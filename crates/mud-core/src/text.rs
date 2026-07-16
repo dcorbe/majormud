@@ -14,9 +14,15 @@ pub fn left_realm(name: &str) -> String {
     format!("{name} just left the Realm.")
 }
 
-/// ORACLE-VERIFY: response to input matching no command. The string is not in
-/// WCCMMUD.DLL (host-side dispatch), so the wording needs a live transcript.
-pub const COMMAND_NOT_UNDERSTOOD: &str = "Your command was not understood.";
+/// VERIFIED (oracle): input matching no command is spoken aloud.
+pub fn you_say(what: &str) -> String {
+    format!("You say \"{what}\"")
+}
+
+/// VERIFIED (DLL): what the rest of the room hears.
+pub fn says(name: &str, what: &str) -> String {
+    format!("{name} says \"{what}\"")
+}
 
 /// VERIFIED (DLL): moving where no exit exists.
 pub const NO_EXIT: &str = "There is no exit in that direction!";
@@ -63,8 +69,18 @@ pub fn arrived_from(name: &str, direction: Direction) -> String {
     format!("{name} just arrived from the {}.", direction_shown(direction))
 }
 
-/// VERIFIED (DLL): character-creation prompts.
+/// VERIFIED (DLL + oracle): character-creation prompts. Blank input gets the
+/// "choose a race/class" wording; a wrong entry gets the "valid" wording.
 pub const CHOOSE_RACE: &str = "Please choose a race from the following list:";
 pub const CHOOSE_CLASS: &str = "Please choose a class from the following list:";
+pub const RACE_PROMPT: &str = "Please choose your race [ ? for help ] :";
+pub const CLASS_PROMPT: &str = "Please choose your class [ ? for help ] :";
+pub const EMPTY_RACE: &str = "You must choose a race. [ ? for help ]";
+pub const EMPTY_CLASS: &str = "You must choose a class. [ ? for help ]";
 pub const INVALID_RACE: &str = "You must choose a valid race. [ ? for help ]";
 pub const INVALID_CLASS: &str = "You must choose a valid class. [ ? for help ]";
+
+/// VERIFIED (oracle): creation list entry — "[N]" padded to four columns.
+pub fn list_entry(number: u16, name: &str) -> String {
+    format!("{:<4} {}\n", format!("[{number}]"), name)
+}

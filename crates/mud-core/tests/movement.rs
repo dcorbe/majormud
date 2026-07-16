@@ -172,6 +172,48 @@ fn blocked_direction_reports_no_exit() {
 }
 
 #[test]
+fn description_first_line_is_indented_four_spaces() {
+    let mut content = world();
+    content
+        .rooms
+        .get_mut(&RoomId { map: 1, room: 1 })
+        .unwrap()
+        .description = vec!["Welcome to the gates.".into(), "Second line.".into()];
+    let mut core = Core::new(content, CoreConfig::default());
+    let alice = core.attach_player(player_at("Alice", 1));
+    let shown = text_to(&core.drain_events(), alice);
+    assert!(
+        shown.contains("Town Gates\n    Welcome to the gates.\nSecond line.\n"),
+        "oracle format: 4-space indent on first line only, got: {shown:?}"
+    );
+}
+
+#[test]
+fn blank_input_shows_brief_room_without_description() {
+    let mut content = world();
+    content
+        .rooms
+        .get_mut(&RoomId { map: 1, room: 1 })
+        .unwrap()
+        .description = vec!["Welcome to the gates.".into()];
+    let mut core = Core::new(content, CoreConfig::default());
+    let alice = core.attach_player(player_at("Alice", 1));
+    core.drain_events();
+
+    core.input(alice, "");
+    let shown = text_to(&core.drain_events(), alice);
+    assert!(shown.contains("Town Gates"), "brief shows name: {shown:?}");
+    assert!(
+        shown.contains("Obvious exits: north, above"),
+        "brief shows exits: {shown:?}"
+    );
+    assert!(
+        !shown.contains("Welcome to the gates."),
+        "brief omits description: {shown:?}"
+    );
+}
+
+#[test]
 fn movement_only_broadcasts_to_the_two_rooms_involved() {
     let mut core = Core::new(world(), CoreConfig::default());
     let bob = core.attach_player(player_at("Bob", 1));

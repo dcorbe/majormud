@@ -106,15 +106,26 @@ fn quit_disconnects_persists_and_announces() {
 }
 
 #[test]
-fn unknown_command_gets_a_response() {
+fn unmatched_input_is_spoken_aloud() {
+    // Oracle: unknown input is SAY, not an error. Speaker sees
+    // `You say "..."`; others in the room see `Name says "..."` (DLL).
     let mut core = Core::new(two_room_content(), CoreConfig::default());
     let alice = core.attach_player(player("Alice"));
+    let bob = core.attach_player(player("Bob"));
     core.drain_events();
 
     core.input(alice, "xyzzy");
     let events = core.drain_events();
     let to_alice = outputs_for(&events, alice).join("");
-    assert!(!to_alice.is_empty(), "unknown command yields a response");
+    assert!(
+        to_alice.contains("You say \"xyzzy\""),
+        "got: {to_alice:?}"
+    );
+    let to_bob = outputs_for(&events, bob).join("");
+    assert!(
+        to_bob.contains("Alice says \"xyzzy\""),
+        "got: {to_bob:?}"
+    );
 }
 
 #[test]

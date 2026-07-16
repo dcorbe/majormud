@@ -70,6 +70,13 @@ fn world() -> Content {
     content
 }
 
+
+fn test_config() -> CoreConfig {
+    CoreConfig {
+        start_location: RoomId { map: 1, room: 1 },
+    }
+}
+
 fn profile(name: &str) -> AccountProfile {
     AccountProfile {
         name: name.into(),
@@ -93,19 +100,38 @@ fn start(core: &mut Core, name: &str) -> SessionId {
 
 #[test]
 fn new_account_is_prompted_for_race() {
-    let mut core = Core::new(world(), CoreConfig::default());
+    let mut core = Core::new(world(), test_config());
     let s = start(&mut core, "Alice");
     let shown = text_to(&core.drain_events(), s);
+    // Oracle-exact list format (MBBSEmu transcript 2026-07-16): "[N]" padded
+    // to four columns, then the name; blank line; prompt with no newline.
     assert!(
-        shown.contains("Please choose a race from the following list:"),
+        shown.contains("Please choose a race from the following list:\n[1]  Human\n[2]  Dwarf\n\nPlease choose your race [ ? for help ] :"),
         "got: {shown:?}"
     );
-    assert!(shown.contains("Human") && shown.contains("Dwarf"));
+}
+
+#[test]
+fn race_list_number_padding_matches_oracle() {
+    // Two-digit ids get one space after the bracket ("[10] Half-Ogre").
+    let mut content = world();
+    content.add_race(mud_core::content::Race {
+        id: RaceId(10),
+        name: "Half-Ogre".into(),
+        abilities: vec![],
+        base_stats: StatBlock::default(),
+        max_stats: StatBlock::default(),
+        cp: 0,
+    });
+    let mut core = Core::new(content, test_config());
+    let s = start(&mut core, "Alice");
+    let shown = text_to(&core.drain_events(), s);
+    assert!(shown.contains("[10] Half-Ogre\n"), "got: {shown:?}");
 }
 
 #[test]
 fn invalid_race_choice_is_rejected() {
-    let mut core = Core::new(world(), CoreConfig::default());
+    let mut core = Core::new(world(), test_config());
     let s = start(&mut core, "Alice");
     core.drain_events();
 
@@ -119,22 +145,37 @@ fn invalid_race_choice_is_rejected() {
 
 #[test]
 fn valid_race_advances_to_class_choice() {
-    let mut core = Core::new(world(), CoreConfig::default());
+    let mut core = Core::new(world(), test_config());
     let s = start(&mut core, "Alice");
     core.drain_events();
 
     core.input(s, "2");
     let shown = text_to(&core.drain_events(), s);
     assert!(
-        shown.contains("Please choose a class from the following list:"),
+        shown.contains("Please choose a class from the following list:\n[1]  Warrior\n\nPlease choose your class [ ? for help ] :"),
         "got: {shown:?}"
     );
-    assert!(shown.contains("Warrior"));
+}
+
+#[test]
+fn blank_input_at_race_prompt_uses_the_choose_variant() {
+    // Oracle: bare CR at the race prompt yields "You must choose a race.",
+    // not the "valid race" wording used for wrong entries.
+    let mut core = Core::new(world(), test_config());
+    let s = start(&mut core, "Alice");
+    core.drain_events();
+
+    core.input(s, "");
+    let shown = text_to(&core.drain_events(), s);
+    assert!(
+        shown.contains("You must choose a race. [ ? for help ]"),
+        "got: {shown:?}"
+    );
 }
 
 #[test]
 fn invalid_class_choice_is_rejected() {
-    let mut core = Core::new(world(), CoreConfig::default());
+    let mut core = Core::new(world(), test_config());
     let s = start(&mut core, "Alice");
     core.input(s, "2");
     core.drain_events();
@@ -149,7 +190,7 @@ fn invalid_class_choice_is_rejected() {
 
 #[test]
 fn completed_creation_matches_the_spec_initial_state() {
-    let mut core = Core::new(world(), CoreConfig::default());
+    let mut core = Core::new(world(), test_config());
     let s = start(&mut core, "Alice");
     core.input(s, "2"); // Dwarf
     core.input(s, "1"); // Warrior
@@ -184,7 +225,7 @@ fn completed_creation_matches_the_spec_initial_state() {
 
 #[test]
 fn completed_creation_enters_the_realm() {
-    let mut core = Core::new(world(), CoreConfig::default());
+    let mut core = Core::new(world(), test_config());
     let s = start(&mut core, "Alice");
     core.input(s, "1");
     core.input(s, "1");
@@ -206,7 +247,7 @@ fn completed_creation_enters_the_realm() {
 
 #[test]
 fn creation_input_is_not_game_commands() {
-    let mut core = Core::new(world(), CoreConfig::default());
+    let mut core = Core::new(world(), test_config());
     let s = start(&mut core, "Alice");
     core.drain_events();
 

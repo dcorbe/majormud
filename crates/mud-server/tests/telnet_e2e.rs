@@ -64,6 +64,13 @@ fn world() -> Content {
     content
 }
 
+
+fn test_config() -> CoreConfig {
+    CoreConfig {
+        start_location: RoomId { map: 1, room: 1 },
+    }
+}
+
 /// Reads from the socket until `needle` appears in the accumulated transcript
 /// (with a timeout so failures are readable, not hangs).
 async fn read_until(stream: &mut TcpStream, transcript: &mut String, needle: &str) {
@@ -90,7 +97,7 @@ async fn send(stream: &mut TcpStream, line: &str) {
 #[tokio::test]
 async fn full_session_create_walk_quit() {
     let state = StateDb::open_in_memory().expect("state db");
-    let server = Server::start(world(), CoreConfig::default(), state, "127.0.0.1:0")
+    let server = Server::start(world(), test_config(), state, "127.0.0.1:0")
         .await
         .expect("start server");
     let addr = server.local_addr();
@@ -140,7 +147,7 @@ async fn full_session_create_walk_quit() {
 #[tokio::test]
 async fn returning_player_resumes_saved_character() {
     let state = StateDb::open_in_memory().expect("state db");
-    let server = Server::start(world(), CoreConfig::default(), state, "127.0.0.1:0")
+    let server = Server::start(world(), test_config(), state, "127.0.0.1:0")
         .await
         .expect("start server");
     let addr = server.local_addr();
@@ -186,7 +193,7 @@ async fn wrong_password_is_rejected() {
     state
         .create_account("Carol", "right", mud_core::game::Gender::Female)
         .expect("account");
-    let server = Server::start(world(), CoreConfig::default(), state, "127.0.0.1:0")
+    let server = Server::start(world(), test_config(), state, "127.0.0.1:0")
         .await
         .expect("start server");
 

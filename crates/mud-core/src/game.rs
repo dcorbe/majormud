@@ -47,15 +47,15 @@ pub struct AccountProfile {
 /// Server-operator configuration (the original's sysop config globals).
 #[derive(Debug, Clone)]
 pub struct CoreConfig {
-    /// Where new characters start (`DAT_00482cf8`; ORACLE-VERIFY the stock
-    /// value — Town Gates (1,1) is the working default).
+    /// Where new characters start (`DAT_00482cf8`). VERIFIED (oracle): the
+    /// stock game starts new characters at Newhaven, Village Entrance.
     pub start_location: RoomId,
 }
 
 impl Default for CoreConfig {
     fn default() -> Self {
         CoreConfig {
-            start_location: RoomId { map: 1, room: 1 },
+            start_location: RoomId { map: 1, room: 2140 },
         }
     }
 }
@@ -131,13 +131,20 @@ impl Core {
     fn game_command(&mut self, session: SessionId, line: &str) {
         match parse(line) {
             Command::Quit => self.quit(session),
-            Command::Blank => {}
+            // Blank input re-shows the room without its description (oracle).
+            Command::Blank => self.show_room_brief(session),
             Command::Look => self.show_room(session),
             Command::Move(direction) => self.move_player(session, direction),
-            Command::Unknown(_) => {
-                self.output(session, text::COMMAND_NOT_UNDERSTOOD);
-            }
+            // Anything else is said aloud (oracle) - there is no error reply.
+            Command::Unknown(what) => self.say(session, &what),
         }
+    }
+
+    fn say(&mut self, session: SessionId, what: &str) {
+        let player = self.player(session);
+        let (room, name) = (player.location, player.name.clone());
+        self.output(session, &text::you_say(what));
+        self.broadcast_to_room(room, Some(session), &text::says(&name, what));
     }
 
     fn next_session_id(&mut self) -> SessionId {
@@ -150,8 +157,10 @@ impl Core {
         let mut out = String::from(text::CHOOSE_RACE);
         out.push('\n');
         for race in self.content.races.values() {
-            out.push_str(&format!("{:>4}) {}\n", race.id.0, race.name));
+            out.push_str(&text::list_entry(race.id.0, &race.name));
         }
+        out.push('\n');
+        out.push_str(text::RACE_PROMPT);
         self.output(session, &out);
     }
 
@@ -159,13 +168,19 @@ impl Core {
         let mut out = String::from(text::CHOOSE_CLASS);
         out.push('\n');
         for class in self.content.classes.values() {
-            out.push_str(&format!("{:>4}) {}\n", class.id.0, class.name));
+            out.push_str(&text::list_entry(class.id.0, &class.name));
         }
+        out.push('\n');
+        out.push_str(text::CLASS_PROMPT);
         self.output(session, &out);
     }
 
     /// State 0x33: the input is `atol`'d and validated against the race data.
     fn choose_race(&mut self, session: SessionId, line: &str) {
+        if line.trim().is_empty() {
+            self.output(session, text::EMPTY_RACE);
+            return;
+        }
         let choice = line.trim().parse::<u16>().ok().map(RaceId);
         let valid = choice.is_some_and(|id| self.content.races.contains_key(&id));
         if !valid {
@@ -187,6 +202,10 @@ impl Core {
 
     /// State 0x34, then `roll_stats` + realm entry.
     fn choose_class(&mut self, session: SessionId, line: &str) {
+        if line.trim().is_empty() {
+            self.output(session, text::EMPTY_CLASS);
+            return;
+        }
         let choice = line.trim().parse::<u16>().ok().map(ClassId);
         let valid = choice.is_some_and(|id| self.content.classes.contains_key(&id));
         if !valid {
@@ -277,18 +296,32 @@ impl Core {
         self.show_room(session);
     }
 
-    /// Renders the session's current room: name, description, occupants,
-    /// obvious exits. Line-exact to the original where VERIFIED.
     fn show_room(&mut self, session: SessionId) {
+        self.render_room(session, true);
+    }
+
+    fn show_room_brief(&mut self, session: SessionId) {
+        self.render_room(session, false);
+    }
+
+    /// Renders the session's current room: name, description (full display
+    /// only, first line indented four spaces per the oracle transcript),
+    /// occupants, obvious exits.
+    fn render_room(&mut self, session: SessionId, full: bool) {
         let player = self.player(session);
         let room = &self.content.rooms[&player.location];
 
         let mut out = String::new();
         out.push_str(&room.name);
         out.push('\n');
-        for line in &room.description {
-            out.push_str(line);
-            out.push('\n');
+        if full {
+            for (i, line) in room.description.iter().enumerate() {
+                if i == 0 {
+                    out.push_str("    ");
+                }
+                out.push_str(line);
+                out.push('\n');
+            }
         }
 
         let others: Vec<&str> = self
