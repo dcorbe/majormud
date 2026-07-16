@@ -12,6 +12,8 @@ struct Args {
     content: PathBuf,
     state: PathBuf,
     listen: String,
+    /// Dev fixture spawns until the M6 spawner: "id@map,room", repeatable.
+    spawns: Vec<(u16, u16, u16)>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -19,6 +21,7 @@ fn parse_args() -> Result<Args, String> {
         content: "re/mmud_wgnt.sqlite".into(),
         state: "state.sqlite".into(),
         listen: "0.0.0.0:2325".into(),
+        spawns: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -30,6 +33,20 @@ fn parse_args() -> Result<Args, String> {
             "--content" => args.content = value("--content")?.into(),
             "--state" => args.state = value("--state")?.into(),
             "--listen" => args.listen = value("--listen")?,
+            "--spawn" => {
+                let v = value("--spawn")?;
+                let (id, loc) = v
+                    .split_once('@')
+                    .ok_or_else(|| format!("--spawn wants id@map,room, got {v}"))?;
+                let (map, room) = loc
+                    .split_once(',')
+                    .ok_or_else(|| format!("--spawn wants id@map,room, got {v}"))?;
+                args.spawns.push((
+                    id.parse().map_err(|_| format!("bad monster id {id}"))?,
+                    map.parse().map_err(|_| format!("bad map {map}"))?,
+                    room.parse().map_err(|_| format!("bad room {room}"))?,
+                ));
+            }
             other => return Err(format!("unknown flag {other}")),
         }
     }
@@ -78,7 +95,14 @@ fn main() -> ExitCode {
 
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
     runtime.block_on(async {
-        let server = match Server::start(content, CoreConfig::default(), state, &args.listen).await
+        let server = match Server::start_with_spawns(
+            content,
+            CoreConfig::default(),
+            state,
+            &args.listen,
+            args.spawns.clone(),
+        )
+        .await
         {
             Ok(s) => s,
             Err(e) => {

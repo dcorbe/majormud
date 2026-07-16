@@ -57,6 +57,17 @@ impl Server {
         state: StateDb,
         addr: &str,
     ) -> io::Result<Server> {
+        Self::start_with_spawns(content, config, state, addr, Vec::new()).await
+    }
+
+    /// `start` plus dev fixture monster spawns (until the M6 spawner).
+    pub async fn start_with_spawns(
+        content: Content,
+        config: CoreConfig,
+        state: StateDb,
+        addr: &str,
+        spawns: Vec<(u16, u16, u16)>,
+    ) -> io::Result<Server> {
         let listener = TcpListener::bind(addr).await?;
         let local = listener.local_addr()?;
         let state = Arc::new(Mutex::new(state));
@@ -66,7 +77,7 @@ impl Server {
             let state = Arc::clone(&state);
             std::thread::Builder::new()
                 .name("game-core".into())
-                .spawn(move || core_thread(content, config, state, core_rx))
+                .spawn(move || core_thread(content, config, state, core_rx, spawns))
                 .expect("spawn core thread");
         }
 
@@ -109,8 +120,18 @@ fn core_thread(
     config: CoreConfig,
     state: Arc<Mutex<StateDb>>,
     rx: std_mpsc::Receiver<CoreMsg>,
+    spawns: Vec<(u16, u16, u16)>,
 ) {
     let mut core = Core::new(content, config);
+    for (id, map, room) in spawns {
+        use mud_core::content::{MonsterId, RoomId};
+        if core
+            .spawn_monster(MonsterId(id), RoomId { map, room })
+            .is_none()
+        {
+            eprintln!("--spawn: unknown monster {id} or room {map},{room}");
+        }
+    }
     let mut outputs: std::collections::HashMap<SessionId, mpsc::UnboundedSender<OutMsg>> =
         std::collections::HashMap::new();
 
