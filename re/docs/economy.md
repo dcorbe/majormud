@@ -548,3 +548,18 @@ purse.
   disagree for 411 of 1,203 slots **because the .VIR is a played-board
   snapshot** — stock persists to Btrieve via the dirty byte. `shopnow`
   is runtime state, not content; a fresh world boots with `now = max`.
+
+## Addendum — shelf persistence & the daily cleanup (2026-07-16)
+
+- Shop stock **persists** in the original: restock/clamp paths set the
+  shop dirty byte (+0x1dc) and the record is written back to Btrieve.
+  The played-board .VIR (411 dented slots) is the proof.
+- `check_initiate_restocking`'s run-once guard (`DAT_00482138`) is never
+  reset within a process — the interval-0 "top-up" branch runs **once
+  per module load**. Boards felt a nightly restock because Worldgroup's
+  nightly cleanup restarted the module. A standalone server that never
+  restarts must emulate this with a 24 h job re-running the same
+  reconciliation (clamp overstock down to max; one probability-gated
+  top-up for dented interval-0 slots). No timed slot's interval exceeds
+  720 min, so leaving the event list running continuously instead of
+  re-randomizing it daily is behaviorally indistinguishable.

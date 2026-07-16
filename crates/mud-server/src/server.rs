@@ -123,6 +123,19 @@ fn core_thread(
     spawns: Vec<(u16, u16, u16)>,
 ) {
     let mut core = Core::new(content, config);
+    {
+        let db = state.lock().expect("state db lock");
+        match db.load_shop_stock() {
+            Ok(rows) => {
+                let rows: Vec<_> = rows
+                    .into_iter()
+                    .map(|(shop, slot, now)| (mud_core::content::ShopId(shop), slot, now))
+                    .collect();
+                core.restore_shop_stock(&rows);
+            }
+            Err(e) => eprintln!("failed to load shop stock: {e}"),
+        }
+    }
     for (id, map, room) in spawns {
         use mud_core::content::{MonsterId, RoomId};
         if core
@@ -162,6 +175,12 @@ fn core_thread(
                     let db = state.lock().expect("state db lock");
                     if let Err(e) = db.save_player(&player) {
                         eprintln!("failed to persist {}: {e}", player.name);
+                    }
+                }
+                Event::PersistShopStock { shop, counts } => {
+                    let db = state.lock().expect("state db lock");
+                    if let Err(e) = db.save_shop_stock(shop.0, &counts) {
+                        eprintln!("failed to persist shop {} stock: {e}", shop.0);
                     }
                 }
                 Event::DeleteCharacter(name) => {

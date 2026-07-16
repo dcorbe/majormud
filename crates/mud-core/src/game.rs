@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use crate::ability::Ability;
 use crate::command::{parse, Command, Resolution};
-use crate::content::{ClassId, Content, Direction, RaceId, RoomId, StatBlock};
+use crate::content::{ClassId, Content, Direction, RaceId, RoomId, ShopStock, StatBlock};
 use crate::stats::{derive, AbilityBag, Derived, StatInputs};
 use crate::text;
 use crate::tick::TickScheduler;
@@ -281,6 +281,12 @@ impl Rng {
 pub enum Event {
     Output { session: SessionId, text: String },
     Persist(Box<Player>),
+    /// A shop shelf changed — upsert its rows in state.sqlite (the
+    /// original's shop dirty byte +0x1dc → Btrieve save).
+    PersistShopStock {
+        shop: crate::content::ShopId,
+        counts: [i16; 20],
+    },
     /// Permadeath: remove the character record entirely.
     DeleteCharacter(String),
     Disconnect(SessionId),
@@ -326,9 +332,16 @@ enum Job {
     Energy,
     /// One meditation dot for a pending exit.
     ExitStep(SessionId),
+    /// The nightly-cleanup stand-in: Worldgroup restarted the module every
+    /// night, re-running check_initiate_restocking (its run-once flag
+    /// DAT_00482138 is never reset within a process). A standalone server
+    /// re-runs the shelf reconciliation every 24 h instead.
+    Cleanup,
 }
 
 const SLOW_INTERVAL: u64 = 30;
+/// One emulated board day (the nightly cleanup cadence).
+const CLEANUP_INTERVAL: u64 = 86_400;
 /// The combat-round cadence (`background_energy`).
 const ENERGY_INTERVAL: u64 = 5;
 /// Player energy pool max/regen (`DAT_00482cd0` default).
@@ -395,6 +408,7 @@ impl Core {
         let mut scheduler = TickScheduler::new();
         scheduler.schedule_in(SLOW_INTERVAL, Job::Slow);
         scheduler.schedule_in(ENERGY_INTERVAL, Job::Energy);
+        scheduler.schedule_in(CLEANUP_INTERVAL, Job::Cleanup);
         let rng = Rng(config.rng_seed | 1);
         let mut core = Core {
             content,
@@ -569,8 +583,80 @@ impl Core {
                     self.scheduler.schedule_in(ENERGY_INTERVAL, Job::Energy);
                 }
                 Job::ExitStep(session) => self.exit_step(session),
+                Job::Cleanup => {
+                    self.reconcile_shelves();
+                    self.scheduler.schedule_in(CLEANUP_INTERVAL, Job::Cleanup);
+                }
             }
         }
+    }
+
+    /// Applies shelf counts saved in state.sqlite (call once, right after
+    /// boot), then runs the reconciliation pass the original performed in
+    /// `check_initiate_restocking` on every module load. Rows naming
+    /// unknown shops or empty slots are ignored (content may have changed
+    /// between runs).
+    pub fn restore_shop_stock(&mut self, rows: &[(crate::content::ShopId, usize, i16)]) {
+        for &(shop, slot, now) in rows {
+            let known = self
+                .content
+                .shops
+                .get(&shop)
+                .is_some_and(|s| slot < s.stock.len() && s.stock[slot].item.is_some());
+            if known {
+                self.shop_stock.entry(shop).or_default()[slot] = now;
+            }
+        }
+        self.reconcile_shelves();
+    }
+
+    /// The per-slot reconciliation from `check_initiate_restocking`
+    /// (0x5b58c), minus the event scheduling done at boot: clamp overstock
+    /// down to max, and give dented interval-0 slots their one
+    /// probability-gated top-up. Runs at restore and on the daily cleanup.
+    fn reconcile_shelves(&mut self) {
+        let shop_ids: Vec<crate::content::ShopId> =
+            self.content.shops.keys().copied().collect();
+        for shop_id in shop_ids {
+            let shop = &self.content.shops[&shop_id];
+            if shop.shop_type == 11 {
+                continue;
+            }
+            let slots: Vec<(usize, ShopStock)> = shop
+                .stock
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.item.is_some())
+                .map(|(i, s)| (i, *s))
+                .collect();
+            let mut changed = false;
+            for (i, slot) in slots {
+                let counts = self.shop_stock.entry(shop_id).or_default();
+                if counts[i] > slot.max {
+                    counts[i] = slot.max;
+                    changed = true;
+                } else if slot.restock_time == 0 && counts[i] < slot.max {
+                    let roll = self.rng.roll(1, 100);
+                    let counts = self.shop_stock.entry(shop_id).or_default();
+                    if roll < i32::from(slot.restock_percent) {
+                        counts[i] = (counts[i] + slot.restock_amount).min(slot.max);
+                        changed = true;
+                    }
+                }
+            }
+            if changed {
+                self.persist_shop_stock(shop_id);
+            }
+        }
+    }
+
+    /// Emits the shelf-changed event (the dirty byte +0x1dc).
+    fn persist_shop_stock(&mut self, shop: crate::content::ShopId) {
+        let counts = self.shop_stock.entry(shop).or_default();
+        self.events.push(Event::PersistShopStock {
+            shop,
+            counts: *counts,
+        });
     }
 
     /// `restock_items` (0x5b6f6): drains due restock events. A due event on
@@ -595,7 +681,13 @@ impl Core {
             if counts[ev.slot] < slot.max {
                 let roll = self.rng.roll(1, 100);
                 if roll < i32::from(slot.restock_percent) {
+                    let counts = self.shop_stock.entry(ev.shop).or_default();
                     counts[ev.slot] = (counts[ev.slot] + slot.restock_amount).min(slot.max);
+                    let snapshot = *counts;
+                    self.events.push(Event::PersistShopStock {
+                        shop: ev.shop,
+                        counts: snapshot,
+                    });
                 }
             }
             ev.due = now + u64::from(slot.restock_time.max(1) as u16) * 60;
@@ -1494,6 +1586,7 @@ impl Core {
         }
         let counts = self.shop_stock.entry(shop_id).or_default();
         counts[idx] -= 1;
+        self.persist_shop_stock(shop_id);
         let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
             return Resolution::FallThrough;
         };
@@ -1557,6 +1650,7 @@ impl Core {
         let counts = self.shop_stock.entry(shop_id).or_default();
         if counts[slot_idx] < shop.stock[slot_idx].max {
             counts[slot_idx] += 1;
+            self.persist_shop_stock(shop_id);
         }
         self.output_line(
             session,

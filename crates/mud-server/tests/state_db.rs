@@ -117,3 +117,23 @@ fn saving_again_updates_the_record() {
     assert_eq!(loaded.location, RoomId { map: 3, room: 77 });
     assert_eq!(loaded.experience, 1234);
 }
+
+#[test]
+fn shop_stock_save_and_load_roundtrip() {
+    let db = db();
+    assert!(db.load_shop_stock().expect("load").is_empty(), "fresh db");
+
+    let mut counts = [0i16; 20];
+    counts[0] = 4;
+    counts[3] = 31;
+    db.save_shop_stock(45, &counts).expect("save");
+    counts[0] = 5;
+    db.save_shop_stock(45, &counts).expect("upsert");
+    db.save_shop_stock(8, &[1i16; 20]).expect("second shop");
+
+    let rows = db.load_shop_stock().expect("load");
+    assert!(rows.contains(&(45, 0, 5)), "upserted: {rows:?}");
+    assert!(rows.contains(&(45, 3, 31)), "got: {rows:?}");
+    assert!(rows.contains(&(8, 19, 1)), "got: {rows:?}");
+    assert_eq!(rows.len(), 40, "20 slots per saved shop");
+}

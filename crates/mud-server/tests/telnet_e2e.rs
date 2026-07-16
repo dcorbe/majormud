@@ -2,7 +2,8 @@
 //! looks around, walks, quits.
 
 use mud_core::content::{
-    Class, ClassId, Content, Direction, Exit, Race, RaceId, Room, RoomId, StatBlock,
+    Class, ClassId, Content, Direction, Exit, Item, ItemId, Race, RaceId, Room, RoomId, Shop,
+    ShopId, ShopStock, StatBlock,
 };
 use mud_core::game::CoreConfig;
 use mud_server::server::Server;
@@ -29,7 +30,7 @@ fn world() -> Content {
         id: RoomId { map: 1, room: 2 },
         name: "Town Square".into(),
         description: vec![],
-        shop: None,
+        shop: Some(ShopId(45)),
         placed_items: vec![],
         exits: Default::default(),
     };
@@ -40,6 +41,38 @@ fn world() -> Content {
     });
     content.add_room(gates);
     content.add_room(square);
+    content.add_item(Item {
+        id: ItemId(100),
+        name: "quarterstaff".into(),
+        weight: 100,
+        item_type: 1,
+        uses: -1,
+        min_damage: 2,
+        max_damage: 12,
+        weapon_type: 1,
+        gettable: 1,
+        speed: 1200,
+        ..Item::default()
+    });
+    let mut stock = [ShopStock::default(); 20];
+    stock[0] = ShopStock {
+        item: Some(ItemId(100)),
+        max: 5,
+        now: 5,
+        restock_time: 0,
+        restock_amount: 0,
+        restock_percent: 0,
+    };
+    content.add_shop(Shop {
+        id: ShopId(45),
+        name: "General Store".into(),
+        shop_type: 1,
+        min_level: 0,
+        max_level: 0,
+        markup: 50,
+        class_limit: 0,
+        stock,
+    });
     content.add_race(Race {
         id: RaceId(1),
         name: "Human".into(),
@@ -243,4 +276,80 @@ async fn wrong_password_is_rejected() {
     read_until(&mut stream, &mut t, "Password: ").await;
     send(&mut stream, "wrong").await;
     read_until(&mut stream, &mut t, "Invalid credentials.").await;
+}
+
+/// Full restart cycle: a shelf dented on one server run stays dented when
+/// a second server boots from the same state.sqlite (the original's
+/// Btrieve shop persistence).
+#[tokio::test]
+async fn shop_shelves_persist_across_restart() {
+    let path = std::env::temp_dir().join(format!(
+        "mud_e2e_stock_{}.sqlite",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+
+    {
+        let state = StateDb::open(&path).expect("state db");
+        let server = Server::start(world(), test_config(), state, "127.0.0.1:0")
+            .await
+            .expect("start server");
+        let mut stream = TcpStream::connect(server.local_addr()).await.expect("connect");
+        let mut t = String::new();
+        read_until(&mut stream, &mut t, "Account: ").await;
+        send(&mut stream, "Cora").await;
+        read_until(&mut stream, &mut t, "Create new account? (y/n)").await;
+        send(&mut stream, "y").await;
+        read_until(&mut stream, &mut t, "Password: ").await;
+        send(&mut stream, "pw").await;
+        read_until(&mut stream, &mut t, "Gender (M/F): ").await;
+        send(&mut stream, "F").await;
+        read_until(&mut stream, &mut t, "race").await;
+        send(&mut stream, "1").await;
+        read_until(&mut stream, &mut t, "class").await;
+        send(&mut stream, "1").await;
+        read_until(&mut stream, &mut t, "Lawful").await;
+        send(&mut stream, "No").await;
+        read_until(&mut stream, &mut t, "[HP=").await;
+        send(&mut stream, "n").await;
+        read_until(&mut stream, &mut t, "Town Square").await;
+        send(&mut stream, "buy quarterstaff").await;
+        read_until(&mut stream, &mut t, "You just bought quarterstaff for nothing.").await;
+        send(&mut stream, "list").await;
+        read_until(&mut stream, &mut t, "quarterstaff                  4").await;
+    }
+
+    {
+        let state = StateDb::open(&path).expect("reopen state db");
+        let server = Server::start(world(), test_config(), state, "127.0.0.1:0")
+            .await
+            .expect("restart server");
+        let mut stream = TcpStream::connect(server.local_addr()).await.expect("connect");
+        let mut t = String::new();
+        read_until(&mut stream, &mut t, "Account: ").await;
+        send(&mut stream, "Bram").await;
+        read_until(&mut stream, &mut t, "Create new account? (y/n)").await;
+        send(&mut stream, "y").await;
+        read_until(&mut stream, &mut t, "Password: ").await;
+        send(&mut stream, "pw").await;
+        read_until(&mut stream, &mut t, "Gender (M/F): ").await;
+        send(&mut stream, "M").await;
+        read_until(&mut stream, &mut t, "race").await;
+        send(&mut stream, "1").await;
+        read_until(&mut stream, &mut t, "class").await;
+        send(&mut stream, "1").await;
+        read_until(&mut stream, &mut t, "Lawful").await;
+        send(&mut stream, "No").await;
+        read_until(&mut stream, &mut t, "[HP=").await;
+        send(&mut stream, "n").await;
+        read_until(&mut stream, &mut t, "Town Square").await;
+        send(&mut stream, "list").await;
+        read_until(&mut stream, &mut t, "quarterstaff                  4").await;
+        assert!(
+            !t.contains("quarterstaff                  5"),
+            "shelf came back full after restart: {t:?}"
+        );
+    }
+
+    let _ = std::fs::remove_file(&path);
 }

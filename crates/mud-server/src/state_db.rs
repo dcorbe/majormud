@@ -98,6 +98,12 @@ CREATE TABLE IF NOT EXISTS bankbook (
     balance INTEGER NOT NULL,
     PRIMARY KEY (name, shop)
 ) STRICT;
+CREATE TABLE IF NOT EXISTS shop_stock (
+    shop INTEGER NOT NULL,
+    slot INTEGER NOT NULL,
+    now  INTEGER NOT NULL,
+    PRIMARY KEY (shop, slot)
+) STRICT;
 CREATE TABLE IF NOT EXISTS player_item (
     name   TEXT NOT NULL COLLATE NOCASE,
     kind   TEXT NOT NULL CHECK (kind IN ('inv', 'worn', 'weapon')),
@@ -301,6 +307,35 @@ impl StateDb {
     }
 
     /// Permadeath: remove the character record.
+    /// Upserts one shop's 20 shelf counts (the shop dirty-byte save).
+    pub fn save_shop_stock(&self, shop: u16, counts: &[i16; 20]) -> Result<(), StateError> {
+        let mut stmt = self.conn.prepare_cached(
+            "INSERT INTO shop_stock (shop, slot, now) VALUES (?1, ?2, ?3)
+             ON CONFLICT (shop, slot) DO UPDATE SET now = excluded.now",
+        )?;
+        for (slot, now) in counts.iter().enumerate() {
+            stmt.execute((shop, slot as i64, i64::from(*now)))?;
+        }
+        Ok(())
+    }
+
+    /// All persisted shelf counts, for `Core::restore_shop_stock` at boot.
+    pub fn load_shop_stock(&self) -> Result<Vec<(u16, usize, i16)>, StateError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT shop, slot, now FROM shop_stock")?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, u16>(0)?,
+                    row.get::<_, i64>(1)? as usize,
+                    row.get::<_, i16>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     pub fn delete_player(&self, name: &str) -> Result<(), StateError> {
         self.conn
             .execute("DELETE FROM player WHERE name = ?1", params![name])?;
