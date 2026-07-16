@@ -7,3 +7,5 @@
 pub mod ability;
 pub mod command;
 pub mod content;
+pub mod game;
+pub mod text;
