@@ -118,6 +118,31 @@ fn unknown_command_gets_a_response() {
 }
 
 #[test]
+fn dropped_connection_detach_persists_and_announces() {
+    let mut core = Core::new(two_room_content(), CoreConfig::default());
+    let alice = core.attach_player(player("Alice"));
+    let bob = core.attach_player(player("Bob"));
+    core.drain_events();
+
+    core.detach(bob); // carrier dropped, no quit command
+    let events = core.drain_events();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::Persist(p) if p.name == "Bob")),
+        "detach persists the player"
+    );
+    let to_alice: String = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Output { session: s, text } if *s == alice => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(to_alice.contains("Bob just left the Realm."));
+}
+
+#[test]
 fn input_from_detached_session_is_ignored() {
     let mut core = Core::new(two_room_content(), CoreConfig::default());
     let alice = core.attach_player(player("Alice"));

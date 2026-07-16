@@ -1,45 +1,94 @@
 //! Standalone telnet server for the MajorMUD reimplementation.
 //!
-//! M0 behavior: load the content database, validate it, report, exit.
+//! Usage: mud-server [--content <path>] [--state <path>] [--listen <addr>]
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-fn main() -> ExitCode {
-    let path: PathBuf = std::env::args_os()
-        .nth(1)
-        .unwrap_or_else(|| "re/mmud_wgnt.sqlite".into())
-        .into();
+use mud_core::game::CoreConfig;
+use mud_server::{content_db, server::Server, state_db::StateDb};
 
-    let content = match mud_server::content_db::load(&path) {
-        Ok(c) => c,
+struct Args {
+    content: PathBuf,
+    state: PathBuf,
+    listen: String,
+}
+
+fn parse_args() -> Result<Args, String> {
+    let mut args = Args {
+        content: "re/mmud_wgnt.sqlite".into(),
+        state: "state.sqlite".into(),
+        listen: "0.0.0.0:2325".into(),
+    };
+    let mut it = std::env::args().skip(1);
+    while let Some(flag) = it.next() {
+        let mut value = |flag: &str| {
+            it.next()
+                .ok_or_else(|| format!("{flag} requires a value"))
+        };
+        match flag.as_str() {
+            "--content" => args.content = value("--content")?.into(),
+            "--state" => args.state = value("--state")?.into(),
+            "--listen" => args.listen = value("--listen")?,
+            other => return Err(format!("unknown flag {other}")),
+        }
+    }
+    Ok(args)
+}
+
+fn main() -> ExitCode {
+    let args = match parse_args() {
+        Ok(a) => a,
         Err(e) => {
-            eprintln!("failed to load {}: {e}", path.display());
+            eprintln!("{e}");
             return ExitCode::FAILURE;
         }
     };
 
+    let content = match content_db::load(&args.content) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("failed to load {}: {e}", args.content.display());
+            return ExitCode::FAILURE;
+        }
+    };
     let errors = content.validate();
+    if !errors.is_empty() {
+        for e in &errors {
+            eprintln!("validation: {e:?}");
+        }
+        eprintln!("content failed validation: {} error(s)", errors.len());
+        return ExitCode::FAILURE;
+    }
     println!(
-        "loaded {}: {} rooms, {} monsters, {} items, {} spells, {} messages, {} shops, {} races, {} classes",
-        path.display(),
+        "content OK: {} rooms, {} monsters, {} items, {} spells",
         content.rooms.len(),
         content.monsters.len(),
         content.items.len(),
         content.spells.len(),
-        content.messages.len(),
-        content.shops.len(),
-        content.races.len(),
-        content.classes.len(),
     );
-    if errors.is_empty() {
-        println!("validation: OK");
-        ExitCode::SUCCESS
-    } else {
-        for e in &errors {
-            eprintln!("validation: {e:?}");
+
+    let state = match StateDb::open(&args.state) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("failed to open {}: {e}", args.state.display());
+            return ExitCode::FAILURE;
         }
-        eprintln!("validation: {} error(s)", errors.len());
-        ExitCode::FAILURE
-    }
+    };
+
+    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+    runtime.block_on(async {
+        let server = match Server::start(content, CoreConfig::default(), state, &args.listen).await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("failed to listen on {}: {e}", args.listen);
+                return ExitCode::FAILURE;
+            }
+        };
+        println!("listening on {}", server.local_addr());
+        // Serve until killed.
+        std::future::pending::<()>().await;
+        ExitCode::SUCCESS
+    })
 }

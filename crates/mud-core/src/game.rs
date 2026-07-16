@@ -228,6 +228,19 @@ impl Core {
         std::mem::take(&mut self.events)
     }
 
+    /// Removes a session whose connection dropped: same as quitting (persist
+    /// + departure broadcast). Sessions still in creation just vanish.
+    pub fn detach(&mut self, session: SessionId) {
+        match self.sessions.get(&session) {
+            Some(Session::InGame { .. }) => self.quit(session),
+            Some(_) => {
+                self.sessions.remove(&session);
+                self.events.push(Event::Disconnect(session));
+            }
+            None => {}
+        }
+    }
+
     fn quit(&mut self, session: SessionId) {
         let Some(Session::InGame { player }) = self.sessions.remove(&session) else {
             return;

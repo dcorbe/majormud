@@ -167,6 +167,18 @@ impl StateDb {
         }))
     }
 
+    pub fn account_exists(&self, name: &str) -> Result<bool, StateError> {
+        let found: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM account WHERE name = ?1",
+                params![name],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(found.is_some())
+    }
+
     /// Test hook: the stored password field for an account.
     pub fn raw_password_field(&self, name: &str) -> String {
         self.conn
