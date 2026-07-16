@@ -80,6 +80,37 @@ fn known_content_spot_checks() {
     assert_eq!(form.energy, 1000);
     assert_eq!(rat.attacks[1].kind, 0); // empty slot
 
+    // Item economy/combat fields: the quarterstaff (id 100).
+    let staff = &content.items[&mud_core::content::ItemId(100)];
+    assert_eq!(staff.name, "quarterstaff");
+    assert_eq!(staff.weight, 100);
+    assert_eq!(staff.item_type, 1); // weapon
+    assert_eq!(staff.min_damage, 2);
+    assert_eq!(staff.max_damage, 12);
+    assert_eq!(staff.speed, 1200);
+    assert_eq!(staff.cost, 0);
+    assert_eq!(staff.weapon_type, 1, "1 or 3 = two-handed (oracle: '(Two handed)')");
+    assert!(staff.hit_msg.is_some());
+
+    // The newbie manual is placed at the Village Entrance but not gettable.
+    let manual = &content.items[&mud_core::content::ItemId(1098)];
+    assert_eq!(manual.name, "newbie manual");
+    assert_eq!(manual.gettable, 0);
+    let entrance = &content.rooms[&RoomId { map: 1, room: 2140 }];
+    assert!(
+        entrance.placed_items.iter().any(|p| p.item.0 == 1098),
+        "manual placed at the entrance"
+    );
+
+    // Weapons shop stock (id 45): quarterstaff 31, club 26 (oracle list).
+    let weapons = &content.shops[&mud_core::content::ShopId(45)];
+    let slot = &weapons.stock[0];
+    assert_eq!(slot.item.map(|i| i.0), Some(100));
+    assert_eq!(slot.max, 31);
+    assert_eq!(slot.now, 31);
+    assert_eq!(weapons.stock[1].item.map(|i| i.0), Some(90));
+    assert_eq!(weapons.stock[1].now, 26);
+
     // Every exit in the shipped data resolves (verified upstream: 62,352 exits).
     let exits: usize = content
         .rooms

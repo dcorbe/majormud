@@ -30,6 +30,7 @@ fn world() -> Content {
         name: "Forest Path".into(),
         description: vec![],
         shop: None,
+        placed_items: vec![],
         exits: Default::default(),
     });
     content.add_monster(rat_template());

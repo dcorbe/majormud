@@ -10,8 +10,9 @@ use std::path::Path;
 
 use mud_core::ability::Ability;
 use mud_core::content::{
-    AbilityValue, AttackForm, Class, ClassId, Content, Exit, Item, ItemId, Message, MessageId, Monster,
-    MonsterId, Race, RaceId, Room, RoomId, Shop, ShopId, Spell, SpellId, StatBlock,
+    AbilityValue, AttackForm, Class, ClassId, Content, Exit, Item, ItemId, Message, MessageId,
+    Monster, MonsterId, PlacedItem, Race, RaceId, Room, RoomId, Shop, ShopId, ShopStock, Spell,
+    SpellId, StatBlock,
 };
 use rusqlite::Connection;
 
@@ -121,8 +122,12 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
         .map(|i| format!("desc_{i}"))
         .collect::<Vec<_>>()
         .join(", ");
+    let placed = (1..=17)
+        .map(|i| format!("roomitems_{i}, roomitemqty_{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
     let mut stmt = db.prepare(&format!(
-        "SELECT mapnumber, roomnumber, name, shopnum, {descs}, {exits} FROM room"
+        "SELECT mapnumber, roomnumber, name, shopnum, {descs}, {exits}, {placed} FROM room"
     ))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
@@ -138,6 +143,18 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
         while description.last().is_some_and(|l| l.is_empty()) {
             description.pop();
         }
+        let mut placed_items = Vec::new();
+        for i in 0..17 {
+            let base = 41 + i * 2;
+            let item: i64 = row.get(base)?;
+            if item > 0 {
+                let quantity = to_i16("room", "roomitemqty", row.get(base + 1)?)?;
+                placed_items.push(PlacedItem {
+                    item: ItemId(to_u16("room", "roomitems", item)?),
+                    quantity: quantity.max(1),
+                });
+            }
+        }
         let mut room = Room {
             id,
             name: row.get(2)?,
@@ -145,6 +162,7 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
             shop: (shopnum > 0)
                 .then(|| to_u16("room", "shopnum", shopnum).map(ShopId))
                 .transpose()?,
+            placed_items,
             exits: Default::default(),
         };
         for d in 0..10 {
@@ -243,17 +261,62 @@ fn coin(table: &'static str, row: &rusqlite::Row<'_>, idx: usize) -> Result<u32,
 }
 
 fn load_items(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
+    // Items carry 20 ability slots (not 10 like the other tables).
+    let a_cols = (1..=20)
+        .map(|i| format!("abilitya_{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let b_cols = (1..=20)
+        .map(|i| format!("abilityb_{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
     let mut stmt = db.prepare(&format!(
-        "SELECT number, name, {}, {} FROM item",
-        ability_cols("abilitya"),
-        ability_cols("abilityb"),
+        "SELECT number, name, {a_cols}, {b_cols}, \
+         weight, type, uses, cost, costtype, minhit, maxhit, ac, weapon, \
+         armour, wornon, accuracy, dr, gettable, reqstr, speed, hitmsg, \
+         missmsg, notdroppable, retainafteruses, destroyondeath FROM item"
     ))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
+        let mut abilities = Vec::new();
+        for i in 0..20 {
+            let id: i64 = row.get(2 + i)?;
+            let value: i64 = row.get(22 + i)?;
+            if id == 0 {
+                continue;
+            }
+            let id = to_u16("item", "ability id", id)?;
+            let ability = Ability::from_id(id)
+                .ok_or_else(|| invalid("item", format!("unknown ability id {id}")))?;
+            abilities.push((ability, to_i16("item", "ability value", value)?));
+        }
+        let base = 42;
         content.add_item(Item {
             id: ItemId(to_u16("item", "number", row.get(0)?)?),
             name: row.get(1)?,
-            abilities: ability_pairs("item", row, 2, 12)?,
+            abilities,
+            weight: to_i16("item", "weight", row.get(base)?)?,
+            item_type: to_i16("item", "type", row.get(base + 1)?)?,
+            uses: to_i16("item", "uses", row.get(base + 2)?)?,
+            cost: i32::try_from(row.get::<_, i64>(base + 3)?)
+                .map_err(|_| invalid("item", "cost overflow"))?,
+            cost_denomination: to_i16("item", "costtype", row.get(base + 4)?)?,
+            min_damage: to_i16("item", "minhit", row.get(base + 5)?)?,
+            max_damage: to_i16("item", "maxhit", row.get(base + 6)?)?,
+            ac: to_i16("item", "ac", row.get(base + 7)?)?,
+            weapon_type: to_i16("item", "weapon", row.get(base + 8)?)?,
+            armour_req: to_i16("item", "armour", row.get(base + 9)?)?,
+            worn_on: to_i16("item", "wornon", row.get(base + 10)?)?,
+            accuracy: to_i16("item", "accuracy", row.get(base + 11)?)?,
+            defense: to_i16("item", "dr", row.get(base + 12)?)?,
+            gettable: to_i16("item", "gettable", row.get(base + 13)?)?,
+            req_str: to_i16("item", "reqstr", row.get(base + 14)?)?,
+            speed: to_i16("item", "speed", row.get(base + 15)?)?,
+            hit_msg: opt_message("item", "hitmsg", row.get(base + 16)?)?,
+            miss_msg: opt_message("item", "missmsg", row.get(base + 17)?)?,
+            not_droppable: to_i16("item", "notdroppable", row.get(base + 18)?)?,
+            retain_after_uses: to_i16("item", "retainafteruses", row.get(base + 19)?)?,
+            destroy_on_death: to_i16("item", "destroyondeath", row.get(base + 20)?)?,
         });
     }
     Ok(())
@@ -297,12 +360,36 @@ fn load_messages(db: &Connection, content: &mut Content) -> Result<(), LoadError
 }
 
 fn load_shops(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
-    let mut stmt = db.prepare(
+    let stock_cols = (1..=20)
+        .map(|i| {
+            format!(
+                "shopitemnumber_{i}, shopmax_{i}, shopnow_{i}, shoprgntime_{i}, \
+                 shoprgnnumber_{i}, shoprgnpercentage_{i}"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut stmt = db.prepare(&format!(
         "SELECT number, name, shoptype, shopminlvl, shopmaxlvl, shopmarkup, \
-         shopclasslimit FROM shop",
-    )?;
+         shopclasslimit, {stock_cols} FROM shop"
+    ))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
+        let mut stock = [ShopStock::default(); 20];
+        for (i, slot) in stock.iter_mut().enumerate() {
+            let base = 7 + i * 6;
+            let item: i64 = row.get(base)?;
+            *slot = ShopStock {
+                item: (item > 0)
+                    .then(|| to_u16("shop", "shopitemnumber", item).map(ItemId))
+                    .transpose()?,
+                max: to_i16("shop", "shopmax", row.get(base + 1)?)?,
+                now: to_i16("shop", "shopnow", row.get(base + 2)?)?,
+                restock_time: to_i16("shop", "shoprgntime", row.get(base + 3)?)?,
+                restock_amount: to_i16("shop", "shoprgnnumber", row.get(base + 4)?)?,
+                restock_percent: to_i16("shop", "shoprgnpercentage", row.get(base + 5)?)?,
+            };
+        }
         content.add_shop(Shop {
             id: ShopId(to_u16("shop", "number", row.get(0)?)?),
             name: row.get(1)?,
@@ -311,6 +398,7 @@ fn load_shops(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
             max_level: to_i16("shop", "shopmaxlvl", row.get(4)?)?,
             markup: to_i16("shop", "shopmarkup", row.get(5)?)?,
             class_limit: to_i16("shop", "shopclasslimit", row.get(6)?)?,
+            stock,
         });
     }
     Ok(())

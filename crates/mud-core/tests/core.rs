@@ -11,6 +11,7 @@ fn two_room_content() -> Content {
         name: "Town Gates".into(),
         description: vec![],
         shop: None,
+        placed_items: vec![],
         exits: Default::default(),
     };
     gates.exits[Direction::North as usize] = Some(Exit {
@@ -22,6 +23,7 @@ fn two_room_content() -> Content {
         name: "Town Square".into(),
         description: vec![],
         shop: None,
+        placed_items: vec![],
         exits: Default::default(),
     };
     square.exits[Direction::South as usize] = Some(Exit {

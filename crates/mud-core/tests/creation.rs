@@ -17,6 +17,7 @@ fn world() -> Content {
         name: "Town Gates".into(),
         description: vec![],
         shop: None,
+        placed_items: vec![],
         exits: Default::default(),
     });
     content.add_race(Race {

@@ -46,6 +46,7 @@ fn world() -> Content {
         name: "Village Entrance".into(),
         description: vec![],
         shop: None,
+        placed_items: vec![],
         exits: Default::default(),
     };
     entrance.exits[mud_core::content::Direction::North as usize] =
@@ -59,6 +60,7 @@ fn world() -> Content {
         name: "Adventurer's Guild".into(),
         description: vec![],
         shop: None,
+        placed_items: vec![],
         exits: Default::default(),
     };
     guild.shop = Some(ShopId(38));
@@ -71,6 +73,7 @@ fn world() -> Content {
         max_level: 10,
         markup: 0,
         class_limit: 0,
+        stock: Default::default(),
     });
     content.add_race(Race {
         id: RaceId(2),

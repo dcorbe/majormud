@@ -49,6 +49,7 @@ fn world() -> Content {
         name: "Arena".into(),
         description: vec![],
         shop: None,
+        placed_items: vec![],
         exits: Default::default(),
     });
     content.add_monster(kobold());
@@ -295,6 +296,7 @@ fn moving_away_breaks_combat() {
         name: "Vestibule".into(),
         description: vec![],
         shop: None,
+        placed_items: vec![],
         exits: Default::default(),
     });
     let mut core = Core::new(content, config());

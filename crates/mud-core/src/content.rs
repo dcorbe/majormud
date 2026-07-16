@@ -19,7 +19,7 @@ pub struct RoomId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MonsterId(pub u16);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct ItemId(pub u16);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -118,8 +118,17 @@ pub struct Room {
     pub description: Vec<String>,
     /// The shop operating in this room (`shopnum` column), if any.
     pub shop: Option<ShopId>,
+    /// Statically placed items (fixtures and initial floor stock).
+    pub placed_items: Vec<PlacedItem>,
     /// Indexed by `Direction as usize`.
     pub exits: [Option<Exit>; 10],
+}
+
+/// A statically placed room item (`roomitems_N` + qty).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlacedItem {
+    pub item: ItemId,
+    pub quantity: i16,
 }
 
 /// One of the five monster attack forms (`knmsr+0x128/0x138` tables;
@@ -166,11 +175,48 @@ pub struct Monster {
     pub attacks: [AttackForm; 5],
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Item {
     pub id: ItemId,
     pub name: String,
     pub abilities: Vec<AbilityValue>,
+    /// `+0x2f2` — weight units (coins weigh 1/3 each, separately).
+    pub weight: i16,
+    /// `+0x2f4` — 0 armor, 1 weapon, 6 light, 7 stackable, 0xb class-locked…
+    pub item_type: i16,
+    /// `+0x31e` — default charges (-1 = permanent).
+    pub uses: i16,
+    /// `+0x322` in denomination `cost_denomination` (`+0x429`, 0 = copper).
+    pub cost: i32,
+    pub cost_denomination: i16,
+    /// `+0x33e`/`+0x340` — weapon damage range.
+    pub min_damage: i16,
+    pub max_damage: i16,
+    /// `ac` column — armor value contribution (fighter [3] via Σ`+0x39c`).
+    pub ac: i16,
+    /// `+0x394` — weapon sub-type/hands (1 or 3 = two-handed).
+    pub weapon_type: i16,
+    /// `+0x396` — armor class-strength requirement.
+    pub armour_req: i16,
+    /// `+0x398` — worn-location code (0 = not wearable).
+    pub worn_on: i16,
+    /// `+0x39a` — to-hit/skill rating (feeds attacker accuracy).
+    pub accuracy: i16,
+    /// `+0x342` — defense rating (feeds defender evasion /10).
+    pub defense: i16,
+    /// 0 = fixture ("You don't see X here." on get).
+    pub gettable: i16,
+    /// `+0x3a0` — strength needed to swing without the EU penalty.
+    pub req_str: i16,
+    /// `+0x3de` — weapon speed (EU numerator).
+    pub speed: i16,
+    /// `+0x40c`/`+0x410` — pipe-separated verb pools (2nd person | 3rd
+    /// person lines); a verb is picked at random per swing.
+    pub hit_msg: Option<MessageId>,
+    pub miss_msg: Option<MessageId>,
+    pub not_droppable: i16,
+    pub retain_after_uses: i16,
+    pub destroy_on_death: i16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,6 +235,18 @@ pub struct Message {
     pub lines: Vec<String>,
 }
 
+/// One shop stock slot (`shopitemnumber/max/now` + the restock triple).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ShopStock {
+    pub item: Option<ItemId>,
+    pub max: i16,
+    pub now: i16,
+    /// Restock: interval minutes (0 = probabilistic top-up), amount, percent.
+    pub restock_time: i16,
+    pub restock_amount: i16,
+    pub restock_percent: i16,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shop {
     pub id: ShopId,
@@ -202,6 +260,8 @@ pub struct Shop {
     pub markup: i16,
     /// `shop+0xd6` — 0 = any class, else required class id (`shopclasslimit`).
     pub class_limit: i16,
+    /// The 20 stock slots.
+    pub stock: [ShopStock; 20],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

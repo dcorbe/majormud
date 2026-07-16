@@ -17,6 +17,7 @@ fn world() -> Content {
         name: "Town Gates".into(),
         description: vec!["You are before the massive town gates.".into()],
         shop: None,
+        placed_items: vec![],
         exits: Default::default(),
     };
     gates.exits[Direction::North as usize] = Some(Exit {
@@ -28,6 +29,7 @@ fn world() -> Content {
         name: "Town Square".into(),
         description: vec![],
         shop: None,
+        placed_items: vec![],
         exits: Default::default(),
     };
     square.exits[Direction::South as usize] = Some(Exit {
