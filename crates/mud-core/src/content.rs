@@ -89,6 +89,18 @@ impl Direction {
 /// holding `Ability::Empty` are omitted at load time.
 pub type AbilityValue = (Ability, i16);
 
+/// The six primary stats in the game's storage order
+/// (Int, Wis, Str, Hea, Agl, Chm — `re/docs/records.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct StatBlock {
+    pub intellect: u16,
+    pub wisdom: u16,
+    pub strength: u16,
+    pub health: u16,
+    pub agility: u16,
+    pub charm: u16,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Exit {
     pub dest: RoomId,
@@ -151,6 +163,13 @@ pub struct Race {
     pub id: RaceId,
     pub name: String,
     pub abilities: Vec<AbilityValue>,
+    /// Starting stat template, copied verbatim at creation — MajorMUD does
+    /// not roll stats (`re/docs/character_creation.md` §2.2).
+    pub base_stats: StatBlock,
+    /// Racial caps the CP editor may raise stats to.
+    pub max_stats: StatBlock,
+    /// Character points granted at creation.
+    pub cp: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

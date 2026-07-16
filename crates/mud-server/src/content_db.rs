@@ -11,7 +11,7 @@ use std::path::Path;
 use mud_core::ability::Ability;
 use mud_core::content::{
     AbilityValue, Class, ClassId, Content, Exit, Item, ItemId, Message, MessageId, Monster,
-    MonsterId, Race, RaceId, Room, RoomId, Shop, ShopId, Spell, SpellId,
+    MonsterId, Race, RaceId, Room, RoomId, Shop, ShopId, Spell, SpellId, StatBlock,
 };
 use rusqlite::Connection;
 
@@ -255,7 +255,9 @@ fn load_shops(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
 
 fn load_races(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
     let mut stmt = db.prepare(&format!(
-        "SELECT number, name, {}, {} FROM race",
+        "SELECT number, name, {}, {}, \
+         minint, minwil, minstr, minhea, minagl, minchm, \
+         maxint, maxwil, maxstr, maxhea, maxagl, maxchm, cp FROM race",
         ability_cols("abilitya"),
         ability_cols("abilityb"),
     ))?;
@@ -265,9 +267,28 @@ fn load_races(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
             id: RaceId(to_u16("race", "number", row.get(0)?)?),
             name: row.get(1)?,
             abilities: ability_pairs("race", row, 2, 12)?,
+            base_stats: stat_block("race", row, 22)?,
+            max_stats: stat_block("race", row, 28)?,
+            cp: to_u16("race", "cp", row.get(34)?)?,
         });
     }
     Ok(())
+}
+
+/// Reads six consecutive stat columns (Int, Wis, Str, Hea, Agl, Chm).
+fn stat_block(
+    table: &'static str,
+    row: &rusqlite::Row<'_>,
+    first: usize,
+) -> Result<StatBlock, LoadError> {
+    Ok(StatBlock {
+        intellect: to_u16(table, "int", row.get(first)?)?,
+        wisdom: to_u16(table, "wil", row.get(first + 1)?)?,
+        strength: to_u16(table, "str", row.get(first + 2)?)?,
+        health: to_u16(table, "hea", row.get(first + 3)?)?,
+        agility: to_u16(table, "agl", row.get(first + 4)?)?,
+        charm: to_u16(table, "chm", row.get(first + 5)?)?,
+    })
 }
 
 fn load_classes(db: &Connection, content: &mut Content) -> Result<(), LoadError> {

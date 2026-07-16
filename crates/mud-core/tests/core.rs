@@ -2,7 +2,7 @@
 //! multi-session broadcast, quit.
 
 use mud_core::content::{ClassId, Content, Direction, Exit, RaceId, Room, RoomId};
-use mud_core::game::{Core, Event, Gender, Player, SessionId};
+use mud_core::game::{Core, CoreConfig, Event, Gender, Player, SessionId};
 
 fn two_room_content() -> Content {
     let mut content = Content::default();
@@ -59,7 +59,7 @@ fn outputs_for(events: &[Event], session: SessionId) -> Vec<&str> {
 
 #[test]
 fn attaching_a_player_announces_entry_to_others() {
-    let mut core = Core::new(two_room_content());
+    let mut core = Core::new(two_room_content(), CoreConfig::default());
     let alice = core.attach_player(player("Alice"));
     core.drain_events();
 
@@ -80,7 +80,7 @@ fn attaching_a_player_announces_entry_to_others() {
 
 #[test]
 fn quit_disconnects_persists_and_announces() {
-    let mut core = Core::new(two_room_content());
+    let mut core = Core::new(two_room_content(), CoreConfig::default());
     let alice = core.attach_player(player("Alice"));
     let bob = core.attach_player(player("Bob"));
     core.drain_events();
@@ -107,7 +107,7 @@ fn quit_disconnects_persists_and_announces() {
 
 #[test]
 fn unknown_command_gets_a_response() {
-    let mut core = Core::new(two_room_content());
+    let mut core = Core::new(two_room_content(), CoreConfig::default());
     let alice = core.attach_player(player("Alice"));
     core.drain_events();
 
@@ -119,7 +119,7 @@ fn unknown_command_gets_a_response() {
 
 #[test]
 fn input_from_detached_session_is_ignored() {
-    let mut core = Core::new(two_room_content());
+    let mut core = Core::new(two_room_content(), CoreConfig::default());
     let alice = core.attach_player(player("Alice"));
     core.input(alice, "x");
     core.drain_events();

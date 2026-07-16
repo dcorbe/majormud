@@ -1,7 +1,7 @@
 //! Tests for room display (look) and movement.
 
 use mud_core::content::{ClassId, Content, Direction, Exit, RaceId, Room, RoomId};
-use mud_core::game::{Core, Event, Gender, Player, SessionId};
+use mud_core::game::{Core, CoreConfig, Event, Gender, Player, SessionId};
 
 fn world() -> Content {
     let mut content = Content::default();
@@ -69,7 +69,7 @@ fn text_to(events: &[Event], session: SessionId) -> String {
 
 #[test]
 fn attach_shows_the_current_room() {
-    let mut core = Core::new(world());
+    let mut core = Core::new(world(), CoreConfig::default());
     let alice = core.attach_player(player_at("Alice", 1));
     let shown = text_to(&core.drain_events(), alice);
     assert!(shown.contains("Town Gates"), "room name shown: {shown:?}");
@@ -83,7 +83,7 @@ fn attach_shows_the_current_room() {
 fn look_renders_name_description_exits() {
     let mut content = world();
     content.rooms.get_mut(&RoomId { map: 1, room: 1 }).unwrap().name = "Town Gates".into();
-    let mut core = Core::new(content);
+    let mut core = Core::new(content, CoreConfig::default());
     let alice = core.attach_player(player_at("Alice", 1));
     core.drain_events();
 
@@ -95,7 +95,7 @@ fn look_renders_name_description_exits() {
 
 #[test]
 fn room_with_no_exits_shows_none() {
-    let mut core = Core::new(world());
+    let mut core = Core::new(world(), CoreConfig::default());
     let alice = core.attach_player(player_at("Alice", 3));
     let shown = text_to(&core.drain_events(), alice);
     assert!(
@@ -106,7 +106,7 @@ fn room_with_no_exits_shows_none() {
 
 #[test]
 fn other_players_in_room_are_listed() {
-    let mut core = Core::new(world());
+    let mut core = Core::new(world(), CoreConfig::default());
     let _alice = core.attach_player(player_at("Alice", 1));
     let bob = core.attach_player(player_at("Bob", 1));
     let shown = text_to(&core.drain_events(), bob);
@@ -118,7 +118,7 @@ fn other_players_in_room_are_listed() {
 
 #[test]
 fn moving_shows_new_room_and_broadcasts_both_sides() {
-    let mut core = Core::new(world());
+    let mut core = Core::new(world(), CoreConfig::default());
     let alice = core.attach_player(player_at("Alice", 1));
     let bob = core.attach_player(player_at("Bob", 1));
     let carol = core.attach_player(player_at("Carol", 2));
@@ -143,7 +143,7 @@ fn moving_shows_new_room_and_broadcasts_both_sides() {
 
 #[test]
 fn vertical_movement_uses_upwards_phrasing() {
-    let mut core = Core::new(world());
+    let mut core = Core::new(world(), CoreConfig::default());
     let alice = core.attach_player(player_at("Alice", 1));
     let bob = core.attach_player(player_at("Bob", 1));
     core.drain_events();
@@ -159,7 +159,7 @@ fn vertical_movement_uses_upwards_phrasing() {
 
 #[test]
 fn blocked_direction_reports_no_exit() {
-    let mut core = Core::new(world());
+    let mut core = Core::new(world(), CoreConfig::default());
     let alice = core.attach_player(player_at("Alice", 1));
     core.drain_events();
 
@@ -173,7 +173,7 @@ fn blocked_direction_reports_no_exit() {
 
 #[test]
 fn movement_only_broadcasts_to_the_two_rooms_involved() {
-    let mut core = Core::new(world());
+    let mut core = Core::new(world(), CoreConfig::default());
     let bob = core.attach_player(player_at("Bob", 1));
     let carol = core.attach_player(player_at("Carol", 3));
     core.drain_events();

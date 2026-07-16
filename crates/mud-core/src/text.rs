@@ -62,3 +62,9 @@ pub fn left_via(name: &str, direction: Direction) -> String {
 pub fn arrived_from(name: &str, direction: Direction) -> String {
     format!("{name} just arrived from the {}.", direction_shown(direction))
 }
+
+/// VERIFIED (DLL): character-creation prompts.
+pub const CHOOSE_RACE: &str = "Please choose a race from the following list:";
+pub const CHOOSE_CLASS: &str = "Please choose a class from the following list:";
+pub const INVALID_RACE: &str = "You must choose a valid race. [ ? for help ]";
+pub const INVALID_CLASS: &str = "You must choose a valid class. [ ? for help ]";

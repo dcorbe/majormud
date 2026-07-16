@@ -50,6 +50,12 @@ fn known_content_spot_checks() {
         "Dwarf has Illu 75 (infravision), got {:?}",
         dwarf.abilities
     );
+    assert_eq!(
+        (dwarf.base_stats.intellect, dwarf.base_stats.wisdom, dwarf.base_stats.strength),
+        (30, 50, 50)
+    );
+    assert_eq!((dwarf.max_stats.health, dwarf.max_stats.charm), (120, 85));
+    assert_eq!(dwarf.cp, 100);
 
     let classes: Vec<&str> = content.classes.values().map(|c| c.name.as_str()).collect();
     assert_eq!(classes[0], "Warrior");
