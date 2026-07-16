@@ -10,9 +10,9 @@ use std::path::Path;
 
 use mud_core::ability::Ability;
 use mud_core::content::{
-    AbilityValue, AttackForm, Class, ClassId, Content, Exit, Item, ItemId, Message, MessageId,
-    Monster, MonsterId, PlacedItem, Race, RaceId, Room, RoomId, Shop, ShopId, ShopStock, Spell,
-    SpellId, StatBlock,
+    AbilityValue, AttackForm, Class, ClassId, Content, Exit, Item, ItemId, LootSlot, Message,
+    MessageId, Monster, MonsterId, PlacedItem, Race, RaceId, Room, RoomId, Shop, ShopId,
+    ShopStock, Spell, SpellId, StatBlock,
 };
 use rusqlite::Connection;
 
@@ -208,10 +208,15 @@ fn load_monsters(db: &Connection, content: &mut Content) -> Result<(), LoadError
         })
         .collect::<Vec<_>>()
         .join(", ");
+    let loot_cols = (1..=10)
+        .map(|i| format!("itemnumber_{i}, itemuses_{i}, itemdropper_{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
     let mut stmt = db.prepare(&format!(
         "SELECT number, name, movemsg, deathmsg, {}, {}, \
          hitpoints, experience, expmulti, ac, dr, mr, bsdefence, energy, \
-         runic, platinum, gold, silver, copper, {attack_cols} FROM monster",
+         runic, platinum, gold, silver, copper, {attack_cols}, \
+         weaponnumber, {loot_cols} FROM monster",
         ability_cols("abilitya"),
         ability_cols("abilityb"),
     ))?;
@@ -230,6 +235,24 @@ fn load_monsters(db: &Connection, content: &mut Content) -> Result<(), LoadError
                 miss_msg: opt_message("monster", "attackmissmsg", row.get(base + 6)?)?,
                 energy: to_i16("monster", "attackenergy", row.get(base + 7)?)?,
             };
+        }
+        let weapon_col = 37 + 5 * 8;
+        let weapon = match to_u16("monster", "weaponnumber", row.get(weapon_col)?)? {
+            0 => None,
+            id => Some(ItemId(id)),
+        };
+        let mut loot = Vec::new();
+        for i in 0..10 {
+            let base = weapon_col + 1 + i * 3;
+            let item = to_u16("monster", "itemnumber", row.get(base)?)?;
+            if item == 0 {
+                continue;
+            }
+            loot.push(LootSlot {
+                item: ItemId(item),
+                uses: to_i16("monster", "itemuses", row.get(base + 1)?)?,
+                dropper: to_i16("monster", "itemdropper", row.get(base + 2)?)?,
+            });
         }
         content.add_monster(Monster {
             id: MonsterId(to_u16("monster", "number", row.get(0)?)?),
@@ -256,6 +279,8 @@ fn load_monsters(db: &Connection, content: &mut Content) -> Result<(), LoadError
                 coin("monster", row, 35)?,
                 coin("monster", row, 36)?,
             ],
+            weapon,
+            loot,
             attacks,
         });
     }

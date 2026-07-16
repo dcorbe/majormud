@@ -155,6 +155,16 @@ pub struct AttackForm {
     pub energy: i16,
 }
 
+/// One of the ten spawn-loot slots (`knmsr+0x30·i`, uses `+0xe8·i`,
+/// dropper `+0xfc+i`). `dropper` is a CARRY chance: rolled once at spawn
+/// (`genrdn(1,100) <= dropper`), and everything carried drops at death.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LootSlot {
+    pub item: ItemId,
+    pub uses: i16,
+    pub dropper: i16,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Monster {
     pub id: MonsterId,
@@ -175,6 +185,10 @@ pub struct Monster {
     /// Per-round energy pool/regen.
     pub energy: i32,
     pub coins: [u32; 5],
+    /// `weaponnumber` — wielded for combat, never dropped at death.
+    pub weapon: Option<ItemId>,
+    /// The populated spawn-loot slots (empty template slots omitted).
+    pub loot: Vec<LootSlot>,
     /// The five attack-form slots (kind 0 = unused).
     pub attacks: [AttackForm; 5],
 }
@@ -320,6 +334,11 @@ pub const KNOWN_DANGLING_MONSTER_MESSAGES: [(MonsterId, MessageId); 2] = [
 pub const KNOWN_DANGLING_SPELL_MESSAGES: [(SpellId, MessageId); 1] =
     [(SpellId(1055), MessageId(3499))]; // "BCNS"
 
+/// See [`KNOWN_DANGLING_MONSTER_MESSAGES`]. Item 2078 does not exist; the
+/// slot simply never yields loot (the spawn roll's get_item_data fails).
+pub const KNOWN_DANGLING_MONSTER_ITEMS: [(MonsterId, ItemId); 1] =
+    [(MonsterId(602), ItemId(2078))]; // saracen commander
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContentError {
     UnresolvedExit {
@@ -334,6 +353,10 @@ pub enum ContentError {
     DanglingSpellMessage {
         spell: SpellId,
         message: MessageId,
+    },
+    DanglingMonsterItem {
+        monster: MonsterId,
+        item: ItemId,
     },
 }
 
@@ -410,6 +433,20 @@ impl Content {
                     errors.push(ContentError::DanglingMonsterMessage {
                         monster: monster.id,
                         message: msg,
+                    });
+                }
+            }
+            let referenced = monster
+                .loot
+                .iter()
+                .map(|slot| slot.item)
+                .chain(monster.weapon);
+            for item in referenced {
+                let known = KNOWN_DANGLING_MONSTER_ITEMS.contains(&(monster.id, item));
+                if !known && !self.items.contains_key(&item) {
+                    errors.push(ContentError::DanglingMonsterItem {
+                        monster: monster.id,
+                        item,
                     });
                 }
             }

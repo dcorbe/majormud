@@ -364,6 +364,9 @@ pub(crate) struct MonsterInstance {
     pub energy: i32,
     /// The player this monster is fighting (retaliation; aggression is M6).
     pub target: Option<SessionId>,
+    /// Carried loot, rolled once at spawn (`generate_monster` step 5:
+    /// carry iff genrdn(1,100) <= dropper). All of it drops at death.
+    pub items: Vec<(crate::content::ItemId, i16)>,
 }
 
 /// A scheduled shop-slot restock, due at an absolute tick. Events live
@@ -478,6 +481,17 @@ impl Core {
     ) -> Option<MonsterInstanceId> {
         let tpl = self.content.monsters.get(&template)?;
         self.content.rooms.get(&room)?;
+        let loot = tpl.loot.clone();
+        let (hitpoints, energy) = (tpl.hitpoints, tpl.energy);
+        let mut items = Vec::new();
+        for slot in loot {
+            if !self.content.items.contains_key(&slot.item) {
+                continue; // shipped dangling ref (saracen commander)
+            }
+            if self.rng.roll(1, 100) <= i32::from(slot.dropper) {
+                items.push((slot.item, slot.uses));
+            }
+        }
         let id = MonsterInstanceId(self.next_monster);
         self.next_monster += 1;
         self.monsters.insert(
@@ -485,9 +499,10 @@ impl Core {
             MonsterInstance {
                 template,
                 location: room,
-                current_hp: tpl.hitpoints,
-                energy: tpl.energy,
+                current_hp: hitpoints,
+                energy,
                 target: None,
+                items,
             },
         );
         Some(id)
@@ -2192,6 +2207,12 @@ impl Core {
         for (i, amount) in tpl.coins.iter().enumerate() {
             piles[4 - i] += amount;
         }
+        // Carried loot drops silently (check_kill_monster: no message; the
+        // wielded weapon is not in the drop loop and stays gone).
+        self.room_items
+            .entry(instance.location)
+            .or_default()
+            .extend(instance.items.iter().copied());
         let exp = u64::from(tpl.experience.max(0) as u32)
             * u64::from(tpl.exp_multi.max(1) as u32);
         let room = instance.location;

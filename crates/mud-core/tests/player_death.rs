@@ -23,6 +23,8 @@ fn executioner() -> Monster {
         bs_defence: 0,
         energy: 1000,
         coins: [0; 5],
+        weapon: None,
+        loot: vec![],
         attacks: [
             AttackForm {
                 kind: 1,

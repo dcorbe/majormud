@@ -19,6 +19,8 @@ fn rat_template() -> Monster {
         bs_defence: 0,
         energy: 1000,
         coins: [0; 5],
+        weapon: None,
+        loot: vec![],
         attacks: Default::default(),
     }
 }

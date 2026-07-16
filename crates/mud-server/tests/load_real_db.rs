@@ -78,6 +78,27 @@ fn known_content_spot_checks() {
     assert_eq!(form.min_damage, 2);
     assert_eq!(form.max_damage, 10);
     assert_eq!(form.energy, 1000);
+    assert_eq!(rat.weapon, None);
+    assert!(rat.loot.is_empty());
+
+    // Loot slots: the thug (id 10) wields a spiked club (never dropped)
+    // and carries a severed arm 1% of the time.
+    let thug = &content.monsters[&mud_core::content::MonsterId(10)];
+    assert_eq!(thug.weapon, Some(mud_core::content::ItemId(92)));
+    assert_eq!(
+        thug.loot,
+        vec![mud_core::content::LootSlot {
+            item: mud_core::content::ItemId(1356),
+            uses: -1,
+            dropper: 1,
+        }]
+    );
+
+    // The one dangling loot ref shipped in the data (allowlisted): the
+    // saracen commander's second slot names nonexistent item 2078.
+    let saracen = &content.monsters[&mud_core::content::MonsterId(602)];
+    assert_eq!(saracen.loot.len(), 2);
+    assert_eq!(saracen.loot[1].item, mud_core::content::ItemId(2078));
     assert_eq!(rat.attacks[1].kind, 0); // empty slot
 
     // Item economy/combat fields: the quarterstaff (id 100).

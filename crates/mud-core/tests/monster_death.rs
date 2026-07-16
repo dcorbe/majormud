@@ -23,6 +23,8 @@ fn dying_rat() -> Monster {
         bs_defence: 0,
         energy: 1000,
         coins: [0, 0, 0, 7, 43], // high->low: 7 silver, 43 copper
+        weapon: None,
+        loot: vec![],
         attacks: [AttackForm::default(); 5],
     }
 }

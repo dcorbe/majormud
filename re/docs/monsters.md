@@ -409,3 +409,27 @@ Consolidated from the functions above (offsets are byte offsets into the instanc
   (`(x<5) || (x!=5)`) routes only `mon+0x12c == 5` into the more-aggressive branch; read as
   a compiler artefact of an original `x <= 5 && x != 5`-style test — treated here as "class
   5 is special," consistent with `move_monster`/`give_monsters_a_free_attack`.
+
+## Addendum — loot mechanics pinned (2026-07-16, decompile pass)
+
+- `itemdropper` is a **carry chance, rolled at spawn** (`generate_monster`
+  step 5: `genrdn(1,100) <= knmsr+0xfc+i`), not a death-time drop roll.
+  The monster genuinely holds the item all its life (this is what
+  `rob_monster` steals from).
+- `check_kill_monster` drops **everything carried, unconditionally and
+  silently** — no message; the items simply join the room's
+  "You notice … here." line after the coin-drop messages.
+- The wielded `weaponnumber` is copied to the instance for combat but is
+  **not in the death drop loop**. Monsters that "drop their weapon" list
+  it again in a loot slot (157 templates do, e.g. guardsman's short
+  sword at 10%).
+- **First-kill guarantee**: the spawn roll is skipped (guaranteed carry)
+  when the template is limited-population (`knmsr+0xa6 != 0`) and its
+  last-kill stamp (`+0xb4`) is zero — a rare monster's first-ever kill
+  on a board always yields its full loadout. Deferred to M6 with the
+  population/respawn stamps.
+- `dispose_of_item_in_room` retries, then recursively spills into
+  adjacent rooms (skipping exit types 8 and 0xc) when the room's 10
+  floor slots are full. Deferred with the floor-slot cap itself.
+- Data: 409/1101 monsters carry loot; 141 have a 100% slot; one shipped
+  dangling ref (saracen commander 602 → item 2078, allowlisted).
