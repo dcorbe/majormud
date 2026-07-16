@@ -70,6 +70,7 @@ fn world() -> Content {
         caster_group: 0,
         casting_factor: 0,
         exp_base: 0,
+        combat_factor: 6,
     });
     content.add_class(Class {
         id: ClassId(12),
@@ -80,6 +81,7 @@ fn world() -> Content {
         caster_group: 1,
         casting_factor: 3,
         exp_base: 0,
+        combat_factor: 6,
     });
     content
 }

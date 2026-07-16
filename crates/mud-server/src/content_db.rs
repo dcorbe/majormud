@@ -359,7 +359,7 @@ fn stat_block(
 
 fn load_classes(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
     let mut stmt = db.prepare(&format!(
-        "SELECT number, name, {}, {}, minhp, maxhp, magictype, magiclvl, exp FROM class",
+        "SELECT number, name, {}, {}, minhp, maxhp, magictype, magiclvl, exp, combat FROM class",
         ability_cols("abilitya"),
         ability_cols("abilityb"),
     ))?;
@@ -374,6 +374,7 @@ fn load_classes(db: &Connection, content: &mut Content) -> Result<(), LoadError>
             caster_group: to_i16("class", "magictype", row.get(24)?)?,
             casting_factor: to_i16("class", "magiclvl", row.get(25)?)?,
             exp_base: to_i16("class", "exp", row.get(26)?)?,
+            combat_factor: to_i16("class", "combat", row.get(27)?)?,
         });
     }
     Ok(())

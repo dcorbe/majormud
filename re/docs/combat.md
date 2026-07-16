@@ -170,3 +170,38 @@ Sanity check: acc 200 vs defense 100 → `100 - 140·10000/40000 = 65%`; defense
 
 `typeAccMod` (`[BP-2]`, from the attack-type switch): type 4 = **−15**, type 6 = **−25**,
 type 7 = **−75**, all others = **0** (special attacks are harder to land).
+
+---
+
+## Recovered in full (WG3-NT decompile pass, 2026-07-16)
+
+`move_player_to_fighter` (0x2a19d) / `compute_energy_used` (0x2a0c8) /
+`move_monster_to_fighter` (0x2b43e) read end-to-end:
+
+- **EU** = `speed*1000 / ((class[+0x48]*level + 45) * (Agl+150) * 1500/9000) + weaponBonus(item+0x320)`;
+  divide-by-zero guard returns 50. `class+0x48` = the `combat` column. Unarmed
+  speeds: fists **1200** (0x4b0), fists-of-fury 1150, kicks 1400, jumpkick 1900
+  (each has a higher variant gated on player flag `+0x7c8 & 2`, untraced).
+  Weapon speed = `item+0x3de` (×3/2 when the flag is set); heavy weapons
+  (Str < item+0x3a0) scale EU by `((need-Str)*3+200)/200`.
+- **Accuracy (normal)** = `(Str-50)/3 + 2*((combat-1)*isqrt(level) + 2*combat
+  + level/2 + skill/2 - 2) + (Agl-50)/6 + dyn(+0x70a)`, where `skill` =
+  weapon+worn `+0x39a` ratings (floor 1) `+ 15 - enc/10` when encumbrance < 33.
+  Stance (+0x6ac front/back ±15/±10), darkness −10 modifiers follow.
+- **Backstab accuracy** = `(Agl + stealth)/2 (±hidden mods) + Agl/2`; defender
+  backstab-compare `[1]` = `(weaponRating/10 + perception)/2`.
+- **Unarmed damage** 1–4; MA styles: min `(min(level,20)*abil)>>3 + 2`, max
+  per-style (`(level+3)*abil>>2+6` fists / `level*abil/6+7` kicks / `+8`
+  jumpkick). **Str bonuses (all attacks):** max += `(Str-50)/10`; min +=
+  `2*(Str-100)/10` when positive; min clamped ≤ max, both ≥ 0.
+- **Crit rating** `[0x91]` = `byte(+0x710 dodge base) + word(+0x7b4)`, min 1.
+- **Parry** `[8]` = `dodgeAbil(0x22) + (Chm-50)/5 + level/5 + (Agl-50)/3
+  + (10 - enc/10 when enc < 33)`; −1 when HP < 1.
+- **Player defense** `[1]` = `(Σ item+0x342)/10 + dyn(+0x70c)`, `[2]` = weapon
+  to-hit ability (naked: both 0). Armor `[3]` = Σ worn `+0x39c` + dyn(+0x7b6),
+  ×(+0x7b8+100)/100.
+- **Monster fighter**: `[0]` = per-form accuracy (knmsr+0x12e) + Accuracy
+  abilities; `[1]` evasion = instance AC (+0x10c) + AC ability; `[3]` armor =
+  **DR(+0x10a) × 10** + DR ability; `[4]` kill exp = worth × multiplier;
+  `[5]`/`[6]`/`[7]` per-form EU/min/max; `[8]` = Dodge ability;
+  crit `[0x91]` = 0 (players-only crits confirmed again).

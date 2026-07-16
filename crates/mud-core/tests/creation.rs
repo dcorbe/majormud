@@ -76,6 +76,7 @@ fn world() -> Content {
         caster_group: 0,
         casting_factor: 0,
         exp_base: 0,
+        combat_factor: 6,
     });
     content
 }

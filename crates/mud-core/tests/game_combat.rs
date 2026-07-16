@@ -78,6 +78,7 @@ fn world() -> Content {
         caster_group: 0,
         casting_factor: 0,
         exp_base: 0,
+        combat_factor: 6,
     });
     content
 }
@@ -118,6 +119,23 @@ fn run_rounds(core: &mut Core, n: u64) -> Vec<Event> {
         all.extend(core.drain_events());
     }
     all
+}
+
+#[test]
+fn fighter_numbers_match_the_decompile() {
+    // Dwarf Warrior L1 (combat 6, Str 50, Agl 30), naked, unencumbered:
+    // skill = 1 + 15 = 16
+    // accuracy = 0 + 2*((6-1)*1 + 12 + 0 + 8 - 2) + (30-50)/6 = 46 - 3 = 43
+    // damage 1-4 (Str 50 adds nothing); crit = dodge_base = 1
+    // EU = 1200*1000 / ((6*1+45)*(30+150)*1500/9000) = 1200000/1530 = 784
+    let mut core = Core::new(world(), config());
+    let s = create(&mut core, "Dain");
+    let (fighter, eu) = core.combat_debug(s);
+    assert_eq!(fighter.accuracy, 43);
+    assert_eq!(fighter.min_damage, 1);
+    assert_eq!(fighter.max_damage, 4);
+    assert_eq!(fighter.crit_rating, 1);
+    assert_eq!(eu, 784);
 }
 
 #[test]

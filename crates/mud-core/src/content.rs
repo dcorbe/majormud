@@ -239,6 +239,9 @@ pub struct Class {
     pub casting_factor: i16,
     /// `class+0x24` — exp-curve base contribution (`exp` column).
     pub exp_base: i16,
+    /// `class+0x48` — the weapon/combat factor feeding accuracy and
+    /// compute_energy_used (`combat` column).
+    pub combat_factor: i16,
 }
 
 /// Dangling references present in the shipped 1.11p data itself. The original

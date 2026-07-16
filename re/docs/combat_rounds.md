@@ -342,6 +342,11 @@ Live-transcript message formats (`re/oracle/oracle_attack3.raw`, `oracle_downed.
   attack instead auto-picks. Direction words also have exact two-letter
   aliases (`ne` = northeast, etc.). During exit meditation all commands are
   refused with "You may not perform any commands while waiting to exit!".
+  **Decompile confirmation:** `parse_command` (0xdd44) is a hardcoded
+  per-character decision tree (nested switches + letter jump tables), not a
+  data table — bare `A` returns command 0xb (attack) directly. The
+  minimum-abbreviation quirks are compiled-in; full trie extraction needs a
+  dedicated Ghidra pass over the jump tables (flagged as follow-up).
   Direction-word minimums are now verified (`oracle_directions.raw`):
   north/south/west require the FULL word (`nort`/`sout`/`wes` fall to say),
   east resolves at 3 (`eas`; `ea` says — `eat` blocks it), down at 3

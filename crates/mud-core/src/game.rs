@@ -13,6 +13,16 @@ use crate::stats::{derive, AbilityBag, Derived, StatInputs};
 use crate::text;
 use crate::tick::TickScheduler;
 
+/// Integer square root as the engine computes it (the accuracy formula's
+/// level term: largest i with (i+1)^2 <= n gives isqrt semantics).
+fn isqrt(n: i32) -> i32 {
+    let mut i = 0;
+    while (i + 1) * (i + 1) <= n {
+        i += 1;
+    }
+    i
+}
+
 /// HPRegen (123): percent modifier to slow-tick HP regen.
 fn hp_regen_ability() -> Ability {
     Ability::from_id(123).expect("HPRegen is in the enum")
@@ -337,6 +347,15 @@ impl Core {
         if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
             player.experience += amount;
         }
+    }
+
+    /// Test hook: the attacker fighter and per-swing EU for a session
+    /// (regression coverage for the decompile-exact formulas).
+    pub fn combat_debug(&self, session: SessionId) -> (crate::combat::Fighter, i32) {
+        (
+            self.build_player_attacker(session),
+            self.player_energy_used(session),
+        )
     }
 
     /// Test hook: set lives.
@@ -1247,28 +1266,67 @@ impl Core {
         }
     }
 
-    /// PROVISIONAL fighter plumbing (`combat.md` inputs not yet extracted
-    /// for players): accuracy 2*MA+level; unarmed damage 1-4 (spec default).
-    /// The resolution math itself is exact. Calibrated against the kobold
-    /// transcript (~75% hit rate, glances on its ac-10 soak).
+    /// EXACT (decompile 0x2a19d `move_player_to_fighter`): the normal-attack
+    /// player fighter. Weapon skill/dyn accumulators are 0 until items and
+    /// spells land (M4/M5); encumbrance is 0 until weight exists (M4).
     fn build_player_attacker(&self, session: SessionId) -> crate::combat::Fighter {
         let Some(Session::InGame { player, derived, .. }) = self.sessions.get(&session) else {
             unreachable!("caller holds an in-game session");
         };
+        let level = i32::from(player.level);
+        let str_ = i32::from(player.stats.strength);
+        let agl = i32::from(player.stats.agility);
+        let combat = self
+            .content
+            .classes
+            .get(&player.class)
+            .map_or(0, |c| i32::from(c.combat_factor));
+
+        // skill = weapon/worn to-hit ratings (0 naked, floored 1) plus the
+        // low-encumbrance bonus (enc < 33: += 15 - enc/10).
+        let encumbrance = 0; // M4: weight carried percent
+        let mut skill = 1;
+        if encumbrance < 33 && player.current_hp > 0 {
+            skill += 15 - encumbrance / 10;
+        }
+        // accuracy = (Str-50)/3
+        //          + 2*((combat-1)*isqrt(level) + 2*combat + level/2 + skill/2 - 2)
+        //          + (Agl-50)/6  (+ dynamic accuracy accumulators, M5)
+        let accuracy = (str_ - 50) / 3
+            + 2 * ((combat - 1) * isqrt(level) + 2 * combat + level / 2 + skill / 2 - 2)
+            + (agl - 50) / 6;
+
+        // Unarmed damage defaults 1-4, plus the Strength bonuses:
+        // max += (Str-50)/10; min += 2*(Str-100)/10 when positive; min <= max.
+        let mut min_damage = 1;
+        let mut max_damage = 4 + (str_ - 50) / 10;
+        let min_bonus = (str_ - 100) / 10 * 2;
+        if min_bonus > 0 {
+            min_damage += min_bonus;
+        }
+        if max_damage < min_damage {
+            min_damage = max_damage;
+        }
+        min_damage = min_damage.max(0);
+        max_damage = max_damage.max(0);
+
         crate::combat::Fighter {
-            accuracy: 2 * derived.dodge + i32::from(player.level),
+            accuracy,
             evasion_a: 0,
             evasion_b: 0,
             armor: 0,
-            min_damage: 1,
-            max_damage: 4,
+            min_damage,
+            max_damage,
+            // crit rating = dodge base byte + crits accumulator, min 1.
+            crit_rating: derived.dodge_base.max(1),
             parry: 0,
-            crit_rating: 1,
         }
     }
 
-    /// Defender view of a player: naked evasion 0 (worn gear joins in M4);
-    /// parry per the spec word[10] formula, forced negative when helpless.
+    /// EXACT (decompile): defender view of a player. Naked: evasion 0
+    /// (item ratings/10 + dynamic AC join in M4/M5), armor 0; parry is the
+    /// word[10] formula plus the low-encumbrance bonus (10 - enc/10),
+    /// forced -1 when helpless.
     fn build_player_defender(&self, session: SessionId) -> crate::combat::Fighter {
         let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
             unreachable!("caller checked the session");
@@ -1276,9 +1334,14 @@ impl Core {
         let parry = if player.current_hp < 1 {
             -1
         } else {
-            (i32::from(player.stats.charm) - 50) / 5
+            let encumbrance = 0; // M4: weight carried percent
+            let mut p = (i32::from(player.stats.charm) - 50) / 5
                 + i32::from(player.level) / 5
-                + (i32::from(player.stats.agility) - 50) / 3
+                + (i32::from(player.stats.agility) - 50) / 3;
+            if encumbrance < 33 {
+                p += 10 - encumbrance / 10;
+            }
+            p
         };
         crate::combat::Fighter {
             accuracy: 0,
@@ -1292,8 +1355,8 @@ impl Core {
         }
     }
 
-    /// Defender view of a monster: evasion from AC, soak = DR*10 (the DR
-    /// ability doc: "DR is expressed in multiples of 10").
+    /// EXACT (decompile 0x2b43e `move_monster_to_fighter`): defender view of
+    /// a monster — evasion [1] = AC, armor [3] = DR*10, crit hard-zeroed.
     fn build_monster_defender(&self, id: MonsterInstanceId) -> crate::combat::Fighter {
         let tpl = self
             .monsters
@@ -1312,18 +1375,26 @@ impl Core {
         }
     }
 
-    /// `compute_energy_used` (PROVISIONAL constants: class weapon factor 6,
-    /// unarmed attack-speed 500 — calibrated to ~3 swings/round at L1).
+    /// EXACT (decompile 0x2a0c8 `compute_energy_used`):
+    /// EU = speed*1000 / ((combat*level + 45) * (Agl+150) * 1500/9000) + bonus,
+    /// divide-by-zero guard = 50. Unarmed fists speed = 1200 (0x4b0; the
+    /// 1800 variant fires when player flag +0x7c8 & 2 is set — semantics
+    /// not yet traced). Weapon speeds join in M4.
     fn player_energy_used(&self, session: SessionId) -> i32 {
         let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
             return PLAYER_ENERGY_MAX;
         };
-        let i = i32::from(player.level) * 6 + 45;
+        let combat = self
+            .content
+            .classes
+            .get(&player.class)
+            .map_or(0, |c| i32::from(c.combat_factor));
+        let i = combat * i32::from(player.level) + 45;
         let den = i * (i32::from(player.stats.agility) + 150) * 1500 / 9000;
-        if den <= 0 {
-            return PLAYER_ENERGY_MAX;
+        if i == 0 || den == 0 {
+            return 50;
         }
-        (500 * 1000 / den).max(1)
+        1200 * 1000 / den
     }
 
     fn say(&mut self, session: SessionId, what: &str) {
