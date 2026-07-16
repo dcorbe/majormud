@@ -5,3 +5,4 @@
 //! Behavior follows the spec in `re/docs/`.
 
 pub mod ability;
+pub mod content;
