@@ -8,5 +8,6 @@ pub mod ability;
 pub mod command;
 pub mod content;
 pub mod game;
+pub mod stats;
 pub mod text;
 pub mod tick;
