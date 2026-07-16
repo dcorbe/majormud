@@ -49,6 +49,11 @@ enum FloorMatch {
     None,
 }
 
+/// Accuracy accumulators (0x16 Accuracy, 0x69, 0x6a) feeding fighter[0].
+fn accuracy_ability(id: u16) -> Ability {
+    Ability::from_id(id).expect("accuracy ability ids are in the enum")
+}
+
 /// Encum (96): percent modifier to carry capacity.
 fn encum_ability() -> Ability {
     Ability::from_id(96).expect("Encum is in the enum")
@@ -100,6 +105,10 @@ pub struct Player {
     pub lawful: bool,
     /// Carried items with remaining uses (`+0xd8`/`+0x268`, cap 100).
     pub inventory: Vec<(crate::content::ItemId, i16)>,
+    /// Wielded weapon (`+0x624`).
+    pub weapon: Option<(crate::content::ItemId, i16)>,
+    /// Worn equipment (`+0x62c[20]`).
+    pub worn: Vec<(crate::content::ItemId, i16)>,
     pub cp_unspent: u16,
     pub cp_lifetime: u16,
     pub lives: u16,
@@ -597,6 +606,15 @@ impl Core {
                 abilities.add(*ability, i32::from(*value));
             }
         }
+        // Worn equipment and the wielded weapon contribute their abilities
+        // (update_dynamic_stats folding).
+        for (id, _) in player.worn.iter().chain(player.weapon.iter()) {
+            if let Some(item) = self.content.items.get(id) {
+                for (ability, value) in &item.abilities {
+                    abilities.add(*ability, i32::from(*value));
+                }
+            }
+        }
         abilities
     }
 
@@ -715,6 +733,21 @@ impl Core {
                 }
             }
             Command::Inventory => self.show_inventory(session),
+            Command::Arm(target) => {
+                if self.arm_command(session, &target) == Resolution::FallThrough {
+                    self.say(session, line.trim());
+                }
+            }
+            Command::Wear(target) => {
+                if self.wear_command(session, &target) == Resolution::FallThrough {
+                    self.say(session, line.trim());
+                }
+            }
+            Command::Remove(target) => {
+                if self.remove_command(session, &target) == Resolution::FallThrough {
+                    self.say(session, line.trim());
+                }
+            }
             Command::Status => self.show_sheet(session),
             Command::Experience => self.show_experience(session),
             Command::Health => self.show_health(session),
@@ -953,6 +986,173 @@ impl Core {
         Resolution::Handled
     }
 
+    /// `arm`/`wield`/`equip`: hold a weapon from inventory; any current
+    /// weapon returns to the pack.
+    fn arm_command(&mut self, session: SessionId, target: &str) -> Resolution {
+        let want = target.trim().to_ascii_lowercase();
+        if want.is_empty() {
+            return Resolution::FallThrough;
+        }
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+            return Resolution::FallThrough;
+        };
+        let pos = player.inventory.iter().position(|(id, _)| {
+            self.content
+                .items
+                .get(id)
+                .is_some_and(|i| i.item_type == 1 && word_prefix_match(&i.name, &want))
+        });
+        let Some(pos) = pos else {
+            self.output_line(session, &text::not_unequipped(target.trim()));
+            return Resolution::Handled;
+        };
+        let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+            return Resolution::FallThrough;
+        };
+        let entry = player.inventory.remove(pos);
+        if let Some(old) = player.weapon.take() {
+            player.inventory.push(old);
+        }
+        player.weapon = Some(entry);
+        let name = self.content.items[&entry.0].name.clone();
+        self.refresh_derived(session);
+        self.output_line(session, &text::now_holding(&name));
+        Resolution::Handled
+    }
+
+    /// `wear`: move armor from inventory to a worn slot, displacing a
+    /// same-location piece (dual-slot pairs 4/0xd and 0xe/0x11 allow two).
+    fn wear_command(&mut self, session: SessionId, target: &str) -> Resolution {
+        let want = target.trim().to_ascii_lowercase();
+        if want.is_empty() {
+            return Resolution::FallThrough;
+        }
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+            return Resolution::FallThrough;
+        };
+        let pos = player.inventory.iter().position(|(id, _)| {
+            self.content
+                .items
+                .get(id)
+                .is_some_and(|i| i.worn_on != 0 && word_prefix_match(&i.name, &want))
+        });
+        let Some(pos) = pos else {
+            self.output_line(session, &text::not_unequipped(target.trim()));
+            return Resolution::Handled;
+        };
+        let location = {
+            let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+                return Resolution::FallThrough;
+            };
+            let id = player.inventory[pos].0;
+            self.content.items[&id].worn_on
+        };
+        let dual = |a: i16, b: i16| (a == 4 || a == 0xd) && (b == 4 || b == 0xd)
+            || (a == 0xe || a == 0x11) && (b == 0xe || b == 0x11);
+        let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+            return Resolution::FallThrough;
+        };
+        // Count/displace same-location items.
+        let same: Vec<usize> = player
+            .worn
+            .iter()
+            .enumerate()
+            .filter(|(_, (id, _))| {
+                self.content
+                    .items
+                    .get(id)
+                    .is_some_and(|i| i.worn_on == location || dual(i.worn_on, location))
+            })
+            .map(|(i, _)| i)
+            .collect();
+        let allowed_two = dual(location, location);
+        if (allowed_two && same.len() >= 2) || (!allowed_two && !same.is_empty()) {
+            let displaced = player.worn.remove(same[0]);
+            player.inventory.push(displaced);
+        }
+        let entry = player.inventory.remove(
+            player
+                .inventory
+                .iter()
+                .position(|(id, _)| {
+                    self.content
+                        .items
+                        .get(id)
+                        .is_some_and(|i| i.worn_on != 0 && word_prefix_match(&i.name, &want))
+                })
+                .expect("checked above"),
+        );
+        player.worn.push(entry);
+        let name = self.content.items[&entry.0].name.clone();
+        self.refresh_derived(session);
+        self.output_line(session, &text::now_wearing(&name));
+        Resolution::Handled
+    }
+
+    /// `remove`: worn armor back to the pack.
+    fn remove_command(&mut self, session: SessionId, target: &str) -> Resolution {
+        let want = target.trim().to_ascii_lowercase();
+        if want.is_empty() {
+            return Resolution::FallThrough;
+        }
+        let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+            return Resolution::FallThrough;
+        };
+        let pos = player.worn.iter().position(|(id, _)| {
+            self.content
+                .items
+                .get(id)
+                .is_some_and(|i| word_prefix_match(&i.name, &want))
+        });
+        let Some(pos) = pos else {
+            self.output_line(session, &text::not_wearing(target.trim()));
+            return Resolution::Handled;
+        };
+        let entry = player.worn.remove(pos);
+        player.inventory.push(entry);
+        let name = self.content.items[&entry.0].name.clone();
+        self.refresh_derived(session);
+        self.output_line(session, &text::removed_item(&name));
+        Resolution::Handled
+    }
+
+    /// The 2nd-person verb pools for the wielded weapon (pipe-separated
+    /// message line 1; fists default to punch / "swing at").
+    fn weapon_verbs(&self, session: SessionId) -> (Vec<String>, Vec<String>) {
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+            return (vec![], vec![]);
+        };
+        let pool = |msg: Option<crate::content::MessageId>| -> Vec<String> {
+            msg.and_then(|m| self.content.messages.get(&m))
+                .and_then(|m| m.lines.first())
+                .map(|line| line.split('|').map(str::to_owned).collect())
+                .unwrap_or_default()
+        };
+        match player
+            .weapon
+            .and_then(|(id, _)| self.content.items.get(&id))
+        {
+            Some(weapon) => (pool(weapon.hit_msg), pool(weapon.miss_msg)),
+            None => (vec!["punch".into()], vec!["swing at".into()]),
+        }
+    }
+
+    /// Recompute cached derived stats after equipment changes.
+    fn refresh_derived(&mut self, session: SessionId) {
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+            return;
+        };
+        let refreshed = self.derive_for(player);
+        if let Some(Session::InGame { derived, .. }) = self.sessions.get_mut(&session) {
+            *derived = refreshed;
+        }
+    }
+
+    /// Test hook: the defender fighter view.
+    pub fn defender_debug(&self, session: SessionId) -> crate::combat::Fighter {
+        self.build_player_defender(session)
+    }
+
     /// Coin denomination names (low->high) for pile pickup by name.
     const COIN_WORDS: [(&'static str, usize); 5] = [
         ("copper", 0),
@@ -1050,6 +1250,27 @@ impl Core {
             return Resolution::FallThrough;
         };
         let room = player.location;
+        // The armed weapon can be dropped directly (oracle).
+        if let Some((id, uses)) = player.weapon
+            && self
+                .content
+                .items
+                .get(&id)
+                .is_some_and(|i| word_prefix_match(&i.name, &want))
+        {
+            let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+                return Resolution::FallThrough;
+            };
+            player.weapon = None;
+            let name = self.content.items[&id].name.clone();
+            self.room_items.entry(room).or_default().push((id, uses));
+            self.refresh_derived(session);
+            self.output_line(session, &text::dropped_item(&name));
+            return Resolution::Handled;
+        }
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+            return Resolution::FallThrough;
+        };
         let pos = player.inventory.iter().position(|(id, _)| {
             self.content
                 .items
@@ -1084,15 +1305,33 @@ impl Core {
             return;
         };
         let mut out = String::new();
-        if player.inventory.is_empty() {
+        let mut names: Vec<String> = Vec::new();
+        if let Some((id, _)) = player.weapon
+            && let Some(item) = self.content.items.get(&id)
+        {
+            let hands = if item.weapon_type == 1 || item.weapon_type == 3 {
+                "(Two handed)"
+            } else {
+                "(Weapon in hand)" // ORACLE-VERIFY the one-handed suffix
+            };
+            names.push(format!("{} {hands}", item.name));
+        }
+        for (id, _) in &player.worn {
+            if let Some(item) = self.content.items.get(id) {
+                // ORACLE-VERIFY the worn suffix.
+                names.push(format!("{} (Worn)", item.name));
+            }
+        }
+        names.extend(
+            player
+                .inventory
+                .iter()
+                .filter_map(|(id, _)| self.content.items.get(id).map(|i| i.name.clone())),
+        );
+        if names.is_empty() {
             out.push_str(text::CARRYING_NOTHING);
             out.push('\n');
         } else {
-            let names: Vec<&str> = player
-                .inventory
-                .iter()
-                .filter_map(|(id, _)| self.content.items.get(id).map(|i| i.name.as_str()))
-                .collect();
             out.push_str(&format!("You are carrying {}\n", names.join(", ")));
         }
         out.push_str(text::NO_KEYS);
@@ -1114,11 +1353,13 @@ impl Core {
         self.output(session, &out);
     }
 
-    /// Item weight + coin weight (each coin weighs 1/3, per drawer).
+    /// Item weight (carried + worn + wielded) + coin weight (1/3 each).
     fn carried_weight(&self, player: &Player) -> i64 {
         let items: i64 = player
             .inventory
             .iter()
+            .chain(player.worn.iter())
+            .chain(player.weapon.iter())
             .filter_map(|(id, _)| self.content.items.get(id))
             .map(|i| i64::from(i.weight))
             .sum();
@@ -1258,6 +1499,7 @@ impl Core {
             .and_then(|m| self.content.monsters.get(&m.template))
             .map(|t| t.name.clone())
             .expect("validated above");
+        let (hit_verbs, miss_verbs) = self.weapon_verbs(session);
 
         let mut swings = 0;
         while swings <= 5 {
@@ -1279,18 +1521,28 @@ impl Core {
                 &mut |lo, hi| rng.roll(lo, hi),
             );
             use crate::combat::Outcome;
+            let hit_verb = {
+                let n = hit_verbs.len().max(1) as i32;
+                let pick = if hit_verbs.len() > 1 { self.rng.roll(0, n - 1) } else { 0 };
+                hit_verbs.get(pick as usize).cloned().unwrap_or_else(|| "punch".into())
+            };
+            let miss_verb = {
+                let n = miss_verbs.len().max(1) as i32;
+                let pick = if miss_verbs.len() > 1 { self.rng.roll(0, n - 1) } else { 0 };
+                miss_verbs.get(pick as usize).cloned().unwrap_or_else(|| "swing at".into())
+            };
             match result.outcome {
                 Outcome::Dodged | Outcome::Parried => {
-                    self.output_line(session, &text::player_miss(&target_name));
+                    self.output_line(session, &text::player_miss(&miss_verb, &target_name));
                 }
                 Outcome::NoDamage => {
-                    self.output_line(session, &text::player_glance(&target_name));
+                    self.output_line(session, &text::player_glance(&miss_verb, &target_name));
                 }
                 Outcome::Hit | Outcome::Critical => {
                     let msg = if result.outcome == Outcome::Critical {
-                        text::player_crit("punch", &target_name, result.damage)
+                        text::player_crit(&hit_verb, &target_name, result.damage)
                     } else {
-                        text::player_hit("punch", &target_name, result.damage)
+                        text::player_hit(&hit_verb, &target_name, result.damage)
                     };
                     self.output_line(session, &msg);
                     let dead = {
@@ -1560,21 +1812,39 @@ impl Core {
         // skill = weapon/worn to-hit ratings (0 naked, floored 1) plus the
         // low-encumbrance bonus (enc < 33: += 15 - enc/10).
         let encumbrance = self.encumbrance_percent(session);
-        let mut skill = 1;
+        let weapon = player
+            .weapon
+            .and_then(|(id, _)| self.content.items.get(&id));
+        let ratings: i32 = i32::from(weapon.map_or(0, |w| w.accuracy))
+            + player
+                .worn
+                .iter()
+                .filter_map(|(id, _)| self.content.items.get(id))
+                .map(|i| i32::from(i.accuracy))
+                .sum::<i32>();
+        let mut skill = if ratings == 0 { 1 } else { ratings };
         if encumbrance < 33 && player.current_hp > 0 {
             skill += 15 - encumbrance / 10;
         }
         // accuracy = (Str-50)/3
         //          + 2*((combat-1)*isqrt(level) + 2*combat + level/2 + skill/2 - 2)
         //          + (Agl-50)/6  (+ dynamic accuracy accumulators, M5)
+        let bag = self.ability_bag(player);
+        let dyn_accuracy = bag.value(accuracy_ability(0x16))
+            + bag.value(accuracy_ability(0x69))
+            + bag.value(accuracy_ability(0x6a));
         let accuracy = (str_ - 50) / 3
             + 2 * ((combat - 1) * isqrt(level) + 2 * combat + level / 2 + skill / 2 - 2)
-            + (agl - 50) / 6;
+            + (agl - 50) / 6
+            + dyn_accuracy;
 
-        // Unarmed damage defaults 1-4, plus the Strength bonuses:
-        // max += (Str-50)/10; min += 2*(Str-100)/10 when positive; min <= max.
-        let mut min_damage = 1;
-        let mut max_damage = 4 + (str_ - 50) / 10;
+        // Weapon damage (or the unarmed 1-4 defaults), plus the Strength
+        // bonuses: max += (Str-50)/10; min += 2*(Str-100)/10 when positive.
+        let (base_min, base_max) = weapon.map_or((1, 4), |w| {
+            (i32::from(w.min_damage), i32::from(w.max_damage))
+        });
+        let mut min_damage = base_min;
+        let mut max_damage = base_max + (str_ - 50) / 10;
         let min_bonus = (str_ - 100) / 10 * 2;
         if min_bonus > 0 {
             min_damage += min_bonus;
@@ -1618,11 +1888,29 @@ impl Core {
             }
             p
         };
+        let armor: i32 = player
+            .worn
+            .iter()
+            .filter_map(|(id, _)| self.content.items.get(id))
+            .map(|i| i32::from(i.ac))
+            .sum();
+        let defense: i32 = (i32::from(
+            player
+                .weapon
+                .and_then(|(id, _)| self.content.items.get(&id))
+                .map_or(0, |w| w.defense),
+        ) + player
+            .worn
+            .iter()
+            .filter_map(|(id, _)| self.content.items.get(id))
+            .map(|i| i32::from(i.defense))
+            .sum::<i32>())
+            / 10;
         crate::combat::Fighter {
             accuracy: 0,
-            evasion_a: 0,
+            evasion_a: defense,
             evasion_b: 0,
-            armor: 0,
+            armor,
             min_damage: 0,
             max_damage: 0,
             parry,
@@ -1827,6 +2115,8 @@ impl Core {
             coins: Coins::default(),
             lawful,
             inventory: Vec::new(),
+            weapon: None,
+            worn: Vec::new(),
             cp_unspent: template.cp,
             cp_lifetime: template.cp,
             lives: 9,

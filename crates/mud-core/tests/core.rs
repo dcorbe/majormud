@@ -52,6 +52,8 @@ fn player(name: &str) -> Player {
         coins: Default::default(),
         lawful: false,
         inventory: vec![],
+        weapon: None,
+        worn: vec![],
         cp_unspent: 0,
         cp_lifetime: 0,
         lives: 9,

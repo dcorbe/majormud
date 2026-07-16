@@ -182,6 +182,25 @@ pub fn encumbrance_descriptor(percent: i64) -> &'static str {
     }
 }
 
+// --- equipment strings (VERIFIED oracle_m4_round2.raw except as noted) ---
+pub fn now_holding(name: &str) -> String {
+    format!("You are now holding {name}.")
+}
+pub fn not_unequipped(name: &str) -> String {
+    format!("You do not have {name} left unequipped.")
+}
+/// ORACLE-VERIFY wording.
+pub fn now_wearing(name: &str) -> String {
+    format!("You are now wearing {name}.")
+}
+/// ORACLE-VERIFY wording.
+pub fn removed_item(name: &str) -> String {
+    format!("You removed {name}.")
+}
+pub fn not_wearing(name: &str) -> String {
+    format!("You are not wearing {name}.")
+}
+
 // --- combat strings (VERIFIED oracle_attack3.raw / oracle_downed.raw / DLL) ---
 pub const COMBAT_ENGAGED: &str = "*Combat Engaged*";
 pub const COMBAT_OFF: &str = "*Combat Off*";
@@ -193,14 +212,14 @@ pub fn player_hit(verb: &str, target: &str, damage: i32) -> String {
     format!("You {verb} {target} for {damage} damage!")
 }
 
-/// "You swing at kobold thief!"
-pub fn player_miss(target: &str) -> String {
-    format!("You swing at {target}!")
+/// "You swing at kobold thief!" — the verb is the weapon's miss verb.
+pub fn player_miss(verb: &str, target: &str) -> String {
+    format!("You {verb} {target}!")
 }
 
 /// "Your swing at kobold thief hits, but glances off its armour."
-pub fn player_glance(target: &str) -> String {
-    format!("Your swing at {target} hits, but glances off its armour.")
+pub fn player_glance(verb: &str, target: &str) -> String {
+    format!("Your {verb} {target} hits, but glances off its armour.")
 }
 
 /// ORACLE-VERIFY: the critical variant was not captured.

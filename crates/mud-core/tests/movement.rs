@@ -64,6 +64,8 @@ fn player_at(name: &str, room: u16) -> Player {
         coins: Default::default(),
         lawful: false,
         inventory: vec![],
+        weapon: None,
+        worn: vec![],
         cp_unspent: 0,
         cp_lifetime: 0,
         lives: 9,

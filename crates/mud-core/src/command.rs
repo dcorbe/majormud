@@ -35,6 +35,12 @@ pub enum Command {
     /// `drop <item>`.
     Drop(String),
     Inventory,
+    /// `arm`/`wield`/`equip <weapon>`.
+    Arm(String),
+    /// `wear <armor>`.
+    Wear(String),
+    /// `remove <worn armor>`.
+    Remove(String),
     Quit,
     Blank,
     Unknown(String),
@@ -77,7 +83,7 @@ enum Verb {
 /// All direction minimums are ORACLE-verified (oracle_directions.raw):
 /// north/south/west = full word, east = 3 (eat blocks 2), down = 3,
 /// up = 2, diagonals = 6. Hand-authored asymmetry is the original's.
-const VERBS: [(&str, usize, Verb); 24] = [
+const VERBS: [(&str, usize, Verb); 29] = [
     ("north", 5, Verb::Plain(|| Command::Move(Direction::North))),
     ("south", 5, Verb::Plain(|| Command::Move(Direction::South))),
     ("east", 3, Verb::Plain(|| Command::Move(Direction::East))),
@@ -93,6 +99,11 @@ const VERBS: [(&str, usize, Verb); 24] = [
     ("get", 1, Verb::WithArgs(Command::Get)),       // ORACLE: g/ge/get
     ("drop", 2, Verb::WithArgs(Command::Drop)),
     ("inventory", 1, Verb::Plain(|| Command::Inventory)), // ORACLE: i
+    ("arm", 3, Verb::WithArgs(Command::Arm)),
+    ("wield", 2, Verb::WithArgs(Command::Arm)),
+    ("equip", 2, Verb::WithArgs(Command::Arm)),     // ORACLE: eq
+    ("wear", 3, Verb::WithArgs(Command::Wear)),     // min 3: "we" says (oracle)
+    ("remove", 3, Verb::WithArgs(Command::Remove)),
     ("look", 2, Verb::Plain(|| Command::Look)),     // ORACLE: lo
     ("exits", 3, Verb::Plain(|| Command::Exits)),   // ORACLE: exi (ex says)
     ("experience", 3, Verb::Plain(|| Command::Experience)), // ORACLE: exp

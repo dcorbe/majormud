@@ -94,10 +94,11 @@ CREATE TABLE IF NOT EXISTS player (
 ) STRICT;
 CREATE TABLE IF NOT EXISTS player_item (
     name   TEXT NOT NULL COLLATE NOCASE,
+    kind   TEXT NOT NULL CHECK (kind IN ('inv', 'worn', 'weapon')),
     slot   INTEGER NOT NULL,
     item   INTEGER NOT NULL,
     uses   INTEGER NOT NULL,
-    PRIMARY KEY (name, slot)
+    PRIMARY KEY (name, kind, slot)
 ) STRICT;
 ";
 
@@ -219,11 +220,19 @@ impl StateDb {
             "DELETE FROM player_item WHERE name = ?1",
             params![player.name],
         )?;
-        for (slot, (item, uses)) in player.inventory.iter().enumerate() {
-            self.conn.execute(
-                "INSERT INTO player_item (name, slot, item, uses) VALUES (?1, ?2, ?3, ?4)",
-                params![player.name, slot as i64, item.0, uses],
-            )?;
+        let groups: [(&str, &[(ItemId, i16)]); 3] = [
+            ("inv", &player.inventory),
+            ("worn", &player.worn),
+            ("weapon", player.weapon.as_slice()),
+        ];
+        for (kind, items) in groups {
+            for (slot, (item, uses)) in items.iter().enumerate() {
+                self.conn.execute(
+                    "INSERT INTO player_item (name, kind, slot, item, uses) \
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![player.name, kind, slot as i64, item.0, uses],
+                )?;
+            }
         }
         self.conn.execute(
             "INSERT OR REPLACE INTO player (name, gender, race, class, level,
@@ -288,13 +297,22 @@ impl StateDb {
             return Ok(None);
         };
         let mut stmt = self.conn.prepare(
-            "SELECT item, uses FROM player_item WHERE name = ?1 ORDER BY slot",
+            "SELECT kind, item, uses FROM player_item WHERE name = ?1 ORDER BY slot",
         )?;
         let rows = stmt.query_map(params![name], |r| {
-            Ok((ItemId(r.get::<_, u16>(0)?), r.get::<_, i16>(1)?))
+            Ok((
+                r.get::<_, String>(0)?,
+                ItemId(r.get::<_, u16>(1)?),
+                r.get::<_, i16>(2)?,
+            ))
         })?;
         for row in rows {
-            player.inventory.push(row?);
+            let (kind, item, uses) = row?;
+            match kind.as_str() {
+                "worn" => player.worn.push((item, uses)),
+                "weapon" => player.weapon = Some((item, uses)),
+                _ => player.inventory.push((item, uses)),
+            }
         }
         Ok(Some(player))
     }
@@ -347,6 +365,8 @@ impl StateDb {
                         },
                         lawful: r.get(27)?,
                         inventory: Vec::new(),
+                        weapon: None,
+                        worn: Vec::new(),
                         cp_unspent: r.get(28)?,
                         cp_lifetime: r.get(29)?,
                         lives: r.get(30)?,
