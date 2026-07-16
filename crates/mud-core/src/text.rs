@@ -146,6 +146,42 @@ pub const HELP_BANNER: &str = "Type HELP followed by a topic for help on that to
 /// VERIFIED (oracle): the top command header.
 pub const TOP_HEADER: &str = "Top Heroes of the Realm\n-=-=-=-=-=-=-=-=-=-=-=-";
 
+// --- inventory strings (VERIFIED oracle_m4_items.raw / round2) ---
+pub const CARRYING_NOTHING: &str = "You are carrying Nothing!";
+pub const NO_KEYS: &str = "You have no keys.";
+
+pub fn took_item(name: &str) -> String {
+    format!("You took {name}.")
+}
+pub fn dropped_item(name: &str) -> String {
+    format!("You dropped {name}.")
+}
+pub fn dont_have_to_drop(name: &str) -> String {
+    format!("You don't have {name} to drop!")
+}
+pub fn dont_see_here(name: &str) -> String {
+    format!("You don't see {name} here.")
+}
+pub fn dont_see_coins(plural: &str) -> String {
+    format!("You don't see any {plural}")
+}
+/// ORACLE-VERIFY exact wording for coin pickup.
+pub fn took_coins(count: u32, name_one: &str, name_many: &str) -> String {
+    let name = if count == 1 { name_one } else { name_many };
+    format!("You took {count} {name}.")
+}
+
+/// Encumbrance descriptor bands (only "None" oracle-observed; the rest
+/// ORACLE-VERIFY).
+pub fn encumbrance_descriptor(percent: i64) -> &'static str {
+    match percent {
+        p if p < 33 => "None",
+        p if p < 66 => "Light",
+        p if p < 100 => "Medium",
+        _ => "Heavy",
+    }
+}
+
 // --- combat strings (VERIFIED oracle_attack3.raw / oracle_downed.raw / DLL) ---
 pub const COMBAT_ENGAGED: &str = "*Combat Engaged*";
 pub const COMBAT_OFF: &str = "*Combat Off*";

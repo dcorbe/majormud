@@ -63,6 +63,7 @@ fn player_at(name: &str, room: u16) -> Player {
         thirst: 1000,
         coins: Default::default(),
         lawful: false,
+        inventory: vec![],
         cp_unspent: 0,
         cp_lifetime: 0,
         lives: 9,

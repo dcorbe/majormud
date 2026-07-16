@@ -23,6 +23,37 @@ fn isqrt(n: i32) -> i32 {
     i
 }
 
+/// Multi-word prefix matching shared by items and monsters: each input word
+/// must prefix consecutive words of the name, starting at any word.
+fn word_prefix_match(name: &str, want: &str) -> bool {
+    let want: Vec<&str> = want.split_whitespace().collect();
+    if want.is_empty() {
+        return false;
+    }
+    let words: Vec<String> = name
+        .split_whitespace()
+        .map(|w| w.to_ascii_lowercase())
+        .collect();
+    (0..words.len()).any(|start| {
+        want.len() <= words.len() - start
+            && want
+                .iter()
+                .enumerate()
+                .all(|(i, w)| words[start + i].starts_with(w))
+    })
+}
+
+enum FloorMatch {
+    Gettable(usize),
+    Fixture,
+    None,
+}
+
+/// Encum (96): percent modifier to carry capacity.
+fn encum_ability() -> Ability {
+    Ability::from_id(96).expect("Encum is in the enum")
+}
+
 /// HPRegen (123): percent modifier to slow-tick HP regen.
 fn hp_regen_ability() -> Ability {
     Ability::from_id(123).expect("HPRegen is in the enum")
@@ -67,6 +98,8 @@ pub struct Player {
     pub coins: Coins,
     /// The irrevocable Lawful (PvP opt-out) choice from creation.
     pub lawful: bool,
+    /// Carried items with remaining uses (`+0xd8`/`+0x268`, cap 100).
+    pub inventory: Vec<(crate::content::ItemId, i16)>,
     pub cp_unspent: u16,
     pub cp_lifetime: u16,
     pub lives: u16,
@@ -278,6 +311,9 @@ pub struct Core {
     next_monster: u64,
     /// Ephemeral floor coin piles per room (low->high denominations).
     room_coins: BTreeMap<RoomId, [u32; 5]>,
+    /// Ephemeral floor items per room (item, remaining uses), seeded from
+    /// the rooms' static placements at boot.
+    room_items: BTreeMap<RoomId, Vec<(crate::content::ItemId, i16)>>,
 }
 
 impl Core {
@@ -286,7 +322,7 @@ impl Core {
         scheduler.schedule_in(SLOW_INTERVAL, Job::Slow);
         scheduler.schedule_in(ENERGY_INTERVAL, Job::Energy);
         let rng = Rng(config.rng_seed | 1);
-        Core {
+        let mut core = Core {
             content,
             config,
             sessions: BTreeMap::new(),
@@ -297,7 +333,25 @@ impl Core {
             monsters: BTreeMap::new(),
             next_monster: 1,
             room_coins: BTreeMap::new(),
+            room_items: BTreeMap::new(),
+        };
+        // Seed floor items from static placements.
+        let mut seeded: BTreeMap<RoomId, Vec<(crate::content::ItemId, i16)>> = BTreeMap::new();
+        for room in core.content.rooms.values() {
+            for placed in &room.placed_items {
+                let uses = core
+                    .content
+                    .items
+                    .get(&placed.item)
+                    .map_or(-1, |i| i.uses);
+                let entry = seeded.entry(room.id).or_default();
+                for _ in 0..placed.quantity.max(1) {
+                    entry.push((placed.item, uses));
+                }
+            }
         }
+        core.room_items = seeded;
+        core
     }
 
     /// Places a live monster from its template (fixture placement — the
@@ -369,6 +423,22 @@ impl Core {
     pub fn give_copper(&mut self, session: SessionId, amount: u32) {
         if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
             player.coins.copper += amount;
+        }
+    }
+
+    /// Test hook: put an item in a player's hands.
+    pub fn give_item(&mut self, session: SessionId, item: crate::content::ItemId) {
+        let uses = self.content.items.get(&item).map_or(-1, |i| i.uses);
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+            player.inventory.push((item, uses));
+        }
+    }
+
+    /// Test hook: drop coins on a room floor (low->high denominations).
+    pub fn add_room_coins(&mut self, room: RoomId, coins: [u32; 5]) {
+        let piles = self.room_coins.entry(room).or_insert([0; 5]);
+        for (i, c) in coins.iter().enumerate() {
+            piles[i] += c;
         }
     }
 
@@ -632,10 +702,19 @@ impl Core {
             Command::Exits => self.show_exits_line(session),
             Command::Help => self.output_line(session, text::HELP_BANNER),
             Command::Top => self.output_line(session, text::TOP_HEADER),
-            Command::Get(_) => {
-                // Items land in M4; the oracle syntax line stands in.
-                self.output_line(session, text::SYNTAX_GET);
+            Command::Get(target) => {
+                if target.trim().is_empty() {
+                    self.output_line(session, text::SYNTAX_GET);
+                } else if self.get_command(session, &target) == Resolution::FallThrough {
+                    self.say(session, line.trim());
+                }
             }
+            Command::Drop(target) => {
+                if self.drop_command(session, &target) == Resolution::FallThrough {
+                    self.say(session, line.trim());
+                }
+            }
+            Command::Inventory => self.show_inventory(session),
             Command::Status => self.show_sheet(session),
             Command::Experience => self.show_experience(session),
             Command::Health => self.show_health(session),
@@ -872,6 +951,202 @@ impl Core {
             &format!("You have aided {name}; {name}'s wounds are bound."),
         );
         Resolution::Handled
+    }
+
+    /// Coin denomination names (low->high) for pile pickup by name.
+    const COIN_WORDS: [(&'static str, usize); 5] = [
+        ("copper", 0),
+        ("silver", 1),
+        ("gold", 2),
+        ("platinum", 3),
+        ("runic", 4),
+    ];
+
+    /// `get <item|coins>`: floor coins by denomination name, else a
+    /// gettable floor item by word-prefix. Fixture items respond with
+    /// "You don't see X here." (oracle); nothing matched falls to say.
+    fn get_command(&mut self, session: SessionId, target: &str) -> Resolution {
+        let room = self.player(session).location;
+        let want = target.trim().to_ascii_lowercase();
+
+        // Coins first: "get silver" empties the silver pile.
+        for (word, idx) in Self::COIN_WORDS {
+            if word.starts_with(&want) || want.starts_with(word) {
+                let count = self
+                    .room_coins
+                    .get(&room)
+                    .map_or(0, |p| p[idx]);
+                let (one, many) = text::COIN_NAMES[idx];
+                if count == 0 {
+                    self.output_line(session, &text::dont_see_coins(many));
+                    return Resolution::Handled;
+                }
+                self.room_coins.get_mut(&room).expect("checked")[idx] = 0;
+                if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+                    match idx {
+                        0 => player.coins.copper += count,
+                        1 => player.coins.silver += count,
+                        2 => player.coins.gold += count,
+                        3 => player.coins.platinum += count,
+                        _ => player.coins.runic += count,
+                    }
+                }
+                self.output_line(session, &text::took_coins(count, one, many));
+                return Resolution::Handled;
+            }
+        }
+
+        // Floor items by word-prefix (gettable only picks up; a matching
+        // fixture answers "don't see").
+        let found = self.find_floor_item(room, &want);
+        match found {
+            FloorMatch::Gettable(pos) => {
+                let (item, uses) = self.room_items.get_mut(&room).expect("has items").remove(pos);
+                let name = self.content.items[&item].name.clone();
+                if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+                    player.inventory.push((item, uses));
+                }
+                self.output_line(session, &text::took_item(&name));
+                Resolution::Handled
+            }
+            FloorMatch::Fixture => {
+                self.output_line(session, &text::dont_see_here(target.trim()));
+                Resolution::Handled
+            }
+            FloorMatch::None => Resolution::FallThrough,
+        }
+    }
+
+    fn find_floor_item(&self, room: RoomId, want: &str) -> FloorMatch {
+        let Some(items) = self.room_items.get(&room) else {
+            return FloorMatch::None;
+        };
+        let mut fixture = false;
+        for (pos, (id, _)) in items.iter().enumerate() {
+            let Some(item) = self.content.items.get(id) else {
+                continue;
+            };
+            if word_prefix_match(&item.name, want) {
+                if item.gettable != 0 {
+                    return FloorMatch::Gettable(pos);
+                }
+                fixture = true;
+            }
+        }
+        if fixture {
+            FloorMatch::Fixture
+        } else {
+            FloorMatch::None
+        }
+    }
+
+    /// `drop <item>` — works even on the armed weapon (oracle).
+    fn drop_command(&mut self, session: SessionId, target: &str) -> Resolution {
+        let want = target.trim().to_ascii_lowercase();
+        if want.is_empty() {
+            return Resolution::FallThrough;
+        }
+        let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+            return Resolution::FallThrough;
+        };
+        let room = player.location;
+        let pos = player.inventory.iter().position(|(id, _)| {
+            self.content
+                .items
+                .get(id)
+                .is_some_and(|i| word_prefix_match(&i.name, &want))
+        });
+        let Some(pos) = pos else {
+            // A named but absent item gets the oracle error; resolve the
+            // display name from content when we can.
+            let known = self
+                .content
+                .items
+                .values()
+                .any(|i| word_prefix_match(&i.name, &want));
+            let _ = known;
+            self.output_line(session, &text::dont_have_to_drop(target.trim()));
+            return Resolution::Handled;
+        };
+        let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+            return Resolution::FallThrough;
+        };
+        let (item, uses) = player.inventory.remove(pos);
+        let name = self.content.items[&item].name.clone();
+        self.room_items.entry(room).or_default().push((item, uses));
+        self.output_line(session, &text::dropped_item(&name));
+        Resolution::Handled
+    }
+
+    /// The inventory display (oracle-exact four lines).
+    fn show_inventory(&mut self, session: SessionId) {
+        let Some(Session::InGame { player, derived, .. }) = self.sessions.get(&session) else {
+            return;
+        };
+        let mut out = String::new();
+        if player.inventory.is_empty() {
+            out.push_str(text::CARRYING_NOTHING);
+            out.push('\n');
+        } else {
+            let names: Vec<&str> = player
+                .inventory
+                .iter()
+                .filter_map(|(id, _)| self.content.items.get(id).map(|i| i.name.as_str()))
+                .collect();
+            out.push_str(&format!("You are carrying {}\n", names.join(", ")));
+        }
+        out.push_str(text::NO_KEYS);
+        out.push('\n');
+        // ORACLE-VERIFY: mixed-denomination wealth display (broke chars show
+        // "0 copper farthings"; we render the total copper value).
+        let total = player.coins.total_copper(self.config.coin_ratios);
+        out.push_str(&format!(
+            "Wealth: {total} {}\n",
+            if total == 1 { "copper farthing" } else { "copper farthings" }
+        ));
+        let weight = self.carried_weight(player);
+        let capacity = self.carry_capacity(player, derived);
+        let percent = if capacity > 0 { weight * 100 / capacity } else { 0 };
+        out.push_str(&format!(
+            "Encumbrance: {weight}/{capacity} - {} [{percent}%]\n",
+            text::encumbrance_descriptor(percent)
+        ));
+        self.output(session, &out);
+    }
+
+    /// Item weight + coin weight (each coin weighs 1/3, per drawer).
+    fn carried_weight(&self, player: &Player) -> i64 {
+        let items: i64 = player
+            .inventory
+            .iter()
+            .filter_map(|(id, _)| self.content.items.get(id))
+            .map(|i| i64::from(i.weight))
+            .sum();
+        let c = &player.coins;
+        let coins: i64 = [c.copper, c.silver, c.gold, c.platinum, c.runic]
+            .iter()
+            .map(|&n| i64::from(n) / 3)
+            .sum();
+        items + coins
+    }
+
+    /// `get_max_weight`: the Str-derived cap scaled by the Encum ability
+    /// percent (oracle: Dwarf 2400 * 1.2 = 2880).
+    fn carry_capacity(&self, player: &Player, derived: &Derived) -> i64 {
+        let encum = self.ability_bag(player).value(encum_ability());
+        i64::from(derived.carry_capacity) * (100 + i64::from(encum)) / 100
+    }
+
+    /// The player's encumbrance percent (`+0x708`), feeding combat.
+    fn encumbrance_percent(&self, session: SessionId) -> i32 {
+        let Some(Session::InGame { player, derived, .. }) = self.sessions.get(&session) else {
+            return 0;
+        };
+        let capacity = self.carry_capacity(player, derived);
+        if capacity <= 0 {
+            return 100;
+        }
+        (self.carried_weight(player) * 100 / capacity) as i32
     }
 
     /// Name match among the room's live monsters. Each input word must
@@ -1284,7 +1559,7 @@ impl Core {
 
         // skill = weapon/worn to-hit ratings (0 naked, floored 1) plus the
         // low-encumbrance bonus (enc < 33: += 15 - enc/10).
-        let encumbrance = 0; // M4: weight carried percent
+        let encumbrance = self.encumbrance_percent(session);
         let mut skill = 1;
         if encumbrance < 33 && player.current_hp > 0 {
             skill += 15 - encumbrance / 10;
@@ -1334,7 +1609,7 @@ impl Core {
         let parry = if player.current_hp < 1 {
             -1
         } else {
-            let encumbrance = 0; // M4: weight carried percent
+            let encumbrance = self.encumbrance_percent(session);
             let mut p = (i32::from(player.stats.charm) - 50) / 5
                 + i32::from(player.level) / 5
                 + (i32::from(player.stats.agility) - 50) / 3;
@@ -1551,6 +1826,7 @@ impl Core {
             thirst: 1000,
             coins: Coins::default(),
             lawful,
+            inventory: Vec::new(),
             cp_unspent: template.cp,
             cp_lifetime: template.cp,
             lives: 9,
@@ -1703,11 +1979,22 @@ impl Core {
             }
         }
 
-        // Floor coin piles (oracle: the notice line precedes Also-here).
+        // Floor items and coin piles share the notice line (oracle shows
+        // each alone; combined ordering items-then-coins ORACLE-VERIFY).
+        let mut notices: Vec<String> = self
+            .room_items
+            .get(&room.id)
+            .into_iter()
+            .flatten()
+            .filter_map(|(id, _)| self.content.items.get(id).map(|i| i.name.clone()))
+            .collect();
         if let Some(piles) = self.room_coins.get(&room.id)
             && let Some(names) = text::coin_pile_names(*piles)
         {
-            out.push_str(&format!("You notice {names} here.\n"));
+            notices.push(names);
+        }
+        if !notices.is_empty() {
+            out.push_str(&format!("You notice {} here.\n", notices.join(", ")));
         }
 
         // Players first, then live monsters (oracle: NPCs share the line).

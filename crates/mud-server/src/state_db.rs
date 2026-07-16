@@ -11,7 +11,7 @@ use std::path::Path;
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
-use mud_core::content::{ClassId, RaceId, RoomId, StatBlock};
+use mud_core::content::{ClassId, ItemId, RaceId, RoomId, StatBlock};
 use mud_core::game::{AccountProfile, Coins, Gender, Player};
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -91,6 +91,13 @@ CREATE TABLE IF NOT EXISTS player (
     experience   INTEGER NOT NULL,
     map          INTEGER NOT NULL,
     room         INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS player_item (
+    name   TEXT NOT NULL COLLATE NOCASE,
+    slot   INTEGER NOT NULL,
+    item   INTEGER NOT NULL,
+    uses   INTEGER NOT NULL,
+    PRIMARY KEY (name, slot)
 ) STRICT;
 ";
 
@@ -209,6 +216,16 @@ impl StateDb {
 
     pub fn save_player(&self, player: &Player) -> Result<(), StateError> {
         self.conn.execute(
+            "DELETE FROM player_item WHERE name = ?1",
+            params![player.name],
+        )?;
+        for (slot, (item, uses)) in player.inventory.iter().enumerate() {
+            self.conn.execute(
+                "INSERT INTO player_item (name, slot, item, uses) VALUES (?1, ?2, ?3, ?4)",
+                params![player.name, slot as i64, item.0, uses],
+            )?;
+        }
+        self.conn.execute(
             "INSERT OR REPLACE INTO player (name, gender, race, class, level,
                  intellect, wisdom, strength, health, agility, charm,
                  b_intellect, b_wisdom, b_strength, b_health, b_agility,
@@ -266,6 +283,23 @@ impl StateDb {
     }
 
     pub fn load_player(&self, name: &str) -> Result<Option<Player>, StateError> {
+        let player = self.load_player_row(name)?;
+        let Some(mut player) = player else {
+            return Ok(None);
+        };
+        let mut stmt = self.conn.prepare(
+            "SELECT item, uses FROM player_item WHERE name = ?1 ORDER BY slot",
+        )?;
+        let rows = stmt.query_map(params![name], |r| {
+            Ok((ItemId(r.get::<_, u16>(0)?), r.get::<_, i16>(1)?))
+        })?;
+        for row in rows {
+            player.inventory.push(row?);
+        }
+        Ok(Some(player))
+    }
+
+    fn load_player_row(&self, name: &str) -> Result<Option<Player>, StateError> {
         self.conn
             .query_row(
                 "SELECT name, gender, race, class, level,
@@ -312,6 +346,7 @@ impl StateDb {
                             copper: r.get(26)?,
                         },
                         lawful: r.get(27)?,
+                        inventory: Vec::new(),
                         cp_unspent: r.get(28)?,
                         cp_lifetime: r.get(29)?,
                         lives: r.get(30)?,

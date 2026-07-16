@@ -38,6 +38,7 @@ fn player(name: &str) -> Player {
         thirst: 1000,
         coins: Default::default(),
         lawful: false,
+        inventory: vec![],
         cp_unspent: 100,
         cp_lifetime: 100,
         lives: 9,
