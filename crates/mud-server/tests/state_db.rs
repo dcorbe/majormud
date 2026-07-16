@@ -34,6 +34,8 @@ fn player(name: &str) -> Player {
         hp_base: 4,
         current_hp: 35,
         current_mana: 0,
+        hunger: 1000,
+        thirst: 1000,
         cp_unspent: 100,
         cp_lifetime: 100,
         lives: 9,

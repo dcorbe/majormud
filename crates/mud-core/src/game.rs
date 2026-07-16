@@ -6,10 +6,22 @@
 
 use std::collections::BTreeMap;
 
+use crate::ability::Ability;
 use crate::command::{parse, Command};
 use crate::content::{ClassId, Content, Direction, RaceId, RoomId, StatBlock};
 use crate::stats::{derive, AbilityBag, Derived, StatInputs};
 use crate::text;
+use crate::tick::TickScheduler;
+
+/// HPRegen (123): percent modifier to slow-tick HP regen.
+fn hp_regen_ability() -> Ability {
+    Ability::from_id(123).expect("HPRegen is in the enum")
+}
+
+/// ManaRgn (145): percent modifier to slow-tick mana regen.
+fn mana_regen_ability() -> Ability {
+    Ability::from_id(145).expect("ManaRgn is in the enum")
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SessionId(pub u64);
@@ -37,6 +49,10 @@ pub struct Player {
     pub hp_base: u16,
     pub current_hp: i32,
     pub current_mana: i32,
+    /// `+0xce`/`+0xd0` — vestigial counters in WG3-NT: seeded 1000, decay one
+    /// per slow tick, nothing reads them (`regeneration.md` §6).
+    pub hunger: u16,
+    pub thirst: u16,
     pub cp_unspent: u16,
     pub cp_lifetime: u16,
     pub lives: u16,
@@ -82,22 +98,130 @@ enum Session {
     InGame { player: Player, derived: Derived },
 }
 
+/// Self-rescheduling background jobs (`combat_rounds.md` §1). Medium (3 s)
+/// and energy (5 s) tiers join with their systems in later milestones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Job {
+    /// `background_slow`, every 30 s: regen, hunger/thirst decay.
+    Slow,
+}
+
+const SLOW_INTERVAL: u64 = 30;
+
 pub struct Core {
     content: Content,
     config: CoreConfig,
     sessions: BTreeMap<SessionId, Session>,
     next_session: u64,
     events: Vec<Event>,
+    scheduler: TickScheduler<Job>,
 }
 
 impl Core {
     pub fn new(content: Content, config: CoreConfig) -> Core {
+        let mut scheduler = TickScheduler::new();
+        scheduler.schedule_in(SLOW_INTERVAL, Job::Slow);
         Core {
             content,
             config,
             sessions: BTreeMap::new(),
             next_session: 1,
             events: Vec::new(),
+            scheduler,
+        }
+    }
+
+    /// Advances game time by one tick (= one second) and runs due jobs.
+    pub fn tick(&mut self) {
+        for job in self.scheduler.advance() {
+            match job {
+                Job::Slow => {
+                    self.slow_update();
+                    self.scheduler.schedule_in(SLOW_INTERVAL, Job::Slow);
+                }
+            }
+        }
+    }
+
+    /// `slow_update_characters` (`regeneration.md`): hunger/thirst decay,
+    /// HP regen, mana regen for every in-game player. (Poison and bleed/aid
+    /// join in M3 with the death system.)
+    fn slow_update(&mut self) {
+        let sessions: Vec<SessionId> = self.sessions.keys().copied().collect();
+        for id in sessions {
+            let Some(Session::InGame { player, derived }) = self.sessions.get(&id) else {
+                continue;
+            };
+            let (max_hp, max_mana) = (derived.max_hp, derived.max_mana);
+            let bag = self.ability_bag(player);
+            let caster = self
+                .content
+                .classes
+                .get(&player.class)
+                .map(|c| (c.caster_group, c.casting_factor));
+            let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&id) else {
+                unreachable!("checked above");
+            };
+
+            player.hunger = player.hunger.saturating_sub(1);
+            player.thirst = player.thirst.saturating_sub(1);
+
+            // HP: only while alive and below max (0 < HP < max).
+            if player.current_hp > 0 && player.current_hp < max_hp {
+                let mut base =
+                    (i32::from(player.level) + 20) * i32::from(player.stats.health) / 750;
+                if base < 2 {
+                    base = 1;
+                }
+                let pct = bag.value(hp_regen_ability());
+                if pct != 0 {
+                    base = (pct + 100) * base / 100;
+                }
+                player.current_hp = (player.current_hp + base).min(max_hp);
+            }
+
+            // Mana: gated on current < max (non-casters have max 0).
+            if player.current_mana < max_mana {
+                let (group, tier) = caster.unwrap_or((0, 0));
+                let stat = match group {
+                    1 => i32::from(player.stats.intellect),
+                    2 => i32::from(player.stats.wisdom),
+                    3 => (i32::from(player.stats.wisdom) + i32::from(player.stats.intellect)) / 2,
+                    4 => i32::from(player.stats.charm),
+                    _ => 0,
+                };
+                let mut regen = (i32::from(player.level) + 20) * stat * (i32::from(tier) + 2)
+                    / 1650;
+                if group == 5 {
+                    regen = 1;
+                }
+                let pct = bag.value(mana_regen_ability());
+                if pct != 0 {
+                    regen = (pct + 100) * regen / 100;
+                }
+                player.current_mana = (player.current_mana + regen).clamp(0, max_mana);
+            }
+        }
+    }
+
+    /// Test/inspection accessors for the live player state.
+    pub fn current_hp(&self, session: SessionId) -> i32 {
+        self.player(session).current_hp
+    }
+
+    pub fn current_mana(&self, session: SessionId) -> i32 {
+        self.player(session).current_mana
+    }
+
+    pub fn set_current_hp(&mut self, session: SessionId, hp: i32) {
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+            player.current_hp = hp;
+        }
+    }
+
+    pub fn set_current_mana(&mut self, session: SessionId, mana: i32) {
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+            player.current_mana = mana;
         }
     }
 
@@ -118,22 +242,27 @@ impl Core {
         id
     }
 
-    /// `update_dynamic_stats` + `calculate_secondary_stats`: accumulate the
-    /// active ability modifiers (race + class permanents for now; gear and
-    /// spells join in later milestones) and derive.
-    fn derive_for(&self, player: &Player) -> Derived {
+    /// The player's accumulated ability modifiers: race + class permanents
+    /// now; gear and active spells join via the same bag in later milestones.
+    fn ability_bag(&self, player: &Player) -> AbilityBag {
         let mut abilities = AbilityBag::default();
         if let Some(race) = self.content.races.get(&player.race) {
             for (ability, value) in &race.abilities {
                 abilities.add(*ability, i32::from(*value));
             }
         }
-        let class = self.content.classes.get(&player.class);
-        if let Some(class) = class {
+        if let Some(class) = self.content.classes.get(&player.class) {
             for (ability, value) in &class.abilities {
                 abilities.add(*ability, i32::from(*value));
             }
         }
+        abilities
+    }
+
+    /// `update_dynamic_stats` + `calculate_secondary_stats`.
+    fn derive_for(&self, player: &Player) -> Derived {
+        let abilities = self.ability_bag(player);
+        let class = self.content.classes.get(&player.class);
         let race_hp = self
             .content
             .races
@@ -348,6 +477,8 @@ impl Core {
             hp_base,
             current_hp: 0,
             current_mana: 0,
+            hunger: 1000,
+            thirst: 1000,
             cp_unspent: template.cp,
             cp_lifetime: template.cp,
             lives: 9,

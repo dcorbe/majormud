@@ -35,6 +35,8 @@ enum CoreMsg {
     Detach {
         session: SessionId,
     },
+    /// One second of game time (the background_fast metronome).
+    Tick,
 }
 
 /// Messages from the core to a connection task.
@@ -66,6 +68,20 @@ impl Server {
                 .name("game-core".into())
                 .spawn(move || core_thread(content, config, state, core_rx))
                 .expect("spawn core thread");
+        }
+
+        {
+            let core_tx = core_tx.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    interval.tick().await;
+                    if core_tx.send(CoreMsg::Tick).is_err() {
+                        break;
+                    }
+                }
+            });
         }
 
         tokio::spawn(async move {
@@ -112,6 +128,7 @@ fn core_thread(
             }
             CoreMsg::Input { session, line } => core.input(session, &line),
             CoreMsg::Detach { session } => core.detach(session),
+            CoreMsg::Tick => core.tick(),
         }
         for event in core.drain_events() {
             match event {
