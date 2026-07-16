@@ -217,6 +217,22 @@ enum Job {
 
 const SLOW_INTERVAL: u64 = 30;
 
+/// A live monster in the world (ephemeral — evaporates on restart, like the
+/// original's instances).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MonsterInstanceId(pub u64);
+
+#[derive(Debug, Clone)]
+pub(crate) struct MonsterInstance {
+    pub template: crate::content::MonsterId,
+    pub location: RoomId,
+    pub current_hp: i32,
+    /// Current energy pool (`mon+0x16`); regen = the template's `energy`.
+    /// Consumed by the round loop (next commit).
+    #[allow(dead_code)]
+    pub energy: i32,
+}
+
 pub struct Core {
     content: Content,
     config: CoreConfig,
@@ -225,6 +241,8 @@ pub struct Core {
     events: Vec<Event>,
     scheduler: TickScheduler<Job>,
     rng: Rng,
+    monsters: BTreeMap<MonsterInstanceId, MonsterInstance>,
+    next_monster: u64,
 }
 
 impl Core {
@@ -240,7 +258,38 @@ impl Core {
             events: Vec::new(),
             scheduler,
             rng,
+            monsters: BTreeMap::new(),
+            next_monster: 1,
         }
+    }
+
+    /// Places a live monster from its template (fixture placement — the
+    /// density-driven spawner arrives in M6). `None` for unknown templates
+    /// or rooms.
+    pub fn spawn_monster(
+        &mut self,
+        template: crate::content::MonsterId,
+        room: RoomId,
+    ) -> Option<MonsterInstanceId> {
+        let tpl = self.content.monsters.get(&template)?;
+        self.content.rooms.get(&room)?;
+        let id = MonsterInstanceId(self.next_monster);
+        self.next_monster += 1;
+        self.monsters.insert(
+            id,
+            MonsterInstance {
+                template,
+                location: room,
+                current_hp: tpl.hitpoints,
+                energy: tpl.energy,
+            },
+        );
+        Some(id)
+    }
+
+    /// Test/inspection: a live monster's current HP (`None` once dead/gone).
+    pub fn monster_hp(&self, id: MonsterInstanceId) -> Option<i32> {
+        self.monsters.get(&id).map(|m| m.current_hp)
     }
 
     /// Test hook: mutable access to loaded content.
@@ -906,11 +955,19 @@ impl Core {
             }
         }
 
-        let others: Vec<&str> = self
+        // Players first, then live monsters (oracle: NPCs share the line).
+        let mut others: Vec<&str> = self
             .in_game_sessions()
             .filter(|(id, p)| *id != session && p.location == room.id)
             .map(|(_, p)| p.name.as_str())
             .collect();
+        others.extend(
+            self.monsters
+                .values()
+                .filter(|m| m.location == room.id)
+                .filter_map(|m| self.content.monsters.get(&m.template))
+                .map(|t| t.name.as_str()),
+        );
         if !others.is_empty() {
             out.push_str(text::ALSO_HERE);
             out.push_str(&others.join(", "));
