@@ -69,18 +69,13 @@ impl Server {
         }
 
         tokio::spawn(async move {
-            loop {
-                match listener.accept().await {
-                    Ok((socket, _)) => {
-                        let core_tx = core_tx.clone();
-                        let state = Arc::clone(&state);
-                        tokio::spawn(async move {
-                            // Connection errors just end that connection.
-                            let _ = handle_connection(socket, core_tx, state).await;
-                        });
-                    }
-                    Err(_) => break,
-                }
+            while let Ok((socket, _)) = listener.accept().await {
+                let core_tx = core_tx.clone();
+                let state = Arc::clone(&state);
+                tokio::spawn(async move {
+                    // Connection errors just end that connection.
+                    let _ = handle_connection(socket, core_tx, state).await;
+                });
             }
         });
 
