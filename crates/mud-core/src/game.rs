@@ -55,6 +55,8 @@ pub struct Player {
     pub thirst: u16,
     /// `+0x610..+0x620` — the five coin denominations (`economy.md` §1).
     pub coins: Coins,
+    /// The irrevocable Lawful (PvP opt-out) choice from creation.
+    pub lawful: bool,
     pub cp_unspent: u16,
     pub cp_lifetime: u16,
     pub lives: u16,
@@ -139,6 +141,8 @@ pub struct CoreConfig {
     pub lives_per_level: u16,
     /// Seed for the game RNG (`genrdn`). Fixed seed = reproducible session.
     pub rng_seed: u64,
+    /// Seconds (= dots) of exit meditation (ORACLE-VERIFY: 10 observed).
+    pub exit_meditation_seconds: u8,
 }
 
 impl Default for CoreConfig {
@@ -149,6 +153,7 @@ impl Default for CoreConfig {
             level_cap: 3000,
             lives_per_level: 1,
             rng_seed: 0x4d4d55445f574721, // "MMUD_WG!"
+            exit_meditation_seconds: 10,
         }
     }
 }
@@ -178,10 +183,26 @@ pub enum Event {
 }
 
 enum Session {
-    /// Character creation: race then class (`character_creation.md` §1).
-    ChoosingRace { profile: AccountProfile },
-    ChoosingClass { profile: AccountProfile, race: RaceId },
-    InGame { player: Player, derived: Derived },
+    /// Character creation: race, class, then the Lawful question
+    /// (`character_creation.md` §1 + oracle addendum §6.5).
+    ChoosingRace {
+        profile: AccountProfile,
+    },
+    ChoosingClass {
+        profile: AccountProfile,
+        race: RaceId,
+    },
+    ChoosingLawful {
+        profile: AccountProfile,
+        race: RaceId,
+        class: ClassId,
+    },
+    InGame {
+        player: Player,
+        derived: Derived,
+        /// Dots left in the exit meditation; `Some` swallows all input.
+        exiting: Option<u8>,
+    },
 }
 
 /// Self-rescheduling background jobs (`combat_rounds.md` §1). Medium (3 s)
@@ -190,6 +211,8 @@ enum Session {
 enum Job {
     /// `background_slow`, every 30 s: regen, hunger/thirst decay.
     Slow,
+    /// One meditation dot for a pending exit.
+    ExitStep(SessionId),
 }
 
 const SLOW_INTERVAL: u64 = 30;
@@ -254,6 +277,7 @@ impl Core {
                     self.slow_update();
                     self.scheduler.schedule_in(SLOW_INTERVAL, Job::Slow);
                 }
+                Job::ExitStep(session) => self.exit_step(session),
             }
         }
     }
@@ -264,7 +288,7 @@ impl Core {
     fn slow_update(&mut self) {
         let sessions: Vec<SessionId> = self.sessions.keys().copied().collect();
         for id in sessions {
-            let Some(Session::InGame { player, derived }) = self.sessions.get(&id) else {
+            let Some(Session::InGame { player, derived, .. }) = self.sessions.get(&id) else {
                 continue;
             };
             let (max_hp, max_mana) = (derived.max_hp, derived.max_mana);
@@ -351,7 +375,8 @@ impl Core {
         let id = self.next_session_id();
         self.broadcast_to_others(id, &text::entered_realm(&player.name));
         let derived = self.derive_for(&player);
-        self.sessions.insert(id, Session::InGame { player, derived });
+        self.sessions
+            .insert(id, Session::InGame { player, derived, exiting: None });
         self.show_room(id);
         self.show_prompt(id);
         id
@@ -397,7 +422,7 @@ impl Core {
     }
 
     fn show_prompt(&mut self, session: SessionId) {
-        let Some(Session::InGame { player, derived: _ }) = self.sessions.get(&session) else {
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
             return;
         };
         let caster_group = self
@@ -410,7 +435,7 @@ impl Core {
     }
 
     fn show_sheet(&mut self, session: SessionId) {
-        let Some(Session::InGame { player, derived }) = self.sessions.get(&session) else {
+        let Some(Session::InGame { player, derived, .. }) = self.sessions.get(&session) else {
             return;
         };
         let race = self
@@ -458,6 +483,9 @@ impl Core {
             None => {}
             Some(Session::ChoosingRace { .. }) => self.choose_race(session, line),
             Some(Session::ChoosingClass { .. }) => self.choose_class(session, line),
+            Some(Session::ChoosingLawful { .. }) => self.choose_lawful(session, line),
+            // Oracle: all input is swallowed during exit meditation.
+            Some(Session::InGame { exiting: Some(_), .. }) => {}
             Some(Session::InGame { .. }) => self.game_command(session, line),
         }
     }
@@ -502,7 +530,7 @@ impl Core {
     }
 
     fn show_health(&mut self, session: SessionId) {
-        let Some(Session::InGame { player, derived }) = self.sessions.get(&session) else {
+        let Some(Session::InGame { player, derived, .. }) = self.sessions.get(&session) else {
             return;
         };
         let line = text::health_line(player.current_hp, derived.max_hp);
@@ -674,11 +702,39 @@ impl Core {
         else {
             unreachable!("dispatched from ChoosingClass");
         };
-        let player = self.roll_stats(profile, race, choice.expect("validated above"));
+        self.sessions.insert(
+            session,
+            Session::ChoosingLawful {
+                profile,
+                race,
+                class: choice.expect("validated above"),
+            },
+        );
+        self.output(session, &format!("\n{}\n{}", text::LAWFUL_PARAGRAPH, text::LAWFUL_QUESTION));
+    }
+
+    /// The Lawful (PvP opt-out) question, then `roll_stats` + realm entry.
+    fn choose_lawful(&mut self, session: SessionId, line: &str) {
+        let answer = line.trim().to_ascii_lowercase();
+        let lawful = if answer.starts_with('y') {
+            true
+        } else if answer.starts_with('n') {
+            false
+        } else {
+            self.output_line(session, text::LAWFUL_QUESTION);
+            return;
+        };
+        let Some(Session::ChoosingLawful { profile, race, class }) =
+            self.sessions.remove(&session)
+        else {
+            unreachable!("dispatched from ChoosingLawful");
+        };
+        let player = self.roll_stats(profile, race, class, lawful);
         self.events.push(Event::Persist(Box::new(player.clone())));
         self.broadcast_to_others(session, &text::entered_realm(&player.name));
         let derived = self.derive_for(&player);
-        self.sessions.insert(session, Session::InGame { player, derived });
+        self.sessions
+            .insert(session, Session::InGame { player, derived, exiting: None });
         // Oracle: first entry shows the stat sheet, not the room.
         self.show_sheet(session);
         self.show_prompt(session);
@@ -687,7 +743,13 @@ impl Core {
     /// `roll_stats` (spec §2.2): no randomisation — the racial template, CP
     /// grant, and creation defaults are copied verbatim; mode-0
     /// `calculate_secondary_stats` fills HP/mana to max.
-    fn roll_stats(&self, profile: AccountProfile, race: RaceId, class: ClassId) -> Player {
+    fn roll_stats(
+        &self,
+        profile: AccountProfile,
+        race: RaceId,
+        class: ClassId,
+        lawful: bool,
+    ) -> Player {
         let template = &self.content.races[&race];
         let hp_base = self
             .content
@@ -708,6 +770,7 @@ impl Core {
             hunger: 1000,
             thirst: 1000,
             coins: Coins::default(),
+            lawful,
             cp_unspent: template.cp,
             cp_lifetime: template.cp,
             lives: 9,
@@ -729,7 +792,7 @@ impl Core {
     /// + departure broadcast). Sessions still in creation just vanish.
     pub fn detach(&mut self, session: SessionId) {
         match self.sessions.get(&session) {
-            Some(Session::InGame { .. }) => self.quit(session),
+            Some(Session::InGame { .. }) => self.complete_quit(session),
             Some(_) => {
                 self.sessions.remove(&session);
                 self.events.push(Event::Disconnect(session));
@@ -738,7 +801,48 @@ impl Core {
         }
     }
 
+    /// Starts the delayed exit (oracle: message, then one dot per second;
+    /// input is swallowed; combat cancels via `cancel_exit`).
     fn quit(&mut self, session: SessionId) {
+        let dots = self.config.exit_meditation_seconds;
+        let Some(Session::InGame { exiting, .. }) = self.sessions.get_mut(&session) else {
+            return;
+        };
+        if exiting.is_some() {
+            return;
+        }
+        *exiting = Some(dots);
+        self.output_line(session, text::EXIT_MEDITATION);
+        self.scheduler.schedule_in(1, Job::ExitStep(session));
+    }
+
+    /// Cancels a pending exit (the combat-engagement hook: you cannot leave
+    /// the Realm while being attacked).
+    pub fn cancel_exit(&mut self, session: SessionId) {
+        if let Some(Session::InGame { exiting, .. }) = self.sessions.get_mut(&session) {
+            *exiting = None;
+        }
+    }
+
+    fn exit_step(&mut self, session: SessionId) {
+        let Some(Session::InGame { exiting, .. }) = self.sessions.get_mut(&session) else {
+            return;
+        };
+        let Some(remaining) = *exiting else {
+            return; // cancelled
+        };
+        self.output(session, ".");
+        if remaining > 1 {
+            if let Some(Session::InGame { exiting, .. }) = self.sessions.get_mut(&session) {
+                *exiting = Some(remaining - 1);
+            }
+            self.scheduler.schedule_in(1, Job::ExitStep(session));
+        } else {
+            self.complete_quit(session);
+        }
+    }
+
+    fn complete_quit(&mut self, session: SessionId) {
         let Some(Session::InGame { player, .. }) = self.sessions.remove(&session) else {
             return;
         };

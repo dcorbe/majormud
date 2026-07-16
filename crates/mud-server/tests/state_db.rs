@@ -37,6 +37,7 @@ fn player(name: &str) -> Player {
         hunger: 1000,
         thirst: 1000,
         coins: Default::default(),
+        lawful: false,
         cp_unspent: 100,
         cp_lifetime: 100,
         lives: 9,

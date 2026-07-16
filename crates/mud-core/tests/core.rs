@@ -48,6 +48,7 @@ fn player(name: &str) -> Player {
         hunger: 1000,
         thirst: 1000,
         coins: Default::default(),
+        lawful: false,
         cp_unspent: 0,
         cp_lifetime: 0,
         lives: 9,
@@ -95,6 +96,10 @@ fn quit_disconnects_persists_and_announces() {
     core.drain_events();
 
     core.input(bob, "x");
+    // The exit completes after the meditation delay (oracle).
+    for _ in 0..10 {
+        core.tick();
+    }
     let events = core.drain_events();
 
     assert!(

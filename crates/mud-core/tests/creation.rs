@@ -207,6 +207,7 @@ fn completed_creation_matches_the_spec_initial_state() {
     let s = start(&mut core, "Alice");
     core.input(s, "2"); // Dwarf
     core.input(s, "1"); // Warrior
+    core.input(s, "No"); // Lawful prompt
     let events = core.drain_events();
 
     let persisted = events
@@ -242,6 +243,7 @@ fn completed_creation_enters_the_realm() {
     let s = start(&mut core, "Alice");
     core.input(s, "1");
     core.input(s, "1");
+    core.input(s, "No");
     let shown = text_to(&core.drain_events(), s);
     // Oracle: first entry shows the stat sheet, not the room.
     assert!(shown.contains("Hits:"), "sheet shown: {shown:?}");
@@ -251,6 +253,7 @@ fn completed_creation_enters_the_realm() {
     core.drain_events();
     core.input(s2, "1");
     core.input(s2, "1");
+    core.input(s2, "No");
     let events = core.drain_events();
     let to_alice = text_to(&events, s);
     assert!(

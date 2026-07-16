@@ -98,6 +98,7 @@ fn create(core: &mut Core, name: &str, race: &str, class: &str) -> SessionId {
     });
     core.input(s, race);
     core.input(s, class);
+    core.input(s, "No");
     core.drain_events();
     s
 }
@@ -109,7 +110,7 @@ fn ticks(core: &mut Core, n: u64) {
 }
 
 fn persisted_on_quit(core: &mut Core, s: SessionId) -> mud_core::game::Player {
-    core.input(s, "x");
+    core.detach(s); // carrier drop persists immediately (no meditation)
     core.drain_events()
         .into_iter()
         .find_map(|e| match e {

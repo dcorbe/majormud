@@ -111,6 +111,27 @@ pub fn train_success(level: u16) -> String {
     format!("you receive training to attain level {level}.")
 }
 
+/// VERIFIED (oracle): the Lawful prompt (verbatim, including the double
+/// space before [Yes/No]).
+pub const LAWFUL_PARAGRAPH: &str = "\
+You must now choose if you want to be a truly 'lawful' citizen of the realm.
+If you answer YES to this question then you will never be allowed to instigate
+any action which would give you evil points, and any player that attacks or
+robs from you will receive three times the regular evil points in return. You
+can still attack those with a bad reputation. This option is designed
+solely for those who want to stay away from the player combat aspects of the
+game, and choosing it for any other reason (Item storage, etc...) is strictly
+prohibited.
+
+Remember, this is a very important choice. Once you have chosen Lawfulness,
+you may not remove this title, unless you start a new character.
+";
+pub const LAWFUL_QUESTION: &str = "Do you want to be Lawful?  [Yes/No]";
+
+/// VERIFIED (oracle): the delayed-exit announcement; dots follow one per
+/// second until departure.
+pub const EXIT_MEDITATION: &str = "You will exit after a period of silent meditation.";
+
 /// VERIFIED (oracle): the status prompt. Caster/Kai variants ORACLE-VERIFY.
 pub fn prompt(hp: i32, mana: i32, caster_group: i16) -> String {
     match caster_group {

@@ -85,6 +85,7 @@ fn create_dwarf_warrior(core: &mut Core, name: &str) -> SessionId {
     });
     core.input(s, "2");
     core.input(s, "1");
+    core.input(s, "No");
     s
 }
 

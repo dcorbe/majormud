@@ -116,6 +116,7 @@ fn create(core: &mut Core) -> SessionId {
     });
     core.input(s, "2");
     core.input(s, "1");
+    core.input(s, "No");
     core.drain_events();
     s
 }

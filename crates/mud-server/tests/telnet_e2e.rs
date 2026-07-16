@@ -77,6 +77,7 @@ fn world() -> Content {
 fn test_config() -> CoreConfig {
     CoreConfig {
         start_location: RoomId { map: 1, room: 1 },
+        exit_meditation_seconds: 1,
         ..CoreConfig::default()
     }
 }
@@ -133,6 +134,9 @@ async fn full_session_create_walk_quit() {
     read_until(&mut stream, &mut t, "Please choose a class from the following list:").await;
     send(&mut stream, "1").await;
 
+    read_until(&mut stream, &mut t, "Do you want to be Lawful?").await;
+    send(&mut stream, "No").await;
+
     // Oracle flow: creation ends on the stat sheet + prompt, not the room.
     read_until(&mut stream, &mut t, "Hits:").await;
     read_until(&mut stream, &mut t, "[HP=").await;
@@ -181,6 +185,8 @@ async fn returning_player_resumes_saved_character() {
     send(&mut stream, "1").await;
     read_until(&mut stream, &mut t, "class").await;
     send(&mut stream, "1").await;
+    read_until(&mut stream, &mut t, "Lawful").await;
+    send(&mut stream, "No").await;
     read_until(&mut stream, &mut t, "[HP=").await;
     send(&mut stream, "look").await;
     read_until(&mut stream, &mut t, "Town Gates").await;
