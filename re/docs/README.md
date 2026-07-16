@@ -83,8 +83,8 @@ A few load-bearing patterns recur across the specs:
 
 | artifact | what it is |
 |----------|-----------|
-| `mmud_wgnt.sqlite` | The full dataset — 9 tables: room 26720, spell 1408, monster 1102, item 1950, message 3905, shop 191, class 19, race 18, action 67. Lossless (`_raw` blob per row). |
-| `vir_wg.py` | Validated Btrieve 6.x reader for the WG3-NT `.vir` files. |
+| `mmud_wgnt.sqlite` | The full dataset — 9 tables: room 26720, spell 1379, monster 1101, item 1950, message 3867, shop 178, class 15, race 13, action 67. Live records only (`_raw` blob per row). |
+| `vir_wg.py` | Validated Btrieve 6.x reader for the WG3-NT `.vir` files. Filters deleted records (usage-word prefix ≠ 1) and stale shadow-page duplicates. |
 | `rectype.py` / `import_mmud.py` | Nightmare RecType parser + the SQLite importer. |
 | `room_graph_wg.py` | Builds the world graph: 26,720 rooms / 17 maps, 100% exits resolve, 98% reciprocity. |
 | `ability_ids.tsv` | Raw ability-id → name/description table. |
