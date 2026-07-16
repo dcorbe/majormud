@@ -107,6 +107,8 @@ pub struct Player {
     pub inventory: Vec<(crate::content::ItemId, i16)>,
     /// Wielded weapon (`+0x624`).
     pub weapon: Option<(crate::content::ItemId, i16)>,
+    /// Bank balances (shop id, copper) — the BANKBOOK records.
+    pub bankbooks: Vec<(u16, u64)>,
     /// Worn equipment (`+0x62c[20]`).
     pub worn: Vec<(crate::content::ItemId, i16)>,
     pub cp_unspent: u16,
@@ -163,21 +165,38 @@ impl Coins {
         let _ = (&mut silver, &mut gold, &mut platinum);
     }
 
-    /// `deduct_currency`: remove a copper amount, breaking higher coins into
-    /// change only when the lower drawers run dry (never consolidating change
-    /// upward). Caller must have checked affordability. ORACLE-VERIFY the
-    /// original's exact spend order for mixed purses.
+    /// `deduct_currency`: remove a copper amount, spending the LARGEST
+    /// whole coins first (oracle: depositing 100 from 11s+49c hands over
+    /// exactly "10 silver nobles"), then breaking one higher coin into
+    /// change when a remainder is due. Caller checks affordability.
     pub fn deduct_copper(&mut self, amount: u64, ratios: [u64; 4]) {
         debug_assert!(self.total_copper(ratios) >= amount);
+        let per_silver = ratios[0];
+        let per_gold = per_silver * ratios[1];
+        let per_platinum = per_gold * ratios[2];
+        let per_runic = per_platinum * ratios[3];
         let mut due = amount;
+
+        let mut pay_whole = |drawer: &mut u32, per: u64| {
+            let take = (u64::from(*drawer)).min(due / per);
+            *drawer -= take as u32;
+            due -= take * per;
+        };
+        pay_whole(&mut self.runic, per_runic);
+        pay_whole(&mut self.platinum, per_platinum);
+        pay_whole(&mut self.gold, per_gold);
+        pay_whole(&mut self.silver, per_silver);
+        pay_whole(&mut self.copper, 1);
+
+        // Remainder: break the smallest non-empty higher coin downward.
         loop {
-            let pay = due.min(u64::from(self.copper));
-            self.copper -= pay as u32;
-            due -= pay;
             if due == 0 {
                 return;
             }
-            // Break one coin of the smallest non-empty higher denomination.
+            if u64::from(self.copper) >= due {
+                self.copper -= due as u32;
+                return;
+            }
             if self.silver > 0 {
                 self.silver -= 1;
                 self.copper += ratios[0] as u32;
@@ -229,7 +248,9 @@ impl Default for CoreConfig {
     fn default() -> Self {
         CoreConfig {
             start_location: RoomId { map: 1, room: 2140 },
-            coin_ratios: [10, 10, 10, 10],
+            // ORACLE-VERIFIED (Bank of Godfrey lobby sign): 10c=1s, 10s=1g,
+            // 100g=1p, 100p=1r.
+            coin_ratios: [10, 10, 100, 100],
             level_cap: 3000,
             lives_per_level: 1,
             rng_seed: 0x4d4d55445f574721, // "MMUD_WG!"
@@ -350,6 +371,8 @@ pub struct Core {
     /// Live shop stock counts (seeded from content; persistence via events
     /// arrives with the restock system).
     shop_stock: BTreeMap<crate::content::ShopId, [i16; 20]>,
+    /// Set while an action-exit trigger routes through move_player.
+    action_exit_pass: bool,
 }
 
 impl Core {
@@ -371,6 +394,7 @@ impl Core {
             room_coins: BTreeMap::new(),
             room_items: BTreeMap::new(),
             shop_stock: BTreeMap::new(),
+            action_exit_pass: false,
         };
         for shop in core.content.shops.values() {
             let mut counts = [0i16; 20];
@@ -467,6 +491,13 @@ impl Core {
     pub fn give_copper(&mut self, session: SessionId, amount: u32) {
         if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
             player.coins.copper += amount;
+        }
+    }
+
+    /// Test hook: set the purse.
+    pub fn set_coins(&mut self, session: SessionId, coins: Coins) {
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+            player.coins = coins;
         }
     }
 
@@ -783,6 +814,9 @@ impl Core {
                     self.say(session, line.trim());
                 }
             }
+            Command::Deposit(amount) => self.deposit_command(session, &amount),
+            Command::Withdraw(amount) => self.withdraw_command(session, &amount),
+            Command::Balance => self.balance_command(session),
             Command::Arm(target) => {
                 if self.arm_command(session, &target) == Resolution::FallThrough {
                     self.say(session, line.trim());
@@ -823,8 +857,13 @@ impl Core {
                     self.move_player(session, direction);
                 }
             }
-            // Anything else is said aloud (oracle) - there is no error reply.
-            Command::Unknown(what) => self.say(session, &what),
+            // Type-10 action exits trigger on their phrases; anything else
+            // is said aloud (oracle) - there is no error reply.
+            Command::Unknown(what) => {
+                if self.try_action_exit(session, &what) == Resolution::FallThrough {
+                    self.say(session, &what);
+                }
+            }
         }
         self.show_prompt(session);
     }
@@ -1203,6 +1242,99 @@ impl Core {
         self.build_player_defender(session)
     }
 
+    /// The bank in the player's room (shop type 7), if any.
+    fn bank_here(&self, session: SessionId) -> Option<crate::content::ShopId> {
+        let shop = self.shop_here(session)?;
+        (self.content.shops.get(&shop)?.shop_type == 7).then_some(shop)
+    }
+
+    fn balance_command(&mut self, session: SessionId) {
+        let Some(bank) = self.bank_here(session) else {
+            // Oracle: balance outside a bank prints nothing.
+            return;
+        };
+        let shop = &self.content.shops[&bank];
+        let balance = self
+            .player(session)
+            .bankbooks
+            .iter()
+            .find(|(id, _)| *id == bank.0)
+            .map_or(0, |(_, b)| *b);
+        let ratios = self.config.coin_ratios;
+        let line = text::balance_lines(&shop.name, bank.0, balance, ratios[0] * ratios[1]);
+        self.output(session, &format!("{line}\n"));
+    }
+
+    fn deposit_command(&mut self, session: SessionId, amount: &str) {
+        let Some(bank) = self.bank_here(session) else {
+            self.output_line(session, text::NOT_IN_BANK_DEPOSIT);
+            return;
+        };
+        let Ok(amount) = amount.trim().parse::<u64>() else {
+            self.output_line(session, text::UNREASONABLE_AMOUNT);
+            return;
+        };
+        if amount == 0 {
+            self.output_line(session, text::UNREASONABLE_AMOUNT);
+            return;
+        }
+        let ratios = self.config.coin_ratios;
+        if self.player(session).coins.total_copper(ratios) < amount {
+            // ORACLE-VERIFY: over-deposit wording (silent like withdraw?).
+            return;
+        }
+        let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+            return;
+        };
+        let before = player.coins;
+        player.coins.deduct_copper(amount, ratios);
+        let after = player.coins;
+        match player.bankbooks.iter_mut().find(|(id, _)| *id == bank.0) {
+            Some((_, b)) => *b += amount,
+            None => player.bankbooks.push((bank.0, amount)),
+        }
+        // Report the actual coins handed over (largest first).
+        let spent = [
+            before.copper.saturating_sub(after.copper),
+            before.silver.saturating_sub(after.silver),
+            before.gold.saturating_sub(after.gold),
+            before.platinum.saturating_sub(after.platinum),
+            before.runic.saturating_sub(after.runic),
+        ];
+        let coins = text::coin_listing(spent).unwrap_or_else(|| "nothing".into());
+        self.output_line(session, &text::deposited(&coins));
+    }
+
+    fn withdraw_command(&mut self, session: SessionId, amount: &str) {
+        let Some(bank) = self.bank_here(session) else {
+            self.output_line(session, text::NOT_IN_BANK_WITHDRAW);
+            return;
+        };
+        let Ok(amount) = amount.trim().parse::<u64>() else {
+            self.output_line(session, text::UNREASONABLE_AMOUNT);
+            return;
+        };
+        if amount == 0 {
+            self.output_line(session, text::UNREASONABLE_AMOUNT);
+            return;
+        }
+        let ratios = self.config.coin_ratios;
+        let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+            return;
+        };
+        let Some((_, balance)) = player.bankbooks.iter_mut().find(|(id, _)| *id == bank.0)
+        else {
+            // Oracle: over-withdrawal is silent.
+            return;
+        };
+        if *balance < amount {
+            return; // silent (oracle)
+        }
+        *balance -= amount;
+        player.coins.add_copper_and_mint(amount, ratios);
+        self.output_line(session, &text::withdrew(amount));
+    }
+
     /// The shop in the player's room, if any.
     fn shop_here(&self, session: SessionId) -> Option<crate::content::ShopId> {
         let room = self.player(session).location;
@@ -1517,6 +1649,12 @@ impl Core {
         };
         let mut out = String::new();
         let mut names: Vec<String> = Vec::new();
+        let c = &player.coins;
+        if let Some(coins) =
+            text::coin_listing([c.copper, c.silver, c.gold, c.platinum, c.runic])
+        {
+            names.push(coins);
+        }
         if let Some((id, _)) = player.weapon
             && let Some(item) = self.content.items.get(&id)
         {
@@ -2327,6 +2465,7 @@ impl Core {
             lawful,
             inventory: Vec::new(),
             weapon: None,
+            bankbooks: Vec::new(),
             worn: Vec::new(),
             cp_unspent: template.cp,
             cp_lifetime: template.cp,
@@ -2415,12 +2554,53 @@ impl Core {
         }
     }
 
+    /// Text-triggered exits (type 10): match the input against each exit's
+    /// pipe-separated phrase pool ("row skiff") and move on a hit.
+    fn try_action_exit(&mut self, session: SessionId, what: &str) -> Resolution {
+        if self.player(session).current_hp < 1 {
+            return Resolution::FallThrough;
+        }
+        let room = self.player(session).location;
+        let want = what.trim().to_ascii_lowercase();
+        for direction in Direction::ALL {
+            let Some(exit) = &self.content.rooms[&room].exits[direction as usize] else {
+                continue;
+            };
+            if exit.exit_type != 10 {
+                continue;
+            }
+            let phrases = exit
+                .trigger_msg
+                .and_then(|m| self.content.messages.get(&m))
+                .and_then(|m| m.lines.first())
+                .map(|l| l.to_ascii_lowercase());
+            let Some(phrases) = phrases else { continue };
+            if phrases.split('|').any(|p| p.trim() == want) {
+                // ORACLE: "You climb into one of the skiffs, and row to
+                // Silvermere." — the flavor line is board data we don't
+                // have per-exit; the movement itself is the mechanic.
+                self.action_exit_pass = true;
+                self.move_player(session, direction);
+                self.action_exit_pass = false;
+                return Resolution::Handled;
+            }
+        }
+        Resolution::FallThrough
+    }
+
     fn move_player(&mut self, session: SessionId, direction: Direction) {
         let from = self.player(session).location;
         let Some(exit) = self.content.rooms[&from].exits[direction as usize].clone() else {
             self.output_line(session, text::NO_EXIT);
             return;
         };
+        // Type-10 exits only move via their trigger phrases — but when the
+        // trigger routes here (try_action_exit), it passes. Plain walking
+        // sees "no exit" (oracle: 's' at the docks).
+        if exit.exit_type == 10 && !self.action_exit_pass {
+            self.output_line(session, text::NO_EXIT);
+            return;
+        }
         let name = self.player(session).name.clone();
         self.broadcast_to_room(from, Some(session), &text::left_via(&name, direction));
         match self.sessions.get_mut(&session) {
@@ -2445,7 +2625,11 @@ impl Core {
         let room = &self.content.rooms[&player.location];
         let exits: Vec<&str> = Direction::ALL
             .into_iter()
-            .filter(|d| room.exits[*d as usize].is_some())
+            .filter(|d| {
+                room.exits[*d as usize]
+                    .as_ref()
+                    .is_some_and(|e| e.exit_type != 10)
+            })
             .map(|d| text::direction_shown(d))
             .collect();
         let line = if exits.is_empty() {
@@ -2519,7 +2703,11 @@ impl Core {
 
         let exits: Vec<&str> = Direction::ALL
             .into_iter()
-            .filter(|d| room.exits[*d as usize].is_some())
+            .filter(|d| {
+                room.exits[*d as usize]
+                    .as_ref()
+                    .is_some_and(|e| e.exit_type != 10)
+            })
             .map(|d| text::direction_shown(d))
             .collect();
         out.push_str(text::OBVIOUS_EXITS);

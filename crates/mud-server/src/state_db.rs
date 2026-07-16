@@ -92,6 +92,12 @@ CREATE TABLE IF NOT EXISTS player (
     map          INTEGER NOT NULL,
     room         INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS bankbook (
+    name    TEXT NOT NULL COLLATE NOCASE,
+    shop    INTEGER NOT NULL,
+    balance INTEGER NOT NULL,
+    PRIMARY KEY (name, shop)
+) STRICT;
 CREATE TABLE IF NOT EXISTS player_item (
     name   TEXT NOT NULL COLLATE NOCASE,
     kind   TEXT NOT NULL CHECK (kind IN ('inv', 'worn', 'weapon')),
@@ -220,6 +226,16 @@ impl StateDb {
             "DELETE FROM player_item WHERE name = ?1",
             params![player.name],
         )?;
+        self.conn.execute(
+            "DELETE FROM bankbook WHERE name = ?1",
+            params![player.name],
+        )?;
+        for (shop, balance) in &player.bankbooks {
+            self.conn.execute(
+                "INSERT INTO bankbook (name, shop, balance) VALUES (?1, ?2, ?3)",
+                params![player.name, shop, *balance as i64],
+            )?;
+        }
         let groups: [(&str, &[(ItemId, i16)]); 3] = [
             ("inv", &player.inventory),
             ("worn", &player.worn),
@@ -314,6 +330,15 @@ impl StateDb {
                 _ => player.inventory.push((item, uses)),
             }
         }
+        let mut stmt = self
+            .conn
+            .prepare("SELECT shop, balance FROM bankbook WHERE name = ?1 ORDER BY shop")?;
+        let rows = stmt.query_map(params![name], |r| {
+            Ok((r.get::<_, u16>(0)?, r.get::<_, i64>(1)? as u64))
+        })?;
+        for row in rows {
+            player.bankbooks.push(row?);
+        }
         Ok(Some(player))
     }
 
@@ -366,6 +391,7 @@ impl StateDb {
                         lawful: r.get(27)?,
                         inventory: Vec::new(),
                         weapon: None,
+                        bankbooks: Vec::new(),
                         worn: Vec::new(),
                         cp_unspent: r.get(28)?,
                         cp_lifetime: r.get(29)?,

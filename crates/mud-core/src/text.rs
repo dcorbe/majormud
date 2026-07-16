@@ -165,11 +165,38 @@ pub fn dont_see_here(name: &str) -> String {
 pub fn dont_see_coins(plural: &str) -> String {
     format!("You don't see any {plural}")
 }
-/// ORACLE-VERIFY exact wording for coin pickup.
+/// VERIFIED (oracle_bank.raw): "You picked up 11 silver nobles".
 pub fn took_coins(count: u32, name_one: &str, name_many: &str) -> String {
     let name = if count == 1 { name_one } else { name_many };
-    format!("You took {count} {name}.")
+    format!("You picked up {count} {name}")
 }
+
+/// A coin listing high->low ("1 gold crown, 9 copper farthings").
+pub fn coin_listing(drawers: [u32; 5]) -> Option<String> {
+    coin_pile_names(drawers)
+}
+
+// --- banking strings (VERIFIED oracle_bank3.raw) ---
+pub fn balance_lines(shop: &str, shop_id: u16, copper: u64, gold_ratio: u64) -> String {
+    let gold = copper / gold_ratio;
+    let rem_silver = (copper % gold_ratio) / 10;
+    format!(
+        "Your balance at {shop} (#{shop_id}) is:\nOn deposit: {copper} copper farthings [{gold}. {rem_silver} gold crowns]"
+    )
+}
+pub fn deposited(coins: &str) -> String {
+    format!("You deposit {coins}.")
+}
+pub fn withdrew(copper: u64) -> String {
+    format!(
+        "You withdrew {copper} {}.",
+        if copper == 1 { "copper farthing" } else { "copper farthings" }
+    )
+}
+pub const UNREASONABLE_AMOUNT: &str = "Please specify a more reasonable amount.";
+pub const NOT_IN_BANK_DEPOSIT: &str = "You cannot DEPOSIT if you are not in a bank!";
+pub const NOT_IN_BANK_WITHDRAW: &str = "You cannot WITHDRAW if you are not in a bank!";
+
 
 /// Encumbrance descriptor bands (only "None" oracle-observed; the rest
 /// ORACLE-VERIFY).

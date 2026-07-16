@@ -16,10 +16,12 @@ fn world() -> Content {
     gates.exits[Direction::North as usize] = Some(Exit {
         dest: RoomId { map: 1, room: 2 },
         exit_type: 0,
+        trigger_msg: None,
     });
     gates.exits[Direction::Up as usize] = Some(Exit {
         dest: RoomId { map: 1, room: 3 },
         exit_type: 0,
+        trigger_msg: None,
     });
     let mut square = Room {
         id: RoomId { map: 1, room: 2 },
@@ -32,6 +34,7 @@ fn world() -> Content {
     square.exits[Direction::South as usize] = Some(Exit {
         dest: RoomId { map: 1, room: 1 },
         exit_type: 0,
+        trigger_msg: None,
     });
     let tower = Room {
         id: RoomId { map: 1, room: 3 },
@@ -65,6 +68,7 @@ fn player_at(name: &str, room: u16) -> Player {
         lawful: false,
         inventory: vec![],
         weapon: None,
+        bankbooks: vec![],
         worn: vec![],
         cp_unspent: 0,
         cp_lifetime: 0,

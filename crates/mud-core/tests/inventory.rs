@@ -205,8 +205,8 @@ fn coins_can_be_picked_up_from_piles() {
     core.input(s, "get silver");
     let shown = text_to(&core.drain_events(), s);
     assert!(
-        shown.contains("You took 7 silver nobles."),
-        "ORACLE-VERIFY wording; got: {shown:?}"
+        shown.contains("You picked up 7 silver nobles"),
+        "oracle wording: {shown:?}"
     );
     core.input(s, "get copper");
     core.drain_events();

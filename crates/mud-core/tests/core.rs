@@ -17,6 +17,7 @@ fn two_room_content() -> Content {
     gates.exits[Direction::North as usize] = Some(Exit {
         dest: RoomId { map: 1, room: 2 },
         exit_type: 0,
+        trigger_msg: None,
     });
     let mut square = Room {
         id: RoomId { map: 1, room: 2 },
@@ -29,6 +30,7 @@ fn two_room_content() -> Content {
     square.exits[Direction::South as usize] = Some(Exit {
         dest: RoomId { map: 1, room: 1 },
         exit_type: 0,
+        trigger_msg: None,
     });
     content.add_room(gates);
     content.add_room(square);
@@ -53,6 +55,7 @@ fn player(name: &str) -> Player {
         lawful: false,
         inventory: vec![],
         weapon: None,
+        bankbooks: vec![],
         worn: vec![],
         cp_unspent: 0,
         cp_lifetime: 0,

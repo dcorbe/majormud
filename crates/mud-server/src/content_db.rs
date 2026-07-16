@@ -172,10 +172,16 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
             }
             let exit_type = to_u16("room", "roomtype", row.get(12 + d * 3)?)?;
             // Exit type 8 is a map-change portal: destination map in para1.
+            // Type 10 is a text-triggered exit: para1 is its phrase message.
             let dest_map = if exit_type == 8 {
                 to_u16("room", "para1", row.get(13 + d * 3)?)?
             } else {
                 map
+            };
+            let trigger_msg = if exit_type == 10 {
+                opt_message("room", "para1", row.get(13 + d * 3)?)?
+            } else {
+                None
             };
             room.exits[d] = Some(Exit {
                 dest: RoomId {
@@ -183,6 +189,7 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
                     room: to_u16("room", "roomexit", dest)?,
                 },
                 exit_type,
+                trigger_msg,
             });
         }
         content.add_room(room);

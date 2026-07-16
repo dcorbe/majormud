@@ -495,3 +495,30 @@ purse.
   `buy_item` but the full gang-house lifecycle is out of scope here.
 </content>
 </invoke>
+
+---
+
+## Oracle addendum (Bank of Godfrey expedition, 2026-07-16)
+
+- **Coin ratios VERIFIED** (the bank lobby prints them): 10 copper = 1 silver,
+  10 silver = 1 gold, **100 gold = 1 platinum, 100 platinum = 1 runic** —
+  i.e. `DAT_00482cec..ce0` = [10, 10, 100, 100], not uniform.
+- `balance`: "Your balance at Bank of Godfrey (#8) is:" / "On deposit: N
+  copper farthings [G. S gold crowns]". Outside a bank, balance prints
+  nothing; deposit/withdraw print "You cannot DEPOSIT/WITHDRAW if you are
+  not in a bank!".
+- `deposit N` reports the coins actually handed over, **largest first**
+  ("You deposit 10 silver nobles." for 100 from an 11s+49c purse — so
+  `deduct_currency` spends whole large coins first). `withdraw N` prints
+  "You withdrew N copper farthings." and the purse is minted upward
+  (`cleanup_currency`) afterward. Over-withdrawal is **silent**; junk
+  amounts get "Please specify a more reasonable amount.".
+- Coin pickup: "You picked up 11 silver nobles" (no period observed).
+  Coins render inside the carrying line, high→low, before items.
+- **Exit type 10 = text-triggered exit**: hidden from Obvious exits; its
+  `para1` is a message holding pipe-separated trigger phrases
+  ("borrow skiff|go skiff|row skiff"); walking the direction plainly says
+  "There is no exit in that direction!". The Newhaven→Silvermere ferry is
+  one ("You climb into one of the skiffs, and row to Silvermere.").
+- Newhaven is the tutorial pocket (14 rooms); Silvermere the first town
+  (24+ prefixed rooms; Town Square = room 224 = the tournament start).

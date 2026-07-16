@@ -105,8 +105,12 @@ pub struct StatBlock {
 pub struct Exit {
     pub dest: RoomId,
     /// Raw `roomtype_N` value; semantics per type are handled by later
-    /// milestones (8 = map-change portal, already folded into `dest`).
+    /// milestones (8 = map-change portal, already folded into `dest`;
+    /// 10 = text-triggered action exit, hidden from the exits line).
     pub exit_type: u16,
+    /// Type 10: the pipe-separated trigger phrases live in this message
+    /// ("borrow skiff|go skiff|row skiff" — oracle).
+    pub trigger_msg: Option<MessageId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

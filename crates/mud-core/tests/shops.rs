@@ -21,6 +21,7 @@ fn world() -> Content {
         Some(mud_core::content::Exit {
             dest: RoomId { map: 1, room: 2 },
             exit_type: 0,
+            trigger_msg: None,
         });
     content.add_room(shop_room);
     content.add_room(Room {

@@ -40,6 +40,7 @@ fn player(name: &str) -> Player {
         lawful: false,
         inventory: vec![],
         weapon: None,
+        bankbooks: vec![],
         worn: vec![],
         cp_unspent: 100,
         cp_lifetime: 100,
