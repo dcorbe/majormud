@@ -39,6 +39,7 @@ fn world() -> Content {
             charm: 100,
         },
         cp: 100,
+        hp_per_level: 0,
     });
     content.add_race(Race {
         id: RaceId(2),
@@ -61,11 +62,16 @@ fn world() -> Content {
             charm: 85,
         },
         cp: 100,
+        hp_per_level: 0,
     });
     content.add_class(Class {
         id: ClassId(1),
         name: "Warrior".into(),
         abilities: vec![],
+        hp_per_level: 6,
+        hp_seed: 4,
+        caster_group: 0,
+        casting_factor: 0,
     });
     content
 }
@@ -122,6 +128,7 @@ fn race_list_number_padding_matches_oracle() {
         base_stats: StatBlock::default(),
         max_stats: StatBlock::default(),
         cp: 0,
+        hp_per_level: 0,
     });
     let mut core = Core::new(content, test_config());
     let s = start(&mut core, "Alice");
@@ -230,7 +237,8 @@ fn completed_creation_enters_the_realm() {
     core.input(s, "1");
     core.input(s, "1");
     let shown = text_to(&core.drain_events(), s);
-    assert!(shown.contains("Town Gates"), "room shown: {shown:?}");
+    // Oracle: first entry shows the stat sheet, not the room.
+    assert!(shown.contains("Hits:"), "sheet shown: {shown:?}");
 
     // A second player creating a character is announced to the first.
     let s2 = start(&mut core, "Bob");

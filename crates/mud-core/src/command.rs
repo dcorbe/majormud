@@ -12,6 +12,7 @@ use crate::content::Direction;
 pub enum Command {
     Move(Direction),
     Look,
+    Status,
     Quit,
     Blank,
     Unknown(String),
@@ -34,7 +35,7 @@ const ALIASES: [(&str, Command); 12] = [
 ];
 
 /// Prefix-matched verbs, in precedence order.
-const VERBS: [(&str, Command); 13] = [
+const VERBS: [(&str, Command); 15] = [
     ("north", Command::Move(Direction::North)),
     ("south", Command::Move(Direction::South)),
     ("east", Command::Move(Direction::East)),
@@ -46,6 +47,8 @@ const VERBS: [(&str, Command); 13] = [
     ("up", Command::Move(Direction::Up)),
     ("down", Command::Move(Direction::Down)),
     ("look", Command::Look),
+    ("status", Command::Status),
+    ("stat", Command::Status),
     ("quit", Command::Quit),
     ("exit", Command::Quit),
 ];

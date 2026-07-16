@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 
 use crate::command::{parse, Command};
 use crate::content::{ClassId, Content, Direction, RaceId, RoomId, StatBlock};
+use crate::stats::{derive, AbilityBag, Derived, StatInputs};
 use crate::text;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -19,7 +20,7 @@ pub enum Gender {
     Female,
 }
 
-/// The M1 subset of the 0x7ec-byte player record
+/// The persisted subset of the 0x7ec-byte player record
 /// (`re/docs/character_creation.md` §6). Grows with each milestone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Player {
@@ -28,7 +29,14 @@ pub struct Player {
     pub race: RaceId,
     pub class: ClassId,
     pub level: u16,
+    /// Current effective stats (`+0xa2..+0xac`) — buffs apply here.
     pub stats: StatBlock,
+    /// The unmodified base copy (`+0x96..+0xa0`).
+    pub base_stats: StatBlock,
+    /// `+0x724` — HP-base addend, seeded from the class and grown by training.
+    pub hp_base: u16,
+    pub current_hp: i32,
+    pub current_mana: i32,
     pub cp_unspent: u16,
     pub cp_lifetime: u16,
     pub lives: u16,
@@ -71,7 +79,7 @@ enum Session {
     /// Character creation: race then class (`character_creation.md` §1).
     ChoosingRace { profile: AccountProfile },
     ChoosingClass { profile: AccountProfile, race: RaceId },
-    InGame { player: Player },
+    InGame { player: Player, derived: Derived },
 }
 
 pub struct Core {
@@ -98,13 +106,95 @@ impl Core {
     }
 
     /// Attaches an authenticated session with its loaded player, announces
-    /// the entry to everyone else in the game, and shows the player their room.
+    /// the entry to everyone else in the game, and shows the player their
+    /// room (returning-character entry; ORACLE-VERIFY the exact ordering).
     pub fn attach_player(&mut self, player: Player) -> SessionId {
         let id = self.next_session_id();
         self.broadcast_to_others(id, &text::entered_realm(&player.name));
-        self.sessions.insert(id, Session::InGame { player });
+        let derived = self.derive_for(&player);
+        self.sessions.insert(id, Session::InGame { player, derived });
         self.show_room(id);
+        self.show_prompt(id);
         id
+    }
+
+    /// `update_dynamic_stats` + `calculate_secondary_stats`: accumulate the
+    /// active ability modifiers (race + class permanents for now; gear and
+    /// spells join in later milestones) and derive.
+    fn derive_for(&self, player: &Player) -> Derived {
+        let mut abilities = AbilityBag::default();
+        if let Some(race) = self.content.races.get(&player.race) {
+            for (ability, value) in &race.abilities {
+                abilities.add(*ability, i32::from(*value));
+            }
+        }
+        let class = self.content.classes.get(&player.class);
+        if let Some(class) = class {
+            for (ability, value) in &class.abilities {
+                abilities.add(*ability, i32::from(*value));
+            }
+        }
+        let race_hp = self
+            .content
+            .races
+            .get(&player.race)
+            .map_or(0, |r| i32::from(r.hp_per_level));
+        derive(&StatInputs {
+            level: i32::from(player.level),
+            stats: player.stats,
+            health_base: i32::from(player.base_stats.health),
+            hp_base: i32::from(player.hp_base),
+            class_hp_per_level: class.map_or(0, |c| i32::from(c.hp_per_level)),
+            race_hp_per_level: race_hp,
+            caster_group: class.map_or(0, |c| i32::from(c.caster_group)),
+            casting_factor: class.map_or(0, |c| i32::from(c.casting_factor)),
+            abilities,
+        })
+    }
+
+    fn show_prompt(&mut self, session: SessionId) {
+        let Some(Session::InGame { player, derived: _ }) = self.sessions.get(&session) else {
+            return;
+        };
+        let caster_group = self
+            .content
+            .classes
+            .get(&player.class)
+            .map_or(0, |c| c.caster_group);
+        let prompt = text::prompt(player.current_hp, player.current_mana, caster_group);
+        self.output(session, &prompt);
+    }
+
+    fn show_sheet(&mut self, session: SessionId) {
+        let Some(Session::InGame { player, derived }) = self.sessions.get(&session) else {
+            return;
+        };
+        let race = self
+            .content
+            .races
+            .get(&player.race)
+            .map_or("", |r| r.name.as_str());
+        let class = self
+            .content
+            .classes
+            .get(&player.class)
+            .map_or("", |c| c.name.as_str());
+        let sheet = text::stat_sheet(&text::SheetData {
+            name: &player.name,
+            race,
+            class,
+            level: player.level,
+            lives: player.lives,
+            cp: player.cp_unspent,
+            experience: player.experience,
+            hp_current: player.current_hp,
+            hp_max: derived.max_hp,
+            armour_class: 0, // get_armour_rating: no equipment until M4
+            armour_max: 0,
+            stats: player.stats,
+            derived,
+        });
+        self.output(session, &sheet);
     }
 
     /// Attaches an authenticated session that has no saved character yet and
@@ -134,17 +224,28 @@ impl Core {
             // Blank input re-shows the room without its description (oracle).
             Command::Blank => self.show_room_brief(session),
             Command::Look => self.show_room(session),
+            Command::Status => self.show_sheet(session),
             Command::Move(direction) => self.move_player(session, direction),
             // Anything else is said aloud (oracle) - there is no error reply.
             Command::Unknown(what) => self.say(session, &what),
         }
+        self.show_prompt(session);
     }
 
     fn say(&mut self, session: SessionId, what: &str) {
         let player = self.player(session);
         let (room, name) = (player.location, player.name.clone());
-        self.output(session, &text::you_say(what));
+        self.output_line(session, &text::you_say(what));
         self.broadcast_to_room(room, Some(session), &text::says(&name, what));
+    }
+
+    /// Emits a single message line (most outputs; the prompt is the
+    /// exception — it stays on its own unterminated line).
+    fn output_line(&mut self, session: SessionId, text: &str) {
+        self.events.push(Event::Output {
+            session,
+            text: format!("{text}\n"),
+        });
     }
 
     fn next_session_id(&mut self) -> SessionId {
@@ -178,13 +279,13 @@ impl Core {
     /// State 0x33: the input is `atol`'d and validated against the race data.
     fn choose_race(&mut self, session: SessionId, line: &str) {
         if line.trim().is_empty() {
-            self.output(session, text::EMPTY_RACE);
+            self.output_line(session, text::EMPTY_RACE);
             return;
         }
         let choice = line.trim().parse::<u16>().ok().map(RaceId);
         let valid = choice.is_some_and(|id| self.content.races.contains_key(&id));
         if !valid {
-            self.output(session, text::INVALID_RACE);
+            self.output_line(session, text::INVALID_RACE);
             return;
         }
         let Some(Session::ChoosingRace { profile }) = self.sessions.remove(&session) else {
@@ -203,13 +304,13 @@ impl Core {
     /// State 0x34, then `roll_stats` + realm entry.
     fn choose_class(&mut self, session: SessionId, line: &str) {
         if line.trim().is_empty() {
-            self.output(session, text::EMPTY_CLASS);
+            self.output_line(session, text::EMPTY_CLASS);
             return;
         }
         let choice = line.trim().parse::<u16>().ok().map(ClassId);
         let valid = choice.is_some_and(|id| self.content.classes.contains_key(&id));
         if !valid {
-            self.output(session, text::INVALID_CLASS);
+            self.output_line(session, text::INVALID_CLASS);
             return;
         }
         let Some(Session::ChoosingClass { profile, race }) = self.sessions.remove(&session)
@@ -219,27 +320,44 @@ impl Core {
         let player = self.roll_stats(profile, race, choice.expect("validated above"));
         self.events.push(Event::Persist(Box::new(player.clone())));
         self.broadcast_to_others(session, &text::entered_realm(&player.name));
-        self.sessions.insert(session, Session::InGame { player });
-        self.show_room(session);
+        let derived = self.derive_for(&player);
+        self.sessions.insert(session, Session::InGame { player, derived });
+        // Oracle: first entry shows the stat sheet, not the room.
+        self.show_sheet(session);
+        self.show_prompt(session);
     }
 
     /// `roll_stats` (spec §2.2): no randomisation — the racial template, CP
-    /// grant, and creation defaults are copied verbatim.
+    /// grant, and creation defaults are copied verbatim; mode-0
+    /// `calculate_secondary_stats` fills HP/mana to max.
     fn roll_stats(&self, profile: AccountProfile, race: RaceId, class: ClassId) -> Player {
         let template = &self.content.races[&race];
-        Player {
+        let hp_base = self
+            .content
+            .classes
+            .get(&class)
+            .map_or(0, |c| c.hp_seed.max(0) as u16);
+        let mut player = Player {
             name: profile.name,
             gender: profile.gender,
             race,
             class,
             level: 1,
             stats: template.base_stats,
+            base_stats: template.base_stats,
+            hp_base,
+            current_hp: 0,
+            current_mana: 0,
             cp_unspent: template.cp,
             cp_lifetime: template.cp,
             lives: 9,
             experience: 0,
             location: self.config.start_location,
-        }
+        };
+        let derived = self.derive_for(&player);
+        player.current_hp = derived.max_hp;
+        player.current_mana = derived.max_mana;
+        player
     }
 
     /// Takes all events produced since the last drain.
@@ -261,7 +379,7 @@ impl Core {
     }
 
     fn quit(&mut self, session: SessionId) {
-        let Some(Session::InGame { player }) = self.sessions.remove(&session) else {
+        let Some(Session::InGame { player, .. }) = self.sessions.remove(&session) else {
             return;
         };
         self.broadcast_to_others(session, &text::left_realm(&player.name));
@@ -271,7 +389,7 @@ impl Core {
 
     fn player(&self, session: SessionId) -> &Player {
         match &self.sessions[&session] {
-            Session::InGame { player } => player,
+            Session::InGame { player, .. } => player,
             _ => unreachable!("caller guarantees an in-game session"),
         }
     }
@@ -279,13 +397,13 @@ impl Core {
     fn move_player(&mut self, session: SessionId, direction: Direction) {
         let from = self.player(session).location;
         let Some(exit) = self.content.rooms[&from].exits[direction as usize].clone() else {
-            self.output(session, text::NO_EXIT);
+            self.output_line(session, text::NO_EXIT);
             return;
         };
         let name = self.player(session).name.clone();
         self.broadcast_to_room(from, Some(session), &text::left_via(&name, direction));
         match self.sessions.get_mut(&session) {
-            Some(Session::InGame { player }) => player.location = exit.dest,
+            Some(Session::InGame { player, .. }) => player.location = exit.dest,
             _ => unreachable!("mover is in game"),
         }
         self.broadcast_to_room(
@@ -358,13 +476,13 @@ impl Core {
             .map(|(id, _)| id)
             .collect();
         for session in recipients {
-            self.output(session, text);
+            self.output_line(session, text);
         }
     }
 
     fn in_game_sessions(&self) -> impl Iterator<Item = (SessionId, &Player)> {
         self.sessions.iter().filter_map(|(id, s)| match s {
-            Session::InGame { player } => Some((*id, player)),
+            Session::InGame { player, .. } => Some((*id, player)),
             _ => None,
         })
     }
@@ -385,7 +503,7 @@ impl Core {
             .map(|(id, _)| id)
             .collect();
         for session in recipients {
-            self.output(session, text);
+            self.output_line(session, text);
         }
     }
 }

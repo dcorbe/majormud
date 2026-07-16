@@ -55,11 +55,16 @@ fn world() -> Content {
             charm: 100,
         },
         cp: 100,
+        hp_per_level: 0,
     });
     content.add_class(Class {
         id: ClassId(1),
         name: "Warrior".into(),
         abilities: vec![],
+        hp_per_level: 6,
+        hp_seed: 4,
+        caster_group: 0,
+        casting_factor: 0,
     });
     content
 }
@@ -123,6 +128,10 @@ async fn full_session_create_walk_quit() {
     read_until(&mut stream, &mut t, "Please choose a class from the following list:").await;
     send(&mut stream, "1").await;
 
+    // Oracle flow: creation ends on the stat sheet + prompt, not the room.
+    read_until(&mut stream, &mut t, "Hits:").await;
+    read_until(&mut stream, &mut t, "[HP=").await;
+    send(&mut stream, "look").await;
     read_until(&mut stream, &mut t, "Town Gates").await;
     read_until(&mut stream, &mut t, "Obvious exits: north").await;
 
@@ -167,6 +176,8 @@ async fn returning_player_resumes_saved_character() {
     send(&mut stream, "1").await;
     read_until(&mut stream, &mut t, "class").await;
     send(&mut stream, "1").await;
+    read_until(&mut stream, &mut t, "[HP=").await;
+    send(&mut stream, "look").await;
     read_until(&mut stream, &mut t, "Town Gates").await;
     send(&mut stream, "n").await;
     read_until(&mut stream, &mut t, "Town Square").await;

@@ -84,3 +84,92 @@ pub const INVALID_CLASS: &str = "You must choose a valid class. [ ? for help ]";
 pub fn list_entry(number: u16, name: &str) -> String {
     format!("{:<4} {}\n", format!("[{number}]"), name)
 }
+
+/// VERIFIED (oracle): the status prompt. Caster/Kai variants ORACLE-VERIFY.
+pub fn prompt(hp: i32, mana: i32, caster_group: i16) -> String {
+    match caster_group {
+        1..=4 => format!("[HP={hp}/MA={mana}]:"),
+        5 => format!("[HP={hp}/KAI={mana}]:"),
+        _ => format!("[HP={hp}]:"),
+    }
+}
+
+/// Inputs for the status sheet (`show_status`, decompile 0x34448).
+pub struct SheetData<'a> {
+    pub name: &'a str,
+    pub race: &'a str,
+    pub class: &'a str,
+    pub level: u16,
+    pub lives: u16,
+    pub cp: u16,
+    pub experience: u64,
+    pub hp_current: i32,
+    pub hp_max: i32,
+    pub armour_class: i32,
+    pub armour_max: i32,
+    pub stats: crate::content::StatBlock,
+    pub derived: &'a crate::stats::Derived,
+}
+
+/// VERIFIED (oracle): the nine-line status sheet, byte-exact to the
+/// transcript except the whitelisted Martial Arts WG3-NT/DOS divergence.
+/// Three columns at 0/18/39; right column label+value is 18 wide.
+/// Non-caster layout; the caster Mana/Spellcasting line is ORACLE-VERIFY.
+pub fn stat_sheet(d: &SheetData<'_>) -> String {
+    let mut out = String::new();
+    let mut row = |left: String, mid: String, right: String| {
+        if mid.is_empty() && left.is_empty() {
+            out.push_str(&format!("{:<39}{right}\n", ""));
+        } else if mid.is_empty() {
+            out.push_str(&format!("{left:<39}{right}\n"));
+        } else {
+            out.push_str(&format!("{left:<18}{mid:<21}{right}\n"));
+        }
+    };
+    row(
+        format!("Name: {}", d.name),
+        String::new(),
+        format!("Lives/CP:{:>7}/{:<5}", d.lives, d.cp),
+    );
+    row(
+        format!("Race: {}", d.race),
+        format!("Exp: {}", d.experience),
+        format!("Perception:{:>7}", d.derived.perception),
+    );
+    row(
+        format!("Class: {}", d.class),
+        format!("Level: {}", d.level),
+        format!("Stealth:{:>10}", d.derived.stealth),
+    );
+    row(
+        format!("Hits:{:>6}/{}", d.hp_current, d.hp_max),
+        format!("Armour Class:{:>4}/{}", d.armour_class, d.armour_max),
+        format!("Thievery:{:>9}", d.derived.thievery),
+    );
+    row(
+        String::new(),
+        String::new(),
+        format!("Traps:{:>12}", d.derived.find_traps),
+    );
+    row(
+        String::new(),
+        String::new(),
+        format!("Picklocks:{:>8}", d.derived.picklocks),
+    );
+    row(
+        format!("Strength:{:>4}", d.stats.strength),
+        format!("Agility:{:>3}", d.stats.agility),
+        format!("Tracking:{:>9}", d.derived.tracking),
+    );
+    row(
+        format!("Intellect:{:>3}", d.stats.intellect),
+        format!("Health:{:>4}", d.stats.health),
+        format!("Martial Arts:{:>5}", d.derived.dodge),
+    );
+    row(
+        format!("Willpower:{:>3}", d.stats.wisdom),
+        format!("Charm:{:>5}", d.stats.charm),
+        format!("MagicRes:{:>9}", d.derived.magic_resist),
+    );
+    out
+}

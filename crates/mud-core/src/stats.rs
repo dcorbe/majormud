@@ -116,7 +116,7 @@ pub fn derive(inputs: &StatInputs) -> Derived {
         agility,
         charm,
     } = inputs.stats;
-    let (int, wis, str_, hea, agl, chm) = (
+    let (int, wis, str_, _hea, agl, chm) = (
         i32::from(intellect),
         i32::from(wisdom),
         i32::from(strength),

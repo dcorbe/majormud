@@ -257,7 +257,7 @@ fn load_races(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
     let mut stmt = db.prepare(&format!(
         "SELECT number, name, {}, {}, \
          minint, minwil, minstr, minhea, minagl, minchm, \
-         maxint, maxwil, maxstr, maxhea, maxagl, maxchm, cp FROM race",
+         maxint, maxwil, maxstr, maxhea, maxagl, maxchm, cp, hpbonus FROM race",
         ability_cols("abilitya"),
         ability_cols("abilityb"),
     ))?;
@@ -270,6 +270,7 @@ fn load_races(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
             base_stats: stat_block("race", row, 22)?,
             max_stats: stat_block("race", row, 28)?,
             cp: to_u16("race", "cp", row.get(34)?)?,
+            hp_per_level: to_i16("race", "hpbonus", row.get(35)?)?,
         });
     }
     Ok(())
@@ -293,7 +294,7 @@ fn stat_block(
 
 fn load_classes(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
     let mut stmt = db.prepare(&format!(
-        "SELECT number, name, {}, {} FROM class",
+        "SELECT number, name, {}, {}, minhp, maxhp, magictype, magiclvl FROM class",
         ability_cols("abilitya"),
         ability_cols("abilityb"),
     ))?;
@@ -303,6 +304,10 @@ fn load_classes(db: &Connection, content: &mut Content) -> Result<(), LoadError>
             id: ClassId(to_u16("class", "number", row.get(0)?)?),
             name: row.get(1)?,
             abilities: ability_pairs("class", row, 2, 12)?,
+            hp_per_level: to_i16("class", "minhp", row.get(22)?)?,
+            hp_seed: to_i16("class", "maxhp", row.get(23)?)?,
+            caster_group: to_i16("class", "magictype", row.get(24)?)?,
+            casting_factor: to_i16("class", "magiclvl", row.get(25)?)?,
         });
     }
     Ok(())

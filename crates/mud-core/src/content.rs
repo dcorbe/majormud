@@ -170,6 +170,8 @@ pub struct Race {
     pub max_stats: StatBlock,
     /// Character points granted at creation.
     pub cp: u16,
+    /// `race+0x2c` — flat max-HP per level (`hpbonus` column).
+    pub hp_per_level: i16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,6 +179,16 @@ pub struct Class {
     pub id: ClassId,
     pub name: String,
     pub abilities: Vec<AbilityValue>,
+    /// `class+0x20` — flat max-HP per level (`minhp` column).
+    pub hp_per_level: i16,
+    /// `class+0x22` — HP-base seed at creation and per-level roll bound
+    /// (`maxhp` column).
+    pub hp_seed: i16,
+    /// `class+0x40` — 0 non-caster, 1-4 caster stat groups, 5 Kai
+    /// (`magictype` column).
+    pub caster_group: i16,
+    /// `class+0x42` — casting level factor (`magiclvl` column).
+    pub casting_factor: i16,
 }
 
 /// Dangling references present in the shipped 1.11p data itself. The original
