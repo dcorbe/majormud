@@ -202,6 +202,10 @@ enum Session {
         derived: Derived,
         /// Dots left in the exit meditation; `Some` swallows all input.
         exiting: Option<u8>,
+        /// Autocombat target (the `DAT_004877e8` record, PvE slice).
+        target: Option<MonsterInstanceId>,
+        /// Combat energy pool (`+0xba`; max/regen `+0xb8` = 1000 default).
+        energy: i32,
     },
 }
 
@@ -211,11 +215,20 @@ enum Session {
 enum Job {
     /// `background_slow`, every 30 s: regen, hunger/thirst decay.
     Slow,
+    /// `background_energy`, every 5 s: the combat round.
+    Energy,
     /// One meditation dot for a pending exit.
     ExitStep(SessionId),
 }
 
 const SLOW_INTERVAL: u64 = 30;
+/// The combat-round cadence (`background_energy`).
+const ENERGY_INTERVAL: u64 = 5;
+/// Player energy pool max/regen (`DAT_00482cd0` default).
+const PLAYER_ENERGY_MAX: i32 = 1000;
+/// The two-stage death gate: HP at/below this kills (`DAT_00482cf0`;
+/// ORACLE: -200 in the stock config — died at -204, survived -196).
+pub const DEATH_FLOOR: i32 = -200;
 
 /// A live monster in the world (ephemeral — evaporates on restart, like the
 /// original's instances).
@@ -227,10 +240,10 @@ pub(crate) struct MonsterInstance {
     pub template: crate::content::MonsterId,
     pub location: RoomId,
     pub current_hp: i32,
-    /// Current energy pool (`mon+0x16`); regen = the template's `energy`.
-    /// Consumed by the round loop (next commit).
-    #[allow(dead_code)]
+    /// Current energy pool (`mon+0x16`); regen/max = the template's `energy`.
     pub energy: i32,
+    /// The player this monster is fighting (retaliation; aggression is M6).
+    pub target: Option<SessionId>,
 }
 
 pub struct Core {
@@ -249,6 +262,7 @@ impl Core {
     pub fn new(content: Content, config: CoreConfig) -> Core {
         let mut scheduler = TickScheduler::new();
         scheduler.schedule_in(SLOW_INTERVAL, Job::Slow);
+        scheduler.schedule_in(ENERGY_INTERVAL, Job::Energy);
         let rng = Rng(config.rng_seed | 1);
         Core {
             content,
@@ -282,6 +296,7 @@ impl Core {
                 location: room,
                 current_hp: tpl.hitpoints,
                 energy: tpl.energy,
+                target: None,
             },
         );
         Some(id)
@@ -325,6 +340,10 @@ impl Core {
                 Job::Slow => {
                     self.slow_update();
                     self.scheduler.schedule_in(SLOW_INTERVAL, Job::Slow);
+                }
+                Job::Energy => {
+                    self.energy_round();
+                    self.scheduler.schedule_in(ENERGY_INTERVAL, Job::Energy);
                 }
                 Job::ExitStep(session) => self.exit_step(session),
             }
@@ -425,7 +444,7 @@ impl Core {
         self.broadcast_to_others(id, &text::entered_realm(&player.name));
         let derived = self.derive_for(&player);
         self.sessions
-            .insert(id, Session::InGame { player, derived, exiting: None });
+            .insert(id, Session::InGame { player, derived, exiting: None, target: None, energy: PLAYER_ENERGY_MAX });
         self.show_room(id);
         self.show_prompt(id);
         id
@@ -549,7 +568,15 @@ impl Core {
             Command::Experience => self.show_experience(session),
             Command::Health => self.show_health(session),
             Command::Train => self.train_level(session),
-            Command::Move(direction) => self.move_player(session, direction),
+            Command::Attack(target) => self.attack_command(session, &target),
+            Command::Move(direction) => {
+                // Oracle: the downed band blocks movement (look/health work).
+                if self.player(session).current_hp < 1 {
+                    self.output_line(session, text::MORTALLY_WOUNDED);
+                } else {
+                    self.move_player(session, direction);
+                }
+            }
             // Anything else is said aloud (oracle) - there is no error reply.
             Command::Unknown(what) => self.say(session, &what),
         }
@@ -664,6 +691,384 @@ impl Core {
             *derived = refreshed;
         }
         self.output_line(session, &text::train_success(new_level));
+    }
+
+
+    // ------------------------------------------------------------------
+    // Combat (`combat_rounds.md`; message formats from the oracle).
+    // ------------------------------------------------------------------
+
+    /// `engage_autocombat` + `restart_autocombat`: set the target and run
+    /// the opening swing sequence immediately.
+    fn attack_command(&mut self, session: SessionId, target_words: &str) {
+        if self.player(session).current_hp < 1 {
+            self.output_line(session, text::MORTALLY_WOUNDED);
+            return;
+        }
+        let room = self.player(session).location;
+        let Some(monster) = self.find_monster(room, target_words) else {
+            self.output_line(session, text::NO_TARGET);
+            return;
+        };
+        if let Some(Session::InGame { target, .. }) = self.sessions.get_mut(&session) {
+            *target = Some(monster);
+        }
+        self.output_line(session, text::COMBAT_ENGAGED);
+        self.player_attack_sequence(session);
+    }
+
+    /// Word-prefix name match among the room's live monsters
+    /// ("kobold" and "thief" both match "kobold thief").
+    fn find_monster(&self, room: RoomId, words: &str) -> Option<MonsterInstanceId> {
+        let want = words.trim().to_ascii_lowercase();
+        self.monsters
+            .iter()
+            .filter(|(_, m)| m.location == room && m.current_hp > 0)
+            .find(|(_, m)| {
+                self.content
+                    .monsters
+                    .get(&m.template)
+                    .is_some_and(|t| {
+                        t.name
+                            .to_ascii_lowercase()
+                            .split_whitespace()
+                            .any(|w| w.starts_with(&want))
+                    })
+            })
+            .map(|(id, _)| *id)
+    }
+
+    /// `background_energy`: regenerate energy, then run the two combat
+    /// drivers in a coin-flipped order (anti first-strike bias).
+    fn energy_round(&mut self) {
+        // energy_update_character: cur += max; clamp unless in autocombat.
+        let sessions: Vec<SessionId> = self.sessions.keys().copied().collect();
+        for id in &sessions {
+            if let Some(Session::InGame { energy, target, .. }) = self.sessions.get_mut(id) {
+                *energy += PLAYER_ENERGY_MAX;
+                if target.is_none() && *energy > PLAYER_ENERGY_MAX {
+                    *energy = PLAYER_ENERGY_MAX;
+                }
+            }
+        }
+        // energy_update_monster: always clamps.
+        let monster_ids: Vec<MonsterInstanceId> = self.monsters.keys().copied().collect();
+        for id in &monster_ids {
+            let max = self
+                .monsters
+                .get(id)
+                .and_then(|m| self.content.monsters.get(&m.template))
+                .map_or(0, |t| t.energy);
+            if let Some(m) = self.monsters.get_mut(id) {
+                m.energy = (m.energy + max).min(max.max(m.energy.min(max)));
+                if m.energy > max {
+                    m.energy = max;
+                }
+            }
+        }
+
+        if self.rng.roll(0, 100) < 60 {
+            self.player_combat_driver(&sessions);
+            self.monster_combat_driver(&monster_ids);
+        } else {
+            self.monster_combat_driver(&monster_ids);
+            self.player_combat_driver(&sessions);
+        }
+    }
+
+    fn player_combat_driver(&mut self, sessions: &[SessionId]) {
+        for id in sessions {
+            self.player_attack_sequence(*id);
+        }
+    }
+
+    fn monster_combat_driver(&mut self, monsters: &[MonsterInstanceId]) {
+        for id in monsters {
+            self.monster_attack_sequence(*id);
+        }
+    }
+
+    /// `validate_auto_combat` + `attack_user_monster`: up to 6 swings gated
+    /// by the energy pool.
+    fn player_attack_sequence(&mut self, session: SessionId) {
+        let Some(Session::InGame { player, target: Some(target), .. }) =
+            self.sessions.get(&session)
+        else {
+            return;
+        };
+        let target = *target;
+        // Helpless players don't swing.
+        if player.current_hp < 1 {
+            return;
+        }
+        // Target gone or moved: combat breaks.
+        let valid = self
+            .monsters
+            .get(&target)
+            .is_some_and(|m| m.current_hp > 0 && m.location == player.location);
+        if !valid {
+            self.break_combat(session);
+            return;
+        }
+
+        let attacker = self.build_player_attacker(session);
+        let eu = self.player_energy_used(session);
+        let target_name = self
+            .monsters
+            .get(&target)
+            .and_then(|m| self.content.monsters.get(&m.template))
+            .map(|t| t.name.clone())
+            .expect("validated above");
+
+        let mut swings = 0;
+        while swings <= 5 {
+            swings += 1;
+            let Some(Session::InGame { energy, .. }) = self.sessions.get_mut(&session) else {
+                return;
+            };
+            if *energy < eu {
+                break;
+            }
+            *energy -= eu;
+
+            let defender = self.build_monster_defender(target);
+            let rng = &mut self.rng;
+            let result = crate::combat::calculate_attack(
+                &attacker,
+                &defender,
+                crate::combat::AttackType::Normal,
+                &mut |lo, hi| rng.roll(lo, hi),
+            );
+            use crate::combat::Outcome;
+            match result.outcome {
+                Outcome::Dodged | Outcome::Parried => {
+                    self.output_line(session, &text::player_miss(&target_name));
+                }
+                Outcome::NoDamage => {
+                    self.output_line(session, &text::player_glance(&target_name));
+                }
+                Outcome::Hit | Outcome::Critical => {
+                    let msg = if result.outcome == Outcome::Critical {
+                        text::player_crit("punch", &target_name, result.damage)
+                    } else {
+                        text::player_hit("punch", &target_name, result.damage)
+                    };
+                    self.output_line(session, &msg);
+                    let dead = {
+                        let m = self.monsters.get_mut(&target).expect("validated");
+                        m.current_hp -= result.damage;
+                        // Retaliation: the victim locks onto its attacker.
+                        m.target = Some(session);
+                        m.current_hp <= 0
+                    };
+                    if dead {
+                        self.monster_killed(target, session);
+                        return;
+                    }
+                }
+            }
+        }
+        // Re-mark retaliation even on whiffed rounds.
+        if let Some(m) = self.monsters.get_mut(&target)
+            && m.target.is_none()
+        {
+            m.target = Some(session);
+        }
+    }
+
+    /// `attack_monster_user`: form selection by cumulative weight, then the
+    /// same 6-swing energy loop.
+    fn monster_attack_sequence(&mut self, id: MonsterInstanceId) {
+        let Some(m) = self.monsters.get(&id) else {
+            return;
+        };
+        if m.current_hp <= 0 {
+            return;
+        }
+        let Some(victim) = m.target else {
+            return;
+        };
+        let template = m.template;
+        let location = m.location;
+        // Victim gone (moved/quit/died-and-respawned elsewhere): drop target.
+        let victim_here = matches!(
+            self.sessions.get(&victim),
+            Some(Session::InGame { player, .. }) if player.location == location
+        );
+        if !victim_here {
+            if let Some(m) = self.monsters.get_mut(&id) {
+                m.target = None;
+            }
+            return;
+        }
+
+        let tpl = self.content.monsters.get(&template).expect("live instance");
+        let name = tpl.name.clone();
+        let forms = tpl.attacks;
+
+        let mut swings = 0;
+        while swings <= 5 {
+            swings += 1;
+            // Pick a form by the cumulative weight table.
+            let pick = self.rng.roll(0, 100);
+            let form = forms
+                .iter()
+                .find(|f| f.kind != 0 && pick < i32::from(f.weight))
+                .copied();
+            let Some(form) = form else {
+                continue; // action 0: no attack this swing
+            };
+            if form.kind != 1 {
+                continue; // cast/rob forms arrive in M5+
+            }
+            let Some(mi) = self.monsters.get_mut(&id) else {
+                return;
+            };
+            if mi.energy < i32::from(form.energy) {
+                break;
+            }
+            mi.energy -= i32::from(form.energy);
+
+            let attacker = crate::combat::Fighter {
+                accuracy: i32::from(form.accuracy),
+                evasion_a: 0,
+                evasion_b: 0,
+                armor: 0,
+                min_damage: i32::from(form.min_damage),
+                max_damage: i32::from(form.max_damage),
+                parry: 0,
+                crit_rating: 0, // monsters never crit (hard-zeroed)
+            };
+            let defender = self.build_player_defender(victim);
+            let rng = &mut self.rng;
+            let result = crate::combat::calculate_attack(
+                &attacker,
+                &defender,
+                crate::combat::AttackType::Normal,
+                &mut |lo, hi| rng.roll(lo, hi),
+            );
+            use crate::combat::Outcome;
+            if matches!(result.outcome, Outcome::Hit | Outcome::Critical) {
+                // Any incoming swing cancels a pending exit (combat logout guard).
+                self.cancel_exit(victim);
+                self.output_line(victim, &text::monster_hit(&name, "hits", result.damage));
+                let (was_up, now_hp, victim_name, room) = {
+                    let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&victim)
+                    else {
+                        return;
+                    };
+                    let was_up = player.current_hp >= 1;
+                    player.current_hp -= result.damage;
+                    (was_up, player.current_hp, player.name.clone(), player.location)
+                };
+                if was_up && now_hp < 1 {
+                    self.output_line(victim, &text::drops_to_ground(&victim_name));
+                    self.broadcast_to_room(room, Some(victim), &text::drops_to_ground(&victim_name));
+                }
+                if now_hp <= DEATH_FLOOR {
+                    self.player_killed(victim);
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Placeholder until the death commit: mark and strand.
+    fn monster_killed(&mut self, id: MonsterInstanceId, _killer: SessionId) {
+        self.monsters.remove(&id);
+    }
+
+    /// Placeholder until the death commit.
+    fn player_killed(&mut self, _session: SessionId) {}
+
+    /// `kill_autocombat` + `display_autocombat_broken`.
+    fn break_combat(&mut self, session: SessionId) {
+        if let Some(Session::InGame { target, energy, .. }) = self.sessions.get_mut(&session)
+            && target.is_some()
+        {
+            *target = None;
+            *energy = (*energy).min(PLAYER_ENERGY_MAX);
+            self.output_line(session, text::COMBAT_OFF);
+        }
+    }
+
+    /// PROVISIONAL fighter plumbing (`combat.md` inputs not yet extracted
+    /// for players): accuracy 2*MA+level; unarmed damage 1-4 (spec default).
+    /// The resolution math itself is exact. Calibrated against the kobold
+    /// transcript (~75% hit rate, glances on its ac-10 soak).
+    fn build_player_attacker(&self, session: SessionId) -> crate::combat::Fighter {
+        let Some(Session::InGame { player, derived, .. }) = self.sessions.get(&session) else {
+            unreachable!("caller holds an in-game session");
+        };
+        crate::combat::Fighter {
+            accuracy: 2 * derived.dodge + i32::from(player.level),
+            evasion_a: 0,
+            evasion_b: 0,
+            armor: 0,
+            min_damage: 1,
+            max_damage: 4,
+            parry: 0,
+            crit_rating: 1,
+        }
+    }
+
+    /// Defender view of a player: naked evasion 0 (worn gear joins in M4);
+    /// parry per the spec word[10] formula, forced negative when helpless.
+    fn build_player_defender(&self, session: SessionId) -> crate::combat::Fighter {
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+            unreachable!("caller checked the session");
+        };
+        let parry = if player.current_hp < 1 {
+            -1
+        } else {
+            (i32::from(player.stats.charm) - 50) / 5
+                + i32::from(player.level) / 5
+                + (i32::from(player.stats.agility) - 50) / 3
+        };
+        crate::combat::Fighter {
+            accuracy: 0,
+            evasion_a: 0,
+            evasion_b: 0,
+            armor: 0,
+            min_damage: 0,
+            max_damage: 0,
+            parry,
+            crit_rating: 0,
+        }
+    }
+
+    /// Defender view of a monster: evasion from AC, soak = DR*10 (the DR
+    /// ability doc: "DR is expressed in multiples of 10").
+    fn build_monster_defender(&self, id: MonsterInstanceId) -> crate::combat::Fighter {
+        let tpl = self
+            .monsters
+            .get(&id)
+            .and_then(|m| self.content.monsters.get(&m.template))
+            .expect("live instance has a template");
+        crate::combat::Fighter {
+            accuracy: 0,
+            evasion_a: i32::from(tpl.armour_class),
+            evasion_b: 0,
+            armor: i32::from(tpl.damage_resist) * 10,
+            min_damage: 0,
+            max_damage: 0,
+            parry: 0,
+            crit_rating: 0,
+        }
+    }
+
+    /// `compute_energy_used` (PROVISIONAL constants: class weapon factor 6,
+    /// unarmed attack-speed 500 — calibrated to ~3 swings/round at L1).
+    fn player_energy_used(&self, session: SessionId) -> i32 {
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+            return PLAYER_ENERGY_MAX;
+        };
+        let i = i32::from(player.level) * 6 + 45;
+        let den = i * (i32::from(player.stats.agility) + 150) * 1500 / 9000;
+        if den <= 0 {
+            return PLAYER_ENERGY_MAX;
+        }
+        (500 * 1000 / den).max(1)
     }
 
     fn say(&mut self, session: SessionId, what: &str) {
@@ -783,7 +1188,7 @@ impl Core {
         self.broadcast_to_others(session, &text::entered_realm(&player.name));
         let derived = self.derive_for(&player);
         self.sessions
-            .insert(session, Session::InGame { player, derived, exiting: None });
+            .insert(session, Session::InGame { player, derived, exiting: None, target: None, energy: PLAYER_ENERGY_MAX });
         // Oracle: first entry shows the stat sheet, not the room.
         self.show_sheet(session);
         self.show_prompt(session);

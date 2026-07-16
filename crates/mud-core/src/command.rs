@@ -16,6 +16,9 @@ pub enum Command {
     Experience,
     Health,
     Train,
+    /// `attack <target>` — the argument is the raw target words.
+    /// (Oracle: bare `a` is NOT an attack alias in this build.)
+    Attack(String),
     Quit,
     Blank,
     Unknown(String),
@@ -74,6 +77,13 @@ pub fn parse(input: &str) -> Command {
     for (alias, command) in &ALIASES {
         if verb == *alias {
             return command.clone();
+        }
+    }
+    // Argument-taking verbs: "attack <target>" ("at"/"att"... prefixes).
+    if verb.len() >= 2 && "attack".starts_with(&verb) {
+        let rest = trimmed[verb.len()..].trim();
+        if !rest.is_empty() {
+            return Command::Attack(rest.to_string());
         }
     }
     for (name, command) in &VERBS {

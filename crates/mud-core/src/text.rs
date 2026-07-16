@@ -132,6 +132,44 @@ pub const LAWFUL_QUESTION: &str = "Do you want to be Lawful?  [Yes/No]";
 /// second until departure.
 pub const EXIT_MEDITATION: &str = "You will exit after a period of silent meditation.";
 
+// --- combat strings (VERIFIED oracle_attack3.raw / oracle_downed.raw / DLL) ---
+pub const COMBAT_ENGAGED: &str = "*Combat Engaged*";
+pub const COMBAT_OFF: &str = "*Combat Off*";
+pub const NO_TARGET: &str = "You don't see your target here.";
+pub const MORTALLY_WOUNDED: &str = "You may not do that while you are mortally wounded!";
+
+/// "You punch kobold thief for 1 damage!" — monster name without article.
+pub fn player_hit(verb: &str, target: &str, damage: i32) -> String {
+    format!("You {verb} {target} for {damage} damage!")
+}
+
+/// "You swing at kobold thief!"
+pub fn player_miss(target: &str) -> String {
+    format!("You swing at {target}!")
+}
+
+/// "Your swing at kobold thief hits, but glances off its armour."
+pub fn player_glance(target: &str) -> String {
+    format!("Your swing at {target} hits, but glances off its armour.")
+}
+
+/// ORACLE-VERIFY: the critical variant was not captured.
+pub fn player_crit(verb: &str, target: &str, damage: i32) -> String {
+    format!("You critically {verb} {target} for {damage} damage!")
+}
+
+/// "The kobold thief stabs you for 5 damage!" — the verb comes from the
+/// attack form's hit message; "hits" is the fallback until message-table
+/// rendering lands.
+pub fn monster_hit(name: &str, verb: &str, damage: i32) -> String {
+    format!("The {name} {verb} you for {damage} damage!")
+}
+
+/// "%s drops to the ground!" (DLL + oracle).
+pub fn drops_to_ground(name: &str) -> String {
+    format!("{name} drops to the ground!")
+}
+
 /// VERIFIED (oracle): the status prompt. Caster/Kai variants ORACLE-VERIFY.
 pub fn prompt(hp: i32, mana: i32, caster_group: i16) -> String {
     match caster_group {

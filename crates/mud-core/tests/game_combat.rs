@@ -1,0 +1,283 @@
+//! Tests for engagement and the 5-second combat round
+//! (`re/docs/combat_rounds.md` + oracle transcripts).
+
+use mud_core::content::{
+    AttackForm, Class, ClassId, Content, Monster, MonsterId, Race, RaceId, Room, RoomId, StatBlock,
+};
+use mud_core::game::{AccountProfile, Core, CoreConfig, Event, Gender, SessionId};
+
+/// A punching bag: huge HP, hits back for exactly 1-8 like the kobold.
+fn kobold() -> Monster {
+    Monster {
+        id: MonsterId(7),
+        name: "kobold thief".into(),
+        move_msg: None,
+        death_msg: None,
+        abilities: vec![],
+        hitpoints: 5000,
+        experience: 40,
+        exp_multi: 1,
+        armour_class: 10,
+        damage_resist: 1,
+        magic_resist: 10,
+        bs_defence: 0,
+        energy: 1000,
+        coins: [0; 5],
+        attacks: [
+            AttackForm {
+                kind: 1,
+                accuracy: 15,
+                weight: 100,
+                min_damage: 1,
+                max_damage: 8,
+                hit_msg: None,
+                miss_msg: None,
+                energy: 666,
+            },
+            AttackForm::default(),
+            AttackForm::default(),
+            AttackForm::default(),
+            AttackForm::default(),
+        ],
+    }
+}
+
+fn world() -> Content {
+    let mut content = Content::default();
+    content.add_room(Room {
+        id: RoomId { map: 1, room: 1 },
+        name: "Arena".into(),
+        description: vec![],
+        shop: None,
+        exits: Default::default(),
+    });
+    content.add_monster(kobold());
+    content.add_race(Race {
+        id: RaceId(2),
+        name: "Dwarf".into(),
+        abilities: vec![],
+        base_stats: StatBlock {
+            intellect: 30,
+            wisdom: 50,
+            strength: 50,
+            health: 50,
+            agility: 30,
+            charm: 30,
+        },
+        max_stats: StatBlock::default(),
+        cp: 100,
+        hp_per_level: 0,
+        exp_chart: 30,
+    });
+    content.add_class(Class {
+        id: ClassId(1),
+        name: "Warrior".into(),
+        abilities: vec![],
+        hp_per_level: 6,
+        hp_seed: 4,
+        caster_group: 0,
+        casting_factor: 0,
+        exp_base: 0,
+    });
+    content
+}
+
+fn config() -> CoreConfig {
+    CoreConfig {
+        start_location: RoomId { map: 1, room: 1 },
+        ..CoreConfig::default()
+    }
+}
+
+fn create(core: &mut Core, name: &str) -> SessionId {
+    let s = core.attach_account(AccountProfile {
+        name: name.into(),
+        gender: Gender::Male,
+    });
+    core.input(s, "2");
+    core.input(s, "1");
+    core.input(s, "No");
+    core.drain_events();
+    s
+}
+
+fn text_to(events: &[Event], session: SessionId) -> String {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Output { session: s, text } if *s == session => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn run_rounds(core: &mut Core, n: u64) -> Vec<Event> {
+    let mut all = Vec::new();
+    for _ in 0..(n * 5) {
+        core.tick();
+        all.extend(core.drain_events());
+    }
+    all
+}
+
+#[test]
+fn attack_engages_with_first_strike() {
+    let mut core = Core::new(world(), config());
+    let s = create(&mut core, "Dain");
+    core.spawn_monster(MonsterId(7), RoomId { map: 1, room: 1 });
+
+    core.input(s, "attack kobold");
+    let shown = text_to(&core.drain_events(), s);
+    assert!(shown.contains("*Combat Engaged*"), "got: {shown:?}");
+    // restart_autocombat: the opening swing happens immediately.
+    assert!(
+        shown.contains("You punch kobold thief for")
+            || shown.contains("You swing at kobold thief!")
+            || shown.contains("Your swing at kobold thief hits, but glances off its armour."),
+        "first strike message: {shown:?}"
+    );
+}
+
+#[test]
+fn attack_matches_name_by_word_prefix() {
+    let mut core = Core::new(world(), config());
+    let s = create(&mut core, "Dain");
+    core.spawn_monster(MonsterId(7), RoomId { map: 1, room: 1 });
+    core.input(s, "attack thief");
+    let shown = text_to(&core.drain_events(), s);
+    assert!(shown.contains("*Combat Engaged*"), "got: {shown:?}");
+}
+
+#[test]
+fn attack_without_target_reports_it() {
+    let mut core = Core::new(world(), config());
+    let s = create(&mut core, "Dain");
+    core.input(s, "attack kobold");
+    let shown = text_to(&core.drain_events(), s);
+    assert!(
+        shown.contains("You don't see your target here."),
+        "got: {shown:?}"
+    );
+}
+
+#[test]
+fn rounds_exchange_blows_every_five_seconds() {
+    let mut core = Core::new(world(), config());
+    let s = create(&mut core, "Dain");
+    let m = core
+        .spawn_monster(MonsterId(7), RoomId { map: 1, room: 1 })
+        .unwrap();
+    core.input(s, "attack kobold");
+    core.drain_events();
+
+    let events = run_rounds(&mut core, 4);
+    let shown = text_to(&events, s);
+    assert!(
+        shown.contains("You punch kobold thief for")
+            || shown.contains("You swing at kobold thief!")
+            || shown.contains("glances off its armour"),
+        "player swings across rounds: {shown:?}"
+    );
+    assert!(
+        shown.contains("The kobold thief hits you for"),
+        "monster retaliates: {shown:?}"
+    );
+    assert!(
+        core.monster_hp(m).unwrap() < 5000 || core.current_hp(s) < 35,
+        "damage flowed somewhere"
+    );
+}
+
+#[test]
+fn no_swings_without_engagement() {
+    let mut core = Core::new(world(), config());
+    let s = create(&mut core, "Dain");
+    core.spawn_monster(MonsterId(7), RoomId { map: 1, room: 1 });
+    let events = run_rounds(&mut core, 3);
+    let shown = text_to(&events, s);
+    assert!(
+        !shown.contains("punch") && !shown.contains("hits you"),
+        "aggression is M6; passive monsters stay passive: {shown:?}"
+    );
+}
+
+#[test]
+fn moving_away_breaks_combat() {
+    let mut content = world();
+    content
+        .rooms
+        .get_mut(&RoomId { map: 1, room: 1 })
+        .unwrap()
+        .exits[mud_core::content::Direction::North as usize] =
+        Some(mud_core::content::Exit {
+            dest: RoomId { map: 1, room: 2 },
+            exit_type: 0,
+        });
+    content.add_room(Room {
+        id: RoomId { map: 1, room: 2 },
+        name: "Vestibule".into(),
+        description: vec![],
+        shop: None,
+        exits: Default::default(),
+    });
+    let mut core = Core::new(content, config());
+    let s = create(&mut core, "Dain");
+    core.spawn_monster(MonsterId(7), RoomId { map: 1, room: 1 });
+    core.input(s, "attack kobold");
+    core.drain_events();
+
+    core.input(s, "n");
+    core.drain_events();
+    let events = run_rounds(&mut core, 3);
+    let shown = text_to(&events, s);
+    assert!(
+        !shown.contains("You punch") && !shown.contains("hits you for"),
+        "combat torn down after leaving: {shown:?}"
+    );
+}
+
+#[test]
+fn being_attacked_cancels_a_pending_exit() {
+    // The meditation-delay purpose (user-confirmed): you cannot exit the
+    // Realm while being attacked.
+    let mut core = Core::new(world(), config());
+    let s = create(&mut core, "Dain");
+    core.spawn_monster(MonsterId(7), RoomId { map: 1, room: 1 });
+    core.input(s, "attack kobold");
+    core.drain_events();
+
+    core.input(s, "x"); // meditation starts mid-fight
+    core.drain_events();
+    let events = run_rounds(&mut core, 4);
+    let disconnected = events
+        .iter()
+        .any(|e| matches!(e, Event::Disconnect(d) if *d == s));
+    assert!(
+        !disconnected,
+        "combat swings must cancel the pending exit"
+    );
+}
+
+#[test]
+fn downed_player_stops_swinging_and_is_blocked() {
+    let mut core = Core::new(world(), config());
+    let s = create(&mut core, "Dain");
+    core.spawn_monster(MonsterId(7), RoomId { map: 1, room: 1 });
+    core.input(s, "attack kobold");
+    core.drain_events();
+    core.set_current_hp(s, -5); // downed (death floor is -200)
+
+    core.input(s, "n");
+    let shown = text_to(&core.drain_events(), s);
+    assert!(
+        shown.contains("You may not do that while you are mortally wounded!"),
+        "got: {shown:?}"
+    );
+
+    let events = run_rounds(&mut core, 2);
+    let shown = text_to(&events, s);
+    assert!(
+        !shown.contains("You punch"),
+        "helpless players do not swing: {shown:?}"
+    );
+}
