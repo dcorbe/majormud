@@ -257,7 +257,7 @@ enum Session {
         class: ClassId,
     },
     InGame {
-        player: Player,
+        player: Box<Player>,
         derived: Derived,
         /// Dots left in the exit meditation; `Some` swallows all input.
         exiting: Option<u8>,
@@ -586,7 +586,7 @@ impl Core {
         self.broadcast_to_others(id, &text::entered_realm(&player.name));
         let derived = self.derive_for(&player);
         self.sessions
-            .insert(id, Session::InGame { player, derived, exiting: None, target: None, aided: false, energy: PLAYER_ENERGY_MAX });
+            .insert(id, Session::InGame { player: Box::new(player), derived, exiting: None, target: None, aided: false, energy: PLAYER_ENERGY_MAX });
         self.show_room(id);
         self.show_prompt(id);
         id
@@ -1753,7 +1753,7 @@ impl Core {
         player.location = self.config.recall_location;
         *aided = false;
         let lives = player.lives;
-        let snapshot = player.clone();
+        let snapshot: Box<Player> = player.clone();
         self.output_line(session, "But, due to a miracle, you have been saved.");
         self.output_line(session, &format!("You have {lives} lives left."));
         self.broadcast_to_room(
@@ -1761,7 +1761,7 @@ impl Core {
             Some(session),
             &format!("{name} appeared on the floor in the middle of the room."),
         );
-        self.events.push(Event::Persist(Box::new(snapshot)));
+        self.events.push(Event::Persist(snapshot));
     }
 
     /// Tear down combat without the *Combat Off* print (death has its own
@@ -2077,7 +2077,7 @@ impl Core {
         self.broadcast_to_others(session, &text::entered_realm(&player.name));
         let derived = self.derive_for(&player);
         self.sessions
-            .insert(session, Session::InGame { player, derived, exiting: None, target: None, aided: false, energy: PLAYER_ENERGY_MAX });
+            .insert(session, Session::InGame { player: Box::new(player), derived, exiting: None, target: None, aided: false, energy: PLAYER_ENERGY_MAX });
         // Oracle: first entry shows the stat sheet, not the room.
         self.show_sheet(session);
         self.show_prompt(session);
@@ -2193,7 +2193,7 @@ impl Core {
             return;
         };
         self.broadcast_to_others(session, &text::left_realm(&player.name));
-        self.events.push(Event::Persist(Box::new(player)));
+        self.events.push(Event::Persist(player));
         self.events.push(Event::Disconnect(session));
     }
 
@@ -2335,7 +2335,7 @@ impl Core {
 
     fn in_game_sessions(&self) -> impl Iterator<Item = (SessionId, &Player)> {
         self.sessions.iter().filter_map(|(id, s)| match s {
-            Session::InGame { player, .. } => Some((*id, player)),
+            Session::InGame { player, .. } => Some((*id, player.as_ref())),
             _ => None,
         })
     }
