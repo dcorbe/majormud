@@ -43,8 +43,15 @@ else { player[+0x6f8] = 0xffff;  return 0; }            // HP<=0 but above floor
   player at HP in the open interval `(DAT_00482cf0, 0]` is at/under zero but **not
   killed** — the function just sets `player+0x6f8 = 0xffff` and returns 0. Actual death
   requires HP to reach the floor (or a hazard-room death). This is the engine's
-  incapacitation / negative-HP grace window. (The exact floor value is a `.data` default
-  not assigned in code; not extracted.)
+  incapacitation / negative-HP grace window.
+  **ORACLE (MBBSEmu DOS 1.11p, 2026-07-16): the stock floor is −200** — a downed
+  player survived to HP −196 and died on the swing that took them to −204
+  (`re/oracle/oracle_arena2.raw` / `oracle_death.raw`). Death messages observed:
+  "You have been killed!" → "But, due to a miracle, you have been saved." →
+  "You have %d lives left."; lives 9→8; instant respawn at the local recall room
+  (Newhaven, Healer) at full HP. While downed (0 ≥ HP > floor): look/health work,
+  movement rejects with "You may not do that while you are mortally wounded!",
+  and the room broadcast on going down is "%s drops to the ground!".
 * **Hazard/"collision" rooms**: `room+0x10f == 5` is a room type that, when the global
   `DAT_004790e8` is enabled, kills on contact regardless of the HP floor and routes to the
   lighter penalty branch (§3).

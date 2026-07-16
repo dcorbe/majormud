@@ -317,3 +317,23 @@ hitting me), `match_combat_target` (resolve a name against my current target).
 * **Attacks-per-round display stat**: the engine exposes attacks/round to clients via the
   energy-pulse flags in `background_energy`; the exact `pool/EU` rounding shown to players
   was not chased down.
+
+---
+
+## 7. Oracle addendum (MBBSEmu DOS 1.11p, 2026-07-16)
+
+Live-transcript message formats (`re/oracle/oracle_attack3.raw`, `oracle_downed.raw`):
+
+- Engage: `attack <name>` prints **`*Combat Engaged*`**. A bare `a <name>` is NOT an
+  attack alias in this build (it falls through to say).
+- Player swing hit: **`You punch <monster name> for %d damage!`** (unarmed; the verb
+  comes from the weapon/attack profile, monster name WITHOUT article).
+- Player swing miss: **`You swing at <monster name>!`**
+- Absorbed (result 1): **`Your swing at <name> hits, but glances off its armour.`**
+- Monster swing hit: **`The <name> stabs you for %d damage!`** (verb per attack form).
+- Going down (HP < 1): room sees **`%s drops to the ground!`**; the downed player may
+  still look/health (negative percent shown) but movement rejects with
+  **`You may not do that while you are mortally wounded!`**
+- Floor coin piles render as `You notice 7 silver nobles, 43 copper farthings here.`
+- Kobold thief cadence observed: 1-3 swings per 5 s round, mixed with idle rounds -
+  consistent with the energy model (pool/EU with banking).
