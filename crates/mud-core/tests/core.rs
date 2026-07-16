@@ -9,6 +9,7 @@ fn two_room_content() -> Content {
     let mut gates = Room {
         id: RoomId { map: 1, room: 1 },
         name: "Town Gates".into(),
+        description: vec![],
         exits: Default::default(),
     };
     gates.exits[Direction::North as usize] = Some(Exit {
@@ -18,6 +19,7 @@ fn two_room_content() -> Content {
     let mut square = Room {
         id: RoomId { map: 1, room: 2 },
         name: "Town Square".into(),
+        description: vec![],
         exits: Default::default(),
     };
     square.exits[Direction::South as usize] = Some(Exit {

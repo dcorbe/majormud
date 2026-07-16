@@ -101,6 +101,9 @@ pub struct Exit {
 pub struct Room {
     pub id: RoomId,
     pub name: String,
+    /// Display lines, from the record's seven fixed `desc_N` line fields
+    /// (trailing empty lines trimmed).
+    pub description: Vec<String>,
     /// Indexed by `Direction as usize`.
     pub exits: [Option<Exit>; 10],
 }

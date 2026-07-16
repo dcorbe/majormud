@@ -117,8 +117,12 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
         .map(|i| format!("roomexit_{i}, roomtype_{i}, para1_{i}"))
         .collect::<Vec<_>>()
         .join(", ");
+    let descs = (1..=7)
+        .map(|i| format!("desc_{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
     let mut stmt = db.prepare(&format!(
-        "SELECT mapnumber, roomnumber, name, {exits} FROM room"
+        "SELECT mapnumber, roomnumber, name, {descs}, {exits} FROM room"
     ))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
@@ -127,20 +131,27 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
             map,
             room: to_u16("room", "roomnumber", row.get(1)?)?,
         };
+        let mut description: Vec<String> = (3..10)
+            .map(|i| row.get(i))
+            .collect::<Result<_, _>>()?;
+        while description.last().is_some_and(|l| l.is_empty()) {
+            description.pop();
+        }
         let mut room = Room {
             id,
             name: row.get(2)?,
+            description,
             exits: Default::default(),
         };
         for d in 0..10 {
-            let dest: i64 = row.get(3 + d * 3)?;
+            let dest: i64 = row.get(10 + d * 3)?;
             if dest <= 0 {
                 continue;
             }
-            let exit_type = to_u16("room", "roomtype", row.get(4 + d * 3)?)?;
+            let exit_type = to_u16("room", "roomtype", row.get(11 + d * 3)?)?;
             // Exit type 8 is a map-change portal: destination map in para1.
             let dest_map = if exit_type == 8 {
-                to_u16("room", "para1", row.get(5 + d * 3)?)?
+                to_u16("room", "para1", row.get(12 + d * 3)?)?
             } else {
                 map
             };

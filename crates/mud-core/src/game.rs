@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use crate::command::{parse, Command};
-use crate::content::{ClassId, Content, RaceId, RoomId};
+use crate::content::{ClassId, Content, Direction, RaceId, RoomId};
 use crate::text;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -80,13 +80,14 @@ impl Core {
         &self.content
     }
 
-    /// Attaches an authenticated session with its loaded player and announces
-    /// the entry to everyone else in the game.
+    /// Attaches an authenticated session with its loaded player, announces
+    /// the entry to everyone else in the game, and shows the player their room.
     pub fn attach_player(&mut self, player: Player) -> SessionId {
         let id = SessionId(self.next_session);
         self.next_session += 1;
         self.broadcast_to_others(id, &text::entered_realm(&player.name));
         self.sessions.insert(id, Session { player });
+        self.show_room(id);
         id
     }
 
@@ -99,10 +100,8 @@ impl Core {
         match parse(line) {
             Command::Quit => self.quit(session),
             Command::Blank => {}
-            Command::Move(_) | Command::Look => {
-                // Implemented with room display in the next step.
-                self.output(session, text::COMMAND_NOT_UNDERSTOOD);
-            }
+            Command::Look => self.show_room(session),
+            Command::Move(direction) => self.move_player(session, direction),
             Command::Unknown(_) => {
                 self.output(session, text::COMMAND_NOT_UNDERSTOOD);
             }
@@ -121,6 +120,77 @@ impl Core {
         self.broadcast_to_others(session, &text::left_realm(&state.player.name));
         self.events.push(Event::Persist(Box::new(state.player)));
         self.events.push(Event::Disconnect(session));
+    }
+
+    fn move_player(&mut self, session: SessionId, direction: Direction) {
+        let from = self.sessions[&session].player.location;
+        let Some(exit) = self.content.rooms[&from].exits[direction as usize].clone() else {
+            self.output(session, text::NO_EXIT);
+            return;
+        };
+        let name = self.sessions[&session].player.name.clone();
+        self.broadcast_to_room(from, Some(session), &text::left_via(&name, direction));
+        self.sessions.get_mut(&session).unwrap().player.location = exit.dest;
+        self.broadcast_to_room(
+            exit.dest,
+            Some(session),
+            &text::arrived_from(&name, direction.opposite()),
+        );
+        self.show_room(session);
+    }
+
+    /// Renders the session's current room: name, description, occupants,
+    /// obvious exits. Line-exact to the original where VERIFIED.
+    fn show_room(&mut self, session: SessionId) {
+        let player = &self.sessions[&session].player;
+        let room = &self.content.rooms[&player.location];
+
+        let mut out = String::new();
+        out.push_str(&room.name);
+        out.push('\n');
+        for line in &room.description {
+            out.push_str(line);
+            out.push('\n');
+        }
+
+        let others: Vec<&str> = self
+            .sessions
+            .iter()
+            .filter(|(id, s)| **id != session && s.player.location == room.id)
+            .map(|(_, s)| s.player.name.as_str())
+            .collect();
+        if !others.is_empty() {
+            out.push_str(text::ALSO_HERE);
+            out.push_str(&others.join(", "));
+            out.push_str(".\n");
+        }
+
+        let exits: Vec<&str> = Direction::ALL
+            .into_iter()
+            .filter(|d| room.exits[*d as usize].is_some())
+            .map(|d| text::direction_shown(d))
+            .collect();
+        out.push_str(text::OBVIOUS_EXITS);
+        if exits.is_empty() {
+            out.push_str(text::NO_EXITS);
+        } else {
+            out.push_str(&exits.join(", "));
+        }
+        out.push('\n');
+
+        self.output(session, &out);
+    }
+
+    fn broadcast_to_room(&mut self, room: RoomId, exclude: Option<SessionId>, text: &str) {
+        let recipients: Vec<SessionId> = self
+            .sessions
+            .iter()
+            .filter(|(id, s)| Some(**id) != exclude && s.player.location == room)
+            .map(|(id, _)| *id)
+            .collect();
+        for session in recipients {
+            self.output(session, text);
+        }
     }
 
     fn output(&mut self, session: SessionId, text: &str) {

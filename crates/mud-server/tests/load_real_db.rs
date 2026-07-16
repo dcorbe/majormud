@@ -31,6 +31,11 @@ fn known_content_spot_checks() {
     let gates = &content.rooms[&RoomId { map: 1, room: 1 }];
     assert_eq!(gates.name, "Town Gates");
     assert!(gates.exits.iter().flatten().count() > 0);
+    assert!(
+        gates.description[0].starts_with("You are before the massive town gates of Silvermere."),
+        "got: {:?}",
+        gates.description
+    );
 
     let dwarf = content
         .races

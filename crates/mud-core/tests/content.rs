@@ -9,6 +9,7 @@ fn room(map: u16, num: u16) -> Room {
     Room {
         id: RoomId { map, room: num },
         name: format!("room {map}/{num}"),
+        description: vec![],
         exits: Default::default(),
     }
 }
