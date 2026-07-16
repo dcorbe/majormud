@@ -10,6 +10,7 @@ fn two_room_content() -> Content {
         id: RoomId { map: 1, room: 1 },
         name: "Town Gates".into(),
         description: vec![],
+        shop: None,
         exits: Default::default(),
     };
     gates.exits[Direction::North as usize] = Some(Exit {
@@ -20,6 +21,7 @@ fn two_room_content() -> Content {
         id: RoomId { map: 1, room: 2 },
         name: "Town Square".into(),
         description: vec![],
+        shop: None,
         exits: Default::default(),
     };
     square.exits[Direction::South as usize] = Some(Exit {
@@ -45,6 +47,7 @@ fn player(name: &str) -> Player {
         current_mana: 0,
         hunger: 1000,
         thirst: 1000,
+        coins: Default::default(),
         cp_unspent: 0,
         cp_lifetime: 0,
         lives: 9,

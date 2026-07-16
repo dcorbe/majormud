@@ -116,6 +116,8 @@ pub struct Room {
     /// Display lines, from the record's seven fixed `desc_N` line fields
     /// (trailing empty lines trimmed).
     pub description: Vec<String>,
+    /// The shop operating in this room (`shopnum` column), if any.
+    pub shop: Option<ShopId>,
     /// Indexed by `Direction as usize`.
     pub exits: [Option<Exit>; 10],
 }
@@ -156,6 +158,15 @@ pub struct Message {
 pub struct Shop {
     pub id: ShopId,
     pub name: String,
+    /// `shop+0xcc` — 8 = trainer/guild (`shoptype` column).
+    pub shop_type: i16,
+    /// `shop+0xce`/`+0xd0` — trainable level band (`shopminlvl`/`shopmaxlvl`).
+    pub min_level: i16,
+    pub max_level: i16,
+    /// `shop+0xd2` — markup percent (`shopmarkup`).
+    pub markup: i16,
+    /// `shop+0xd6` — 0 = any class, else required class id (`shopclasslimit`).
+    pub class_limit: i16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,6 +183,8 @@ pub struct Race {
     pub cp: u16,
     /// `race+0x2c` — flat max-HP per level (`hpbonus` column).
     pub hp_per_level: i16,
+    /// `race+0x62` — exp-curve base contribution (`expchart` column).
+    pub exp_chart: i16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,6 +202,8 @@ pub struct Class {
     pub caster_group: i16,
     /// `class+0x42` — casting level factor (`magiclvl` column).
     pub casting_factor: i16,
+    /// `class+0x24` — exp-curve base contribution (`exp` column).
+    pub exp_base: i16,
 }
 
 /// Dangling references present in the shipped 1.11p data itself. The original

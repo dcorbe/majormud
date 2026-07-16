@@ -53,11 +53,68 @@ pub struct Player {
     /// per slow tick, nothing reads them (`regeneration.md` §6).
     pub hunger: u16,
     pub thirst: u16,
+    /// `+0x610..+0x620` — the five coin denominations (`economy.md` §1).
+    pub coins: Coins,
     pub cp_unspent: u16,
     pub cp_lifetime: u16,
     pub lives: u16,
     pub experience: u64,
     pub location: RoomId,
+}
+
+/// The five coin denominations, high to low (`+0x610..+0x620`). All prices
+/// are computed in copper (index 0, the lowest) via `convert_currency`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Coins {
+    pub runic: u32,
+    pub platinum: u32,
+    pub gold: u32,
+    pub silver: u32,
+    pub copper: u32,
+}
+
+impl Coins {
+    /// `convert_currency`: collapse to a copper total using the inter-coin
+    /// ratios (config globals `DAT_00482ce0..cec`; values ORACLE-VERIFY,
+    /// default 10 per step).
+    pub fn total_copper(&self, ratios: [u64; 4]) -> u64 {
+        let mut total = u64::from(self.runic);
+        total = total * ratios[3] + u64::from(self.platinum);
+        total = total * ratios[2] + u64::from(self.gold);
+        total = total * ratios[1] + u64::from(self.silver);
+        total * ratios[0] + u64::from(self.copper)
+    }
+
+    /// `deduct_currency`: remove a copper amount, breaking higher coins into
+    /// change only when the lower drawers run dry (never consolidating change
+    /// upward). Caller must have checked affordability. ORACLE-VERIFY the
+    /// original's exact spend order for mixed purses.
+    pub fn deduct_copper(&mut self, amount: u64, ratios: [u64; 4]) {
+        debug_assert!(self.total_copper(ratios) >= amount);
+        let mut due = amount;
+        loop {
+            let pay = due.min(u64::from(self.copper));
+            self.copper -= pay as u32;
+            due -= pay;
+            if due == 0 {
+                return;
+            }
+            // Break one coin of the smallest non-empty higher denomination.
+            if self.silver > 0 {
+                self.silver -= 1;
+                self.copper += ratios[0] as u32;
+            } else if self.gold > 0 {
+                self.gold -= 1;
+                self.silver += ratios[1] as u32;
+            } else if self.platinum > 0 {
+                self.platinum -= 1;
+                self.gold += ratios[2] as u32;
+            } else {
+                self.runic -= 1;
+                self.platinum += ratios[3] as u32;
+            }
+        }
+    }
 }
 
 /// The authenticated identity a session arrives with. In the original this
@@ -74,13 +131,42 @@ pub struct CoreConfig {
     /// Where new characters start (`DAT_00482cf8`). VERIFIED (oracle): the
     /// stock game starts new characters at Newhaven, Village Entrance.
     pub start_location: RoomId,
+    /// Inter-coin ratios low→high (`DAT_00482cec..ce0`; ORACLE-VERIFY).
+    pub coin_ratios: [u64; 4],
+    /// Global level cap (`DAT_00482d90`; ORACLE-VERIFY the stock value).
+    pub level_cap: u16,
+    /// Lives granted per level (`DAT_00482cd8`, capped at 9; ORACLE-VERIFY).
+    pub lives_per_level: u16,
+    /// Seed for the game RNG (`genrdn`). Fixed seed = reproducible session.
+    pub rng_seed: u64,
 }
 
 impl Default for CoreConfig {
     fn default() -> Self {
         CoreConfig {
             start_location: RoomId { map: 1, room: 2140 },
+            coin_ratios: [10, 10, 10, 10],
+            level_cap: 3000,
+            lives_per_level: 1,
+            rng_seed: 0x4d4d55445f574721, // "MMUD_WG!"
         }
+    }
+}
+
+/// `genrdn(lo, hi)`-style PRNG: xorshift64*, uniform in `[lo, hi]`.
+/// Deterministic given the seed; exactness targets distributions, not the
+/// original's roll stream (design decision).
+struct Rng(u64);
+
+impl Rng {
+    fn roll(&mut self, lo: i32, hi: i32) -> i32 {
+        debug_assert!(lo <= hi);
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        let x = self.0.wrapping_mul(0x2545F4914F6CDD1D);
+        let span = (hi - lo + 1) as u64;
+        lo + (x % span) as i32
     }
 }
 
@@ -115,12 +201,14 @@ pub struct Core {
     next_session: u64,
     events: Vec<Event>,
     scheduler: TickScheduler<Job>,
+    rng: Rng,
 }
 
 impl Core {
     pub fn new(content: Content, config: CoreConfig) -> Core {
         let mut scheduler = TickScheduler::new();
         scheduler.schedule_in(SLOW_INTERVAL, Job::Slow);
+        let rng = Rng(config.rng_seed | 1);
         Core {
             content,
             config,
@@ -128,6 +216,33 @@ impl Core {
             next_session: 1,
             events: Vec::new(),
             scheduler,
+            rng,
+        }
+    }
+
+    /// Test hook: mutable access to loaded content.
+    pub fn content_mut(&mut self) -> &mut Content {
+        &mut self.content
+    }
+
+    /// Test hook: a copy of the live player state.
+    pub fn player_snapshot(&self, session: SessionId) -> Player {
+        self.player(session).clone()
+    }
+
+    /// Awards experience (`add_experience` — the restructured-flag path is
+    /// always satisfied here since our characters are created flagged).
+    /// The over-level banking cap joins with combat exp in M3.
+    pub fn add_experience(&mut self, session: SessionId, amount: u64) {
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+            player.experience += amount;
+        }
+    }
+
+    /// Test hook: grant coins.
+    pub fn give_copper(&mut self, session: SessionId, amount: u32) {
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+            player.coins.copper += amount;
         }
     }
 
@@ -354,11 +469,124 @@ impl Core {
             Command::Blank => self.show_room_brief(session),
             Command::Look => self.show_room(session),
             Command::Status => self.show_sheet(session),
+            Command::Experience => self.show_experience(session),
+            Command::Health => self.show_health(session),
+            Command::Train => self.train_level(session),
             Command::Move(direction) => self.move_player(session, direction),
             // Anything else is said aloud (oracle) - there is no error reply.
             Command::Unknown(what) => self.say(session, &what),
         }
         self.show_prompt(session);
+    }
+
+    /// The exp base for the curve: `class.exp_base + race.exp_chart`.
+    fn exp_base(&self, player: &Player) -> u64 {
+        let class = self
+            .content
+            .classes
+            .get(&player.class)
+            .map_or(0, |c| i64::from(c.exp_base));
+        let race = self
+            .content
+            .races
+            .get(&player.race)
+            .map_or(0, |r| i64::from(r.exp_chart));
+        (class + race).max(0) as u64
+    }
+
+    fn show_experience(&mut self, session: SessionId) {
+        let player = self.player(session);
+        let needed = crate::stats::exp_needed(player.level, self.exp_base(player));
+        let line = text::exp_line(player.experience, player.level, needed);
+        self.output_line(session, &line);
+    }
+
+    fn show_health(&mut self, session: SessionId) {
+        let Some(Session::InGame { player, derived }) = self.sessions.get(&session) else {
+            return;
+        };
+        let line = text::health_line(player.current_hp, derived.max_hp);
+        self.output_line(session, &line);
+    }
+
+    /// `train_level` (`leveling.md` §4). Gate order is oracle-confirmed:
+    /// location, class, level band, cap, experience, money.
+    fn train_level(&mut self, session: SessionId) {
+        let player = self.player(session);
+        let shop = self.content.rooms[&player.location]
+            .shop
+            .and_then(|id| self.content.shops.get(&id));
+        let Some(shop) = shop.filter(|s| s.shop_type == 8) else {
+            self.output_line(session, text::TRAIN_WRONG_ROOM);
+            return;
+        };
+        if shop.class_limit != 0 && shop.class_limit as u16 != player.class.0 {
+            self.output_line(session, text::TRAIN_WRONG_ROOM);
+            return;
+        }
+        let next = player.level + 1;
+        if i32::from(next) < i32::from(shop.min_level) {
+            // ORACLE-VERIFY exact wording.
+            self.output_line(session, "You have not progressed far enough to use this trainer!");
+            return;
+        }
+        if i32::from(next) > i32::from(shop.max_level) {
+            // ORACLE-VERIFY exact wording.
+            self.output_line(session, "You have progressed too far to use this trainer!");
+            return;
+        }
+        if player.level >= self.config.level_cap {
+            // ORACLE-VERIFY exact wording (DAT_00482d90 gate).
+            self.output_line(session, "You may not train any further!");
+            return;
+        }
+        let needed = crate::stats::exp_needed(player.level, self.exp_base(player));
+        if player.experience < needed {
+            self.output_line(session, text::TRAIN_NO_EXP);
+            return;
+        }
+        let cost = ((i64::from(shop.markup) + 100).max(0) as u64)
+            * u64::from(player.level)
+            * 5
+            / 100;
+        let ratios = self.config.coin_ratios;
+        if self.player(session).coins.total_copper(ratios) < cost {
+            self.output_line(session, text::TRAIN_NO_MONEY);
+            return;
+        }
+
+        // All gates passed: pay, level, grant CP, roll HP-base, add lives.
+        let hp_seed = self
+            .content
+            .classes
+            .get(&self.player(session).class)
+            .map_or(0, |c| i32::from(c.hp_seed));
+        let roll = self.rng.roll(0, hp_seed);
+        let lives_grant = self.config.lives_per_level;
+        let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+            unreachable!("train dispatched from in-game session");
+        };
+        player.coins.deduct_copper(cost, ratios);
+        player.level += 1;
+        let new_level = player.level;
+        let cp = match new_level {
+            0..=10 => 10,
+            11..=20 => 15,
+            l => (l - 1) / 10 * 5 + 10,
+        };
+        player.cp_unspent += cp;
+        player.cp_lifetime += cp;
+        if roll > 0 {
+            player.hp_base += roll as u16;
+        }
+        player.lives = (player.lives + lives_grant).min(9);
+
+        // Mode-2 recompute: derived stats refresh, current HP/mana kept.
+        let refreshed = self.derive_for(self.player(session));
+        if let Some(Session::InGame { derived, .. }) = self.sessions.get_mut(&session) {
+            *derived = refreshed;
+        }
+        self.output_line(session, &text::train_success(new_level));
     }
 
     fn say(&mut self, session: SessionId, what: &str) {
@@ -479,6 +707,7 @@ impl Core {
             current_mana: 0,
             hunger: 1000,
             thirst: 1000,
+            coins: Coins::default(),
             cp_unspent: template.cp,
             cp_lifetime: template.cp,
             lives: 9,

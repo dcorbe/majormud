@@ -13,6 +13,9 @@ pub enum Command {
     Move(Direction),
     Look,
     Status,
+    Experience,
+    Health,
+    Train,
     Quit,
     Blank,
     Unknown(String),
@@ -35,7 +38,7 @@ const ALIASES: [(&str, Command); 12] = [
 ];
 
 /// Prefix-matched verbs, in precedence order.
-const VERBS: [(&str, Command); 15] = [
+const VERBS: [(&str, Command); 19] = [
     ("north", Command::Move(Direction::North)),
     ("south", Command::Move(Direction::South)),
     ("east", Command::Move(Direction::East)),
@@ -49,6 +52,10 @@ const VERBS: [(&str, Command); 15] = [
     ("look", Command::Look),
     ("status", Command::Status),
     ("stat", Command::Status),
+    ("experience", Command::Experience),
+    ("exp", Command::Experience),
+    ("health", Command::Health),
+    ("train", Command::Train),
     ("quit", Command::Quit),
     ("exit", Command::Quit),
 ];

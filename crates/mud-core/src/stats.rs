@@ -98,6 +98,58 @@ pub struct Derived {
     pub carry_capacity: i32,
 }
 
+/// The per-level exp ratio table for levels 1-26
+/// (`records.md` exp curve; byte-identical in both builds).
+const EXP_RATIOS: [(u64, u64); 26] = [
+    (1, 1),
+    (40, 20),
+    (44, 24),
+    (44, 24),
+    (48, 28),
+    (48, 28),
+    (52, 32),
+    (52, 32),
+    (56, 36),
+    (56, 36),
+    (60, 40),
+    (60, 40),
+    (65, 45),
+    (65, 45),
+    (70, 50),
+    (70, 50),
+    (75, 55),
+    (50, 40),
+    (50, 40),
+    (50, 40),
+    (50, 40),
+    (50, 40),
+    (50, 40),
+    (50, 40),
+    (50, 40),
+    (23, 20),
+];
+
+/// `new_calc_exp_needed(level, base)` — the exp required to train TO
+/// `level + 1` (callers pass the current level), where
+/// `base = class.exp_base + race.exp_chart` (decompile 0x73810).
+///
+/// High bands (WG3-NT live path): i in [26,53] → 115/100, [54,56] → 109/100,
+/// ≥57 → 108/100. Computed exactly in u64 — the original's `/100` rescale
+/// dance is an overflow guard, not curve math (`records.md`).
+pub fn exp_needed(level: u16, base: u64) -> u64 {
+    let mut e = 10 * (base + 100);
+    for i in 0..u64::from(level) {
+        let (mult, div) = match i {
+            0..=25 => EXP_RATIOS[i as usize],
+            26..=53 => (115, 100),
+            54..=56 => (109, 100),
+            _ => (108, 100),
+        };
+        e = e * mult / div;
+    }
+    e
+}
+
 /// The level growth term `g(L)`: linear to 15, half-rate after.
 fn growth(level: i32) -> i32 {
     if level < 16 {

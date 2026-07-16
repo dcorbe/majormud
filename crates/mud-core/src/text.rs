@@ -85,6 +85,32 @@ pub fn list_entry(number: u16, name: &str) -> String {
     format!("{:<4} {}\n", format!("[{number}]"), name)
 }
 
+/// VERIFIED (oracle): the exp command line. The parenthesised number is the
+/// exp still needed; the percent is progress toward the next level.
+pub fn exp_line(exp: u64, level: u16, needed: u64) -> String {
+    let remaining = needed.saturating_sub(exp);
+    let percent = if needed == 0 { 100 } else { exp * 100 / needed };
+    format!("Exp: {exp} Level: {level} Exp needed for next level: {needed} ({remaining}) [{percent}%]")
+}
+
+/// VERIFIED (oracle): the health command line.
+pub fn health_line(current: i32, max: i32) -> String {
+    let percent = if max == 0 { 0 } else { current * 100 / max };
+    format!("Health:{current:>6}/{max:<6}[{percent}%]")
+}
+
+/// VERIFIED (oracle/DLL): training messages.
+pub const TRAIN_WRONG_ROOM: &str = "You must be in an appropriate training room to train!";
+pub const TRAIN_NO_EXP: &str = "You do not have the required experience to train yet!";
+pub const TRAIN_NO_MONEY: &str = "You do not have the money required for your training.";
+
+/// VERIFIED (DLL): " and you receive training to attain level %d." — the
+/// leading fragment follows the payment sentence; ORACLE-VERIFY the full
+/// combined line once a fund run is captured.
+pub fn train_success(level: u16) -> String {
+    format!("you receive training to attain level {level}.")
+}
+
 /// VERIFIED (oracle): the status prompt. Caster/Kai variants ORACLE-VERIFY.
 pub fn prompt(hp: i32, mana: i32, caster_group: i16) -> String {
     match caster_group {

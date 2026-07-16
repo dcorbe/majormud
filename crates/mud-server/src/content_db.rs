@@ -122,7 +122,7 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
         .collect::<Vec<_>>()
         .join(", ");
     let mut stmt = db.prepare(&format!(
-        "SELECT mapnumber, roomnumber, name, {descs}, {exits} FROM room"
+        "SELECT mapnumber, roomnumber, name, shopnum, {descs}, {exits} FROM room"
     ))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
@@ -131,7 +131,8 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
             map,
             room: to_u16("room", "roomnumber", row.get(1)?)?,
         };
-        let mut description: Vec<String> = (3..10)
+        let shopnum: i64 = row.get(3)?;
+        let mut description: Vec<String> = (4..11)
             .map(|i| row.get(i))
             .collect::<Result<_, _>>()?;
         while description.last().is_some_and(|l| l.is_empty()) {
@@ -141,17 +142,20 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
             id,
             name: row.get(2)?,
             description,
+            shop: (shopnum > 0)
+                .then(|| to_u16("room", "shopnum", shopnum).map(ShopId))
+                .transpose()?,
             exits: Default::default(),
         };
         for d in 0..10 {
-            let dest: i64 = row.get(10 + d * 3)?;
+            let dest: i64 = row.get(11 + d * 3)?;
             if dest <= 0 {
                 continue;
             }
-            let exit_type = to_u16("room", "roomtype", row.get(11 + d * 3)?)?;
+            let exit_type = to_u16("room", "roomtype", row.get(12 + d * 3)?)?;
             // Exit type 8 is a map-change portal: destination map in para1.
             let dest_map = if exit_type == 8 {
-                to_u16("room", "para1", row.get(12 + d * 3)?)?
+                to_u16("room", "para1", row.get(13 + d * 3)?)?
             } else {
                 map
             };
@@ -242,12 +246,20 @@ fn load_messages(db: &Connection, content: &mut Content) -> Result<(), LoadError
 }
 
 fn load_shops(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
-    let mut stmt = db.prepare("SELECT number, name FROM shop")?;
+    let mut stmt = db.prepare(
+        "SELECT number, name, shoptype, shopminlvl, shopmaxlvl, shopmarkup, \
+         shopclasslimit FROM shop",
+    )?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         content.add_shop(Shop {
             id: ShopId(to_u16("shop", "number", row.get(0)?)?),
             name: row.get(1)?,
+            shop_type: to_i16("shop", "shoptype", row.get(2)?)?,
+            min_level: to_i16("shop", "shopminlvl", row.get(3)?)?,
+            max_level: to_i16("shop", "shopmaxlvl", row.get(4)?)?,
+            markup: to_i16("shop", "shopmarkup", row.get(5)?)?,
+            class_limit: to_i16("shop", "shopclasslimit", row.get(6)?)?,
         });
     }
     Ok(())
@@ -257,7 +269,8 @@ fn load_races(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
     let mut stmt = db.prepare(&format!(
         "SELECT number, name, {}, {}, \
          minint, minwil, minstr, minhea, minagl, minchm, \
-         maxint, maxwil, maxstr, maxhea, maxagl, maxchm, cp, hpbonus FROM race",
+         maxint, maxwil, maxstr, maxhea, maxagl, maxchm, cp, hpbonus, \
+         expchart FROM race",
         ability_cols("abilitya"),
         ability_cols("abilityb"),
     ))?;
@@ -271,6 +284,7 @@ fn load_races(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
             max_stats: stat_block("race", row, 28)?,
             cp: to_u16("race", "cp", row.get(34)?)?,
             hp_per_level: to_i16("race", "hpbonus", row.get(35)?)?,
+            exp_chart: to_i16("race", "expchart", row.get(36)?)?,
         });
     }
     Ok(())
@@ -294,7 +308,7 @@ fn stat_block(
 
 fn load_classes(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
     let mut stmt = db.prepare(&format!(
-        "SELECT number, name, {}, {}, minhp, maxhp, magictype, magiclvl FROM class",
+        "SELECT number, name, {}, {}, minhp, maxhp, magictype, magiclvl, exp FROM class",
         ability_cols("abilitya"),
         ability_cols("abilityb"),
     ))?;
@@ -308,6 +322,7 @@ fn load_classes(db: &Connection, content: &mut Content) -> Result<(), LoadError>
             hp_seed: to_i16("class", "maxhp", row.get(23)?)?,
             caster_group: to_i16("class", "magictype", row.get(24)?)?,
             casting_factor: to_i16("class", "magiclvl", row.get(25)?)?,
+            exp_base: to_i16("class", "exp", row.get(26)?)?,
         });
     }
     Ok(())

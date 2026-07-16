@@ -9,6 +9,7 @@ fn world() -> Content {
         id: RoomId { map: 1, room: 1 },
         name: "Town Gates".into(),
         description: vec![],
+        shop: None,
         exits: Default::default(),
     };
     gates.exits[Direction::North as usize] = Some(Exit {
@@ -23,6 +24,7 @@ fn world() -> Content {
         id: RoomId { map: 1, room: 2 },
         name: "Town Square".into(),
         description: vec![],
+        shop: None,
         exits: Default::default(),
     };
     square.exits[Direction::South as usize] = Some(Exit {
@@ -33,6 +35,7 @@ fn world() -> Content {
         id: RoomId { map: 1, room: 3 },
         name: "Guard Tower".into(),
         description: vec![],
+        shop: None,
         exits: Default::default(),
     };
     content.add_room(gates);
@@ -55,6 +58,7 @@ fn player_at(name: &str, room: u16) -> Player {
         current_mana: 0,
         hunger: 1000,
         thirst: 1000,
+        coins: Default::default(),
         cp_unspent: 0,
         cp_lifetime: 0,
         lives: 9,

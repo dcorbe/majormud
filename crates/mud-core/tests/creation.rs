@@ -16,6 +16,7 @@ fn world() -> Content {
         id: RoomId { map: 1, room: 1 },
         name: "Town Gates".into(),
         description: vec![],
+        shop: None,
         exits: Default::default(),
     });
     content.add_race(Race {
@@ -40,6 +41,7 @@ fn world() -> Content {
         },
         cp: 100,
         hp_per_level: 0,
+        exp_chart: 30,
     });
     content.add_race(Race {
         id: RaceId(2),
@@ -63,6 +65,7 @@ fn world() -> Content {
         },
         cp: 100,
         hp_per_level: 0,
+        exp_chart: 30,
     });
     content.add_class(Class {
         id: ClassId(1),
@@ -72,6 +75,7 @@ fn world() -> Content {
         hp_seed: 4,
         caster_group: 0,
         casting_factor: 0,
+        exp_base: 0,
     });
     content
 }
@@ -80,6 +84,7 @@ fn world() -> Content {
 fn test_config() -> CoreConfig {
     CoreConfig {
         start_location: RoomId { map: 1, room: 1 },
+        ..CoreConfig::default()
     }
 }
 
@@ -129,6 +134,7 @@ fn race_list_number_padding_matches_oracle() {
         max_stats: StatBlock::default(),
         cp: 0,
         hp_per_level: 0,
+        exp_chart: 30,
     });
     let mut core = Core::new(content, test_config());
     let s = start(&mut core, "Alice");

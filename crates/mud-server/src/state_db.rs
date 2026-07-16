@@ -12,7 +12,7 @@ use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
 use mud_core::content::{ClassId, RaceId, RoomId, StatBlock};
-use mud_core::game::{AccountProfile, Gender, Player};
+use mud_core::game::{AccountProfile, Coins, Gender, Player};
 use rusqlite::{params, Connection, OptionalExtension};
 
 #[derive(Debug)]
@@ -79,6 +79,11 @@ CREATE TABLE IF NOT EXISTS player (
     current_mana INTEGER NOT NULL,
     hunger       INTEGER NOT NULL,
     thirst       INTEGER NOT NULL,
+    runic        INTEGER NOT NULL,
+    platinum     INTEGER NOT NULL,
+    gold         INTEGER NOT NULL,
+    silver       INTEGER NOT NULL,
+    copper       INTEGER NOT NULL,
     cp_unspent   INTEGER NOT NULL,
     cp_lifetime  INTEGER NOT NULL,
     lives        INTEGER NOT NULL,
@@ -207,10 +212,11 @@ impl StateDb {
                  intellect, wisdom, strength, health, agility, charm,
                  b_intellect, b_wisdom, b_strength, b_health, b_agility,
                  b_charm, hp_base, current_hp, current_mana, hunger, thirst,
+                 runic, platinum, gold, silver, copper,
                  cp_unspent, cp_lifetime, lives, experience, map, room)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
                  ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
-                 ?26, ?27, ?28)",
+                 ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33)",
             params![
                 player.name,
                 gender_str(player.gender),
@@ -234,6 +240,11 @@ impl StateDb {
                 player.current_mana,
                 player.hunger,
                 player.thirst,
+                player.coins.runic,
+                player.coins.platinum,
+                player.coins.gold,
+                player.coins.silver,
+                player.coins.copper,
                 player.cp_unspent,
                 player.cp_lifetime,
                 player.lives,
@@ -252,6 +263,7 @@ impl StateDb {
                      intellect, wisdom, strength, health, agility, charm,
                      b_intellect, b_wisdom, b_strength, b_health, b_agility,
                      b_charm, hp_base, current_hp, current_mana, hunger, thirst,
+                     runic, platinum, gold, silver, copper,
                      cp_unspent, cp_lifetime, lives, experience, map, room
                  FROM player WHERE name = ?1",
                 params![name],
@@ -283,13 +295,20 @@ impl StateDb {
                         current_mana: r.get(19)?,
                         hunger: r.get(20)?,
                         thirst: r.get(21)?,
-                        cp_unspent: r.get(22)?,
-                        cp_lifetime: r.get(23)?,
-                        lives: r.get(24)?,
-                        experience: r.get(25)?,
+                        coins: Coins {
+                            runic: r.get(22)?,
+                            platinum: r.get(23)?,
+                            gold: r.get(24)?,
+                            silver: r.get(25)?,
+                            copper: r.get(26)?,
+                        },
+                        cp_unspent: r.get(27)?,
+                        cp_lifetime: r.get(28)?,
+                        lives: r.get(29)?,
+                        experience: r.get(30)?,
                         location: RoomId {
-                            map: r.get(26)?,
-                            room: r.get(27)?,
+                            map: r.get(31)?,
+                            room: r.get(32)?,
                         },
                     })
                 },

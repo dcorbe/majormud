@@ -10,6 +10,7 @@ fn world() -> Content {
         id: RoomId { map: 1, room: 1 },
         name: "Town Gates".into(),
         description: vec![],
+        shop: None,
         exits: Default::default(),
     });
     content.add_race(Race {
@@ -34,6 +35,7 @@ fn world() -> Content {
         },
         cp: 100,
         hp_per_level: 0,
+        exp_chart: 30,
     });
     content.add_race(Race {
         id: RaceId(1),
@@ -57,6 +59,7 @@ fn world() -> Content {
         },
         cp: 100,
         hp_per_level: 0,
+        exp_chart: 30,
     });
     content.add_class(Class {
         id: ClassId(1),
@@ -66,6 +69,7 @@ fn world() -> Content {
         hp_seed: 4,
         caster_group: 0,
         casting_factor: 0,
+        exp_base: 0,
     });
     content.add_class(Class {
         id: ClassId(12),
@@ -75,6 +79,7 @@ fn world() -> Content {
         hp_seed: 3,
         caster_group: 1,
         casting_factor: 3,
+        exp_base: 0,
     });
     content
 }
@@ -82,6 +87,7 @@ fn world() -> Content {
 fn config() -> CoreConfig {
     CoreConfig {
         start_location: RoomId { map: 1, room: 1 },
+        ..CoreConfig::default()
     }
 }
 
