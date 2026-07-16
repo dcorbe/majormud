@@ -342,8 +342,12 @@ Live-transcript message formats (`re/oracle/oracle_attack3.raw`, `oracle_downed.
   attack instead auto-picks. Direction words also have exact two-letter
   aliases (`ne` = northeast, etc.). During exit meditation all commands are
   refused with "You may not perform any commands while waiting to exit!".
-  Direction-word minimum abbreviations (`no`, `sou`) remain ORACLE-VERIFY
-  (the probe batch was consumed by the BBS menu after `q`).
+  Direction-word minimums are now verified (`oracle_directions.raw`):
+  north/south/west require the FULL word (`nort`/`sout`/`wes` fall to say),
+  east resolves at 3 (`eas`; `ea` says — `eat` blocks it), down at 3
+  (`dow`), up at 2, and the diagonals at 6 (`northe`, `southw`). The
+  asymmetry (west full vs east 3) is hand-authored in the original's
+  command table, not derivable from ambiguity.
 - Player swing hit: **`You punch <monster name> for %d damage!`** (unarmed; the verb
   comes from the weapon/attack profile, monster name WITHOUT article).
 - Player swing miss: **`You swing at <monster name>!`**

@@ -71,20 +71,20 @@ enum Verb {
 }
 
 /// (name, minimum abbreviation length, constructor) in match order.
-/// Minimums marked ORACLE are transcript-verified; others are the shortest
-/// unambiguous prefix pending verification. Direction minimums are
-/// ORACLE-VERIFY (the probe batch got eaten by the BBS menu).
+/// All direction minimums are ORACLE-verified (oracle_directions.raw):
+/// north/south/west = full word, east = 3 (eat blocks 2), down = 3,
+/// up = 2, diagonals = 6. Hand-authored asymmetry is the original's.
 const VERBS: [(&str, usize, Verb); 22] = [
-    ("north", 2, Verb::Plain(|| Command::Move(Direction::North))),
-    ("south", 2, Verb::Plain(|| Command::Move(Direction::South))),
-    ("east", 2, Verb::Plain(|| Command::Move(Direction::East))),
-    ("west", 2, Verb::Plain(|| Command::Move(Direction::West))),
+    ("north", 5, Verb::Plain(|| Command::Move(Direction::North))),
+    ("south", 5, Verb::Plain(|| Command::Move(Direction::South))),
+    ("east", 3, Verb::Plain(|| Command::Move(Direction::East))),
+    ("west", 4, Verb::Plain(|| Command::Move(Direction::West))),
     ("northeast", 6, Verb::Plain(|| Command::Move(Direction::NorthEast))),
     ("northwest", 6, Verb::Plain(|| Command::Move(Direction::NorthWest))),
     ("southeast", 6, Verb::Plain(|| Command::Move(Direction::SouthEast))),
     ("southwest", 6, Verb::Plain(|| Command::Move(Direction::SouthWest))),
     ("up", 2, Verb::Plain(|| Command::Move(Direction::Up))),
-    ("down", 2, Verb::Plain(|| Command::Move(Direction::Down))),
+    ("down", 3, Verb::Plain(|| Command::Move(Direction::Down))),
     ("attack", 1, Verb::WithArgs(Command::Attack)), // ORACLE: a/at/att
     ("aid", 2, Verb::WithArgs(Command::Aid)),       // ORACLE: ai
     ("get", 1, Verb::WithArgs(Command::Get)),       // ORACLE: g/ge/get

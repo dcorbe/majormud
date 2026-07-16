@@ -37,11 +37,9 @@ fn matching_is_case_insensitive() {
 
 #[test]
 fn prefix_matches_resolve_in_precedence_order() {
-    // "no" is a prefix of "north" only.
-    assert_eq!(parse("no"), Command::Move(Direction::North));
-    // "sou" prefixes "south" before "southeast"/"southwest" (table order).
-    assert_eq!(parse("sou"), Command::Move(Direction::South));
+    // Oracle: cardinal words need their full minimums; "lo" is look's.
     assert_eq!(parse("lo"), Command::Look);
+    assert_eq!(parse("look"), Command::Look);
 }
 
 #[test]
@@ -100,4 +98,29 @@ fn minimum_abbreviations_match_the_oracle() {
     assert_eq!(parse("a bob"), Command::Attack("bob".into()));
     assert_eq!(parse("lo"), Command::Look);
     assert!(matches!(parse("h"), Command::Unknown(_)));
+}
+
+#[test]
+fn direction_word_minimums_match_the_oracle() {
+    // Oracle (oracle_directions.raw): hand-authored per-direction minimums.
+    // north/south/west require the full word; east resolves at 3 (eat blocks
+    // 2); down at 3; up at 2; diagonals at 6.
+    assert!(matches!(parse("no"), Command::Unknown(_)));
+    assert!(matches!(parse("nor"), Command::Unknown(_)));
+    assert!(matches!(parse("nort"), Command::Unknown(_)));
+    assert_eq!(parse("north"), Command::Move(Direction::North));
+    assert!(matches!(parse("sout"), Command::Unknown(_)));
+    assert_eq!(parse("south"), Command::Move(Direction::South));
+    assert!(matches!(parse("wes"), Command::Unknown(_)));
+    assert_eq!(parse("west"), Command::Move(Direction::West));
+    assert!(matches!(parse("ea"), Command::Unknown(_)));
+    assert_eq!(parse("eas"), Command::Move(Direction::East));
+    assert!(matches!(parse("do"), Command::Unknown(_)));
+    assert_eq!(parse("dow"), Command::Move(Direction::Down));
+    assert_eq!(parse("up"), Command::Move(Direction::Up));
+    assert_eq!(parse("northe"), Command::Move(Direction::NorthEast));
+    assert_eq!(parse("southw"), Command::Move(Direction::SouthWest));
+    // Exact two-letter aliases keep working regardless of minimums.
+    assert_eq!(parse("ne"), Command::Move(Direction::NorthEast));
+    assert_eq!(parse("sw"), Command::Move(Direction::SouthWest));
 }
