@@ -122,6 +122,26 @@ pub struct Room {
     pub exits: [Option<Exit>; 10],
 }
 
+/// One of the five monster attack forms (`knmsr+0x128/0x138` tables;
+/// `attack*_N` columns).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct AttackForm {
+    /// 0 = empty, 1 = melee, 2 = cast, 3 = rob (`attacktype`).
+    pub kind: i16,
+    /// Melee accuracy, or spell id for casts (`attackaccuspell`).
+    pub accuracy: i16,
+    /// Cumulative selection threshold 0-100 (`attackper`).
+    pub weight: i16,
+    /// Melee min damage / cast percent (`attackminhcastper`).
+    pub min_damage: i16,
+    /// Melee max damage / cast level (`attackmaxhcastlvl`).
+    pub max_damage: i16,
+    pub hit_msg: Option<MessageId>,
+    pub miss_msg: Option<MessageId>,
+    /// EU spent per swing (`attackenergy`).
+    pub energy: i16,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Monster {
     pub id: MonsterId,
@@ -129,6 +149,21 @@ pub struct Monster {
     pub move_msg: Option<MessageId>,
     pub death_msg: Option<MessageId>,
     pub abilities: Vec<AbilityValue>,
+    /// `hitpoints` — spawn HP.
+    pub hitpoints: i32,
+    /// `experience` (worth) and `expmulti` (percent-ish multiplier).
+    pub experience: i32,
+    pub exp_multi: i32,
+    pub armour_class: i16,
+    pub damage_resist: i16,
+    pub magic_resist: i16,
+    /// Backstab defence.
+    pub bs_defence: i16,
+    /// Per-round energy pool/regen.
+    pub energy: i32,
+    pub coins: [u32; 5],
+    /// The five attack-form slots (kind 0 = unused).
+    pub attacks: [AttackForm; 5],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

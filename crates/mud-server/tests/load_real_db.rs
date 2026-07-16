@@ -61,6 +61,25 @@ fn known_content_spot_checks() {
     assert_eq!(classes[0], "Warrior");
     assert!(classes.contains(&"Mystic"));
 
+    // Monster combat fields: the giant rat (id 1).
+    let rat = &content.monsters[&mud_core::content::MonsterId(1)];
+    assert_eq!(rat.name, "giant rat");
+    assert_eq!(rat.hitpoints, 12);
+    assert_eq!(rat.experience, 9);
+    assert_eq!(rat.exp_multi, 1);
+    assert_eq!(rat.armour_class, 0);
+    assert_eq!(rat.damage_resist, 1);
+    assert_eq!(rat.magic_resist, 30);
+    assert_eq!(rat.energy, 1000);
+    let form = &rat.attacks[0];
+    assert_eq!(form.kind, 1); // melee
+    assert_eq!(form.accuracy, 10);
+    assert_eq!(form.weight, 100);
+    assert_eq!(form.min_damage, 2);
+    assert_eq!(form.max_damage, 10);
+    assert_eq!(form.energy, 1000);
+    assert_eq!(rat.attacks[1].kind, 0); // empty slot
+
     // Every exit in the shipped data resolves (verified upstream: 62,352 exits).
     let exits: usize = content
         .rooms

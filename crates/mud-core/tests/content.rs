@@ -29,6 +29,16 @@ fn monster(id: u16) -> Monster {
         move_msg: None,
         death_msg: None,
         abilities: vec![],
+        hitpoints: 9,
+        experience: 1,
+        exp_multi: 12,
+        armour_class: 0,
+        damage_resist: 1,
+        magic_resist: 30,
+        bs_defence: 0,
+        energy: 1000,
+        coins: [0; 5],
+        attacks: Default::default(),
     }
 }
 

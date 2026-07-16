@@ -10,7 +10,7 @@ use std::path::Path;
 
 use mud_core::ability::Ability;
 use mud_core::content::{
-    AbilityValue, Class, ClassId, Content, Exit, Item, ItemId, Message, MessageId, Monster,
+    AbilityValue, AttackForm, Class, ClassId, Content, Exit, Item, ItemId, Message, MessageId, Monster,
     MonsterId, Race, RaceId, Room, RoomId, Shop, ShopId, Spell, SpellId, StatBlock,
 };
 use rusqlite::Connection;
@@ -173,22 +173,73 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
 }
 
 fn load_monsters(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
+    let attack_cols = (1..=5)
+        .map(|i| {
+            format!(
+                "attacktype_{i}, attackaccuspell_{i}, attackper_{i}, \
+                 attackminhcastper_{i}, attackmaxhcastlvl_{i}, attackhitmsg_{i}, \
+                 attackmissmsg_{i}, attackenergy_{i}"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
     let mut stmt = db.prepare(&format!(
-        "SELECT number, name, movemsg, deathmsg, {}, {} FROM monster",
+        "SELECT number, name, movemsg, deathmsg, {}, {}, \
+         hitpoints, experience, expmulti, ac, dr, mr, bsdefence, energy, \
+         runic, platinum, gold, silver, copper, {attack_cols} FROM monster",
         ability_cols("abilitya"),
         ability_cols("abilityb"),
     ))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
+        let mut attacks = [AttackForm::default(); 5];
+        for (i, form) in attacks.iter_mut().enumerate() {
+            let base = 37 + i * 8;
+            *form = AttackForm {
+                kind: to_i16("monster", "attacktype", row.get(base)?)?,
+                accuracy: to_i16("monster", "attackaccuspell", row.get(base + 1)?)?,
+                weight: to_i16("monster", "attackper", row.get(base + 2)?)?,
+                min_damage: to_i16("monster", "attackminhcastper", row.get(base + 3)?)?,
+                max_damage: to_i16("monster", "attackmaxhcastlvl", row.get(base + 4)?)?,
+                hit_msg: opt_message("monster", "attackhitmsg", row.get(base + 5)?)?,
+                miss_msg: opt_message("monster", "attackmissmsg", row.get(base + 6)?)?,
+                energy: to_i16("monster", "attackenergy", row.get(base + 7)?)?,
+            };
+        }
         content.add_monster(Monster {
             id: MonsterId(to_u16("monster", "number", row.get(0)?)?),
             name: row.get(1)?,
             move_msg: opt_message("monster", "movemsg", row.get(2)?)?,
             death_msg: opt_message("monster", "deathmsg", row.get(3)?)?,
             abilities: ability_pairs("monster", row, 4, 14)?,
+            hitpoints: i32::try_from(row.get::<_, i64>(24)?)
+                .map_err(|_| invalid("monster", "hitpoints overflow"))?,
+            experience: i32::try_from(row.get::<_, i64>(25)?)
+                .map_err(|_| invalid("monster", "experience overflow"))?,
+            exp_multi: i32::try_from(row.get::<_, i64>(26)?)
+                .map_err(|_| invalid("monster", "expmulti overflow"))?,
+            armour_class: to_i16("monster", "ac", row.get(27)?)?,
+            damage_resist: to_i16("monster", "dr", row.get(28)?)?,
+            magic_resist: to_i16("monster", "mr", row.get(29)?)?,
+            bs_defence: to_i16("monster", "bsdefence", row.get(30)?)?,
+            energy: i32::try_from(row.get::<_, i64>(31)?)
+                .map_err(|_| invalid("monster", "energy overflow"))?,
+            coins: [
+                coin("monster", row, 32)?,
+                coin("monster", row, 33)?,
+                coin("monster", row, 34)?,
+                coin("monster", row, 35)?,
+                coin("monster", row, 36)?,
+            ],
+            attacks,
         });
     }
     Ok(())
+}
+
+fn coin(table: &'static str, row: &rusqlite::Row<'_>, idx: usize) -> Result<u32, LoadError> {
+    let v: i64 = row.get(idx)?;
+    u32::try_from(v.max(0)).map_err(|_| invalid(table, format!("coin at {idx} overflow")))
 }
 
 fn load_items(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
