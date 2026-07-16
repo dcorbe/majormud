@@ -324,8 +324,13 @@ hitting me), `match_combat_target` (resolve a name against my current target).
 
 Live-transcript message formats (`re/oracle/oracle_attack3.raw`, `oracle_downed.raw`):
 
-- Engage: `attack <name>` prints **`*Combat Engaged*`**. A bare `a <name>` is NOT an
-  attack alias in this build (it falls through to say).
+- Engage: `attack <name>` prints **`*Combat Engaged*`**. The syntax is flexible
+  (player testimony, reconciled with the transcript): `a`, `at`, `att`… are all
+  attack; `a` with no argument **auto-picks a target**; multi-word names and any
+  word prefix resolve (`a kobold thief` / `a kobold` / `a thief`). An attack whose
+  target does NOT resolve in the room falls through to SAY — which is why the
+  transcript shows `a kobold` spoken aloud in a kobold-less room (an earlier
+  revision of this note wrongly concluded `a` wasn't an alias).
 - Player swing hit: **`You punch <monster name> for %d damage!`** (unarmed; the verb
   comes from the weapon/attack profile, monster name WITHOUT article).
 - Player swing miss: **`You swing at <monster name>!`**

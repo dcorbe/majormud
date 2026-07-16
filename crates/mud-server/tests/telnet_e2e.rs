@@ -193,7 +193,19 @@ async fn returning_player_resumes_saved_character() {
     send(&mut stream, "n").await;
     read_until(&mut stream, &mut t, "Town Square").await;
     send(&mut stream, "x").await;
-    drop(stream);
+    // Wait for the meditation to finish and the server to close (persist
+    // completes before we reconnect — avoids racing the save).
+    let mut buf = [0u8; 256];
+    loop {
+        match tokio::time::timeout(std::time::Duration::from_secs(5), stream.read(&mut buf))
+            .await
+            .expect("timely close")
+            .expect("read")
+        {
+            0 => break,
+            _ => continue,
+        }
+    }
 
     // Second visit: no creation, resumes in Town Square.
     let mut stream = TcpStream::connect(addr).await.expect("connect");

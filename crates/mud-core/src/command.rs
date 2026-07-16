@@ -1,10 +1,14 @@
 //! The in-game command parser.
 //!
-//! Matching semantics: case-insensitive; single-letter direction aliases are
-//! exact matches; other verbs prefix-match against the table in precedence
-//! order, first match wins. The M1 verb set covers movement, look, and quit;
-//! the table grows with each milestone. Parser behavior is oracle-checked
-//! (matching precedence is player-visible).
+//! Design philosophy (player testimony, oracle-reconciled): **best-effort
+//! matching everywhere, say as the universal fallback.** Verbs prefix-match
+//! against the table in precedence order down to a single letter ("a" =
+//! attack, "at" = attack, "ai" = aid); argument words are resolved by the
+//! game layer with the same word-prefix leniency ("a kob th", "get sil");
+//! and whenever the engine cannot intuit what the player meant — unknown
+//! verb OR unresolvable argument — the whole line is spoken aloud instead
+//! of erroring. Handlers signal argument-resolution failure by returning
+//! [`Resolution::FallThrough`]; `Core::game_command` owns the say fallback.
 
 use crate::content::Direction;
 
@@ -16,8 +20,7 @@ pub enum Command {
     Experience,
     Health,
     Train,
-    /// `attack <target>` — the argument is the raw target words.
-    /// (Oracle: bare `a` is NOT an attack alias in this build.)
+    /// `attack [target]` — empty target means auto-pick.
     Attack(String),
     /// `aid <player>` — stabilize a downed player.
     Aid(String),
@@ -26,7 +29,16 @@ pub enum Command {
     Unknown(String),
 }
 
-/// Exact-match aliases, checked before the verb table.
+/// What an argument-taking handler did with its input. `FallThrough` makes
+/// the dispatcher say the raw line (the parser's universal fallback).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resolution {
+    Handled,
+    FallThrough,
+}
+
+/// Exact-match aliases, checked before the verb table (single/double letter
+/// shortcuts that must not be shadowed by prefix matching).
 const ALIASES: [(&str, Command); 12] = [
     ("n", Command::Move(Direction::North)),
     ("s", Command::Move(Direction::South)),
@@ -42,27 +54,38 @@ const ALIASES: [(&str, Command); 12] = [
     ("x", Command::Quit),
 ];
 
-/// Prefix-matched verbs, in precedence order.
-const VERBS: [(&str, Command); 19] = [
-    ("north", Command::Move(Direction::North)),
-    ("south", Command::Move(Direction::South)),
-    ("east", Command::Move(Direction::East)),
-    ("west", Command::Move(Direction::West)),
-    ("northeast", Command::Move(Direction::NorthEast)),
-    ("northwest", Command::Move(Direction::NorthWest)),
-    ("southeast", Command::Move(Direction::SouthEast)),
-    ("southwest", Command::Move(Direction::SouthWest)),
-    ("up", Command::Move(Direction::Up)),
-    ("down", Command::Move(Direction::Down)),
-    ("look", Command::Look),
-    ("status", Command::Status),
-    ("stat", Command::Status),
-    ("experience", Command::Experience),
-    ("exp", Command::Experience),
-    ("health", Command::Health),
-    ("train", Command::Train),
-    ("quit", Command::Quit),
-    ("exit", Command::Quit),
+/// Verb constructors for the precedence table.
+#[derive(Clone, Copy)]
+enum Verb {
+    Plain(fn() -> Command),
+    /// Takes the rest of the line as an argument (may be empty).
+    WithArgs(fn(String) -> Command),
+}
+
+/// Prefix-matched verbs in precedence order: any prefix of a name matches,
+/// first entry wins ("a" → attack because attack precedes aid).
+const VERBS: [(&str, Verb); 21] = [
+    ("north", Verb::Plain(|| Command::Move(Direction::North))),
+    ("south", Verb::Plain(|| Command::Move(Direction::South))),
+    ("east", Verb::Plain(|| Command::Move(Direction::East))),
+    ("west", Verb::Plain(|| Command::Move(Direction::West))),
+    ("northeast", Verb::Plain(|| Command::Move(Direction::NorthEast))),
+    ("northwest", Verb::Plain(|| Command::Move(Direction::NorthWest))),
+    ("southeast", Verb::Plain(|| Command::Move(Direction::SouthEast))),
+    ("southwest", Verb::Plain(|| Command::Move(Direction::SouthWest))),
+    ("up", Verb::Plain(|| Command::Move(Direction::Up))),
+    ("down", Verb::Plain(|| Command::Move(Direction::Down))),
+    ("attack", Verb::WithArgs(Command::Attack)),
+    ("aid", Verb::WithArgs(Command::Aid)),
+    ("look", Verb::Plain(|| Command::Look)),
+    ("status", Verb::Plain(|| Command::Status)),
+    ("stat", Verb::Plain(|| Command::Status)),
+    ("experience", Verb::Plain(|| Command::Experience)),
+    ("exp", Verb::Plain(|| Command::Experience)),
+    ("health", Verb::Plain(|| Command::Health)),
+    ("train", Verb::Plain(|| Command::Train)),
+    ("quit", Verb::Plain(|| Command::Quit)),
+    ("exit", Verb::Plain(|| Command::Quit)),
 ];
 
 pub fn parse(input: &str) -> Command {
@@ -81,22 +104,12 @@ pub fn parse(input: &str) -> Command {
             return command.clone();
         }
     }
-    // Argument-taking verbs: "attack <target>" ("at"/"att"... prefixes).
-    if verb.len() >= 2 && "attack".starts_with(&verb) {
-        let rest = trimmed[verb.len()..].trim();
-        if !rest.is_empty() {
-            return Command::Attack(rest.to_string());
-        }
-    }
-    if verb.len() >= 3 && "aid".starts_with(&verb) {
-        let rest = trimmed[verb.len()..].trim();
-        if !rest.is_empty() {
-            return Command::Aid(rest.to_string());
-        }
-    }
-    for (name, command) in &VERBS {
+    for (name, kind) in &VERBS {
         if name.starts_with(&verb) {
-            return command.clone();
+            return match kind {
+                Verb::Plain(make) => make(),
+                Verb::WithArgs(make) => make(trimmed[verb.len()..].trim().to_string()),
+            };
         }
     }
     Command::Unknown(trimmed.to_string())

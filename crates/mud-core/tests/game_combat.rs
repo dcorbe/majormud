@@ -149,15 +149,57 @@ fn attack_matches_name_by_word_prefix() {
 }
 
 #[test]
-fn attack_without_target_reports_it() {
+fn unresolved_attack_falls_through_to_say() {
+    // Oracle: "a kobold" in a kobold-less room was spoken aloud.
     let mut core = Core::new(world(), config());
     let s = create(&mut core, "Dain");
-    core.input(s, "attack kobold");
+    core.input(s, "a kobold");
     let shown = text_to(&core.drain_events(), s);
     assert!(
-        shown.contains("You don't see your target here."),
+        shown.contains("You say \"a kobold\""),
         "got: {shown:?}"
     );
+    assert!(!shown.contains("*Combat Engaged*"));
+}
+
+#[test]
+fn bare_a_auto_picks_a_target() {
+    // Player testimony: "just a and it picks a target for me".
+    let mut core = Core::new(world(), config());
+    let s = create(&mut core, "Dain");
+    core.spawn_monster(MonsterId(7), RoomId { map: 1, room: 1 });
+    core.input(s, "a");
+    let shown = text_to(&core.drain_events(), s);
+    assert!(shown.contains("*Combat Engaged*"), "got: {shown:?}");
+}
+
+#[test]
+fn bare_a_with_no_monster_is_said() {
+    let mut core = Core::new(world(), config());
+    let s = create(&mut core, "Dain");
+    core.input(s, "a");
+    let shown = text_to(&core.drain_events(), s);
+    assert!(shown.contains("You say \"a\""), "got: {shown:?}");
+}
+
+#[test]
+fn multi_word_target_names_resolve() {
+    let mut core = Core::new(world(), config());
+    let s = create(&mut core, "Dain");
+    core.spawn_monster(MonsterId(7), RoomId { map: 1, room: 1 });
+    core.input(s, "a kobold thief");
+    let shown = text_to(&core.drain_events(), s);
+    assert!(shown.contains("*Combat Engaged*"), "got: {shown:?}");
+}
+
+#[test]
+fn partial_multi_word_prefixes_resolve() {
+    let mut core = Core::new(world(), config());
+    let s = create(&mut core, "Dain");
+    core.spawn_monster(MonsterId(7), RoomId { map: 1, room: 1 });
+    core.input(s, "a kob th");
+    let shown = text_to(&core.drain_events(), s);
+    assert!(shown.contains("*Combat Engaged*"), "got: {shown:?}");
 }
 
 #[test]

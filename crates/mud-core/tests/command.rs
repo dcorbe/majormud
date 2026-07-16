@@ -63,3 +63,25 @@ fn whitespace_is_tolerated() {
 fn unknown_input_is_reported_verbatim() {
     assert_eq!(parse("xyzzy"), Command::Unknown("xyzzy".into()));
 }
+
+#[test]
+fn attack_syntax_is_flexible() {
+    // Player testimony: "a kobold thief", "a kobold", or just "a" all work.
+    assert_eq!(parse("a"), Command::Attack(String::new()));
+    assert_eq!(parse("a kobold"), Command::Attack("kobold".into()));
+    assert_eq!(parse("a kobold thief"), Command::Attack("kobold thief".into()));
+    assert_eq!(parse("at rat"), Command::Attack("rat".into()));
+    assert_eq!(parse("att rat"), Command::Attack("rat".into()));
+    assert_eq!(parse("attack rat"), Command::Attack("rat".into()));
+    assert_eq!(parse("attack"), Command::Attack(String::new()));
+    assert_eq!(parse("A Kobold"), Command::Attack("Kobold".into()));
+}
+
+#[test]
+fn aid_still_parses_and_does_not_shadow_attack() {
+    assert_eq!(parse("aid bob"), Command::Aid("bob".into()));
+    // Best-effort: "ai" uniquely prefixes aid; "a" prefers attack
+    // (precedence order).
+    assert_eq!(parse("ai bob"), Command::Aid("bob".into()));
+    assert_eq!(parse("a bob"), Command::Attack("bob".into()));
+}

@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use crate::ability::Ability;
-use crate::command::{parse, Command};
+use crate::command::{parse, Command, Resolution};
 use crate::content::{ClassId, Content, Direction, RaceId, RoomId, StatBlock};
 use crate::stats::{derive, AbilityBag, Derived, StatInputs};
 use crate::text;
@@ -612,8 +612,19 @@ impl Core {
             Command::Experience => self.show_experience(session),
             Command::Health => self.show_health(session),
             Command::Train => self.train_level(session),
-            Command::Attack(target) => self.attack_command(session, &target),
-            Command::Aid(target) => self.aid_command(session, &target),
+            // Argument commands do best-effort resolution; when they cannot
+            // intuit the target, the whole line is said aloud (the parser's
+            // universal fallback — applies to every future argument command).
+            Command::Attack(target) => {
+                if self.attack_command(session, &target) == Resolution::FallThrough {
+                    self.say(session, line.trim());
+                }
+            }
+            Command::Aid(target) => {
+                if self.aid_command(session, &target) == Resolution::FallThrough {
+                    self.say(session, line.trim());
+                }
+            }
             Command::Move(direction) => {
                 // Oracle: the downed band blocks movement (look/health work).
                 if self.player(session).current_hp < 1 {
@@ -744,41 +755,75 @@ impl Core {
     // ------------------------------------------------------------------
 
     /// `engage_autocombat` + `restart_autocombat`: set the target and run
-    /// the opening swing sequence immediately.
-    fn attack_command(&mut self, session: SessionId, target_words: &str) {
+    /// the opening swing sequence immediately. Flexible syntax (player
+    /// testimony): no argument auto-picks; an unresolvable target falls
+    /// through to SAY (oracle-observed).
+    fn attack_command(&mut self, session: SessionId, target_words: &str) -> Resolution {
         if self.player(session).current_hp < 1 {
             self.output_line(session, text::MORTALLY_WOUNDED);
-            return;
+            return Resolution::Handled;
         }
         let room = self.player(session).location;
-        let Some(monster) = self.find_monster(room, target_words) else {
-            self.output_line(session, text::NO_TARGET);
-            return;
+        let monster = if target_words.trim().is_empty() {
+            self.auto_pick_target(session, room)
+        } else {
+            self.find_monster(room, target_words)
+        };
+        let Some(monster) = monster else {
+            return Resolution::FallThrough;
         };
         if let Some(Session::InGame { target, .. }) = self.sessions.get_mut(&session) {
             *target = Some(monster);
         }
         self.output_line(session, text::COMBAT_ENGAGED);
         self.player_attack_sequence(session);
+        Resolution::Handled
     }
 
-    /// `cmd_aid`: set the aided flag on a downed co-located player.
-    fn aid_command(&mut self, session: SessionId, target_words: &str) {
+    /// Bare `a`: current combat target first, then whoever is attacking us,
+    /// then the first live monster in the room (priority ORACLE-VERIFY).
+    fn auto_pick_target(&self, session: SessionId, room: RoomId) -> Option<MonsterInstanceId> {
+        if let Some(Session::InGame { target: Some(t), .. }) = self.sessions.get(&session)
+            && self
+                .monsters
+                .get(t)
+                .is_some_and(|m| m.current_hp > 0 && m.location == room)
+        {
+            return Some(*t);
+        }
+        if let Some((id, _)) = self
+            .monsters
+            .iter()
+            .find(|(_, m)| m.location == room && m.current_hp > 0 && m.target == Some(session))
+        {
+            return Some(*id);
+        }
+        self.monsters
+            .iter()
+            .find(|(_, m)| m.location == room && m.current_hp > 0)
+            .map(|(id, _)| *id)
+    }
+
+    /// `cmd_aid`: set the aided flag on a downed co-located player. An
+    /// unresolvable (or empty) name falls through to say.
+    fn aid_command(&mut self, session: SessionId, target_words: &str) -> Resolution {
         let room = self.player(session).location;
         let want = target_words.trim().to_ascii_lowercase();
+        if want.is_empty() {
+            return Resolution::FallThrough;
+        }
         let target = self
             .in_game_sessions()
             .filter(|(id, p)| *id != session && p.location == room)
             .find(|(_, p)| p.name.to_ascii_lowercase().starts_with(&want))
             .map(|(id, p)| (id, p.name.clone(), p.current_hp));
         let Some((target_id, name, hp)) = target else {
-            self.output_line(session, text::NO_TARGET);
-            return;
+            return Resolution::FallThrough;
         };
         if hp >= 1 {
             // DLL: "is in no need of assistance".
             self.output_line(session, &format!("{name} is in no need of assistance."));
-            return;
+            return Resolution::Handled;
         }
         if let Some(Session::InGame { aided, .. }) = self.sessions.get_mut(&target_id) {
             *aided = true;
@@ -788,25 +833,36 @@ impl Core {
             session,
             &format!("You have aided {name}; {name}'s wounds are bound."),
         );
+        Resolution::Handled
     }
 
-    /// Word-prefix name match among the room's live monsters
-    /// ("kobold" and "thief" both match "kobold thief").
+    /// Name match among the room's live monsters. Each input word must
+    /// prefix-match consecutive words of the name, starting at any word:
+    /// "kobold thief", "kobold", "thief", and "kob th" all match
+    /// "kobold thief".
     fn find_monster(&self, room: RoomId, words: &str) -> Option<MonsterInstanceId> {
-        let want = words.trim().to_ascii_lowercase();
+        let want: Vec<String> = words
+            .trim()
+            .to_ascii_lowercase()
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        if want.is_empty() {
+            return None;
+        }
         self.monsters
             .iter()
             .filter(|(_, m)| m.location == room && m.current_hp > 0)
             .find(|(_, m)| {
-                self.content
-                    .monsters
-                    .get(&m.template)
-                    .is_some_and(|t| {
-                        t.name
-                            .to_ascii_lowercase()
-                            .split_whitespace()
-                            .any(|w| w.starts_with(&want))
+                self.content.monsters.get(&m.template).is_some_and(|t| {
+                    let name: Vec<&str> = t.name.split_whitespace().collect();
+                    (0..name.len()).any(|start| {
+                        want.len() <= name.len() - start
+                            && want.iter().enumerate().all(|(i, w)| {
+                                name[start + i].to_ascii_lowercase().starts_with(w)
+                            })
                     })
+                })
             })
             .map(|(id, _)| *id)
     }
@@ -833,10 +889,7 @@ impl Core {
                 .and_then(|m| self.content.monsters.get(&m.template))
                 .map_or(0, |t| t.energy);
             if let Some(m) = self.monsters.get_mut(id) {
-                m.energy = (m.energy + max).min(max.max(m.energy.min(max)));
-                if m.energy > max {
-                    m.energy = max;
-                }
+                m.energy = (m.energy + max).min(max);
             }
         }
 
