@@ -353,6 +353,15 @@ pub(crate) struct MonsterInstance {
     pub target: Option<SessionId>,
 }
 
+/// A scheduled shop-slot restock, due at an absolute tick. Events live
+/// forever and reschedule themselves, as the original's linked list does.
+#[derive(Debug, Clone, Copy)]
+struct RestockEvent {
+    shop: crate::content::ShopId,
+    slot: usize,
+    due: u64,
+}
+
 pub struct Core {
     content: Content,
     config: CoreConfig,
@@ -368,9 +377,15 @@ pub struct Core {
     /// Ephemeral floor items per room (item, remaining uses), seeded from
     /// the rooms' static placements at boot.
     room_items: BTreeMap<RoomId, Vec<(crate::content::ItemId, i16)>>,
-    /// Live shop stock counts (seeded from content; persistence via events
-    /// arrives with the restock system).
+    /// Live shop stock counts. Boot fills every shelf to max — the pristine
+    /// distribution shipped full, and the `shopnow` values in an extracted
+    /// .VIR are played-board runtime state. (Cross-restart persistence in
+    /// state.sqlite is deferred; a restart is a first run.)
     shop_stock: BTreeMap<crate::content::ShopId, [i16; 20]>,
+    /// Pending timed restock events (`check_initiate_restocking` 0x5b58c).
+    restock_events: Vec<RestockEvent>,
+    /// `DAT_0047fb80`: the sweep runs on every 21st slow tick (630 s).
+    restock_counter: u8,
     /// Set while an action-exit trigger routes through move_player.
     action_exit_pass: bool,
 }
@@ -394,14 +409,31 @@ impl Core {
             room_coins: BTreeMap::new(),
             room_items: BTreeMap::new(),
             shop_stock: BTreeMap::new(),
+            restock_events: Vec::new(),
+            restock_counter: 0,
             action_exit_pass: false,
         };
+        // First run of the world: every shelf full, and each timed slot's
+        // first event lands at genrdn(1, max(2, interval)) minutes so the
+        // timers don't all fire together (check_initiate_restocking).
+        let mut timed: Vec<(crate::content::ShopId, usize, i16)> = Vec::new();
         for shop in core.content.shops.values() {
             let mut counts = [0i16; 20];
             for (i, slot) in shop.stock.iter().enumerate() {
-                counts[i] = slot.now;
+                counts[i] = slot.max;
+                if shop.shop_type != 11 && slot.item.is_some() && slot.restock_time > 0 {
+                    timed.push((shop.id, i, slot.restock_time));
+                }
             }
             core.shop_stock.insert(shop.id, counts);
+        }
+        for (shop, slot, interval) in timed {
+            let minutes = core.rng.roll(1, i32::from(interval).max(2));
+            core.restock_events.push(RestockEvent {
+                shop,
+                slot,
+                due: minutes as u64 * 60,
+            });
         }
         // Seed floor items from static placements.
         let mut seeded: BTreeMap<RoomId, Vec<(crate::content::ItemId, i16)>> = BTreeMap::new();
@@ -523,6 +555,13 @@ impl Core {
             match job {
                 Job::Slow => {
                     self.slow_update();
+                    // background_slow runs the restock sweep on every 21st
+                    // slow tick (DAT_0047fb80 counter, fires past 0x14).
+                    self.restock_counter += 1;
+                    if self.restock_counter > 20 {
+                        self.restock_counter = 0;
+                        self.restock_items();
+                    }
                     self.scheduler.schedule_in(SLOW_INTERVAL, Job::Slow);
                 }
                 Job::Energy => {
@@ -532,6 +571,36 @@ impl Core {
                 Job::ExitStep(session) => self.exit_step(session),
             }
         }
+    }
+
+    /// `restock_items` (0x5b6f6): drains due restock events. A due event on
+    /// a live non-gang shop rolls 1-100 < percent to add the slot's amount
+    /// (clamped to max, and only while below max), then reschedules itself
+    /// +interval minutes whether or not the roll succeeded.
+    fn restock_items(&mut self) {
+        let now = self.scheduler.now();
+        let mut events = std::mem::take(&mut self.restock_events);
+        for ev in &mut events {
+            if ev.due > now {
+                continue;
+            }
+            let Some(shop) = self.content.shops.get(&ev.shop) else {
+                continue;
+            };
+            if shop.shop_type == 11 {
+                continue;
+            }
+            let slot = &shop.stock[ev.slot];
+            let counts = self.shop_stock.entry(ev.shop).or_default();
+            if counts[ev.slot] < slot.max {
+                let roll = self.rng.roll(1, 100);
+                if roll < i32::from(slot.restock_percent) {
+                    counts[ev.slot] = (counts[ev.slot] + slot.restock_amount).min(slot.max);
+                }
+            }
+            ev.due = now + u64::from(slot.restock_time.max(1) as u16) * 60;
+        }
+        self.restock_events = events;
     }
 
     /// `slow_update_characters` (`regeneration.md`): hunger/thirst decay,

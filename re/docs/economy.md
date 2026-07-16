@@ -522,3 +522,29 @@ purse.
   one ("You climb into one of the skiffs, and row to Silvermere.").
 - Newhaven is the tutorial pocket (14 rooms); Silvermere the first town
   (24+ prefixed rooms; Town Square = room 224 = the tournament start).
+
+## Addendum — restock mechanism fully pinned (2026-07-16, decompile pass)
+
+- **Boot**: `check_initiate_restocking` is called once for shops 0..199
+  right after startup (guarded by `DAT_00482138` in the polling routine).
+  So the interval-0 "probabilistic top-up when poked" happens at **boot
+  only** — there is no per-transaction poke. On a MajorBBS board that
+  meant once per nightly cleanup/restart.
+- **Sweep cadence**: `restock_items()` hangs off `background_slow` behind
+  counter `DAT_0047fb80` — it runs on every **21st slow tick, i.e. every
+  630 s (~10.5 min)**. A due event on a live non-gang shop (type != 0xb)
+  re-checks `current < max`, rolls `genrdn(1,100) < percent`, adds
+  `amount` clamped to max, sets the shop-dirty byte (+0x1dc), then
+  **reschedules itself +interval minutes whether or not the roll
+  succeeded** (`FUN_0045b856` adds minutes to the packed DOS date/time
+  pair at event +8/+0xc; events live forever on the `DAT_0048bdc0` list).
+- **Rarity arithmetic**: expected time per unit = interval / percent.
+  Slowest slots in the data: shadow cloak (Dreary Shop) 720 min @ 1% ≈
+  50 days/unit; etched adamant warhammer/broadsword, ruby earrings,
+  warpblade, prismatic gear all 720 min @ 2-3% (max 1 on the shelf).
+  869 slots carry timers in total.
+- **First-run state** (user testimony): on the first run of the world
+  every item is available in its shop. The extracted `shopnow` columns
+  disagree for 411 of 1,203 slots **because the .VIR is a played-board
+  snapshot** — stock persists to Btrieve via the dirty byte. `shopnow`
+  is runtime state, not content; a fresh world boots with `now = max`.
