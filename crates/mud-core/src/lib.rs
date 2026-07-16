@@ -5,6 +5,7 @@
 //! Behavior follows the spec in `re/docs/`.
 
 pub mod ability;
+pub mod combat;
 pub mod command;
 pub mod content;
 pub mod game;
