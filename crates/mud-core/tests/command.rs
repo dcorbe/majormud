@@ -78,10 +78,26 @@ fn attack_syntax_is_flexible() {
 }
 
 #[test]
-fn aid_still_parses_and_does_not_shadow_attack() {
-    assert_eq!(parse("aid bob"), Command::Aid("bob".into()));
-    // Best-effort: "ai" uniquely prefixes aid; "a" prefers attack
-    // (precedence order).
+fn minimum_abbreviations_match_the_oracle() {
+    // Oracle (oracle_ambiguity2.raw): each verb has a minimum abbreviation;
+    // anything shorter falls to say.
+    assert_eq!(parse("q"), Command::Quit);
+    assert_eq!(parse("exp"), Command::Experience);
+    assert!(matches!(parse("ex"), Command::Unknown(_)));
+    assert_eq!(parse("exi"), Command::Exits);
+    assert_eq!(parse("st"), Command::Status);
+    assert_eq!(parse("sta"), Command::Status);
+    assert_eq!(parse("he"), Command::Health);
+    assert_eq!(parse("hel"), Command::Help);
+    assert_eq!(parse("to"), Command::Top);
+    assert!(matches!(parse("t"), Command::Unknown(_)));
+    assert_eq!(parse("trai"), Command::Train);
+    assert!(matches!(parse("tra"), Command::Unknown(_)));
+    assert!(matches!(parse("tr"), Command::Unknown(_)));
+    assert_eq!(parse("g"), Command::Get(String::new()));
+    assert_eq!(parse("get sil"), Command::Get("sil".into()));
     assert_eq!(parse("ai bob"), Command::Aid("bob".into()));
     assert_eq!(parse("a bob"), Command::Attack("bob".into()));
+    assert_eq!(parse("lo"), Command::Look);
+    assert!(matches!(parse("h"), Command::Unknown(_)));
 }

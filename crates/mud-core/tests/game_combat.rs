@@ -183,6 +183,23 @@ fn bare_a_with_no_monster_is_said() {
 }
 
 #[test]
+fn reengaging_prints_combat_off_first() {
+    // Oracle: "at thief" while already fighting printed *Combat Off* then
+    // *Combat Engaged*.
+    let mut core = Core::new(world(), config());
+    let s = create(&mut core, "Dain");
+    core.spawn_monster(MonsterId(7), RoomId { map: 1, room: 1 });
+    core.input(s, "attack kobold");
+    core.drain_events();
+
+    core.input(s, "at thief");
+    let shown = text_to(&core.drain_events(), s);
+    let off = shown.find("*Combat Off*");
+    let on = shown.find("*Combat Engaged*");
+    assert!(off.is_some() && on.is_some() && off < on, "got: {shown:?}");
+}
+
+#[test]
 fn multi_word_target_names_resolve() {
     let mut core = Core::new(world(), config());
     let s = create(&mut core, "Dain");

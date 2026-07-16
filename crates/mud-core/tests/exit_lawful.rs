@@ -189,9 +189,9 @@ fn exit_completes_after_ten_dots() {
 }
 
 #[test]
-fn commands_during_meditation_are_swallowed() {
-    // Oracle: sending movement during the dots produces nothing and the
-    // exit still completes.
+fn commands_during_meditation_are_rejected() {
+    // Oracle (oracle_ambiguity2.raw): commands during the dots are refused
+    // with an explicit message, and the exit still completes.
     let mut core = Core::new(world(), config());
     let s = create(&mut core, "Dain");
     core.input(s, "x");
@@ -203,6 +203,10 @@ fn commands_during_meditation_are_swallowed() {
     assert!(
         !shown.contains("Town Gates"),
         "look ignored while meditating: {shown:?}"
+    );
+    assert!(
+        shown.contains("You may not perform any commands while waiting to exit!"),
+        "rejection message: {shown:?}"
     );
 
     let mut disconnected = false;

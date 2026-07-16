@@ -596,8 +596,10 @@ impl Core {
             Some(Session::ChoosingRace { .. }) => self.choose_race(session, line),
             Some(Session::ChoosingClass { .. }) => self.choose_class(session, line),
             Some(Session::ChoosingLawful { .. }) => self.choose_lawful(session, line),
-            // Oracle: all input is swallowed during exit meditation.
-            Some(Session::InGame { exiting: Some(_), .. }) => {}
+            // Oracle: commands during exit meditation are refused.
+            Some(Session::InGame { exiting: Some(_), .. }) => {
+                self.output_line(session, text::MEDITATION_BLOCKED);
+            }
             Some(Session::InGame { .. }) => self.game_command(session, line),
         }
     }
@@ -608,6 +610,13 @@ impl Core {
             // Blank input re-shows the room without its description (oracle).
             Command::Blank => self.show_room_brief(session),
             Command::Look => self.show_room(session),
+            Command::Exits => self.show_exits_line(session),
+            Command::Help => self.output_line(session, text::HELP_BANNER),
+            Command::Top => self.output_line(session, text::TOP_HEADER),
+            Command::Get(_) => {
+                // Items land in M4; the oracle syntax line stands in.
+                self.output_line(session, text::SYNTAX_GET);
+            }
             Command::Status => self.show_sheet(session),
             Command::Experience => self.show_experience(session),
             Command::Health => self.show_health(session),
@@ -773,6 +782,14 @@ impl Core {
             return Resolution::FallThrough;
         };
         if let Some(Session::InGame { target, .. }) = self.sessions.get_mut(&session) {
+            // Oracle: attacking while already engaged prints *Combat Off*
+            // before the new *Combat Engaged*.
+            if target.is_some() {
+                *target = None;
+                self.output_line(session, text::COMBAT_OFF);
+            }
+        }
+        if let Some(Session::InGame { target, .. }) = self.sessions.get_mut(&session) {
             *target = Some(monster);
         }
         self.output_line(session, text::COMBAT_ENGAGED);
@@ -810,7 +827,9 @@ impl Core {
         let room = self.player(session).location;
         let want = target_words.trim().to_ascii_lowercase();
         if want.is_empty() {
-            return Resolution::FallThrough;
+            // Oracle: bare "ai" prints the syntax line.
+            self.output_line(session, text::SYNTAX_AID);
+            return Resolution::Handled;
         }
         let target = self
             .in_game_sessions()
@@ -1570,6 +1589,23 @@ impl Core {
 
     fn show_room(&mut self, session: SessionId) {
         self.render_room(session, true);
+    }
+
+    /// The `exits` command: just the obvious-exits line (oracle).
+    fn show_exits_line(&mut self, session: SessionId) {
+        let player = self.player(session);
+        let room = &self.content.rooms[&player.location];
+        let exits: Vec<&str> = Direction::ALL
+            .into_iter()
+            .filter(|d| room.exits[*d as usize].is_some())
+            .map(|d| text::direction_shown(d))
+            .collect();
+        let line = if exits.is_empty() {
+            format!("{}{}", text::OBVIOUS_EXITS, text::NO_EXITS)
+        } else {
+            format!("{}{}", text::OBVIOUS_EXITS, exits.join(", "))
+        };
+        self.output_line(session, &line);
     }
 
     fn show_room_brief(&mut self, session: SessionId) {

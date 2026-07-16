@@ -330,7 +330,20 @@ Live-transcript message formats (`re/oracle/oracle_attack3.raw`, `oracle_downed.
   word prefix resolve (`a kobold thief` / `a kobold` / `a thief`). An attack whose
   target does NOT resolve in the room falls through to SAY — which is why the
   transcript shows `a kobold` spoken aloud in a kobold-less room (an earlier
-  revision of this note wrongly concluded `a` wasn't an alias).
+  revision of this note wrongly concluded `a` wasn't an alias). Attacking while
+  already engaged prints **`*Combat Off*`** then the new `*Combat Engaged*`.
+- **Command-parser model** (`oracle_ambiguity2.raw`): each verb has a
+  **minimum abbreviation**; shorter or unknown input falls through to SAY.
+  Verified: `q`→quit, `exp`→experience but `ex`→say, `exi`→**exits** (a real
+  command printing just the obvious-exits line), `st`→status, `he`→health but
+  `hel`→help, `to`→top ("Top Heroes of the Realm"), `trai`→train but
+  `tra`/`t`→say, `g`→get. Argument commands invoked bare print a syntax line
+  (`ai` → "Syntax: AID {user name}", `g` → "Syntax: GET {Item Name}");
+  attack instead auto-picks. Direction words also have exact two-letter
+  aliases (`ne` = northeast, etc.). During exit meditation all commands are
+  refused with "You may not perform any commands while waiting to exit!".
+  Direction-word minimum abbreviations (`no`, `sou`) remain ORACLE-VERIFY
+  (the probe batch was consumed by the BBS menu after `q`).
 - Player swing hit: **`You punch <monster name> for %d damage!`** (unarmed; the verb
   comes from the weapon/attack profile, monster name WITHOUT article).
 - Player swing miss: **`You swing at <monster name>!`**

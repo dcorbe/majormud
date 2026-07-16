@@ -132,6 +132,20 @@ pub const LAWFUL_QUESTION: &str = "Do you want to be Lawful?  [Yes/No]";
 /// second until departure.
 pub const EXIT_MEDITATION: &str = "You will exit after a period of silent meditation.";
 
+/// VERIFIED (oracle): rejection while the exit meditation is pending —
+/// commands are refused, not silently swallowed.
+pub const MEDITATION_BLOCKED: &str = "You may not perform any commands while waiting to exit!";
+
+/// VERIFIED (oracle): syntax lines for argument commands invoked bare.
+pub const SYNTAX_AID: &str = "Syntax: AID {user name}";
+pub const SYNTAX_GET: &str = "Syntax: GET {Item Name}";
+
+/// VERIFIED (oracle, first line; remainder ORACLE-VERIFY).
+pub const HELP_BANNER: &str = "Type HELP followed by a topic for help on that topic";
+
+/// VERIFIED (oracle): the top command header.
+pub const TOP_HEADER: &str = "Top Heroes of the Realm\n-=-=-=-=-=-=-=-=-=-=-=-";
+
 // --- combat strings (VERIFIED oracle_attack3.raw / oracle_downed.raw / DLL) ---
 pub const COMBAT_ENGAGED: &str = "*Combat Engaged*";
 pub const COMBAT_OFF: &str = "*Combat Off*";

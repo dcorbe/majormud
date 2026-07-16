@@ -171,9 +171,9 @@ fn dropped_connection_detach_persists_and_announces() {
 fn input_from_detached_session_is_ignored() {
     let mut core = Core::new(two_room_content(), CoreConfig::default());
     let alice = core.attach_player(player("Alice"));
-    core.input(alice, "x");
+    core.detach(alice); // carrier dropped
     core.drain_events();
 
-    core.input(alice, "look"); // already disconnected
+    core.input(alice, "look"); // already gone
     assert_eq!(core.drain_events(), vec![]);
 }

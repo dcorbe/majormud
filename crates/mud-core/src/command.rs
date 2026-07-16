@@ -1,14 +1,17 @@
 //! The in-game command parser.
 //!
-//! Design philosophy (player testimony, oracle-reconciled): **best-effort
-//! matching everywhere, say as the universal fallback.** Verbs prefix-match
-//! against the table in precedence order down to a single letter ("a" =
-//! attack, "at" = attack, "ai" = aid); argument words are resolved by the
-//! game layer with the same word-prefix leniency ("a kob th", "get sil");
-//! and whenever the engine cannot intuit what the player meant — unknown
-//! verb OR unresolvable argument — the whole line is spoken aloud instead
-//! of erroring. Handlers signal argument-resolution failure by returning
-//! [`Resolution::FallThrough`]; `Core::game_command` owns the say fallback.
+//! Model (oracle-calibrated, `oracle_ambiguity2.raw`): every verb carries a
+//! **minimum abbreviation length**; the input's first word matches a verb iff
+//! it is a prefix of the verb's name AND at least that minimum long. Entries
+//! are tried in table order (first match wins — `hel` hits help before
+//! health). Anything that matches nothing — too-short prefix, unknown word,
+//! or an argument the handler can't resolve — falls through to SAY, the
+//! parser's universal fallback. Verified pairs: q→quit, exp/ex, exi→exits,
+//! st→status, he→health vs hel→help, to→top, trai/tra, g→get.
+//!
+//! Argument-taking verbs that require an argument print a `Syntax: VERB
+//! {...}` line when given none (oracle: `ai` → "Syntax: AID {user name}");
+//! attack is the exception — bare attack auto-picks a target.
 
 use crate::content::Direction;
 
@@ -16,14 +19,19 @@ use crate::content::Direction;
 pub enum Command {
     Move(Direction),
     Look,
+    Exits,
     Status,
     Experience,
     Health,
+    Help,
+    Top,
     Train,
     /// `attack [target]` — empty target means auto-pick.
     Attack(String),
     /// `aid <player>` — stabilize a downed player.
     Aid(String),
+    /// `get <item>` — placeholder until M4 items (syntax line only).
+    Get(String),
     Quit,
     Blank,
     Unknown(String),
@@ -54,7 +62,7 @@ const ALIASES: [(&str, Command); 12] = [
     ("x", Command::Quit),
 ];
 
-/// Verb constructors for the precedence table.
+/// Verb constructors for the table.
 #[derive(Clone, Copy)]
 enum Verb {
     Plain(fn() -> Command),
@@ -62,30 +70,33 @@ enum Verb {
     WithArgs(fn(String) -> Command),
 }
 
-/// Prefix-matched verbs in precedence order: any prefix of a name matches,
-/// first entry wins ("a" → attack because attack precedes aid).
-const VERBS: [(&str, Verb); 21] = [
-    ("north", Verb::Plain(|| Command::Move(Direction::North))),
-    ("south", Verb::Plain(|| Command::Move(Direction::South))),
-    ("east", Verb::Plain(|| Command::Move(Direction::East))),
-    ("west", Verb::Plain(|| Command::Move(Direction::West))),
-    ("northeast", Verb::Plain(|| Command::Move(Direction::NorthEast))),
-    ("northwest", Verb::Plain(|| Command::Move(Direction::NorthWest))),
-    ("southeast", Verb::Plain(|| Command::Move(Direction::SouthEast))),
-    ("southwest", Verb::Plain(|| Command::Move(Direction::SouthWest))),
-    ("up", Verb::Plain(|| Command::Move(Direction::Up))),
-    ("down", Verb::Plain(|| Command::Move(Direction::Down))),
-    ("attack", Verb::WithArgs(Command::Attack)),
-    ("aid", Verb::WithArgs(Command::Aid)),
-    ("look", Verb::Plain(|| Command::Look)),
-    ("status", Verb::Plain(|| Command::Status)),
-    ("stat", Verb::Plain(|| Command::Status)),
-    ("experience", Verb::Plain(|| Command::Experience)),
-    ("exp", Verb::Plain(|| Command::Experience)),
-    ("health", Verb::Plain(|| Command::Health)),
-    ("train", Verb::Plain(|| Command::Train)),
-    ("quit", Verb::Plain(|| Command::Quit)),
-    ("exit", Verb::Plain(|| Command::Quit)),
+/// (name, minimum abbreviation length, constructor) in match order.
+/// Minimums marked ORACLE are transcript-verified; others are the shortest
+/// unambiguous prefix pending verification. Direction minimums are
+/// ORACLE-VERIFY (the probe batch got eaten by the BBS menu).
+const VERBS: [(&str, usize, Verb); 22] = [
+    ("north", 2, Verb::Plain(|| Command::Move(Direction::North))),
+    ("south", 2, Verb::Plain(|| Command::Move(Direction::South))),
+    ("east", 2, Verb::Plain(|| Command::Move(Direction::East))),
+    ("west", 2, Verb::Plain(|| Command::Move(Direction::West))),
+    ("northeast", 6, Verb::Plain(|| Command::Move(Direction::NorthEast))),
+    ("northwest", 6, Verb::Plain(|| Command::Move(Direction::NorthWest))),
+    ("southeast", 6, Verb::Plain(|| Command::Move(Direction::SouthEast))),
+    ("southwest", 6, Verb::Plain(|| Command::Move(Direction::SouthWest))),
+    ("up", 2, Verb::Plain(|| Command::Move(Direction::Up))),
+    ("down", 2, Verb::Plain(|| Command::Move(Direction::Down))),
+    ("attack", 1, Verb::WithArgs(Command::Attack)), // ORACLE: a/at/att
+    ("aid", 2, Verb::WithArgs(Command::Aid)),       // ORACLE: ai
+    ("get", 1, Verb::WithArgs(Command::Get)),       // ORACLE: g/ge/get
+    ("look", 2, Verb::Plain(|| Command::Look)),     // ORACLE: lo
+    ("exits", 3, Verb::Plain(|| Command::Exits)),   // ORACLE: exi (ex says)
+    ("experience", 3, Verb::Plain(|| Command::Experience)), // ORACLE: exp
+    ("status", 2, Verb::Plain(|| Command::Status)), // ORACLE: st/sta/stat
+    ("help", 3, Verb::Plain(|| Command::Help)),     // ORACLE: hel (before health)
+    ("health", 2, Verb::Plain(|| Command::Health)), // ORACLE: he
+    ("top", 2, Verb::Plain(|| Command::Top)),       // ORACLE: to (t says)
+    ("train", 4, Verb::Plain(|| Command::Train)),   // ORACLE: trai (tra says)
+    ("quit", 1, Verb::Plain(|| Command::Quit)),     // ORACLE: q
 ];
 
 pub fn parse(input: &str) -> Command {
@@ -104,8 +115,8 @@ pub fn parse(input: &str) -> Command {
             return command.clone();
         }
     }
-    for (name, kind) in &VERBS {
-        if name.starts_with(&verb) {
+    for (name, min, kind) in &VERBS {
+        if verb.len() >= *min && name.starts_with(&verb) {
             return match kind {
                 Verb::Plain(make) => make(),
                 Verb::WithArgs(make) => make(trimmed[verb.len()..].trim().to_string()),
