@@ -1,0 +1,190 @@
+id	name	description
+0	empty	The "nothing" attribute. New objects automatically have their attributes filled with this.
+1	Damage	Does damage in the amount specified by the parameter. MR is not taken into account.
+2	AC	Modifies the AC value specified by the parameter, this AC is NOT affected by the targets weight. Used in barkskin and stoneskin.
+3	Rcol	Modifies resistance to cold by the value specified by the parameter.
+4	Max Damage	Modifies max damage to the value specified by the parameter.
+5	Rfir	Modifies resistance to fire by the value specified by the parameter.
+6	Enslave	Charms the target.
+7	DR	Modifies the DR value specified by the parameter. Note that DR is expressed in multiples of 10.
+8	Drain	Drains HP from the target to the caster. (usually seen in spells)
+9	Shadow	Displays "A shadowy figure!" when looked at by other players.
+10	AC(Blur)	Modifies the AC value specified by the parameter, this AC IS affected by the targets encumberance. Used in blur, and the spell for the amethyst pendant.
+11	EnergyLevel	Modifies the Energy level specified by the parameter.
+12	Summon	Summons a monster specified by the parameter. The value in parameter is the monster number.
+13	Illu	Increases or decreases the light value for the target ONLY by the value specified in the parameter.
+14	RoomIllu	Increases or decreases the light value for the entire room by the value specified in the parameter.
+15	Alterhunger	Unknown
+16	Alter thirst	Unknown
+17	Damage(-MR)	Does damage which takes into account the targets MR (or so the name implies).
+18	Heal	Heals damage specified by the value in the parameter.
+19	Poison	Poisons the target doing damage specified by the value in the parameter.
+20	Cure Poison	Cures poison (cure poison has a parameter of 8, as does antidote).
+21	ImmuPoison	Used in duration spells to make the target immune to poison.
+22	Accuracy	Increases the targets accuracy by the value specified in the parameter. (bless increases this value by 3, divine favour increases it by 10)
+23	AffectsUndead	Used to make a spell ONLY work on undead monsters.
+24	ProtEvil	Protection from evil.
+25	ProtGood	Protection from good.
+26	DetectMagic	Detects the magic in an item.
+27	Stealth	Modifies stealth by the value in the parameter.
+28	Magical	Defines the magical potency of an item. Witchunters cannot use items with this flag. To make a non-magical item hit highly magical creatures, use the HitMagic flag.
+29	Punch	Used in the Mystic class definition to grant the Punch ability. A parameter of +1 is used in their definition.
+30	Kick	Used in the Mystic class definition to grant the Kick ability. A parameter of +1 is used in their definition.
+31	Bash	Used in almost all class definition to grant the ability to bash attack monsters.
+32	Smash	Unknown
+33	Killblow	Unknown
+34	Dodge	Increases or decreases the targets ability to Dodge by the % value specified in the parameter.
+35	JumpKick	Used in the Mystic class definition to grant the JumpKick ability. A parameter of +1 is used in their definition.
+36	M.R.	Increases or decreases the targets MR by the value specified in the parameter.
+37	Picklocks	In Race and Class definitions, this grants the ability to Picklock, in items, this can be used to enhance the ability.
+38	Tracking	Used in Race and Class definitions to grant Tracking to a Race/Class.
+39	Thievery	In Race and Class definitions, this grants the ability to Rob, in items, this can be used to enhance the ability.
+40	FindTraps	In Race and Class definitions, this grants the ability to find traps, in items, this can be used to enhance the ability.
+41	DisarmTraps	In Race and Class definitions, this grants the ability to disarm traps, in items, this can be used to enhance the ability.
+42	LearnSp	Places the spell specified in the parameter into the players spells list. Also used for Kai powers and Bard songs. Use this in a
+scroll item. The parameter is the spell number.
+43	CastsSp	Casts the spell when an item is 'used', or, with the %Spell attribute, this is the spell that is cast when the % chance is met.
+44	Intel	Increases or decreases the Intel stat by the value specified in the parameter.
+45	Wisdom	Increases or decreases the Wisdom/Willpower stat by the value specified in the parameter.
+46	Strength	Increases or decreases the Strength stat by the value specified in the parameter.
+47	Health	Increases or decreases the Health stat by the value specified in the parameter.
+48	Agility	Increases or decreases the Agility stat by the value specified in the parameter.
+49	Charm	Increases or decreases the Charm stat by the value specified in the parameter.
+50	MageBaneQuest	This Determines if the player has completed the MageBane quest.
+51	AntiMagic	Used in the Witchunter class definition, apperently the only effect being that MR effects beneficial as well as combat spells cast on the target.
+52	EvilInCombat	Used in spells to generate evil warnings and give EP when used.
+53	BlindingLight	Unknown
+54	IlluTarget	Increases or decreases the light level for the target specified by the value in the parameter.
+55	AlterGeneralLightDuration	Unknown
+56	RechargeItem	Unknown
+57	SeeHidden	Grants the ability to see hidden players. For monsters, this allows them to see hidden players and attack them while they are sneaking or hiding. The monster will also follow even if the player escapes and re-sneaks.
+58	Crits	Increases or decreases the targets critical hit chance by the value specified in the parameter.
+59	ClassOk	Used in items to make the item equippable by classes they aren't intended to be used with.
+60	Fear	Makes the target flee in fear. Used in duration spells.
+61	AffectExit	Unknown
+62	EvilChance	Unknown
+63	Experience	Unknown (although one would assume this can be used to add/remove experience)
+64	AddCP	Unknown (although one would assume this can be used to add/remove CP)
+65	ResistStone	Modifies resistance to stone by the value specified by the parameter.
+66	Rlit	Modifies resistance to lightning by the value specified by the parameter.
+67	Quickness	does in fact make you walk faster (but only to a point so that it only matters if you're heavy.)
+68	Slowness	Modifies the room movement time while not affecting stealth as a modified encumbrance would. The Mage spell "Slow" uses a parameter of +200 for this attribute.
+69	MaxMana	Increases or decreases the targets maximum mana by the value specified in the parameter.
+70	S.C.	Incresaes or decreases the targets SC by the value specified in the parameter.
+71	Confusion	Confuses the target, making them fumble in the % specified by the parameter. A parameter of +50 would make them fumble 50% of the time-- most "stun" spells use this with a value of +100, which makes the target fumble 100% of the time.
+72	DamageShield	Used to setup a shockshield for the player. Shockshield uses this.
+73	DispellMagic	cancels spells that affect the ability in the value (ie dispellmagic +107 cancels spells giving the "blind" ability), but probably only certain ones
+74	HoldPerson	Holds the target in the room. Used with duration spells. Entangle and Hold Person use this attribute.
+75	Paralyze	Unknown
+76	Mute	Strikes the target mute, making them unable to talk in rooms, etc.
+77	Percep	Increases or decreases the targets perception by the value specified in the parameter.
+78	Animal	Used in monster attributes to flag a monster as an animal. See "Affects Animals".
+79	MageBind	did use to make spellcasting impossible but not sure it's still working.
+80	AffectsAnimals	Used in spells to make it ONLY affect animals.
+81	Freedom	Frees the target from holding spells and spells that alter the targets speed.
+82	Cursed	Used on items, once worn, a Cursed item can't be removed.
+83	CURSED	has the same affects as 82 (curse) so you can't remove an item but it also makes it not drop at death (unlike 82).. although the item is still unequipped at death so it kinda doesn't work right.
+84	Rcrs	Remove curse. Seen in spells. The Priest spell "Remove Curse" uses this flag. Removes all cursed items.
+85	Shatter	Shatters the targets weapon. The parameter (in theory) specifies which "Quality" of weapons the spell affects and can shatter. The Druid sell "Shatter" specifies a parameter of 1, and thus will not work on items with a Quality of or greater than 1.
+86	Quality	Specifies an items "Quality". The only effect of this is to counter "Shatter". See "Shatter".
+87	Speed	Increases or decreases the targets swing speed with their weapon or attack by the value specified in the parameter. The Mage spell "Speed" uses +85 for a parameter, the Mage spell "Slow" uses +125.
+88	Alter HP	increases or decreases the targets max HP
+89	PunchACY	believed to alter punch accuracy value
+90	KickACY	believed to alter kick accuracy value
+91	JumpKACY	believed to alter jump accuracy value
+92	PunchDmg	Increases punch damage for the Mystic punch attack.
+93	KickDmg	Increases kick damage for the Mystic kick attack.
+94	JumpKDmg	Increases jumpkick damage for the Mystic jumpkick attack.
+95	Slay	Unknown. Used by the "laen longsword" item.
+96	Encum	Increases or decreases the targets encumberance % by the value specified in the parameter.
+97	Good	In spells and items, makes the spell/item useable only by Good aligned characters.
+98	Evil	In spells and items, makes the spell/item useable only by Evil aligned characters.
+99	AlterDRpercent	changes DR by the % in the value (is cast by some Mod 9 monsters with negative values.)
+100	LoyalItem	Makes the item stay with the player even into death. Seen in items.
+101	ConfuseMsg	Sets the confusion message for a previous "Confusion" attribute. The parameter specifies the message number to use for when the player is confused and fumbles. For the Mage spell "confusion", the message is along the lines of "You fumble in confusion!".
+102	RaceStealth	Used in Race definitions to grant racial stealth.
+103	ClassStealth	Used in Class definitions to grant class stealth.
+104	DefenseModifier	Unknown
+105	Accuracy(2)	Increases or decreases accuracy by the value specified in the parameter.
+106	Accuracy (3)	Increases or decreases accuracy by the value specified in the parameter.
+107	BlindUser	Blinds the target.
+108	AffectsLiving	Used in spells to limit their abilities to only living players or monsters. See "NonLiving"
+109	NonLiving	Used in monster attributes to flag the monster as being Non Living which makes it impossible to cast spells flagged as AffectsLiving on them. See "AffectsLiving"
+110	NotGood	Used in items/spells to flag the object as being useable by any alignment EXCEPT Good. (Neutral, Seedy, Outlaw, Criminal, Villain and FIEND can use it, but Good, Saint, Lawful cannot.)
+111	NotEvil	Used in items/spells to flag the object as being useable by any alignment EXCEPT Evil. (Lawful, Saint, Good, Neutral and Seedy can use it, but Outlaw, Criminal, Villain and FIEND cannot.)
+112	Neutral	In spells and items, makes the spell/item useable only by Neutral aligned characters.
+113	NotNeutral	Used in items/spells to flag the object as being useable by any alignment EXCEPT Neutral. (Lawful, Saint, Good, Outlaw, Criminal, Villain and FIEND can use it, but Neutral and Seedy cannot.)
+114	%Spell	Used in items to make a "spell effect" occur on a percent chance on each hit or crit. The spell cast is specified by the NEXT "CastsSp" attribute. See "CastsSp".
+115	DescMsg	Used in spells. Specifies the message in WCCMSG.DAT to use when the spell wears off, when you are looked at, and when you type 'STAT' to see the effect listed.
+116	BSAccu	Used in items (although I can see no reason why it couldn't be used in a spell) to specify the backstab accuracy for the weapon. A positive value increases the chance to hit, a negative value decreases the chance to hit.
+117	BsMinDmg	Used in items (although I can see no reason why it couldn't be used in a spell) to specify a higher (or lower) minimum backstab damage for the weapon when armed.
+118	BsMaxDmg	Used in items (although I can see no reason why it couldn't be used in a spell) to specify a higher (or lower) maximum backstab damage for the weapon when armed.
+119	Del@Maint	Used in items to delete the item, hidden or not, at cleanup.
+120	StartMsg	Used in spells to specify the 'start message' for the spell.Basically, this sets the opening line for the spell before the Cast Message is sent.
+121	Recharge	Used in items to specify the amount of "uses" to recharge at cleanup.
+122	RemovesSpell	Used in spells to remove other spells (cancel them out).
+123	HPRegen	Used in any object to modify the targets HP regen rate. The Druid spell "Rapid Healing" and the module-1 quest rings use this attribute.
+124	NegateAbility	Removes the ability number?
+125	IceSorcQuest	This is the progress the player has made with the Ice Sorceress quest.
+126	GoodQuest	This is the progress the player has made with the GOOD quest.
+127	NeutralQuest	This is the progress the player has made with the NEUTRAL quest.
+128	EvilQuest	This is the progress the player has made with the EVIL quest.
+129	DarkDruidQuest	This is the progress the player has made with the Dark Druid quest.
+130	BloodChampQuest	This is the progress the player has made with the Blood Champion quest.
+131	SheDragonQuest	This is the progress the player has made with the SheDragon quest.
+132	WereratQuest	This is the progress the player has made with the Wererat quest.
+133	PhoenixQuest	This is the progress the player has made with the Phoenix feather quest.
+134	DaoLordQuest	This is the progress the player has made with the DaoLord quest.
+135	MinLevel	Typically seen in items (useless for spells since they have their own internal Minimum level field) to restrict them to players ONLY of the level specified or higher. The value in the parameter is the minimum level.
+136	MaxLevel	Typically seen in items to restrict them to players ONLY of the level specified or LOWER. The value in the parameter is the maximum level.
+137	Shock	Sets the Shockshield message for the spell/item. See "DmgShield".
+138	RoomVisible	Makes the item visible to the entire room.
+139	SpellImmu	Used in objects to make the target immune to spells below or equal to the level specified in the parameter.
+140	TeleportRoom	Teleports the target to the specified room in the parameter. Usually seen with a "Teleport map". See "Teleport map".
+141	TeleportMap	Teleports the target to the specified map in the parameter. Usually seen with a "Teleport room". See "Teleport room".
+142	HitMagic	Seen in weapons (and possibly could be used in spells) and used to make them hit magical creatures of the value specified in the parameter or LOWER. HitMagic +5 for example would let the target hit monsters with a magical attribute of 5 or lower.
+143	ClearItem	Poofs or unequips item number?
+144	NonMagicalSpell	Flags the spell as non-magical, thus making it immune to MR.
+145	ManaRgn	Used in objects to increase or decrease the targets mana regen by the percent specified in the parameter. A value of +25 would increase the targets mana regen by 25%. A value of +100 would increase the targets mana regen by 100% (double).
+146	MonsGuards	Used in monster definitions to define a monster that protects this one. The parameter points to an entry in the monster database that will protect this one. Multiple MonsGuards can be used to make the monster be protected by different monsters.
+147	ResistWater	Increases or decreases the targets resistance to Water by the value specified in the parameter.
+148	TextBlock	Executes the text block specified by the parameter.
+149	Remove@Maint	Used in items-- removes the item at cleanup, poofing it.
+150	HealMana	Regenerates mana back by the value specified in the parameter.
+151	EndCast	Used in spell definitions to chain to another spell at the end of the current ones cast. EndCast is only called if the first spell doesn't fail.
+152	Rune	Flags the object as a Rune. Seen in one item.
+153	KillSpell	Kills a spell without calling it's EndCast effect (if one exists).
+154	Visible@Maint	Used in items to keep them visible at cleanup.
+155	DeathText	Unknown (executes the specified text block when the player dies?)
+156	QuestItem	Makes the item a quest item
+157	ScatterItems	Scatters the items in the room to the specified room(s). You can use a range to specify multiple rooms, but, these rooms must all be a part of the current map.
+158	ReqToHit	Monsters with this flag require that weapons (and spells?) with this IDENTICAL flag (including parameter) be used to attack it. NOTHING else will work on these monsters.
+159	KaiBind	Prevents the target from using Kai powers. Seen in 1.1u's race change to Half-Ogre's.
+160	GiveTempSpell	Unknown (gives the spell specified in Value/Parameter temporarily, as in, it appears in the spells/powers list? Maybe used in future items to give out spells only if a player has a specific item or has a specific item armed/equipped?)
+161	OpenDoor	Unknown (opens a door, I assume, but how it determines direction/etc is unknown)
+162	Lore	Unknown
+163	SpellComponent	Make the item a spell component.
+164	CastOnEnd%	cast a spell specificed in the next EndCast ability when this spell ends only Value % chance of the time
+165	AlterSpDmg	Unknown (alter spells damage (eg: used in an item or another spell to temporarily increase all spells damage)?)
+166	AlterSpLength	Unknown (alter the length of duration spells (eg: used in an item or another spell to temporarily increase all future spells durations)?)
+167	UnEquipItem	Unknown (remove either the specific item, or, perhaps the value is an item location? (head, arms, etc)?)
+168	EquipItem	Unknown (equip either the specific item, or, perhaps the value is an item location? (head, arms, etc)? and the first elgible item found in the players inventory is used?)
+169	CannotWearLocation	Unknown (perhaps used to make an item that can be worn on multiple locations, but, this flag is used to define WHICH locations it cannot be used on?)
+170	Sleep	Unknown
+171	Invisibility	Unknown (some new form of stealth perhaps that doesn't rely on Stealth?)
+172	SeeInvisible	Unknown (most likely a way for monsters/players to see others with this new Invisible ability)
+173	Scry	Unknown (perhaps show the room specificed in the value? No idea really)
+174	StealMana	Unknown (most likely steals Mana from another Player or monster for the value specified (or min/max in a spell))
+175	StealHPtoMP	Unknown (convert stolen HP to Mana instead? Works like the other 'Steal' abilities?)
+176	StealMPtoHP	Unknown (convert stolen Mana to HP instead? Works like the other 'Steal' abilities?)
+177	SpellColours	Unknown (perhaps a way to specific the ANSI colour coding for spells, overriding the default colours for the spell?)
+178	Shadowform	This functions much like shadowform except the value states which text block to display when the player is looked at.
+179	FindTrapsValue	alters user's Traps Value
+180	PickLocksValue	alters user's PickLocks Value
+181	GHouseDeed	Gang House Deed value
+182	GHouseTax	Gang House Tax value
+183	GHouseItem	Gang House Item
+184	GShopItem	Gang Shop Item (controller)
+185	BadAttk	Do not Attack if Item Nmbr
+186	PerStealth	Perfect Stealth
+187	Meditate	Meditate skill granted
