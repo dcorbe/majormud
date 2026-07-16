@@ -139,6 +139,30 @@ impl Coins {
         total * ratios[0] + u64::from(self.copper)
     }
 
+    /// `cleanup_currency`: roll loose copper upward into proper coins
+    /// through the ratios (selling/withdrawing mint path).
+    pub fn add_copper_and_mint(&mut self, amount: u64, ratios: [u64; 4]) {
+        let mut copper = u64::from(self.copper) + amount;
+        let silver_r = ratios[0];
+        let gold_r = ratios[1];
+        let plat_r = ratios[2];
+        let runic_r = ratios[3];
+        let mut silver = u64::from(self.silver) + copper / silver_r;
+        copper %= silver_r;
+        let mut gold = u64::from(self.gold) + silver / gold_r;
+        silver %= gold_r;
+        let mut platinum = u64::from(self.platinum) + gold / plat_r;
+        gold %= plat_r;
+        let runic = u64::from(self.runic) + platinum / runic_r;
+        platinum %= runic_r;
+        self.copper = copper as u32;
+        self.silver = silver as u32;
+        self.gold = gold as u32;
+        self.platinum = platinum as u32;
+        self.runic = runic as u32;
+        let _ = (&mut silver, &mut gold, &mut platinum);
+    }
+
     /// `deduct_currency`: remove a copper amount, breaking higher coins into
     /// change only when the lower drawers run dry (never consolidating change
     /// upward). Caller must have checked affordability. ORACLE-VERIFY the
@@ -323,6 +347,9 @@ pub struct Core {
     /// Ephemeral floor items per room (item, remaining uses), seeded from
     /// the rooms' static placements at boot.
     room_items: BTreeMap<RoomId, Vec<(crate::content::ItemId, i16)>>,
+    /// Live shop stock counts (seeded from content; persistence via events
+    /// arrives with the restock system).
+    shop_stock: BTreeMap<crate::content::ShopId, [i16; 20]>,
 }
 
 impl Core {
@@ -343,7 +370,15 @@ impl Core {
             next_monster: 1,
             room_coins: BTreeMap::new(),
             room_items: BTreeMap::new(),
+            shop_stock: BTreeMap::new(),
         };
+        for shop in core.content.shops.values() {
+            let mut counts = [0i16; 20];
+            for (i, slot) in shop.stock.iter().enumerate() {
+                counts[i] = slot.now;
+            }
+            core.shop_stock.insert(shop.id, counts);
+        }
         // Seed floor items from static placements.
         let mut seeded: BTreeMap<RoomId, Vec<(crate::content::ItemId, i16)>> = BTreeMap::new();
         for room in core.content.rooms.values() {
@@ -733,6 +768,21 @@ impl Core {
                 }
             }
             Command::Inventory => self.show_inventory(session),
+            Command::List => {
+                if self.list_command(session) == Resolution::FallThrough {
+                    self.say(session, line.trim());
+                }
+            }
+            Command::Buy(target) => {
+                if self.buy_command(session, &target) == Resolution::FallThrough {
+                    self.say(session, line.trim());
+                }
+            }
+            Command::Sell(target) => {
+                if self.sell_command(session, &target) == Resolution::FallThrough {
+                    self.say(session, line.trim());
+                }
+            }
             Command::Arm(target) => {
                 if self.arm_command(session, &target) == Resolution::FallThrough {
                     self.say(session, line.trim());
@@ -1153,7 +1203,168 @@ impl Core {
         self.build_player_defender(session)
     }
 
-    /// Coin denomination names (low->high) for pile pickup by name.
+    /// The shop in the player's room, if any.
+    fn shop_here(&self, session: SessionId) -> Option<crate::content::ShopId> {
+        let room = self.player(session).location;
+        self.content.rooms.get(&room)?.shop
+    }
+
+    /// `display_shop_items`: shelf price = cost x (markup+100)/100 — the
+    /// Charm haggle applies only at purchase (economy.md §2.1).
+    fn list_command(&mut self, session: SessionId) -> Resolution {
+        let Some(shop_id) = self.shop_here(session) else {
+            return Resolution::FallThrough;
+        };
+        let shop = &self.content.shops[&shop_id];
+        let counts = self.shop_stock.get(&shop_id).copied().unwrap_or_default();
+        let mut out = String::from(text::SHOP_HEADER);
+        out.push('\n');
+        for (i, slot) in shop.stock.iter().enumerate() {
+            let Some(item_id) = slot.item else { continue };
+            let Some(item) = self.content.items.get(&item_id) else {
+                continue;
+            };
+            let base = self.item_base_copper(item);
+            let shelf = base * (i64::from(shop.markup) + 100) / 100;
+            let price = if shelf == 0 {
+                "Free".to_string()
+            } else {
+                // ORACLE-VERIFY the price column rendering.
+                text::copper_amount(shelf as u64)
+            };
+            out.push_str(&text::shop_row(&item.name, counts[i], &price));
+            out.push('\n');
+        }
+        self.output(session, &out);
+        Resolution::Handled
+    }
+
+    /// The item's base cost in copper.
+    fn item_base_copper(&self, item: &crate::content::Item) -> i64 {
+        let ratios = self.config.coin_ratios;
+        let mut value = i64::from(item.cost.max(0));
+        for r in ratios.iter().take(item.cost_denomination.max(0) as usize) {
+            value *= *r as i64;
+        }
+        value
+    }
+
+    /// `buy_item` (economy.md §2.1): price = base x (markup+100)/100
+    /// x (110 - Charm/5)/100 copper.
+    fn buy_command(&mut self, session: SessionId, target: &str) -> Resolution {
+        let want = target.trim().to_ascii_lowercase();
+        if want.is_empty() {
+            return Resolution::FallThrough;
+        }
+        let Some(shop_id) = self.shop_here(session) else {
+            return Resolution::FallThrough;
+        };
+        let shop = self.content.shops[&shop_id].clone();
+        let slot = shop.stock.iter().enumerate().find(|(_, s)| {
+            s.item.is_some_and(|id| {
+                self.content
+                    .items
+                    .get(&id)
+                    .is_some_and(|i| word_prefix_match(&i.name, &want))
+            })
+        });
+        let Some((idx, slot)) = slot else {
+            self.output_line(session, &text::not_known_item(target.trim()));
+            return Resolution::Handled;
+        };
+        let item_id = slot.item.expect("matched");
+        let item = self.content.items[&item_id].clone();
+        let counts = self.shop_stock.entry(shop_id).or_default();
+        if counts[idx] < 1 {
+            // ORACLE-VERIFY out-of-stock wording.
+            self.output_line(session, &text::not_known_item(target.trim()));
+            return Resolution::Handled;
+        }
+
+        let base = self.item_base_copper(&item);
+        let charm = i64::from(self.player(session).stats.charm);
+        let price = (110 - charm / 5) * (base * (i64::from(shop.markup) + 100) / 100) / 100;
+        let ratios = self.config.coin_ratios;
+        if price > 0
+            && self.player(session).coins.total_copper(ratios) < price as u64
+        {
+            self.output_line(session, &text::cannot_afford(&item.name));
+            return Resolution::Handled;
+        }
+        let counts = self.shop_stock.entry(shop_id).or_default();
+        counts[idx] -= 1;
+        let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+            return Resolution::FallThrough;
+        };
+        if price > 0 {
+            player.coins.deduct_copper(price as u64, ratios);
+        }
+        player.inventory.push((item_id, item.uses));
+        let msg = if price == 0 {
+            text::bought_free(&item.name)
+        } else {
+            text::bought_for(&item.name, &text::copper_amount(price as u64))
+        };
+        self.output_line(session, &msg);
+        Resolution::Handled
+    }
+
+    /// `sell_item` (economy.md §3.1): sellback = base x (Charm/2 + 25)/100,
+    /// minted upward; the shop must stock the item, and restocks below max.
+    fn sell_command(&mut self, session: SessionId, target: &str) -> Resolution {
+        let want = target.trim().to_ascii_lowercase();
+        if want.is_empty() {
+            return Resolution::FallThrough;
+        }
+        let Some(shop_id) = self.shop_here(session) else {
+            return Resolution::FallThrough;
+        };
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+            return Resolution::FallThrough;
+        };
+        let pos = player.inventory.iter().position(|(id, _)| {
+            self.content
+                .items
+                .get(id)
+                .is_some_and(|i| word_prefix_match(&i.name, &want))
+        });
+        let Some(pos) = pos else {
+            self.output_line(session, &format!("You don't have {} to sell!", target.trim()));
+            return Resolution::Handled;
+        };
+        let item_id = player.inventory[pos].0;
+        let item = self.content.items[&item_id].clone();
+        let shop = self.content.shops[&shop_id].clone();
+        let slot_idx = shop
+            .stock
+            .iter()
+            .position(|s| s.item == Some(item_id));
+        let Some(slot_idx) = slot_idx else {
+            self.output_line(session, &text::cannot_sell_here(&item.name));
+            return Resolution::Handled;
+        };
+
+        let base = self.item_base_copper(&item);
+        let charm = i64::from(self.player(session).stats.charm);
+        let price = (charm / 2 + 25) * base / 100;
+        let ratios = self.config.coin_ratios;
+        let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+            return Resolution::FallThrough;
+        };
+        player.inventory.remove(pos);
+        player.coins.add_copper_and_mint(price.max(0) as u64, ratios);
+        let counts = self.shop_stock.entry(shop_id).or_default();
+        if counts[slot_idx] < shop.stock[slot_idx].max {
+            counts[slot_idx] += 1;
+        }
+        self.output_line(
+            session,
+            &text::sold_for(&item.name, &text::copper_amount(price.max(0) as u64)),
+        );
+        Resolution::Handled
+    }
+
+    /// Coin denomination names (low->high) for pile pickup by name.\n    /// Coin denomination names (low->high) for pile pickup by name.
     const COIN_WORDS: [(&'static str, usize); 5] = [
         ("copper", 0),
         ("silver", 1),

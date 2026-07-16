@@ -201,6 +201,42 @@ pub fn not_wearing(name: &str) -> String {
     format!("You are not wearing {name}.")
 }
 
+// --- shop strings (list format VERIFIED oracle_m4_items.raw) ---
+pub const SHOP_HEADER: &str = "The following items are for sale here:\n\nItem                          Quantity    Price\n------------------------------------------------------";
+
+/// One list row: name %-30, quantity %-12, then the price column.
+pub fn shop_row(name: &str, quantity: i16, price: &str) -> String {
+    format!("{name:<30}{quantity:<13}{price}")
+}
+
+pub fn bought_free(name: &str) -> String {
+    format!("You just bought {name} for nothing.")
+}
+/// ORACLE-VERIFY the paid wording.
+pub fn bought_for(name: &str, price: &str) -> String {
+    format!("You just bought {name} for {price}.")
+}
+pub fn not_known_item(name: &str) -> String {
+    format!("{name} is not a known item.")
+}
+/// ORACLE-VERIFY wording.
+pub fn cannot_afford(name: &str) -> String {
+    format!("You cannot afford {name}.")
+}
+/// ORACLE-VERIFY wording.
+pub fn sold_for(name: &str, price: &str) -> String {
+    format!("You sold {name} for {price}.")
+}
+pub fn cannot_sell_here(name: &str) -> String {
+    format!("You cannot sell {name} here.")
+}
+
+/// A copper amount as coin words.
+pub fn copper_amount(total: u64) -> String {
+    let (one, many) = COIN_NAMES[0];
+    format!("{total} {}", if total == 1 { one } else { many })
+}
+
 // --- combat strings (VERIFIED oracle_attack3.raw / oracle_downed.raw / DLL) ---
 pub const COMBAT_ENGAGED: &str = "*Combat Engaged*";
 pub const COMBAT_OFF: &str = "*Combat Off*";
