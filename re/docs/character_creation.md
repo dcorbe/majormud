@@ -234,6 +234,32 @@ in-game later via the `gender` command (which may cost currency, `DAT_00482dc8`)
 
 ---
 
+## 6.5 Oracle addendum (MBBSEmu, WCCMMUD 1.11p DOS, 2026-07-16)
+
+Live-transcript findings that refine or extend the decompile reading above
+(raw transcript: `re/oracle/oracle_m1.raw`):
+
+- **Starting room = Newhaven, Village Entrance**, i.e. `DAT_00482cf8` resolves
+  to room **(map 1, room 2140)** in the stock data.
+- **Lawful prompt**: after a valid class (before `roll_stats` output), the
+  game asks "Do you want to be Lawful? [Yes/No]" — the PvP opt-out. This is
+  distinct from (and in the DOS build asked instead of / in addition to) the
+  sysop-gated evil prompt in §1.5. Irrevocable except by reroll.
+- **Family name**: the FSD editor requires a *family* (last) name in addition
+  to the given name ("You must enter a last name!"). The full name renders as
+  "Given Family" on the entry stat sheet.
+- **CP cost chart** (FSD editor): within a stat, each successive block of 10
+  raised points costs 1/2/3/... CP per point (so +10 = 10 CP, +20 = 30,
+  +30 = 60, +40 = 100, +50 = 150).
+- **Name validation** is slow by design: the polling routine steps one DB
+  record per cycle across player and monster names (~10 min under MBBSEmu).
+- Entry stat sheet for Dwarf Warrior L1, base stats, no CP spent:
+  Hits 35/35, AC 0/0, Perception 35, MagicRes 55, Martial Arts 10,
+  Stealth/Thievery/Traps/Picklocks/Tracking 0 — reference points for the
+  `calculate_secondary_stats` formulas (`leveling.md` §5).
+- **Exit ('x')**: "You will exit after a period of silent meditation." — exit
+  is delayed (anti combat-logout), then dots print until departure.
+
 ## 7. Undetermined / flagged
 
 - **Exact starting room number** (`DAT_00482cf8`) and the other config constants

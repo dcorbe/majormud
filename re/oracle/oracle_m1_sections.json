@@ -1,0 +1,9 @@
+{
+ "look": "look\r\nNewhaven, Village Entrance\r\n    Welcome to Newhaven! You are standing at the crude wooden gates of the\r\nvillage entrance, in the middle of a dusty path. A low wooden palisade\r\nsurrounds the village, to protect against creatures of the night and random\r\nraiders. You can see small buildings to the north and south, and a dusty path\r\nthat leads to the west and southeast. \r\nYou notice large sign, newbie manual here.\r\nObvious exits: nP\borth, sM\bouth, wN\best, sW\boutheast\r\n[HP=35]:",
+ "move_n": "n\r\nNewhaven, Weapons Shop\r\n    This dusky old shop carries a small assortment of weapons suitable for the\r\nyoung adventurer. Torches line the walls, illuminating the room with a smoky,\r\nflickering glow. A stocky, mustached man stands behind a counter here, waiting\r\nto provide weaponry to novice adventurers. You can exit the shop through a\r\ndoorway to the south. \r\nAlso here: Nathaniel.\r\nObvious exits: sM\bouth\r\n[HP=35]:",
+ "move_back_s": "s\r\nNewhaven, Village Entrance\r\n    Welcome to Newhaven! You are standing at the crude wooden gates of the\r\nvillage entrance, in the middle of a dusty path. A low wooden palisade\r\nsurrounds the village, to protect against creatures of the night and random\r\nraiders. You can see small buildings to the north and south, and a dusty path\r\nthat leads to the west and southeast. \r\nYou notice large sign, newbie manual here.\r\nObvious exits: nP\borth, sM\bouth, wN\best, sW\boutheast\r\n[HP=35]:",
+ "bad_direction": "u\r\nThere is no exit in that direction!\r\n[HP=35]:",
+ "unknown_command": "xyzzy\r\nYou say \"xyzzy\"\r\n[HP=35]:",
+ "blank": "\r\nNewhaven, Village Entrance\r\nYou notice large sign, newbie manual here.\r\nObvious exits: nP\borth, sM\bouth, wN\best, sW\boutheast\r\n[HP=35]:",
+ "quit": "x\r\nYou will exit after a period of silent meditation.\r\n............."
+}
