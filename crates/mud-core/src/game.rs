@@ -143,6 +143,10 @@ pub struct CoreConfig {
     pub rng_seed: u64,
     /// Seconds (= dots) of exit meditation (ORACLE-VERIFY: 10 observed).
     pub exit_meditation_seconds: u8,
+    /// Death recall room (`DAT_00482cfc`/`d00` temples; alignment split and
+    /// per-room DeathRoom overrides arrive with alignment/zones). ORACLE:
+    /// Newhaven deaths recall to Newhaven, Healer.
+    pub recall_location: RoomId,
 }
 
 impl Default for CoreConfig {
@@ -154,6 +158,7 @@ impl Default for CoreConfig {
             lives_per_level: 1,
             rng_seed: 0x4d4d55445f574721, // "MMUD_WG!"
             exit_meditation_seconds: 10,
+            recall_location: RoomId { map: 1, room: 2190 },
         }
     }
 }
@@ -179,6 +184,8 @@ impl Rng {
 pub enum Event {
     Output { session: SessionId, text: String },
     Persist(Box<Player>),
+    /// Permadeath: remove the character record entirely.
+    DeleteCharacter(String),
     Disconnect(SessionId),
 }
 
@@ -204,6 +211,9 @@ enum Session {
         exiting: Option<u8>,
         /// Autocombat target (the `DAT_004877e8` record, PvE slice).
         target: Option<MonsterInstanceId>,
+        /// The AID flag (`+0x6a8`): a downed player stabilizes instead of
+        /// bleeding. Cleared when HP climbs above 0.
+        aided: bool,
         /// Combat energy pool (`+0xba`; max/regen `+0xb8` = 1000 default).
         energy: i32,
     },
@@ -329,6 +339,13 @@ impl Core {
         }
     }
 
+    /// Test hook: set lives.
+    pub fn set_lives(&mut self, session: SessionId, lives: u16) {
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+            player.lives = lives;
+        }
+    }
+
     /// Test hook: grant coins.
     pub fn give_copper(&mut self, session: SessionId, amount: u32) {
         if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
@@ -369,12 +386,36 @@ impl Core {
                 .classes
                 .get(&player.class)
                 .map(|c| (c.caster_group, c.casting_factor));
-            let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&id) else {
+            let Some(Session::InGame { player, aided, .. }) = self.sessions.get_mut(&id)
+            else {
                 unreachable!("checked above");
             };
+            let aided = *aided;
 
             player.hunger = player.hunger.saturating_sub(1);
             player.thirst = player.thirst.saturating_sub(1);
+
+            // Near-death band (HP < 1): bleed toward the floor, or recover
+            // one per tick when aided (`regeneration.md` §5).
+            if player.current_hp < 1 {
+                if aided {
+                    player.current_hp += 1;
+                    if player.current_hp > 0 {
+                        // Recovered: normal regen resumes, flag clears.
+                        if let Some(Session::InGame { aided, .. }) =
+                            self.sessions.get_mut(&id)
+                        {
+                            *aided = false;
+                        }
+                    }
+                } else {
+                    player.current_hp -= 1;
+                    if player.current_hp <= DEATH_FLOOR {
+                        self.player_killed(id);
+                    }
+                }
+                continue;
+            }
 
             // HP: only while alive and below max (0 < HP < max).
             if player.current_hp > 0 && player.current_hp < max_hp {
@@ -447,7 +488,7 @@ impl Core {
         self.broadcast_to_others(id, &text::entered_realm(&player.name));
         let derived = self.derive_for(&player);
         self.sessions
-            .insert(id, Session::InGame { player, derived, exiting: None, target: None, energy: PLAYER_ENERGY_MAX });
+            .insert(id, Session::InGame { player, derived, exiting: None, target: None, aided: false, energy: PLAYER_ENERGY_MAX });
         self.show_room(id);
         self.show_prompt(id);
         id
@@ -572,6 +613,7 @@ impl Core {
             Command::Health => self.show_health(session),
             Command::Train => self.train_level(session),
             Command::Attack(target) => self.attack_command(session, &target),
+            Command::Aid(target) => self.aid_command(session, &target),
             Command::Move(direction) => {
                 // Oracle: the downed band blocks movement (look/health work).
                 if self.player(session).current_hp < 1 {
@@ -718,6 +760,34 @@ impl Core {
         }
         self.output_line(session, text::COMBAT_ENGAGED);
         self.player_attack_sequence(session);
+    }
+
+    /// `cmd_aid`: set the aided flag on a downed co-located player.
+    fn aid_command(&mut self, session: SessionId, target_words: &str) {
+        let room = self.player(session).location;
+        let want = target_words.trim().to_ascii_lowercase();
+        let target = self
+            .in_game_sessions()
+            .filter(|(id, p)| *id != session && p.location == room)
+            .find(|(_, p)| p.name.to_ascii_lowercase().starts_with(&want))
+            .map(|(id, p)| (id, p.name.clone(), p.current_hp));
+        let Some((target_id, name, hp)) = target else {
+            self.output_line(session, text::NO_TARGET);
+            return;
+        };
+        if hp >= 1 {
+            // DLL: "is in no need of assistance".
+            self.output_line(session, &format!("{name} is in no need of assistance."));
+            return;
+        }
+        if let Some(Session::InGame { aided, .. }) = self.sessions.get_mut(&target_id) {
+            *aided = true;
+        }
+        // DLL fragment: "You have aided %s; %s's wounds are [bound]".
+        self.output_line(
+            session,
+            &format!("You have aided {name}; {name}'s wounds are bound."),
+        );
     }
 
     /// Word-prefix name match among the room's live monsters
@@ -1019,8 +1089,80 @@ impl Core {
         }
     }
 
-    /// Placeholder until the death commit.
-    fn player_killed(&mut self, _session: SessionId) {}
+    /// `check_kill_user`'s full-death branch (`death.md` §2/§3) — reached
+    /// when HP hits the death floor.
+    fn player_killed(&mut self, session: SessionId) {
+        let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+            return;
+        };
+        let name = player.name.clone();
+        let died_in = player.location;
+
+        // Drop all money into the room piles.
+        let coins = player.coins;
+        player.coins = Coins::default();
+        let piles = self.room_coins.entry(died_in).or_insert([0; 5]);
+        piles[0] += coins.copper;
+        piles[1] += coins.silver;
+        piles[2] += coins.gold;
+        piles[3] += coins.platinum;
+        piles[4] += coins.runic;
+        // (Inventory/key/worn drops join with items in M4.)
+
+        self.output_line(session, "You have been killed!");
+        self.broadcast_to_room(died_in, Some(session), &format!("{name} is dead."));
+        self.break_combat_silent(session);
+        self.release_monster_targets(session);
+
+        let Some(Session::InGame { player, derived, aided, .. }) =
+            self.sessions.get_mut(&session)
+        else {
+            return;
+        };
+        player.lives = player.lives.saturating_sub(1);
+        if player.lives < 1 {
+            // Permadeath (`death.md` §2c).
+            let name = player.name.clone();
+            self.output_line(session, "You have no lives remaining!");
+            self.sessions.remove(&session);
+            self.events.push(Event::DeleteCharacter(name));
+            self.events.push(Event::Disconnect(session));
+            return;
+        }
+        // Miracle respawn: full HP/mana at the recall room.
+        player.current_hp = derived.max_hp;
+        player.current_mana = derived.max_mana;
+        player.location = self.config.recall_location;
+        *aided = false;
+        let lives = player.lives;
+        let snapshot = player.clone();
+        self.output_line(session, "But, due to a miracle, you have been saved.");
+        self.output_line(session, &format!("You have {lives} lives left."));
+        self.broadcast_to_room(
+            self.config.recall_location,
+            Some(session),
+            &format!("{name} appeared on the floor in the middle of the room."),
+        );
+        self.events.push(Event::Persist(Box::new(snapshot)));
+    }
+
+    /// Tear down combat without the *Combat Off* print (death has its own
+    /// messaging).
+    fn break_combat_silent(&mut self, session: SessionId) {
+        if let Some(Session::InGame { target, energy, .. }) = self.sessions.get_mut(&session) {
+            *target = None;
+            *energy = (*energy).min(PLAYER_ENERGY_MAX);
+        }
+    }
+
+    /// Monsters lose their lock on a dead/removed player.
+    fn release_monster_targets(&mut self, session: SessionId) {
+        for m in self.monsters.values_mut() {
+            if m.target == Some(session) {
+                m.target = None;
+            }
+        }
+    }
 
     /// `kill_autocombat` + `display_autocombat_broken`.
     fn break_combat(&mut self, session: SessionId) {
@@ -1229,7 +1371,7 @@ impl Core {
         self.broadcast_to_others(session, &text::entered_realm(&player.name));
         let derived = self.derive_for(&player);
         self.sessions
-            .insert(session, Session::InGame { player, derived, exiting: None, target: None, energy: PLAYER_ENERGY_MAX });
+            .insert(session, Session::InGame { player, derived, exiting: None, target: None, aided: false, energy: PLAYER_ENERGY_MAX });
         // Oracle: first entry shows the stat sheet, not the room.
         self.show_sheet(session);
         self.show_prompt(session);

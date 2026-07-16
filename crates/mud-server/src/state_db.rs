@@ -258,6 +258,13 @@ impl StateDb {
         Ok(())
     }
 
+    /// Permadeath: remove the character record.
+    pub fn delete_player(&self, name: &str) -> Result<(), StateError> {
+        self.conn
+            .execute("DELETE FROM player WHERE name = ?1", params![name])?;
+        Ok(())
+    }
+
     pub fn load_player(&self, name: &str) -> Result<Option<Player>, StateError> {
         self.conn
             .query_row(

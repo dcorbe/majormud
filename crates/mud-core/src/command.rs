@@ -19,6 +19,8 @@ pub enum Command {
     /// `attack <target>` — the argument is the raw target words.
     /// (Oracle: bare `a` is NOT an attack alias in this build.)
     Attack(String),
+    /// `aid <player>` — stabilize a downed player.
+    Aid(String),
     Quit,
     Blank,
     Unknown(String),
@@ -84,6 +86,12 @@ pub fn parse(input: &str) -> Command {
         let rest = trimmed[verb.len()..].trim();
         if !rest.is_empty() {
             return Command::Attack(rest.to_string());
+        }
+    }
+    if verb.len() >= 3 && "aid".starts_with(&verb) {
+        let rest = trimmed[verb.len()..].trim();
+        if !rest.is_empty() {
+            return Command::Aid(rest.to_string());
         }
     }
     for (name, command) in &VERBS {

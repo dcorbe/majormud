@@ -143,6 +143,12 @@ fn core_thread(
                         eprintln!("failed to persist {}: {e}", player.name);
                     }
                 }
+                Event::DeleteCharacter(name) => {
+                    let db = state.lock().expect("state db lock");
+                    if let Err(e) = db.delete_player(&name) {
+                        eprintln!("failed to delete {name}: {e}");
+                    }
+                }
                 Event::Disconnect(session) => {
                     if let Some(out) = outputs.remove(&session) {
                         let _ = out.send(OutMsg::Close);

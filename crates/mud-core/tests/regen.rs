@@ -178,11 +178,12 @@ fn hunger_and_thirst_tick_down_from_1000() {
 }
 
 #[test]
-fn dead_or_downed_players_do_not_regen() {
-    // The HP handler is gated on 0 < HP < max (bleed/aid is M3).
+fn downed_players_bleed_instead_of_regenerating() {
+    // The HP-regen handler is gated on 0 < HP < max; the near-death band
+    // bleeds one per slow tick instead (death.md §5).
     let mut core = Core::new(world(), config());
     let s = create(&mut core, "Dain", "2", "1");
     core.set_current_hp(s, 0);
     ticks(&mut core, 30);
-    assert_eq!(core.current_hp(s), 0);
+    assert_eq!(core.current_hp(s), -1);
 }
