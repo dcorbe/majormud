@@ -170,6 +170,45 @@ pub fn drops_to_ground(name: &str) -> String {
     format!("{name} drops to the ground!")
 }
 
+/// DLL "%s is dead." — the monster-kill announcement (article form
+/// ORACLE-VERIFY).
+pub fn monster_dead(name: &str) -> String {
+    format!("The {name} is dead.")
+}
+
+/// VERIFIED (DLL): "You gain %s experience."
+pub fn gain_experience(amount: u64) -> String {
+    format!("You gain {amount} experience.")
+}
+
+/// VERIFIED (DLL): coin denomination names, low to high.
+pub const COIN_NAMES: [(&str, &str); 5] = [
+    ("copper farthing", "copper farthings"),
+    ("silver noble", "silver nobles"),
+    ("gold crown", "gold crowns"),
+    ("platinum piece", "platinum pieces"),
+    ("runic coin", "runic coins"), // slot 5 is sysop-defined; ORACLE-VERIFY
+];
+
+/// VERIFIED (oracle): "You notice 7 silver nobles, 43 copper farthings here."
+/// — piles listed high to low.
+pub fn coin_pile_names(piles: [u32; 5]) -> Option<String> {
+    let mut parts = Vec::new();
+    for idx in (0..5).rev() {
+        let count = piles[idx];
+        if count == 0 {
+            continue;
+        }
+        let (one, many) = COIN_NAMES[idx];
+        parts.push(format!("{count} {}", if count == 1 { one } else { many }));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(", "))
+    }
+}
+
 /// VERIFIED (oracle): the status prompt. Caster/Kai variants ORACLE-VERIFY.
 pub fn prompt(hp: i32, mana: i32, caster_group: i16) -> String {
     match caster_group {

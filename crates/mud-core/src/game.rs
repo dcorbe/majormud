@@ -256,6 +256,8 @@ pub struct Core {
     rng: Rng,
     monsters: BTreeMap<MonsterInstanceId, MonsterInstance>,
     next_monster: u64,
+    /// Ephemeral floor coin piles per room (low->high denominations).
+    room_coins: BTreeMap<RoomId, [u32; 5]>,
 }
 
 impl Core {
@@ -274,6 +276,7 @@ impl Core {
             rng,
             monsters: BTreeMap::new(),
             next_monster: 1,
+            room_coins: BTreeMap::new(),
         }
     }
 
@@ -973,9 +976,47 @@ impl Core {
         }
     }
 
-    /// Placeholder until the death commit: mark and strand.
-    fn monster_killed(&mut self, id: MonsterInstanceId, _killer: SessionId) {
-        self.monsters.remove(&id);
+    /// `check_kill_monster` + `distribute_experience` (`death.md` §4/§5).
+    fn monster_killed(&mut self, id: MonsterInstanceId, killer: SessionId) {
+        let Some(instance) = self.monsters.remove(&id) else {
+            return;
+        };
+        let tpl = self
+            .content
+            .monsters
+            .get(&instance.template)
+            .expect("live instance has a template");
+        let name = tpl.name.clone();
+        // Coins drop into the room piles (template order is high->low).
+        let piles = self.room_coins.entry(instance.location).or_insert([0; 5]);
+        for (i, amount) in tpl.coins.iter().enumerate() {
+            piles[4 - i] += amount;
+        }
+        let exp = u64::from(tpl.experience.max(0) as u32)
+            * u64::from(tpl.exp_multi.max(1) as u32);
+        let room = instance.location;
+
+        self.output_line(killer, &text::monster_dead(&name));
+        self.broadcast_to_room(room, Some(killer), &text::monster_dead(&name));
+
+        // Equal split among the killer and everyone engaged on this target.
+        let mut recipients: Vec<SessionId> = vec![killer];
+        for (sid, session) in self.sessions.iter() {
+            if let Session::InGame { target: Some(t), .. } = session
+                && *t == id
+                && *sid != killer
+            {
+                recipients.push(*sid);
+            }
+        }
+        let share = (exp / recipients.len() as u64).max(1);
+        for sid in recipients {
+            if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&sid) {
+                player.experience += share;
+            }
+            self.output_line(sid, &text::gain_experience(share));
+            self.break_combat(sid);
+        }
     }
 
     /// Placeholder until the death commit.
@@ -1358,6 +1399,13 @@ impl Core {
                 out.push_str(line);
                 out.push('\n');
             }
+        }
+
+        // Floor coin piles (oracle: the notice line precedes Also-here).
+        if let Some(piles) = self.room_coins.get(&room.id)
+            && let Some(names) = text::coin_pile_names(*piles)
+        {
+            out.push_str(&format!("You notice {names} here.\n"));
         }
 
         // Players first, then live monsters (oracle: NPCs share the line).
