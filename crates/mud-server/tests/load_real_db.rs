@@ -9,6 +9,31 @@ fn db_path() -> std::path::PathBuf {
 }
 
 #[test]
+fn magic_missile_cast_fields_load_exactly() {
+    use mud_core::content::{Element, MatchType, SaveClass, ScalePair, SpellId, TargetMode};
+    let content = content_db::load(&db_path()).expect("load content db");
+    let mm = &content.spells[&SpellId(1)];
+    assert_eq!(mm.name, "magic missile");
+    assert_eq!(mm.mana_cost, 1);
+    assert_eq!(mm.required_power, 1);
+    assert_eq!((mm.min_base, mm.max_base), (4, 12));
+    assert_eq!(mm.round_cost, 1000);
+    assert_eq!(mm.base_chance, 15);
+    assert_eq!(mm.level_cap, 6);
+    assert_eq!(mm.class_gate_group, 1);
+    assert_eq!(mm.required_class_level, 1);
+    assert_eq!(mm.target_mode, TargetMode::Offensive0);
+    assert_eq!(mm.save_class, SaveClass::None);
+    assert_eq!(mm.match_type, MatchType::Special8);
+    assert_eq!(mm.element, Element::Magic);
+    assert_eq!(mm.duration, 0);
+    assert_eq!(mm.duration_per_level, 0);
+    assert_eq!(mm.max_increase, ScalePair { per: 1, levels: 0 });
+    assert_eq!(mm.min_increase, ScalePair::NONE);
+    assert_eq!(mm.duration_increase, ScalePair::NONE);
+}
+
+#[test]
 fn full_database_loads_and_validates() {
     let content = content_db::load(&db_path()).expect("load content db");
 

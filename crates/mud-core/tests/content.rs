@@ -3,6 +3,7 @@
 use mud_core::ability::Ability;
 use mud_core::content::{
     Content, ContentError, Direction, Exit, Message, MessageId, Monster, MonsterId, Room, RoomId,
+    Spell, SpellId,
 };
 
 fn room(map: u16, num: u16) -> Room {
@@ -43,6 +44,36 @@ fn monster(id: u16) -> Monster {
         weapon: None,
         loot: vec![],
         attacks: Default::default(),
+    }
+}
+
+fn spell(n: u16) -> Spell {
+    use mud_core::content::{Element, MatchType, SaveClass, ScalePair, TargetMode};
+    Spell {
+        id: SpellId(n),
+        name: format!("spell {n}"),
+        short_name: String::new(),
+        cast_msg_a: None,
+        cast_msg_b: None,
+        abilities: vec![],
+        level_cap: 0,
+        round_cost: 0,
+        required_power: 0,
+        min_base: 0,
+        max_base: 0,
+        target_mode: TargetMode::Benign,
+        save_class: SaveClass::None,
+        base_chance: 200,
+        duration_per_level: 0,
+        match_type: MatchType::Single0,
+        duration: 0,
+        element: Element::Cold,
+        class_gate_group: 0,
+        mana_cost: 0,
+        max_increase: ScalePair::NONE,
+        required_class_level: 0,
+        min_increase: ScalePair::NONE,
+        duration_increase: ScalePair::NONE,
     }
 }
 
@@ -120,16 +151,11 @@ fn known_dangling_refs_are_allowlisted() {
 fn known_dangling_spell_message_is_allowlisted() {
     // Spell 1055 "BCNS" references cast message 3499, which does not exist
     // in the shipped data.
-    use mud_core::content::{Spell, SpellId};
     let mut content = Content::default();
-    content.add_spell(Spell {
-        id: SpellId(1055),
-        name: "BCNS".into(),
-        short_name: String::new(),
-        cast_msg_a: None,
-        cast_msg_b: Some(MessageId(3499)),
-        abilities: vec![],
-    });
+    let mut s = spell(1055);
+    s.name = "BCNS".into();
+    s.cast_msg_b = Some(MessageId(3499));
+    content.add_spell(s);
     assert_eq!(content.validate(), vec![]);
 }
 

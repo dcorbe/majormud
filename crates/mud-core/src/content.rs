@@ -474,6 +474,43 @@ pub struct Spell {
     pub cast_msg_a: Option<MessageId>,
     pub cast_msg_b: Option<MessageId>,
     pub abilities: Vec<AbilityValue>,
+    /// `+0xa2` `levelcap` — caster level is clamped to this before scaling.
+    pub level_cap: i16,
+    /// `+0xbc` `energy` — round-action cost, deducted from the round pool.
+    pub round_cost: i16,
+    /// `+0xbe` `level` — required caster spell power ("too powerful for you").
+    pub required_power: i16,
+    /// `+0xc0` `min` — base magnitude lower bound.
+    pub min_base: i16,
+    /// `+0xc2` `max` — base magnitude upper bound.
+    pub max_base: i16,
+    /// `+0xc4` `spelltype`.
+    pub target_mode: TargetMode,
+    /// `+0xc6` `typeofresists` — target saving-throw class.
+    pub save_class: SaveClass,
+    /// `+0xc8` `difficulty` — base success chance %; `>= 200` auto-succeeds.
+    pub base_chance: i16,
+    /// `+0xca` `undefined01` — duration-per-level multiplier (duration max
+    /// = this × effective level; spellcasting.md §4).
+    pub duration_per_level: i16,
+    /// `+0xcc` `target`.
+    pub match_type: MatchType,
+    /// `+0xce` `duration` — base duration in ticks; 0 = instant.
+    pub duration: i16,
+    /// `+0xd0` `typeofattack`.
+    pub element: Element,
+    /// `+0xd6` `magerya` — class-gate group; 0 = ungated.
+    pub class_gate_group: i16,
+    /// `+0xf0` `mana` — mana cost (half is charged on a failed roll).
+    pub mana_cost: i16,
+    /// `+0xf2/+0xf3` `maxincrease/lvlsmaxincr` — max-bound per-level scaling.
+    pub max_increase: ScalePair,
+    /// `+0xf4` `mageryb` — required level within the class.
+    pub required_class_level: i16,
+    /// `+0xf6/+0xf7` `minincrease/lvlsminincr` — min-bound per-level scaling.
+    pub min_increase: ScalePair,
+    /// `+0xf8/+0xf9` `durincrease/lvlsdurincr` — duration per-level scaling.
+    pub duration_increase: ScalePair,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

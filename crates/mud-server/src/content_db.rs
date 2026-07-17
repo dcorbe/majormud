@@ -10,9 +10,9 @@ use std::path::Path;
 
 use mud_core::ability::Ability;
 use mud_core::content::{
-    AbilityValue, AttackForm, Class, ClassId, Content, Exit, Item, ItemId, LootSlot, Message,
-    MessageId, Monster, MonsterId, PlacedItem, Race, RaceId, Room, RoomId, Shop, ShopId,
-    ShopStock, Spell, SpellId, StatBlock,
+    AbilityValue, AttackForm, Class, ClassId, Content, Element, Exit, Item, ItemId, LootSlot,
+    MatchType, Message, MessageId, Monster, MonsterId, PlacedItem, Race, RaceId, Room, RoomId,
+    SaveClass, ScalePair, Shop, ShopId, ShopStock, Spell, SpellId, StatBlock, TargetMode,
 };
 use rusqlite::Connection;
 
@@ -72,6 +72,10 @@ fn to_u16(table: &'static str, field: &str, v: i64) -> Result<u16, LoadError> {
 
 fn to_i16(table: &'static str, field: &str, v: i64) -> Result<i16, LoadError> {
     i16::try_from(v).map_err(|_| invalid(table, format!("{field} = {v} does not fit i16")))
+}
+
+fn to_u8(table: &'static str, field: &str, v: i64) -> Result<u8, LoadError> {
+    u8::try_from(v).map_err(|_| invalid(table, format!("{field} = {v} does not fit u8")))
 }
 
 /// `0` (and negatives) mean "no message" in the data.
@@ -374,12 +378,29 @@ fn load_items(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
 
 fn load_spells(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
     let mut stmt = db.prepare(&format!(
-        "SELECT number, name, shortname, castmsga, castmsgb, {}, {} FROM spell",
+        "SELECT number, name, shortname, castmsga, castmsgb, {}, {}, \
+         levelcap, energy, level, min, max, spelltype, typeofresists, \
+         difficulty, undefined01, target, duration, typeofattack, magerya, \
+         mana, maxincrease, lvlsmaxincr, mageryb, minincrease, lvlsminincr, \
+         durincrease, lvlsdurincr FROM spell",
         ability_cols("abilitya"),
         ability_cols("abilityb"),
     ))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
+        let field = |name: &str, idx: usize| -> Result<i16, LoadError> {
+            to_i16("spell", name, row.get(idx)?)
+        };
+        let pair = |na: &str, ia: usize, nb: &str, ib: usize| -> Result<ScalePair, LoadError> {
+            Ok(ScalePair {
+                per: to_u8("spell", na, row.get(ia)?)?,
+                levels: to_u8("spell", nb, row.get(ib)?)?,
+            })
+        };
+        let target_mode = field("spelltype", 30)?;
+        let save_class = field("typeofresists", 31)?;
+        let match_type = field("target", 34)?;
+        let element = field("typeofattack", 36)?;
         content.add_spell(Spell {
             id: SpellId(to_u16("spell", "number", row.get(0)?)?),
             name: row.get(1)?,
@@ -387,6 +408,28 @@ fn load_spells(db: &Connection, content: &mut Content) -> Result<(), LoadError> 
             cast_msg_a: opt_message("spell", "castmsga", row.get(3)?)?,
             cast_msg_b: opt_message("spell", "castmsgb", row.get(4)?)?,
             abilities: ability_pairs("spell", row, 5, 15)?,
+            level_cap: field("levelcap", 25)?,
+            round_cost: field("energy", 26)?,
+            required_power: field("level", 27)?,
+            min_base: field("min", 28)?,
+            max_base: field("max", 29)?,
+            target_mode: TargetMode::from_i16(target_mode)
+                .ok_or_else(|| invalid("spell", format!("spelltype = {target_mode}")))?,
+            save_class: SaveClass::from_i16(save_class)
+                .ok_or_else(|| invalid("spell", format!("typeofresists = {save_class}")))?,
+            base_chance: field("difficulty", 32)?,
+            duration_per_level: field("undefined01", 33)?,
+            match_type: MatchType::from_i16(match_type)
+                .ok_or_else(|| invalid("spell", format!("target = {match_type}")))?,
+            duration: field("duration", 35)?,
+            element: Element::from_i16(element)
+                .ok_or_else(|| invalid("spell", format!("typeofattack = {element}")))?,
+            class_gate_group: field("magerya", 37)?,
+            mana_cost: field("mana", 38)?,
+            max_increase: pair("maxincrease", 39, "lvlsmaxincr", 40)?,
+            required_class_level: field("mageryb", 41)?,
+            min_increase: pair("minincrease", 42, "lvlsminincr", 43)?,
+            duration_increase: pair("durincrease", 44, "lvlsdurincr", 45)?,
         });
     }
     Ok(())
