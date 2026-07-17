@@ -2498,7 +2498,9 @@ fn expiry_runs_the_endcast_chain_with_the_default_pct() {
 fn cast_on_end_zero_row_substitutes_the_stored_value_as_pct() {
     // (CastOnEnd, 0) rides the override convention (44849-44852): the
     // STORED slot value becomes the percentage. Value 0 -> genrdn(0,100)
-    // < 0 never chains; value 100 always does.
+    // < 0 never chains; value 100 chains on roll(0,100) < 100 — fails
+    // 1-in-101 under inclusive genrdn, same quirk as the DLL's default
+    // pct 100 (this test's seed rolls a chaining value).
     let mut core = Core::new(world(), CoreConfig::default());
     let mut vexil = player("Vexil", MAGE, full_book());
     vexil.active_spells[0] = ActiveSpell { spell: Some(RELAY), value: 0, remaining: 1 };

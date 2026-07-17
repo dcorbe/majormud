@@ -2843,7 +2843,9 @@ impl Core {
     ///   round flag is only consulted in the mode-0 benign branch
     ///   (39344-39355);
     /// - the always-success path deducts the FULL round cost and mana
-    ///   (39400-39408; mana floored at 0).
+    ///   (39400-39408; the COST is clamped non-negative — for a
+    ///   pathological negative mana_cost the DLL would grant mana, we
+    ///   refuse; unreachable with shipped data).
     ///
     /// Slice-4 scope: benign self-cast only — no shipped EndCast chain is
     /// reachable by a player cast (48 duration spells carry EndCast 151;
