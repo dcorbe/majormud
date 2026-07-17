@@ -569,8 +569,14 @@ impl StateDb {
             "SELECT slot, spell, value, remaining FROM player_effect WHERE name = ?1",
         )?;
         let rows = stmt.query_map(params![name], |r| {
+            // Checked like the other columns: a corrupt slot index errors
+            // through StateError::Db instead of panicking on the array.
+            let slot = r.get::<_, usize>(0)?;
+            if slot >= 10 {
+                return Err(rusqlite::Error::IntegralValueOutOfRange(0, slot as i64));
+            }
             Ok((
-                r.get::<_, i64>(0)? as usize,
+                slot,
                 SpellId(r.get::<_, u16>(1)?),
                 r.get::<_, i16>(2)?,
                 r.get::<_, i32>(3)?,
