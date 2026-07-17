@@ -1,17 +1,24 @@
 //! Tests for the `cast` command: parsing (§8.9 bare/abbreviation behavior),
 //! book-only spell resolution (exact shortname OR per-word name prefix,
 //! remainder-as-target), the slice-3 cast gates (spec §3 order, oracle
-//! strings from spellcasting.md §8.6/§8.9), and the success roll + costs
-//! (spec §3 steps 5-7: full costs on success, half mana on a failed roll).
+//! strings from spellcasting.md §8.6/§8.9), the success roll + costs
+//! (spec §3 steps 5-7: full costs on success, half mana on a failed roll),
+//! and the Task-11 offensive path: targeting refusals, magnitude, resist,
+//! saves, engagement, re-fire and the M3 kill route.
 
 use std::collections::BTreeMap;
 
-use mud_core::command::{parse, Command};
+use mud_core::ability::Ability;
 use mud_core::content::{
-    Class, ClassId, Content, Element, MatchType, Race, RaceId, Room, RoomId, SaveClass,
-    ScalePair, Spell, SpellId, StatBlock, TargetMode,
+    AttackForm, Class, ClassId, Content, Element, MatchType, Message, MessageId, Monster,
+    MonsterId, Race, RaceId, Room, RoomId, SaveClass, ScalePair, Spell, SpellId, StatBlock,
+    TargetMode,
 };
-use mud_core::game::{cast_roll_succeeds, Core, CoreConfig, Event, Gender, Player, SessionId};
+use mud_core::command::{parse, Command};
+use mud_core::game::{
+    cast_roll_succeeds, monster_save_resists, spell_magnitude, Core, CoreConfig, Event, Gender,
+    Player, SessionId,
+};
 
 const MAGE: ClassId = ClassId(1);
 const WARRIOR: ClassId = ClassId(2);
@@ -26,6 +33,52 @@ const SPARK: SpellId = SpellId(40);
 const HEAVY: SpellId = SpellId(50);
 /// Rollable (base_chance 15, mana 4, round cost 100): the failed-roll probe.
 const JINX: SpellId = SpellId(60);
+// --- Task 11 offensive fixtures (all base_chance 200 = deterministic hit) ---
+/// Fire-element rolled damage 10..=11 (min=max=10, no increases): the
+/// resist-scaling probe — 50% Rfir turns both roll outcomes into exactly 5.
+const ZAP: SpellId = SpellId(70);
+/// Magic-element twin of zap: unresistable (spec §4).
+const PURE: SpellId = SpellId(80);
+/// IfAntiMagic save class, mana 4: the saving-throw probe.
+const HEXBOLT: SpellId = SpellId(90);
+/// Fixed Damage(9) (non-zero ability value bypasses magnitude+resist),
+/// round cost 1000: the kill/re-fire probe — one fire per round.
+const DOOM: SpellId = SpellId(100);
+/// Fixed Damage(9), mana 2, round cost 500: the mid-combat no-mana probe.
+const SIPHON: SpellId = SpellId(110);
+
+const RAT: MonsterId = MonsterId(7);
+const EMBER: MonsterId = MonsterId(8);
+const WARDED: MonsterId = MonsterId(9);
+const IMMUNE: MonsterId = MonsterId(10);
+const FRAIL: MonsterId = MonsterId(11);
+
+const TOWER: RoomId = RoomId { map: 1, room: 1 };
+/// `attributes & 1` — the protected-room (guilt line) fixture.
+const SHOP: RoomId = RoomId { map: 1, room: 2 };
+
+/// A silent punching bag (no attack forms) worth 12 exp.
+fn monster(id: MonsterId, name: &str, hitpoints: i32) -> Monster {
+    Monster {
+        id,
+        name: name.into(),
+        move_msg: None,
+        death_msg: None,
+        abilities: vec![],
+        hitpoints,
+        experience: 12,
+        exp_multi: 1,
+        armour_class: 0,
+        damage_resist: 0,
+        magic_resist: 0,
+        bs_defence: 0,
+        energy: 0,
+        coins: [0; 5],
+        weapon: None,
+        loot: vec![],
+        attacks: [AttackForm::default(); 5],
+    }
+}
 
 fn spell(id: SpellId, name: &str, short: &str) -> Spell {
     Spell {
@@ -59,13 +112,51 @@ fn spell(id: SpellId, name: &str, short: &str) -> Spell {
 fn world() -> Content {
     let mut content = Content::default();
     content.add_room(Room {
-        id: RoomId { map: 1, room: 1 },
+        id: TOWER,
         name: "Tower".into(),
         description: vec![],
         room_type: 0,
+        attributes: 0,
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+    });
+    content.add_room(Room {
+        id: SHOP,
+        name: "Spell Shop".into(),
+        description: vec![],
+        room_type: 0,
+        // Bit 1 = protected (room+0x564; the Newhaven shops carry it) —
+        // the guilt-line trigger for bare offensive casts.
+        attributes: 1,
+        shop: None,
+        placed_items: vec![],
+        exits: Default::default(),
+    });
+    content.add_monster(monster(RAT, "giant rat", 1000));
+    let mut ember = monster(EMBER, "ember beast", 1000);
+    // Rfir (5) 50: fire-element magnitude scales by (100-50)/100.
+    ember.abilities = vec![(Ability::from_id(5).unwrap(), 50)];
+    content.add_monster(ember);
+    let mut warded = monster(WARDED, "warded golem", 1000);
+    // AntiMagic (51) grants the IfAntiMagic save; mr 500 halves+caps to a
+    // 98% resist roll (deterministic under the fixture rng seed).
+    warded.abilities = vec![(Ability::AntiMagic, 1)];
+    warded.magic_resist = 500;
+    content.add_monster(warded);
+    let mut immune = monster(IMMUNE, "immune wisp", 1000);
+    // SpellImmu (139) 5: refuses spells below level 5 pre-cost.
+    immune.abilities = vec![(Ability::SpellImmu, 5)];
+    content.add_monster(immune);
+    content.add_monster(monster(FRAIL, "frail bat", 5));
+    // The mmis castmsgb shape (message 3242; line 3's damage is %s).
+    content.add_message(Message {
+        id: MessageId(900),
+        lines: vec![
+            "You fire a %s at %s for %d damage!".into(),
+            "%s fires a %s at you for %d damage!".into(),
+            "%s fires a %s at %s for %s damage!".into(),
+        ],
     });
     content.add_race(Race {
         id: RaceId(1),
@@ -120,12 +211,53 @@ fn world() -> Content {
     jinx.mana_cost = 4;
     jinx.round_cost = 100;
     jinx.base_chance = 15;
+    // Task 11 offensive fixtures. Damage value 0 = "use the rolled
+    // magnitude" (a non-zero value is a fixed, unresisted amount).
+    let mut zap = spell(ZAP, "zap", "zapp");
+    zap.target_mode = TargetMode::Offensive0;
+    zap.element = Element::Fire;
+    zap.abilities = vec![(Ability::Damage, 0)];
+    zap.min_base = 10;
+    zap.max_base = 10;
+    zap.mana_cost = 1;
+    zap.round_cost = 100;
+    zap.cast_msg_b = Some(MessageId(900));
+    let mut pure = zap.clone();
+    pure.id = PURE;
+    pure.name = "pure bolt".into();
+    pure.short_name = "pure".into();
+    pure.element = Element::Magic;
+    let mut hexbolt = zap.clone();
+    hexbolt.id = HEXBOLT;
+    hexbolt.name = "hex bolt".into();
+    hexbolt.short_name = "hexb".into();
+    hexbolt.element = Element::Magic;
+    hexbolt.save_class = SaveClass::IfAntiMagic;
+    hexbolt.mana_cost = 4;
+    let mut doom = spell(DOOM, "doom", "doom");
+    doom.target_mode = TargetMode::Offensive0;
+    doom.element = Element::Magic;
+    doom.abilities = vec![(Ability::Damage, 9)];
+    doom.mana_cost = 1;
+    doom.round_cost = 1000;
+    doom.cast_msg_b = Some(MessageId(900));
+    let mut siphon = doom.clone();
+    siphon.id = SIPHON;
+    siphon.name = "siphon".into();
+    siphon.short_name = "siph".into();
+    siphon.mana_cost = 2;
+    siphon.round_cost = 500;
     content.add_spell(mmis);
     content.add_spell(blur);
     content.add_spell(illu);
     content.add_spell(spark);
     content.add_spell(heavy);
     content.add_spell(jinx);
+    content.add_spell(zap);
+    content.add_spell(pure);
+    content.add_spell(hexbolt);
+    content.add_spell(doom);
+    content.add_spell(siphon);
     content
 }
 
@@ -162,12 +294,21 @@ fn player(name: &str, class: ClassId, spellbook: BTreeMap<SpellId, bool>) -> Pla
 /// too-powerful illuminate (reachable in slice 4+ via temp spells).
 fn full_book() -> BTreeMap<SpellId, bool> {
     let mut book = BTreeMap::new();
-    book.insert(MAGIC_MISSILE, false);
-    book.insert(BLUR, false);
-    book.insert(ILLUMINATE, false);
-    book.insert(SPARK, false);
-    book.insert(HEAVY, false);
-    book.insert(JINX, false);
+    for id in [
+        MAGIC_MISSILE,
+        BLUR,
+        ILLUMINATE,
+        SPARK,
+        HEAVY,
+        JINX,
+        ZAP,
+        PURE,
+        HEXBOLT,
+        DOOM,
+        SIPHON,
+    ] {
+        book.insert(id, false);
+    }
     book
 }
 
@@ -557,4 +698,405 @@ fn failed_roll_broadcasts_the_room_line_to_others_only() {
     );
     let own = text_to(&events, caster);
     assert!(!own.contains("attempted"), "caster-only line: {own:?}");
+}
+
+// --- offensive casts (Task 11; spellcasting.md §8.6/§8.9 + decompile) ---
+
+/// Fixture core with a mage in the Tower and a spawned monster.
+fn arena(template: MonsterId) -> (Core, SessionId, mud_core::game::MonsterInstanceId) {
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(player("Vexil", MAGE, full_book()));
+    let m = core.spawn_monster(template, TOWER).expect("fixture template");
+    core.drain_events();
+    (core, s, m)
+}
+
+#[test]
+fn bare_offensive_cast_in_empty_room_must_specify() {
+    // MEASURED (§8.9): mana unchanged — target resolution runs BEFORE the
+    // cost gates and the roll.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(player("Vexil", MAGE, full_book()));
+    core.drain_events();
+    let shown = cast(&mut core, s, "c zap");
+    assert!(
+        shown.contains("You must specify a target for that spell!\n"),
+        "got: {shown:?}"
+    );
+    assert_eq!(core.current_mana(s), 6, "mana unchanged (§8.9)");
+}
+
+#[test]
+fn bare_offensive_cast_never_auto_picks_a_live_monster() {
+    // MEASURED (§8.9): unlike attack, even a room with a live monster
+    // refuses the bare cast.
+    let (mut core, s, m) = arena(RAT);
+    let shown = cast(&mut core, s, "c zap");
+    assert!(
+        shown.contains("You must specify a target for that spell!\n"),
+        "got: {shown:?}"
+    );
+    assert!(!shown.contains("*Combat Engaged*"), "got: {shown:?}");
+    assert_eq!(core.monster_hp(m), Some(1000), "no damage dealt");
+    assert_eq!(core.current_mana(s), 6, "mana unchanged (§8.9)");
+}
+
+#[test]
+fn bare_offensive_cast_in_protected_room_prints_guilt() {
+    // MEASURED (§8.6/§8.9): the guilt line keys on the ROOM's protected
+    // flag (attributes & 1; decompile cast_no_target 39168-39184), not on
+    // who is standing in it. Mana unchanged; the DLL charges the round
+    // cost when affordable (39185-39195).
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut vexil = player("Vexil", MAGE, full_book());
+    vexil.location = SHOP;
+    let s = core.attach_player(vexil);
+    core.drain_events();
+    let energy = core.round_energy(s);
+    let shown = cast(&mut core, s, "c zap");
+    assert!(
+        shown.contains(
+            "You are overcome with a feeling of guilt and break off your attack.\n"
+        ),
+        "got: {shown:?}"
+    );
+    assert_eq!(core.current_mana(s), 6, "mana unchanged (§8.9)");
+    assert_eq!(core.round_energy(s), energy - 100, "round cost charged (DLL)");
+}
+
+#[test]
+fn engaged_bare_offensive_cast_breaks_off_then_refuses() {
+    // MEASURED (§8.9 run 2): *Combat Off* precedes the must-specify line;
+    // the second bare cast finds no engagement left to break.
+    let (mut core, s, _m) = arena(RAT);
+    let attack = cast(&mut core, s, "attack rat");
+    assert!(attack.contains("*Combat Engaged*"), "got: {attack:?}");
+    let shown = cast(&mut core, s, "c zap");
+    let off = shown.find("*Combat Off*").expect("breaks engagement");
+    let refuse = shown
+        .find("You must specify a target for that spell!")
+        .expect("then refuses");
+    assert!(off < refuse, "order (§8.9 run 2): {shown:?}");
+    let again = cast(&mut core, s, "c zap");
+    assert!(!again.contains("*Combat Off*"), "already broken: {again:?}");
+    assert!(again.contains("You must specify a target"), "got: {again:?}");
+}
+
+#[test]
+fn unmatched_explicit_target_is_not_seen_here() {
+    // MEASURED (§8.9): the whole remainder echoes verbatim; no mana moves.
+    let (mut core, s, _m) = arena(RAT);
+    let shown = cast(&mut core, s, "c zap purple dragon");
+    assert!(
+        shown.contains("You do not see purple dragon here!\n"),
+        "got: {shown:?}"
+    );
+    assert_eq!(core.current_mana(s), 6, "mana unchanged");
+}
+
+#[test]
+fn magnitude_spans_lo_to_hi_plus_one() {
+    // Decompile 43668-43704: V = genrdn(0, hi-lo+1) + lo with genrdn
+    // inclusive of both ends — the mmis-like fixture (bounds 4..12,
+    // max_increase 1/0 = the zero-denominator guard) spans 4..=13,
+    // matching the oracle's observed 13 (§8.6).
+    let mut mmis_like = spell(SpellId(1), "probe", "prob");
+    mmis_like.min_base = 4;
+    mmis_like.max_base = 12;
+    mmis_like.max_increase = ScalePair { per: 1, levels: 0 };
+    assert_eq!(spell_magnitude(&mmis_like, 1, 0, &mut rolls(&[0])), 4);
+    assert_eq!(spell_magnitude(&mmis_like, 1, 0, &mut rolls(&[9])), 13);
+}
+
+#[test]
+fn level_cap_clamps_scaling_and_zero_means_uncapped() {
+    // Decompile 41783-41789: cap < 1 OR level <= cap => use the level;
+    // otherwise the cap. So cap 0 (and negative) = uncapped.
+    let mut probe = spell(SpellId(1), "probe", "prob");
+    probe.max_base = 10;
+    probe.max_increase = ScalePair { per: 2, levels: 1 }; // +2/level
+    probe.level_cap = 6;
+    // L = min(20, 6) = 6: hi = 10 + 12 = 22, lo = 0 -> roll(0, 23).
+    assert_eq!(spell_magnitude(&probe, 20, 0, &mut rolls(&[22])), 22);
+    probe.level_cap = 0;
+    // Uncapped: hi = 10 + 40 = 50.
+    assert_eq!(spell_magnitude(&probe, 20, 0, &mut rolls(&[50])), 50);
+    probe.level_cap = -1;
+    assert_eq!(spell_magnitude(&probe, 20, 0, &mut rolls(&[50])), 50);
+}
+
+#[test]
+fn inverted_bounds_clamp_lo_to_hi_without_swapping() {
+    // Decompile: lo = min(lo, hi); hi keeps its value — inverted data
+    // rolls in hi ..= hi+1, it does not swap.
+    let mut probe = spell(SpellId(1), "probe", "prob");
+    probe.min_base = 10;
+    probe.max_base = 5;
+    assert_eq!(spell_magnitude(&probe, 1, 0, &mut rolls(&[0])), 5);
+    assert_eq!(spell_magnitude(&probe, 1, 0, &mut rolls(&[1])), 6);
+}
+
+#[test]
+fn resist_scales_the_rolled_magnitude() {
+    // Decompile 43705: V = (100 - resist) * V / 100, integer division.
+    let mut probe = spell(SpellId(1), "probe", "prob");
+    probe.min_base = 10;
+    probe.max_base = 10;
+    assert_eq!(spell_magnitude(&probe, 1, 50, &mut rolls(&[0])), 5);
+    assert_eq!(spell_magnitude(&probe, 1, 50, &mut rolls(&[1])), 5); // 11*50/100
+    assert_eq!(spell_magnitude(&probe, 1, 100, &mut rolls(&[0])), 0);
+    assert_eq!(spell_magnitude(&probe, 1, 0, &mut rolls(&[1])), 11);
+}
+
+/// One combat round (the Job::Energy cadence), returning the caster's text.
+fn fire_round(core: &mut Core, s: SessionId) -> String {
+    for _ in 0..5 {
+        core.tick();
+    }
+    text_to(&core.drain_events(), s)
+}
+
+#[test]
+fn manual_offensive_cast_engages_without_firing() {
+    // MEASURED (oracle_spell_cast.raw 567-573): the command prints
+    // *Combat Engaged* and nothing else — mana unchanged at the prompt,
+    // energy zeroed; the first fire arrives with the next combat round.
+    let (mut core, s, m) = arena(RAT);
+    let shown = cast(&mut core, s, "c doom rat");
+    assert!(shown.contains("*Combat Engaged*"), "got: {shown:?}");
+    assert!(!shown.contains("You fire"), "no immediate fire: {shown:?}");
+    assert_eq!(core.current_mana(s), 6, "no mana at engagement");
+    assert_eq!(core.round_energy(s), 0, "engagement zeroes the pool (DLL 43468)");
+    assert_eq!(core.monster_hp(m), Some(1000));
+    let round = fire_round(&mut core, s);
+    assert!(
+        round.contains("You fire a doom at giant rat for 9 damage!\n"),
+        "driver fires: {round:?}"
+    );
+    assert_eq!(core.monster_hp(m), Some(991));
+    assert_eq!(core.current_mana(s), 5, "mana charged at the fire");
+}
+
+#[test]
+fn elemental_resist_reduces_live_damage() {
+    // zap is Fire; the ember beast carries Rfir 50. Both roll outcomes
+    // (10, 11) scale to exactly 5 — deterministic without touching rng.
+    let (mut core, s, m) = arena(EMBER);
+    let shown = cast(&mut core, s, "c zapp ember");
+    assert!(shown.contains("*Combat Engaged*"), "got: {shown:?}");
+    let round = fire_round(&mut core, s);
+    assert!(
+        round.contains("You fire a zap at ember beast for 5 damage!\n"),
+        "got: {round:?}"
+    );
+    assert_eq!(core.monster_hp(m), Some(995));
+}
+
+#[test]
+fn magic_element_bypasses_resistance() {
+    // pure bolt is Element::Magic — no resist ability exists for it
+    // (spec §4), so the ember beast's Rfir is ignored: full 10..=11.
+    let (mut core, s, m) = arena(EMBER);
+    cast(&mut core, s, "c pure ember");
+    fire_round(&mut core, s);
+    let hp = core.monster_hp(m).unwrap();
+    assert!(
+        (989..=990).contains(&hp),
+        "full magnitude 10..=11 applied: {hp}"
+    );
+}
+
+#[test]
+fn save_roll_is_half_stat_capped_98() {
+    // Decompile 43594-43614: genrdn(1,100) <= min(stat/2, 98) resists.
+    assert!(monster_save_resists(20, &mut rolls(&[10])));
+    assert!(!monster_save_resists(20, &mut rolls(&[11])));
+    assert!(monster_save_resists(400, &mut rolls(&[98]))); // capped at 98
+    assert!(!monster_save_resists(400, &mut rolls(&[99])));
+    assert!(!monster_save_resists(1, &mut rolls(&[1]))); // floor stat never saves
+}
+
+#[test]
+fn if_antimagic_save_needs_the_monster_ability() {
+    // hex bolt is IfAntiMagic; the rat has no AntiMagic — no save is
+    // rolled and the damage lands with the full mana charge.
+    let (mut core, s, m) = arena(RAT);
+    cast(&mut core, s, "c hexb rat");
+    let round = fire_round(&mut core, s);
+    assert!(
+        round.contains("You fire a hex bolt at giant rat for 1"),
+        "10 or 11 damage: {round:?}"
+    );
+    assert!(core.monster_hp(m).unwrap() < 1000, "damage applied");
+    assert_eq!(core.current_mana(s), 2, "full mana 4 on success");
+}
+
+#[test]
+fn antimagic_monster_resists_and_caster_pays_half_mana() {
+    // The warded golem: AntiMagic + save stat 500 -> a 98%-capped resist
+    // roll. The fixture seed rolls under 98 (deterministic); the resisted
+    // cast pays like a failed roll — full round cost, half mana — and
+    // prints the DLL resist pair (ORACLE-VERIFY: SaveClass::None on all
+    // starter spells makes this unreachable live).
+    let (mut core, s, m) = arena(WARDED);
+    let shown = cast(&mut core, s, "c hexb golem");
+    assert!(shown.contains("*Combat Engaged*"), "got: {shown:?}");
+    let round = fire_round(&mut core, s);
+    assert!(
+        round.contains(
+            "You attempt to cast hex bolt at warded golem, but the spell is resisted.\n"
+        ),
+        "got: {round:?}"
+    );
+    assert_eq!(core.monster_hp(m), Some(1000), "no damage on resist");
+    assert_eq!(core.current_mana(s), 4, "half of mana 4 charged");
+}
+
+#[test]
+fn spellimmu_monster_refuses_before_any_cost() {
+    // Decompile 43630-43638: spell level below the monster's SpellImmu
+    // (139) value => "no effect", before costs or engagement.
+    let (mut core, s, m) = arena(IMMUNE);
+    let energy = core.round_energy(s);
+    let shown = cast(&mut core, s, "c zapp wisp");
+    assert!(
+        shown.contains("Your spell has no effect on immune wisp.\n"),
+        "got: {shown:?}"
+    );
+    assert!(!shown.contains("*Combat Engaged*"), "no engagement: {shown:?}");
+    assert_eq!(core.monster_hp(m), Some(1000));
+    assert_eq!(core.current_mana(s), 6, "no mana charged");
+    assert_eq!(core.round_energy(s), energy, "no round cost charged");
+    // And the round is not consumed.
+    let next = cast(&mut core, s, "c spark");
+    assert!(!next.contains(ALREADY_CAST), "free refusal: {next:?}");
+}
+
+#[test]
+fn kill_routes_through_death_exp_and_combat_off() {
+    // §8.6 kill epilogue: death line, "You gain N experience.",
+    // *Combat Off* — the M3 monster-death path, fired by a cast.
+    let (mut core, s, m) = arena(FRAIL);
+    let shown = cast(&mut core, s, "c doom bat");
+    assert!(shown.contains("*Combat Engaged*"), "got: {shown:?}");
+    let round = fire_round(&mut core, s);
+    assert!(
+        round.contains("You fire a doom at frail bat for 9 damage!\n"),
+        "fixed Damage(9) bypasses magnitude: {round:?}"
+    );
+    let death = round.find("The frail bat is dead.").expect("death line");
+    let exp = round.find("You gain 12 experience.").expect("exp line");
+    let off = round.find("*Combat Off*").expect("combat off");
+    assert!(death < exp && exp < off, "order: {round:?}");
+    assert_eq!(core.monster_hp(m), None, "instance gone");
+    assert_eq!(core.player_snapshot(s).experience, 12);
+}
+
+#[test]
+fn engaged_cast_refires_each_round_with_fresh_costs() {
+    // MEASURED (§8.9): an engaged offensive cast re-fires unprompted each
+    // combat round, charging mana again. doom costs the full round pool,
+    // so exactly one fire per round.
+    let (mut core, s, m) = arena(RAT);
+    cast(&mut core, s, "c doom rat");
+    let round = fire_round(&mut core, s);
+    assert!(
+        round.contains("You fire a doom at giant rat for 9 damage!\n"),
+        "got: {round:?}"
+    );
+    assert_eq!(core.monster_hp(m), Some(991));
+    assert_eq!(core.current_mana(s), 5);
+    // Next combat round: the same spell fires again with no input.
+    let round = fire_round(&mut core, s);
+    assert!(
+        round.contains("You fire a doom at giant rat for 9 damage!\n"),
+        "unprompted re-fire: {round:?}"
+    );
+    assert_eq!(core.monster_hp(m), Some(982));
+    assert_eq!(core.current_mana(s), 4, "mana charged per round");
+}
+
+#[test]
+fn out_of_mana_refire_skips_silently_and_stays_engaged() {
+    // Decompile cast_monster_target 43560-43575 (autocombat branch): a
+    // mana-short re-fire pays the round cost, casts nothing, says nothing,
+    // and keeps the engagement — casting resumes when mana returns.
+    // ORACLE-VERIFY: unmeasured live.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut vexil = player("Vexil", MAGE, full_book());
+    vexil.current_mana = 3; // siphon costs 2: one cast, then short
+    let s = core.attach_player(vexil);
+    let m = core.spawn_monster(RAT, TOWER).unwrap();
+    core.drain_events();
+    cast(&mut core, s, "c siph rat");
+    let round = fire_round(&mut core, s);
+    assert!(
+        round.contains("You fire a siphon at giant rat for 9 damage!\n"),
+        "got: {round:?}"
+    );
+    assert_eq!(core.current_mana(s), 1, "3 - 2");
+    // Next round: mana 1 < 2 -> silent skip, engagement holds.
+    let round = fire_round(&mut core, s);
+    assert!(!round.contains("You fire"), "no cast: {round:?}");
+    assert!(!round.contains("*Combat Off*"), "still engaged: {round:?}");
+    assert!(!round.contains("mana"), "silent: {round:?}");
+    assert_eq!(core.monster_hp(m), Some(991), "no damage in the dry round");
+    // Mana returns -> the SAME engagement fires again unprompted.
+    core.set_current_mana(s, 4);
+    let round = fire_round(&mut core, s);
+    assert!(
+        round.contains("You fire a siphon at giant rat for 9 damage!\n"),
+        "casting resumed: {round:?}"
+    );
+    assert_eq!(core.monster_hp(m), Some(982));
+}
+
+#[test]
+fn recasting_mid_combat_toggles_off_then_engaged() {
+    // MEASURED (oracle_spell_cast.raw 592-606): re-casting mid-combat
+    // toggles *Combat Off* / *Combat Engaged* — and is NOT blocked by the
+    // one-cast-per-round gate, because the manual offensive cast only
+    // re-engages (the driver does the casting).
+    let (mut core, s, _m) = arena(RAT);
+    let first = cast(&mut core, s, "c zapp rat");
+    assert!(first.contains("*Combat Engaged*"), "got: {first:?}");
+    assert!(!first.contains("*Combat Off*"), "got: {first:?}");
+    fire_round(&mut core, s); // a fire happens in between
+    let second = cast(&mut core, s, "c zapp rat");
+    let off = second.find("*Combat Off*").expect("toggles off");
+    let on = second.find("*Combat Engaged*").expect("then engages");
+    assert!(off < on, "order: {second:?}");
+}
+
+#[test]
+fn room_sees_the_cast_line_with_string_damage() {
+    // Message 900 line 3 renders damage through %s (message 3242's shape).
+    let (mut core, s, _m) = arena(RAT);
+    let watcher = core.attach_player(player("Grunt", WARRIOR, BTreeMap::new()));
+    core.drain_events();
+    core.input(s, "c doom rat");
+    for _ in 0..5 {
+        core.tick();
+    }
+    let seen = text_to(&core.drain_events(), watcher);
+    assert!(
+        seen.contains("Vexil fires a doom at giant rat for 9 damage!\n"),
+        "got: {seen:?}"
+    );
+}
+
+#[test]
+fn melee_attack_replaces_a_cast_engagement() {
+    // `attack` after a cast engagement swings instead of re-firing the
+    // spell — the casting slot is cleared by the melee engagement.
+    let (mut core, s, m) = arena(RAT);
+    cast(&mut core, s, "c doom rat");
+    let round = fire_round(&mut core, s);
+    assert!(round.contains("You fire"), "cast engagement fires: {round:?}");
+    assert_eq!(core.monster_hp(m), Some(991));
+    let mana = core.current_mana(s);
+    cast(&mut core, s, "attack rat");
+    let round = fire_round(&mut core, s);
+    assert!(!round.contains("You fire"), "no re-fire after attack: {round:?}");
+    assert_eq!(core.current_mana(s), mana, "no further mana charges");
 }

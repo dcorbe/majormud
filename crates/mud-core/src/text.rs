@@ -177,6 +177,36 @@ pub fn cast_fail_room(caster: &str, spell: &str) -> String {
     format!("{caster} attempted to cast {spell}, but failed.")
 }
 
+/// VERIFIED (spellcasting.md §8.9): bare offensive cast with no resolvable
+/// bare-cast form — empty room or monsters-only room alike.
+pub const MUST_SPECIFY_TARGET: &str = "You must specify a target for that spell!";
+
+/// VERIFIED (spellcasting.md §8.6/§8.9): bare offensive cast in a
+/// protected room (room `attributes & 1` — the Newhaven shops).
+pub const CAST_GUILT: &str =
+    "You are overcome with a feeling of guilt and break off your attack.";
+
+/// DLL string 00485de3 ("Your spell has no effect on %s.") — the SpellImmu
+/// (139) refusal on a monster target (decompile cast_monster_target
+/// 43630-43638). ORACLE-VERIFY: no starter spell/monster pair reaches it.
+pub fn spell_no_effect_on(target: &str) -> String {
+    format!("Your spell has no effect on {target}.")
+}
+
+/// DLL string 00485fe3 ("You attempt to cast %s at %s, but the spell is
+/// resisted.") — the caster line when the monster's saving throw succeeds
+/// (decompile cast_monster_target 44234-44236). ORACLE-VERIFY: the starter
+/// spells are all SaveClass::None, so this is unreachable live for now.
+pub fn cast_resisted(spell: &str, target: &str) -> String {
+    format!("You attempt to cast {spell} at {target}, but the spell is resisted.")
+}
+
+/// DLL string 00486034 ("%s resisted %s's %s.") — the room line beside
+/// [`cast_resisted`] (decompile 44240). ORACLE-VERIFY as above.
+pub fn cast_resisted_room(target: &str, caster: &str, spell: &str) -> String {
+    format!("{target} resisted {caster}'s {spell}.")
+}
+
 /// VERIFIED (oracle, first line; remainder ORACLE-VERIFY).
 pub const HELP_BANNER: &str = "Type HELP followed by a topic for help on that topic";
 

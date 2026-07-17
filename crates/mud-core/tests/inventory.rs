@@ -39,6 +39,7 @@ fn world() -> Content {
         name: "Village Entrance".into(),
         description: vec![],
         room_type: 0,
+        attributes: 0,
         shop: None,
         placed_items: vec![PlacedItem {
             item: ItemId(1098),

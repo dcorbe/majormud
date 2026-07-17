@@ -80,6 +80,15 @@ fn known_content_spot_checks() {
     let gates = &content.rooms[&RoomId { map: 1, room: 1 }];
     assert_eq!(gates.name, "Town Gates");
     assert!(gates.exits.iter().flatten().count() > 0);
+
+    // Room flags (attributes/room+0x564): the Newhaven Spell Shop is
+    // protected (bit 1 — the offensive-cast guilt line), the §8.9
+    // must-specify probe room is not.
+    let spell_shop = &content.rooms[&RoomId { map: 1, room: 2144 }];
+    assert_eq!(spell_shop.name, "Newhaven, Spell Shop");
+    assert!(spell_shop.protected());
+    let narrow_road = &content.rooms[&RoomId { map: 1, room: 2146 }];
+    assert!(!narrow_road.protected());
     assert!(
         gates.description[0].starts_with("You are before the massive town gates of Silvermere."),
         "got: {:?}",

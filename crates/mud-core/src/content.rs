@@ -124,12 +124,27 @@ pub struct Room {
     /// `shopnum` but another type (e.g. the Silvermere Temple Healer,
     /// type 3) refuse LIST/buy — the shop reference is inert there.
     pub room_type: i16,
+    /// `room+0x564` (`attributes` column) — room-flags byte: bit `0x1`
+    /// protected (no attacking; the Newhaven shops carry it), `0x2`
+    /// patrollable, `0x4` build-permitted, `0x40` ganghouse (gangs.md).
+    pub attributes: i16,
     /// The shop operating in this room (`shopnum` column), if any.
     pub shop: Option<ShopId>,
     /// Statically placed items (fixtures and initial floor stock).
     pub placed_items: Vec<PlacedItem>,
     /// Indexed by `Direction as usize`.
     pub exits: [Option<Exit>; 10],
+}
+
+impl Room {
+    /// Protected room (`attributes & 1`, room+0x564 bit 1): offensive
+    /// magic bare-cast here prints the guilt line instead of target
+    /// resolution (decompile `cast_no_target` 39168-39184; verified
+    /// against the content DB — Newhaven Spell/Weapons Shops carry 1,
+    /// the §8.9 must-specify probe rooms carry 0).
+    pub fn protected(&self) -> bool {
+        self.attributes & 1 != 0
+    }
 }
 
 /// A statically placed room item (`roomitems_N` + qty).

@@ -88,6 +88,7 @@ fn world() -> Content {
         name: "Tower".into(),
         description: vec![],
         room_type: 0,
+        attributes: 0,
         shop: None,
         // A club on the floor: the read-unowned floor path.
         placed_items: vec![PlacedItem { item: CLUB, quantity: 1 }],
@@ -98,6 +99,7 @@ fn world() -> Content {
         name: "Spell Shop".into(),
         description: vec![],
         room_type: 1,
+        attributes: 0,
         shop: Some(ShopId(48)),
         placed_items: vec![],
         exits: Default::default(),

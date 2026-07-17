@@ -131,7 +131,7 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
         .collect::<Vec<_>>()
         .join(", ");
     let mut stmt = db.prepare(&format!(
-        "SELECT mapnumber, roomnumber, name, shopnum, {descs}, {exits}, {placed}, type FROM room"
+        "SELECT mapnumber, roomnumber, name, shopnum, {descs}, {exits}, {placed}, type, attributes FROM room"
     ))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
@@ -164,6 +164,7 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
             name: row.get(2)?,
             description,
             room_type: to_i16("room", "type", row.get(41 + 17 * 2)?)?,
+            attributes: to_i16("room", "attributes", row.get(41 + 17 * 2 + 1)?)?,
             shop: (shopnum > 0)
                 .then(|| to_u16("room", "shopnum", shopnum).map(ShopId))
                 .transpose()?,

@@ -43,6 +43,7 @@ fn world(loot: Vec<LootSlot>) -> Content {
         name: "Alley".into(),
         description: vec![],
         room_type: 0,
+        attributes: 0,
         shop: None,
         placed_items: vec![],
         exits: Default::default(),

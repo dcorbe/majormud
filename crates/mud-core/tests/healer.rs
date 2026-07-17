@@ -19,6 +19,7 @@ fn world() -> Content {
         name: "Newhaven, Healer".into(),
         description: vec![],
         room_type: 1,
+        attributes: 0,
         shop: Some(ShopId(4)),
         placed_items: vec![],
         exits: Default::default(),
@@ -28,6 +29,7 @@ fn world() -> Content {
         name: "Temple Healer".into(),
         description: vec![],
         room_type: 3, // healer NPC room, NOT shop-active
+        attributes: 0,
         shop: Some(ShopId(4)),
         placed_items: vec![],
         exits: Default::default(),

@@ -322,6 +322,50 @@ pub fn cast_roll_succeeds(
     roll(0, 100) < chance
 }
 
+/// The offensive-cast magnitude roll (decompile `cast_monster_target`
+/// 43668-43704, identical block in `cast_user_target` 41783-41811; spec §3):
+///
+/// - `L` = caster level, clamped to `level_cap` — the DLL clamp is
+///   `cap < 1 || level <= cap ? level : cap`, so a cap at or below 0 means
+///   UNCAPPED and a positive cap gives `min(level, cap)`.
+/// - `hi = max_base + max_increase.scaled(L)`,
+///   `lo = min_base + min_increase.scaled(L)`; inverted data does not swap —
+///   the DLL lowers `lo` to `hi` and keeps `hi` (`lo = min(lo, hi)`).
+/// - `V = genrdn(0, hi - lo + 1) + lo`. genrdn is inclusive of BOTH ends,
+///   so V spans `lo ..= hi + 1` — one MORE than the printed bounds. This is
+///   not a bug in our port: the oracle observed mmis damage 13 at L1 bounds
+///   4..12 (§8.6), which is exactly `lo 4 + top roll 9`.
+/// - Resist: `V = (100 - resist) * V / 100` (integer division; resist 0
+///   passes V through). The caller supplies the target's elemental resist —
+///   0 for Element::Magic, which has no resist ability (spec §4).
+///
+/// `roll(lo, hi)` must return a uniform value in `[lo, hi]` — the same
+/// injectable seam as `cast_roll_succeeds`.
+pub fn spell_magnitude(
+    spell: &crate::content::Spell,
+    caster_level: u16,
+    resist: i32,
+    roll: &mut impl FnMut(i32, i32) -> i32,
+) -> i32 {
+    let level = i32::from(caster_level);
+    let cap = i32::from(spell.level_cap);
+    let l = if cap < 1 || level <= cap { level } else { cap };
+    let hi = i32::from(spell.max_base) + spell.max_increase.scaled(l);
+    let lo = (i32::from(spell.min_base) + spell.min_increase.scaled(l)).min(hi);
+    let v = roll(0, hi - lo + 1) + lo;
+    (100 - resist) * v / 100
+}
+
+/// The monster saving throw against a player's successful offensive cast
+/// (decompile `cast_monster_target` 43594-43614; spec §3). Rolled only when
+/// the spell's save class grants one (`Always`, or `IfAntiMagic` on a
+/// monster with AntiMagic 51): `genrdn(1, 100) <= min(save_stat / 2, 98)`
+/// resists. The halving truncates toward zero, so `save_stat` 1 (the
+/// engine's floor) never resists.
+pub fn monster_save_resists(save_stat: i32, roll: &mut impl FnMut(i32, i32) -> i32) -> bool {
+    roll(1, 100) <= (save_stat / 2).min(98)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     Output { session: SessionId, text: String },
@@ -368,6 +412,12 @@ enum Session {
         /// §8.6); set whether the roll then succeeds or fails, cleared by
         /// `energy_round`.
         cast_this_round: bool,
+        /// The spell an offensive-cast engagement re-fires each combat
+        /// round in place of melee swings (the DLL threads the spell id
+        /// through `engage_autocombat`, decompile 43469; the unprompted
+        /// re-fire is MEASURED §8.9). `Some` only while `target` is
+        /// `Some`; cleared with it, and replaced by a melee `attack`.
+        casting: Option<SpellId>,
     },
 }
 
@@ -885,7 +935,7 @@ impl Core {
         self.broadcast_to_others(id, &text::entered_realm(&player.name));
         let derived = self.derive_for(&player);
         self.sessions
-            .insert(id, Session::InGame { player: Box::new(player), derived, exiting: None, target: None, aided: false, energy: PLAYER_ENERGY_MAX, cast_this_round: false });
+            .insert(id, Session::InGame { player: Box::new(player), derived, exiting: None, target: None, aided: false, energy: PLAYER_ENERGY_MAX, cast_this_round: false, casting: None });
         self.show_room(id);
         self.show_prompt(id);
         id
@@ -1281,9 +1331,10 @@ impl Core {
         let Some(monster) = monster else {
             return Resolution::FallThrough;
         };
-        if let Some(Session::InGame { target, .. }) = self.sessions.get_mut(&session) {
+        if let Some(Session::InGame { target, casting, .. }) = self.sessions.get_mut(&session) {
             // Oracle: attacking while already engaged prints *Combat Off*
             // before the new *Combat Engaged*.
+            *casting = None; // a melee attack replaces any cast engagement
             if target.is_some() {
                 *target = None;
                 self.output_line(session, text::COMBAT_OFF);
@@ -1815,12 +1866,16 @@ impl Core {
         // after resolution. ORACLE-VERIFY: second-cast-unknown ordering
         // unmeasured (probe: `c blur` then `c zzz` in one round).
         let resolved = self.resolve_spell_from_book(self.player(session), args);
-        let Some((spell_id, _target)) = resolved else {
+        let Some((spell_id, target)) = resolved else {
             self.output_line(session, &text::dont_know_cast(args));
             return;
         };
         // Gate 3: one cast per round — even for energy-0 spells
-        // (MEASURED §8.6).
+        // (MEASURED §8.6). ORACLE-VERIFY: the DLL scopes this flag to
+        // benign casts (offensive ones are gated by round energy instead,
+        // and their manual form only engages, below); whether a benign
+        // cast blocks a subsequent offensive ENGAGEMENT in the same round
+        // is unmeasured — we currently block it here.
         if let Some(Session::InGame { cast_this_round: true, .. }) = self.sessions.get(&session)
         {
             self.output_line(session, text::ALREADY_CAST);
@@ -1833,13 +1888,108 @@ impl Core {
             self.output_line(session, text::SPELL_TOO_POWERFUL);
             return;
         }
-        // Gate 5: round energy — exactly like an M3 attack without energy,
-        // a silent no-op within the round (no measured message). The
-        // deduction itself happens at roll time below.
+        // Offensive target resolution, BEFORE the cost gates and the roll
+        // (MEASURED §8.9: the must-specify, guilt and unmatched-target
+        // refusals all left the prompt mana unchanged; in the DLL they
+        // live in the dispatcher / cast_no_target ahead of
+        // cast_monster_target's cost gates).
         let round_cost = i32::from(spell.round_cost);
         let mana_cost = i32::from(spell.mana_cost);
         let base_chance = spell.base_chance;
         let spell_name = spell.name.clone();
+        let offensive = spell.target_mode.is_offensive();
+        let mut monster = None;
+        if offensive {
+            let room = self.player(session).location;
+            if target.is_empty() {
+                // MEASURED (§8.9 run 2): a bare offensive cast while
+                // melee-engaged prints *Combat Off* (the engagement
+                // breaks) and THEN its refusal.
+                self.break_combat(session);
+                if self.content.rooms.get(&room).is_some_and(|r| r.protected()) {
+                    // Protected room (attributes & 1 — the Newhaven
+                    // shops): the guilt line (MEASURED §8.6/§8.9). The
+                    // DLL charges the round cost here when affordable but
+                    // never the mana (decompile cast_no_target
+                    // 39185-39195; §8.9: mana unchanged).
+                    if let Some(Session::InGame { energy, .. }) =
+                        self.sessions.get_mut(&session)
+                        && *energy >= round_cost
+                    {
+                        *energy -= round_cost;
+                    }
+                    self.output_line(session, text::CAST_GUILT);
+                    return;
+                }
+                // Empty room and monsters-only alike — an offensive cast
+                // NEVER auto-picks a target, unlike attack (MEASURED §8.9).
+                self.output_line(session, text::MUST_SPECIFY_TARGET);
+                return;
+            }
+            match self.find_monster(room, &target) {
+                Some(id) => monster = Some(id),
+                None => {
+                    // MEASURED (§8.9): the entire remainder is one target
+                    // string, echoed verbatim.
+                    self.output_line(session, &text::do_not_see_here(&target));
+                    return;
+                }
+            }
+        }
+        if let Some(monster_id) = monster {
+            // SpellImmu (139): a monster immune to spells at or below this
+            // level refuses the cast before any cost or engagement
+            // (decompile cast_monster_target 43630-43638: spell level <
+            // SpellImmu value => "no effect"; the autocombat re-fire skips
+            // this check, so it lives on the command path only).
+            let immu = self.monster_ability_value(monster_id, Ability::SpellImmu);
+            if immu > 0 && i32::from(self.content.spells[&spell_id].required_power) < immu {
+                let name = self.monster_name(monster_id);
+                self.output_line(session, &text::spell_no_effect_on(&name));
+                return;
+            }
+            // Engagement is the command's ENTIRE effect (MEASURED,
+            // oracle_spell_cast.raw 567-637 + decompile cast_monster_target
+            // 43439-43481): the manual offensive cast never rolls, charges
+            // or fires directly — it prints the *Combat Off*/*Combat
+            // Engaged* toggle, zeroes the round energy and arms `casting`;
+            // the combat round driver performs every actual cast. (§8.6's
+            // condensed example shows engage+fire together, but the raw
+            // capture shows mana UNCHANGED at the engagement prompt and the
+            // fire arriving a round later — which is also why a mid-combat
+            // re-cast is never blocked by the one-cast-per-round gate: for
+            // offensive spells the round energy IS that gate.) Mana and
+            // energy shortages are therefore not checked here either; the
+            // per-round attempt handles both silently.
+            if let Some(Session::InGame { target, .. }) = self.sessions.get_mut(&session)
+                && target.is_some()
+            {
+                *target = None;
+                self.output_line(session, text::COMBAT_OFF);
+            }
+            if let Some(Session::InGame { target, casting, energy, .. }) =
+                self.sessions.get_mut(&session)
+            {
+                *target = Some(monster_id);
+                *casting = Some(spell_id);
+                // DLL 43468: engagement zeroes the pool — the first fire
+                // waits for the next combat round's refill.
+                *energy = 0;
+            }
+            self.output_line(session, text::COMBAT_ENGAGED);
+            // Retaliation lock (transcript: the filthbug swiped back after
+            // the bare engagement, before any damage landed).
+            if let Some(m) = self.monsters.get_mut(&monster_id) {
+                m.target = Some(session);
+            }
+            return;
+        }
+        // Benign spells: roll + costs at the command, unlike offensive
+        // (MEASURED: blur's mana moved at the prompt, §8.6/§8.9) — the
+        // instant/duration effects land in Task 12.
+        // Gate 5: round energy — exactly like an M3 attack without energy,
+        // a silent no-op within the round (no measured message). The
+        // deduction itself happens at roll time below.
         let Some(Session::InGame { energy, player, derived, .. }) = self.sessions.get(&session)
         else {
             return;
@@ -1872,8 +2022,8 @@ impl Core {
         *energy -= round_cost;
         if succeeded {
             player.current_mana -= mana_cost;
-            // Task 11: effects + messages — success is silent until then,
-            // observable only via the deductions.
+            // Task 12: benign effects + messages — success is silent until
+            // then, observable only via the deductions.
         } else {
             // Half mana rounded down (mmis 1 -> 0 oracle-confirmed §8.6;
             // blur 4 -> 2 §8.9), no effects applied.
@@ -1884,6 +2034,232 @@ impl Core {
             let room = player.location;
             self.output_line(session, &text::cast_fail(&spell_name));
             self.broadcast_to_room(room, Some(session), &text::cast_fail_room(&caster, &spell_name));
+        }
+    }
+
+    /// A live monster's template name (empty if the instance is gone).
+    fn monster_name(&self, id: MonsterInstanceId) -> String {
+        self.monsters
+            .get(&id)
+            .and_then(|m| self.content.monsters.get(&m.template))
+            .map_or_else(String::new, |t| t.name.clone())
+    }
+
+    /// Sum of the template's ability values for one ability — the
+    /// `get_monster_ability_value` template term (live monster buff slots
+    /// join in slice 4+).
+    fn monster_ability_value(&self, id: MonsterInstanceId, ability: Ability) -> i32 {
+        self.monsters
+            .get(&id)
+            .and_then(|m| self.content.monsters.get(&m.template))
+            .map_or(0, |t| {
+                t.abilities
+                    .iter()
+                    .filter(|(a, _)| *a == ability)
+                    .map(|(_, v)| i32::from(*v))
+                    .sum()
+            })
+    }
+
+    /// The monster-side save stat (decompile cast_monster_target
+    /// 43640-43648): M.R.(36) ability modifiers plus the template's `mr`
+    /// column, floored at 1. ORACLE-VERIFY: the `mr` column's identity as
+    /// the template word the DLL reads rests on the Nightmare field-map
+    /// ordering; the starter spells are all SaveClass::None, so no live
+    /// save was measurable.
+    fn monster_save_stat(&self, id: MonsterInstanceId) -> i32 {
+        let mr = self
+            .monsters
+            .get(&id)
+            .and_then(|m| self.content.monsters.get(&m.template))
+            .map_or(0, |t| i32::from(t.magic_resist));
+        (self.monster_ability_value(id, Ability::MR) + mr).max(1)
+    }
+
+    /// One offensive-cast execution against the engaged monster, invoked by
+    /// the combat round driver every round — including the first fire (the
+    /// command only engages; MEASURED oracle_spell_cast.raw + §8.9's
+    /// unprompted re-fire, with a fresh success roll and a fresh mana
+    /// charge every round). Deliberately does NOT touch `cast_this_round`:
+    /// the DLL gates offensive casts on round energy alone, keeping the
+    /// benign one-cast flag independent.
+    fn offensive_cast_attempt(
+        &mut self,
+        session: SessionId,
+        spell_id: SpellId,
+        monster_id: MonsterInstanceId,
+    ) {
+        let Some(spell) = self.content.spells.get(&spell_id).cloned() else {
+            return;
+        };
+        let round_cost = i32::from(spell.round_cost);
+        let mana_cost = i32::from(spell.mana_cost);
+
+        {
+            let Some(Session::InGame { energy, player, .. }) = self.sessions.get_mut(&session)
+            else {
+                return;
+            };
+            if *energy < round_cost {
+                return; // wait for the pool, like a melee whiff round
+            }
+            if player.current_mana < mana_cost {
+                // Out of mana mid-combat: decompile cast_monster_target
+                // 43560-43575 (the autocombat-driver branch) — the round
+                // cost is still paid, nothing is cast, no message, and the
+                // engagement holds; casting resumes if mana regenerates.
+                // ORACLE-VERIFY: unmeasured live (§8.9 note).
+                *energy -= round_cost;
+                return;
+            }
+        }
+
+        let (caster_name, room, level) = {
+            let p = self.player(session);
+            (p.name.clone(), p.location, p.level)
+        };
+        let monster_name = self.monster_name(monster_id);
+        let spellcasting = match self.sessions.get(&session) {
+            Some(Session::InGame { derived, .. }) => derived.spellcasting,
+            _ => return,
+        };
+
+        // Success roll (spec §3 step 5) — re-rolled on every re-fire
+        // (§8.9: a failed roll was followed by an unprompted success).
+        let rng = &mut self.rng;
+        let succeeded = cast_roll_succeeds(spellcasting, spell.base_chance, &mut |lo, hi| {
+            rng.roll(lo, hi)
+        });
+
+        // Saving throw (spec §3; decompile cast_monster_target 43594-43614):
+        // only on a successful roll, and only when the save class grants
+        // one — Always, or IfAntiMagic against a monster carrying
+        // AntiMagic (51).
+        let save_allowed = match spell.save_class {
+            crate::content::SaveClass::None => false,
+            crate::content::SaveClass::Always => true,
+            crate::content::SaveClass::IfAntiMagic => self
+                .monsters
+                .get(&monster_id)
+                .and_then(|m| self.content.monsters.get(&m.template))
+                .is_some_and(|t| t.abilities.iter().any(|(a, _)| *a == Ability::AntiMagic)),
+        };
+        let resisted = succeeded && save_allowed && {
+            let stat = self.monster_save_stat(monster_id);
+            let rng = &mut self.rng;
+            monster_save_resists(stat, &mut |lo, hi| rng.roll(lo, hi))
+        };
+
+        if !succeeded || resisted {
+            // Fail and resist pay alike: full round cost, half mana
+            // rounded toward zero (decompile 43617-43629 / 44244-44265).
+            let Some(Session::InGame { energy, player, .. }) = self.sessions.get_mut(&session)
+            else {
+                return;
+            };
+            *energy -= round_cost;
+            player.current_mana -= (mana_cost / 2).max(0);
+            if resisted {
+                self.output_line(session, &text::cast_resisted(&spell.name, &monster_name));
+                self.broadcast_to_room(
+                    room,
+                    Some(session),
+                    &text::cast_resisted_room(&monster_name, &caster_name, &spell.name),
+                );
+            } else {
+                self.output_line(session, &text::cast_fail(&spell.name));
+                self.broadcast_to_room(
+                    room,
+                    Some(session),
+                    &text::cast_fail_room(&caster_name, &spell.name),
+                );
+            }
+            // The victim still locks on (the melee path re-marks after
+            // whiffed rounds too).
+            if let Some(m) = self.monsters.get_mut(&monster_id)
+                && m.target.is_none()
+            {
+                m.target = Some(session);
+            }
+            return;
+        }
+
+        // Success: full costs (spec §3 step 7).
+        let Some(Session::InGame { energy, player, .. }) = self.sessions.get_mut(&session)
+        else {
+            return;
+        };
+        *energy -= round_cost;
+        player.current_mana -= mana_cost;
+
+        // Magnitude (spec §3; decompile 43668-43704), scaled by the
+        // monster's elemental resist — Element::Magic has no resist
+        // ability, so mmis lands at full value (spec §4; the modifier only
+        // applies to offensive target modes, which this path is by
+        // construction).
+        let resist = spell
+            .element
+            .resist_ability()
+            .map_or(0, |a| self.monster_ability_value(monster_id, a));
+        let rng = &mut self.rng;
+        let magnitude = spell_magnitude(&spell, level, resist, &mut |lo, hi| rng.roll(lo, hi));
+
+        // Damage (1) is the only offensive instant ability in slice 3 —
+        // Heal/Drain/EnergyLevel and the area match types land in Task 12
+        // and slice 5. A non-zero ability value is a FIXED amount that
+        // bypasses both the magnitude roll and the resist scaling; value 0
+        // means "use the rolled magnitude" (decompile 43711-43717:
+        // slot value == 0 selects the rolled local_20).
+        let damage = spell
+            .abilities
+            .iter()
+            .find(|(a, _)| *a == Ability::Damage)
+            .map(|(_, v)| match *v {
+                0 => magnitude,
+                v => i32::from(v),
+            });
+
+        // Cast messages: castmsgb only (castmsga is the empty message on
+        // every sampled spell — the Task-10 renderer contract). The target
+        // line is skipped: the target is a monster, not a session.
+        // slice-4: msgstyle-odd arg orders — Spell does not load the
+        // msgstyle column yet; every slice-3 starter is msgstyle-even, and
+        // odd-style spells (fireball 120, deathtouch 58, ...) bind
+        // (target, damage) orders with no spell-name slot. Load the column
+        // and add the second order table before shipping any of them.
+        if let Some(msg) = spell.cast_msg_b.and_then(|id| self.content.messages.get(&id)) {
+            let args = text::CastMsgArgs {
+                caster: &caster_name,
+                target: Some(&monster_name),
+                spell: &spell.name,
+                damage,
+            };
+            let caster_line = text::render_cast_line(msg, text::CastAudience::Caster, &args);
+            let room_line = text::render_cast_line(msg, text::CastAudience::Room, &args);
+            if let Some(line) = caster_line {
+                self.output_line(session, &line);
+            }
+            if let Some(line) = room_line {
+                self.broadcast_to_room(room, Some(session), &line);
+            }
+        }
+
+        // Damage + retaliation + the M3 kill path (death line, exp split,
+        // *Combat Off* — monster_killed is check_kill_monster +
+        // distribute_experience).
+        let Some(damage) = damage else {
+            return; // non-Damage offensive abilities: Task 12 / slice 5
+        };
+        let dead = {
+            let Some(m) = self.monsters.get_mut(&monster_id) else {
+                return;
+            };
+            m.current_hp -= damage;
+            m.target = Some(session);
+            m.current_hp <= 0
+        };
+        if dead {
+            self.monster_killed(monster_id, session);
         }
     }
 
@@ -2658,12 +3034,13 @@ impl Core {
     /// `validate_auto_combat` + `attack_user_monster`: up to 6 swings gated
     /// by the energy pool.
     fn player_attack_sequence(&mut self, session: SessionId) {
-        let Some(Session::InGame { player, target: Some(target), .. }) =
+        let Some(Session::InGame { player, target: Some(target), casting, .. }) =
             self.sessions.get(&session)
         else {
             return;
         };
         let target = *target;
+        let casting = *casting;
         // Helpless players don't swing.
         if player.current_hp < 1 {
             return;
@@ -2675,6 +3052,13 @@ impl Core {
             .is_some_and(|m| m.current_hp > 0 && m.location == player.location);
         if !valid {
             self.break_combat(session);
+            return;
+        }
+        // A cast engagement re-fires its spell instead of swinging
+        // (MEASURED §8.9: the unprompted mmis line the round after a
+        // failed roll, mana charged again).
+        if let Some(spell_id) = casting {
+            self.offensive_cast_attempt(session, spell_id, target);
             return;
         }
 
@@ -2960,8 +3344,11 @@ impl Core {
     /// Tear down combat without the *Combat Off* print (death has its own
     /// messaging).
     fn break_combat_silent(&mut self, session: SessionId) {
-        if let Some(Session::InGame { target, energy, .. }) = self.sessions.get_mut(&session) {
+        if let Some(Session::InGame { target, energy, casting, .. }) =
+            self.sessions.get_mut(&session)
+        {
             *target = None;
+            *casting = None;
             *energy = (*energy).min(PLAYER_ENERGY_MAX);
         }
     }
@@ -2977,10 +3364,12 @@ impl Core {
 
     /// `kill_autocombat` + `display_autocombat_broken`.
     fn break_combat(&mut self, session: SessionId) {
-        if let Some(Session::InGame { target, energy, .. }) = self.sessions.get_mut(&session)
+        if let Some(Session::InGame { target, energy, casting, .. }) =
+            self.sessions.get_mut(&session)
             && target.is_some()
         {
             *target = None;
+            *casting = None;
             *energy = (*energy).min(PLAYER_ENERGY_MAX);
             self.output_line(session, text::COMBAT_OFF);
         }
@@ -3270,7 +3659,7 @@ impl Core {
         self.broadcast_to_others(session, &text::entered_realm(&player.name));
         let derived = self.derive_for(&player);
         self.sessions
-            .insert(session, Session::InGame { player: Box::new(player), derived, exiting: None, target: None, aided: false, energy: PLAYER_ENERGY_MAX, cast_this_round: false });
+            .insert(session, Session::InGame { player: Box::new(player), derived, exiting: None, target: None, aided: false, energy: PLAYER_ENERGY_MAX, cast_this_round: false, casting: None });
         // Oracle: first entry shows the stat sheet, not the room.
         self.show_sheet(session);
         self.show_prompt(session);
