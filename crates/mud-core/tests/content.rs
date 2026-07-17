@@ -75,6 +75,7 @@ fn spell(n: u16) -> Spell {
         required_class_level: 0,
         min_increase: ScalePair::NONE,
         duration_increase: ScalePair::NONE,
+        msg_style: 0, // even = the render_cast_line contract
     }
 }
 

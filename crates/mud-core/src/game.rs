@@ -1888,6 +1888,16 @@ impl Core {
             self.output_line(session, text::SPELL_TOO_POWERFUL);
             return;
         }
+        // TEMPORARY until the slice-4 odd-style arg table: msgstyle-odd
+        // spells (~441 shipped, incl. fireball 120 / deathtouch 58) bind
+        // castmsgb args as (target, damage) orders with NO spell-name
+        // slot; text::render_cast_line would silently mis-bind them
+        // ("magic missile takes 13 fire damage!"). Refuse the cast loudly
+        // before any cost or engagement instead — not a real DLL gate.
+        if spell.msg_style & 1 != 0 {
+            self.output_line(session, text::CANNOT_CAST_YET);
+            return;
+        }
         // Offensive target resolution, BEFORE the cost gates and the roll
         // (MEASURED §8.9: the must-specify, guilt and unmatched-target
         // refusals all left the prompt mana unchanged; in the DLL they
@@ -1935,6 +1945,21 @@ impl Core {
                     return;
                 }
             }
+            // The protected-room flag gates the TARGETED path too
+            // (decompile cast_monster_target 43232, guilt refusal
+            // 44290-44297 — the same room+0x564 & 1 check as the bare-cast
+            // gate above, sitting ahead of the SpellImmu and cost gates):
+            // guilt line, no engagement, and the same round-cost-only
+            // charging as the bare-cast guilt path.
+            if self.content.rooms.get(&room).is_some_and(|r| r.protected()) {
+                if let Some(Session::InGame { energy, .. }) = self.sessions.get_mut(&session)
+                    && *energy >= round_cost
+                {
+                    *energy -= round_cost;
+                }
+                self.output_line(session, text::CAST_GUILT);
+                return;
+            }
         }
         if let Some(monster_id) = monster {
             // SpellImmu (139): a monster immune to spells at or below this
@@ -1960,7 +1985,10 @@ impl Core {
             // re-cast is never blocked by the one-cast-per-round gate: for
             // offensive spells the round energy IS that gate.) Mana and
             // energy shortages are therefore not checked here either; the
-            // per-round attempt handles both silently.
+            // per-round attempt handles both silently. The DLL conditions
+            // this engage-only block on duration == 0 (decompile:
+            // `param_1[0x67] == 0`); offensive DURATION spells take a
+            // different path that slice 4 must split out.
             if let Some(Session::InGame { target, .. }) = self.sessions.get_mut(&session)
                 && target.is_some()
             {

@@ -529,6 +529,12 @@ pub struct Spell {
     pub min_increase: ScalePair,
     /// `+0xf8/+0xf9` `durincrease/lvlsdurincr` — duration per-level scaling.
     pub duration_increase: ScalePair,
+    /// `msgstyle` — castmsgb argument-order style. Odd values (~441
+    /// shipped spells, incl. fireball 120 / deathtouch 58) bind
+    /// (target, damage) orders with NO spell-name slot; even values are
+    /// the [`crate::text::render_cast_line`] contract. Casting refuses
+    /// odd styles until the slice-4 second arg table lands.
+    pub msg_style: i16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

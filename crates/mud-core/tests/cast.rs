@@ -46,6 +46,9 @@ const HEXBOLT: SpellId = SpellId(90);
 const DOOM: SpellId = SpellId(100);
 /// Fixed Damage(9), mana 2, round cost 500: the mid-combat no-mana probe.
 const SIPHON: SpellId = SpellId(110);
+/// msgstyle-odd (the fireball/deathtouch family): refused pending the
+/// slice-4 odd-style castmsgb arg table.
+const ODDBALL: SpellId = SpellId(120);
 
 const RAT: MonsterId = MonsterId(7);
 const EMBER: MonsterId = MonsterId(8);
@@ -106,6 +109,7 @@ fn spell(id: SpellId, name: &str, short: &str) -> Spell {
         required_class_level: 1,
         min_increase: ScalePair::NONE,
         duration_increase: ScalePair::NONE,
+        msg_style: 0, // even = the render_cast_line contract
     }
 }
 
@@ -247,6 +251,13 @@ fn world() -> Content {
     siphon.short_name = "siph".into();
     siphon.mana_cost = 2;
     siphon.round_cost = 500;
+    let mut oddball = zap.clone();
+    oddball.id = ODDBALL;
+    oddball.name = "oddball".into();
+    oddball.short_name = "oddb".into();
+    // msgstyle & 1 == 1: the castmsgb args bind in a different order with
+    // no spell-name slot — must refuse until the slice-4 arg table.
+    oddball.msg_style = 1;
     content.add_spell(mmis);
     content.add_spell(blur);
     content.add_spell(illu);
@@ -258,6 +269,7 @@ fn world() -> Content {
     content.add_spell(hexbolt);
     content.add_spell(doom);
     content.add_spell(siphon);
+    content.add_spell(oddball);
     content
 }
 
@@ -306,6 +318,7 @@ fn full_book() -> BTreeMap<SpellId, bool> {
         HEXBOLT,
         DOOM,
         SIPHON,
+        ODDBALL,
     ] {
         book.insert(id, false);
     }
@@ -762,6 +775,59 @@ fn bare_offensive_cast_in_protected_room_prints_guilt() {
     );
     assert_eq!(core.current_mana(s), 6, "mana unchanged (§8.9)");
     assert_eq!(core.round_energy(s), energy - 100, "round cost charged (DLL)");
+}
+
+#[test]
+fn targeted_offensive_cast_in_protected_room_prints_guilt() {
+    // The protected-room gate covers the TARGETED path too (decompile
+    // cast_monster_target 43232, guilt refusal 44290-44297 — the same
+    // room+0x564 & 1 flag as the bare-cast gate): guilt line, no
+    // engagement, mana unchanged, round cost charged when affordable
+    // (mirrors the bare-cast guilt charging).
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut vexil = player("Vexil", MAGE, full_book());
+    vexil.location = SHOP;
+    let s = core.attach_player(vexil);
+    let m = core.spawn_monster(RAT, SHOP).expect("fixture template");
+    core.drain_events();
+    let energy = core.round_energy(s);
+    let shown = cast(&mut core, s, "c zap rat");
+    assert!(
+        shown.contains(
+            "You are overcome with a feeling of guilt and break off your attack.\n"
+        ),
+        "got: {shown:?}"
+    );
+    assert!(!shown.contains("*Combat Engaged*"), "no engagement: {shown:?}");
+    assert_eq!(core.current_mana(s), 6, "mana unchanged");
+    assert_eq!(core.round_energy(s), energy - 100, "round cost charged (DLL)");
+    assert_eq!(core.monster_hp(m), Some(1000), "no damage dealt");
+    // Nothing was armed: the next combat round fires nothing.
+    let round = fire_round(&mut core, s);
+    assert!(!round.contains("You fire"), "no armed cast: {round:?}");
+}
+
+#[test]
+fn msgstyle_odd_spell_refuses_before_costs_and_engagement() {
+    // TEMPORARY until the slice-4 odd-style arg table: msgstyle-odd
+    // spells (~441 shipped, incl. fireball 120 / deathtouch 58) bind
+    // castmsgb args in a different order with no spell-name slot;
+    // render_cast_line would silently mis-bind them, so the cast refuses
+    // loudly before any cost or engagement.
+    let (mut core, s, m) = arena(RAT);
+    let energy = core.round_energy(s);
+    let shown = cast(&mut core, s, "c oddb rat");
+    assert!(
+        shown.contains("You cannot cast that yet.\n"),
+        "got: {shown:?}"
+    );
+    assert!(!shown.contains("*Combat Engaged*"), "no engagement: {shown:?}");
+    assert_eq!(core.current_mana(s), 6, "no mana cost");
+    assert_eq!(core.round_energy(s), energy, "no round cost");
+    assert_eq!(core.monster_hp(m), Some(1000), "no damage dealt");
+    // Nothing was armed: the next combat round fires nothing.
+    let round = fire_round(&mut core, s);
+    assert!(!round.contains("You fire"), "no armed cast: {round:?}");
 }
 
 #[test]

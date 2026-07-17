@@ -186,6 +186,14 @@ pub const MUST_SPECIFY_TARGET: &str = "You must specify a target for that spell!
 pub const CAST_GUILT: &str =
     "You are overcome with a feeling of guilt and break off your attack.";
 
+/// ORACLE-INVENTED-TEMPORARY until the slice-4 odd-style arg table: the
+/// refusal for `msgstyle & 1 == 1` spells (~441 shipped, incl. fireball
+/// 120 / deathtouch 58), whose castmsgb args bind in a different order
+/// with no spell-name slot — [`render_cast_line`] would silently mis-bind
+/// them (see its doc). Not a DLL string; remove with the guard in
+/// `cast_command`.
+pub const CANNOT_CAST_YET: &str = "You cannot cast that yet.";
+
 /// DLL string 00485de3 ("Your spell has no effect on %s.") — the SpellImmu
 /// (139) refusal on a monster target (decompile cast_monster_target
 /// 43630-43638). ORACLE-VERIFY: no starter spell/monster pair reaches it.

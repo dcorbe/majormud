@@ -783,6 +783,15 @@ confirmed no `Also here:` before every cast); monster probes in the Arena.
   friendly NPC in room → guilt; otherwise (empty OR monsters only) →
   `You must specify a target for that spell!`. There is no "no effect"
   family.
+
+  **Correction (decompile):** the "friendly NPC present" inference above
+  is superseded — the NPC was a confound. The gate is the ROOM's
+  protected flag, `room+0x564 & 1` (the `attributes` column; Weapons
+  Shop and the Spell Shop carry bit 1, Narrow Road and the Arena do
+  not), checked in `cast_no_target` 39163-39195 for the bare form and
+  again in `cast_monster_target` 43232 for the targeted form (guilt
+  refusal at 44290-44297) — so `c mmis rat` in a protected room refuses
+  with the same guilt line. The measured strings above stand as-is.
 - **Trailing words are the target, not garbage.** Everything after the
   matched spell name is looked up as one target string among room
   entities:

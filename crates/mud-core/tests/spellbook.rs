@@ -52,6 +52,7 @@ fn spell(id: SpellId, name: &str, short: &str) -> Spell {
         required_class_level: 1,
         min_increase: ScalePair::NONE,
         duration_increase: ScalePair::NONE,
+        msg_style: 0, // even = the render_cast_line contract
     }
 }
 

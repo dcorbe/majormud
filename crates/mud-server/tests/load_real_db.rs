@@ -31,6 +31,11 @@ fn magic_missile_cast_fields_load_exactly() {
     assert_eq!(mm.max_increase, ScalePair { per: 1, levels: 0 });
     assert_eq!(mm.min_increase, ScalePair::NONE);
     assert_eq!(mm.duration_increase, ScalePair::NONE);
+    // msgstyle pins (sqlite: spell 1 = 32, spell 129 blur = 0): the tail
+    // column of the SELECT — a shifted column order lands some other
+    // field here, and 32-vs-0 disambiguates the pair.
+    assert_eq!(mm.msg_style, 32);
+    assert_eq!(content.spells[&SpellId(129)].msg_style, 0);
 }
 
 // Barkskin (spell 34) exists as a second pin because magic missile cannot

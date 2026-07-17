@@ -393,7 +393,7 @@ fn load_spells(db: &Connection, content: &mut Content) -> Result<(), LoadError> 
          levelcap, energy, level, min, max, spelltype, typeofresists, \
          difficulty, undefined01, target, duration, typeofattack, magerya, \
          mana, maxincrease, lvlsmaxincr, mageryb, minincrease, lvlsminincr, \
-         durincrease, lvlsdurincr FROM spell",
+         durincrease, lvlsdurincr, msgstyle FROM spell",
         ability_cols("abilitya"),
         ability_cols("abilityb"),
     ))?;
@@ -444,6 +444,7 @@ fn load_spells(db: &Connection, content: &mut Content) -> Result<(), LoadError> 
             required_class_level: field("mageryb", 41)?,
             min_increase: pair("minincrease", 42, "lvlsminincr", 43)?,
             duration_increase: pair("durincrease", 44, "lvlsdurincr", 45)?,
+            msg_style: field("msgstyle", 46)?,
         });
     }
     Ok(())
