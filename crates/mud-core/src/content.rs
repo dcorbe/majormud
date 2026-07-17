@@ -631,6 +631,11 @@ pub enum ContentError {
         monster: MonsterId,
         item: ItemId,
     },
+    DanglingSpellRef {
+        spell: SpellId,
+        ability: Ability,
+        referenced: SpellId,
+    },
 }
 
 /// All static content, keyed for deterministic iteration.
@@ -732,6 +737,24 @@ impl Content {
                     errors.push(ContentError::DanglingSpellMessage {
                         spell: spell.id,
                         message: msg,
+                    });
+                }
+            }
+        }
+
+        // EndCast (151), RemovesSpell (122), KillSpell (153) and
+        // GiveTempSpell (160) values name other spells; 0 = none.
+        let spell_refs = [122, 151, 153, 160].map(|id| Ability::from_id(id).expect("in the enum"));
+        for spell in self.spells.values() {
+            for &(ability, value) in &spell.abilities {
+                if spell_refs.contains(&ability)
+                    && value != 0
+                    && !self.spells.contains_key(&SpellId(value as u16))
+                {
+                    errors.push(ContentError::DanglingSpellRef {
+                        spell: spell.id,
+                        ability,
+                        referenced: SpellId(value as u16),
                     });
                 }
             }

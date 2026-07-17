@@ -251,3 +251,45 @@ fn scale_pair_duration_divides_before_multiplying() {
     assert_eq!(ScalePair { per: 2, levels: 0 }.scaled_duration(8), 0);
     assert_eq!(ScalePair::NONE.scaled_duration(50), 0);
 }
+
+#[test]
+fn dangling_spell_reference_fails_validation() {
+    use mud_core::content::ContentError;
+    let mut content = Content::default();
+    let mut s = spell(1);
+    // EndCast (151) pointing at a spell that doesn't exist.
+    s.abilities = vec![(Ability::from_id(151).unwrap(), 999)];
+    content.add_spell(s);
+    assert_eq!(
+        content.validate(),
+        vec![ContentError::DanglingSpellRef {
+            spell: SpellId(1),
+            ability: Ability::from_id(151).unwrap(),
+            referenced: SpellId(999),
+        }]
+    );
+}
+
+#[test]
+fn zero_spell_reference_is_the_none_sentinel() {
+    // 14 shipped slots carry EndCast/RemovesSpell value 0 = "none".
+    let mut content = Content::default();
+    let mut s = spell(1);
+    s.abilities = vec![(Ability::from_id(151).unwrap(), 0)];
+    content.add_spell(s);
+    assert_eq!(content.validate(), vec![]);
+}
+
+#[test]
+fn resolving_spell_references_pass() {
+    let mut content = Content::default();
+    let mut s = spell(1);
+    s.abilities = vec![
+        (Ability::from_id(122).unwrap(), 2), // RemovesSpell -> spell 2
+        (Ability::from_id(153).unwrap(), 2), // KillSpell -> spell 2
+        (Ability::from_id(160).unwrap(), 2), // GiveTempSpell -> spell 2
+    ];
+    content.add_spell(s);
+    content.add_spell(spell(2));
+    assert_eq!(content.validate(), vec![]);
+}
