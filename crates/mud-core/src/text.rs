@@ -289,9 +289,13 @@ pub fn cannot_sell_here(name: &str) -> String {
     format!("You cannot sell {name} here.")
 }
 pub const NOT_IN_SHOP_LIST: &str = "You cannot LIST if you are not in a shop!";
-/// Appended to a list row when user_can_use fails (items; spells get
-/// " (Too powerful)" — M5).
+/// VERIFIED (spellcasting.md §8.3): list-row suffixes. Non-scroll items
+/// gate by user_can_use → CANT_USE_SUFFIX. LearnSp scrolls gate by
+/// spell_gate on the taught spell: WrongClass → CANT_USE_SUFFIX,
+/// TooPowerful (character level below the spell's required power) →
+/// TOO_POWERFUL_SUFFIX.
 pub const CANT_USE_SUFFIX: &str = " (You can't use)";
+pub const TOO_POWERFUL_SUFFIX: &str = " (Too powerful)";
 pub const MAY_NOT_WEAR: &str = "You may not wear that item!";
 pub const MAY_NOT_USE_WEAPON: &str = "You may not use that weapon.";
 

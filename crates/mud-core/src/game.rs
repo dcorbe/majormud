@@ -1704,6 +1704,39 @@ impl Core {
         SpellGate::Ok
     }
 
+    /// The eligibility annotation for one shop row (spellcasting.md §8.3):
+    /// a LearnSp(42) scroll gates by `spell_gate` on the spell it teaches
+    /// (WrongClass → "(You can't use)", TooPowerful → "(Too powerful)");
+    /// a scroll whose taught spell id resolves to nothing can never be
+    /// learned, so it annotates like WrongClass. Everything else keeps the
+    /// M4 `user_can_use` gate.
+    fn list_row_suffix(
+        &self,
+        session: SessionId,
+        item: &crate::content::Item,
+    ) -> Option<&'static str> {
+        let taught = item
+            .abilities
+            .iter()
+            .find_map(|(a, v)| (*a == Ability::LearnSp).then_some(*v));
+        let Some(taught) = taught else {
+            return (!self.user_can_use(self.player(session), item))
+                .then_some(text::CANT_USE_SUFFIX);
+        };
+        let spell = u16::try_from(taught)
+            .ok()
+            .map(SpellId)
+            .and_then(|id| self.content.spells.get(&id));
+        let Some(spell) = spell else {
+            return Some(text::CANT_USE_SUFFIX);
+        };
+        match self.spell_gate(self.player(session), spell) {
+            SpellGate::Ok => None,
+            SpellGate::WrongClass => Some(text::CANT_USE_SUFFIX),
+            SpellGate::TooPowerful => Some(text::TOO_POWERFUL_SUFFIX),
+        }
+    }
+
     /// `display_shop_items`: shelf price = cost x (markup+100)/100 — the
     /// Charm haggle applies only at purchase (economy.md §2.1).
     fn list_command(&mut self, session: SessionId) -> Resolution {
@@ -1745,9 +1778,8 @@ impl Core {
                 )
             };
             out.push_str(&row);
-            let usable = self.user_can_use(self.player(session), item);
-            if !usable {
-                out.push_str(text::CANT_USE_SUFFIX);
+            if let Some(suffix) = self.list_row_suffix(session, item) {
+                out.push_str(suffix);
             }
             out.push('\n');
         }

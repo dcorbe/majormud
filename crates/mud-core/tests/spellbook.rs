@@ -22,6 +22,9 @@ const ILLUMINATE: SpellId = SpellId(10);
 const MAGIC_MISSILE: SpellId = SpellId(20);
 const BLUR: SpellId = SpellId(30);
 const DEEP_MAGERY: SpellId = SpellId(40);
+// A priest-group spell (§8.3's "scroll of minor healing" shape) — wrong
+// magery group for both fixture classes.
+const MINOR_HEALING: SpellId = SpellId(50);
 
 fn spell(id: SpellId, name: &str, short: &str) -> Spell {
     Spell {
@@ -55,6 +58,9 @@ fn spell(id: SpellId, name: &str, short: &str) -> Spell {
 const MMIS_SCROLL: ItemId = ItemId(200);
 const ILLU_SCROLL: ItemId = ItemId(201);
 const CLUB: ItemId = ItemId(202);
+const HEAL_SCROLL: ItemId = ItemId(203);
+/// Teaches a spell id that resolves to nothing in `content.spells`.
+const GHOST_SCROLL: ItemId = ItemId(204);
 const SHOP_ROOM: RoomId = RoomId { map: 1, room: 2 };
 
 /// A LearnSp(42) scroll teaching `teaches`, with the real parchment
@@ -98,6 +104,8 @@ fn world() -> Content {
     });
     content.add_item(scroll(MMIS_SCROLL, "scroll of magic missile", MAGIC_MISSILE));
     content.add_item(scroll(ILLU_SCROLL, "scroll of illuminate", ILLUMINATE));
+    content.add_item(scroll(HEAL_SCROLL, "scroll of minor healing", MINOR_HEALING));
+    content.add_item(scroll(GHOST_SCROLL, "scroll of oblivion", SpellId(999)));
     content.add_item(Item {
         id: CLUB,
         name: "club".into(),
@@ -108,12 +116,17 @@ fn world() -> Content {
         ..Item::default()
     });
     let mut stock = [ShopStock::default(); 20];
-    stock[0] = ShopStock {
-        item: Some(MMIS_SCROLL),
-        max: 5,
-        now: 5,
-        ..ShopStock::default()
-    };
+    for (slot, item) in [MMIS_SCROLL, ILLU_SCROLL, HEAL_SCROLL, GHOST_SCROLL]
+        .into_iter()
+        .enumerate()
+    {
+        stock[slot] = ShopStock {
+            item: Some(item),
+            max: 5,
+            now: 5,
+            ..ShopStock::default()
+        };
+    }
     content.add_shop(Shop {
         id: ShopId(48),
         name: "Spell Shop".into(),
@@ -174,10 +187,13 @@ fn world() -> Content {
     // than the fixture mage's 3 — never castable by either fixture class.
     let mut deep = spell(DEEP_MAGERY, "meteor storm", "mets");
     deep.required_class_level = 5;
+    let mut heal = spell(MINOR_HEALING, "minor healing", "mihe");
+    heal.class_gate_group = 2;
     content.add_spell(illu);
     content.add_spell(mmis);
     content.add_spell(blur);
     content.add_spell(deep);
+    content.add_spell(heal);
     content
 }
 
@@ -539,4 +555,81 @@ fn learned_spell_persists() {
     let persisted = persisted.expect("Event::Persist after learning");
     assert_eq!(persisted.spellbook.get(&MAGIC_MISSILE), Some(&false));
     assert!(persisted.inventory.is_empty());
+}
+
+// --- shop listing suffixes (spellcasting.md §8.3) ---
+
+/// The shop row for `name` in the listing, panicking if absent.
+fn shop_row(shown: &str, name: &str) -> String {
+    shown
+        .lines()
+        .find(|l| l.contains(name))
+        .unwrap_or_else(|| panic!("{name} row missing: {shown:?}"))
+        .to_string()
+}
+
+#[test]
+fn shop_rows_annotate_scrolls_by_spell_gate() {
+    // VERIFIED (§8.3): a mage viewing the spell shop — castable scroll
+    // bare, same-group-too-high scroll "(Too powerful)", other-group
+    // scroll "(You can't use)".
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut vexil = player("Vexil", MAGE, BTreeMap::new());
+    vexil.location = SHOP_ROOM;
+    let s = core.attach_player(vexil);
+    core.drain_events();
+    core.input(s, "list");
+    let shown = text_to(&core.drain_events(), s);
+    let mmis = shop_row(&shown, "scroll of magic missile");
+    assert!(
+        mmis.trim_end().ends_with("Free"),
+        "castable scroll unsuffixed: {mmis:?}"
+    );
+    let illu = shop_row(&shown, "scroll of illuminate");
+    assert!(
+        illu.ends_with(" (Too powerful)"),
+        "level-gated scroll: {illu:?}"
+    );
+    let heal = shop_row(&shown, "scroll of minor healing");
+    assert!(
+        heal.ends_with(" (You can't use)"),
+        "wrong-group scroll: {heal:?}"
+    );
+}
+
+#[test]
+fn warrior_sees_cant_use_on_every_scroll() {
+    // VERIFIED (§8.3): the non-caster fails gate 1 on all gated spells —
+    // never "(Too powerful)", even on the level-gated illuminate.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut grunt = player("Grunt", WARRIOR, BTreeMap::new());
+    grunt.location = SHOP_ROOM;
+    let s = core.attach_player(grunt);
+    core.drain_events();
+    core.input(s, "list");
+    let shown = text_to(&core.drain_events(), s);
+    for name in [
+        "scroll of magic missile",
+        "scroll of illuminate",
+        "scroll of minor healing",
+    ] {
+        let row = shop_row(&shown, name);
+        assert!(row.ends_with(" (You can't use)"), "{name}: {row:?}");
+    }
+    assert!(!shown.contains("Too powerful"), "got: {shown:?}");
+}
+
+#[test]
+fn scroll_teaching_unknown_spell_lists_as_cant_use() {
+    // A LearnSp value that resolves to no spell can never be learned;
+    // annotate like WrongClass rather than pretending it's usable.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut vexil = player("Vexil", MAGE, BTreeMap::new());
+    vexil.location = SHOP_ROOM;
+    let s = core.attach_player(vexil);
+    core.drain_events();
+    core.input(s, "list");
+    let shown = text_to(&core.drain_events(), s);
+    let row = shop_row(&shown, "scroll of oblivion");
+    assert!(row.ends_with(" (You can't use)"), "got: {row:?}");
 }
