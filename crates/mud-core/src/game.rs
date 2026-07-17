@@ -412,10 +412,15 @@ pub fn spell_magnitude(
 ///   (the §8.6 magnitude finding), so the result spans `base ..= max + 1`.
 /// - AlterSpLength (166) — the CASTER's accumulated ability percentage —
 ///   applies last: `duration = (alter + 100) * duration / 100` (integer
-///   division).
+///   division). ORACLE-VERIFY: this term's placement is inferred through a
+///   Ghidra return-register artifact (the decompile reuses the register at
+///   38165-38166), not a clean data-flow — probe with an AlterSpLength
+///   race/item live.
 ///
 /// Blur (129): all scaling zero → 70 flat. `roll(lo, hi)` is the same
-/// injectable uniform-`[lo, hi]` seam as [`spell_magnitude`].
+/// injectable uniform-`[lo, hi]` seam as [`spell_magnitude`]. The DLL
+/// stores the slot value AND duration as 16-bit words; our slots keep the
+/// i32 result (values in range agree).
 pub fn spell_duration(
     spell: &crate::content::Spell,
     caster_level: u16,
@@ -2226,11 +2231,53 @@ impl Core {
             return;
         }
         player.current_mana -= mana_cost;
-        if spell.duration == 0 {
+        // RemovesSpell (122) / KillSpell (153) pre-pass on the target's
+        // own slots (spec §3): the named spell is dispelled — blur (129)
+        // removes the amethyst pendant's effect 157 (anti-stacking). The
+        // pre-pass loop (decompile cast_no_target 39463-39572) runs for
+        // EVERY benign cast — it is NOT duration-gated; 17 shipped instant
+        // spells (cure-poison family) carry dispel abilities. RemovesSpell
+        // honors the victim's EndCast chain, KillSpell suppresses it —
+        // Task 6's distinction; both merely clear the slot today.
+        let mut dispelled = false;
+        for (ability, value) in &spell.abilities {
+            let honor_endcast = match ability {
+                Ability::RemovesSpell => true,
+                Ability::KillSpell => false,
+                _ => continue,
+            };
+            if let Ok(id) = u16::try_from(*value)
+                && id != 0
+                && let Some(idx) = self.player(session).find_active(SpellId(id))
+            {
+                self.clear_active_slot(session, idx, honor_endcast);
+                dispelled = true;
+                // First find wins: the DLL returns from inside the slot
+                // scan (39494) without visiting later ability slots.
+                break;
+            }
+        }
+        if dispelled {
+            // Early return (decompile 39472-39494, match types 1/2/6): a
+            // FOUND dispel prints display_spell_success, clears the slot,
+            // runs the termination path, recomputes, and RETURNS — the
+            // cast ends. The return precedes the apply loop (39573), so
+            // the caster's spell is neither applied (instant effects
+            // included) nor entered into a slot; only the success lines
+            // below still print.
+            // ORACLE-VERIFY: blur-over-157 live probe (st should NOT show
+            // blurred).
+            let snapshot = Box::new(self.player(session).clone());
+            self.events.push(Event::Persist(snapshot));
+        } else if spell.duration == 0 {
             // Instant apply loop (spec §4 table, self-target): iterate the
             // ability slots; a non-zero slot value is a FIXED amount, 0
             // means the rolled V — pinned on BOTH paths (offensive
             // decompile 43711-43717; benign cast_no_target loop ~39577).
+            let Some(Session::InGame { energy, player, .. }) = self.sessions.get_mut(&session)
+            else {
+                return;
+            };
             for (ability, value) in &spell.abilities {
                 let amount = match *value {
                     0 => magnitude,
@@ -2267,28 +2314,7 @@ impl Core {
         // enters them into the target's active-spell slots and the stat
         // recompute reads the slots from there (spec §4; the recompute
         // feed is Task 4).
-        if spell.duration != 0 {
-            // RemovesSpell (122) / KillSpell (153) pre-pass on the
-            // target's own slots BEFORE entry (spec §3): the named spell
-            // is dispelled — blur (129) removes the amethyst pendant's
-            // effect 157 (anti-stacking). RemovesSpell honors the victim's
-            // EndCast chain, KillSpell suppresses it — Task 6's
-            // distinction; both merely clear the slot today.
-            let mut dispelled = false;
-            for (ability, value) in &spell.abilities {
-                let honor_endcast = match ability {
-                    Ability::RemovesSpell => true,
-                    Ability::KillSpell => false,
-                    _ => continue,
-                };
-                if let Ok(id) = u16::try_from(*value)
-                    && id != 0
-                    && let Some(idx) = self.player(session).find_active(SpellId(id))
-                {
-                    self.clear_active_slot(session, idx, honor_endcast);
-                    dispelled = true;
-                }
-            }
+        else {
             // Entry (spec §4 steps 2-3): already active → refresh value
             // and duration in place; else the first free slot. The DLL
             // stores the 16-bit rolled magnitude as the slot value
@@ -2318,11 +2344,10 @@ impl Core {
                     false
                 }
             };
-            if entered || dispelled {
+            if entered {
                 let snapshot = Box::new(self.player(session).clone());
                 self.events.push(Event::Persist(snapshot));
-            }
-            if !entered {
+            } else {
                 // ORACLE-VERIFY slot overflow (unmeasured live;
                 // decompile-backed): both slot scans exhausted →
                 // add_cast_spell_to_user 38205-38217 prints the cast-fail

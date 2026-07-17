@@ -175,7 +175,13 @@ abilities **RemovesSpell** (122/0x7a) and **KillSpell** (153/0x99): the named
 target spell (value slot) is located in the target's active-spell slots and
 terminated via `perform_spell_termination_player_upkeep` — RemovesSpell runs the
 spell's EndCast chain, KillSpell suppresses it (the `param_5` flag distinguishes
-`0x7a` vs `0x99`).
+`0x7a` vs `0x99`). A successful pre-pass dispel **terminates the cast**
+(`cast_no_target` 39472-39494, match types 1/2/6): the DLL prints
+`display_spell_success`, clears the slot, runs the termination path, recomputes
+secondary stats, and returns — the early return precedes the apply loop
+(39573), so the caster's own spell is neither applied (instant effects
+included) nor entered into a slot. The pre-pass is not duration-gated; it runs
+for every cast that reaches the apply stage.
 
 ---
 

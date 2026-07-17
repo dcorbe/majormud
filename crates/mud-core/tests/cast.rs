@@ -82,6 +82,10 @@ const WARD: SpellId = SpellId(220);
 /// KillSpell(WARD) twin of veil — the suppress-EndCast dispel. Task 6
 /// honors the chain distinction; today both merely clear the slot.
 const REAP: SpellId = SpellId(230);
+/// INSTANT dispel (cure-poison model): duration 0, [(Heal, 5),
+/// (RemovesSpell, WARD)] — the pre-pass runs for instant casts too, and a
+/// successful dispel's early return skips the Heal.
+const PURGE: SpellId = SpellId(240);
 
 const RAT: MonsterId = MonsterId(7);
 const EMBER: MonsterId = MonsterId(8);
@@ -401,9 +405,13 @@ fn world() -> Content {
     let mut reap = spell(REAP, "reap", "reap");
     reap.duration = 70;
     reap.abilities = vec![(Ability::KillSpell, 220)];
+    // Instant dispel (cure-poison model): duration 0 stays the default.
+    let mut purge = spell(PURGE, "purge", "purg");
+    purge.abilities = vec![(Ability::Heal, 5), (Ability::RemovesSpell, 220)];
     content.add_spell(veil);
     content.add_spell(ward);
     content.add_spell(reap);
+    content.add_spell(purge);
     content.add_spell(mmis);
     content.add_spell(blur);
     content.add_spell(illu);
@@ -485,6 +493,7 @@ fn full_book() -> BTreeMap<SpellId, bool> {
         VEIL,
         WARD,
         REAP,
+        PURGE,
     ] {
         book.insert(id, false);
     }
@@ -1750,27 +1759,49 @@ fn full_slots_print_the_fail_line_and_lose_the_effect() {
 }
 
 #[test]
-fn removes_spell_pre_pass_clears_the_named_slot() {
+fn removes_spell_pre_pass_dispels_and_ends_the_cast() {
     // Blur's model (spec §3 pre-pass): (RemovesSpell 122, 157) dispels the
-    // amethyst pendant's effect on cast (anti-stacking). veil carries
-    // (RemovesSpell, WARD); the chain is honored in Task 6.
+    // amethyst pendant's effect on cast (anti-stacking). Decompile
+    // cast_no_target 39472-39494: a FOUND dispel prints the success lines,
+    // clears the slot, runs the termination, and RETURNS — the cast ends;
+    // veil does NOT enter a slot. The chain is honored in Task 6.
+    // ORACLE-VERIFY: blur-over-157 live probe (st should NOT show blurred).
     let mut core = Core::new(world(), CoreConfig::default());
     let mut vexil = player("Vexil", MAGE, full_book());
+    vexil.current_mana = 20; // two veil casts at 4 each
     vexil.active_spells[0] = ActiveSpell { spell: Some(WARD), value: 2, remaining: 40 };
     let s = core.attach_player(vexil);
     core.drain_events();
-    cast(&mut core, s, "c veil");
+    core.input(s, "c veil");
+    let events = core.drain_events();
+    let shown = text_to(&events, s);
+    // display_spell_success runs on the dispel path (39482), so the normal
+    // success lines still print even though veil never lands.
+    assert!(shown.contains("You cast veil on Vexil!"), "castmsgb: {shown:?}");
+    assert!(shown.contains("You are veiled!"), "DescMsg line3: {shown:?}");
     let p = core.player_snapshot(s);
     assert_eq!(p.find_active(WARD), None, "ward slot cleared");
-    let idx = p.find_active(VEIL).expect("veil entered");
+    assert_eq!(p.find_active(VEIL), None, "veil NOT entered — cast ended");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::Persist(p) if p.find_active(WARD).is_none())),
+        "Persist after dispel"
+    );
+    // Nothing left to dispel: the next round's cast enters normally.
+    energy_round(&mut core);
+    cast(&mut core, s, "c veil");
+    let p = core.player_snapshot(s);
+    let idx = p.find_active(VEIL).expect("second cast enters");
     assert_eq!(p.active_spells[idx].remaining, 70);
 }
 
 #[test]
-fn kill_spell_pre_pass_also_clears_the_named_slot() {
+fn kill_spell_pre_pass_also_dispels_and_ends_the_cast() {
     // KillSpell (153) dispels too; it differs from RemovesSpell only by
     // suppressing the victim's EndCast chain — Task 6's distinction, both
-    // merely clear the slot today.
+    // merely clear the slot today. The same 39494 early return applies:
+    // reap does NOT enter a slot on the dispel cast.
     let mut core = Core::new(world(), CoreConfig::default());
     let mut vexil = player("Vexil", MAGE, full_book());
     vexil.active_spells[0] = ActiveSpell { spell: Some(WARD), value: 2, remaining: 40 };
@@ -1779,7 +1810,43 @@ fn kill_spell_pre_pass_also_clears_the_named_slot() {
     cast(&mut core, s, "c reap");
     let p = core.player_snapshot(s);
     assert_eq!(p.find_active(WARD), None, "ward slot cleared");
-    assert!(p.find_active(REAP).is_some(), "reap entered");
+    assert_eq!(p.find_active(REAP), None, "reap NOT entered — cast ended");
+    energy_round(&mut core);
+    cast(&mut core, s, "c reap");
+    assert!(
+        core.player_snapshot(s).find_active(REAP).is_some(),
+        "second cast enters"
+    );
+}
+
+#[test]
+fn instant_cast_runs_the_dispel_pre_pass_and_skips_its_own_effects() {
+    // The pre-pass loop (decompile 39463-39572) runs for EVERY benign cast
+    // — it is NOT gated on duration; 17 shipped instant spells carry
+    // dispel abilities (the cure-poison family). The 39494 early return
+    // precedes the apply loop (39573), so a successful dispel skips the
+    // caster's instant effects too: purge's Heal(5) must NOT land.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut vexil = hardy("Vexil", MAGE); // max_hp 27
+    vexil.current_hp = 10;
+    vexil.active_spells[0] = ActiveSpell { spell: Some(WARD), value: 2, remaining: 40 };
+    let s = core.attach_player(vexil);
+    core.drain_events();
+    core.input(s, "c purge");
+    let events = core.drain_events();
+    let p = core.player_snapshot(s);
+    assert_eq!(p.find_active(WARD), None, "ward slot cleared");
+    assert_eq!(p.current_hp, 10, "Heal skipped — the dispel ended the cast");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::Persist(p) if p.find_active(WARD).is_none())),
+        "Persist after dispel"
+    );
+    // Nothing active: the next round's cast applies its instants normally.
+    energy_round(&mut core);
+    cast(&mut core, s, "c purge");
+    assert_eq!(core.player_snapshot(s).current_hp, 15, "Heal lands");
 }
 
 #[test]
