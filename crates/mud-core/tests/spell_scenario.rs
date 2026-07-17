@@ -233,6 +233,7 @@ fn mage() -> Player {
         experience: 0,
         location: SHOP_ROOM,
         spellbook: BTreeMap::new(),
+        active_spells: Default::default(),
     }
 }
 

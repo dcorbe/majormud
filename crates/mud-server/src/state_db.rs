@@ -15,7 +15,7 @@ use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
 use mud_core::content::{ClassId, ItemId, RaceId, RoomId, SpellId, StatBlock};
-use mud_core::game::{AccountProfile, Coins, Gender, Player};
+use mud_core::game::{AccountProfile, ActiveSpell, Coins, Gender, Player};
 use rusqlite::{params, Connection, OptionalExtension};
 
 #[derive(Debug)]
@@ -153,6 +153,20 @@ const TABLES: &[TableDef] = &[
             ("temporary", "INTEGER NOT NULL CHECK (temporary IN (0, 1))"),
         ],
         constraint: "PRIMARY KEY (name, spell)",
+    },
+    // Active duration-spell slots (spellcasting.md §1: 10 per player).
+    // Only occupied slots are stored; `slot` is the array index, preserved
+    // so slot order — and slot exhaustion — survives a reload.
+    TableDef {
+        name: "player_effect",
+        columns: &[
+            ("name", "TEXT NOT NULL COLLATE NOCASE"),
+            ("slot", "INTEGER NOT NULL"),
+            ("spell", "INTEGER NOT NULL"),
+            ("value", "INTEGER NOT NULL"),
+            ("remaining", "INTEGER NOT NULL"),
+        ],
+        constraint: "PRIMARY KEY (name, slot)",
     },
 ];
 
@@ -342,9 +356,9 @@ impl StateDb {
     }
 
     /// Test hook: rows for `name` remaining across the per-player side
-    /// tables (player_item, bankbook, player_spell).
+    /// tables (player_item, bankbook, player_spell, player_effect).
     pub fn side_table_rows(&self, name: &str) -> usize {
-        ["player_item", "bankbook", "player_spell"]
+        ["player_item", "bankbook", "player_spell", "player_effect"]
             .iter()
             .map(|table| {
                 self.conn
@@ -396,6 +410,18 @@ impl StateDb {
             tx.execute(
                 "INSERT INTO player_spell (name, spell, temporary) VALUES (?1, ?2, ?3)",
                 params![player.name, spell.0, i64::from(*temporary)],
+            )?;
+        }
+        tx.execute(
+            "DELETE FROM player_effect WHERE name = ?1",
+            params![player.name],
+        )?;
+        for (slot, active) in player.active_spells.iter().enumerate() {
+            let Some(spell) = active.spell else { continue };
+            tx.execute(
+                "INSERT INTO player_effect (name, slot, spell, value, remaining) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![player.name, slot as i64, spell.0, active.value, active.remaining],
             )?;
         }
         tx.execute(
@@ -481,7 +507,13 @@ impl StateDb {
     /// Permadeath: remove the character record.
     pub fn delete_player(&self, name: &str) -> Result<(), StateError> {
         let tx = self.conn.unchecked_transaction()?;
-        for table in ["player", "player_item", "bankbook", "player_spell"] {
+        for table in [
+            "player",
+            "player_item",
+            "bankbook",
+            "player_spell",
+            "player_effect",
+        ] {
             tx.execute(
                 &format!("DELETE FROM {table} WHERE name = ?1"),
                 params![name],
@@ -532,6 +564,25 @@ impl StateDb {
         for row in rows {
             let (spell, temporary) = row?;
             player.spellbook.insert(spell, temporary);
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT slot, spell, value, remaining FROM player_effect WHERE name = ?1",
+        )?;
+        let rows = stmt.query_map(params![name], |r| {
+            Ok((
+                r.get::<_, i64>(0)? as usize,
+                SpellId(r.get::<_, u16>(1)?),
+                r.get::<_, i16>(2)?,
+                r.get::<_, i32>(3)?,
+            ))
+        })?;
+        for row in rows {
+            let (slot, spell, value, remaining) = row?;
+            player.active_spells[slot] = ActiveSpell {
+                spell: Some(spell),
+                value,
+                remaining,
+            };
         }
         Ok(Some(player))
     }
@@ -596,6 +647,7 @@ impl StateDb {
                             room: r.get(33)?,
                         },
                         spellbook: BTreeMap::new(),
+                        active_spells: Default::default(),
                     })
                 },
             )

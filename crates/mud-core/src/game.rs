@@ -129,6 +129,39 @@ pub struct Player {
     /// the granting effect ends — wiring lands in slice 4). Display order
     /// is computed at render (level, then name), not storage order.
     pub spellbook: BTreeMap<SpellId, bool>,
+    /// Active duration-spell slots (`spellcasting.md` §1: id `+0x40+i*2`,
+    /// value `+0x54+i*2`, remaining ticks `+0x68+i*2` — 10 slots each).
+    /// An array, not a Vec: slot exhaustion is observable (an 11th buff
+    /// finds no free slot).
+    pub active_spells: [ActiveSpell; 10],
+}
+
+/// One player active-spell slot (`spellcasting.md` §1). `spell` is `None`
+/// for an empty slot (the DLL's id 0); `value` is the stored potency fed to
+/// upkeep and the dynamic-stat recompute (`+0x54`); `remaining` counts down
+/// in upkeep ticks (`+0x68`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ActiveSpell {
+    pub spell: Option<SpellId>,
+    pub value: i16,
+    pub remaining: i32,
+}
+
+impl Player {
+    /// Index of the first empty active-spell slot (`spellcasting.md` §4
+    /// step 3: "write into the first empty slot"), or `None` when all 10
+    /// are occupied.
+    pub fn first_free_slot(&self) -> Option<usize> {
+        self.active_spells.iter().position(|s| s.spell.is_none())
+    }
+
+    /// Index of the slot holding `spell`, if it is currently active
+    /// (`spellcasting.md` §4 step 2: recast refreshes in place).
+    pub fn find_active(&self, spell: SpellId) -> Option<usize> {
+        self.active_spells
+            .iter()
+            .position(|s| s.spell == Some(spell))
+    }
 }
 
 /// Why a spell can('t) be learned/used by this character.
@@ -4089,6 +4122,7 @@ impl Core {
             experience: 0,
             location: self.config.start_location,
             spellbook: BTreeMap::new(),
+            active_spells: Default::default(),
         };
         let derived = self.derive_for(&player);
         player.current_hp = derived.max_hp;

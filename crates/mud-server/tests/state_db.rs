@@ -1,7 +1,7 @@
 //! Tests for the runtime state database: accounts and player persistence.
 
 use mud_core::content::{ClassId, ItemId, RaceId, RoomId, SpellId, StatBlock};
-use mud_core::game::{Gender, Player};
+use mud_core::game::{ActiveSpell, Gender, Player};
 use mud_server::state_db::{CreateAccountError, StateDb};
 
 fn db() -> StateDb {
@@ -48,6 +48,7 @@ fn player(name: &str) -> Player {
         experience: 0,
         location: RoomId { map: 1, room: 1 },
         spellbook: Default::default(),
+        active_spells: Default::default(),
     }
 }
 
@@ -139,12 +140,48 @@ fn spellbook_roundtrips() {
 }
 
 #[test]
+fn active_spells_roundtrip() {
+    let db = db();
+    let mut p = player("Vexil");
+    // Blur in slot 0, a second buff in slot 3; empty slots in between must
+    // survive the trip (slot index is part of the state, not an artifact).
+    p.active_spells[0] = ActiveSpell {
+        spell: Some(SpellId(129)),
+        value: 5,
+        remaining: 70,
+    };
+    p.active_spells[3] = ActiveSpell {
+        spell: Some(SpellId(157)),
+        value: -2,
+        remaining: 1,
+    };
+    db.save_player(&p).expect("save");
+    let loaded = db.load_player("Vexil").expect("query").expect("found");
+    assert_eq!(loaded, p);
+
+    // Mutate and resave: the upkeep tick decays a slot and one expires.
+    // Delete-before-insert means no stale rows survive.
+    p.active_spells[0].remaining = 42;
+    p.active_spells[3] = ActiveSpell::default();
+    db.save_player(&p).expect("resave");
+    let loaded = db.load_player("Vexil").expect("query").expect("found");
+    assert_eq!(loaded, p);
+    assert_eq!(loaded.active_spells[0].remaining, 42);
+    assert_eq!(loaded.active_spells[3], ActiveSpell::default());
+}
+
+#[test]
 fn delete_player_purges_everything() {
     let db = db();
     let mut p = player("Vexil");
     p.inventory.push((ItemId(3), 0));
     p.bankbooks.push((45, 1000));
     p.spellbook.insert(SpellId(1), false);
+    p.active_spells[0] = ActiveSpell {
+        spell: Some(SpellId(129)),
+        value: 5,
+        remaining: 70,
+    };
     db.save_player(&p).expect("save");
 
     db.delete_player("Vexil").expect("delete");
@@ -160,6 +197,7 @@ fn delete_player_purges_everything() {
     assert!(loaded.inventory.is_empty());
     assert!(loaded.bankbooks.is_empty());
     assert!(loaded.spellbook.is_empty());
+    assert_eq!(loaded.active_spells, [ActiveSpell::default(); 10]);
 }
 
 /// The schema as first shipped (commit 02f029a): the shape of a live
@@ -219,8 +257,15 @@ fn old_database_is_migrated_on_open() {
 
     let db = StateDb::open(&path).expect("open migrates old schema");
 
-    // (a) Saving a modern player must succeed against the migrated table.
-    let modern = player("Newbie");
+    // (a) Saving a modern player must succeed against the migrated table —
+    // including an active spell, which needs the player_effect table the
+    // old database never had (CREATE TABLE IF NOT EXISTS adds it on open).
+    let mut modern = player("Newbie");
+    modern.active_spells[0] = ActiveSpell {
+        spell: Some(SpellId(129)),
+        value: 5,
+        remaining: 70,
+    };
     db.save_player(&modern).expect("modern save succeeds");
     let loaded = db.load_player("Newbie").expect("query").expect("found");
     assert_eq!(loaded, modern);
@@ -236,6 +281,7 @@ fn old_database_is_migrated_on_open() {
     assert_eq!(old.experience, 500);
     assert!(!old.lawful);
     assert_eq!(old.coins, Default::default());
+    assert_eq!(old.active_spells, [ActiveSpell::default(); 10]);
     drop(db);
 
     // (c) Reopening is idempotent: same data, still writable.
