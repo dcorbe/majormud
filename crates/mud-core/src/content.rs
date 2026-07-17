@@ -377,6 +377,8 @@ impl MatchType {
 
 /// Target mode (`spell+0xc4`, `spelltype`): `< 3` = offensive/combat-scoped,
 /// `>= 3` = benign/self (spellcasting.md §1). Shipped data uses 0, 1, 3.
+/// Deliberately stricter than the engine's `< 3` threshold: out-of-domain
+/// values (e.g. 4) are load errors, not benign.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetMode {
     Offensive0 = 0,
@@ -427,7 +429,11 @@ impl SaveClass {
 /// A per-level scaling fraction: `per` points per `levels` levels
 /// (numerator/denominator byte pairs at spell `+0xf2/f3`, `+0xf6/f7`,
 /// `+0xf8/f9`). The engine guards zero denominators — they contribute 0
-/// (magic missile ships one; spellcasting.md §7).
+/// (magic missile ships one; spellcasting.md §7). The two formulas differ
+/// under integer division: [`ScalePair::scaled`] is the min/max-bound
+/// formula (`per * L / levels`, §3) while [`ScalePair::scaled_duration`]
+/// is the duration formula (`(L / levels) * per`, §5), which truncates
+/// before multiplying.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScalePair {
     pub per: u8,
@@ -437,12 +443,25 @@ pub struct ScalePair {
 impl ScalePair {
     pub const NONE: ScalePair = ScalePair { per: 0, levels: 0 };
 
+    /// Min/max-bound scaling (`+0xf2/f3`, `+0xf6/f7`, spellcasting.md §3):
     /// `per * level / levels`, 0 when the denominator is 0.
     pub fn scaled(self, level: i32) -> i32 {
         if self.levels == 0 {
             0
         } else {
             i32::from(self.per) * level / i32::from(self.levels)
+        }
+    }
+
+    /// Duration scaling (`+0xf8/f9`, spellcasting.md §5 step 1 of
+    /// `add_cast_spell_to_user`): `(level / levels) * per`, 0 when the
+    /// denominator is 0. Divides first, so it truncates more aggressively
+    /// than [`ScalePair::scaled`].
+    pub fn scaled_duration(self, level: i32) -> i32 {
+        if self.levels == 0 {
+            0
+        } else {
+            level / i32::from(self.levels) * i32::from(self.per)
         }
     }
 }

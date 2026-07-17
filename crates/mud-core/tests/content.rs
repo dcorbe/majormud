@@ -159,7 +159,11 @@ fn element_maps_ids_and_resist_abilities() {
     assert_eq!(Element::from_i16(4), Some(Element::Magic));
     assert_eq!(Element::from_i16(7), None);
     assert_eq!(Element::Magic.resist_ability(), None); // no case 4 in get_spell_random_modifier
+    assert_eq!(Element::Cold.resist_ability(), Some(Ability::from_id(3).unwrap())); // Rcol
     assert_eq!(Element::Fire.resist_ability(), Some(Ability::from_id(5).unwrap())); // Rfir
+    assert_eq!(Element::Stone.resist_ability(), Some(Ability::from_id(65).unwrap())); // ResistStone
+    assert_eq!(Element::Lightning.resist_ability(), Some(Ability::from_id(66).unwrap())); // Rlit
+    assert_eq!(Element::Water.resist_ability(), Some(Ability::from_id(147).unwrap())); // ResistWater
     assert_eq!(Element::Poison.resist_ability(), Some(Ability::from_id(21).unwrap())); // ImmuPoison
 }
 
@@ -176,6 +180,7 @@ fn match_type_predicates_follow_spec_groupings() {
     for n in [3, 5, 9, 10] { assert!(mt(n).splits_magnitude()); }
     for n in [0, 1, 2, 4, 8] { assert!(!mt(n).room_wide() && !mt(n).is_item()); }
     assert!(!mt(10).hits_monsters());
+    assert!(!mt(13).hits_monsters());
     assert!(!mt(11).splits_magnitude());
 }
 
@@ -205,4 +210,18 @@ fn scale_pair_guards_zero_denominator() {
     assert_eq!(ScalePair { per: 3, levels: 2 }.scaled(10), 15);
     assert_eq!(ScalePair { per: 1, levels: 3 }.scaled(8), 2); // integer division
     assert_eq!(ScalePair::NONE.scaled(50), 0);
+}
+
+#[test]
+fn scale_pair_duration_divides_before_multiplying() {
+    use mud_core::content::ScalePair;
+    // §3 min/max: per * L / levels (multiply-first) vs
+    // §5 duration: (L / levels) * per (divide-first). per=2, levels=3, L=8
+    // distinguishes them: 2*8/3 = 5 but (8/3)*2 = 4.
+    let p = ScalePair { per: 2, levels: 3 };
+    assert_eq!(p.scaled(8), 5);
+    assert_eq!(p.scaled_duration(8), 4);
+    // Zero-denominator guard (spell+0xf9 == 0 contributes nothing).
+    assert_eq!(ScalePair { per: 2, levels: 0 }.scaled_duration(8), 0);
+    assert_eq!(ScalePair::NONE.scaled_duration(50), 0);
 }
