@@ -36,8 +36,10 @@ pub const ALSO_HERE: &str = "Also here: ";
 
 use crate::content::Direction;
 
-/// Display name used in the exits list and arrival broadcasts. Up/down show
-/// as "above"/"below" (VERIFIED: DLL exit string table).
+/// Display name used in the exits list. Vertical exits show as "up"/"down"
+/// (USER TESTIMONY — the earlier "above"/"below" reading of the DLL string
+/// table was wrong; that pair belongs to the vertical arrival broadcasts,
+/// see [`arrived_from`]).
 pub fn direction_shown(direction: Direction) -> &'static str {
     match direction {
         Direction::North => "north",
@@ -48,8 +50,8 @@ pub fn direction_shown(direction: Direction) -> &'static str {
         Direction::NorthWest => "northwest",
         Direction::SouthEast => "southeast",
         Direction::SouthWest => "southwest",
-        Direction::Up => "above",
-        Direction::Down => "below",
+        Direction::Up => "up",
+        Direction::Down => "down",
     }
 }
 
@@ -63,10 +65,15 @@ pub fn left_via(name: &str, direction: Direction) -> String {
     }
 }
 
-/// VERIFIED (DLL) format string; ORACLE-VERIFY for vertical arrivals
-/// ("arrived from the above/below" is presumed).
+/// VERIFIED (DLL) format string for compass arrivals; vertical arrivals use
+/// "from above"/"from below" without the article (ORACLE-VERIFY the exact
+/// vertical wording).
 pub fn arrived_from(name: &str, direction: Direction) -> String {
-    format!("{name} just arrived from the {}.", direction_shown(direction))
+    match direction {
+        Direction::Up => format!("{name} just arrived from above."),
+        Direction::Down => format!("{name} just arrived from below."),
+        d => format!("{name} just arrived from the {}.", direction_shown(d)),
+    }
 }
 
 /// VERIFIED (DLL + oracle): character-creation prompts. Blank input gets the
