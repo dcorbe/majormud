@@ -2420,11 +2420,14 @@ impl Core {
         // Cast messages: castmsgb only (castmsga is the empty message on
         // every sampled spell — the Task-10 renderer contract). The target
         // line is skipped: the target is a monster, not a session.
-        // slice-4: msgstyle-odd arg orders — Spell does not load the
-        // msgstyle column yet; every slice-3 starter is msgstyle-even, and
-        // odd-style spells (fireball 120, deathtouch 58, ...) bind
-        // (target, damage) orders with no spell-name slot. Load the column
-        // and add the second order table before shipping any of them.
+        // slice-4: msgstyle-odd arg orders — msg_style IS loaded and odd
+        // styles are refused at the gate (cast_command); what remains is
+        // the second arg-order table so odd-style spells (fireball 120,
+        // deathtouch 58, ...) — which bind (target, damage) with no
+        // spell-name slot — can render instead of being refused.
+        // slice-5: kai/mystic message variants ("invoke a power"/"kai"
+        // instead of "cast a spell"/"mana", spec §2) + the per-round
+        // invoke flag — a mystic casting today gets mage wording.
         if let Some(msg) = spell.cast_msg_b.and_then(|id| self.content.messages.get(&id)) {
             let args = text::CastMsgArgs {
                 caster: &caster_name,

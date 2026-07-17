@@ -424,8 +424,11 @@ confusion/fear/MageBind arrive with their abilities in later slices; leave
 one comment naming each future gate in spec order):
 
 1. Mortally-wounded / dead gating — reuse M3's command gating.
-2. `cast_this_round` → `You have already cast a spell this round!`
-3. Resolve spell (Task 7).
+2. Resolve spell (Task 7). (AMENDED during implementation: resolution
+   precedes the per-round gate — the DLL dispatcher resolves and passes a
+   spell pointer into cast_no_target, where the round gate lives.
+   ORACLE-VERIFY: second-cast-unknown ordering.)
+3. `cast_this_round` → `You have already cast a spell this round!`
 4. Level: `player.level < spell.required_power` → `This spell is too
    powerful for you.` (unreachable via scroll-learned books; reachable in
    slice 4+ via temp spells — gate stays, spec §2.)

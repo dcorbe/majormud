@@ -24,6 +24,16 @@ Vertical slices in dependency order; each slice ends green, hand-testable,
 and committed. Engine-first was rejected: no playable feedback until late,
 big-bang integration risk.
 
+**Status (2026-07-17):** Slices 1-3 COMPLETE on branch m5-magic — content
+layer (all 1379 spells load/validate), spellbook (scroll-only learning,
+oracle-proven), cast skeleton (deferred-fire combat model, Damage(-MR),
+protected rooms, saves) — both live gates passed against the real DB.
+Implementation-corrected details live in the slice plans and
+spellcasting.md §8; where this doc's slice 2/3 bullets disagree with those
+(auto-pick targeting, friendly-NPC guilt inference, magnitude swap), the
+measured/decompiled versions win. Kai/mystic message variants deferred to
+slice 5 (marker in cast_command). Next: slice 4 (duration engine).
+
 ## Slice 1 — Content layer: the full Spell record
 
 `Spell` in `content.rs` grows from 6 fields to the full cast-path record,
