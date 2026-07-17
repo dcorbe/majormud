@@ -105,6 +105,21 @@ const SEVER: SpellId = SpellId(300);
 /// (GiveTempSpell, ILLUMINATE) duration spell: termination purges the
 /// temporary book entry (the slice-2 flag).
 const GIFT: SpellId = SpellId(310);
+// --- slice-4 Task 5 upkeep fixtures ---
+/// (EndCast, ECHO) + (CastOnEnd, 0): the zero row substitutes the
+/// STORED slot value as the percentage (the same override convention,
+/// decompile 44849-44852) — a value-0 slot never chains, value 100
+/// always does.
+const RELAY: SpellId = SpellId(320);
+/// (EndCast, BLUR): the chained spell costs mana 4 / round 100 — the
+/// mode-2 cost-gate probe.
+const TOLL: SpellId = SpellId(330);
+/// Recurring (Damage, 2), DescMsg-less: the upkeep DoT.
+const VENOM: SpellId = SpellId(340);
+/// Recurring (Heal, 30) + (HealMana, 30): the per-tick cap probe.
+const REPOSE: SpellId = SpellId(350);
+/// Recurring (EnergyLevel, 300) + (Alterhunger, 40) + (AlterThirst, 30).
+const GRIT: SpellId = SpellId(360);
 
 const RAT: MonsterId = MonsterId(7);
 const EMBER: MonsterId = MonsterId(8);
@@ -497,6 +512,31 @@ fn world() -> Content {
     let mut gift = spell(GIFT, "gift", "gift");
     gift.duration = 70;
     gift.abilities = vec![(Ability::GiveTempSpell, 10)]; // -> ILLUMINATE
+    // Task 5 upkeep fixtures (pre-seeded into slots, never cast).
+    let mut relay = spell(RELAY, "relay", "rela");
+    relay.duration = 70;
+    relay.abilities = vec![(Ability::EndCast, 280), (Ability::CastOnEnd, 0)];
+    let mut toll = spell(TOLL, "toll", "toll");
+    toll.duration = 70;
+    toll.abilities = vec![(Ability::EndCast, 30)]; // -> BLUR (mana 4)
+    let mut venom = spell(VENOM, "venom", "veno");
+    venom.duration = 70;
+    venom.abilities = vec![(Ability::Damage, 2)];
+    let mut repose = spell(REPOSE, "repose", "repo");
+    repose.duration = 70;
+    repose.abilities = vec![(Ability::Heal, 30), (Ability::HealMana, 30)];
+    let mut grit = spell(GRIT, "grit", "grit");
+    grit.duration = 70;
+    grit.abilities = vec![
+        (Ability::EnergyLevel, 300),
+        (Ability::Alterhunger, 40),
+        (Ability::AlterThirst, 30),
+    ];
+    content.add_spell(relay);
+    content.add_spell(toll);
+    content.add_spell(venom);
+    content.add_spell(repose);
+    content.add_spell(grit);
     content.add_spell(anthem);
     content.add_spell(unsing);
     content.add_spell(chime);
@@ -2214,4 +2254,243 @@ fn death_terminates_all_slots_chain_suppressed_and_purges_temp() {
     assert_eq!(p.lives, 8, "miracle respawn");
     assert!(!p.spellbook.contains_key(&ILLUMINATE), "temp entry purged");
     assert!(p.spellbook.contains_key(&BLUR), "permanent entries survive");
+}
+
+// --- upkeep tick (slice 4 Task 5; spec §5, decompile 19807-19830 +
+// --- perform_routine_spell_player_upkeep 44712-44810) ---
+
+/// Advance n game ticks (1 tick = 1 s; Job::Upkeep fires every 3).
+fn ticks(core: &mut Core, n: u64) {
+    for _ in 0..n {
+        core.tick();
+    }
+}
+
+#[test]
+fn upkeep_decays_blur_over_seventy_ticks_and_expires_it() {
+    // MEASURED (§8.11): ~3 s per upkeep tick — blur's 70 ticks expire at
+    // game-second 210, with the wear-off line, the Dodge contribution
+    // gone from the recompute, the slot cleared, and a persist.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(hardy("Vexil", MAGE));
+    core.drain_events();
+    let base_parry = core.defender_debug(s).parry;
+    cast(&mut core, s, "c blur");
+    let p = core.player_snapshot(s);
+    let idx = p.find_active(BLUR).expect("entered");
+    let v = i32::from(p.active_spells[idx].value);
+    assert_eq!(p.active_spells[idx].remaining, 70);
+    assert_eq!(core.defender_debug(s).parry, base_parry + v, "blurred");
+    // One tick shy of expiry: still active.
+    ticks(&mut core, 209);
+    core.drain_events();
+    let p = core.player_snapshot(s);
+    assert_eq!(p.active_spells[idx].remaining, 1, "69 upkeep decrements");
+    // Tick 210 expires it.
+    ticks(&mut core, 1);
+    let events = core.drain_events();
+    let shown = text_to(&events, s);
+    assert!(
+        shown.contains("The effects of blur wear off.\n"),
+        "wear-off line: {shown:?}"
+    );
+    let p = core.player_snapshot(s);
+    assert!(p.active_spells.iter().all(|s| s.spell.is_none()), "slot cleared");
+    assert_eq!(core.defender_debug(s).parry, base_parry, "dodge contribution gone");
+    assert!(
+        events.iter().any(
+            |e| matches!(e, Event::Persist(p) if p.active_spells.iter().all(|s| s.spell.is_none()))
+        ),
+        "Persist after expiry"
+    );
+}
+
+#[test]
+fn upkeep_recurring_damage_prompts_and_drops_the_player() {
+    // Damage (1) per tick: HP -= v, prompt refresh (44739-44743), and the
+    // FUN_0043c91d drop announce when HP crosses below 1 (44745-44747).
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut vexil = hardy("Vexil", MAGE);
+    vexil.current_hp = 2;
+    vexil.active_spells[0] = ActiveSpell { spell: Some(VENOM), value: 0, remaining: 40 };
+    let s = core.attach_player(vexil);
+    let watcher = core.attach_player(player("Grunt", WARRIOR, BTreeMap::new()));
+    core.drain_events();
+    ticks(&mut core, 3);
+    let events = core.drain_events();
+    let shown = text_to(&events, s);
+    assert_eq!(core.current_hp(s), 0, "fixed Damage 2 ticked once");
+    assert!(shown.contains("[HP=0/MA="), "prompt refreshed: {shown:?}");
+    assert!(
+        shown.contains("Vexil drops to the ground!\n"),
+        "drop line on crossing: {shown:?}"
+    );
+    let seen = text_to(&events, watcher);
+    assert!(
+        seen.contains("Vexil drops to the ground!\n"),
+        "room sees the drop: {seen:?}"
+    );
+}
+
+#[test]
+fn upkeep_recurring_damage_kills_through_the_death_path() {
+    // check_kill_user runs after each slot (19826-19828): recurring
+    // damage that reaches the -200 floor routes through the M3 death
+    // path — announce, slot termination (death path, chain suppressed),
+    // miracle respawn.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut vexil = player("Vexil", MAGE, full_book());
+    vexil.current_hp = -199;
+    vexil.active_spells[0] = ActiveSpell { spell: Some(VENOM), value: 0, remaining: 40 };
+    let s = core.attach_player(vexil);
+    core.drain_events();
+    ticks(&mut core, 3);
+    let shown = text_to(&core.drain_events(), s);
+    assert!(shown.contains("You have been killed!"), "died: {shown:?}");
+    let p = core.player_snapshot(s);
+    assert!(p.active_spells.iter().all(|s| s.spell.is_none()), "slots cleared");
+    assert_eq!(p.lives, 8, "miracle respawn");
+}
+
+#[test]
+fn upkeep_recurring_heal_and_mana_cap_at_the_derived_maxima() {
+    // Heal (18): HP += v capped at max HP (44770-44776); HealMana (150):
+    // mana += v floored 0 / capped at max mana (44795-44805). Both
+    // refresh the prompt. Hardy L1 mage: max HP 27, max mana 12.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut vexil = hardy("Vexil", MAGE);
+    vexil.current_hp = 1;
+    vexil.current_mana = 0;
+    vexil.active_spells[0] = ActiveSpell { spell: Some(REPOSE), value: 0, remaining: 40 };
+    let s = core.attach_player(vexil);
+    core.drain_events();
+    ticks(&mut core, 3);
+    let shown = text_to(&core.drain_events(), s);
+    assert_eq!(core.current_hp(s), 27, "healed to the derived max");
+    assert_eq!(core.current_mana(s), 12, "mana to the derived max");
+    assert!(shown.contains("[HP=27/MA=12]:"), "prompt refreshed: {shown:?}");
+}
+
+#[test]
+fn upkeep_energy_hunger_and_thirst_tick() {
+    // EnergyLevel (11): round pool += v capped at the 1000 max
+    // (44756-44760); Alterhunger (15) / AlterThirst (16): plain adds
+    // (44735-44737, 44767-44769). A veil cast dents the pool to 900 so
+    // the cap is observable.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut vexil = player("Vexil", MAGE, full_book());
+    vexil.active_spells[0] = ActiveSpell { spell: Some(GRIT), value: 0, remaining: 40 };
+    let s = core.attach_player(vexil);
+    core.drain_events();
+    cast(&mut core, s, "c veil");
+    assert_eq!(core.round_energy(s), 900, "veil's round cost");
+    ticks(&mut core, 3);
+    let p = core.player_snapshot(s);
+    assert_eq!(core.round_energy(s), 1000, "900 + 300 capped at the max");
+    assert_eq!(p.hunger, 1040, "+40");
+    assert_eq!(p.thirst, 1030, "+30");
+}
+
+#[test]
+fn expiry_runs_the_endcast_chain_with_the_default_pct() {
+    // Natural expiry terminates with the chain HONORED (19823: chainFlag
+    // '\x01'); chime has no CastOnEnd row -> pct 100 -> the forced
+    // mode-2 cast enters echo.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut vexil = player("Vexil", MAGE, full_book());
+    vexil.active_spells[0] = ActiveSpell { spell: Some(CHIME), value: 5, remaining: 1 };
+    let s = core.attach_player(vexil);
+    core.drain_events();
+    ticks(&mut core, 3);
+    let shown = text_to(&core.drain_events(), s);
+    assert!(shown.contains("The chime fades.\n"), "wear-off: {shown:?}");
+    assert!(shown.contains("An echo follows you!\n"), "chained line: {shown:?}");
+    let p = core.player_snapshot(s);
+    assert_eq!(p.find_active(CHIME), None, "chime expired");
+    let idx = p.find_active(ECHO).expect("chained spell entered");
+    assert_eq!(p.active_spells[idx].remaining, 70, "fresh duration");
+}
+
+#[test]
+fn cast_on_end_zero_row_substitutes_the_stored_value_as_pct() {
+    // (CastOnEnd, 0) rides the override convention (44849-44852): the
+    // STORED slot value becomes the percentage. Value 0 -> genrdn(0,100)
+    // < 0 never chains; value 100 always does.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut vexil = player("Vexil", MAGE, full_book());
+    vexil.active_spells[0] = ActiveSpell { spell: Some(RELAY), value: 0, remaining: 1 };
+    let s = core.attach_player(vexil);
+    core.drain_events();
+    ticks(&mut core, 3);
+    let p = core.player_snapshot(s);
+    assert_eq!(p.find_active(RELAY), None, "relay expired");
+    assert_eq!(p.find_active(ECHO), None, "pct 0 never chains");
+
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut vexil = player("Vexil", MAGE, full_book());
+    vexil.active_spells[0] = ActiveSpell { spell: Some(RELAY), value: 100, remaining: 1 };
+    let s = core.attach_player(vexil);
+    core.drain_events();
+    ticks(&mut core, 3);
+    let p = core.player_snapshot(s);
+    assert!(p.find_active(ECHO).is_some(), "pct 100 always chains");
+}
+
+#[test]
+fn chained_cast_pays_full_costs_and_respects_the_mana_gate() {
+    // The mode-2 forced cast still pays and still gates (decompile
+    // 39253-39281, 39400-39408): toll chains to blur (mana 4, round
+    // 100). With mana 0 the chain refuses with the measured mana line
+    // and no slot; with mana 6 blur lands, full mana and round cost
+    // paid, NO success roll in the way.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut vexil = player("Vexil", MAGE, full_book());
+    vexil.current_mana = 0;
+    vexil.active_spells[0] = ActiveSpell { spell: Some(TOLL), value: 1, remaining: 1 };
+    let s = core.attach_player(vexil);
+    core.drain_events();
+    ticks(&mut core, 3);
+    let shown = text_to(&core.drain_events(), s);
+    assert!(
+        shown.contains("You do not have enough mana to cast that spell."),
+        "mana gate: {shown:?}"
+    );
+    assert_eq!(core.player_snapshot(s).find_active(BLUR), None, "no blur");
+
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut vexil = player("Vexil", MAGE, full_book());
+    vexil.active_spells[0] = ActiveSpell { spell: Some(TOLL), value: 1, remaining: 1 };
+    let s = core.attach_player(vexil);
+    core.drain_events();
+    ticks(&mut core, 3);
+    let shown = text_to(&core.drain_events(), s);
+    assert!(shown.contains("You cast blur on Vexil!\n"), "castmsgb: {shown:?}");
+    assert!(shown.contains("You are blurred!\n"), "active line: {shown:?}");
+    assert!(core.player_snapshot(s).find_active(BLUR).is_some(), "blur entered");
+    assert_eq!(core.current_mana(s), 2, "full mana 4 paid");
+    assert_eq!(core.round_energy(s), 900, "full round cost paid");
+}
+
+#[test]
+fn temp_spell_purges_when_the_granting_effect_expires() {
+    // GiveTempSpell (160) on expiry: purge_spell_from_spellbook
+    // (44883-44885) removes the TEMPORARY entry and persists.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut book = full_book();
+    book.insert(ILLUMINATE, true); // temporary (the slice-2 flag)
+    let mut vexil = player("Vexil", MAGE, book);
+    vexil.active_spells[0] = ActiveSpell { spell: Some(GIFT), value: 1, remaining: 1 };
+    let s = core.attach_player(vexil);
+    core.drain_events();
+    ticks(&mut core, 3);
+    let events = core.drain_events();
+    let p = core.player_snapshot(s);
+    assert_eq!(p.find_active(GIFT), None, "gift expired");
+    assert!(!p.spellbook.contains_key(&ILLUMINATE), "temp entry purged");
+    assert!(
+        events.iter().any(
+            |e| matches!(e, Event::Persist(p) if !p.spellbook.contains_key(&ILLUMINATE))
+        ),
+        "Persist after purge"
+    );
 }

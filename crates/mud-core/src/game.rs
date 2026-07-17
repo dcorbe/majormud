@@ -126,8 +126,9 @@ pub struct Player {
     pub experience: u64,
     pub location: RoomId,
     /// Learned spells; `true` = temporary (GiveTempSpell 160, purged when
-    /// the granting effect ends — wiring lands in slice 4). Display order
-    /// is computed at render (level, then name), not storage order.
+    /// the granting effect terminates — see `terminate_active_spell`).
+    /// Display order is computed at render (level, then name), not
+    /// storage order.
     pub spellbook: BTreeMap<SpellId, bool>,
     /// Active duration-spell slots (`spellcasting.md` §1: id `+0x40+i*2`,
     /// value `+0x54+i*2`, remaining ticks `+0x68+i*2` — 10 slots each).
@@ -543,6 +544,9 @@ enum Job {
     Slow,
     /// `background_energy`, every 5 s: the combat round.
     Energy,
+    /// The "medium/routine update" pass (spec §5): active-spell duration
+    /// decay, recurring per-tick effects, expiry termination.
+    Upkeep,
     /// One meditation dot for a pending exit.
     ExitStep(SessionId),
     /// The nightly-cleanup stand-in: Worldgroup restarted the module every
@@ -557,6 +561,10 @@ const SLOW_INTERVAL: u64 = 30;
 const CLEANUP_INTERVAL: u64 = 86_400;
 /// The combat-round cadence (`background_energy`).
 const ENERGY_INTERVAL: u64 = 5;
+/// The duration-upkeep cadence. MEASURED (spellcasting.md §8.11:
+/// 3.03-3.06 s/tick over three clean runs) — a ~3 s routine cycle, NOT
+/// the 5 s energy round; blur's 70 ticks ≈ 3½ minutes.
+const UPKEEP_INTERVAL: u64 = 3;
 /// Player energy pool max/regen (`DAT_00482cd0` default).
 const PLAYER_ENERGY_MAX: i32 = 1000;
 /// The two-stage death gate: HP at/below this kills (`DAT_00482cf0`;
@@ -624,6 +632,7 @@ impl Core {
         let mut scheduler = TickScheduler::new();
         scheduler.schedule_in(SLOW_INTERVAL, Job::Slow);
         scheduler.schedule_in(ENERGY_INTERVAL, Job::Energy);
+        scheduler.schedule_in(UPKEEP_INTERVAL, Job::Upkeep);
         scheduler.schedule_in(CLEANUP_INTERVAL, Job::Cleanup);
         let rng = Rng(config.rng_seed | 1);
         let mut core = Core {
@@ -809,6 +818,10 @@ impl Core {
                 Job::Energy => {
                     self.energy_round();
                     self.scheduler.schedule_in(ENERGY_INTERVAL, Job::Energy);
+                }
+                Job::Upkeep => {
+                    self.upkeep_update();
+                    self.scheduler.schedule_in(UPKEEP_INTERVAL, Job::Upkeep);
                 }
                 Job::ExitStep(session) => self.exit_step(session),
                 Job::Cleanup => {
@@ -1008,6 +1021,146 @@ impl Core {
                     regen = (pct + 100) * regen / 100;
                 }
                 player.current_mana = (player.current_mana + regen).clamp(0, max_mana);
+            }
+        }
+    }
+
+    /// The player half of the ~3 s routine pass (spec §5; decompile
+    /// 19807-19830): walk each in-game player's active-spell slots.
+    fn upkeep_update(&mut self) {
+        let sessions: Vec<SessionId> = self.sessions.keys().copied().collect();
+        for id in sessions {
+            self.upkeep_player(id);
+        }
+    }
+
+    /// One player's slot walk (decompile 19807-19830, per non-empty slot):
+    /// 1. decrement remaining (`+0x68 += -1`);
+    /// 2. `perform_routine_spell_player_upkeep` — the recurring per-tick
+    ///    effect (runs even on the expiry tick);
+    /// 3. at 0 remaining — clear the slot + terminate, chain HONORED
+    ///    (19823: chainFlag `'\x01'`);
+    /// 4. `check_kill_user` — recurring damage kills mid-loop, ending the
+    ///    player's whole pass (19826-19828 returns).
+    fn upkeep_player(&mut self, session: SessionId) {
+        for idx in 0..10 {
+            let Some(Session::InGame { player, derived, .. }) = self.sessions.get(&session)
+            else {
+                // Died out of the loop (permadeath removes the session).
+                return;
+            };
+            let Some(spell_id) = player.active_spells[idx].spell else {
+                continue;
+            };
+            // Unknown spell id (content changed under a save): the DLL
+            // gates the slot's ENTIRE processing on get_spell_data
+            // (19812-19813) — no decrement, no effect; the slot idles.
+            let Some(spell) = self.content.spells.get(&spell_id).cloned() else {
+                continue;
+            };
+            let (max_hp, max_mana) = (derived.max_hp, derived.max_mana);
+            let stored = i32::from(player.active_spells[idx].value);
+            let mut visible = false;
+            let mut crossed_down = false;
+            let remaining;
+            {
+                let Some(Session::InGame { player, energy, .. }) =
+                    self.sessions.get_mut(&session)
+                else {
+                    return;
+                };
+                player.active_spells[idx].remaining -= 1;
+                remaining = player.active_spells[idx].remaining;
+                // `perform_routine_spell_player_upkeep` (decompile
+                // 44712-44810): value = the STORED slot value unless the
+                // ability row carries its own nonzero value (44727-44730
+                // — the `+0xa8` per-ability override, spec §5). The DLL
+                // refreshes the prompt inside the Damage/Drain/Heal/
+                // HealMana handlers (prf_prompt per hit); we fold that
+                // into one refresh per slot below — same final line.
+                for (ability, row) in &spell.abilities {
+                    let v = if *row != 0 { i32::from(*row) } else { stored };
+                    match ability {
+                        // Damage (1) and Drain (8) are IDENTICAL at the
+                        // player tick (44739-44754): HP -= v, prompt,
+                        // drop-line when crossing below 1 — spec §5
+                        // lists no caster-side heal for Drain here (a
+                        // slot has no caster), and neither does the
+                        // decompile.
+                        Ability::Damage | Ability::Drain => {
+                            let was_up = player.current_hp >= 1;
+                            player.current_hp -= v;
+                            visible = true;
+                            if was_up && player.current_hp < 1 {
+                                crossed_down = true;
+                            }
+                        }
+                        // EnergyLevel (11): round pool += v, capped at
+                        // the pool max (44756-44760).
+                        Ability::EnergyLevel => {
+                            *energy = (*energy + v).min(PLAYER_ENERGY_MAX);
+                        }
+                        // Alterhunger (15) / AlterThirst (16): plain adds
+                        // (44735-44737, 44767-44769; u16 clamp is ours).
+                        Ability::Alterhunger => {
+                            player.hunger = clamp_counter(i32::from(player.hunger) + v);
+                        }
+                        Ability::AlterThirst => {
+                            player.thirst = clamp_counter(i32::from(player.thirst) + v);
+                        }
+                        // Heal (18): HP += v capped at max, prompt
+                        // (44770-44776).
+                        Ability::Heal => {
+                            player.current_hp = (player.current_hp + v).min(max_hp);
+                            visible = true;
+                        }
+                        // Cure Poison (20): poison -= v floor 0
+                        // (44778-44785) — SLICE 5, no poison field yet.
+                        Ability::CurePoison => {}
+                        // Fear (60): genrdn(0,100) < v => flee a random
+                        // exit (44788-44793) — SLICE 5 with the fear
+                        // flag; move_user needs the flee plumbing.
+                        Ability::Fear => {}
+                        // HealMana (150): mana += v, floored at 0 then
+                        // capped at max — the DLL's sequential pair
+                        // (44795-44805), not a clamp.
+                        Ability::HealMana => {
+                            player.current_mana += v;
+                            if player.current_mana < 0 {
+                                player.current_mana = 0;
+                            }
+                            if player.current_mana > max_mana {
+                                player.current_mana = max_mana;
+                            }
+                            visible = true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if visible {
+                self.show_prompt(session);
+            }
+            if crossed_down {
+                // FUN_0043c91d — the drop announce the Damage/Drain
+                // handlers fire when HP crosses below 1 (44745-44747),
+                // same lines as the monster-swing crossing.
+                let name = self.player(session).name.clone();
+                let room = self.player(session).location;
+                self.output_line(session, &text::drops_to_ground(&name));
+                self.broadcast_to_room(room, Some(session), &text::drops_to_ground(&name));
+            }
+            // Expiry: the DLL checks `== 0` (19819); `<=` also catches a
+            // zero/negative entered duration (an AlterSpLength-crushed
+            // roll), which the DLL would tick past into a 16-bit wrap.
+            if remaining <= 0 {
+                self.terminate_active_spell(session, idx, true);
+            }
+            // check_kill_user (19826-19828): the M3 death path; a kill
+            // ends this player's whole pass.
+            if self.player(session).current_hp <= DEATH_FLOOR {
+                self.player_killed(session);
+                return;
             }
         }
     }
