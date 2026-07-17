@@ -186,7 +186,8 @@ pub const MUST_SPECIFY_TARGET: &str = "You must specify a target for that spell!
 pub const CAST_GUILT: &str =
     "You are overcome with a feeling of guilt and break off your attack.";
 
-/// ORACLE-INVENTED-TEMPORARY until the slice-4 odd-style arg table: the
+/// ORACLE-INVENTED-TEMPORARY until the slice-5 odd-style arg table (the
+/// slice-4 data check moved it: no learnable duration starter is odd): the
 /// refusal for `msgstyle & 1 == 1` spells (~441 shipped, incl. fireball
 /// 120 / deathtouch 58), whose castmsgb args bind in a different order
 /// with no spell-name slot — [`render_cast_line`] would silently mis-bind

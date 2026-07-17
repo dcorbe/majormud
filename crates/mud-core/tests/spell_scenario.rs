@@ -13,6 +13,12 @@
 //! against 20 HP); the round bound exists so a broken driver fails with a
 //! message instead of spinning. The failed-roll path is covered in
 //! tests/cast.rs.
+//!
+//! The slice-4 companion scenario (`mage_learns_blur_and_outlives_it`)
+//! runs the duration lifecycle end to end: learn blur from its scroll,
+//! cast it (slot entry, the `st` active line, Dodge into the defender),
+//! idle through the 70 upkeep ticks, and outlive it (wear-off line, st
+//! line gone, Dodge gone, slot empty).
 
 use std::collections::BTreeMap;
 
@@ -27,6 +33,9 @@ use mud_core::game::{Core, CoreConfig, Event, Gender, Player, SessionId};
 const MAGE: ClassId = ClassId(1);
 const MAGIC_MISSILE: SpellId = SpellId(20);
 const MMIS_SCROLL: ItemId = ItemId(200);
+/// The real blur's spell number (129) — the slice-4 duration scenario.
+const BLUR: SpellId = SpellId(129);
+const BLUR_SCROLL: ItemId = ItemId(210);
 const FILTHBUG: MonsterId = MonsterId(7);
 
 /// Newhaven-shaped shop room (protected, shop-active) with the lair north.
@@ -108,6 +117,27 @@ fn world() -> Content {
             "%s fires a %s at %s for %s damage!".into(),
         ],
     });
+    // The blur castmsgb shape (message 7): a targeted benign template; a
+    // self-cast delivers the caster line only (oracle §8.6).
+    content.add_message(Message {
+        id: MessageId(901),
+        lines: vec![
+            "You cast %s on %s!".into(),
+            "%s casts %s upon you!".into(),
+            "%s casts %s on %s!".into(),
+        ],
+    });
+    // Blur's DescMsg record (msg 68), MEASURED §8.9/§8.11: line1 = the
+    // expiry line, line2 = empty (room variant unmeasured), line3 = the
+    // active line printed at cast and appended to `st`.
+    content.add_message(Message {
+        id: MessageId(904),
+        lines: vec![
+            "The effects of blur wear off.".into(),
+            String::new(),
+            "You are blurred!".into(),
+        ],
+    });
     content.add_item(Item {
         id: MMIS_SCROLL,
         name: "scroll of magic missile".into(),
@@ -120,9 +150,27 @@ fn world() -> Content {
         ],
         ..Item::default()
     });
+    content.add_item(Item {
+        id: BLUR_SCROLL,
+        name: "scroll of blur".into(),
+        abilities: vec![(Ability::from_id(42).unwrap(), BLUR.0 as i16)],
+        uses: 1,
+        gettable: 1,
+        description: vec![
+            "This parchment is inscribed with runes of magic, but exactly".into(),
+            "what is written can only be learned by reading it.".into(),
+        ],
+        ..Item::default()
+    });
     let mut stock = [ShopStock::default(); 20];
     stock[0] = ShopStock {
         item: Some(MMIS_SCROLL),
+        max: 5,
+        now: 5,
+        ..ShopStock::default()
+    };
+    stock[1] = ShopStock {
+        item: Some(BLUR_SCROLL),
         max: 5,
         now: 5,
         ..ShopStock::default()
@@ -193,6 +241,41 @@ fn world() -> Content {
         msg_style: 0,
     };
     content.add_spell(mmis);
+    // The real blur (129) shape: duration 70 flat (no scaling), magnitude
+    // bounds 5..5 (rolled V 5..=6 stored as the slot value), mana 4,
+    // abilities [(Dodge, 0), (DescMsg, 68 -> fixture 904)]. base_chance
+    // 200 keeps the cast deterministic (the real record rolls); the real
+    // (RemovesSpell, 157) anti-stacking row is omitted — spell 157 (the
+    // amethyst pendant's effect) is not in this world, and the dispel
+    // pre-pass is covered in tests/cast.rs.
+    let blur = Spell {
+        id: BLUR,
+        name: "blur".into(),
+        short_name: "blur".into(),
+        cast_msg_a: None,
+        cast_msg_b: Some(MessageId(901)),
+        abilities: vec![(Ability::Dodge, 0), (Ability::DescMsg, 904)],
+        level_cap: 0,
+        round_cost: 100,
+        required_power: 1,
+        min_base: 5,
+        max_base: 5,
+        target_mode: TargetMode::Benign,
+        save_class: SaveClass::None,
+        base_chance: 200,
+        duration_per_level: 0,
+        match_type: MatchType::Single0,
+        duration: 70,
+        element: Element::Magic,
+        class_gate_group: 1,
+        mana_cost: 4,
+        max_increase: ScalePair::NONE,
+        required_class_level: 1,
+        min_increase: ScalePair::NONE,
+        duration_increase: ScalePair::NONE,
+        msg_style: 0,
+    };
+    content.add_spell(blur);
     content
 }
 
@@ -344,4 +427,97 @@ fn mage_learns_scroll_casts_and_kills() {
     assert_eq!(after.experience, 12);
     assert_eq!(core.current_mana(s), 8, "1 mana per successful fire");
     assert_eq!(core.monster_hp(m), None, "instance gone");
+}
+
+/// Slice-4 golden scenario: the blur lifecycle, seeded end to end. The
+/// mage buys and reads the blur scroll, casts it (slot entry, the DescMsg
+/// active line at cast AND on the `st` sheet, the rolled Dodge value into
+/// the defender's recompute), then idles through the full duration —
+/// `Job::Upkeep` fires every 3 game ticks (the §8.11-measured ~3 s tick),
+/// so blur's 70 ticks expire on game-second 210 with the wear-off line,
+/// the st line gone, the Dodge contribution gone, and the slot empty.
+#[test]
+fn mage_learns_blur_and_outlives_it() {
+    let config = CoreConfig {
+        rng_seed: SEED,
+        ..CoreConfig::default()
+    };
+    let mut core = Core::new(world(), config);
+    let s = core.attach_player(mage());
+    core.drain_events();
+    let base_parry = core.defender_debug(s).parry;
+
+    let mut transcript = String::new();
+    drive(&mut core, s, &mut transcript, "buy scroll of blur");
+    drive(&mut core, s, &mut transcript, "use scroll of blur");
+    drive(&mut core, s, &mut transcript, "c blur");
+
+    // Slot entry: the rolled magnitude (bounds 5..5 -> genrdn 5..=6; 6
+    // under SEED) is stored and feeds the defender through the recompute.
+    let p = core.player_snapshot(s);
+    let idx = p.find_active(BLUR).expect("blur entered a slot");
+    let v = i32::from(p.active_spells[idx].value);
+    assert_eq!(v, 6, "the SEED magnitude roll");
+    assert_eq!(p.active_spells[idx].remaining, 70, "flat duration");
+    assert_eq!(
+        core.defender_debug(s).parry,
+        base_parry + v,
+        "dodge feeds the defender"
+    );
+    assert_eq!(core.current_mana(s), 6, "full mana 4 paid");
+
+    // The sheet appends the active line while the buff lives (§8.11).
+    drive(&mut core, s, &mut transcript, "st");
+
+    // 69 upkeep firings (game ticks 3, 6, .., 207): one shy of expiry.
+    for _ in 0..209 {
+        core.tick();
+    }
+    transcript.push_str(&text_to(&core.drain_events(), s));
+    let p = core.player_snapshot(s);
+    assert_eq!(p.active_spells[idx].remaining, 1, "one tick left");
+
+    // Game tick 210 = the 70th upkeep: expiry.
+    core.tick();
+    transcript.push_str(&text_to(&core.drain_events(), s));
+    let p = core.player_snapshot(s);
+    assert!(
+        p.active_spells.iter().all(|slot| slot.spell.is_none()),
+        "slot empty after expiry"
+    );
+    assert_eq!(core.defender_debug(s).parry, base_parry, "dodge contribution gone");
+
+    // The post-expiry sheet, captured separately for the absence check.
+    core.input(s, "st");
+    let after_sheet = text_to(&core.drain_events(), s);
+    assert!(after_sheet.contains("Vexil"), "sheet rendered: {after_sheet:?}");
+    assert!(
+        !after_sheet.contains("You are blurred!"),
+        "st line gone after expiry: {after_sheet:?}"
+    );
+    transcript.push_str(&after_sheet);
+
+    // Key lines, verbatim (oracle-pinned) and in order.
+    let mut last = 0;
+    for (what, line) in [
+        // Shop purchase (economy.md oracle string, free item).
+        ("bought", "You just bought scroll of blur for nothing.\n"),
+        // §8.4 `use` learn line (a trailing blank line follows).
+        (
+            "learn",
+            "You read scroll of blur and learn the spell blur.\n\n",
+        ),
+        // §8.6/§8.11 cast order: castmsgb caster line, then DescMsg line3.
+        ("cast line", "You cast blur on Vexil!\n"),
+        ("active line", "You are blurred!\n"),
+        // §8.11: the sheet repeats the active line while the buff lives.
+        ("st line", "You are blurred!\n"),
+        // §8.9/§8.11: expiry after the 70 measured ticks.
+        ("wear-off", "The effects of blur wear off.\n"),
+    ] {
+        let at = transcript[last..]
+            .find(line)
+            .unwrap_or_else(|| panic!("{what} missing/out of order: {transcript:?}"));
+        last += at + line.len();
+    }
 }

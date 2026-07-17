@@ -1303,8 +1303,10 @@ impl Core {
     /// haggle) keep reading base stats — no stat-buff duration spell is
     /// castable before bard support (all 12 learnable carriers are bard
     /// songs), and the one shipped stat ITEM (331 "Indiana Jones hat",
-    /// +30 Charm) awaits the same sweep. Values clamp at 0: our fields
-    /// are u16 where the DLL's signed shorts can go negative.
+    /// (Charm 49, 30) per the loader's abilitya/abilityb pairing —
+    /// checked against the content DB, its other rows are
+    /// LoyalItem/AC/Shadow) awaits the same sweep. Values clamp at 0:
+    /// our fields are u16 where the DLL's signed shorts can go negative.
     fn effective_stats(&self, player: &Player, bag: &AbilityBag) -> StatBlock {
         let fold = |base: u16, ability: Ability| -> u16 {
             clamp_counter(i32::from(base) + bag.value(ability))
@@ -2823,14 +2825,21 @@ impl Core {
     /// branches pin what a forced cast skips and what it still pays:
     /// - confusion / downed / NoMagic / Kai-block gates are all
     ///   `param_3 == '\0'`-gated (39118, 39125, 39133, 39147) — skipped;
-    /// - the class-school gate still applies, SILENTLY (39239-39243:
+    /// - the class-school gate still applies, SILENTLY (39235-39239:
     ///   wrong magery group or casting factor below the spell's class
     ///   level → bare `return 0`);
     /// - round-energy, mana and level gates still apply WITH their
     ///   refusal lines (39253-39281: the triple check is unconditional;
-    ///   energy prints the already-cast line, then mana, then level);
+    ///   energy prints the already-cast line, then mana, then level).
+    ///   The refusal block sits under `DAT_004877f4 == 0` (39257) — the
+    ///   autocombat-driver flag, set nonzero only inside
+    ///   do_autocombat_for_user (46642) and cleared on every exit
+    ///   (46674/46689), so on the command and upkeep paths the gate is
+    ///   effectively constant-false and the refusal lines always print
+    ///   (the silent energy-drain else-branch at 39283-39297 belongs to
+    ///   autocombat, out of scope here);
     /// - NO success roll and NO one-cast-per-round flag: modes 1/2 set
-    ///   the success local unconditionally (39247), and the `+0x700 & 4`
+    ///   the success local unconditionally (39240), and the `+0x700 & 4`
     ///   round flag is only consulted in the mode-0 benign branch
     ///   (39344-39355);
     /// - the always-success path deducts the FULL round cost and mana
@@ -2852,7 +2861,7 @@ impl Core {
         let Some(Session::InGame { player, energy, .. }) = self.sessions.get(&session) else {
             return;
         };
-        // Class-school gate (39239-39243): silent refusal.
+        // Class-school gate (39235-39239): silent refusal.
         if self.spell_gate(player, &spell) == SpellGate::WrongClass {
             return;
         }

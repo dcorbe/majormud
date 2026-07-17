@@ -7,7 +7,8 @@
 //! saves, engagement, re-fire and the M3 kill route. Task 12 adds the
 //! benign instant handlers (spec §4: Heal/EnergyLevel/hunger/thirst, plus
 //! offensive Drain), the benign cast-message fan-out, and the
-//! duration-spells-apply-nothing divergence that slice 4 closes.
+//! duration-spells-apply-nothing divergence that slice 4 closed with the
+//! duration formula / slot entry / termination / upkeep suites below.
 
 use std::collections::BTreeMap;
 
@@ -105,6 +106,14 @@ const SEVER: SpellId = SpellId(300);
 /// (GiveTempSpell, ILLUMINATE) duration spell: termination purges the
 /// temporary book entry (the slice-2 flag).
 const GIFT: SpellId = SpellId(310);
+// --- multi-level chain fixtures (dispel -> chain -> dispel -> chain) ---
+/// Chain level A: (EndCast, LATCH) — the unhook dispel starts the chain.
+const HOOK: SpellId = SpellId(370);
+/// Chain level B: a duration spell whose PRE-PASS dispels CHIME — the
+/// dispel's early return means LATCH itself never enters a slot.
+const LATCH: SpellId = SpellId(380);
+/// Instant RemovesSpell(HOOK): the chain-depth probe's trigger.
+const UNHOOK: SpellId = SpellId(390);
 // --- slice-4 Task 5 upkeep fixtures ---
 /// (EndCast, ECHO) + (CastOnEnd, 0): the zero row substitutes the
 /// STORED slot value as the percentage (the same override convention,
@@ -512,6 +521,16 @@ fn world() -> Content {
     let mut gift = spell(GIFT, "gift", "gift");
     gift.duration = 70;
     gift.abilities = vec![(Ability::GiveTempSpell, 10)]; // -> ILLUMINATE
+    // Multi-level chain fixtures: all cost-free, DescMsg-less except the
+    // reused CHIME/ECHO tail, so the observable lines stay unambiguous.
+    let mut hook = spell(HOOK, "hook", "hook");
+    hook.duration = 70;
+    hook.abilities = vec![(Ability::EndCast, 380)]; // -> LATCH
+    let mut latch = spell(LATCH, "latch", "latc");
+    latch.duration = 70;
+    latch.abilities = vec![(Ability::RemovesSpell, 270)]; // -> CHIME
+    let mut unhook = spell(UNHOOK, "unhook", "unho");
+    unhook.abilities = vec![(Ability::RemovesSpell, 370)]; // -> HOOK
     // Task 5 upkeep fixtures (pre-seeded into slots, never cast).
     let mut relay = spell(RELAY, "relay", "rela");
     relay.duration = 70;
@@ -532,6 +551,9 @@ fn world() -> Content {
         (Ability::Alterhunger, 40),
         (Ability::AlterThirst, 30),
     ];
+    content.add_spell(hook);
+    content.add_spell(latch);
+    content.add_spell(unhook);
     content.add_spell(relay);
     content.add_spell(toll);
     content.add_spell(venom);
@@ -968,7 +990,7 @@ fn base_chance_200_skips_the_roll_entirely() {
 fn successful_cast_deducts_full_mana_and_round_energy() {
     // blur: mana 4, round cost 100, base_chance 200 -> deterministic
     // success. Spec §3 step 7: full costs (a duration spell still pays in
-    // full; only its effects wait for slice 4).
+    // full; its effects ride the slice-4 slot machinery).
     let mut core = Core::new(world(), CoreConfig::default());
     let s = core.attach_player(player("Vexil", MAGE, full_book()));
     core.drain_events();
@@ -2159,7 +2181,9 @@ fn stat_buff_termination_reverts_through_the_recompute() {
     // identical observable). Anthem: (Intel, 0) stored 5 on a base-0
     // fixture -> Intellect row 5, MagicRes (5 + 0*3)/4 = 1.
     let mut core = Core::new(world(), CoreConfig::default());
-    let mut vexil = player("Vexil", MAGE, full_book());
+    let mut book = full_book();
+    book.insert(ANTHEM, false); // castable for the refresh probe below
+    let mut vexil = player("Vexil", MAGE, book);
     vexil.active_spells[0] = ActiveSpell { spell: Some(ANTHEM), value: 5, remaining: 40 };
     let s = core.attach_player(vexil);
     core.drain_events();
@@ -2167,6 +2191,23 @@ fn stat_buff_termination_reverts_through_the_recompute() {
     let sheet = text_to(&core.drain_events(), s);
     assert!(sheet.contains("Intellect:  5"), "buffed Intel: {sheet:?}");
     assert!(sheet.contains("An anthem lifts you!"), "st line: {sheet:?}");
+    // Refresh non-stacking through the stat observable: a mid-buff recast
+    // REPLACES the slot in place and the bag contributes once per slot —
+    // the sheet shows the single-application value (the fresh roll), never
+    // the sum (KNOWN-DIVERGENCE vs the DLL's stacking direct write; see
+    // effective_stats).
+    cast(&mut core, s, "c anthem");
+    let p = core.player_snapshot(s);
+    let idx = p.find_active(ANTHEM).expect("refreshed in place");
+    let v = p.active_spells[idx].value;
+    assert!((5..=6).contains(&v), "fresh rolled value: {v}");
+    core.input(s, "st");
+    let sheet = text_to(&core.drain_events(), s);
+    assert!(
+        sheet.contains(&format!("Intellect:{v:>3}")),
+        "single application after recast (stored {v}): {sheet:?}"
+    );
+    energy_round(&mut core);
     let shown = cast(&mut core, s, "c unsing");
     assert!(shown.contains("The anthem fades.\n"), "wear-off: {shown:?}");
     let p = core.player_snapshot(s);
@@ -2218,6 +2259,48 @@ fn kill_spell_dispel_suppresses_the_chain() {
     let p = core.player_snapshot(s);
     assert_eq!(p.find_active(CHIME), None, "chime slot cleared");
     assert_eq!(p.find_active(ECHO), None, "chain suppressed");
+}
+
+#[test]
+fn dispel_chain_recurses_through_a_second_dispel() {
+    // Multi-level chain depth: unhook dispels HOOK (level 1) -> HOOK's
+    // EndCast forces LATCH (mode 2) -> LATCH's own pre-pass finds CHIME
+    // and dispels it (level 2) — the 39494 early return means LATCH never
+    // enters a slot -> CHIME's EndCast forces ECHO (level 3), which
+    // enters. Each level consumes a cleared slot and the recursion
+    // bottoms out when a forced cast finds nothing to dispel: the final
+    // state is deterministic — two slots cleared, only ECHO occupied.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut book = full_book();
+    book.insert(UNHOOK, false);
+    let mut vexil = player("Vexil", MAGE, book);
+    vexil.active_spells[0] = ActiveSpell { spell: Some(HOOK), value: 5, remaining: 40 };
+    vexil.active_spells[1] = ActiveSpell { spell: Some(CHIME), value: 5, remaining: 40 };
+    let s = core.attach_player(vexil);
+    core.drain_events();
+    let shown = cast(&mut core, s, "c unhook");
+    // Level-2 wear-off, then the level-3 chained cast's active line.
+    let chime = shown.find("The chime fades.\n").expect("level-2 dispel");
+    let echo = shown
+        .find("An echo follows you!\n")
+        .expect("level-3 chained cast");
+    assert!(chime < echo, "termination before the chained entry: {shown:?}");
+    let p = core.player_snapshot(s);
+    assert_eq!(p.find_active(HOOK), None, "level 1 dispelled");
+    assert_eq!(p.find_active(CHIME), None, "level 2 dispelled by LATCH's pre-pass");
+    assert_eq!(
+        p.find_active(LATCH),
+        None,
+        "LATCH never entered — its own dispel ended the forced cast"
+    );
+    let idx = p.find_active(ECHO).expect("level-3 spell entered");
+    assert!((5..=6).contains(&p.active_spells[idx].value), "fresh roll");
+    assert_eq!(p.active_spells[idx].remaining, 70, "fresh duration");
+    assert_eq!(
+        p.active_spells.iter().filter(|slot| slot.spell.is_some()).count(),
+        1,
+        "two slots cleared, one entered"
+    );
 }
 
 #[test]

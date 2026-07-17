@@ -24,15 +24,19 @@ Vertical slices in dependency order; each slice ends green, hand-testable,
 and committed. Engine-first was rejected: no playable feedback until late,
 big-bang integration risk.
 
-**Status (2026-07-17):** Slices 1-3 COMPLETE on branch m5-magic — content
+**Status (2026-07-17):** Slices 1-4 COMPLETE on branch m5-magic — content
 layer (all 1379 spells load/validate), spellbook (scroll-only learning,
 oracle-proven), cast skeleton (deferred-fire combat model, Damage(-MR),
-protected rooms, saves) — both live gates passed against the real DB.
+protected rooms, saves), duration engine (active slots, upkeep,
+termination + EndCast chaining) — live gates passed against the real DB.
+Slice 4's upkeep tick is oracle-measured at ~3 s (§8.11: blur's 70 ticks
+≈ 3.5 min) and player death terminates every slot with the EndCast chain
+SUPPRESSED (decompile 13053-13066 — unlike reroll's honored chain).
 Implementation-corrected details live in the slice plans and
 spellcasting.md §8; where this doc's slice 2/3 bullets disagree with those
 (auto-pick targeting, friendly-NPC guilt inference, magnitude swap), the
 measured/decompiled versions win. Kai/mystic message variants deferred to
-slice 5 (marker in cast_command). Next: slice 4 (duration engine).
+slice 5 (marker in cast_command). Next: slice 5 (breadth).
 
 ## Slice 1 — Content layer: the full Spell record
 
