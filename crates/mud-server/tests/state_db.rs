@@ -1,6 +1,6 @@
 //! Tests for the runtime state database: accounts and player persistence.
 
-use mud_core::content::{ClassId, RaceId, RoomId, SpellId, StatBlock};
+use mud_core::content::{ClassId, ItemId, RaceId, RoomId, SpellId, StatBlock};
 use mud_core::game::{Gender, Player};
 use mud_server::state_db::{CreateAccountError, StateDb};
 
@@ -128,6 +128,38 @@ fn spellbook_roundtrips() {
     db.save_player(&p).expect("save");
     let loaded = db.load_player("Vexil").expect("query").expect("found");
     assert_eq!(loaded.spellbook, p.spellbook);
+
+    // Mutate and resave: delete-before-insert means the stored book
+    // matches exactly — no stale rows survive a save.
+    p.spellbook.remove(&SpellId(1));
+    p.spellbook.insert(SpellId(129), false); // temp grant became learned
+    db.save_player(&p).expect("resave");
+    let loaded = db.load_player("Vexil").expect("query").expect("found");
+    assert_eq!(loaded.spellbook, p.spellbook);
+}
+
+#[test]
+fn delete_player_purges_everything() {
+    let db = db();
+    let mut p = player("Vexil");
+    p.inventory.push((ItemId(3), 0));
+    p.bankbooks.push((45, 1000));
+    p.spellbook.insert(SpellId(1), false);
+    db.save_player(&p).expect("save");
+
+    db.delete_player("Vexil").expect("delete");
+    assert!(db.load_player("Vexil").expect("query").is_none());
+    assert_eq!(db.side_table_rows("Vexil"), 0, "no orphan rows survive");
+
+    // A fresh same-name character (names collate NOCASE) must not
+    // inherit the dead one's belongings.
+    let fresh = player("vexil");
+    db.save_player(&fresh).expect("save fresh");
+    let loaded = db.load_player("vexil").expect("query").expect("found");
+    assert_eq!(loaded, fresh);
+    assert!(loaded.inventory.is_empty());
+    assert!(loaded.bankbooks.is_empty());
+    assert!(loaded.spellbook.is_empty());
 }
 
 #[test]

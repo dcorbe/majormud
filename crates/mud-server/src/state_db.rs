@@ -234,17 +234,35 @@ impl StateDb {
             .expect("account exists")
     }
 
+    /// Test hook: rows for `name` remaining across the per-player side
+    /// tables (player_item, bankbook, player_spell).
+    pub fn side_table_rows(&self, name: &str) -> usize {
+        ["player_item", "bankbook", "player_spell"]
+            .iter()
+            .map(|table| {
+                self.conn
+                    .query_row(
+                        &format!("SELECT COUNT(*) FROM {table} WHERE name = ?1"),
+                        params![name],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .expect("count rows") as usize
+            })
+            .sum()
+    }
+
     pub fn save_player(&self, player: &Player) -> Result<(), StateError> {
-        self.conn.execute(
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
             "DELETE FROM player_item WHERE name = ?1",
             params![player.name],
         )?;
-        self.conn.execute(
+        tx.execute(
             "DELETE FROM bankbook WHERE name = ?1",
             params![player.name],
         )?;
         for (shop, balance) in &player.bankbooks {
-            self.conn.execute(
+            tx.execute(
                 "INSERT INTO bankbook (name, shop, balance) VALUES (?1, ?2, ?3)",
                 params![player.name, shop, *balance as i64],
             )?;
@@ -256,24 +274,24 @@ impl StateDb {
         ];
         for (kind, items) in groups {
             for (slot, (item, uses)) in items.iter().enumerate() {
-                self.conn.execute(
+                tx.execute(
                     "INSERT INTO player_item (name, kind, slot, item, uses) \
                      VALUES (?1, ?2, ?3, ?4, ?5)",
                     params![player.name, kind, slot as i64, item.0, uses],
                 )?;
             }
         }
-        self.conn.execute(
+        tx.execute(
             "DELETE FROM player_spell WHERE name = ?1",
             params![player.name],
         )?;
         for (spell, temporary) in &player.spellbook {
-            self.conn.execute(
+            tx.execute(
                 "INSERT INTO player_spell (name, spell, temporary) VALUES (?1, ?2, ?3)",
                 params![player.name, spell.0, i64::from(*temporary)],
             )?;
         }
-        self.conn.execute(
+        tx.execute(
             "INSERT OR REPLACE INTO player (name, gender, race, class, level,
                  intellect, wisdom, strength, health, agility, charm,
                  b_intellect, b_wisdom, b_strength, b_health, b_agility,
@@ -320,10 +338,10 @@ impl StateDb {
                 player.location.room,
             ],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
-    /// Permadeath: remove the character record.
     /// Upserts one shop's 20 shelf counts (the shop dirty-byte save).
     pub fn save_shop_stock(&self, shop: u16, counts: &[i16; 20]) -> Result<(), StateError> {
         let mut stmt = self.conn.prepare_cached(
@@ -353,11 +371,16 @@ impl StateDb {
         Ok(rows)
     }
 
+    /// Permadeath: remove the character record.
     pub fn delete_player(&self, name: &str) -> Result<(), StateError> {
-        self.conn
-            .execute("DELETE FROM player WHERE name = ?1", params![name])?;
-        self.conn
-            .execute("DELETE FROM player_spell WHERE name = ?1", params![name])?;
+        let tx = self.conn.unchecked_transaction()?;
+        for table in ["player", "player_item", "bankbook", "player_spell"] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE name = ?1"),
+                params![name],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
