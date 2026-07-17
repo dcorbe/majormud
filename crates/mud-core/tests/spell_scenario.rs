@@ -316,6 +316,7 @@ fn mage() -> Player {
         experience: 0,
         location: SHOP_ROOM,
         spellbook: BTreeMap::new(),
+        poison: 0,
         active_spells: Default::default(),
     }
 }

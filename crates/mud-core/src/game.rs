@@ -68,6 +68,13 @@ fn clamp_counter(v: i32) -> u16 {
     u16::try_from(v.clamp(0, i32::from(u16::MAX))).expect("clamped into range")
 }
 
+/// The poison counter (`+0xbe`, a DLL `short`): every write site floors at
+/// 0 (there is no negative poison); the i16 ceiling is our saturation —
+/// the DLL would wrap, unreachable with shipped values.
+fn clamp_poison(v: i32) -> i16 {
+    i16::try_from(v.clamp(0, i32::from(i16::MAX))).expect("clamped into range")
+}
+
 /// HPRegen (123): percent modifier to slow-tick HP regen.
 fn hp_regen_ability() -> Ability {
     Ability::from_id(123).expect("HPRegen is in the enum")
@@ -130,6 +137,13 @@ pub struct Player {
     /// Display order is computed at render (level, then name), not
     /// storage order.
     pub spellbook: BTreeMap<SpellId, bool>,
+    /// `+0xbe` — the poison counter (a `short` in the DLL). Each slow tick
+    /// with a positive counter prints "You feel ill." and deals that much
+    /// HP damage (`regeneration.md` §4, decompile 19518-19533). Written
+    /// set-if-greater by Poison(19) at cast application, reduced by
+    /// CurePoison(20), the poison spell's termination, the healer's curing
+    /// service, and zeroed by death (13066). Never negative.
+    pub poison: i16,
     /// Active duration-spell slots (`spellcasting.md` §1: id `+0x40+i*2`,
     /// value `+0x54+i*2`, remaining ticks `+0x68+i*2` — 10 slots each).
     /// An array, not a Vec: slot exhaustion is observable (an 11th buff
@@ -937,8 +951,8 @@ impl Core {
     }
 
     /// `slow_update_characters` (`regeneration.md`): hunger/thirst decay,
-    /// HP regen, mana regen for every in-game player. (Poison and bleed/aid
-    /// join in M3 with the death system.)
+    /// poison damage, bleed/aid, HP regen, mana regen for every in-game
+    /// player.
     fn slow_update(&mut self) {
         let sessions: Vec<SessionId> = self.sessions.keys().copied().collect();
         for id in sessions {
@@ -964,6 +978,36 @@ impl Core {
 
             player.hunger = player.hunger.saturating_sub(1);
             player.thirst = player.thirst.saturating_sub(1);
+
+            // Poison (`regeneration.md` §4; decompile 19518-19533): a
+            // positive counter prints "You feel ill.", deals its value in
+            // HP damage, announces the drop when HP crosses from above 0
+            // to below 0 (19526-19528: FUN_0043c91d, the same announce as
+            // the upkeep Damage crossing), then check_kill_user. The
+            // counter itself does not decay here — only CurePoison, the
+            // poison spell's termination, the healer, or death lower it.
+            // A downed poisoned player still bleeds below (the DLL's
+            // branches are chained the same way), and a living one still
+            // regenerates in the same tick.
+            if player.poison > 0 {
+                let was_up = player.current_hp > 0;
+                player.current_hp -= i32::from(player.poison);
+                let dropped = was_up && player.current_hp < 0;
+                let name = player.name.clone();
+                let room = player.location;
+                self.output_line(id, text::YOU_FEEL_ILL);
+                if dropped {
+                    self.output_line(id, &text::drops_to_ground(&name));
+                    self.broadcast_to_room(room, Some(id), &text::drops_to_ground(&name));
+                }
+                if self.player(id).current_hp <= DEATH_FLOOR {
+                    self.player_killed(id);
+                    continue;
+                }
+            }
+            let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&id) else {
+                continue;
+            };
 
             // Near-death band (HP < 1): bleed toward the floor, or recover
             // one per tick when aided (`regeneration.md` §5).
@@ -1114,9 +1158,17 @@ impl Core {
                             player.current_hp = (player.current_hp + v).min(max_hp);
                             visible = true;
                         }
-                        // Cure Poison (20): poison -= v floor 0
-                        // (44778-44785) — SLICE 5, no poison field yet.
-                        Ability::CurePoison => {}
+                        // Cure Poison (20): poison -= v floor 0. The
+                        // decompile's odd guard (44778: `poison - v <
+                        // poison`) just skips v <= 0 — a zero/negative
+                        // per-tick cure is a no-op here, unlike the
+                        // instant path.
+                        Ability::CurePoison => {
+                            if v > 0 {
+                                player.poison =
+                                    clamp_poison(i32::from(player.poison) - v);
+                            }
+                        }
                         // Fear (60): genrdn(0,100) < v => flee a random
                         // exit (44788-44793) — SLICE 5 with the fear
                         // flag; move_user needs the flee plumbing.
@@ -1183,6 +1235,29 @@ impl Core {
     pub fn set_current_mana(&mut self, session: SessionId, mana: i32) {
         if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
             player.current_mana = mana;
+        }
+    }
+
+    /// The poison counter (`+0xbe`; 0 for sessions not in game).
+    pub fn poison(&self, session: SessionId) -> i16 {
+        match self.sessions.get(&session) {
+            Some(Session::InGame { player, .. }) => player.poison,
+            _ => 0,
+        }
+    }
+
+    pub fn set_poison(&mut self, session: SessionId, poison: i16) {
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+            player.poison = poison;
+        }
+    }
+
+    /// Test hook: pre-seed an active-spell slot (and recompute, since
+    /// slots feed the ability bag).
+    pub fn set_active_spell(&mut self, session: SessionId, idx: usize, slot: ActiveSpell) {
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+            player.active_spells[idx] = slot;
+            self.refresh_derived(session);
         }
     }
 
@@ -2544,6 +2619,12 @@ impl Core {
                 return;
             }
         }
+        // ImmuPoison (21) gates the ENTIRE Poison(19) case — counter
+        // write and success display alike (decompile 40520-40523:
+        // user_has_ability(0x15) wraps the case body). Race/class/gear/
+        // active-slot sources all count (the same bag the recompute uses).
+        let immune_poison = spell.abilities.iter().any(|(a, _)| *a == Ability::Poison)
+            && self.ability_bag(self.player(session)).value(Ability::ImmuPoison) != 0;
         if spell.duration == 0 {
             // Instant apply loop (spec §4 table, self-target): iterate the
             // ability slots; a non-zero slot value is a FIXED amount, 0
@@ -2579,8 +2660,32 @@ impl Core {
                     Ability::AlterThirst => {
                         player.thirst = clamp_counter(i32::from(player.thirst) + amount);
                     }
-                    // Remaining benign instants (Summon 12, cures, ...)
-                    // land in slice 5 with their systems.
+                    // Poison (19): the +0xbe counter is SET-IF-GREATER,
+                    // not added (decompile 40525-40527: `if (poison < v)
+                    // poison = v` — every apply site agrees, incl. the
+                    // monster-cast paths 22726/23390), ImmuPoison-gated.
+                    Ability::Poison => {
+                        if !immune_poison {
+                            let v = clamp_poison(amount);
+                            if player.poison < v {
+                                player.poison = v;
+                            }
+                        }
+                    }
+                    // Cure Poison (20): poison -= V, floored 0
+                    // (40669-40673) — no ImmuPoison gate on the cure side.
+                    Ability::CurePoison => {
+                        player.poison = clamp_poison(i32::from(player.poison) - amount);
+                    }
+                    // Summon (12): SLICE 6 — DATA (slice-5 Task 6 check,
+                    // re/mmud_wgnt.sqlite): 87 shipped spells carry
+                    // Summon(12); ZERO are named by any LearnSp(42) item —
+                    // all are monster-attack payloads (raptor summon,
+                    // calls for aid, ...). No player cast can reach this
+                    // arm before slice-6 monster casting; the spawn-side
+                    // wiring (owned tag = aggression marker) lands there.
+                    Ability::Summon => {}
+                    // Remaining benign instants land with their systems.
                     _ => {}
                 }
             }
@@ -2590,6 +2695,28 @@ impl Core {
         // recompute reads the slots from there (spec §4; the recompute
         // feed is Task 4).
         else {
+            // Poison (19) hard-writes at ENTRY too (decompile 40536-40538:
+            // the duration arm max-writes the counter BEFORE
+            // add_cast_spell_to_user — even a slot-overflow cast leaves
+            // the counter raised), same ImmuPoison gate and the same
+            // per-ability value override convention.
+            if !immune_poison {
+                for (ability, row) in &spell.abilities {
+                    if *ability != Ability::Poison {
+                        continue;
+                    }
+                    let v = clamp_poison(match *row {
+                        0 => magnitude,
+                        v => i32::from(v),
+                    });
+                    if let Some(Session::InGame { player, .. }) =
+                        self.sessions.get_mut(&session)
+                        && player.poison < v
+                    {
+                        player.poison = v;
+                    }
+                }
+            }
             // Entry (spec §4 steps 2-3): already active → refresh value
             // and duration in place; else the first free slot. The DLL
             // stores the 16-bit rolled magnitude as the slot value
@@ -2750,10 +2877,17 @@ impl Core {
         for (ability, row) in &spell.abilities {
             let v = if *row != 0 { i32::from(*row) } else { stored };
             match ability {
-                // Poison (19): `+0xbe -= v`, floored 0 (44853-44857) —
-                // SLICE 5: the poison field lands with the death
-                // system's DoT; nothing to reverse until then.
-                Ability::Poison => {}
+                // Poison (19): `+0xbe -= v`, floored 0 (44853-44857).
+                // With the set-if-greater apply, a doubly-poisoned
+                // player keeps the surplus and a partially-cured one
+                // floors at 0 — both faithful.
+                Ability::Poison => {
+                    if let Some(Session::InGame { player, .. }) =
+                        self.sessions.get_mut(&session)
+                    {
+                        player.poison = clamp_poison(i32::from(player.poison) - v);
+                    }
+                }
                 // Stat buffs 44-49 (44858-44875 subtract from the
                 // effective stats +0xa2..+0xac): NO explicit reversal
                 // here — our cast entry never direct-writes; the buff
@@ -3350,9 +3484,11 @@ impl Core {
     }
 
     /// Healer services: `buy healing` = (max−cur)×2 copper, full heal;
-    /// `buy curing`/`buy cure poison` = 25 silver if poisoned (poison is
-    /// M5) or 15 SILVER when not — the constants ride in the silver arg
-    /// of check_currency (live: 150 copper, oracle_healer2.raw).
+    /// `buy curing`/`buy cure poison` = 25 SILVER if poisoned (cures +
+    /// terminates poison-carrying slots) or 15 SILVER when not — the
+    /// constants ride in the silver arg of check_currency (live: 150
+    /// copper, oracle_healer2.raw; the 25-silver poisoned price is
+    /// decompile-only — ORACLE-VERIFY, needs a poisoned live probe).
     fn buy_healer_service(&mut self, session: SessionId, want: &str) -> Resolution {
         let ratios = self.config.coin_ratios;
         if word_prefix_match("healing", want) {
@@ -3387,8 +3523,15 @@ impl Core {
             return Resolution::Handled;
         }
         if word_prefix_match("curing", want) || word_prefix_match("cure poison", want) {
-            // Not-poisoned path only until M5 brings poison: 15 silver.
-            let cost = 15 * ratios[0];
+            // Poisoned = 25 silver, cures; not poisoned = 15 silver, the
+            // wasted-purchase line. Both constants ride the SILVER arg of
+            // check_currency (decompile buy_item 14297/14335; economy.md
+            // §2 + addendum — the addendum's live capture pinned the
+            // not-poisoned 15 at 150 copper, and 0x19=25 sits in the SAME
+            // argument slot, so the poisoned price is 25 SILVER — the
+            // plan's "25 gold" was a memory transcription error).
+            let poisoned = self.player(session).poison > 0;
+            let cost = if poisoned { 25 } else { 15 } * ratios[0];
             if self.player(session).coins.total_copper(ratios) < cost {
                 self.output_line(session, &text::cannot_afford("curing"));
                 return Resolution::Handled;
@@ -3405,7 +3548,32 @@ impl Core {
                 spent.runic,
             ])
             .unwrap_or_else(|| "nothing".into());
-            self.output_line(session, &text::not_poisoned(&coins));
+            if !poisoned {
+                self.output_line(session, &text::not_poisoned(&coins));
+                return Resolution::Handled;
+            }
+            player.poison = 0;
+            self.output_line(session, &text::poisoning_cured(&coins));
+            // Slot sweep (14306-14328): every active spell CARRYING
+            // Poison(19) is cleared and terminated with its stored value,
+            // chain HONORED ('\x01' at 14322); unknown-spell slots are
+            // bare-cleared (terminate_active_spell's unknown arm matches
+            // the DLL's inline zeroing); other slots survive. The
+            // terminations' own poison subtractions floor at the already
+            // cleared 0.
+            for idx in 0..10 {
+                let Some(spell_id) = self.player(session).active_spells[idx].spell else {
+                    continue;
+                };
+                let carries_poison = self
+                    .content
+                    .spells
+                    .get(&spell_id)
+                    .is_none_or(|sp| sp.abilities.iter().any(|(a, _)| *a == Ability::Poison));
+                if carries_poison {
+                    self.terminate_active_spell(session, idx, true);
+                }
+            }
             return Resolution::Handled;
         }
         self.output_line(session, &text::not_known_item(want));
@@ -4408,6 +4576,12 @@ impl Core {
         for idx in 0..10 {
             self.terminate_active_spell(session, idx, false);
         }
+        // check_kill_user zeroes the poison counter AFTER the slot
+        // terminations (decompile 13066) — the poison-spell reversals
+        // subtract first, then the hard clear catches any remainder.
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+            player.poison = 0;
+        }
 
         let Some(Session::InGame { player, derived, aided, .. }) =
             self.sessions.get_mut(&session)
@@ -4810,6 +4984,7 @@ impl Core {
             experience: 0,
             location: self.config.start_location,
             spellbook: BTreeMap::new(),
+            poison: 0,
             active_spells: Default::default(),
         };
         let derived = self.derive_for(&player);

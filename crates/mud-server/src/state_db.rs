@@ -113,6 +113,9 @@ const TABLES: &[TableDef] = &[
             ("experience", "INTEGER NOT NULL"),
             ("map", "INTEGER NOT NULL"),
             ("room", "INTEGER NOT NULL"),
+            // The poison counter (+0xbe) — M5 slice 5; older databases
+            // gain it with a 0 default on open.
+            ("poison", "INTEGER NOT NULL"),
         ],
         constraint: "",
     },
@@ -430,10 +433,11 @@ impl StateDb {
                  b_intellect, b_wisdom, b_strength, b_health, b_agility,
                  b_charm, hp_base, current_hp, current_mana, hunger, thirst,
                  runic, platinum, gold, silver, copper, lawful,
-                 cp_unspent, cp_lifetime, lives, experience, map, room)
+                 cp_unspent, cp_lifetime, lives, experience, map, room,
+                 poison)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
                  ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
-                 ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34)",
+                 ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35)",
             params![
                 player.name,
                 gender_str(player.gender),
@@ -469,6 +473,7 @@ impl StateDb {
                 player.experience,
                 player.location.map,
                 player.location.room,
+                player.poison,
             ],
         )?;
         tx.commit()?;
@@ -601,7 +606,8 @@ impl StateDb {
                      b_intellect, b_wisdom, b_strength, b_health, b_agility,
                      b_charm, hp_base, current_hp, current_mana, hunger, thirst,
                      runic, platinum, gold, silver, copper, lawful,
-                     cp_unspent, cp_lifetime, lives, experience, map, room
+                     cp_unspent, cp_lifetime, lives, experience, map, room,
+                     poison
                  FROM player WHERE name = ?1",
                 params![name],
                 |r| {
@@ -653,6 +659,7 @@ impl StateDb {
                             room: r.get(33)?,
                         },
                         spellbook: BTreeMap::new(),
+                        poison: r.get(34)?,
                         active_spells: Default::default(),
                     })
                 },

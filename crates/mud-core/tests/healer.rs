@@ -77,6 +77,38 @@ fn world() -> Content {
     content
 }
 
+/// A benign fixture spell (for the poisoned-cure slot sweep).
+fn test_spell(id: mud_core::content::SpellId, name: &str) -> mud_core::content::Spell {
+    use mud_core::content::{Element, MatchType, SaveClass, ScalePair, Spell, TargetMode};
+    Spell {
+        id,
+        name: name.into(),
+        short_name: name.chars().take(4).collect(),
+        cast_msg_a: None,
+        cast_msg_b: None,
+        abilities: vec![],
+        level_cap: 0,
+        round_cost: 0,
+        required_power: 1,
+        min_base: 0,
+        max_base: 0,
+        target_mode: TargetMode::Benign,
+        save_class: SaveClass::None,
+        base_chance: 200,
+        duration_per_level: 0,
+        match_type: MatchType::Single0,
+        duration: 0,
+        element: Element::Cold,
+        class_gate_group: 1,
+        mana_cost: 0,
+        max_increase: ScalePair::NONE,
+        required_class_level: 1,
+        min_increase: ScalePair::NONE,
+        duration_increase: ScalePair::NONE,
+        msg_style: 0,
+    }
+}
+
 fn config(room: u16) -> CoreConfig {
     CoreConfig {
         start_location: RoomId { map: 1, room },
@@ -158,6 +190,72 @@ fn buy_curing_unpoisoned_costs_fifteen_silver() {
     core.input(s, "buy cure poison");
     let shown = text_to(&core.drain_events(), s);
     assert!(shown.contains("were not poisoned!"), "got: {shown:?}");
+}
+
+#[test]
+fn buy_curing_poisoned_costs_twenty_five_silver_and_cures() {
+    // Poisoned path (decompile buy_item 14295-14329): check_currency with
+    // 0x19 = 25 in the SAME silver arg as the not-poisoned 0xf = 15
+    // (economy.md addendum) -> 250 copper; "and your poisoning is cured."
+    // (DLL 0xbd28d — note the trailing PERIOD, unlike the not-poisoned
+    // bang), counter cleared.
+    let mut core = Core::new(world(), config(2190));
+    let s = create(&mut core, "Dain");
+    core.set_poison(s, 4);
+    core.set_coins(
+        s,
+        Coins { runic: 0, platinum: 0, gold: 2, silver: 5, copper: 0 },
+    );
+    core.input(s, "buy curing");
+    let shown = text_to(&core.drain_events(), s);
+    assert!(
+        shown.contains(
+            "You hand over 2 gold crowns, 5 silver nobles and your poisoning is cured."
+        ),
+        "got: {shown:?}"
+    );
+    assert_eq!(core.poison(s), 0);
+    assert_eq!(core.player_snapshot(s).coins, Coins::default());
+
+    // No longer poisoned: the next purchase takes the 15-silver path.
+    core.give_copper(s, 150);
+    core.input(s, "buy cure poison");
+    let shown = text_to(&core.drain_events(), s);
+    assert!(shown.contains("were not poisoned!"), "got: {shown:?}");
+}
+
+#[test]
+fn poisoned_cure_terminates_poison_carrying_spell_slots() {
+    // After clearing the counter the DLL sweeps the active slots and
+    // terminates every spell carrying Poison(19) with its stored value,
+    // chain honored (14306-14327); other slots survive.
+    use mud_core::ability::Ability;
+    use mud_core::content::SpellId;
+    use mud_core::game::ActiveSpell;
+
+    let mut world = world();
+    let mut venom = test_spell(SpellId(700), "venom touch");
+    venom.duration = 50;
+    venom.abilities = vec![(Ability::Poison, 5)];
+    let mut ward = test_spell(SpellId(710), "stone ward");
+    ward.duration = 50;
+    ward.abilities = vec![(Ability::AC, 2)];
+    world.add_spell(venom);
+    world.add_spell(ward);
+
+    let mut core = Core::new(world, config(2190));
+    let s = create(&mut core, "Dain");
+    core.set_poison(s, 9);
+    core.give_copper(s, 250);
+    core.set_active_spell(s, 0, ActiveSpell { spell: Some(SpellId(700)), value: 5, remaining: 40 });
+    core.set_active_spell(s, 1, ActiveSpell { spell: Some(SpellId(710)), value: 2, remaining: 40 });
+    core.input(s, "buy curing");
+    let shown = text_to(&core.drain_events(), s);
+    assert!(shown.contains("your poisoning is cured."), "got: {shown:?}");
+    let p = core.player_snapshot(s);
+    assert!(p.active_spells[0].spell.is_none(), "poison spell terminated");
+    assert_eq!(p.active_spells[1].spell, Some(SpellId(710)), "other slots survive");
+    assert_eq!(p.poison, 0, "counter cleared; the termination subtract floors at 0");
 }
 
 #[test]

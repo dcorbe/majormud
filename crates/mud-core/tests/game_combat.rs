@@ -935,6 +935,7 @@ fn dwarf(name: &str) -> Player {
         experience: 0,
         location: RoomId { map: 1, room: 1 },
         spellbook: std::collections::BTreeMap::new(),
+        poison: 0,
         active_spells: Default::default(),
     }
 }

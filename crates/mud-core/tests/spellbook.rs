@@ -226,6 +226,7 @@ fn player(name: &str, class: ClassId, spellbook: BTreeMap<SpellId, bool>) -> Pla
         experience: 0,
         location: RoomId { map: 1, room: 1 },
         spellbook,
+        poison: 0,
         active_spells: Default::default(),
     }
 }

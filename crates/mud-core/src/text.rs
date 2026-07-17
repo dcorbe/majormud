@@ -446,6 +446,18 @@ pub fn not_poisoned(coins: &str) -> String {
     format!("You hand over {coins} and find that you were not poisoned!")
 }
 
+/// DLL string 0xbd28d (" and your poisoning is cured.") — the healer's
+/// poisoned curing purchase. Trailing PERIOD, unlike [`not_poisoned`]'s
+/// bang. ORACLE-VERIFY: no poisoned live capture exists yet.
+pub fn poisoning_cured(coins: &str) -> String {
+    format!("You hand over {coins} and your poisoning is cured.")
+}
+
+/// DLL string 0xc775d ("You feel ill.") — the slow-tick poison line
+/// (`regeneration.md` §4, decompile 19518-19524). ORACLE-VERIFY: never
+/// measured live (needs a poisoned character).
+pub const YOU_FEEL_ILL: &str = "You feel ill.";
+
 /// A copper amount as coin words.
 pub fn copper_amount(total: u64) -> String {
     let (one, many) = COIN_NAMES[0];

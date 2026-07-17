@@ -82,6 +82,7 @@ fn player_at(name: &str, room: u16) -> Player {
         experience: 0,
         location: RoomId { map: 1, room },
         spellbook: std::collections::BTreeMap::new(),
+        poison: 0,
         active_spells: Default::default(),
     }
 }
