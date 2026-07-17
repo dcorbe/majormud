@@ -23,6 +23,8 @@ pub enum Command {
     Status,
     Experience,
     Health,
+    /// `spells` — list the learned spellbook.
+    Spells,
     Help,
     Top,
     Train,
@@ -90,7 +92,7 @@ enum Verb {
 /// All direction minimums are ORACLE-verified (oracle_directions.raw):
 /// north/south/west = full word, east = 3 (eat blocks 2), down = 3,
 /// up = 2, diagonals = 6. Hand-authored asymmetry is the original's.
-const VERBS: [(&str, usize, Verb); 35] = [
+const VERBS: [(&str, usize, Verb); 36] = [
     ("north", 5, Verb::Plain(|| Command::Move(Direction::North))),
     ("south", 5, Verb::Plain(|| Command::Move(Direction::South))),
     ("east", 3, Verb::Plain(|| Command::Move(Direction::East))),
@@ -123,6 +125,9 @@ const VERBS: [(&str, usize, Verb); 35] = [
     ("status", 2, Verb::Plain(|| Command::Status)), // ORACLE: st/sta/stat
     ("help", 3, Verb::Plain(|| Command::Help)),     // ORACLE: hel (before health)
     ("health", 2, Verb::Plain(|| Command::Health)), // ORACLE: he
+    // ORACLE-VERIFY min abbrev: unmeasured; 2 is unambiguous ("s" is the
+    // south alias, "st" hits status first).
+    ("spells", 2, Verb::Plain(|| Command::Spells)),
     ("top", 2, Verb::Plain(|| Command::Top)),       // ORACLE: to (t says)
     ("train", 4, Verb::Plain(|| Command::Train)),   // ORACLE: trai (tra says)
     ("quit", 1, Verb::Plain(|| Command::Quit)),     // ORACLE: q

@@ -295,6 +295,26 @@ pub const CANT_USE_SUFFIX: &str = " (You can't use)";
 pub const MAY_NOT_WEAR: &str = "You may not wear that item!";
 pub const MAY_NOT_USE_WEAPON: &str = "You may not use that weapon.";
 
+// --- spellbook strings (VERIFIED oracle_spell_train.raw /
+// oracle_spell_learning.raw; spellcasting.md §8.5) ---
+
+/// VERIFIED (oracle): the `spells` listing header pair.
+pub const SPELLS_HEADER: &str = "You have the following spells:\nLevel Mana Short Spell Name";
+/// VERIFIED (oracle): the empty-book reply — a single line, no header,
+/// no trailing blank.
+pub const NO_SPELLS: &str = "You have no spells.";
+
+/// VERIFIED (oracle_spell_train.raw lines 74-75/190-192): one book row.
+/// Measured columns: level right-aligned width 3, mana right-aligned
+/// width 4, four spaces, short name left-aligned width 6, spell name
+/// left-aligned width 30 — trailing spaces are part of the line
+/// (`  1   4    blur  blur` + 26 spaces). Every shipped short name is
+/// 4 chars, so the short column's 6 could also be 5 + a gutter space —
+/// indistinguishable in the data we have.
+pub fn spell_row(level: i16, mana: i16, short: &str, name: &str) -> String {
+    format!("{level:>3}{mana:>4}    {short:<6}{name:<30}")
+}
+
 // --- healer strings (VERIFIED oracle_healer2.raw) ---
 pub fn healed(coins: &str) -> String {
     format!("You hand over {coins} and all your wounds are healed.")

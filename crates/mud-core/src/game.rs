@@ -1019,6 +1019,7 @@ impl Core {
             Command::Status => self.show_sheet(session),
             Command::Experience => self.show_experience(session),
             Command::Health => self.show_health(session),
+            Command::Spells => self.spells_command(session),
             Command::Train => self.train_level(session),
             // Argument commands do best-effort resolution; when they cannot
             // intuit the target, the whole line is said aloud (the parser's
@@ -1080,6 +1081,39 @@ impl Core {
         };
         let line = text::health_line(player.current_hp, derived.max_hp);
         self.output_line(session, &line);
+    }
+
+    /// `spells` — the learned-book listing (spellcasting.md §8.5). Rows
+    /// sort by required power ascending, then name; display order is
+    /// computed here, not stored. Format VERIFIED oracle_spell_train.raw.
+    fn spells_command(&mut self, session: SessionId) {
+        let player = self.player(session);
+        let mut known: Vec<_> = player
+            .spellbook
+            .keys()
+            .filter_map(|id| self.content.spells.get(id))
+            .collect();
+        if known.is_empty() {
+            self.output_line(session, text::NO_SPELLS);
+            return;
+        }
+        known.sort_by(|a, b| {
+            (a.required_power, &a.name).cmp(&(b.required_power, &b.name))
+        });
+        let mut out = String::from(text::SPELLS_HEADER);
+        out.push('\n');
+        for spell in known {
+            out.push_str(&text::spell_row(
+                spell.required_power,
+                spell.mana_cost,
+                &spell.short_name,
+                &spell.name,
+            ));
+            out.push('\n');
+        }
+        // The table ends with a blank line (oracle; unlike exp/health).
+        out.push('\n');
+        self.output(session, &out);
     }
 
     /// `train_level` (`leveling.md` §4). Gate order is oracle-confirmed:
