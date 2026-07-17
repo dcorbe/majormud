@@ -299,11 +299,15 @@ impl Rng {
     }
 }
 
-/// The cast success roll (spec §3 step 5; decompiled 38150+ family):
-/// `base_chance >= 200` auto-succeeds without consuming a roll; otherwise
+/// The cast success roll (spec §3 step 5; decompiled 39300-39340):
+/// `base_chance >= 200` auto-succeeds; otherwise
 /// `chance = min(SC + base_chance, 98)` and the cast succeeds when
-/// `genrdn(0,100) < chance`. There is no floor: a chance at or below 0
-/// (possible only with negative SC, i.e. a non-caster) never succeeds.
+/// `genrdn(0,100) < chance`. DELIBERATE DIVERGENCE: the DLL rolls
+/// `genrdn(0,100)` unconditionally and discards it on auto-success
+/// (39300); we skip the roll — outcomes identical, and RNG-stream parity
+/// with the DLL's generator is unattainable anyway. There is no floor: a
+/// chance at or below 0 (possible only with negative SC, i.e. a
+/// non-caster) never succeeds.
 /// `roll(lo, hi)` must return a uniform value in `[lo, hi]` — the
 /// `calculate_attack` injection seam, so tests can script rolls.
 pub fn cast_roll_succeeds(
@@ -1873,7 +1877,9 @@ impl Core {
         } else {
             // Half mana rounded down (mmis 1 -> 0 oracle-confirmed §8.6;
             // blur 4 -> 2 §8.9), no effects applied.
-            player.current_mana -= mana_cost / 2;
+            // DLL clamps the halved cost at 0 (decompiled 39387) — a
+            // negative mana_cost must not refund on failure.
+            player.current_mana -= (mana_cost / 2).max(0);
             let caster = player.name.clone();
             let room = player.location;
             self.output_line(session, &text::cast_fail(&spell_name));
