@@ -229,13 +229,32 @@ fn world() -> Content {
     });
     // The DescMsg record (the blur msg-68 model): line1 = expiry line,
     // line2 = empty (room variant unmeasured), line3 = the active line
-    // printed at cast and appended to `st` (§8.6). One record, three roles.
+    // printed at cast and appended to `st` (§8.6/§8.11). One record,
+    // three roles.
     content.add_message(Message {
         id: MessageId(903),
         lines: vec![
             "The effects of veil wear off.".into(),
             String::new(),
             "You are veiled!".into(),
+        ],
+    });
+    // Blur's real DescMsg (msg 68) strings, MEASURED §8.9/§8.11.
+    content.add_message(Message {
+        id: MessageId(904),
+        lines: vec![
+            "The effects of blur wear off.".into(),
+            String::new(),
+            "You are blurred!".into(),
+        ],
+    });
+    // Ward's DescMsg — the multi-buff `st` ordering probe.
+    content.add_message(Message {
+        id: MessageId(905),
+        lines: vec![
+            "The shimmering ward fades.".into(),
+            String::new(),
+            "A shimmering ward surrounds you!".into(),
         ],
     });
     content.add_race(Race {
@@ -281,17 +300,17 @@ fn world() -> Content {
     let mut blur = spell(BLUR, "blur", "blur");
     blur.mana_cost = 4;
     blur.round_cost = 100;
-    // Real blur is a DURATION spell (duration != 0): slice 3 renders its
-    // castmsgb and charges costs but applies NO effects — the abilities
-    // below are fixture stand-ins that must all stay inert until slice 4
-    // wires duration slots (duration_spell_cast_applies_no_stats).
-    blur.duration = 5;
+    // The real blur (129) record: duration 70 flat, magnitude bounds 5..5,
+    // Dodge value 0 = "store the rolled V", DescMsg 68 (fixture 904),
+    // RemovesSpell -> the amethyst pendant's effect 157 (fixture WARD).
+    blur.duration = 70;
+    blur.min_base = 5;
+    blur.max_base = 5;
     blur.cast_msg_b = Some(MessageId(901));
     blur.abilities = vec![
-        (Ability::Heal, 25),
-        (Ability::EnergyLevel, 300),
-        (Ability::Alterhunger, 40),
-        (Ability::AlterThirst, 30),
+        (Ability::Dodge, 0),
+        (Ability::DescMsg, 904),
+        (Ability::RemovesSpell, 220),
     ];
     let mut illu = spell(ILLUMINATE, "illuminate", "illu");
     illu.mana_cost = 4;
@@ -402,6 +421,9 @@ fn world() -> Content {
     ];
     let mut ward = spell(WARD, "ward", "ward");
     ward.duration = 70;
+    // Dodge like the pendant effect it stands in for, plus a DescMsg of
+    // its own — the dispel-recompute and multi-buff `st` probes.
+    ward.abilities = vec![(Ability::Dodge, 0), (Ability::DescMsg, 905)];
     let mut reap = spell(REAP, "reap", "reap");
     reap.duration = 70;
     reap.abilities = vec![(Ability::KillSpell, 220)];
@@ -1581,25 +1603,118 @@ fn benign_cast_with_target_string_is_refused() {
 }
 
 #[test]
-fn duration_spell_cast_applies_no_stats() {
-    // Blur is a DURATION spell (duration != 0 in real data): slice 3 pays
-    // the costs and renders castmsgb but applies NO effects — the fixture
-    // carries every instant-handler ability precisely so this test fails
-    // loudly when slice 4 wires duration slots (deliberate). The oracle's
-    // "You are blurred!" line is the spell's own message, not castmsgb,
-    // and must NOT print until slice 4 either.
+fn duration_cast_feeds_derived_stats_and_the_sheet() {
+    // The slice-3 tripwire (duration_spell_cast_applies_no_stats) closed:
+    // a blur cast enters a slot AND the recompute reads it. MEASURED
+    // (§8.11): `st` appends DescMsg line3 ("You are blurred!") directly
+    // after the MagicRes row while active, and the Martial Arts row rises
+    // by exactly the stored magnitude (13→18 live) — the Dodge value adds
+    // RAW to the derived dodge, not doubled.
     let mut core = Core::new(world(), CoreConfig::default());
     let s = core.attach_player(hardy("Vexil", MAGE));
     core.set_current_hp(s, 10);
     core.drain_events();
+    let base_parry = core.defender_debug(s).parry;
     let shown = cast(&mut core, s, "c blur");
     assert!(shown.contains("You cast blur on Vexil!\n"), "got: {shown:?}");
-    assert!(!shown.contains("You are blurred!"), "slice 4: {shown:?}");
-    assert_eq!(core.current_hp(s), 10, "Heal not applied");
-    assert_eq!(core.round_energy(s), 900, "round cost only, no EnergyLevel");
-    assert_eq!(core.current_mana(s), 2, "full mana 4 paid");
+    assert!(shown.contains("You are blurred!\n"), "active line: {shown:?}");
     let p = core.player_snapshot(s);
-    assert_eq!((p.hunger, p.thirst), (1000, 1000), "counters untouched");
+    let idx = p.find_active(BLUR).expect("slot occupied");
+    let v = i32::from(p.active_spells[idx].value);
+    assert!((5..=6).contains(&v), "stored rolled V: {v}");
+    // Dodge (34) flows into the defender's parry rating (combat.md:
+    // parry = dodgeAbil(0x22) + (Chm-50)/5 + level/5 + (Agl-50)/3 ...).
+    assert_eq!(core.defender_debug(s).parry, base_parry + v, "blur dodges");
+    // Sheet: Martial Arts = 2*dodge_base(1) + Dodge = 2 + V; the active
+    // line follows the MagicRes row.
+    core.input(s, "st");
+    let sheet = text_to(&core.drain_events(), s);
+    let want = format!("Martial Arts:{:>5}", 2 + v);
+    assert!(sheet.contains(&want), "MA reflects the slot: {sheet:?}");
+    let mr = sheet.find("MagicRes:").expect("MagicRes row");
+    let line = sheet.find("You are blurred!").expect("st active line");
+    assert!(mr < line, "active line after MagicRes: {sheet:?}");
+    // Costs are unchanged from slice 3; blur carries no instant handlers.
+    assert_eq!(core.current_mana(s), 2, "full mana 4 paid");
+    assert_eq!(core.round_energy(s), 900, "round cost paid");
+    assert_eq!(core.current_hp(s), 10, "no instant effects");
+}
+
+#[test]
+fn dispelling_a_slot_recomputes_derived_stats() {
+    // The pre-pass dispel (veil removes WARD) must drop ward's Dodge
+    // contribution on the same cast — the recompute runs on slot clear
+    // (spec §4: contributions vanish on the next from-scratch recompute).
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut vexil = player("Vexil", MAGE, full_book());
+    vexil.active_spells[0] = ActiveSpell { spell: Some(WARD), value: 3, remaining: 40 };
+    let s = core.attach_player(vexil);
+    core.drain_events();
+    let warded_parry = core.defender_debug(s).parry;
+    cast(&mut core, s, "c veil");
+    let p = core.player_snapshot(s);
+    assert_eq!(p.find_active(WARD), None, "ward dispelled");
+    assert_eq!(p.find_active(VEIL), None, "veil not entered — cast ended");
+    assert_eq!(
+        core.defender_debug(s).parry,
+        warded_parry - 3,
+        "ward's stored Dodge 3 gone from the recompute"
+    );
+    // ORACLE-VERIFY: blur-over-157 live probe (st should NOT show the
+    // dispelling spell's line) — asserted from the decompile early return.
+    core.input(s, "st");
+    let sheet = text_to(&core.drain_events(), s);
+    assert!(!sheet.contains("You are veiled!"), "no veil line: {sheet:?}");
+    assert!(!sheet.contains("shimmering ward"), "no ward line: {sheet:?}");
+}
+
+#[test]
+fn sheet_appends_active_lines_in_slot_order() {
+    // ORACLE-VERIFY: multi-buff `st` ordering is unmeasured live; slot
+    // order chosen (the DLL iterates the slot array). A DescMsg-less
+    // active spell (reap) contributes no line.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut vexil = player("Vexil", MAGE, full_book());
+    vexil.active_spells[0] = ActiveSpell { spell: Some(REAP), value: 1, remaining: 40 };
+    vexil.active_spells[1] = ActiveSpell { spell: Some(WARD), value: 2, remaining: 40 };
+    vexil.active_spells[2] = ActiveSpell { spell: Some(BLUR), value: 5, remaining: 40 };
+    let s = core.attach_player(vexil);
+    core.drain_events();
+    core.input(s, "st");
+    let sheet = text_to(&core.drain_events(), s);
+    let mr = sheet.find("MagicRes:").expect("MagicRes row");
+    let ward = sheet
+        .find("A shimmering ward surrounds you!")
+        .expect("ward line");
+    let blur = sheet.find("You are blurred!").expect("blur line");
+    assert!(mr < ward && ward < blur, "slot order after MagicRes: {sheet:?}");
+    assert!(!sheet.contains("reap"), "DescMsg-less spell adds no line: {sheet:?}");
+}
+
+#[test]
+fn attached_player_with_saved_slots_derives_them_immediately() {
+    // The login path loads player_effect rows into active_spells BEFORE
+    // attach_player's first derive (server load_player fills the slots,
+    // then attach recomputes) — a restored blur keeps dodging with no
+    // recast. Modeled here by attaching a pre-seeded player.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let plain = core.attach_player(player("Grunt", MAGE, full_book()));
+    let mut vexil = player("Vexil", MAGE, full_book());
+    vexil.active_spells[0] = ActiveSpell { spell: Some(BLUR), value: 5, remaining: 40 };
+    let s = core.attach_player(vexil);
+    core.drain_events();
+    assert_eq!(
+        core.defender_debug(s).parry,
+        core.defender_debug(plain).parry + 5,
+        "restored slot feeds the first derive"
+    );
+    core.input(s, "st");
+    let sheet = text_to(&core.drain_events(), s);
+    assert!(
+        sheet.contains("Martial Arts:    7"),
+        "MA = 2 + restored 5: {sheet:?}"
+    );
+    assert!(sheet.contains("You are blurred!"), "st line: {sheet:?}");
 }
 
 // --- duration formula (slice 4 Task 3; spec §4 step 1, decompile
@@ -1676,9 +1791,9 @@ fn duration_cast_enters_the_first_free_slot() {
     core.input(s, "c veil");
     let events = core.drain_events();
     let shown = text_to(&events, s);
-    // Measured order: castmsgb caster line, then the DescMsg(115) line3
-    // active line (the live capture has the prompt BETWEEN them —
-    // ORACLE-VERIFY prompt placement, noted at the emit site).
+    // MEASURED order (§8.11): castmsgb caster line, then the DescMsg(115)
+    // line3 active line (the live async path erases the pending prompt
+    // and re-prompts; net visible order matches — noted at the emit site).
     let msg = shown.find("You cast veil on Vexil!").expect("castmsgb line");
     let active = shown.find("You are veiled!").expect("DescMsg line3");
     assert!(msg < active, "order: {shown:?}");
@@ -1695,7 +1810,8 @@ fn duration_cast_enters_the_first_free_slot() {
         ),
         "Persist after slot entry"
     );
-    // Entry alone feeds no stats until Task 4: the only deltas are costs.
+    // Full costs paid (the stat feed itself is covered by
+    // duration_cast_feeds_derived_stats_and_the_sheet).
     assert_eq!(core.current_mana(s), 2, "full mana 4 paid");
     assert_eq!(core.round_energy(s), 900, "round cost only");
 }
@@ -1703,8 +1819,9 @@ fn duration_cast_enters_the_first_free_slot() {
 #[test]
 fn duration_recast_refreshes_the_slot_in_place() {
     // Spec §4 step 2: already active -> refresh value + duration in the
-    // SAME slot; no second slot. ORACLE-VERIFY refresh message (expedition
-    // in flight): refresh is silent beyond the normal cast lines.
+    // SAME slot; no second slot. VERIFIED (§8.11): a mid-buff recast is a
+    // SILENT full refresh — byte-identical cast lines, full mana charged,
+    // timer reset to a full duration from the recast.
     let mut core = Core::new(world(), CoreConfig::default());
     let mut vexil = player("Vexil", MAGE, full_book());
     vexil.active_spells[0] = ActiveSpell { spell: Some(VEIL), value: 1, remaining: 3 };

@@ -1063,8 +1063,9 @@ impl Core {
         id
     }
 
-    /// The player's accumulated ability modifiers: race + class permanents
-    /// now; gear and active spells join via the same bag in later milestones.
+    /// The player's accumulated ability modifiers: race + class permanents,
+    /// worn/wielded gear, and active duration-spell slots — the
+    /// `update_dynamic_stats` from-scratch fold.
     fn ability_bag(&self, player: &Player) -> AbilityBag {
         let mut abilities = AbilityBag::default();
         if let Some(race) = self.content.races.get(&player.race) {
@@ -1084,6 +1085,33 @@ impl Core {
                 for (ability, value) in &item.abilities {
                     abilities.add(*ability, i32::from(*value));
                 }
+            }
+        }
+        // Occupied active-spell slots re-apply their spell's ability table
+        // on every recompute (spec §4: "The stored (id, value) in the
+        // active slot is what makes the effect persist" — when a spell
+        // leaves the slots its contribution simply vanishes on the next
+        // recompute). A value-0 ability row means "the rolled magnitude":
+        // the STORED slot value substitutes, mirroring
+        // add_cast_spell_to_user's stored potency; nonzero rows are fixed
+        // amounts (the same convention as the instant apply loop).
+        // Metadata rows (DescMsg 115, StartMsg 120, RemovesSpell 122,
+        // EndCast 151, KillSpell 153, GiveTempSpell 160, CastOnEnd% 164)
+        // accumulate harmlessly and are NOT filtered: every bag consumer
+        // queries specific ability ids, none of which are metadata —
+        // exactly like the DLL, whose update_dynamic_with_ability switch
+        // falls through for ids it does not handle. Unknown spell ids
+        // (content changed under a save) contribute nothing.
+        for slot in &player.active_spells {
+            let Some(spell) = slot.spell.and_then(|id| self.content.spells.get(&id)) else {
+                continue;
+            };
+            for (ability, value) in &spell.abilities {
+                let v = match *value {
+                    0 => i32::from(slot.value),
+                    v => i32::from(v),
+                };
+                abilities.add(*ability, v);
             }
         }
         abilities
@@ -1138,6 +1166,26 @@ impl Core {
             .classes
             .get(&player.class)
             .map_or("", |c| c.name.as_str());
+        // Each active duration spell's DescMsg (115) line3, appended after
+        // the MagicRes row (MEASURED §8.11: "You are blurred!" while
+        // active, gone after expiry). DescMsg-less spells add no line.
+        // ORACLE-VERIFY: multi-buff ordering unmeasured live; slot order
+        // chosen (the DLL iterates the slot array).
+        let active_lines: Vec<String> = player
+            .active_spells
+            .iter()
+            .filter_map(|s| s.spell)
+            .filter_map(|id| self.content.spells.get(&id))
+            .filter_map(|spell| {
+                spell
+                    .abilities
+                    .iter()
+                    .find_map(|(a, v)| (*a == Ability::DescMsg).then_some(*v))
+            })
+            .filter_map(|v| u16::try_from(v).ok())
+            .filter_map(|id| self.content.messages.get(&crate::content::MessageId(id)))
+            .filter_map(|m| m.lines.get(2).filter(|l| !l.is_empty()).cloned())
+            .collect();
         let sheet = text::stat_sheet(&text::SheetData {
             name: &player.name,
             race,
@@ -1152,6 +1200,7 @@ impl Core {
             armour_max: 0,
             stats: player.stats,
             derived,
+            active_lines: &active_lines,
         });
         self.output(session, &sheet);
     }
@@ -2330,11 +2379,11 @@ impl Core {
                     remaining: duration,
                 };
                 if let Some(idx) = player.find_active(spell_id) {
-                    // ORACLE-VERIFY refresh message (expedition in
-                    // flight): the refresh emits nothing beyond the
-                    // normal cast lines below — the decompile re-runs
-                    // display_spell_success on this branch (38180-38186),
-                    // so castmsgb + the DescMsg active line still print.
+                    // VERIFIED (§8.11): a mid-buff recast is a SILENT
+                    // full refresh — byte-identical output to a first
+                    // cast (castmsgb + the DescMsg active line below, no
+                    // "already have" variant), full mana charged, and the
+                    // timer resets to a full duration from the recast.
                     player.active_spells[idx] = slot;
                     true
                 } else if let Some(idx) = player.first_free_slot() {
@@ -2347,6 +2396,9 @@ impl Core {
             if entered {
                 let snapshot = Box::new(self.player(session).clone());
                 self.events.push(Event::Persist(snapshot));
+                // The slot now feeds the ability bag: recompute cached
+                // derived stats (update_dynamic_stats runs after apply).
+                self.refresh_derived(session);
             } else {
                 // ORACLE-VERIFY slot overflow (unmeasured live;
                 // decompile-backed): both slot scans exhausted →
@@ -2384,10 +2436,11 @@ impl Core {
         // Cast-time active line: message line3 of the spell's DescMsg (115)
         // record, to the caster on a duration cast (decompile
         // display_spell_success 38010-38011 prints message line 3 to the
-        // target; oracle: `You are blurred!`). MEASURED order: castmsgb
-        // caster line → prompt → this line — our prompt prints once at
-        // end-of-command, so the line lands BEFORE the prompt instead.
-        // ORACLE-VERIFY prompt placement (expedition in flight).
+        // target; oracle: `You are blurred!`). MEASURED (§8.11): the live
+        // async path prints castmsgb, prompt, then erases the pending
+        // prompt in place and prints line3 + a fresh prompt — the net
+        // visible order (castmsgb, line3, prompt) is exactly what our
+        // single end-of-command prompt produces.
         if spell.duration != 0
             && let Some(msg_val) = spell
                 .abilities
@@ -2406,13 +2459,16 @@ impl Core {
     /// pre-pass route (spec §3). Task 6: full termination
     /// (`perform_spell_termination_player_upkeep`) replaces this body —
     /// DescMsg line1, hard-write reversal, the EndCast chain when
-    /// `honor_endcast` (RemovesSpell honors it, KillSpell suppresses),
-    /// recompute. Today it only clears the slot.
+    /// `honor_endcast` (RemovesSpell honors it, KillSpell suppresses).
+    /// Today it clears the slot and recomputes.
     fn clear_active_slot(&mut self, session: SessionId, idx: usize, honor_endcast: bool) {
         let _ = honor_endcast; // Task 6 consumes it
         if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
             player.active_spells[idx] = ActiveSpell::default();
         }
+        // The cleared slot's contribution vanishes from the next recompute
+        // (spec §4) — refresh the cached derived stats now.
+        self.refresh_derived(session);
     }
 
     /// A live monster's template name (empty if the instance is gone).
@@ -4049,9 +4105,12 @@ impl Core {
     }
 
     /// EXACT (decompile): defender view of a player. Naked: evasion 0
-    /// (item ratings/10 + dynamic AC join in M4/M5), armor 0; parry is the
-    /// word[10] formula plus the low-encumbrance bonus (10 - enc/10),
-    /// forced -1 when helpless.
+    /// (item ratings/10; the dynamic AC accumulator +0x70c joins when
+    /// content carries AC(2) buffs), armor 0; parry is the word[10]
+    /// formula — `dodgeAbil(0x22) + (Chm-50)/5 + level/5 + (Agl-50)/3`
+    /// (combat.md "Parry") — plus the low-encumbrance bonus
+    /// (10 - enc/10), forced -1 when helpless. The Dodge term reads the
+    /// accumulated bag, so items AND active spells (blur) feed it.
     fn build_player_defender(&self, session: SessionId) -> crate::combat::Fighter {
         let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
             unreachable!("caller checked the session");
@@ -4060,7 +4119,8 @@ impl Core {
             -1
         } else {
             let encumbrance = self.encumbrance_percent(session);
-            let mut p = (i32::from(player.stats.charm) - 50) / 5
+            let mut p = self.ability_bag(player).value(Ability::Dodge)
+                + (i32::from(player.stats.charm) - 50) / 5
                 + i32::from(player.level) / 5
                 + (i32::from(player.stats.agility) - 50) / 3;
             if encumbrance < 33 {

@@ -703,6 +703,9 @@ pub struct SheetData<'a> {
     pub armour_max: i32,
     pub stats: crate::content::StatBlock,
     pub derived: &'a crate::stats::Derived,
+    /// DescMsg line3 of each active duration spell, in slot order —
+    /// appended after the MagicRes row (MEASURED §8.11).
+    pub active_lines: &'a [String],
 }
 
 /// VERIFIED (oracle): the nine-line status sheet, byte-exact to the
@@ -765,5 +768,12 @@ pub fn stat_sheet(d: &SheetData<'_>) -> String {
         format!("Charm:{:>5}", d.stats.charm),
         format!("MagicRes:{:>9}", d.derived.magic_resist),
     );
+    // MEASURED (§8.11): each active duration spell's DescMsg line3
+    // ("You are blurred!") appends directly after the MagicRes row and
+    // disappears with the slot.
+    for line in d.active_lines {
+        out.push_str(line);
+        out.push('\n');
+    }
     out
 }

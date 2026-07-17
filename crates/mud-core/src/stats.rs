@@ -249,6 +249,10 @@ pub fn derive(inputs: &StatInputs) -> Derived {
         (level / 10 + (int - 50) / 10 + (agl - 50) / 20 + (chm - 50) / 30).clamp(1, 75);
 
     let dodge = {
+        // VERIFIED (spellcasting.md §8.11): the Dodge (34) ability adds
+        // RAW — blur's stored 5 raised the sheet's Martial Arts row (which
+        // displays this value) 13→18 exactly; only dodge_base is doubled
+        // (the WG3-NT/DOS divergence).
         let d = 2 * dodge_base + chm / 10 + agl / 5 + level / 5 + bag.value(a(abil::DODGE));
         if bag.has(a(abil::JUMPKICK)) {
             (d + level) * 2

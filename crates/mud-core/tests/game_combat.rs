@@ -1,11 +1,15 @@
 //! Tests for engagement and the 5-second combat round
 //! (`re/docs/combat_rounds.md` + oracle transcripts).
 
+use mud_core::ability::Ability;
 use mud_core::content::{
-    AttackForm, Class, ClassId, Content, Item, ItemId, Message, MessageId, Monster, MonsterId,
-    Race, RaceId, Room, RoomId, StatBlock,
+    AttackForm, Class, ClassId, Content, Element, Item, ItemId, MatchType, Message, MessageId,
+    Monster, MonsterId, Race, RaceId, Room, RoomId, SaveClass, ScalePair, Spell, SpellId,
+    StatBlock, TargetMode,
 };
-use mud_core::game::{AccountProfile, Core, CoreConfig, Event, Gender, SessionId};
+use mud_core::game::{
+    AccountProfile, ActiveSpell, Core, CoreConfig, Event, Gender, Player, SessionId,
+};
 
 /// A punching bag: huge HP, hits back for exactly 1-8 like the kobold.
 fn kobold() -> Monster {
@@ -857,5 +861,126 @@ fn record_less_unarmed_renders_empty_verb_slots() {
     assert!(
         !shown.contains("The kobold thief swings at you!"),
         "the invented plain-miss fallback must be gone: {shown:?}"
+    );
+}
+
+// --- active-spell Dodge feeds the defender (M5 slice 4) ---
+
+/// The blur (129) record reduced to what the recompute reads: a Dodge
+/// ability with value 0 = "use the stored slot value" (spec §4).
+fn blur_spell() -> Spell {
+    Spell {
+        id: SpellId(129),
+        name: "blur".into(),
+        short_name: "blur".into(),
+        cast_msg_a: None,
+        cast_msg_b: None,
+        abilities: vec![(Ability::Dodge, 0)],
+        level_cap: 0,
+        round_cost: 0,
+        required_power: 1,
+        min_base: 5,
+        max_base: 5,
+        target_mode: TargetMode::Benign,
+        save_class: SaveClass::None,
+        base_chance: 200,
+        duration_per_level: 0,
+        match_type: MatchType::Single0,
+        duration: 70,
+        element: Element::Cold,
+        class_gate_group: 1,
+        mana_cost: 4,
+        max_increase: ScalePair::NONE,
+        required_class_level: 1,
+        min_increase: ScalePair::NONE,
+        duration_increase: ScalePair::NONE,
+        msg_style: 0,
+    }
+}
+
+/// A hand-built Dwarf Warrior matching the arena(_, 30, 30) creation
+/// output (stats copied verbatim from the racial template; hp_base =
+/// class hp_seed) so slots can be pre-seeded before attach.
+fn dwarf(name: &str) -> Player {
+    let stats = StatBlock {
+        intellect: 30,
+        wisdom: 50,
+        strength: 50,
+        health: 50,
+        agility: 30,
+        charm: 30,
+    };
+    Player {
+        name: name.into(),
+        gender: Gender::Male,
+        race: RaceId(2),
+        class: ClassId(1),
+        level: 1,
+        stats,
+        base_stats: stats,
+        hp_base: 4,
+        current_hp: 35,
+        current_mana: 0,
+        hunger: 1000,
+        thirst: 1000,
+        coins: Default::default(),
+        lawful: false,
+        inventory: vec![],
+        weapon: None,
+        bankbooks: vec![],
+        worn: vec![],
+        cp_unspent: 100,
+        cp_lifetime: 100,
+        lives: 9,
+        experience: 0,
+        location: RoomId { map: 1, room: 1 },
+        spellbook: std::collections::BTreeMap::new(),
+        active_spells: Default::default(),
+    }
+}
+
+/// Runs the identical seeded attack script and counts result-3 swings
+/// (the ", but you dodge out of the way!" framing).
+fn parry_framing_count(blur_value: Option<i16>) -> usize {
+    // rat(16, 0, 0) vs the 30/30 dwarf: to-hit 99% (naked defense 0),
+    // damage 0 (no death over the run), defender parry 0 — so WITHOUT a
+    // blur slot a result-3 swing is structurally impossible (the parry
+    // branch requires parry > 0). WITH the stored Dodge 5: parry 5,
+    // parry chance 5*10/(16/8) = 25% per connecting swing.
+    let mut content = arena(rat(16, 0, 0), 30, 30);
+    add_rat_messages(&mut content);
+    content.add_spell(blur_spell());
+    let mut core = Core::new(content, config());
+    core.spawn_monster(MonsterId(1), RoomId { map: 1, room: 1 });
+    let mut player = dwarf("Dain");
+    if let Some(v) = blur_value {
+        player.active_spells[0] = ActiveSpell {
+            spell: Some(SpellId(129)),
+            value: v,
+            remaining: 70,
+        };
+    }
+    let s = core.attach_player(player);
+    core.drain_events();
+    core.input(s, "attack rat");
+    core.drain_events();
+    let shown = text_to(&run_rounds(&mut core, 20), s);
+    assert!(
+        shown.contains("but your armour deflects the blow!"),
+        "swings connected: {shown:?}"
+    );
+    shown.matches("but you dodge out of the way!").count()
+}
+
+#[test]
+fn a_blur_slot_makes_the_defender_dodge() {
+    // Identical monster-attack script under the same fixed seed: the only
+    // difference is the pre-seeded blur slot, whose stored Dodge 5 feeds
+    // the defender's parry rating (combat.md: parry = dodgeAbil(0x22) +
+    // stat terms) and turns some hits into the dodge framing.
+    assert_eq!(parry_framing_count(None), 0, "parry 0: no dodges possible");
+    assert!(
+        parry_framing_count(Some(5)) > 0,
+        "stored Dodge 5: dodges appear under the same script"
     );
 }
