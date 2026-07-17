@@ -38,12 +38,14 @@ mapped 1:1 from spec §1's offset table:
   numerator/denominator byte pairs (+0xf2/f3, +0xf6/f7)
 - **Duration:** `duration` (+0xce; 0 = instant), per-level num/denom
   (+0xf8/f9), per-level multiplier (+0xca)
-- **Element:** `damage_element` (+0xd0) as an enum
+- **Element:** `element` (+0xd0) as an enum
   (Cold/Fire/Stone/Lightning/Water/Poison)
 
 `match_type` and `target_mode` are enums; unknown values fail boot
-validation. Additional validation: zero scaling denominators only legal with
-zero numerators; `EndCast` (151) ability values must reference existing spell
+validation. Additional validation: zero scaling denominators are LEGAL
+shipped data (magic missile ships one; the runtime guard yields 0 — corrected
+during slice 1, do not re-introduce a load error here); `EndCast` (151)
+ability values must reference existing spell
 ids (same dangling-reference treatment as messages). Deliverable: full-DB
 boot test proving every real spell validates (the M0 pattern). No behavior.
 

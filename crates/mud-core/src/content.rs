@@ -432,7 +432,7 @@ impl SaveClass {
 /// (magic missile ships one; spellcasting.md §7). The two formulas differ
 /// under integer division: [`ScalePair::scaled`] is the min/max-bound
 /// formula (`per * L / levels`, §3) while [`ScalePair::scaled_duration`]
-/// is the duration formula (`(L / levels) * per`, §5), which truncates
+/// is the duration formula (`(L / levels) * per`, §4), which truncates
 /// before multiplying.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScalePair {
@@ -453,7 +453,7 @@ impl ScalePair {
         }
     }
 
-    /// Duration scaling (`+0xf8/f9`, spellcasting.md §5 step 1 of
+    /// Duration scaling (`+0xf8/f9`, spellcasting.md §4 step 1 of
     /// `add_cast_spell_to_user`): `(level / levels) * per`, 0 when the
     /// denominator is 0. Divides first, so it truncates more aggressively
     /// than [`ScalePair::scaled`].

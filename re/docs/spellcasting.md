@@ -45,9 +45,9 @@ in `cast_no_target`/`add_cast_spell_to_user`:
 | `+0xd6` | **class-gate group** | must equal class `+0x40` |
 | `+0xd8..` | ability **id** array (10) | see effect table |
 | `+0xf0` | **mana cost** | deducted from player `+0x602` |
-| `+0xf2/+0xf3` | min-value per-level numerator/denominator (bytes) | |
+| `+0xf2/+0xf3` | max-bound per-level numerator/denominator (bytes, `maxincrease/lvlsmaxincr`) | see §7 label note |
 | `+0xf4` | **required level within class** | vs class `+0x42` |
-| `+0xf6/+0xf7` | max-value per-level numerator/denominator (bytes) | |
+| `+0xf6/+0xf7` | min-bound per-level numerator/denominator (bytes, `minincrease/lvlsminincr`) | see §7 label note |
 | `+0xf8/+0xf9` | duration per-level numerator/denominator (bytes) | |
 
 `get_spell_match_type(+0xcc)` cases: `0/1/2` single-scope (returns `0x82`, or
