@@ -28,6 +28,7 @@ class Session:
             self.t += c
             if self.raw:
                 self.raw.write(c)
+                self.raw.flush()
 
     def send(self, line, pause=0.4):
         time.sleep(pause)
@@ -44,6 +45,7 @@ class Session:
                 self.t += c
                 if self.raw:
                     self.raw.write(c)
+                    self.raw.flush()
             except socket.timeout:
                 pass
 

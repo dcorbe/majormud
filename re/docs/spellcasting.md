@@ -814,3 +814,168 @@ confirmed no `Also here:` before every cast); monster probes in the Arena.
   the next round fired `You fire a magic missile at big giant rat for 6
   damage!` with no further input, charging mana normally (run 2; the same
   unprompted re-fire is visible in `oracle_spell_cast.raw`).
+
+### 8.10 Monster attack lines (oracle-measured)
+
+Expedition 2026-07-17, Newhaven Arena (down from Narrow Road). Victim =
+Vexil (Human Mage L2, unarmored, 29 HP — killed out of all nine lives by
+the end of the expedition; the character no longer exists); observer =
+Oracle (Dwarf Warrior, chain coif). Transcripts:
+`oracle_monster_lines1.log`/`2.log` (runs 1-2 are stdout logs — the raw
+byte captures were lost to unflushed buffers, since fixed in `mudlib.py`),
+`oracle_monster_lines3*.raw` + `3_rescue.log`, `oracle_monster_lines4*.raw`,
+`oracle_monster_lines5*.raw`, `oracle_monster_attacks*.raw` (runs 5-5b and
+the cleanup passes), `oracle_dead_vexil.raw` (out-of-lives aftermath),
+`oracle_gear_recovery.raw`; prior rat and filthbug misses in
+`oracle_cast_edges*.raw` / `oracle_spell_cast.raw`. Complements
+`combat_rounds.md` §"Monster swing execution" (attack-form weight table;
+the verb comes from the form).
+
+**Hit (victim view)** — `The <name> <form verb phrase> for %d damage!`,
+prompt HP drops by exactly the printed amount. There is NO generic
+"hits you" — the verb phrase is the attack-form's own string:
+
+```
+The acid slime whips you with its pseudopod for 9 damage!
+The nasty acid slime whips you with its pseudopod for 4 damage!
+The nasty kobold thief stabs you for 2 damage!
+The thin giant rat bites you for 10 damage!
+```
+
+(171 slime pseudopod hits, 63+ kobold stabs on record; kobold damage 1-8,
+slime 2-9. The rat's hit verb is "bites" while both its miss lines use
+"lunges" — the hit and miss strings are fully independent. No filthbug
+hit ever landed across all runs, so its hit verb remains unmeasured.)
+
+**Hit rider** — the slime's form carries a second, separately-rolled line
+after every pseudopod hit:
+
+```
+Acid burns you for 1 damage!            (victim)
+Oracle is burned by acid for 2 damage!  (observer)
+```
+
+**Miss, plain** — same verb phrase, no damage clause, HP provably
+unchanged (inline prompt):
+
+```
+The giant rat lunges at you!
+The big giant rat lunges at you!
+The large giant rat lunges at you!
+The nasty filthbug swipes at you with its claws!
+The acid slime flails at you!
+The nasty kobold thief lunges at you with their shortsword!
+```
+
+**Miss, dodge** — `..., but you dodge out of the way!` (rat, filthbug,
+slime) or the shorter `..., but you dodge!` (kobold):
+
+```
+The giant rat lunges at you, but you dodge out of the way!
+The nasty filthbug claws at you, but you dodge out of the way!
+The acid slime lashes at you, but you dodge out of the way!
+The nasty kobold thief lunges at you with their shortsword, but you dodge!
+```
+
+Both miss framings exist for the same monster (kobold: 1 plain vs 24
+dodge; rat: 9 plain vs 2 dodge), and the miss verb can differ from the
+hit verb AND from the other miss's verb: slime hit "whips … pseudopod",
+plain miss "flails", dodge "lashes"; filthbug "swipes … with its claws"
+plain vs "claws" dodge; kobold "stabs" hit vs "lunges … shortsword" both
+misses; rat "bites" hit vs "lunges" both misses. So hit / plain-miss /
+dodge are independent per-form message strings, not one verb in a shared
+template — matching the per-form hit/miss message ids in the monster
+records. Two more monsters seen only as a bystander (carrion beast:
+`The carrion beast snaps at Poop with its teeth!` plain / `…snaps at
+Poop, but he dodges out of the way!` dodge; lashworm: `The lashworm
+lunges at Poop!`) fit the same shapes.
+
+**Name adjectives are per-spawn flavor, not distinct monsters.** The same
+kobold thief spawned as "nasty/angry/tall/fat/small kobold thief", the
+giant rat as "thin/small/large/big/nasty/angry giant rat", the slime as
+"nasty/big acid slime" — and the DEATH line always uses the base name
+("tall kobold thief" dies as `The kobold thief falls to the ground with a
+shrill cry.`). Monster death lines are per-monster:
+
+```
+The giant rat falls to the ground with a tortured squeak.
+The kobold thief falls to the ground with a shrill cry.
+The acid slime dissolves into a puddle of bluish goo.
+The filthbug collapses, its legs curling tightly around it.
+The carrion beast falls to the ground with a yelp, and is still.
+```
+
+**Observer view** — identical strings with the victim's name substituted
+for "you" (pronouns follow: "he dodges", "their"); observers DO see the
+damage number:
+
+```
+The acid slime whips Oracle with its pseudopod for 2 damage!
+The nasty acid slime whips Vexil with its pseudopod for 9 damage!
+The acid slime lashes at Vexil, but he dodges out of the way!
+Vexil is burned by acid for 3 damage!
+```
+
+**Glance family:** never observed in ~300 monster swings against both an
+unarmored mage and a chain-coif warrior; the monster-swing equivalent of
+the player's absorb line (`Your swing at <name> hits, but glances off its
+armour.`, see `combat_rounds.md`) remains unmeasured — if it exists it
+needs a properly armored victim to stage.
+
+**Downing / death sequence** (incidental capture, both perspectives):
+
+```
+Vexil drops to the ground!                  (same line in own view and room)
+You may not do that while you are mortally wounded!   (every command while down)
+You have been killed!
+But, due to a miracle, you have been saved.
+You have 8 lives left.
+Vexil is dead.                              (observer's death line)
+```
+
+While mortally wounded the prompt keeps counting down (`[HP=-136/MA=18]`;
+`health` shows `-136/29 [-468%]`) and monsters keep swinging at the body
+with the normal hit lines. Death fired at -203..-204 with maxhp 29 (-7x)
+but at -208 with maxhp 35, so the threshold formula is not settled. The
+miracle revives the character at the Newhaven Healer at full HP, minus one
+life; everything carried drops where the body lay. Also measured: the next
+entry after a mid-play disconnect prints `Last time you were on, you
+disconnected while playing. / The gods have punished you appropriately.`
+(one occurrence dropped the whole inventory on the spot; another left
+inventory intact — the punishment is not a fixed item drop).
+
+**Out of lives** (measured the hard way — this expedition burned all of
+Vexil's): the last death prints
+
+```
+You have been killed!
+
+You have no lives remaining!
+```
+
+followed by the game banner, a `MUD Internal Error - Please tell your
+sysop / Invalid room 0/0>` hiccup, and then **Temple, Halls of the Dead**
+(marble slabs, shrouded forms, prompt is a bare `>` with no HP block).
+On the NEXT entry to the Realm the character is gone: the account lands
+straight in character creation (`You must choose a valid race.`). Vexil
+is dead; long live Vexil. Related healer string when broke:
+`You do not have sufficient funds to buy full healing!` (partial funds
+are taken as partial payment otherwise: `You hand over 8 copper farthings
+and all your wounds are healed.` / `You hand over nothing and all your
+wounds are healed.` at full HP).
+
+**Spawn incidentals:** `A acid slime oozes into the room from nowhere.`
+(bare "A" even before a vowel), `A nasty filthbug scuttles into the room
+from nowhere.`, `A large giant rat creeps into the room from nowhere.`,
+`A angry kobold thief sneaks into the room from nowhere.` — the entry
+verb is per-monster too. Floor items — coin piles included — persist
+across an MBBSEmu restart; live monsters do not.
+
+**Bystander bonus strings** (another player "Poop" fought in view):
+`Poop moves to attack giant rat.`, `Poop punches acid slime for 7
+damage!`, `Poop critically punches giant rat for 21 damage!`, quarterstaff
+verbs `whaps`/`beats`/`smacks` (`Poop critically whaps angry kobold thief
+for 45 damage!`), miss `Poop swings at carrion beast!`, `Poop wields
+quarterstaff!` / `Poop removes dagger.`, `Poop breaks off combat.`,
+`Poop picks up quarterstaff.`, `Poop just disconnected!!!`, and the
+third-person move-fail `Oracle ran into the wall to the up.`

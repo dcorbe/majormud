@@ -29,6 +29,28 @@ Character: Oracle Delver, Dwarf Warrior, not Lawful, default stats.
   semantics before comparing.
 - Output is CP437 with ANSI; the module is in demo mode (unregistered),
   which caps usage but not the M1-relevant behavior.
+- Combat expeditions (2026-07-17, monster-attack-lines runs) added more:
+  - Kill scripted sessions only as a last resort: SIGTERM used to lose the
+    whole raw capture to unflushed buffers (mudlib now flushes per recv),
+    and the game punishes mid-play disconnects (`The gods have punished
+    you appropriately` — can drop the character's whole inventory on the
+    spot).
+  - The prompt HP goes NEGATIVE while mortally wounded — parse
+    `\[HP=(-?\d+)`. A downed character can do nothing; monsters keep
+    swinging until death at roughly -7x maxhp, then a "miracle" revives
+    them at the Newhaven Healer at full HP, minus one **life** (chars
+    start with ~9; check before risking more).
+  - Monsters get a free attack on movement and it can BREAK the move, so
+    blind `u`/`w` walk sequences desync. Verify every step by room name
+    and retry (see `oracle_monster_cleanup.py::move`).
+  - Newhaven arena spawns include acid slimes (~10 dmg/round pairs) that
+    will burst a L2 mage between two guard polls. `buy healing` at the
+    Newhaven healer (west of Narrow Road) is a full heal for 2cp/HP.
+  - Floor items persist across an MBBSEmu restart; live monsters do not —
+    restarting is the clean way to defuse a monster-camped room.
+  - When driving two sessions, pump both sockets in strict interleave;
+    any blocking wait on one leaves the other's character unattended in
+    combat (this killed a character twice).
 
 ## Scripts
 
