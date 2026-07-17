@@ -4,7 +4,10 @@
 //! strings from spellcasting.md §8.6/§8.9), the success roll + costs
 //! (spec §3 steps 5-7: full costs on success, half mana on a failed roll),
 //! and the Task-11 offensive path: targeting refusals, magnitude, resist,
-//! saves, engagement, re-fire and the M3 kill route.
+//! saves, engagement, re-fire and the M3 kill route. Task 12 adds the
+//! benign instant handlers (spec §4: Heal/EnergyLevel/hunger/thirst, plus
+//! offensive Drain), the benign cast-message fan-out, and the
+//! duration-spells-apply-nothing divergence that slice 4 closes.
 
 use std::collections::BTreeMap;
 
@@ -49,6 +52,19 @@ const SIPHON: SpellId = SpellId(110);
 /// msgstyle-odd (the fireball/deathtouch family): refused pending the
 /// slice-4 odd-style castmsgb arg table.
 const ODDBALL: SpellId = SpellId(120);
+// --- Task 12 benign instant fixtures (base_chance 200 = deterministic) ---
+/// Fixed Heal(25): the max-HP cap probe.
+const MEND: SpellId = SpellId(130);
+/// Heal(0) with bounds 10..10 — the rolled-magnitude probe (V is 10..=11).
+const CURE: SpellId = SpellId(140);
+/// EnergyLevel(300), round cost 500: exact round-pool delta.
+const SURGE: SpellId = SpellId(150);
+/// EnergyLevel(300), round cost 100: round-pool cap at the 1000 max.
+const CHARGE: SpellId = SpellId(160);
+/// Alterhunger(40) + AlterThirst(30): the +0xce/+0xd0 counter deltas.
+const FEAST: SpellId = SpellId(170);
+/// Offensive fixed Drain(9), round cost 1000: HP steal, caster cap, kill.
+const LEECH: SpellId = SpellId(180);
 
 const RAT: MonsterId = MonsterId(7);
 const EMBER: MonsterId = MonsterId(8);
@@ -162,6 +178,27 @@ fn world() -> Content {
             "%s fires a %s at %s for %s damage!".into(),
         ],
     });
+    // The blur castmsgb shape (message 7): a targeted benign template. The
+    // target line exists in the record but a self-cast delivers it to no
+    // one (oracle §8.6: `c blur` prints the caster line only).
+    content.add_message(Message {
+        id: MessageId(901),
+        lines: vec![
+            "You cast %s on %s!".into(),
+            "%s casts %s upon you!".into(),
+            "%s casts %s on %s!".into(),
+        ],
+    });
+    // The illuminate castmsgb shape (message 2): target-less, consumes a
+    // prefix of the arg order.
+    content.add_message(Message {
+        id: MessageId(902),
+        lines: vec![
+            "You cast %s!".into(),
+            "%s casts %s!".into(),
+            "%s casts %s!".into(),
+        ],
+    });
     content.add_race(Race {
         id: RaceId(1),
         name: "Human".into(),
@@ -205,10 +242,23 @@ fn world() -> Content {
     let mut blur = spell(BLUR, "blur", "blur");
     blur.mana_cost = 4;
     blur.round_cost = 100;
+    // Real blur is a DURATION spell (duration != 0): slice 3 renders its
+    // castmsgb and charges costs but applies NO effects — the abilities
+    // below are fixture stand-ins that must all stay inert until slice 4
+    // wires duration slots (duration_spell_cast_applies_no_stats).
+    blur.duration = 5;
+    blur.cast_msg_b = Some(MessageId(901));
+    blur.abilities = vec![
+        (Ability::Heal, 25),
+        (Ability::EnergyLevel, 300),
+        (Ability::Alterhunger, 40),
+        (Ability::AlterThirst, 30),
+    ];
     let mut illu = spell(ILLUMINATE, "illuminate", "illu");
     illu.mana_cost = 4;
     illu.required_power = 2;
-    let spark = spell(SPARK, "spark", "spar");
+    let mut spark = spell(SPARK, "spark", "spar");
+    spark.cast_msg_b = Some(MessageId(902)); // target-less (msg 2 model)
     let mut heavy = spell(HEAVY, "heavy bolt", "hbol");
     heavy.round_cost = 2000;
     let mut jinx = spell(JINX, "jinx", "jinx");
@@ -258,6 +308,28 @@ fn world() -> Content {
     // msgstyle & 1 == 1: the castmsgb args bind in a different order with
     // no spell-name slot — must refuse until the slice-4 arg table.
     oddball.msg_style = 1;
+    // Task 12 benign instant fixtures (spec §4 table, single-target).
+    let mut mend = spell(MEND, "mend", "mend");
+    mend.abilities = vec![(Ability::Heal, 25)]; // fixed value bypasses the roll
+    let mut cure = spell(CURE, "cure", "cure");
+    cure.abilities = vec![(Ability::Heal, 0)]; // 0 = the rolled magnitude
+    cure.min_base = 10;
+    cure.max_base = 10;
+    let mut surge = spell(SURGE, "surge", "surg");
+    surge.abilities = vec![(Ability::EnergyLevel, 300)];
+    surge.round_cost = 500;
+    let mut charge = spell(CHARGE, "charge", "chrg");
+    charge.abilities = vec![(Ability::EnergyLevel, 300)];
+    charge.round_cost = 100;
+    let mut feast = spell(FEAST, "feast", "feas");
+    feast.abilities = vec![(Ability::Alterhunger, 40), (Ability::AlterThirst, 30)];
+    let mut leech = spell(LEECH, "leech", "leec");
+    leech.target_mode = TargetMode::Offensive0;
+    leech.element = Element::Magic;
+    leech.abilities = vec![(Ability::Drain, 9)];
+    leech.mana_cost = 1;
+    leech.round_cost = 1000; // one fire per combat round
+    leech.cast_msg_b = Some(MessageId(900));
     content.add_spell(mmis);
     content.add_spell(blur);
     content.add_spell(illu);
@@ -270,6 +342,12 @@ fn world() -> Content {
     content.add_spell(doom);
     content.add_spell(siphon);
     content.add_spell(oddball);
+    content.add_spell(mend);
+    content.add_spell(cure);
+    content.add_spell(surge);
+    content.add_spell(charge);
+    content.add_spell(feast);
+    content.add_spell(leech);
     content
 }
 
@@ -319,10 +397,26 @@ fn full_book() -> BTreeMap<SpellId, bool> {
         DOOM,
         SIPHON,
         ODDBALL,
+        MEND,
+        CURE,
+        SURGE,
+        CHARGE,
+        FEAST,
+        LEECH,
     ] {
         book.insert(id, false);
     }
     book
+}
+
+/// A player with a meaningful max HP for the heal/drain cap probes: base
+/// health 50 gives the L1 mage fixture max_hp = 50/2 + 2 = 27 (the default
+/// zeroed StatBlock derives a nonsensical negative max).
+fn hardy(name: &str, class: ClassId) -> Player {
+    let mut p = player(name, class, full_book());
+    p.stats.health = 50;
+    p.base_stats.health = 50;
+    p
 }
 
 fn text_to(events: &[Event], session: SessionId) -> String {
@@ -643,8 +737,8 @@ fn base_chance_200_skips_the_roll_entirely() {
 #[test]
 fn successful_cast_deducts_full_mana_and_round_energy() {
     // blur: mana 4, round cost 100, base_chance 200 -> deterministic
-    // success. Spec §3 step 7: full costs. No cast message until Task 11 —
-    // success is observable via the deductions only.
+    // success. Spec §3 step 7: full costs (a duration spell still pays in
+    // full; only its effects wait for slice 4).
     let mut core = Core::new(world(), CoreConfig::default());
     let s = core.attach_player(player("Vexil", MAGE, full_book()));
     core.drain_events();
@@ -1149,6 +1243,192 @@ fn room_sees_the_cast_line_with_string_damage() {
         seen.contains("Vexil fires a doom at giant rat for 9 damage!\n"),
         "got: {seen:?}"
     );
+}
+
+// --- benign instant effects (Task 12; spec §4 instant table) ---
+
+#[test]
+fn heal_caps_at_max_hp() {
+    // Heal (18): HP += V, capped at the derived max (spec §4).
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(hardy("Vexil", MAGE));
+    let max = core.max_hp(s);
+    core.set_current_hp(s, max - 5);
+    core.drain_events();
+    cast(&mut core, s, "c mend"); // fixed Heal(25) > the missing 5
+    assert_eq!(core.current_hp(s), max, "healing never exceeds max HP");
+}
+
+#[test]
+fn heal_value_zero_uses_the_rolled_magnitude() {
+    // Ability value 0 = the rolled V (the offensive convention, decompile
+    // 43711-43717); cure's bounds 10..10 roll V in 10..=11.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(hardy("Vexil", MAGE));
+    core.set_current_hp(s, 5);
+    core.drain_events();
+    cast(&mut core, s, "c cure");
+    let hp = core.current_hp(s);
+    assert!((15..=16).contains(&hp), "5 + rolled 10..=11: {hp}");
+}
+
+#[test]
+fn energy_level_adds_to_the_round_pool() {
+    // EnergyLevel (11): round pool += V — costs deduct first, then the
+    // effect lands: 1000 - 500 + 300 = 800.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(player("Vexil", MAGE, full_book()));
+    core.drain_events();
+    cast(&mut core, s, "c surge");
+    assert_eq!(core.round_energy(s), 800, "1000 - round 500 + V 300");
+}
+
+#[test]
+fn energy_level_caps_at_the_pool_max() {
+    // 1000 - 100 + 300 = 1200 -> capped at the 1000 pool max.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(player("Vexil", MAGE, full_book()));
+    core.drain_events();
+    cast(&mut core, s, "c charge");
+    assert_eq!(core.round_energy(s), 1000, "pool capped at max");
+}
+
+#[test]
+fn hunger_and_thirst_deltas_apply() {
+    // Alterhunger (15) / AlterThirst (16): the +0xce/+0xd0 counters.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(player("Vexil", MAGE, full_book()));
+    core.drain_events();
+    cast(&mut core, s, "c feast");
+    let p = core.player_snapshot(s);
+    assert_eq!(p.hunger, 1040, "1000 + 40");
+    assert_eq!(p.thirst, 1030, "1000 + 30");
+}
+
+#[test]
+fn drain_steals_hp_and_caps_the_caster_at_max() {
+    // Drain (8), offensive side: target HP -= V, caster HP += V capped at
+    // the caster's max (spec §4).
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(hardy("Vexil", MAGE));
+    let m = core.spawn_monster(RAT, TOWER).expect("fixture template");
+    let max = core.max_hp(s);
+    core.set_current_hp(s, 10);
+    core.drain_events();
+    cast(&mut core, s, "c leech rat");
+    let round = fire_round(&mut core, s);
+    assert!(
+        round.contains("You fire a leech at giant rat for 9 damage!\n"),
+        "got: {round:?}"
+    );
+    assert_eq!(core.monster_hp(m), Some(991), "target loses the drain");
+    assert_eq!(core.current_hp(s), 19, "caster gains the drain");
+    // A drain that would overshoot max is capped there.
+    core.set_current_hp(s, max - 5);
+    let round = fire_round(&mut core, s);
+    assert!(round.contains("You fire"), "re-fires: {round:?}");
+    assert_eq!(core.current_hp(s), max, "caster heal capped at max HP");
+}
+
+#[test]
+fn drain_kill_routes_through_the_death_path() {
+    // A killing drain takes the M3 death route (death line, exp,
+    // *Combat Off*) exactly like Damage.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(hardy("Vexil", MAGE));
+    let m = core.spawn_monster(FRAIL, TOWER).expect("fixture template");
+    core.set_current_hp(s, 10);
+    core.drain_events();
+    cast(&mut core, s, "c leech bat");
+    let round = fire_round(&mut core, s);
+    let death = round.find("The frail bat is dead.").expect("death line");
+    let exp = round.find("You gain 12 experience.").expect("exp line");
+    let off = round.find("*Combat Off*").expect("combat off");
+    assert!(death < exp && exp < off, "order: {round:?}");
+    assert_eq!(core.monster_hp(m), None, "instance gone");
+    assert_eq!(core.current_hp(s), 19, "the kill still heals the caster");
+}
+
+#[test]
+fn self_cast_message_reaches_caster_and_room_but_no_target_line() {
+    // Oracle §8.6 (msg 7 model): "You cast blur on Vexil!" to the caster;
+    // the room line to others in the SAME room; the target line ("%s casts
+    // %s upon you!") to NO ONE on a self-cast; nothing to other rooms.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(player("Vexil", MAGE, full_book()));
+    let watcher = core.attach_player(player("Grunt", WARRIOR, BTreeMap::new()));
+    let mut far = player("Distant", WARRIOR, BTreeMap::new());
+    far.location = SHOP;
+    let elsewhere = core.attach_player(far);
+    core.drain_events();
+    core.input(s, "c blur");
+    let events = core.drain_events();
+    let own = text_to(&events, s);
+    assert!(own.contains("You cast blur on Vexil!\n"), "got: {own:?}");
+    let seen = text_to(&events, watcher);
+    assert!(seen.contains("Vexil casts blur on Vexil!\n"), "got: {seen:?}");
+    assert!(!seen.contains("upon you"), "no target line to anyone: {seen:?}");
+    assert!(!own.contains("upon you"), "no target line to anyone: {own:?}");
+    let far_sees = text_to(&events, elsewhere);
+    assert!(!far_sees.contains("blur"), "other rooms hear nothing: {far_sees:?}");
+}
+
+#[test]
+fn targetless_benign_cast_prints_caster_and_room_lines() {
+    // Oracle §8.6 (msg 2 model): "You cast illuminate!" — target-less
+    // templates consume a prefix of the arg order.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(player("Vexil", MAGE, full_book()));
+    let watcher = core.attach_player(player("Grunt", WARRIOR, BTreeMap::new()));
+    core.drain_events();
+    core.input(s, "c spark");
+    let events = core.drain_events();
+    let own = text_to(&events, s);
+    assert!(own.contains("You cast spark!\n"), "got: {own:?}");
+    let seen = text_to(&events, watcher);
+    assert!(seen.contains("Vexil casts spark!\n"), "got: {seen:?}");
+}
+
+#[test]
+fn benign_cast_with_target_string_is_refused() {
+    // MEASURED (§8.9): "cast blur extra trailing words" -> "You do not see
+    // extra trailing words here!" — a non-empty target string on a benign
+    // spell does a room-entity lookup that can fail; no self-cast, no
+    // mana, and the round is not consumed.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(player("Vexil", MAGE, full_book()));
+    core.drain_events();
+    let shown = cast(&mut core, s, "c blur extra trailing words");
+    assert!(
+        shown.contains("You do not see extra trailing words here!\n"),
+        "got: {shown:?}"
+    );
+    assert!(!shown.contains("You cast"), "no self-cast: {shown:?}");
+    assert_eq!(core.current_mana(s), 6, "mana unchanged (§8.9)");
+    let next = cast(&mut core, s, "c spark");
+    assert!(!next.contains(ALREADY_CAST), "round not consumed: {next:?}");
+}
+
+#[test]
+fn duration_spell_cast_applies_no_stats() {
+    // Blur is a DURATION spell (duration != 0 in real data): slice 3 pays
+    // the costs and renders castmsgb but applies NO effects — the fixture
+    // carries every instant-handler ability precisely so this test fails
+    // loudly when slice 4 wires duration slots (deliberate). The oracle's
+    // "You are blurred!" line is the spell's own message, not castmsgb,
+    // and must NOT print until slice 4 either.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(hardy("Vexil", MAGE));
+    core.set_current_hp(s, 10);
+    core.drain_events();
+    let shown = cast(&mut core, s, "c blur");
+    assert!(shown.contains("You cast blur on Vexil!\n"), "got: {shown:?}");
+    assert!(!shown.contains("You are blurred!"), "slice 4: {shown:?}");
+    assert_eq!(core.current_hp(s), 10, "Heal not applied");
+    assert_eq!(core.round_energy(s), 900, "round cost only, no EnergyLevel");
+    assert_eq!(core.current_mana(s), 2, "full mana 4 paid");
+    let p = core.player_snapshot(s);
+    assert_eq!((p.hunger, p.thirst), (1000, 1000), "counters untouched");
 }
 
 #[test]

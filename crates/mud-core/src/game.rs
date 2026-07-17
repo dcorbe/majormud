@@ -59,6 +59,13 @@ fn encum_ability() -> Ability {
     Ability::from_id(96).expect("Encum is in the enum")
 }
 
+/// Clamps an i32 into the u16 counter range — the hunger/thirst fields
+/// (`+0xce`/`+0xd0`) are words; Alterhunger/AlterThirst deltas saturate
+/// instead of wrapping.
+fn clamp_counter(v: i32) -> u16 {
+    u16::try_from(v.clamp(0, i32::from(u16::MAX))).expect("clamped into range")
+}
+
 /// HPRegen (123): percent modifier to slow-tick HP regen.
 fn hp_regen_ability() -> Ability {
     Ability::from_id(123).expect("HPRegen is in the enum")
@@ -912,6 +919,14 @@ impl Core {
     pub fn set_current_mana(&mut self, session: SessionId, mana: i32) {
         if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
             player.current_mana = mana;
+        }
+    }
+
+    /// The derived max HP (0 for sessions not in game).
+    pub fn max_hp(&self, session: SessionId) -> i32 {
+        match self.sessions.get(&session) {
+            Some(Session::InGame { derived, .. }) => derived.max_hp,
+            _ => 0,
         }
     }
 
@@ -1881,7 +1896,7 @@ impl Core {
             self.output_line(session, text::ALREADY_CAST);
             return;
         }
-        let spell = &self.content.spells[&spell_id];
+        let spell = self.content.spells[&spell_id].clone();
         // Gate 4: level vs required_power (spec §2) — unreachable via
         // scroll-learned books, reachable via slice-4 temp spells.
         if i32::from(self.player(session).level) < i32::from(spell.required_power) {
@@ -1960,6 +1975,16 @@ impl Core {
                 self.output_line(session, text::CAST_GUILT);
                 return;
             }
+        } else if !target.is_empty() {
+            // MEASURED (§8.9): a non-empty target string on a benign spell
+            // does a room-entity lookup that can fail — "cast blur extra
+            // trailing words" -> the do-not-see refusal, no self-cast, no
+            // mana, before any cost. Slice 3 benign casts are SELF-ONLY,
+            // so every lookup here fails; explicit friendly targets
+            // (match types with a target slot) land in slice 5.
+            // ORACLE-VERIFY: targeting a real other player is unmeasured.
+            self.output_line(session, &text::do_not_see_here(&target));
+            return;
         }
         if let Some(monster_id) = monster {
             // SpellImmu (139): a monster immune to spells at or below this
@@ -1968,7 +1993,7 @@ impl Core {
             // SpellImmu value => "no effect"; the autocombat re-fire skips
             // this check, so it lives on the command path only).
             let immu = self.monster_ability_value(monster_id, Ability::SpellImmu);
-            if immu > 0 && i32::from(self.content.spells[&spell_id].required_power) < immu {
+            if immu > 0 && i32::from(spell.required_power) < immu {
                 let name = self.monster_name(monster_id);
                 self.output_line(session, &text::spell_no_effect_on(&name));
                 return;
@@ -2013,8 +2038,7 @@ impl Core {
             return;
         }
         // Benign spells: roll + costs at the command, unlike offensive
-        // (MEASURED: blur's mana moved at the prompt, §8.6/§8.9) — the
-        // instant/duration effects land in Task 12.
+        // (MEASURED: blur's mana moved at the prompt, §8.6/§8.9).
         // Gate 5: round energy — exactly like an M3 attack without energy,
         // a silent no-op within the round (no measured message). The
         // deduction itself happens at roll time below.
@@ -2023,6 +2047,10 @@ impl Core {
             return;
         };
         let spellcasting = derived.spellcasting;
+        let max_hp = derived.max_hp;
+        let level = player.level;
+        let caster_name = player.name.clone();
+        let room = player.location;
         if *energy < round_cost {
             return;
         }
@@ -2043,25 +2071,92 @@ impl Core {
         let succeeded = cast_roll_succeeds(spellcasting, base_chance, &mut |lo, hi| {
             rng.roll(lo, hi)
         });
+        // Magnitude (success only): the SAME roll as the offensive side
+        // (spec §3) — but benign target modes never apply elemental
+        // resistance (spec §4: the modifier returns 0 unless target mode
+        // < 3), so resist is 0 by construction.
+        let magnitude = if succeeded {
+            let rng = &mut self.rng;
+            spell_magnitude(&spell, level, 0, &mut |lo, hi| rng.roll(lo, hi))
+        } else {
+            0
+        };
         let Some(Session::InGame { energy, player, .. }) = self.sessions.get_mut(&session) else {
             return;
         };
         // Both outcomes pay the full round cost (spec §3 steps 6-7).
         *energy -= round_cost;
-        if succeeded {
-            player.current_mana -= mana_cost;
-            // Task 12: benign effects + messages — success is silent until
-            // then, observable only via the deductions.
-        } else {
+        if !succeeded {
             // Half mana rounded down (mmis 1 -> 0 oracle-confirmed §8.6;
             // blur 4 -> 2 §8.9), no effects applied.
             // DLL clamps the halved cost at 0 (decompiled 39387) — a
             // negative mana_cost must not refund on failure.
             player.current_mana -= (mana_cost / 2).max(0);
-            let caster = player.name.clone();
-            let room = player.location;
             self.output_line(session, &text::cast_fail(&spell_name));
-            self.broadcast_to_room(room, Some(session), &text::cast_fail_room(&caster, &spell_name));
+            self.broadcast_to_room(room, Some(session), &text::cast_fail_room(&caster_name, &spell_name));
+            return;
+        }
+        player.current_mana -= mana_cost;
+        if spell.duration == 0 {
+            // Instant apply loop (spec §4 table, self-target): iterate the
+            // ability slots; a non-zero slot value is a FIXED amount, 0
+            // means the rolled V — the offensive convention (decompile
+            // 43711-43717).
+            for (ability, value) in &spell.abilities {
+                let amount = match *value {
+                    0 => magnitude,
+                    v => i32::from(v),
+                };
+                match ability {
+                    // Heal (18): HP += V, capped at the derived max.
+                    Ability::Heal => {
+                        player.current_hp = (player.current_hp + amount).min(max_hp);
+                    }
+                    // EnergyLevel (11): round pool += V, capped at max.
+                    Ability::EnergyLevel => {
+                        *energy = (*energy + amount).min(PLAYER_ENERGY_MAX);
+                    }
+                    // Alterhunger (15) / AlterThirst (16): the +0xce/+0xd0
+                    // counters (u16 fields; clamp instead of wrapping).
+                    Ability::Alterhunger => {
+                        player.hunger = clamp_counter(i32::from(player.hunger) + amount);
+                    }
+                    Ability::AlterThirst => {
+                        player.thirst = clamp_counter(i32::from(player.thirst) + amount);
+                    }
+                    // Remaining benign instants (Summon 12, cures, ...)
+                    // land in slice 5 with their systems.
+                    _ => {}
+                }
+            }
+        }
+        // slice 4: duration slots — a duration != 0 spell applies NOTHING
+        // here; add_cast_spell_to_user enters it into the target's
+        // active-spell slots instead (spec §4). KNOWN DIVERGENCE until
+        // then: the oracle's "You are blurred!" line after `c blur` is the
+        // spell's own message, NOT castmsgb — it does not print in slice 3.
+        //
+        // Cast messages: castmsgb only (castmsga is the empty message on
+        // every sampled spell — the Task-10 renderer contract). Slice-3
+        // benign casts are SELF-ONLY: target = the caster, the caster line
+        // always prints, the TARGET line goes to no one (oracle §8.6:
+        // `c blur` printed the caster line only), and the room line goes
+        // to everyone else in the room.
+        if let Some(msg) = spell.cast_msg_b.and_then(|id| self.content.messages.get(&id)) {
+            let args = text::CastMsgArgs {
+                caster: &caster_name,
+                target: Some(&caster_name),
+                spell: &spell.name,
+                damage: None,
+            };
+            let caster_line = text::render_cast_line(msg, text::CastAudience::Caster, &args);
+            let room_line = text::render_cast_line(msg, text::CastAudience::Room, &args);
+            if let Some(line) = caster_line {
+                self.output_line(session, &line);
+            }
+            if let Some(line) = room_line {
+                self.broadcast_to_room(room, Some(session), &line);
+            }
         }
     }
 
@@ -2147,8 +2242,8 @@ impl Core {
             (p.name.clone(), p.location, p.level)
         };
         let monster_name = self.monster_name(monster_id);
-        let spellcasting = match self.sessions.get(&session) {
-            Some(Session::InGame { derived, .. }) => derived.spellcasting,
+        let (spellcasting, caster_max_hp) = match self.sessions.get(&session) {
+            Some(Session::InGame { derived, .. }) => (derived.spellcasting, derived.max_hp),
             _ => return,
         };
 
@@ -2232,20 +2327,36 @@ impl Core {
         let rng = &mut self.rng;
         let magnitude = spell_magnitude(&spell, level, resist, &mut |lo, hi| rng.roll(lo, hi));
 
-        // Damage (1) is the only offensive instant ability in slice 3 —
-        // Heal/Drain/EnergyLevel and the area match types land in Task 12
-        // and slice 5. A non-zero ability value is a FIXED amount that
-        // bypasses both the magnitude roll and the resist scaling; value 0
-        // means "use the rolled magnitude" (decompile 43711-43717:
-        // slot value == 0 selects the rolled local_20).
-        let damage = spell
-            .abilities
-            .iter()
-            .find(|(a, _)| *a == Ability::Damage)
-            .map(|(_, v)| match *v {
+        // Offensive instant abilities (spec §4 table): Damage (1) and
+        // Drain (8) — the area match types and the remaining offensive
+        // abilities land in slice 5. A non-zero ability value is a FIXED
+        // amount that bypasses both the magnitude roll and the resist
+        // scaling; value 0 means "use the rolled magnitude" (decompile
+        // 43711-43717: slot value == 0 selects the rolled local_20).
+        let mut damage_total = 0i32;
+        let mut drain_total = 0i32;
+        let mut harms = false;
+        for (ability, value) in &spell.abilities {
+            let amount = match *value {
                 0 => magnitude,
                 v => i32::from(v),
-            });
+            };
+            match ability {
+                Ability::Damage => {
+                    damage_total += amount;
+                    harms = true;
+                }
+                // Drain (8): the target loses it, the caster gains it
+                // (capped at the caster's max HP), kill-checked like
+                // Damage (spec §4).
+                Ability::Drain => {
+                    drain_total += amount;
+                    harms = true;
+                }
+                _ => {} // slice 5: other offensive abilities
+            }
+        }
+        let damage = harms.then_some(damage_total + drain_total);
 
         // Cast messages: castmsgb only (castmsga is the empty message on
         // every sampled spell — the Task-10 renderer contract). The target
@@ -2276,7 +2387,7 @@ impl Core {
         // *Combat Off* — monster_killed is check_kill_monster +
         // distribute_experience).
         let Some(damage) = damage else {
-            return; // non-Damage offensive abilities: Task 12 / slice 5
+            return; // other offensive abilities: slice 5
         };
         let dead = {
             let Some(m) = self.monsters.get_mut(&monster_id) else {
@@ -2286,6 +2397,12 @@ impl Core {
             m.target = Some(session);
             m.current_hp <= 0
         };
+        // Drain: the stolen HP heals the caster, capped at max (spec §4).
+        if drain_total != 0
+            && let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session)
+        {
+            player.current_hp = (player.current_hp + drain_total).min(caster_max_hp);
+        }
         if dead {
             self.monster_killed(monster_id, session);
         }
