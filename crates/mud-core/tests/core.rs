@@ -64,6 +64,7 @@ fn player(name: &str) -> Player {
         lives: 9,
         experience: 0,
         location: RoomId { map: 1, room: 1 },
+        spellbook: std::collections::BTreeMap::new(),
     }
 }
 

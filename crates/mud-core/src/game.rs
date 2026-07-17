@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use crate::ability::Ability;
 use crate::command::{parse, Command, Resolution};
-use crate::content::{ClassId, Content, Direction, RaceId, RoomId, ShopStock, StatBlock};
+use crate::content::{ClassId, Content, Direction, RaceId, RoomId, ShopStock, SpellId, StatBlock};
 use crate::stats::{derive, AbilityBag, Derived, StatInputs};
 use crate::text;
 use crate::tick::TickScheduler;
@@ -116,6 +116,10 @@ pub struct Player {
     pub lives: u16,
     pub experience: u64,
     pub location: RoomId,
+    /// Learned spells; `true` = temporary (GiveTempSpell 160, purged when
+    /// the granting effect ends — wiring lands in slice 4). Display order
+    /// is computed at render (level, then name), not storage order.
+    pub spellbook: BTreeMap<SpellId, bool>,
 }
 
 /// The five coin denominations, high to low (`+0x610..+0x620`). All prices
@@ -2880,6 +2884,7 @@ impl Core {
             lives: 9,
             experience: 0,
             location: self.config.start_location,
+            spellbook: BTreeMap::new(),
         };
         let derived = self.derive_for(&player);
         player.current_hp = derived.max_hp;

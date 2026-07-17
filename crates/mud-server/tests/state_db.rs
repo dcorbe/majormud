@@ -1,6 +1,6 @@
 //! Tests for the runtime state database: accounts and player persistence.
 
-use mud_core::content::{ClassId, RaceId, RoomId, StatBlock};
+use mud_core::content::{ClassId, RaceId, RoomId, SpellId, StatBlock};
 use mud_core::game::{Gender, Player};
 use mud_server::state_db::{CreateAccountError, StateDb};
 
@@ -47,6 +47,7 @@ fn player(name: &str) -> Player {
         lives: 9,
         experience: 0,
         location: RoomId { map: 1, room: 1 },
+        spellbook: Default::default(),
     }
 }
 
@@ -116,6 +117,17 @@ fn saving_again_updates_the_record() {
     let loaded = db.load_player("Alice").unwrap().unwrap();
     assert_eq!(loaded.location, RoomId { map: 3, room: 77 });
     assert_eq!(loaded.experience, 1234);
+}
+
+#[test]
+fn spellbook_roundtrips() {
+    let db = db();
+    let mut p = player("Vexil");
+    p.spellbook.insert(SpellId(1), false); // learned
+    p.spellbook.insert(SpellId(129), true); // temporary (GiveTempSpell)
+    db.save_player(&p).expect("save");
+    let loaded = db.load_player("Vexil").expect("query").expect("found");
+    assert_eq!(loaded.spellbook, p.spellbook);
 }
 
 #[test]

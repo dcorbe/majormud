@@ -5,13 +5,14 @@
 //! are argon2id hashes. The player schema mirrors `mud_core::game::Player`
 //! field-for-field and grows with it.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
-use mud_core::content::{ClassId, ItemId, RaceId, RoomId, StatBlock};
+use mud_core::content::{ClassId, ItemId, RaceId, RoomId, SpellId, StatBlock};
 use mud_core::game::{AccountProfile, Coins, Gender, Player};
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -111,6 +112,12 @@ CREATE TABLE IF NOT EXISTS player_item (
     item   INTEGER NOT NULL,
     uses   INTEGER NOT NULL,
     PRIMARY KEY (name, kind, slot)
+) STRICT;
+CREATE TABLE IF NOT EXISTS player_spell (
+    name TEXT NOT NULL COLLATE NOCASE,
+    spell INTEGER NOT NULL,
+    temporary INTEGER NOT NULL CHECK (temporary IN (0, 1)),
+    PRIMARY KEY (name, spell)
 ) STRICT;
 ";
 
@@ -257,6 +264,16 @@ impl StateDb {
             }
         }
         self.conn.execute(
+            "DELETE FROM player_spell WHERE name = ?1",
+            params![player.name],
+        )?;
+        for (spell, temporary) in &player.spellbook {
+            self.conn.execute(
+                "INSERT INTO player_spell (name, spell, temporary) VALUES (?1, ?2, ?3)",
+                params![player.name, spell.0, i64::from(*temporary)],
+            )?;
+        }
+        self.conn.execute(
             "INSERT OR REPLACE INTO player (name, gender, race, class, level,
                  intellect, wisdom, strength, health, agility, charm,
                  b_intellect, b_wisdom, b_strength, b_health, b_agility,
@@ -339,6 +356,8 @@ impl StateDb {
     pub fn delete_player(&self, name: &str) -> Result<(), StateError> {
         self.conn
             .execute("DELETE FROM player WHERE name = ?1", params![name])?;
+        self.conn
+            .execute("DELETE FROM player_spell WHERE name = ?1", params![name])?;
         Ok(())
     }
 
@@ -373,6 +392,16 @@ impl StateDb {
         })?;
         for row in rows {
             player.bankbooks.push(row?);
+        }
+        let mut stmt = self
+            .conn
+            .prepare("SELECT spell, temporary FROM player_spell WHERE name = ?1")?;
+        let rows = stmt.query_map(params![name], |r| {
+            Ok((SpellId(r.get::<_, u16>(0)?), r.get::<_, bool>(1)?))
+        })?;
+        for row in rows {
+            let (spell, temporary) = row?;
+            player.spellbook.insert(spell, temporary);
         }
         Ok(Some(player))
     }
@@ -436,6 +465,7 @@ impl StateDb {
                             map: r.get(32)?,
                             room: r.get(33)?,
                         },
+                        spellbook: BTreeMap::new(),
                     })
                 },
             )

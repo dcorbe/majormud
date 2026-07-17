@@ -78,6 +78,7 @@ fn player_at(name: &str, room: u16) -> Player {
         lives: 9,
         experience: 0,
         location: RoomId { map: 1, room },
+        spellbook: std::collections::BTreeMap::new(),
     }
 }
 
