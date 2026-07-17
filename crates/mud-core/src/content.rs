@@ -634,7 +634,9 @@ pub enum ContentError {
     DanglingSpellRef {
         spell: SpellId,
         ability: Ability,
-        referenced: SpellId,
+        /// The raw ability value. Kept as `i16` (not `SpellId`) so negative
+        /// values are reported honestly instead of wrapped through `as u16`.
+        referenced: i16,
     },
 }
 
@@ -747,14 +749,19 @@ impl Content {
         let spell_refs = [122, 151, 153, 160].map(|id| Ability::from_id(id).expect("in the enum"));
         for spell in self.spells.values() {
             for &(ability, value) in &spell.abilities {
-                if spell_refs.contains(&ability)
-                    && value != 0
-                    && !self.spells.contains_key(&SpellId(value as u16))
-                {
+                if !spell_refs.contains(&ability) {
+                    continue;
+                }
+                let resolves = match u16::try_from(value) {
+                    Ok(0) => true, // none sentinel
+                    Ok(v) => self.spells.contains_key(&SpellId(v)),
+                    Err(_) => false, // negative: structurally dangling
+                };
+                if !resolves {
                     errors.push(ContentError::DanglingSpellRef {
                         spell: spell.id,
                         ability,
-                        referenced: SpellId(value as u16),
+                        referenced: value,
                     });
                 }
             }

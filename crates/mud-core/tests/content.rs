@@ -265,7 +265,44 @@ fn dangling_spell_reference_fails_validation() {
         vec![ContentError::DanglingSpellRef {
             spell: SpellId(1),
             ability: Ability::from_id(151).unwrap(),
-            referenced: SpellId(999),
+            referenced: 999,
+        }]
+    );
+}
+
+#[test]
+fn negative_spell_reference_is_dangling() {
+    use mud_core::content::ContentError;
+    let mut content = Content::default();
+    let mut s = spell(1);
+    // Negative values can never name a spell (ids are u16); they must be
+    // reported structurally, not wrapped through `as u16`.
+    s.abilities = vec![(Ability::from_id(151).unwrap(), -1)];
+    content.add_spell(s);
+    assert_eq!(
+        content.validate(),
+        vec![ContentError::DanglingSpellRef {
+            spell: SpellId(1),
+            ability: Ability::from_id(151).unwrap(),
+            referenced: -1,
+        }]
+    );
+}
+
+#[test]
+fn dangling_give_temp_spell_reference_fails_validation() {
+    use mud_core::content::ContentError;
+    let mut content = Content::default();
+    let mut s = spell(1);
+    // GiveTempSpell (160) pointing at a spell that doesn't exist.
+    s.abilities = vec![(Ability::from_id(160).unwrap(), 999)];
+    content.add_spell(s);
+    assert_eq!(
+        content.validate(),
+        vec![ContentError::DanglingSpellRef {
+            spell: SpellId(1),
+            ability: Ability::from_id(160).unwrap(),
+            referenced: 999,
         }]
     );
 }
