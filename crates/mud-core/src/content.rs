@@ -247,6 +247,183 @@ pub struct Item {
     pub destroy_on_death: i16,
 }
 
+/// Damage element (`spell+0xd0`, `typeofattack`). Resistance keying per
+/// `get_spell_random_modifier` (spellcasting.md §4): element 4 has no switch
+/// case — unresistable "pure magic" (e.g. magic missile) — and the modifier
+/// only applies at all when the spell's target mode is offensive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Element {
+    Cold = 0,
+    Fire = 1,
+    Stone = 2,
+    Lightning = 3,
+    Magic = 4,
+    Water = 5,
+    Poison = 6,
+}
+
+impl Element {
+    pub fn from_i16(v: i16) -> Option<Element> {
+        Some(match v {
+            0 => Element::Cold,
+            1 => Element::Fire,
+            2 => Element::Stone,
+            3 => Element::Lightning,
+            4 => Element::Magic,
+            5 => Element::Water,
+            6 => Element::Poison,
+            _ => return None,
+        })
+    }
+
+    /// The ability that resists this element; `None` for Magic (unresistable).
+    pub fn resist_ability(self) -> Option<Ability> {
+        let id = match self {
+            Element::Cold => 3,       // Rcol
+            Element::Fire => 5,       // Rfir
+            Element::Stone => 65,     // ResistStone
+            Element::Lightning => 66, // Rlit
+            Element::Magic => return None,
+            Element::Water => 147,    // ResistWater
+            Element::Poison => 21,    // ImmuPoison
+        };
+        Some(Ability::from_id(id).expect("resist abilities are in the enum"))
+    }
+}
+
+/// Spell match/delivery type (`spell+0xcc`, `target`) — selects the cast
+/// entry point and target iteration (spellcasting.md §1, §3, §4). Variant
+/// names are placeholders pending semantic pinning; the predicates encode
+/// the decompile's groupings. Shipped data uses {0,1,2,4,6,7,8,11,12,13};
+/// 3/5/9/10 are engine-valid but unused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchType {
+    Single0 = 0,
+    Single1 = 1,
+    Single2 = 2,
+    Area3 = 3,
+    Special4 = 4,
+    Area5 = 5,
+    Item6 = 6,
+    Item7 = 7,
+    Special8 = 8,
+    Area9 = 9,
+    Area10 = 10,
+    AreaB = 11,
+    AreaC = 12,
+    AreaD = 13,
+}
+
+impl MatchType {
+    pub fn from_i16(v: i16) -> Option<MatchType> {
+        Some(match v {
+            0 => MatchType::Single0,
+            1 => MatchType::Single1,
+            2 => MatchType::Single2,
+            3 => MatchType::Area3,
+            4 => MatchType::Special4,
+            5 => MatchType::Area5,
+            6 => MatchType::Item6,
+            7 => MatchType::Item7,
+            8 => MatchType::Special8,
+            9 => MatchType::Area9,
+            10 => MatchType::Area10,
+            11 => MatchType::AreaB,
+            12 => MatchType::AreaC,
+            13 => MatchType::AreaD,
+            _ => return None,
+        })
+    }
+
+    /// Requires an item target (`cast_item_target`, §3).
+    pub fn is_item(self) -> bool {
+        matches!(self, MatchType::Item6 | MatchType::Item7)
+    }
+
+    /// Iterates every valid player in the room (§4).
+    pub fn room_wide(self) -> bool {
+        matches!(
+            self,
+            MatchType::Area3
+                | MatchType::Area5
+                | MatchType::Area9
+                | MatchType::Area10
+                | MatchType::AreaB
+                | MatchType::AreaC
+                | MatchType::AreaD
+        )
+    }
+
+    /// Also iterates the room's monsters (§4: 3/5/9/0xb/0xc).
+    pub fn hits_monsters(self) -> bool {
+        matches!(
+            self,
+            MatchType::Area3
+                | MatchType::Area5
+                | MatchType::Area9
+                | MatchType::AreaB
+                | MatchType::AreaC
+        )
+    }
+
+    /// Magnitude is divided by the target count (§3: 3/5/9/10).
+    pub fn splits_magnitude(self) -> bool {
+        matches!(
+            self,
+            MatchType::Area3 | MatchType::Area5 | MatchType::Area9 | MatchType::Area10
+        )
+    }
+}
+
+/// Target mode (`spell+0xc4`, `spelltype`): `< 3` = offensive/combat-scoped,
+/// `>= 3` = benign/self (spellcasting.md §1). Shipped data uses 0, 1, 3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetMode {
+    Offensive0 = 0,
+    Offensive1 = 1,
+    Offensive2 = 2,
+    Benign = 3,
+}
+
+impl TargetMode {
+    pub fn from_i16(v: i16) -> Option<TargetMode> {
+        Some(match v {
+            0 => TargetMode::Offensive0,
+            1 => TargetMode::Offensive1,
+            2 => TargetMode::Offensive2,
+            3 => TargetMode::Benign,
+            _ => return None,
+        })
+    }
+
+    pub fn is_offensive(self) -> bool {
+        !matches!(self, TargetMode::Benign)
+    }
+}
+
+/// Save class (`spell+0xc6`, `typeofresists`) — when the target of a
+/// successful targeted cast gets a saving throw (spellcasting.md §3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveClass {
+    /// No save (1121 shipped spells).
+    None = 0,
+    /// Save only if the target has AntiMagic (51).
+    IfAntiMagic = 1,
+    /// Target always gets a save.
+    Always = 2,
+}
+
+impl SaveClass {
+    pub fn from_i16(v: i16) -> Option<SaveClass> {
+        Some(match v {
+            0 => SaveClass::None,
+            1 => SaveClass::IfAntiMagic,
+            2 => SaveClass::Always,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Spell {
     pub id: SpellId,

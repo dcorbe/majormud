@@ -152,3 +152,47 @@ fn ability_pairs_use_the_generated_enum() {
     content.add_monster(m);
     assert_eq!(content.validate(), vec![]);
 }
+
+#[test]
+fn element_maps_ids_and_resist_abilities() {
+    use mud_core::content::Element;
+    assert_eq!(Element::from_i16(4), Some(Element::Magic));
+    assert_eq!(Element::from_i16(7), None);
+    assert_eq!(Element::Magic.resist_ability(), None); // no case 4 in get_spell_random_modifier
+    assert_eq!(Element::Fire.resist_ability(), Some(Ability::from_id(5).unwrap())); // Rfir
+    assert_eq!(Element::Poison.resist_ability(), Some(Ability::from_id(21).unwrap())); // ImmuPoison
+}
+
+#[test]
+fn match_type_predicates_follow_spec_groupings() {
+    use mud_core::content::MatchType;
+    assert_eq!(MatchType::from_i16(14), None);
+    assert_eq!(MatchType::from_i16(-1), None);
+    let mt = |n| MatchType::from_i16(n).unwrap();
+    // spellcasting.md §3/§4 groupings
+    for n in [6, 7] { assert!(mt(n).is_item()); }
+    for n in [3, 5, 9, 10, 11, 12, 13] { assert!(mt(n).room_wide()); }
+    for n in [3, 5, 9, 11, 12] { assert!(mt(n).hits_monsters()); }
+    for n in [3, 5, 9, 10] { assert!(mt(n).splits_magnitude()); }
+    for n in [0, 1, 2, 4, 8] { assert!(!mt(n).room_wide() && !mt(n).is_item()); }
+    assert!(!mt(10).hits_monsters());
+    assert!(!mt(11).splits_magnitude());
+}
+
+#[test]
+fn target_mode_offensive_threshold_is_three() {
+    use mud_core::content::TargetMode;
+    assert!(TargetMode::from_i16(0).unwrap().is_offensive());
+    assert!(TargetMode::from_i16(2).unwrap().is_offensive());
+    assert!(!TargetMode::from_i16(3).unwrap().is_offensive());
+    assert_eq!(TargetMode::from_i16(4), None);
+}
+
+#[test]
+fn save_class_maps_typeofresists() {
+    use mud_core::content::SaveClass;
+    assert_eq!(SaveClass::from_i16(0), Some(SaveClass::None));
+    assert_eq!(SaveClass::from_i16(1), Some(SaveClass::IfAntiMagic));
+    assert_eq!(SaveClass::from_i16(2), Some(SaveClass::Always));
+    assert_eq!(SaveClass::from_i16(3), None);
+}
