@@ -565,6 +565,38 @@ Owned scroll, eligible spell (`oracle_spell_learning.raw`,
   After training to L2 the same character's `use scroll of illuminate`
   succeeds — pinning the gate to level.
 
+- **Already-known scroll** (magic missile while it is in the book —
+  `oracle_use_verbs.raw`, 2026-07-17):
+
+  ```
+  use scroll of magic missile
+  You realize that you already know this scroll!
+  ```
+
+  The scroll is **not consumed** and the book is unchanged. `read` on the
+  same owned scroll prints the identical line (also not consumed).
+
+- **`use` never reads the shop shelf.** With no owned match, `use {arg}`
+  prints `You don't have {arg}.` — seen both for garbage (`use zzz`,
+  `oracle_use_verbs.raw`) and for a real shelf item not carried
+  (`use scroll of blur` immediately after the owned one was consumed,
+  `oracle_spell_cast.raw`). Only `read` falls back to the visible
+  shelf/floor item description. `read {arg}` with nothing owned and
+  nothing visible prints `You do not see {arg} here!`
+  (`read zzz`, `oracle_use_verbs.raw`).
+
+- **Owned non-LearnSp item** with no use action of its own (club,
+  `oracle_use_verbs2.raw`): both `use club` and `read club` print
+
+  ```
+  You may not use that item!
+  ```
+
+  and the item is kept — the same refusal the too-high scroll gets. Items
+  that carry their own use semantics diverge before this refusal:
+  `use torch` → `You lit the torch.` (light-source path,
+  `oracle_use_verbs.raw`; charged/usable items are out of M5 scope).
+
 - Purchases (M4 cross-check): free rows print
   `You just bought scroll of magic missile for nothing.`; paid rows print
   the deduct_currency multiset, e.g.
