@@ -209,7 +209,7 @@ fn load_monsters(db: &Connection, content: &mut Content) -> Result<(), LoadError
             format!(
                 "attacktype_{i}, attackaccuspell_{i}, attackper_{i}, \
                  attackminhcastper_{i}, attackmaxhcastlvl_{i}, attackhitmsg_{i}, \
-                 attackmissmsg_{i}, attackenergy_{i}"
+                 attackdodgemsg_{i}, attackmissmsg_{i}, attackenergy_{i}"
             )
         })
         .collect::<Vec<_>>()
@@ -230,7 +230,7 @@ fn load_monsters(db: &Connection, content: &mut Content) -> Result<(), LoadError
     while let Some(row) = rows.next()? {
         let mut attacks = [AttackForm::default(); 5];
         for (i, form) in attacks.iter_mut().enumerate() {
-            let base = 37 + i * 8;
+            let base = 37 + i * 9;
             *form = AttackForm {
                 kind: to_i16("monster", "attacktype", row.get(base)?)?,
                 accuracy: to_i16("monster", "attackaccuspell", row.get(base + 1)?)?,
@@ -238,11 +238,12 @@ fn load_monsters(db: &Connection, content: &mut Content) -> Result<(), LoadError
                 min_damage: to_i16("monster", "attackminhcastper", row.get(base + 3)?)?,
                 max_damage: to_i16("monster", "attackmaxhcastlvl", row.get(base + 4)?)?,
                 hit_msg: opt_message("monster", "attackhitmsg", row.get(base + 5)?)?,
-                miss_msg: opt_message("monster", "attackmissmsg", row.get(base + 6)?)?,
-                energy: to_i16("monster", "attackenergy", row.get(base + 7)?)?,
+                dodge_msg: opt_message("monster", "attackdodgemsg", row.get(base + 6)?)?,
+                miss_msg: opt_message("monster", "attackmissmsg", row.get(base + 7)?)?,
+                energy: to_i16("monster", "attackenergy", row.get(base + 8)?)?,
             };
         }
-        let weapon_col = 37 + 5 * 8;
+        let weapon_col = 37 + 5 * 9;
         let weapon = match to_u16("monster", "weaponnumber", row.get(weapon_col)?)? {
             0 => None,
             id => Some(ItemId(id)),

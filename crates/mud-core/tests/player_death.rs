@@ -33,6 +33,7 @@ fn executioner() -> Monster {
                 min_damage: 60,
                 max_damage: 60,
                 hit_msg: None,
+                dodge_msg: None,
                 miss_msg: None,
                 energy: 200, // five swings per round: 300 damage
             },

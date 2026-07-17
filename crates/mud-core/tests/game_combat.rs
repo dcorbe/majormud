@@ -2,7 +2,8 @@
 //! (`re/docs/combat_rounds.md` + oracle transcripts).
 
 use mud_core::content::{
-    AttackForm, Class, ClassId, Content, Monster, MonsterId, Race, RaceId, Room, RoomId, StatBlock,
+    AttackForm, Class, ClassId, Content, Item, ItemId, Message, MessageId, Monster, MonsterId,
+    Race, RaceId, Room, RoomId, StatBlock,
 };
 use mud_core::game::{AccountProfile, Core, CoreConfig, Event, Gender, SessionId};
 
@@ -33,6 +34,7 @@ fn kobold() -> Monster {
                 min_damage: 1,
                 max_damage: 8,
                 hit_msg: None,
+                dodge_msg: None,
                 miss_msg: None,
                 energy: 666,
             },
@@ -367,5 +369,337 @@ fn downed_player_stops_swinging_and_is_blocked() {
     assert!(
         !shown.contains("You punch"),
         "helpless players do not swing: {shown:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Monster attack lines (`re/docs/spellcasting.md` §8.10 + decompile
+// `attack_monster_user` 0x2e34b). The fixtures carry the REAL 1.11p message
+// records: rat hit 27 / dodge 8307 / miss 8294; kobold hit 41 / dodge 8297 /
+// miss 8310, with the shortsword's verb record 8287 filling the %s slots.
+//
+// DLL result mapping (calculate_attack 0x2b800): a failed to-hit roll leaves
+// result 0 = the PLAIN miss lines; result 3 (parry) renders the ", but you
+// dodge" framing; result 1 (damage < 1) the armour-deflect glance lines.
+// ---------------------------------------------------------------------------
+
+/// The giant rat's real records: no weapon, so the verb/weapon `%s` slots
+/// render empty and the verbs live in the templates themselves.
+fn add_rat_messages(content: &mut Content) {
+    content.add_message(Message {
+        id: MessageId(27),
+        lines: vec![
+            "The %s bites you for %d damage!".into(),
+            "The %s bites %s for %s damage!".into(),
+            "The giant rat falls to the ground with a tortured squeak.".into(),
+        ],
+    });
+    content.add_message(Message {
+        id: MessageId(8307),
+        lines: vec![
+            "The %s %slunges at you, but your armour deflects the blow!".into(),
+            "The %s %slunges at %s, but %s armour deflects the blow!".into(),
+            "The %s %slunges at %syou, but you dodge out of the way!".into(),
+        ],
+    });
+    content.add_message(Message {
+        id: MessageId(8294),
+        lines: vec![
+            "The %s %slunges at %s, %sbut %s dodges out of the way!".into(),
+            "The %s %slunges at %syou!".into(),
+            "The %s %slunges at %s! %s".into(),
+        ],
+    });
+}
+
+/// The kobold thief's real records plus its wielded shortsword (item 67,
+/// miss-verb record 8287) — the weapon fills the `%s` verb/weapon slots.
+fn add_kobold_messages(content: &mut Content) {
+    content.add_message(Message {
+        id: MessageId(41),
+        lines: vec![
+            "The %s stabs you for %d damage!".into(),
+            "The %s stabs %s for %s damage!".into(),
+            "The kobold thief falls to the ground with a shrill cry.".into(),
+        ],
+    });
+    content.add_message(Message {
+        id: MessageId(8297),
+        lines: vec![
+            "The %s %s you, but your armour deflects the blow!".into(),
+            "The %s %s %s, but %s armour deflects the blow!".into(),
+            "The %s %s you with their %s, but you dodge!".into(),
+        ],
+    });
+    content.add_message(Message {
+        id: MessageId(8310),
+        lines: vec![
+            "The %s %s %s with their %s, but %s dodges!".into(),
+            "The %s %s you with their %s!".into(),
+            "The %s %s %s with their %s!".into(),
+        ],
+    });
+    content.add_message(Message {
+        id: MessageId(8287),
+        lines: vec!["lunge at".into(), "lunges at".into(), "lunges at".into()],
+    });
+    content.add_item(Item {
+        id: ItemId(67),
+        name: "shortsword".into(),
+        item_type: 1,
+        miss_msg: Some(MessageId(8287)),
+        ..Default::default()
+    });
+}
+
+/// A message-carrying giant rat with a single melee form.
+fn rat(accuracy: i16, min: i16, max: i16) -> Monster {
+    Monster {
+        id: MonsterId(1),
+        name: "giant rat".into(),
+        move_msg: None,
+        death_msg: None,
+        abilities: vec![],
+        hitpoints: 5000,
+        experience: 9,
+        exp_multi: 1,
+        armour_class: 10,
+        damage_resist: 1,
+        magic_resist: 30,
+        bs_defence: 0,
+        energy: 1000,
+        coins: [0; 5],
+        weapon: None,
+        loot: vec![],
+        attacks: [
+            AttackForm {
+                kind: 1,
+                accuracy,
+                weight: 100,
+                min_damage: min,
+                max_damage: max,
+                hit_msg: Some(MessageId(27)),
+                dodge_msg: Some(MessageId(8307)),
+                miss_msg: Some(MessageId(8294)),
+                energy: 666,
+            },
+            AttackForm::default(),
+            AttackForm::default(),
+            AttackForm::default(),
+            AttackForm::default(),
+        ],
+    }
+}
+
+/// The kobold with its real message ids and shortsword.
+fn armed_kobold(accuracy: i16, min: i16, max: i16) -> Monster {
+    let mut m = kobold();
+    m.weapon = Some(ItemId(67));
+    m.attacks[0] = AttackForm {
+        kind: 1,
+        accuracy,
+        weight: 100,
+        min_damage: min,
+        max_damage: max,
+        hit_msg: Some(MessageId(41)),
+        dodge_msg: Some(MessageId(8297)),
+        miss_msg: Some(MessageId(8310)),
+        energy: 666,
+    };
+    m
+}
+
+/// world() with the monster swapped and the fixture race's agility/charm
+/// set. Dwarf 30/30 gives defender parry 0 (no parries); 80/80 gives 26,
+/// i.e. plenty of result-3 "dodge"-framed swings.
+fn arena(monster: Monster, agility: u16, charm: u16) -> Content {
+    let mut content = world();
+    content.monsters.clear();
+    content.add_monster(monster);
+    let race = content.races.get_mut(&RaceId(2)).unwrap();
+    race.base_stats.agility = agility;
+    race.base_stats.charm = charm;
+    content
+}
+
+fn engage(core: &mut Core, target: &str) -> SessionId {
+    let s = create(core, "Dain");
+    core.input(s, &format!("attack {target}"));
+    core.drain_events();
+    s
+}
+
+#[test]
+fn monster_hit_renders_the_form_hit_message() {
+    let mut content = arena(rat(200, 3, 3), 30, 30);
+    add_rat_messages(&mut content);
+    let mut core = Core::new(content, config());
+    core.spawn_monster(MonsterId(1), RoomId { map: 1, room: 1 });
+    let s = engage(&mut core, "rat");
+    let shown = text_to(&run_rounds(&mut core, 4), s);
+    assert!(
+        shown.contains("The giant rat bites you for 3 damage!"),
+        "hit uses the form's own verb phrase: {shown:?}"
+    );
+    assert!(
+        !shown.contains("hits you for"),
+        "no generic fallback when the record exists: {shown:?}"
+    );
+}
+
+#[test]
+fn monster_plain_miss_renders_the_miss_line() {
+    // Accuracy 5 -> to-hit threshold 5 (sub-formula), so ~95% of swings
+    // leave result 0: the PLAIN miss line, no dodge framing.
+    let mut content = arena(rat(5, 1, 1), 30, 30);
+    add_rat_messages(&mut content);
+    let mut core = Core::new(content, config());
+    core.spawn_monster(MonsterId(1), RoomId { map: 1, room: 1 });
+    let s = engage(&mut core, "rat");
+    let shown = text_to(&run_rounds(&mut core, 10), s);
+    assert!(
+        shown.contains("The giant rat lunges at you!"),
+        "to-hit failure is the plain miss: {shown:?}"
+    );
+    assert!(
+        !shown.contains("but you dodge"),
+        "parry impossible at parry rating 0: {shown:?}"
+    );
+}
+
+#[test]
+fn monster_parry_renders_the_dodge_framing() {
+    // Agility/charm 80 -> defender parry 26; accuracy 40 -> to-hit 99%
+    // and parry chance 26*10/(40/8) = 52%: result 3 swings render the
+    // ", but you dodge out of the way!" framing from dodge record line 3.
+    let mut content = arena(rat(40, 0, 0), 80, 80);
+    add_rat_messages(&mut content);
+    let mut core = Core::new(content, config());
+    core.spawn_monster(MonsterId(1), RoomId { map: 1, room: 1 });
+    let s = engage(&mut core, "rat");
+    let shown = text_to(&run_rounds(&mut core, 20), s);
+    assert!(
+        shown.contains("The giant rat lunges at you, but you dodge out of the way!"),
+        "parry renders the dodge framing: {shown:?}"
+    );
+}
+
+#[test]
+fn monster_glance_renders_the_armour_deflect_line() {
+    // min=max=0 damage with high accuracy: connects resolve to result 1
+    // (damage < 1) -> dodge record line 1 (ORACLE-VERIFY: decompile-only,
+    // never observed in ~300 oracle swings).
+    let mut content = arena(rat(200, 0, 0), 30, 30);
+    add_rat_messages(&mut content);
+    let mut core = Core::new(content, config());
+    core.spawn_monster(MonsterId(1), RoomId { map: 1, room: 1 });
+    let s = engage(&mut core, "rat");
+    let shown = text_to(&run_rounds(&mut core, 10), s);
+    assert!(
+        shown.contains("The giant rat lunges at you, but your armour deflects the blow!"),
+        "glance uses dodge record line 1: {shown:?}"
+    );
+}
+
+#[test]
+fn observers_see_name_substituted_variants() {
+    let mut content = arena(rat(200, 3, 3), 30, 30);
+    add_rat_messages(&mut content);
+    let mut core = Core::new(content, config());
+    core.spawn_monster(MonsterId(1), RoomId { map: 1, room: 1 });
+    let s = engage(&mut core, "rat");
+    let o = create(&mut core, "Oracle");
+    let events = run_rounds(&mut core, 4);
+    let seen = text_to(&events, o);
+    assert!(
+        seen.contains("The giant rat bites Dain for 3 damage!"),
+        "observer hit line substitutes the victim and shows damage: {seen:?}"
+    );
+    let victim = text_to(&events, s);
+    assert!(
+        !victim.contains("bites Dain"),
+        "the victim's own line stays second-person: {victim:?}"
+    );
+    assert!(
+        !seen.contains("bites you"),
+        "observers never get the second-person line: {seen:?}"
+    );
+}
+
+#[test]
+fn observers_see_miss_and_dodge_variants() {
+    // Parry-heavy setup: observers get miss record line 1 ("... but he
+    // dodges out of the way!") for parries and line 3 for plain misses.
+    let mut content = arena(rat(40, 0, 0), 80, 80);
+    add_rat_messages(&mut content);
+    let mut core = Core::new(content, config());
+    core.spawn_monster(MonsterId(1), RoomId { map: 1, room: 1 });
+    let s = engage(&mut core, "rat");
+    let o = create(&mut core, "Oracle");
+    let seen = text_to(&run_rounds(&mut core, 30), o);
+    assert!(
+        seen.contains("The giant rat lunges at Dain, but he dodges out of the way!"),
+        "observer dodge line: {seen:?}"
+    );
+    assert!(
+        seen.contains("The giant rat lunges at Dain, but his armour deflects the blow!"),
+        "observer glance line: {seen:?}"
+    );
+    let _ = s;
+}
+
+#[test]
+fn weapon_verbs_fill_the_message_slots() {
+    // Kobold + shortsword: verb slots take the weapon's miss record line 2
+    // ("lunges at") for the victim view, and the weapon name fills %s.
+    let mut content = arena(armed_kobold(40, 0, 0), 80, 80);
+    add_kobold_messages(&mut content);
+    let mut core = Core::new(content, config());
+    core.spawn_monster(MonsterId(7), RoomId { map: 1, room: 1 });
+    let s = engage(&mut core, "kobold");
+    let shown = text_to(&run_rounds(&mut core, 30), s);
+    assert!(
+        shown.contains("The kobold thief lunges at you with their shortsword, but you dodge!"),
+        "kobold's shorter dodge framing comes from ITS record: {shown:?}"
+    );
+    assert!(
+        shown.contains("The kobold thief lunges at you, but your armour deflects the blow!"),
+        "glance verb slot filled from the weapon: {shown:?}"
+    );
+}
+
+#[test]
+fn weapon_verbs_fill_the_plain_miss_slots() {
+    let mut content = arena(armed_kobold(5, 1, 1), 30, 30);
+    add_kobold_messages(&mut content);
+    let mut core = Core::new(content, config());
+    core.spawn_monster(MonsterId(7), RoomId { map: 1, room: 1 });
+    let s = engage(&mut core, "kobold");
+    let shown = text_to(&run_rounds(&mut core, 10), s);
+    assert!(
+        shown.contains("The kobold thief lunges at you with their shortsword!"),
+        "plain miss with weapon clause: {shown:?}"
+    );
+}
+
+#[test]
+fn messageless_forms_fall_back_to_plain_verbs() {
+    // The stock kobold() fixture has no message records: hits keep the
+    // "hits you for" fallback (asserted elsewhere) and misses get a plain
+    // "swings at" line.
+    let mut content = world();
+    content
+        .monsters
+        .get_mut(&MonsterId(7))
+        .unwrap()
+        .attacks[0]
+        .accuracy = 5;
+    let mut core = Core::new(content, config());
+    core.spawn_monster(MonsterId(7), RoomId { map: 1, room: 1 });
+    let s = engage(&mut core, "kobold");
+    let shown = text_to(&run_rounds(&mut core, 10), s);
+    assert!(
+        shown.contains("The kobold thief swings at you!"),
+        "fallback plain miss: {shown:?}"
     );
 }

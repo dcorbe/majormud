@@ -477,11 +477,72 @@ pub fn player_crit(verb: &str, target: &str, damage: i32) -> String {
     format!("You critically {verb} {target} for {damage} damage!")
 }
 
-/// "The kobold thief stabs you for 5 damage!" — the verb comes from the
-/// attack form's hit message; "hits" is the fallback until message-table
-/// rendering lands.
+/// Fills a DB printf-style message template: each `%s`/`%d` consumes the
+/// next argument in order (damage arrives pre-formatted — the DLL renders
+/// the observer's damage through `get_damage_descriptor`, a `%d` sprintf,
+/// and passes the result as a string). Slots beyond the argument list
+/// render empty, exactly like the DLL's always-passed trailing `""`
+/// arguments (decompile `attack_monster_user` 0x2e34b).
+pub fn fill_message(template: &str, args: &[&str]) -> String {
+    let mut out = String::with_capacity(template.len() + 16);
+    let mut next = 0;
+    let mut chars = template.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '%' && matches!(chars.peek(), Some('s' | 'd')) {
+            chars.next();
+            out.push_str(args.get(next).copied().unwrap_or(""));
+            next += 1;
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+// Fallback monster-swing lines, used only when an attack form lacks its
+// message records (fixtures; no shipped 1.11p melee form is missing them).
+// The DLL's own fallbacks compose from the wielded weapon's verb buffers
+// ("%s %s you with %s, but you dodge!"); ours are simpler fixed shapes —
+// ORACLE-VERIFY if a record-less form ever surfaces in real content.
+
+/// "The kobold thief hits you for 5 damage!" — fallback hit, victim view.
 pub fn monster_hit(name: &str, verb: &str, damage: i32) -> String {
     format!("The {name} {verb} you for {damage} damage!")
+}
+
+/// Fallback hit, room view.
+pub fn monster_hit_room(name: &str, victim: &str, damage: i32) -> String {
+    format!("The {name} hits {victim} for {damage} damage!")
+}
+
+/// Fallback plain miss (result 0 — the to-hit roll failed), victim view.
+pub fn monster_miss(name: &str) -> String {
+    format!("The {name} swings at you!")
+}
+
+/// Fallback plain miss, room view.
+pub fn monster_miss_room(name: &str, victim: &str) -> String {
+    format!("The {name} swings at {victim}!")
+}
+
+/// Fallback parry (result 3 — rendered with the "dodge" framing), victim.
+pub fn monster_dodge(name: &str) -> String {
+    format!("The {name} swings at you, but you dodge out of the way!")
+}
+
+/// Fallback parry, room view ("he/she dodges").
+pub fn monster_dodge_room(name: &str, victim: &str, pronoun: &str) -> String {
+    format!("The {name} swings at {victim}, but {pronoun} dodges out of the way!")
+}
+
+/// Fallback glance (result 1 — connected, armour absorbed it), victim.
+pub fn monster_glance(name: &str) -> String {
+    format!("The {name} hits you, but your armour deflects the blow!")
+}
+
+/// Fallback glance, room view ("his/her armour").
+pub fn monster_glance_room(name: &str, victim: &str, possessive: &str) -> String {
+    format!("The {name} hits {victim}, but {possessive} armour deflects the blow!")
 }
 
 /// "%s drops to the ground!" (DLL + oracle).

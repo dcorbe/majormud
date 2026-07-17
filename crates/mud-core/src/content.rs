@@ -168,7 +168,14 @@ pub struct AttackForm {
     pub min_damage: i16,
     /// Melee max damage / cast level (`attackmaxhcastlvl`).
     pub max_damage: i16,
+    /// `attackhitmsg` — line 1 victim hit, line 2 room hit, line 3 the
+    /// monster's death line.
     pub hit_msg: Option<MessageId>,
+    /// `attackdodgemsg` — line 1 victim glance, line 2 room glance, line 3
+    /// victim "dodge" (the parry, result 3).
+    pub dodge_msg: Option<MessageId>,
+    /// `attackmissmsg` — line 1 room "dodge", line 2 victim plain miss,
+    /// line 3 room plain miss.
     pub miss_msg: Option<MessageId>,
     /// EU spent per swing (`attackenergy`).
     pub energy: i16,

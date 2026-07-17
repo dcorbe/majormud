@@ -144,6 +144,32 @@ fn known_content_spot_checks() {
     assert_eq!(rat.weapon, None);
     assert!(rat.loot.is_empty());
 
+    // Attack-line message pins (spellcasting.md §8.10): the rat's form
+    // carries hit 27 / dodge 8307 / miss 8294, and the records hold the
+    // oracle-measured templates verbatim.
+    use mud_core::content::MessageId;
+    assert_eq!(form.hit_msg, Some(MessageId(27)));
+    assert_eq!(form.dodge_msg, Some(MessageId(8307)));
+    assert_eq!(form.miss_msg, Some(MessageId(8294)));
+    let hit = &content.messages[&MessageId(27)];
+    assert_eq!(hit.lines[0], "The %s bites you for %d damage!");
+    assert_eq!(hit.lines[1], "The %s bites %s for %s damage!");
+    assert_eq!(
+        hit.lines[2],
+        "The giant rat falls to the ground with a tortured squeak."
+    );
+    let dodge = &content.messages[&MessageId(8307)];
+    assert_eq!(
+        dodge.lines[2],
+        "The %s %slunges at %syou, but you dodge out of the way!"
+    );
+    let miss = &content.messages[&MessageId(8294)];
+    assert_eq!(
+        miss.lines[0],
+        "The %s %slunges at %s, %sbut %s dodges out of the way!"
+    );
+    assert_eq!(miss.lines[1], "The %s %slunges at %syou!");
+
     // Loot slots: the thug (id 10) wields a spiked club (never dropped)
     // and carries a severed arm 1% of the time.
     let thug = &content.monsters[&mud_core::content::MonsterId(10)];
