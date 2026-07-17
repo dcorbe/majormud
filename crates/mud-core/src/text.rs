@@ -308,8 +308,8 @@ pub const NO_SPELLS: &str = "You have no spells.";
 /// Measured columns: level right-aligned width 3, mana right-aligned
 /// width 4, four spaces, short name left-aligned width 6, spell name
 /// left-aligned width 30 — trailing spaces are part of the line
-/// (`  1   4    blur  blur` + 26 spaces). Every shipped short name is
-/// 4 chars, so the short column's 6 could also be 5 + a gutter space —
+/// (`  1   4    blur  blur` + 26 spaces). Shipped short names run 0-5
+/// chars (`spray` = 5), so the short column's 6 could also be 5 + a gutter —
 /// indistinguishable in the data we have.
 pub fn spell_row(level: i16, mana: i16, short: &str, name: &str) -> String {
     format!("{level:>3}{mana:>4}    {short:<6}{name:<30}")

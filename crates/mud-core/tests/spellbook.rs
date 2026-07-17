@@ -77,8 +77,10 @@ fn world() -> Content {
         abilities: vec![],
         hp_per_level: 2,
         hp_seed: 4,
+        // Real Mage values (magictype=1, magiclvl=3). Deliberately unequal
+        // so a caster_group/casting_factor field swap in spell_gate fails.
         caster_group: 1,
-        casting_factor: 1,
+        casting_factor: 3,
         exp_base: 0,
         combat_factor: 2,
         weapon_code: 8,
@@ -106,9 +108,9 @@ fn world() -> Content {
     let mut blur = spell(BLUR, "blur", "blur");
     blur.mana_cost = 4;
     // Same magery group as the mage, but requires a deeper casting factor
-    // than the fixture mage's 1 — never castable by either fixture class.
+    // than the fixture mage's 3 — never castable by either fixture class.
     let mut deep = spell(DEEP_MAGERY, "meteor storm", "mets");
-    deep.required_class_level = 3;
+    deep.required_class_level = 5;
     content.add_spell(illu);
     content.add_spell(mmis);
     content.add_spell(blur);
@@ -189,8 +191,12 @@ fn empty_book_prints_you_have_no_spells() {
     core.input(s, "spells");
     let shown = text_to(&core.drain_events(), s);
     // VERIFIED oracle_spell_learning.raw line 162: single line, no
-    // header, no trailing blank line before the prompt.
-    assert!(shown.contains("You have no spells.\n"), "got: {shown:?}");
+    // header, no trailing blank line before the prompt. Prefix match up to
+    // the prompt's '[' so an extra blank line can't hide behind contains().
+    assert!(
+        shown.starts_with("You have no spells.\n["),
+        "got: {shown:?}"
+    );
     assert!(
         !shown.contains("following spells"),
         "no header on empty book: {shown:?}"
@@ -237,7 +243,7 @@ fn spell_gate_rejects_wrong_magery_group_as_wrong_class() {
         SpellGate::WrongClass
     );
     // Right group but the class can't ever cast this deep: casting
-    // factor 1 < required class level 3 is WrongClass, not TooPowerful.
+    // factor 3 < required class level 5 is WrongClass, not TooPowerful.
     let s = core.attach_player(player("Vexil", MAGE, BTreeMap::new()));
     let mage = core.player_snapshot(s);
     assert_eq!(
