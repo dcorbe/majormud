@@ -399,11 +399,15 @@ route to Cast; VERBS row `("cast", 2, WithArgs)` ORACLE-VERIFY min),
 `game.rs` dispatch + `resolve_spell_from_book`, tests in new
 `tests/cast.rs`.
 
-Resolution (per §8.6 + Task 6): candidates = learned book only. Match full
-shortname, shortname prefix, or name word-prefix — implement exactly what
-Task 6 measured. Miss → `You do not know how to cast {arg}.` — **Handled,
-never say-fallthrough** (measured: `cast zzz` does not become speech). Bare
-`cast` → whatever Task 6 measured.
+Resolution (MEASURED, §8.9): candidates = learned book only. A spell name
+matches on **exact shortname OR per-word name prefix** (`c m`, `c magic`,
+`c magic mi` all hit magic missile; `c mm`/`c mmi` MISS — shortname prefixes
+do not match). Words consumed by the name match don't become the target.
+Miss → `You do not know how to cast {arg}.` — **Handled, never
+say-fallthrough**. Bare `cast`/`c` → `Syntax: CAST {spell} [{target}]`.
+After the spell resolves, the ENTIRE remaining input is the target string —
+trailing garbage is not tolerated (`cast blur extra trailing words` →
+`You do not see extra trailing words here!`, no self-cast, no mana).
 
 Tests: resolution hits/misses (`mmis`, full name, `mami` miss), unknown
 echo, bare form.
@@ -474,10 +478,15 @@ Commit: `feat: cast message renderer — 3-audience castmsgb substitution`
 **Files:** `game.rs` (cast handler offensive branch), `tests/cast.rs` +
 `tests/game_combat.rs` patterns.
 
-- Target selection: explicit arg → monster by `word_prefix_match` (M3
-  targeting); bare → per Task 6 measurement (expected: auto-pick like
-  `attack`). No valid monster target and room has a friendly NPC → the
-  guilt line; truly empty → per Task 6.
+- Target selection (MEASURED, §8.9 — the auto-pick assumption was WRONG):
+  explicit arg → monster by `word_prefix_match` (M3 targeting); bare
+  offensive cast NEVER auto-picks — friendly NPC present → the guilt line;
+  empty room or monsters-only → `You must specify a target for that
+  spell!`. Bare offensive cast while melee-ENGAGED prints `*Combat Off*`
+  (breaks the engagement) and then the must-specify refusal.
+- Engaged repeat: an offensive cast that engages combat auto-repeats every
+  combat round like `attack` (measured: unprompted mmis line the round
+  after a failed roll).
 - Engagement: entering combat emits `*Combat Engaged*` and cast damage joins
   the M3 combat frame (`c mmis filthbug` engaged + fired in one round —
   reuse the attack-command engagement path).
