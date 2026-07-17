@@ -3310,6 +3310,11 @@ impl Core {
                 miss_verbs.get(pick as usize).cloned().unwrap_or_else(|| "swing at".into())
             };
             match result.outcome {
+                // combat_rounds.md §5: result 3 renders distinct
+                // dodge/parry flavor for the player view too — this
+                // conflation is a pre-existing M3 gap. ORACLE-VERIFY:
+                // needs a player-view capture of a monster
+                // dodging/parrying a swing.
                 Outcome::Dodged | Outcome::Parried => {
                     self.output_line(session, &text::player_miss(&miss_verb, &target_name));
                 }
@@ -3454,9 +3459,15 @@ impl Core {
     /// a failed to-hit roll is result 0 = PLAIN miss; a parry is result 3 =
     /// the ", but you dodge" framing; damage < 1 is result 1 = glance.
     /// The `%s` verb/weapon slots are filled from the wielded weapon's
-    /// miss-verb record (line 2 victim-view, line 3 room-view, chosen from
-    /// the `|` pool like player weapon verbs) plus the weapon's name; both
-    /// render empty for unarmed monsters — exactly the giant rat's shape.
+    /// records (`move_monster_to_fighter` 1040:1739): the HIT record's
+    /// lines 2/3 fill the hit-verb slots, the miss record's lines 2/3 the
+    /// swing-verb slots (line 2 victim-view, line 3 room-view, chosen from
+    /// the `|` pool like player weapon verbs), with the swing slots
+    /// falling back to the hit verbs when the weapon has no miss record.
+    /// All render empty for unarmed monsters — exactly the giant rat's
+    /// shape. Record-less forms (healer 47, zombie 492, ju-ju zombie
+    /// 493/772) compose whole lines from the generic seg-1140 templates
+    /// with those same buffers.
     fn monster_swing_lines(
         &mut self,
         template: crate::content::MonsterId,
@@ -3469,10 +3480,8 @@ impl Core {
         let name = tpl.name.clone();
         let weapon = tpl.weapon.and_then(|id| self.content.items.get(&id));
         let weapon_name = weapon.map(|i| i.name.clone()).unwrap_or_default();
-        let (pool2, pool3): (Vec<String>, Vec<String>) = weapon
-            .and_then(|i| i.miss_msg)
-            .and_then(|m| self.content.messages.get(&m))
-            .map(|m| {
+        let pools = |msg: Option<crate::content::MessageId>| -> Option<(Vec<String>, Vec<String>)> {
+            msg.and_then(|m| self.content.messages.get(&m)).map(|m| {
                 let split = |i: usize| -> Vec<String> {
                     m.lines
                         .get(i)
@@ -3481,7 +3490,13 @@ impl Core {
                 };
                 (split(1), split(2))
             })
-            .unwrap_or_default();
+        };
+        let (hit_pool2, hit_pool3) =
+            pools(weapon.and_then(|i| i.hit_msg)).unwrap_or_default();
+        // Swing verbs default to the hit verbs when the weapon carries no
+        // miss record (move_monster_to_fighter's buffer-copy fallback).
+        let (pool2, pool3) = pools(weapon.and_then(|i| i.miss_msg))
+            .unwrap_or_else(|| (hit_pool2.clone(), hit_pool3.clone()));
         let pick = |pool: &[String], rng: &mut Rng| -> String {
             match pool.len() {
                 0 => String::new(),
@@ -3491,6 +3506,8 @@ impl Core {
         };
         let verb2 = pick(&pool2, &mut self.rng);
         let verb3 = pick(&pool3, &mut self.rng);
+        let hit_verb2 = pick(&hit_pool2, &mut self.rng);
+        let hit_verb3 = pick(&hit_pool3, &mut self.rng);
         let (victim_name, gender) = match self.sessions.get(&victim) {
             Some(Session::InGame { player, .. }) => (player.name.clone(), player.gender),
             _ => (String::new(), Gender::Male),
@@ -3506,52 +3523,99 @@ impl Core {
                 .map(String::as_str)
         };
         use crate::combat::Outcome;
-        match outcome {
+        let (v, r) = match outcome {
             Outcome::Hit | Outcome::Critical => {
                 let dmg = damage.to_string();
+                // Record-less: generic templates 1140:0x7b7 / 0x7d1 with
+                // the weapon's hit verbs; a crit wraps the verb in the
+                // "critically %s" template (1140:0xab2).
+                let crit_wrap = |verb: &str| -> String {
+                    if outcome == Outcome::Critical {
+                        format!("critically {verb}")
+                    } else {
+                        verb.to_string()
+                    }
+                };
                 let v = line(form.hit_msg, 0)
                     .map(|t| text::fill_message(t, &[&name, &dmg]))
-                    .unwrap_or_else(|| text::monster_hit(&name, "hits", damage));
+                    .unwrap_or_else(|| {
+                        text::fill_message(
+                            text::MONSTER_HIT_TPL,
+                            &[&name, &crit_wrap(&hit_verb2), &dmg],
+                        )
+                    });
                 let r = line(form.hit_msg, 1)
                     .map(|t| text::fill_message(t, &[&name, &victim_name, &dmg]))
-                    .unwrap_or_else(|| text::monster_hit_room(&name, &victim_name, damage));
+                    .unwrap_or_else(|| {
+                        text::fill_message(
+                            text::MONSTER_HIT_ROOM_TPL,
+                            &[&name, &crit_wrap(&hit_verb3), &victim_name, &dmg],
+                        )
+                    });
                 (v, r)
             }
             // DLL result 3: the parry branch needs BOTH records — the
             // victim line is dodge record line 3, the room line miss
-            // record line 1 — else it falls back wholesale.
+            // record line 1 — else it composes 1140:0xfc5 / 0xfe8.
             Outcome::Parried => match (line(form.dodge_msg, 2), line(form.miss_msg, 0)) {
                 (Some(tv), Some(tr)) => (
                     text::fill_message(tv, &[&name, &verb2, &weapon_name]),
                     text::fill_message(tr, &[&name, &verb3, &victim_name, &weapon_name, subj]),
                 ),
                 _ => (
-                    text::monster_dodge(&name),
-                    text::monster_dodge_room(&name, &victim_name, subj),
+                    text::fill_message(
+                        text::MONSTER_DODGE_TPL,
+                        &[&name, &verb2, &weapon_name],
+                    ),
+                    text::fill_message(
+                        text::MONSTER_DODGE_ROOM_TPL,
+                        &[&name, &verb3, &victim_name, &weapon_name, subj],
+                    ),
                 ),
             },
             // DLL result 1 (never oracle-observed — decompile-only,
-            // ORACLE-VERIFY against an armoured victim).
+            // ORACLE-VERIFY against an armoured victim). Record-less:
+            // 1140:0xf6b / 0xf98, both on the victim-view swing verb.
             Outcome::NoDamage => {
                 let v = line(form.dodge_msg, 0)
                     .map(|t| text::fill_message(t, &[&name, &verb2]))
-                    .unwrap_or_else(|| text::monster_glance(&name));
+                    .unwrap_or_else(|| {
+                        text::fill_message(text::MONSTER_GLANCE_TPL, &[&name, &verb2])
+                    });
                 let r = line(form.dodge_msg, 1)
                     .map(|t| text::fill_message(t, &[&name, &verb2, &victim_name, poss]))
-                    .unwrap_or_else(|| text::monster_glance_room(&name, &victim_name, poss));
+                    .unwrap_or_else(|| {
+                        text::fill_message(
+                            text::MONSTER_GLANCE_ROOM_TPL,
+                            &[&name, &verb2, &victim_name, poss],
+                        )
+                    });
                 (v, r)
             }
-            // DLL result 0: the to-hit roll failed — the PLAIN miss pair.
+            // DLL result 0: the to-hit roll failed — the PLAIN miss pair;
+            // record-less composes 1140:0x100e / 0x1022.
             Outcome::Dodged => {
                 let v = line(form.miss_msg, 1)
                     .map(|t| text::fill_message(t, &[&name, &verb2, &weapon_name]))
-                    .unwrap_or_else(|| text::monster_miss(&name));
+                    .unwrap_or_else(|| {
+                        text::fill_message(
+                            text::MONSTER_MISS_TPL,
+                            &[&name, &verb2, &weapon_name],
+                        )
+                    });
                 let r = line(form.miss_msg, 2)
                     .map(|t| text::fill_message(t, &[&name, &verb3, &victim_name, &weapon_name]))
-                    .unwrap_or_else(|| text::monster_miss_room(&name, &victim_name));
+                    .unwrap_or_else(|| {
+                        text::fill_message(
+                            text::MONSTER_MISS_ROOM_TPL,
+                            &[&name, &verb3, &victim_name, &weapon_name],
+                        )
+                    });
                 (v, r)
             }
-        }
+        };
+        // The DLL touppers the first byte of every composed line.
+        (text::capitalize_first(v), text::capitalize_first(r))
     }
 
     /// `check_kill_monster` + `distribute_experience` (`death.md` §4/§5).

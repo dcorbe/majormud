@@ -483,6 +483,10 @@ pub fn player_crit(verb: &str, target: &str, damage: i32) -> String {
 /// and passes the result as a string). Slots beyond the argument list
 /// render empty, exactly like the DLL's always-passed trailing `""`
 /// arguments (decompile `attack_monster_user` 0x2e34b).
+///
+/// Sibling: [`render_cast_line`] does %-substitution for spell messages —
+/// there overflow slots pass through UNCHANGED (its decompile path has no
+/// trailing `""` args), so the two policies intentionally differ.
 pub fn fill_message(template: &str, args: &[&str]) -> String {
     let mut out = String::with_capacity(template.len() + 16);
     let mut next = 0;
@@ -499,50 +503,53 @@ pub fn fill_message(template: &str, args: &[&str]) -> String {
     out
 }
 
-// Fallback monster-swing lines, used only when an attack form lacks its
-// message records (fixtures; no shipped 1.11p melee form is missing them).
-// The DLL's own fallbacks compose from the wielded weapon's verb buffers
-// ("%s %s you with %s, but you dodge!"); ours are simpler fixed shapes —
-// ORACLE-VERIFY if a record-less form ever surfaces in real content.
+// Generic monster-swing templates, used when an attack form lacks its
+// message records. Four shipped 1.11p monsters have such record-less melee
+// forms: healer (47, wielding item 64), zombie (492), and ju-ju zombie
+// (493 and 772). Extracted verbatim from WCCMMUD.DLL seg 0x1140 (file base
+// 0xc9c00; identical strings in the WG3-NT build, `attack_monster_user`
+// 0x2e34b / 16-bit 1040:4f2a). The verb/weapon `%s` slots are filled from
+// the wielded weapon's records (`move_monster_to_fighter` 1040:1739);
+// unarmed monsters render them empty.
 
-/// "The kobold thief hits you for 5 damage!" — fallback hit, victim view.
-pub fn monster_hit(name: &str, verb: &str, damage: i32) -> String {
-    format!("The {name} {verb} you for {damage} damage!")
-}
+/// 1140:0x7b7 — record-less hit, victim view: (name, hit verb, damage).
+pub const MONSTER_HIT_TPL: &str = "%s %s you for %d damage!";
 
-/// Fallback hit, room view.
-pub fn monster_hit_room(name: &str, victim: &str, damage: i32) -> String {
-    format!("The {name} hits {victim} for {damage} damage!")
-}
+/// 1140:0x7d1 — record-less hit, room view: (name, hit verb, victim,
+/// damage descriptor — `get_damage_descriptor` renders the plain number).
+pub const MONSTER_HIT_ROOM_TPL: &str = "%s %s %s for %s damage!";
 
-/// Fallback plain miss (result 0 — the to-hit roll failed), victim view.
-pub fn monster_miss(name: &str) -> String {
-    format!("The {name} swings at you!")
-}
+/// 1140:0xf6b — record-less glance (result 1), victim view: (name, swing
+/// verb).
+pub const MONSTER_GLANCE_TPL: &str = "%s's %s hits you, but your armour deflects.";
 
-/// Fallback plain miss, room view.
-pub fn monster_miss_room(name: &str, victim: &str) -> String {
-    format!("The {name} swings at {victim}!")
-}
+/// 1140:0xf98 — record-less glance, room view: (name, swing verb — the
+/// VICTIM-view slot, same as 0xf6b —, victim, possessive pronoun).
+pub const MONSTER_GLANCE_ROOM_TPL: &str = "%s's %s hits %s, but glances off %s armour.";
 
-/// Fallback parry (result 3 — rendered with the "dodge" framing), victim.
-pub fn monster_dodge(name: &str) -> String {
-    format!("The {name} swings at you, but you dodge out of the way!")
-}
+/// 1140:0xfc5 — record-less parry (result 3), victim view: (name, swing
+/// verb, weapon name).
+pub const MONSTER_DODGE_TPL: &str = "%s %s you with %s, but you dodge!";
 
-/// Fallback parry, room view ("he/she dodges").
-pub fn monster_dodge_room(name: &str, victim: &str, pronoun: &str) -> String {
-    format!("The {name} swings at {victim}, but {pronoun} dodges out of the way!")
-}
+/// 1140:0xfe8 — record-less parry, room view: (name, swing verb, victim,
+/// weapon name, subject pronoun).
+pub const MONSTER_DODGE_ROOM_TPL: &str = "%s %s %s with its %s, but %s dodges.";
 
-/// Fallback glance (result 1 — connected, armour absorbed it), victim.
-pub fn monster_glance(name: &str) -> String {
-    format!("The {name} hits you, but your armour deflects the blow!")
-}
+/// 1140:0x100e — record-less plain miss, victim view: (name, swing verb,
+/// weapon name).
+pub const MONSTER_MISS_TPL: &str = "%s %s you with %s.";
 
-/// Fallback glance, room view ("his/her armour").
-pub fn monster_glance_room(name: &str, victim: &str, possessive: &str) -> String {
-    format!("The {name} hits {victim}, but {possessive} armour deflects the blow!")
+/// 1140:0x1022 — record-less plain miss, room view: (name, swing verb,
+/// victim, weapon name).
+pub const MONSTER_MISS_ROOM_TPL: &str = "%s %s %s with its %s.";
+
+/// `attack_monster_user` runs `toupper` on the first byte of every
+/// composed swing line (a no-op for record templates starting "The ...").
+pub fn capitalize_first(mut line: String) -> String {
+    if let Some(first) = line.get_mut(0..1) {
+        first.make_ascii_uppercase();
+    }
+    line
 }
 
 /// "%s drops to the ground!" (DLL + oracle).
@@ -606,7 +613,9 @@ pub struct CastMsgArgs<'a> {
 /// uses `%s` for the number. Returns `None` for a missing or empty line
 /// (message 1, the empty message, renders nothing). A `%` not followed by
 /// `s`/`d`, or a placeholder beyond the available arguments, passes through
-/// unchanged. `castmsga` is the empty message on every sampled spell, so
+/// unchanged — unlike sibling [`fill_message`], which renders overflow
+/// slots EMPTY to mirror the combat path's always-passed trailing `""`
+/// args; each policy matches its own decompile evidence. `castmsga` is the empty message on every sampled spell, so
 /// callers render `castmsgb` only and flag any spell shipping a non-empty
 /// `castmsga`.
 pub fn render_cast_line(

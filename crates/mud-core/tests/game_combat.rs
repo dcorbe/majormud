@@ -264,8 +264,10 @@ fn rounds_exchange_blows_every_five_seconds() {
             || shown.contains("glances off its armour"),
         "player swings across rounds: {shown:?}"
     );
+    // Unarmed record-less form: the DLL's generic hit template 1140:0x7b7
+    // with an empty verb slot ("Kobold thief  you for N damage!").
     assert!(
-        shown.contains("The kobold thief hits you for"),
+        shown.contains("Kobold thief  you for"),
         "monster retaliates: {shown:?}"
     );
     assert!(
@@ -682,11 +684,161 @@ fn weapon_verbs_fill_the_plain_miss_slots() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Record-less melee forms (healer 47, zombie 492, ju-ju zombie 493/772):
+// `attack_monster_user` composes their lines from the generic templates at
+// seg 1140 (0x7b7/0x7d1 hit, 0xf6b/0xf98 glance, 0xfc5/0xfe8 dodge,
+// 0x100e/0x1022 plain miss), with the verb `%s` slots filled from the
+// WIELDED WEAPON's records by `move_monster_to_fighter` (1040:1739): hit
+// verbs from the hit record lines 2/3, swing verbs from the miss record
+// lines 2/3 (hit verbs when no miss record; all empty when unarmed).
+// ---------------------------------------------------------------------------
+
+/// The healer's real shape: a record-less melee form plus the wielded
+/// longsword (item 64, hit record 8226, miss record 8286 — real strings).
+fn healer(accuracy: i16, min: i16, max: i16) -> Monster {
+    let mut m = kobold();
+    m.id = MonsterId(47);
+    m.name = "healer".into();
+    m.weapon = Some(ItemId(64));
+    m.attacks[0] = AttackForm {
+        kind: 1,
+        accuracy,
+        weight: 100,
+        min_damage: min,
+        max_damage: max,
+        hit_msg: None,
+        dodge_msg: None,
+        miss_msg: None,
+        energy: 666,
+    };
+    m
+}
+
+fn add_healer_weapon(content: &mut Content) {
+    content.add_message(Message {
+        id: MessageId(8226),
+        lines: vec![
+            "slash|impale|hack".into(),
+            "slashes|impales|hacks".into(),
+            "slashes|impales|hacks".into(),
+        ],
+    });
+    content.add_message(Message {
+        id: MessageId(8286),
+        lines: vec!["swing at".into(), "swings at".into(), "swings at".into()],
+    });
+    content.add_item(Item {
+        id: ItemId(64),
+        name: "longsword".into(),
+        item_type: 1,
+        hit_msg: Some(MessageId(8226)),
+        miss_msg: Some(MessageId(8286)),
+        ..Default::default()
+    });
+}
+
 #[test]
-fn messageless_forms_fall_back_to_plain_verbs() {
-    // The stock kobold() fixture has no message records: hits keep the
-    // "hits you for" fallback (asserted elsewhere) and misses get a plain
-    // "swings at" line.
+fn record_less_hit_composes_from_weapon_hit_verbs() {
+    // 1140:0x7b7 "%s %s you for %d damage!" + hit record line 2 verb pool,
+    // first char uppercased (the DLL's toupper on the composed buffer).
+    let mut content = arena(healer(200, 3, 3), 30, 30);
+    add_healer_weapon(&mut content);
+    let mut core = Core::new(content, config());
+    core.spawn_monster(MonsterId(47), RoomId { map: 1, room: 1 });
+    let s = engage(&mut core, "healer");
+    let shown = text_to(&run_rounds(&mut core, 4), s);
+    assert!(
+        ["slashes", "impales", "hacks"]
+            .iter()
+            .any(|v| shown.contains(&format!("Healer {v} you for 3 damage!"))),
+        "record-less hit composes 0x7b7 with a weapon hit verb: {shown:?}"
+    );
+    assert!(
+        !shown.contains("The healer hits you for"),
+        "the invented generic fallback must be gone: {shown:?}"
+    );
+}
+
+#[test]
+fn record_less_hit_room_view_composes_0x7d1() {
+    // 1140:0x7d1 "%s %s %s for %s damage!" (name, room verb, victim, dmg).
+    let mut content = arena(healer(200, 3, 3), 30, 30);
+    add_healer_weapon(&mut content);
+    let mut core = Core::new(content, config());
+    core.spawn_monster(MonsterId(47), RoomId { map: 1, room: 1 });
+    let s = engage(&mut core, "healer");
+    let o = create(&mut core, "Oracle");
+    let seen = text_to(&run_rounds(&mut core, 4), o);
+    assert!(
+        ["slashes", "impales", "hacks"]
+            .iter()
+            .any(|v| seen.contains(&format!("Healer {v} Dain for 3 damage!"))),
+        "record-less room hit composes 0x7d1: {seen:?}"
+    );
+    let _ = s;
+}
+
+#[test]
+fn record_less_dodge_and_glance_compose_the_weapon_clause() {
+    // Parry-heavy arena: 1140:0xfc5 "%s %s you with %s, but you dodge!"
+    // takes the miss-record swing verb + weapon name; the glance pair
+    // (0xf6b/0xf98) uses the same victim-view swing verb.
+    let mut content = arena(healer(40, 0, 0), 80, 80);
+    add_healer_weapon(&mut content);
+    let mut core = Core::new(content, config());
+    core.spawn_monster(MonsterId(47), RoomId { map: 1, room: 1 });
+    let s = engage(&mut core, "healer");
+    let o = create(&mut core, "Oracle");
+    let events = run_rounds(&mut core, 30);
+    let shown = text_to(&events, s);
+    assert!(
+        shown.contains("Healer swings at you with longsword, but you dodge!"),
+        "record-less parry composes 0xfc5: {shown:?}"
+    );
+    assert!(
+        shown.contains("Healer's swings at hits you, but your armour deflects."),
+        "record-less glance composes 0xf6b: {shown:?}"
+    );
+    let seen = text_to(&events, o);
+    assert!(
+        seen.contains("Healer swings at Dain with its longsword, but he dodges."),
+        "record-less room parry composes 0xfe8: {seen:?}"
+    );
+    assert!(
+        seen.contains("Healer's swings at hits Dain, but glances off his armour."),
+        "record-less room glance composes 0xf98: {seen:?}"
+    );
+}
+
+#[test]
+fn record_less_plain_miss_composes_0x100e() {
+    // Accuracy 5: ~95% plain misses -> "%s %s you with %s." and the room
+    // variant "%s %s %s with its %s."
+    let mut content = arena(healer(5, 1, 1), 30, 30);
+    add_healer_weapon(&mut content);
+    let mut core = Core::new(content, config());
+    core.spawn_monster(MonsterId(47), RoomId { map: 1, room: 1 });
+    let s = engage(&mut core, "healer");
+    let o = create(&mut core, "Oracle");
+    let events = run_rounds(&mut core, 10);
+    let shown = text_to(&events, s);
+    assert!(
+        shown.contains("Healer swings at you with longsword."),
+        "record-less plain miss composes 0x100e: {shown:?}"
+    );
+    let seen = text_to(&events, o);
+    assert!(
+        seen.contains("Healer swings at Dain with its longsword."),
+        "record-less room miss composes 0x1022: {seen:?}"
+    );
+}
+
+#[test]
+fn record_less_unarmed_renders_empty_verb_slots() {
+    // The zombies' shape (no weapon, no records): move_monster_to_fighter
+    // zeroes every verb buffer, so the same templates render with EMPTY
+    // verb/weapon slots — double space and all. Verbatim DLL behavior.
     let mut content = world();
     content
         .monsters
@@ -699,7 +851,11 @@ fn messageless_forms_fall_back_to_plain_verbs() {
     let s = engage(&mut core, "kobold");
     let shown = text_to(&run_rounds(&mut core, 10), s);
     assert!(
-        shown.contains("The kobold thief swings at you!"),
-        "fallback plain miss: {shown:?}"
+        shown.contains("Kobold thief  you with ."),
+        "unarmed record-less plain miss keeps the empty slots: {shown:?}"
+    );
+    assert!(
+        !shown.contains("The kobold thief swings at you!"),
+        "the invented plain-miss fallback must be gone: {shown:?}"
     );
 }
