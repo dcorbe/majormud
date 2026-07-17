@@ -2148,6 +2148,8 @@ impl Core {
     fn use_command(&mut self, session: SessionId, target: &str, read_verb: bool) -> Resolution {
         let want = target.trim().to_ascii_lowercase();
         if want.is_empty() {
+            // ORACLE-VERIFY: bare use/read behavior unmeasured — falling
+            // to the say fallback is a guess.
             return Resolution::FallThrough;
         }
         let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
@@ -2196,7 +2198,7 @@ impl Core {
             return Resolution::Handled;
         }
         let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
-            return Resolution::FallThrough;
+            unreachable!("session verified in-game above");
         };
         player.inventory.remove(pos);
         player.spellbook.insert(spell_id, false);
@@ -2230,6 +2232,8 @@ impl Core {
         match self.visible_item_description(session, want) {
             Some(lines) => {
                 let paragraph = text::item_description(&lines);
+                // ORACLE-VERIFY: empty-description item output unmeasured
+                // (we print nothing at all).
                 if !paragraph.is_empty() {
                     self.output_line(session, &paragraph);
                 }

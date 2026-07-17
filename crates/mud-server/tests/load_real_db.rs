@@ -162,6 +162,18 @@ fn known_content_spot_checks() {
     assert_eq!(staff.weapon_type, 1, "1 or 3 = two-handed (oracle: '(Two handed)')");
     assert!(staff.hit_msg.is_some());
 
+    // Item descriptions: the magic-missile scroll (id 119) parchment —
+    // exactly the two stored lines (desc1/desc2; the empty desc3 dropped).
+    let scroll = &content.items[&mud_core::content::ItemId(119)];
+    assert_eq!(scroll.name, "scroll of magic missile");
+    assert_eq!(
+        scroll.description,
+        vec![
+            "This parchment is inscribed with runes of magic, but exactly".to_string(),
+            "what is written can only be learned by reading it.".to_string(),
+        ]
+    );
+
     // The newbie manual is placed at the Village Entrance but not gettable.
     let manual = &content.items[&mud_core::content::ItemId(1098)];
     assert_eq!(manual.name, "newbie manual");
