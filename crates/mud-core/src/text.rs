@@ -186,15 +186,6 @@ pub const MUST_SPECIFY_TARGET: &str = "You must specify a target for that spell!
 pub const CAST_GUILT: &str =
     "You are overcome with a feeling of guilt and break off your attack.";
 
-/// ORACLE-INVENTED-TEMPORARY until the slice-5 odd-style arg table (the
-/// slice-4 data check moved it: no learnable duration starter is odd): the
-/// refusal for `msgstyle & 1 == 1` spells (~441 shipped, incl. fireball
-/// 120 / deathtouch 58), whose castmsgb args bind in a different order
-/// with no spell-name slot — [`render_cast_line`] would silently mis-bind
-/// them (see its doc). Not a DLL string; remove with the guard in
-/// `cast_command`.
-pub const CANNOT_CAST_YET: &str = "You cannot cast that yet.";
-
 /// DLL string 00485de3 ("Your spell has no effect on %s.") — the SpellImmu
 /// (139) refusal on a monster target (decompile cast_monster_target
 /// 43630-43638). ORACLE-VERIFY: no starter spell/monster pair reaches it.
@@ -601,20 +592,24 @@ pub struct CastMsgArgs<'a> {
     pub damage: Option<i32>,
 }
 
-/// VERIFIED (oracle §8.6 + mmud_wgnt.sqlite messages 3242/2/7) **for spells
-/// with `msgstyle & 1 == 0` ONLY**: renders one line of a spell's `castmsgb`
-/// record, substituting `%s`/`%d` left to right from the audience-appropriate
-/// argument order:
+/// Renders one line of a spell's `castmsgb` record, substituting `%s`/`%d`
+/// left to right from the audience-appropriate argument order. Two order
+/// tables, keyed on `odd_style` (callers pass `spell.msg_style & 1 == 1` —
+/// the decompile branches display_spell_success on `spell+0xa4 & 1`):
 ///
+/// EVEN (VERIFIED, oracle §8.6 + mmud_wgnt.sqlite messages 3242/2/7):
 /// - caster line: spell, target, damage (the caster never appears);
 /// - target line: caster, spell, damage;
 /// - room line: caster, spell, target, damage.
 ///
-/// Spells with `msgstyle & 1 == 1` (~441 shipped, incl. fireball/deathtouch)
-/// bind (target, damage) / (damage) / (target, damage) with NO spell-name
-/// slot — callers MUST check `msgstyle` and refuse/flag odd styles until a
-/// second order table lands, or the mis-bind is silent ("magic missile takes
-/// 13 fire damage!").
+/// ODD (~441 shipped spells, incl. fireball 120 / deathtouch 58; decompile
+/// display_spell_success else-branch 38040-38124: caster prf(line, target,
+/// damage), target prf(line, damage), room prf(line, target, damage) — NO
+/// spell-name slot and NO caster name anywhere; shape: message 8524).
+/// ORACLE-VERIFY: the lowest learnable odd spell is L19 — unmeasured live.
+/// - caster line: target, damage;
+/// - target line: damage;
+/// - room line: target, damage.
 ///
 /// Caller obligations: for self-casts pass `target = Some(caster_name)` and
 /// do NOT deliver the Target line to anyone (oracle: `c blur` prints the
@@ -635,6 +630,7 @@ pub fn render_cast_line(
     msg: &crate::content::Message,
     audience: CastAudience,
     args: &CastMsgArgs<'_>,
+    odd_style: bool,
 ) -> Option<String> {
     let line = msg.lines.get(audience as usize)?;
     if line.is_empty() {
@@ -642,10 +638,18 @@ pub fn render_cast_line(
     }
     let damage = args.damage.map(|d| d.to_string());
     let damage = damage.as_deref();
-    let order: [Option<&str>; 4] = match audience {
-        CastAudience::Caster => [Some(args.spell), args.target, damage, None],
-        CastAudience::Target => [Some(args.caster), Some(args.spell), damage, None],
-        CastAudience::Room => [Some(args.caster), Some(args.spell), args.target, damage],
+    let order: [Option<&str>; 4] = match (odd_style, audience) {
+        (false, CastAudience::Caster) => [Some(args.spell), args.target, damage, None],
+        (false, CastAudience::Target) => {
+            [Some(args.caster), Some(args.spell), damage, None]
+        }
+        (false, CastAudience::Room) => {
+            [Some(args.caster), Some(args.spell), args.target, damage]
+        }
+        (true, CastAudience::Caster) | (true, CastAudience::Room) => {
+            [args.target, damage, None, None]
+        }
+        (true, CastAudience::Target) => [damage, None, None, None],
     };
     let mut next_arg = order.into_iter().flatten();
     let mut out = String::with_capacity(line.len());

@@ -536,12 +536,13 @@ pub struct Spell {
     pub min_increase: ScalePair,
     /// `+0xf8/+0xf9` `durincrease/lvlsdurincr` — duration per-level scaling.
     pub duration_increase: ScalePair,
-    /// `msgstyle` — castmsgb argument-order style. Odd values (~441
-    /// shipped spells, incl. fireball 120 / deathtouch 58) bind
-    /// (target, damage) orders with NO spell-name slot; even values are
-    /// the [`crate::text::render_cast_line`] contract. Casting refuses
-    /// odd styles until the slice-5 second arg table lands (slice-4 data
-    /// check: no shop-learnable duration spell below L19 is odd).
+    /// `msgstyle` (`+0xa4`) — castmsgb argument-order style, keyed on
+    /// `& 1` ([`crate::text::render_cast_line`]'s `odd_style`). Even:
+    /// caster (spell, target, damage) / target (caster, spell, damage) /
+    /// room (caster, spell, target, damage). Odd (~441 shipped spells,
+    /// incl. fireball 120 / deathtouch 58): caster (target, damage) /
+    /// target (damage) / room (target, damage) — no spell-name slot, no
+    /// caster name (decompile display_spell_success 0x3e433 else-branch).
     pub msg_style: i16,
 }
 

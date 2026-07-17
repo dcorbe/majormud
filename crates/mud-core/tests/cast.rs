@@ -50,9 +50,8 @@ const HEXBOLT: SpellId = SpellId(90);
 const DOOM: SpellId = SpellId(100);
 /// Fixed Damage(9), mana 2, round cost 500: the mid-combat no-mana probe.
 const SIPHON: SpellId = SpellId(110);
-/// msgstyle-odd (the fireball/deathtouch family): refused pending the
-/// slice-5 odd-style castmsgb arg table (slice-4 data check: no duration
-/// starter is odd — the lowest odd learnable duration spell is L19).
+/// msgstyle-odd (the fireball/deathtouch family): fixed Damage(9), round
+/// cost 1000, msg-8524-shaped castmsgb — the odd arg-order-table probe.
 const ODDBALL: SpellId = SpellId(120);
 // --- Task 12 benign instant fixtures (base_chance 200 = deterministic) ---
 /// Fixed Heal(25): the max-HP cap probe.
@@ -325,6 +324,17 @@ fn world() -> Content {
             "An echo follows you!".into(),
         ],
     });
+    // The msg-8524 shape (fireball family): msgstyle-odd binding —
+    // caster (target, damage), target (damage), room (target, damage),
+    // no spell-name slot.
+    content.add_message(Message {
+        id: MessageId(909),
+        lines: vec![
+            "%s takes %d fire damage!".into(),
+            "You take %d fire damage!".into(),
+            "%s takes %s fire damage!".into(),
+        ],
+    });
     content.add_race(Race {
         id: RaceId(1),
         name: "Human".into(),
@@ -431,9 +441,13 @@ fn world() -> Content {
     oddball.id = ODDBALL;
     oddball.name = "oddball".into();
     oddball.short_name = "oddb".into();
-    // msgstyle & 1 == 1: the castmsgb args bind in a different order with
-    // no spell-name slot — must refuse until the slice-5 arg table.
+    // msgstyle & 1 == 1: castmsgb binds through the ODD order table —
+    // caster (target, damage), target (damage), room (target, damage),
+    // no spell-name slot (decompile display_spell_success else-branch).
     oddball.msg_style = 1;
+    oddball.abilities = vec![(Ability::Damage, 9)]; // fixed: deterministic line
+    oddball.round_cost = 1000; // one fire per round, like doom
+    oddball.cast_msg_b = Some(MessageId(909));
     // Task 12 benign instant fixtures (spec §4 table, single-target).
     let mut mend = spell(MEND, "mend", "mend");
     mend.abilities = vec![(Ability::Heal, 25)]; // fixed value bypasses the roll
@@ -1155,26 +1169,34 @@ fn targeted_offensive_cast_in_protected_room_prints_guilt() {
 }
 
 #[test]
-fn msgstyle_odd_spell_refuses_before_costs_and_engagement() {
-    // TEMPORARY until the slice-5 odd-style arg table: msgstyle-odd
-    // spells (~441 shipped, incl. fireball 120 / deathtouch 58) bind
-    // castmsgb args in a different order with no spell-name slot;
-    // render_cast_line would silently mis-bind them, so the cast refuses
-    // loudly before any cost or engagement.
+fn msgstyle_odd_spell_casts_with_the_odd_arg_order() {
+    // The slice-5 odd arg table (decompile display_spell_success odd
+    // branch): caster line binds (target, damage), the room line
+    // (target, damage) — no spell name, no caster name. The slice-4
+    // CANNOT_CAST_YET refusal is gone. ORACLE-VERIFY: the lowest
+    // learnable odd spell is L19 — unmeasured live.
     let (mut core, s, m) = arena(RAT);
-    let energy = core.round_energy(s);
+    let watcher = core.attach_player(player("Grunt", WARRIOR, BTreeMap::new()));
+    core.drain_events();
     let shown = cast(&mut core, s, "c oddb rat");
+    assert!(shown.contains("*Combat Engaged*"), "engages: {shown:?}");
+    let events = {
+        for _ in 0..5 {
+            core.tick();
+        }
+        core.drain_events()
+    };
+    let fired = text_to(&events, s);
     assert!(
-        shown.contains("You cannot cast that yet.\n"),
-        "got: {shown:?}"
+        fired.contains("giant rat takes 9 fire damage!\n"),
+        "caster line (target, damage): {fired:?}"
     );
-    assert!(!shown.contains("*Combat Engaged*"), "no engagement: {shown:?}");
-    assert_eq!(core.current_mana(s), 6, "no mana cost");
-    assert_eq!(core.round_energy(s), energy, "no round cost");
-    assert_eq!(core.monster_hp(m), Some(1000), "no damage dealt");
-    // Nothing was armed: the next combat round fires nothing.
-    let round = fire_round(&mut core, s);
-    assert!(!round.contains("You fire"), "no armed cast: {round:?}");
+    let seen = text_to(&events, watcher);
+    assert!(
+        seen.contains("giant rat takes 9 fire damage!\n"),
+        "room line (target, damage): {seen:?}"
+    );
+    assert_eq!(core.monster_hp(m), Some(1000 - 9), "fixed Damage 9 landed");
 }
 
 #[test]

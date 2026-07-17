@@ -2346,20 +2346,6 @@ impl Core {
             self.output_line(session, text::SPELL_TOO_POWERFUL);
             return;
         }
-        // TEMPORARY until the slice-5 odd-style arg table: msgstyle-odd
-        // spells (~441 shipped, incl. fireball 120 / deathtouch 58) bind
-        // castmsgb args as (target, damage) orders with NO spell-name
-        // slot; text::render_cast_line would silently mis-bind them
-        // ("magic missile takes 13 fire damage!"). Refuse the cast loudly
-        // before any cost or engagement instead — not a real DLL gate.
-        // DATA (slice-4 Task 3 check): every shop-learnable duration spell
-        // below level 19 is msgstyle-even (the lowest odd ones are solid
-        // fog L19, black wind L21) — no duration STARTER needs the table,
-        // so it slides to slice 5 with the deeper spell content.
-        if spell.msg_style & 1 != 0 {
-            self.output_line(session, text::CANNOT_CAST_YET);
-            return;
-        }
         // Offensive target resolution, BEFORE the cost gates and the roll
         // (MEASURED §8.9: the must-specify, guilt and unmatched-target
         // refusals all left the prompt mana unchanged; in the DLL they
@@ -2790,8 +2776,12 @@ impl Core {
                 spell: &spell.name,
                 damage: None,
             };
-            let caster_line = text::render_cast_line(msg, text::CastAudience::Caster, &args);
-            let room_line = text::render_cast_line(msg, text::CastAudience::Room, &args);
+            // msgstyle-odd binds (target, damage) with no spell name —
+            // the renderer's second order table (ORACLE-VERIFY: no
+            // learnable odd BENIGN spell exists below L19).
+            let odd = spell.msg_style & 1 == 1;
+            let caster_line = text::render_cast_line(msg, text::CastAudience::Caster, &args, odd);
+            let room_line = text::render_cast_line(msg, text::CastAudience::Room, &args, odd);
             if let Some(line) = caster_line {
                 self.output_line(session, &line);
             }
@@ -3261,11 +3251,10 @@ impl Core {
         // Cast messages: castmsgb only (castmsga is the empty message on
         // every sampled spell — the Task-10 renderer contract). The target
         // line is skipped: the target is a monster, not a session.
-        // slice-5: msgstyle-odd arg orders — msg_style IS loaded and odd
-        // styles are refused at the gate (cast_command); what remains is
-        // the second arg-order table so odd-style spells (fireball 120,
-        // deathtouch 58, ...) — which bind (target, damage) with no
-        // spell-name slot — can render instead of being refused.
+        // msgstyle-odd (fireball 120, deathtouch 58, ...) binds (target,
+        // damage) with no spell-name slot — the renderer's second order
+        // table, keyed on msg_style & 1 (ORACLE-VERIFY: the lowest
+        // learnable odd spell is L19, unmeasured live).
         // slice-5: kai/mystic message variants ("invoke a power"/"kai"
         // instead of "cast a spell"/"mana", spec §2) + the per-round
         // invoke flag — a mystic casting today gets mage wording.
@@ -3276,8 +3265,9 @@ impl Core {
                 spell: &spell.name,
                 damage,
             };
-            let caster_line = text::render_cast_line(msg, text::CastAudience::Caster, &args);
-            let room_line = text::render_cast_line(msg, text::CastAudience::Room, &args);
+            let odd = spell.msg_style & 1 == 1;
+            let caster_line = text::render_cast_line(msg, text::CastAudience::Caster, &args, odd);
+            let room_line = text::render_cast_line(msg, text::CastAudience::Room, &args, odd);
             if let Some(line) = caster_line {
                 self.output_line(session, &line);
             }
