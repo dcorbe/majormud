@@ -126,6 +126,25 @@ fn direction_word_minimums_match_the_oracle() {
 }
 
 #[test]
+fn use_and_read_verbs() {
+    // ORACLE-VERIFY min abbrevs: unmeasured; use = 2 ("u" stays the up
+    // alias), read = 2.
+    assert_eq!(parse("us scroll"), Command::Use("scroll".into()));
+    assert_eq!(parse("use scroll of blur"), Command::Use("scroll of blur".into()));
+    assert_eq!(parse("u"), Command::Move(Direction::Up)); // alias intact
+    assert_eq!(parse("re scroll"), Command::Read("scroll".into()));
+    assert_eq!(parse("read scroll"), Command::Read("scroll".into()));
+}
+
+#[test]
+fn read_does_not_shadow_remove() {
+    // "rem" is not a prefix of "read", so remove's oracle minimum of 3
+    // keeps resolving even with read at min 2.
+    assert_eq!(parse("rem cap"), Command::Remove("cap".into()));
+    assert_eq!(parse("remove cap"), Command::Remove("cap".into()));
+}
+
+#[test]
 fn equip_verb_minimums_match_the_oracle() {
     // oracle_m4_verify.raw: "ar dagger" arms, "wi quarterstaff" SAYS,
     // "wie dagger" arms, "eq quarterstaff" arms.

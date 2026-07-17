@@ -1030,6 +1030,16 @@ impl Core {
                     self.say(session, line.trim());
                 }
             }
+            Command::Use(target) => {
+                if self.use_command(session, &target, false) == Resolution::FallThrough {
+                    self.say(session, line.trim());
+                }
+            }
+            Command::Read(target) => {
+                if self.use_command(session, &target, true) == Resolution::FallThrough {
+                    self.say(session, line.trim());
+                }
+            }
             Command::Status => self.show_sheet(session),
             Command::Experience => self.show_experience(session),
             Command::Health => self.show_health(session),
@@ -2097,6 +2107,135 @@ impl Core {
         self.room_items.entry(room).or_default().push((item, uses));
         self.output_line(session, &text::dropped_item(&name));
         Resolution::Handled
+    }
+
+    /// `use`/`read <item>` — the LearnSp(42) scroll path (spellcasting.md
+    /// §8.4). Both verbs share the learn handler; only the epilogue
+    /// differs (`use` prints a trailing blank line, `read` the
+    /// disintegrate line). Every refusal keeps the item.
+    fn use_command(&mut self, session: SessionId, target: &str, read_verb: bool) -> Resolution {
+        let want = target.trim().to_ascii_lowercase();
+        if want.is_empty() {
+            return Resolution::FallThrough;
+        }
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+            return Resolution::FallThrough;
+        };
+        let pos = player.inventory.iter().position(|(id, _)| {
+            self.content
+                .items
+                .get(id)
+                .is_some_and(|i| word_prefix_match(&i.name, &want))
+        });
+        let Some(pos) = pos else {
+            return self.use_unowned(session, target.trim(), &want, read_verb);
+        };
+        let item_id = player.inventory[pos].0;
+        let item = &self.content.items[&item_id];
+        let item_name = item.name.clone();
+        // LearnSp's value is the taught spell id. Other usable item kinds
+        // (charged items, light sources — "You lit the torch.",
+        // oracle_use_verbs.raw) arrive with the item-charges slice and
+        // slot in ahead of the refusal below.
+        let taught = item
+            .abilities
+            .iter()
+            .find_map(|(a, v)| (*a == Ability::LearnSp).then_some(*v))
+            .and_then(|v| u16::try_from(v).ok())
+            .map(SpellId)
+            .and_then(|id| self.content.spells.get(&id));
+        let Some(spell) = taught else {
+            // VERIFIED (oracle_use_verbs2.raw): both verbs refuse an
+            // owned non-LearnSp item and keep it.
+            self.output_line(session, text::MAY_NOT_USE_ITEM);
+            return Resolution::Handled;
+        };
+        let (spell_id, spell_name) = (spell.id, spell.name.clone());
+        if self.spell_gate(self.player(session), spell) != SpellGate::Ok {
+            // VERIFIED (§8.4): too-high or wrong-class — not consumed, so
+            // the book can never hold an uncastable-yet spell.
+            self.output_line(session, text::MAY_NOT_USE_ITEM);
+            return Resolution::Handled;
+        }
+        if self.player(session).spellbook.contains_key(&spell_id) {
+            // VERIFIED (oracle_use_verbs.raw): identical for both verbs;
+            // not consumed, book unchanged.
+            self.output_line(session, text::ALREADY_KNOW_SCROLL);
+            return Resolution::Handled;
+        }
+        let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+            return Resolution::FallThrough;
+        };
+        player.inventory.remove(pos);
+        player.spellbook.insert(spell_id, false);
+        let snapshot: Box<Player> = player.clone();
+        let mut out = text::learned_spell(&item_name, &spell_name);
+        out.push('\n');
+        if read_verb {
+            out.push_str(text::SCROLL_DISINTEGRATES);
+        }
+        out.push('\n');
+        self.output(session, &out);
+        self.events.push(Event::Persist(snapshot));
+        Resolution::Handled
+    }
+
+    /// The unowned arm of `use`/`read`: `use` never reads the shelf
+    /// ("You don't have {arg}." — oracle_use_verbs.raw); `read` prints the
+    /// description paragraph of a visible shop-shelf or floor item, else
+    /// "You do not see {arg} here!".
+    fn use_unowned(
+        &mut self,
+        session: SessionId,
+        raw: &str,
+        want: &str,
+        read_verb: bool,
+    ) -> Resolution {
+        if !read_verb {
+            self.output_line(session, &text::dont_have(raw));
+            return Resolution::Handled;
+        }
+        match self.visible_item_description(session, want) {
+            Some(lines) => {
+                let paragraph = text::item_description(&lines);
+                if !paragraph.is_empty() {
+                    self.output_line(session, &paragraph);
+                }
+            }
+            None => self.output_line(session, &text::do_not_see_here(raw)),
+        }
+        Resolution::Handled
+    }
+
+    /// The description of an item visible to the player without owning
+    /// it: the shop shelf (stocked rows only, like LIST), then the floor.
+    /// Only the shelf case is oracle-measured; the relative priority never
+    /// co-occurred (ORACLE-VERIFY).
+    fn visible_item_description(&self, session: SessionId, want: &str) -> Option<Vec<String>> {
+        if let Some(shop_id) = self.shop_here(session) {
+            let shop = &self.content.shops[&shop_id];
+            let counts = self.shop_stock.get(&shop_id).copied().unwrap_or_default();
+            for (i, slot) in shop.stock.iter().enumerate() {
+                let Some(item_id) = slot.item else { continue };
+                if counts[i] == 0 {
+                    continue;
+                }
+                if let Some(item) = self.content.items.get(&item_id)
+                    && word_prefix_match(&item.name, want)
+                {
+                    return Some(item.description.clone());
+                }
+            }
+        }
+        let room = self.player(session).location;
+        for (id, _) in self.room_items.get(&room).into_iter().flatten() {
+            if let Some(item) = self.content.items.get(id)
+                && word_prefix_match(&item.name, want)
+            {
+                return Some(item.description.clone());
+            }
+        }
+        None
     }
 
     /// The inventory display (oracle-exact four lines).

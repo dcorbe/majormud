@@ -315,6 +315,56 @@ pub fn spell_row(level: i16, mana: i16, short: &str, name: &str) -> String {
     format!("{level:>3}{mana:>4}    {short:<6}{name:<30}")
 }
 
+// --- use/read strings (VERIFIED oracle_spell_learning.raw /
+// oracle_use_verbs.raw / oracle_use_verbs2.raw; spellcasting.md §8.4) ---
+
+/// VERIFIED (§8.4): the learn line shared by both verbs.
+pub fn learned_spell(item: &str, spell: &str) -> String {
+    format!("You read {item} and learn the spell {spell}.")
+}
+/// VERIFIED (§8.4): `read`'s epilogue line (`use` prints a blank line
+/// instead).
+pub const SCROLL_DISINTEGRATES: &str = "Its magic used, the scroll disintegrates.";
+/// VERIFIED (§8.4): refusal for a too-high or wrong-class scroll AND for
+/// an owned item with no use action — the item is kept in every case.
+pub const MAY_NOT_USE_ITEM: &str = "You may not use that item!";
+/// VERIFIED (§8.4): a scroll whose spell is already in the book — both
+/// verbs, not consumed.
+pub const ALREADY_KNOW_SCROLL: &str = "You realize that you already know this scroll!";
+/// VERIFIED (§8.4): `use {arg}` with no owned match; `use` never falls
+/// back to the shop shelf.
+pub fn dont_have(name: &str) -> String {
+    format!("You don't have {name}.")
+}
+/// VERIFIED (§8.4): `read {arg}` with nothing owned and nothing visible.
+pub fn do_not_see_here(name: &str) -> String {
+    format!("You do not see {name} here!")
+}
+
+/// The item description paragraph (VERIFIED oracle_spell_cast.raw `read
+/// scroll of smite`, raw bytes): the stored desc lines re-flow as one word
+/// stream, each word emitted with a trailing space; a line breaks before
+/// the word that would pass the wrap column, and the break swallows the
+/// pending space — so interior lines end flush and the final line keeps
+/// one trailing space. Wrap column 79: the measured break bounds it to
+/// 77..=79 (line ends at col 77, next word would end at 80). ORACLE-VERIFY
+/// with a description whose lines re-flow near the boundary.
+pub fn item_description(lines: &[String]) -> String {
+    let mut out = String::new();
+    let mut col = 0usize;
+    for word in lines.iter().flat_map(|l| l.split_whitespace()) {
+        if col > 0 && col + word.len() > 79 {
+            out.pop(); // the wrap swallows the pending space
+            out.push('\n');
+            col = 0;
+        }
+        out.push_str(word);
+        out.push(' ');
+        col += word.len() + 1;
+    }
+    out
+}
+
 // --- healer strings (VERIFIED oracle_healer2.raw) ---
 pub fn healed(coins: &str) -> String {
     format!("You hand over {coins} and all your wounds are healed.")

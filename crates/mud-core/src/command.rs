@@ -43,6 +43,10 @@ pub enum Command {
     Wear(String),
     /// `remove <worn armor>`.
     Remove(String),
+    /// `use <item>` — LearnSp scrolls today; charged items later.
+    Use(String),
+    /// `read <item>` — like `use`, plus the unowned-item description path.
+    Read(String),
     /// Shop commands.
     List,
     Buy(String),
@@ -92,7 +96,7 @@ enum Verb {
 /// All direction minimums are ORACLE-verified (oracle_directions.raw):
 /// north/south/west = full word, east = 3 (eat blocks 2), down = 3,
 /// up = 2, diagonals = 6. Hand-authored asymmetry is the original's.
-const VERBS: [(&str, usize, Verb); 36] = [
+const VERBS: [(&str, usize, Verb); 38] = [
     ("north", 5, Verb::Plain(|| Command::Move(Direction::North))),
     ("south", 5, Verb::Plain(|| Command::Move(Direction::South))),
     ("east", 3, Verb::Plain(|| Command::Move(Direction::East))),
@@ -113,6 +117,11 @@ const VERBS: [(&str, usize, Verb); 36] = [
     ("equip", 2, Verb::WithArgs(Command::Arm)),     // ORACLE: eq
     ("wear", 3, Verb::WithArgs(Command::Wear)),     // min 3: "we" says (oracle)
     ("remove", 3, Verb::WithArgs(Command::Remove)),
+    // ORACLE-VERIFY min abbrev: unmeasured; "u" is the up alias, so 2.
+    ("use", 2, Verb::WithArgs(Command::Use)),
+    // ORACLE-VERIFY min abbrev: unmeasured; 2 cannot shadow remove's
+    // oracle minimum of 3 ("rem" is not a prefix of "read").
+    ("read", 2, Verb::WithArgs(Command::Read)),
     ("list", 2, Verb::Plain(|| Command::List)),
     ("buy", 2, Verb::WithArgs(Command::Buy)),
     ("sell", 3, Verb::WithArgs(Command::Sell)),

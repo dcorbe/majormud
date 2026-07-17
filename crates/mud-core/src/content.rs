@@ -201,6 +201,9 @@ pub struct Monster {
 pub struct Item {
     pub id: ItemId,
     pub name: String,
+    /// `desc1..desc9` — the description paragraph, stored pre-wrapped but
+    /// re-flowed as a word stream at render (`text::item_description`).
+    pub description: Vec<String>,
     pub abilities: Vec<AbilityValue>,
     /// `+0x324[10]` — class allowlist (`class_1..10`): when non-empty,
     /// only these classes can use the item — and a match bypasses the

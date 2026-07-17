@@ -314,7 +314,9 @@ fn load_items(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
          missmsg, notdroppable, retainafteruses, destroyondeath, \
          class_1, class_2, class_3, class_4, class_5, class_6, class_7, \
          class_8, class_9, class_10, race_1, race_2, race_3, race_4, \
-         race_5, race_6, race_7, race_8, race_9, race_10 FROM item"
+         race_5, race_6, race_7, race_8, race_9, race_10, \
+         desc1, desc2, desc3, desc4, desc5, desc6, desc7, desc8, desc9 \
+         FROM item"
     ))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
@@ -343,9 +345,17 @@ fn load_items(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
                 races.push(RaceId(to_u16("item", "race", r)?));
             }
         }
+        // desc1..desc9 trail the query (indexes base+41..base+49).
+        let mut description: Vec<String> = (base + 41..base + 50)
+            .map(|i| row.get(i))
+            .collect::<Result<_, _>>()?;
+        while description.last().is_some_and(|l| l.is_empty()) {
+            description.pop();
+        }
         content.add_item(Item {
             id: ItemId(to_u16("item", "number", row.get(0)?)?),
             name: row.get(1)?,
+            description,
             abilities,
             classes,
             races,
