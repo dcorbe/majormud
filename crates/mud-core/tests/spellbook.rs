@@ -9,7 +9,7 @@ use mud_core::content::{
     Class, ClassId, Content, Element, MatchType, Race, RaceId, Room, RoomId, SaveClass, ScalePair,
     Spell, SpellId, StatBlock, TargetMode,
 };
-use mud_core::game::{Core, CoreConfig, Event, Gender, Player, SessionId};
+use mud_core::game::{Core, CoreConfig, Event, Gender, Player, SessionId, SpellGate};
 
 const MAGE: ClassId = ClassId(1);
 const WARRIOR: ClassId = ClassId(2);
@@ -194,6 +194,55 @@ fn empty_book_prints_you_have_no_spells() {
     assert!(
         !shown.contains("following spells"),
         "no header on empty book: {shown:?}"
+    );
+}
+
+#[test]
+fn spell_gate_passes_castable_same_group_spell() {
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(player("Vexil", MAGE, BTreeMap::new()));
+    let mage = core.player_snapshot(s);
+    assert_eq!(
+        core.spell_gate(&mage, &core.content().spells[&MAGIC_MISSILE]),
+        SpellGate::Ok
+    );
+    // Gate 1 only applies to gated spells: an ungated (group 0) spell
+    // passes even for the non-caster warrior.
+    let w = core.attach_player(player("Grunt", WARRIOR, BTreeMap::new()));
+    let warrior = core.player_snapshot(w);
+    let mut ungated = spell(SpellId(99), "light", "ligh");
+    ungated.class_gate_group = 0;
+    assert_eq!(core.spell_gate(&warrior, &ungated), SpellGate::Ok);
+}
+
+#[test]
+fn spell_gate_rejects_high_required_power_as_too_powerful() {
+    // Illuminate requires power 2; the fixture mage is level 1.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(player("Vexil", MAGE, BTreeMap::new()));
+    let mage = core.player_snapshot(s);
+    assert_eq!(
+        core.spell_gate(&mage, &core.content().spells[&ILLUMINATE]),
+        SpellGate::TooPowerful
+    );
+}
+
+#[test]
+fn spell_gate_rejects_wrong_magery_group_as_wrong_class() {
+    let mut core = Core::new(world(), CoreConfig::default());
+    let w = core.attach_player(player("Grunt", WARRIOR, BTreeMap::new()));
+    let warrior = core.player_snapshot(w);
+    assert_eq!(
+        core.spell_gate(&warrior, &core.content().spells[&MAGIC_MISSILE]),
+        SpellGate::WrongClass
+    );
+    // Right group but the class can't ever cast this deep: casting
+    // factor 1 < required class level 3 is WrongClass, not TooPowerful.
+    let s = core.attach_player(player("Vexil", MAGE, BTreeMap::new()));
+    let mage = core.player_snapshot(s);
+    assert_eq!(
+        core.spell_gate(&mage, &core.content().spells[&DEEP_MAGERY]),
+        SpellGate::WrongClass
     );
 }
 

@@ -122,6 +122,20 @@ pub struct Player {
     pub spellbook: BTreeMap<SpellId, bool>,
 }
 
+/// Why a spell can('t) be learned/used by this character.
+/// [`Core::spell_gate`] covers gates 1-2 (spellcasting.md §2); the
+/// alignment lattice (gate 3) is deferred with M4's other alignment
+/// gates — no starter scroll carries one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpellGate {
+    Ok,
+    /// Wrong magery group, or the class can't ever cast this deep.
+    WrongClass,
+    /// Right class, character level below spell.required_power (+0xbe).
+    /// Oracle-proven level gate (spellcasting.md §8.3).
+    TooPowerful,
+}
+
 /// The five coin denominations, high to low (`+0x610..+0x620`). All prices
 /// are computed in copper (index 0, the lowest) via `convert_currency`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1656,6 +1670,28 @@ impl Core {
             },
             _ => true,
         }
+    }
+
+    /// Spell learnability/usability gates 1-2 (spellcasting.md §2 + §8.3):
+    /// a gated spell (group != 0) needs the class's magery group to match
+    /// AND the class casting factor to reach the spell's required class
+    /// level; then the character level must reach `required_power` — the
+    /// oracle-proven level (not Spellcasting) gate. A player whose class
+    /// id resolves to nothing can't cast, matching `user_can_use`.
+    pub fn spell_gate(&self, player: &Player, spell: &crate::content::Spell) -> SpellGate {
+        let Some(class) = self.content.classes.get(&player.class) else {
+            return SpellGate::WrongClass;
+        };
+        if spell.class_gate_group != 0
+            && (class.caster_group != spell.class_gate_group
+                || class.casting_factor < spell.required_class_level)
+        {
+            return SpellGate::WrongClass;
+        }
+        if i32::from(player.level) < i32::from(spell.required_power) {
+            return SpellGate::TooPowerful;
+        }
+        SpellGate::Ok
     }
 
     /// `display_shop_items`: shelf price = cost x (markup+100)/100 — the
