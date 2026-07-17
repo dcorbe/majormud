@@ -19,8 +19,8 @@ use mud_core::content::{
 };
 use mud_core::command::{parse, Command};
 use mud_core::game::{
-    cast_roll_succeeds, damage_mr, monster_save_resists, spell_magnitude, Core, CoreConfig, Event,
-    Gender, Player, SessionId,
+    cast_roll_succeeds, damage_mr, monster_save_resists, spell_duration, spell_magnitude,
+    ActiveSpell, Core, CoreConfig, Event, Gender, Player, SessionId,
 };
 
 const MAGE: ClassId = ClassId(1);
@@ -50,7 +50,8 @@ const DOOM: SpellId = SpellId(100);
 /// Fixed Damage(9), mana 2, round cost 500: the mid-combat no-mana probe.
 const SIPHON: SpellId = SpellId(110);
 /// msgstyle-odd (the fireball/deathtouch family): refused pending the
-/// slice-4 odd-style castmsgb arg table.
+/// slice-5 odd-style castmsgb arg table (slice-4 data check: no duration
+/// starter is odd — the lowest odd learnable duration spell is L19).
 const ODDBALL: SpellId = SpellId(120);
 // --- Task 12 benign instant fixtures (base_chance 200 = deterministic) ---
 /// Fixed Heal(25): the max-HP cap probe.
@@ -70,6 +71,17 @@ const LEECH: SpellId = SpellId(180);
 const MRBOLT: SpellId = SpellId(190);
 /// Fixed Damage(100) twin of mrbolt: the "1 ignores MR entirely" contrast.
 const RAWBOLT: SpellId = SpellId(200);
+// --- slice-4 Task 3 duration fixtures (base_chance 200 = deterministic) ---
+/// The blur (129) model: duration 70 flat, magnitude bounds 5..5, abilities
+/// [(Dodge, 0), (DescMsg, 903), (RemovesSpell, WARD)] — slot entry, the
+/// cast-time active line, and the anti-stacking dispel.
+const VEIL: SpellId = SpellId(210);
+/// The amethyst-pendant-effect stand-in (blur's RemovesSpell target 157):
+/// only ever pre-seeded into a slot, never cast.
+const WARD: SpellId = SpellId(220);
+/// KillSpell(WARD) twin of veil — the suppress-EndCast dispel. Task 6
+/// honors the chain distinction; today both merely clear the slot.
+const REAP: SpellId = SpellId(230);
 
 const RAT: MonsterId = MonsterId(7);
 const EMBER: MonsterId = MonsterId(8);
@@ -211,6 +223,17 @@ fn world() -> Content {
             "%s casts %s!".into(),
         ],
     });
+    // The DescMsg record (the blur msg-68 model): line1 = expiry line,
+    // line2 = empty (room variant unmeasured), line3 = the active line
+    // printed at cast and appended to `st` (§8.6). One record, three roles.
+    content.add_message(Message {
+        id: MessageId(903),
+        lines: vec![
+            "The effects of veil wear off.".into(),
+            String::new(),
+            "You are veiled!".into(),
+        ],
+    });
     content.add_race(Race {
         id: RaceId(1),
         name: "Human".into(),
@@ -318,7 +341,7 @@ fn world() -> Content {
     oddball.name = "oddball".into();
     oddball.short_name = "oddb".into();
     // msgstyle & 1 == 1: the castmsgb args bind in a different order with
-    // no spell-name slot — must refuse until the slice-4 arg table.
+    // no spell-name slot — must refuse until the slice-5 arg table.
     oddball.msg_style = 1;
     // Task 12 benign instant fixtures (spec §4 table, single-target).
     let mut mend = spell(MEND, "mend", "mend");
@@ -358,6 +381,29 @@ fn world() -> Content {
     rawbolt.name = "rawbolt".into();
     rawbolt.short_name = "rawb".into();
     rawbolt.abilities = vec![(Ability::Damage, 100)];
+    // Slice-4 duration fixtures. veil mirrors real blur (mana 4, round
+    // cost 100, duration 70 flat, magnitude 5..5, Dodge value 0 = "store
+    // the rolled V", RemovesSpell -> the pendant effect).
+    let mut veil = spell(VEIL, "veil", "veil");
+    veil.mana_cost = 4;
+    veil.round_cost = 100;
+    veil.duration = 70;
+    veil.min_base = 5;
+    veil.max_base = 5;
+    veil.cast_msg_b = Some(MessageId(901));
+    veil.abilities = vec![
+        (Ability::Dodge, 0),
+        (Ability::DescMsg, 903),
+        (Ability::RemovesSpell, 220),
+    ];
+    let mut ward = spell(WARD, "ward", "ward");
+    ward.duration = 70;
+    let mut reap = spell(REAP, "reap", "reap");
+    reap.duration = 70;
+    reap.abilities = vec![(Ability::KillSpell, 220)];
+    content.add_spell(veil);
+    content.add_spell(ward);
+    content.add_spell(reap);
     content.add_spell(mmis);
     content.add_spell(blur);
     content.add_spell(illu);
@@ -436,6 +482,9 @@ fn full_book() -> BTreeMap<SpellId, bool> {
         LEECH,
         MRBOLT,
         RAWBOLT,
+        VEIL,
+        WARD,
+        REAP,
     ] {
         book.insert(id, false);
     }
@@ -936,7 +985,7 @@ fn targeted_offensive_cast_in_protected_room_prints_guilt() {
 
 #[test]
 fn msgstyle_odd_spell_refuses_before_costs_and_engagement() {
-    // TEMPORARY until the slice-4 odd-style arg table: msgstyle-odd
+    // TEMPORARY until the slice-5 odd-style arg table: msgstyle-odd
     // spells (~441 shipped, incl. fireball 120 / deathtouch 58) bind
     // castmsgb args in a different order with no spell-name slot;
     // render_cast_line would silently mis-bind them, so the cast refuses
@@ -1542,6 +1591,216 @@ fn duration_spell_cast_applies_no_stats() {
     assert_eq!(core.current_mana(s), 2, "full mana 4 paid");
     let p = core.player_snapshot(s);
     assert_eq!((p.hunger, p.thirst), (1000, 1000), "counters untouched");
+}
+
+// --- duration formula (slice 4 Task 3; spec §4 step 1, decompile
+// --- add_cast_spell_to_user 38148-38166) ---
+
+/// A roll source that must never fire (un-banded duration paths).
+fn no_roll() -> impl FnMut(i32, i32) -> i32 {
+    |_, _| panic!("duration rolled without a band")
+}
+
+#[test]
+fn duration_is_flat_when_all_scaling_is_zero() {
+    // Blur (spell 129): duration 70, duration_per_level 0, increase (0,0),
+    // level_cap 0 — 70 flat at any caster level, no band roll.
+    let mut probe = spell(SpellId(1), "probe", "prob");
+    probe.duration = 70;
+    assert_eq!(spell_duration(&probe, 1, 0, &mut no_roll()), 70);
+    assert_eq!(spell_duration(&probe, 999, 0, &mut no_roll()), 70);
+}
+
+#[test]
+fn duration_increase_divides_the_level_first_and_clamps_to_the_cap() {
+    // scaled_duration = (L / levels) * per — divide-first truncation
+    // (decompile 38156-38158); the level cap clamps exactly like the
+    // magnitude clamp: cap < 1 = uncapped (38148-38155).
+    let mut probe = spell(SpellId(1), "probe", "prob");
+    probe.duration = 10;
+    probe.duration_increase = ScalePair { per: 5, levels: 2 };
+    assert_eq!(spell_duration(&probe, 7, 0, &mut no_roll()), 25); // 10+(7/2)*5
+    probe.level_cap = 4;
+    assert_eq!(spell_duration(&probe, 7, 0, &mut no_roll()), 20); // L = 4
+    probe.level_cap = -1;
+    assert_eq!(spell_duration(&probe, 7, 0, &mut no_roll()), 25); // uncapped
+}
+
+#[test]
+fn duration_band_rolls_base_to_max_plus_one_only_below_max() {
+    // max = duration_per_level * L; base < max -> genrdn(base, max+1),
+    // inclusive of BOTH ends like the magnitude roll — the result spans
+    // base ..= max+1 (decompile 38160-38163).
+    let mut probe = spell(SpellId(1), "probe", "prob");
+    probe.duration = 10;
+    probe.duration_per_level = 4; // L 5 -> max 20
+    assert_eq!(spell_duration(&probe, 5, 0, &mut rolls(&[10])), 10);
+    assert_eq!(spell_duration(&probe, 5, 0, &mut rolls(&[21])), 21);
+    // base == max never rolls (38161 is a strict less-than).
+    probe.duration = 20;
+    assert_eq!(spell_duration(&probe, 5, 0, &mut no_roll()), 20);
+    // base > max (shrinking per-level data) never rolls either.
+    probe.duration = 30;
+    assert_eq!(spell_duration(&probe, 5, 0, &mut no_roll()), 30);
+}
+
+#[test]
+fn alter_sp_length_is_a_final_percentage() {
+    // duration = (alter + 100) * duration / 100, integer division
+    // (decompile 38165-38166) — applied AFTER the band roll.
+    let mut probe = spell(SpellId(1), "probe", "prob");
+    probe.duration = 70;
+    assert_eq!(spell_duration(&probe, 1, 50, &mut no_roll()), 105);
+    assert_eq!(spell_duration(&probe, 1, -50, &mut no_roll()), 35);
+    assert_eq!(spell_duration(&probe, 1, 0, &mut no_roll()), 70);
+    probe.duration = 25;
+    assert_eq!(spell_duration(&probe, 1, 50, &mut no_roll()), 37); // truncates
+}
+
+// --- duration slot entry (slice 4 Task 3; spec §4 add_cast_spell_to_user) ---
+
+#[test]
+fn duration_cast_enters_the_first_free_slot() {
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(player("Vexil", MAGE, full_book()));
+    core.drain_events();
+    core.input(s, "c veil");
+    let events = core.drain_events();
+    let shown = text_to(&events, s);
+    // Measured order: castmsgb caster line, then the DescMsg(115) line3
+    // active line (the live capture has the prompt BETWEEN them —
+    // ORACLE-VERIFY prompt placement, noted at the emit site).
+    let msg = shown.find("You cast veil on Vexil!").expect("castmsgb line");
+    let active = shown.find("You are veiled!").expect("DescMsg line3");
+    assert!(msg < active, "order: {shown:?}");
+    let p = core.player_snapshot(s);
+    let slot = p.active_spells[0];
+    assert_eq!(slot.spell, Some(VEIL), "first free slot taken");
+    assert!((5..=6).contains(&slot.value), "stored rolled V: {}", slot.value);
+    assert_eq!(slot.remaining, 70, "flat blur-model duration");
+    assert!(p.active_spells[1..].iter().all(|s| s.spell.is_none()));
+    // Slot changes persist.
+    assert!(
+        events.iter().any(
+            |e| matches!(e, Event::Persist(p) if p.active_spells[0].spell == Some(VEIL))
+        ),
+        "Persist after slot entry"
+    );
+    // Entry alone feeds no stats until Task 4: the only deltas are costs.
+    assert_eq!(core.current_mana(s), 2, "full mana 4 paid");
+    assert_eq!(core.round_energy(s), 900, "round cost only");
+}
+
+#[test]
+fn duration_recast_refreshes_the_slot_in_place() {
+    // Spec §4 step 2: already active -> refresh value + duration in the
+    // SAME slot; no second slot. ORACLE-VERIFY refresh message (expedition
+    // in flight): refresh is silent beyond the normal cast lines.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut vexil = player("Vexil", MAGE, full_book());
+    vexil.active_spells[0] = ActiveSpell { spell: Some(VEIL), value: 1, remaining: 3 };
+    let s = core.attach_player(vexil);
+    core.drain_events();
+    let shown = cast(&mut core, s, "c veil");
+    assert!(shown.contains("You cast veil on Vexil!"), "got: {shown:?}");
+    assert!(shown.contains("You are veiled!"), "active line on refresh: {shown:?}");
+    let p = core.player_snapshot(s);
+    assert_eq!(p.active_spells[0].spell, Some(VEIL), "same slot");
+    assert!((5..=6).contains(&p.active_spells[0].value), "value refreshed");
+    assert_eq!(p.active_spells[0].remaining, 70, "duration refreshed");
+    assert_eq!(
+        p.active_spells.iter().filter(|s| s.spell.is_some()).count(),
+        1,
+        "no second slot"
+    );
+    assert!(!shown.contains("already"), "silent refresh: {shown:?}");
+}
+
+#[test]
+fn full_slots_print_the_fail_line_and_lose_the_effect() {
+    // ORACLE-VERIFY slot overflow (unmeasured live; decompile-backed):
+    // add_cast_spell_to_user 38205-38217 — both slot scans exhausted ->
+    // "You attempt to cast %s, but fail." to the caster ONLY, return -1.
+    // The success roll already passed, so the FULL costs stay paid (no
+    // failure half-mana), and display_spell_success is never reached: no
+    // castmsgb, no active line, no room broadcast, no slot written.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut vexil = player("Vexil", MAGE, full_book());
+    for (i, slot) in vexil.active_spells.iter_mut().enumerate() {
+        *slot = ActiveSpell { spell: Some(SpellId(1000 + i as u16)), value: 1, remaining: 50 };
+    }
+    let before = vexil.active_spells;
+    let s = core.attach_player(vexil);
+    let watcher = core.attach_player(player("Grunt", WARRIOR, BTreeMap::new()));
+    core.drain_events();
+    core.input(s, "c veil");
+    let events = core.drain_events();
+    let shown = text_to(&events, s);
+    assert!(
+        shown.contains("You attempt to cast veil, but fail.\n"),
+        "got: {shown:?}"
+    );
+    assert!(!shown.contains("You cast veil"), "no castmsgb: {shown:?}");
+    assert!(!shown.contains("You are veiled!"), "no active line: {shown:?}");
+    let seen = text_to(&events, watcher);
+    assert!(!seen.contains("veil"), "caster-only, no room line: {seen:?}");
+    assert_eq!(core.player_snapshot(s).active_spells, before, "slots untouched");
+    assert_eq!(core.current_mana(s), 2, "FULL mana 4 paid, not the failure half");
+    assert_eq!(core.round_energy(s), 900, "full round cost paid");
+}
+
+#[test]
+fn removes_spell_pre_pass_clears_the_named_slot() {
+    // Blur's model (spec §3 pre-pass): (RemovesSpell 122, 157) dispels the
+    // amethyst pendant's effect on cast (anti-stacking). veil carries
+    // (RemovesSpell, WARD); the chain is honored in Task 6.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut vexil = player("Vexil", MAGE, full_book());
+    vexil.active_spells[0] = ActiveSpell { spell: Some(WARD), value: 2, remaining: 40 };
+    let s = core.attach_player(vexil);
+    core.drain_events();
+    cast(&mut core, s, "c veil");
+    let p = core.player_snapshot(s);
+    assert_eq!(p.find_active(WARD), None, "ward slot cleared");
+    let idx = p.find_active(VEIL).expect("veil entered");
+    assert_eq!(p.active_spells[idx].remaining, 70);
+}
+
+#[test]
+fn kill_spell_pre_pass_also_clears_the_named_slot() {
+    // KillSpell (153) dispels too; it differs from RemovesSpell only by
+    // suppressing the victim's EndCast chain — Task 6's distinction, both
+    // merely clear the slot today.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut vexil = player("Vexil", MAGE, full_book());
+    vexil.active_spells[0] = ActiveSpell { spell: Some(WARD), value: 2, remaining: 40 };
+    let s = core.attach_player(vexil);
+    core.drain_events();
+    cast(&mut core, s, "c reap");
+    let p = core.player_snapshot(s);
+    assert_eq!(p.find_active(WARD), None, "ward slot cleared");
+    assert!(p.find_active(REAP).is_some(), "reap entered");
+}
+
+#[test]
+fn caster_alter_sp_length_stretches_the_entered_duration() {
+    // AlterSpLength (166) reads the caster's accumulated ability bag
+    // (race/class/gear — decompile 38165 get_user_ability_value(0xa6)):
+    // +100% doubles veil's flat 70.
+    let mut content = world();
+    content
+        .classes
+        .get_mut(&MAGE)
+        .expect("fixture class")
+        .abilities
+        .push((Ability::AlterSpLength, 100));
+    let mut core = Core::new(content, CoreConfig::default());
+    let s = core.attach_player(player("Vexil", MAGE, full_book()));
+    core.drain_events();
+    cast(&mut core, s, "c veil");
+    let p = core.player_snapshot(s);
+    let idx = p.find_active(VEIL).expect("entered");
+    assert_eq!(p.active_spells[idx].remaining, 140, "(100+100)*70/100");
 }
 
 #[test]

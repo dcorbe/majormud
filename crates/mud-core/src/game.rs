@@ -398,6 +398,39 @@ pub fn spell_magnitude(
     (100 - resist) * v / 100
 }
 
+/// The duration roll for a successful duration-spell cast (decompile
+/// `add_cast_spell_to_user` 38148-38166, twin `add_cast_spell_to_monster`
+/// 38238-38256; spec §4 step 1):
+///
+/// - `L` = caster level with the SAME clamp as [`spell_magnitude`]:
+///   `cap < 1 || level <= cap ? level : cap` (cap at or below 0 = uncapped).
+/// - `base = duration + duration_increase.scaled_duration(L)` — the
+///   divide-first `(L / levels) * per` scaling.
+/// - `max = duration_per_level * L`; only when `base < max` (strict — the
+///   DLL's `base <= max && base != max`) is the band rolled:
+///   `duration = genrdn(base, max + 1)`. genrdn is inclusive of BOTH ends
+///   (the §8.6 magnitude finding), so the result spans `base ..= max + 1`.
+/// - AlterSpLength (166) — the CASTER's accumulated ability percentage —
+///   applies last: `duration = (alter + 100) * duration / 100` (integer
+///   division).
+///
+/// Blur (129): all scaling zero → 70 flat. `roll(lo, hi)` is the same
+/// injectable uniform-`[lo, hi]` seam as [`spell_magnitude`].
+pub fn spell_duration(
+    spell: &crate::content::Spell,
+    caster_level: u16,
+    alter_sp_length: i32,
+    roll: &mut impl FnMut(i32, i32) -> i32,
+) -> i32 {
+    let level = i32::from(caster_level);
+    let cap = i32::from(spell.level_cap);
+    let l = if cap < 1 || level <= cap { level } else { cap };
+    let base = i32::from(spell.duration) + spell.duration_increase.scaled_duration(l);
+    let max = i32::from(spell.duration_per_level) * l;
+    let duration = if base < max { roll(base, max + 1) } else { base };
+    (alter_sp_length + 100) * duration / 100
+}
+
 /// The monster saving throw against a player's successful offensive cast
 /// (decompile `cast_monster_target` 43594-43614; spec §3). Rolled only when
 /// the spell's save class grants one (`Always`, or `IfAntiMagic` on a
@@ -1972,12 +2005,16 @@ impl Core {
             self.output_line(session, text::SPELL_TOO_POWERFUL);
             return;
         }
-        // TEMPORARY until the slice-4 odd-style arg table: msgstyle-odd
+        // TEMPORARY until the slice-5 odd-style arg table: msgstyle-odd
         // spells (~441 shipped, incl. fireball 120 / deathtouch 58) bind
         // castmsgb args as (target, damage) orders with NO spell-name
         // slot; text::render_cast_line would silently mis-bind them
         // ("magic missile takes 13 fire damage!"). Refuse the cast loudly
         // before any cost or engagement instead — not a real DLL gate.
+        // DATA (slice-4 Task 3 check): every shop-learnable duration spell
+        // below level 19 is msgstyle-even (the lowest odd ones are solid
+        // fog L19, black wind L21) — no duration STARTER needs the table,
+        // so it slides to slice 5 with the deeper spell content.
         if spell.msg_style & 1 != 0 {
             self.output_line(session, text::CANNOT_CAST_YET);
             return;
@@ -2081,8 +2118,13 @@ impl Core {
             // energy shortages are therefore not checked here either; the
             // per-round attempt handles both silently. The DLL conditions
             // this engage-only block on duration == 0 (decompile:
-            // `param_1[0x67] == 0`); offensive DURATION spells take a
-            // different path that slice 4 must split out.
+            // `param_1[0x67] == 0`); offensive DURATION spells take the
+            // add_cast_spell_to_monster path instead — SLICE 6, with
+            // monster slots. DATA (slice-4 Task 3 check): ZERO of the 65
+            // shipped offensive-duration spells are taught by any
+            // LearnSp(42) scroll — all are monster-attack payloads — so no
+            // player cast can reach that path before slice 6; engage-only
+            // is correct for every learnable spell until then.
             if let Some(Session::InGame { target, .. }) = self.sessions.get_mut(&session)
                 && target.is_some()
             {
@@ -2120,6 +2162,16 @@ impl Core {
         let level = player.level;
         let caster_name = player.name.clone();
         let room = player.location;
+        // AlterSpLength (166): the caster's accumulated percentage
+        // stretches duration-spell lengths (spec §4 step 1; decompile
+        // add_cast_spell_to_user 38165 reads get_user_ability_value(0xa6)
+        // at entry time — race/class/gear via the same bag the recompute
+        // uses; active-slot contributions join the bag in Task 4).
+        let alter_sp_length = if spell.duration == 0 {
+            0
+        } else {
+            self.ability_bag(player).value(Ability::AlterSpLength)
+        };
         if *energy < round_cost {
             return;
         }
@@ -2147,6 +2199,14 @@ impl Core {
         let magnitude = if succeeded {
             let rng = &mut self.rng;
             spell_magnitude(&spell, level, 0, &mut |lo, hi| rng.roll(lo, hi))
+        } else {
+            0
+        };
+        // Duration (success only, duration spells only): spec §4 step 1,
+        // rolled from the same seeded game rng as the magnitude.
+        let duration = if succeeded && spell.duration != 0 {
+            let rng = &mut self.rng;
+            spell_duration(&spell, level, alter_sp_length, &mut |lo, hi| rng.roll(lo, hi))
         } else {
             0
         };
@@ -2203,12 +2263,77 @@ impl Core {
                 }
             }
         }
-        // slice 4: duration slots — a duration != 0 spell applies NOTHING
-        // here; add_cast_spell_to_user enters it into the target's
-        // active-spell slots instead (spec §4). KNOWN DIVERGENCE until
-        // then: the oracle's "You are blurred!" line after `c blur` is the
-        // spell's own message, NOT castmsgb — it does not print in slice 3.
-        //
+        // Duration spells apply NOTHING directly: add_cast_spell_to_user
+        // enters them into the target's active-spell slots and the stat
+        // recompute reads the slots from there (spec §4; the recompute
+        // feed is Task 4).
+        if spell.duration != 0 {
+            // RemovesSpell (122) / KillSpell (153) pre-pass on the
+            // target's own slots BEFORE entry (spec §3): the named spell
+            // is dispelled — blur (129) removes the amethyst pendant's
+            // effect 157 (anti-stacking). RemovesSpell honors the victim's
+            // EndCast chain, KillSpell suppresses it — Task 6's
+            // distinction; both merely clear the slot today.
+            let mut dispelled = false;
+            for (ability, value) in &spell.abilities {
+                let honor_endcast = match ability {
+                    Ability::RemovesSpell => true,
+                    Ability::KillSpell => false,
+                    _ => continue,
+                };
+                if let Ok(id) = u16::try_from(*value)
+                    && id != 0
+                    && let Some(idx) = self.player(session).find_active(SpellId(id))
+                {
+                    self.clear_active_slot(session, idx, honor_endcast);
+                    dispelled = true;
+                }
+            }
+            // Entry (spec §4 steps 2-3): already active → refresh value
+            // and duration in place; else the first free slot. The DLL
+            // stores the 16-bit rolled magnitude as the slot value
+            // (decompile 38180/38195: `(undefined2)param_4`).
+            let entered = {
+                let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session)
+                else {
+                    return;
+                };
+                let slot = ActiveSpell {
+                    spell: Some(spell_id),
+                    value: magnitude as i16,
+                    remaining: duration,
+                };
+                if let Some(idx) = player.find_active(spell_id) {
+                    // ORACLE-VERIFY refresh message (expedition in
+                    // flight): the refresh emits nothing beyond the
+                    // normal cast lines below — the decompile re-runs
+                    // display_spell_success on this branch (38180-38186),
+                    // so castmsgb + the DescMsg active line still print.
+                    player.active_spells[idx] = slot;
+                    true
+                } else if let Some(idx) = player.first_free_slot() {
+                    player.active_spells[idx] = slot;
+                    true
+                } else {
+                    false
+                }
+            };
+            if entered || dispelled {
+                let snapshot = Box::new(self.player(session).clone());
+                self.events.push(Event::Persist(snapshot));
+            }
+            if !entered {
+                // ORACLE-VERIFY slot overflow (unmeasured live;
+                // decompile-backed): both slot scans exhausted →
+                // add_cast_spell_to_user 38205-38217 prints the cast-fail
+                // line to the CASTER only and returns -1. The effect is
+                // lost, the full costs stay paid (the success roll
+                // passed), and display_spell_success is never reached —
+                // no castmsgb, no active line, no room broadcast.
+                self.output_line(session, &text::cast_fail(&spell_name));
+                return;
+            }
+        }
         // Cast messages: castmsgb only (castmsga is the empty message on
         // every sampled spell — the Task-10 renderer contract). Slice-3
         // benign casts are SELF-ONLY: target = the caster, the caster line
@@ -2231,6 +2356,38 @@ impl Core {
                 self.broadcast_to_room(room, Some(session), &line);
             }
         }
+        // Cast-time active line: message line3 of the spell's DescMsg (115)
+        // record, to the caster on a duration cast (decompile
+        // display_spell_success 38010-38011 prints message line 3 to the
+        // target; oracle: `You are blurred!`). MEASURED order: castmsgb
+        // caster line → prompt → this line — our prompt prints once at
+        // end-of-command, so the line lands BEFORE the prompt instead.
+        // ORACLE-VERIFY prompt placement (expedition in flight).
+        if spell.duration != 0
+            && let Some(msg_val) = spell
+                .abilities
+                .iter()
+                .find_map(|(a, v)| (*a == Ability::DescMsg).then_some(*v))
+            && let Ok(id) = u16::try_from(msg_val)
+            && let Some(msg) = self.content.messages.get(&crate::content::MessageId(id))
+            && let Some(line) = msg.lines.get(2).filter(|l| !l.is_empty())
+        {
+            let line = line.clone();
+            self.output_line(session, &line);
+        }
+    }
+
+    /// Minimal targeted active-slot removal — the RemovesSpell/KillSpell
+    /// pre-pass route (spec §3). Task 6: full termination
+    /// (`perform_spell_termination_player_upkeep`) replaces this body —
+    /// DescMsg line1, hard-write reversal, the EndCast chain when
+    /// `honor_endcast` (RemovesSpell honors it, KillSpell suppresses),
+    /// recompute. Today it only clears the slot.
+    fn clear_active_slot(&mut self, session: SessionId, idx: usize, honor_endcast: bool) {
+        let _ = honor_endcast; // Task 6 consumes it
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+            player.active_spells[idx] = ActiveSpell::default();
+        }
     }
 
     /// A live monster's template name (empty if the instance is gone).
@@ -2243,7 +2400,7 @@ impl Core {
 
     /// Sum of the template's ability values for one ability — the
     /// `get_monster_ability_value` template term (live monster buff slots
-    /// join in slice 4+).
+    /// join in slice 6 with the 5-slot monster active-spell table).
     fn monster_ability_value(&self, id: MonsterInstanceId, ability: Ability) -> i32 {
         self.monsters
             .get(&id)
@@ -2453,7 +2610,7 @@ impl Core {
         // Cast messages: castmsgb only (castmsga is the empty message on
         // every sampled spell — the Task-10 renderer contract). The target
         // line is skipped: the target is a monster, not a session.
-        // slice-4: msgstyle-odd arg orders — msg_style IS loaded and odd
+        // slice-5: msgstyle-odd arg orders — msg_style IS loaded and odd
         // styles are refused at the gate (cast_command); what remains is
         // the second arg-order table so odd-style spells (fireball 120,
         // deathtouch 58, ...) — which bind (target, damage) with no

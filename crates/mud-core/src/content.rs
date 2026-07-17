@@ -540,7 +540,8 @@ pub struct Spell {
     /// shipped spells, incl. fireball 120 / deathtouch 58) bind
     /// (target, damage) orders with NO spell-name slot; even values are
     /// the [`crate::text::render_cast_line`] contract. Casting refuses
-    /// odd styles until the slice-4 second arg table lands.
+    /// odd styles until the slice-5 second arg table lands (slice-4 data
+    /// check: no shop-learnable duration spell below L19 is odd).
     pub msg_style: i16,
 }
 
