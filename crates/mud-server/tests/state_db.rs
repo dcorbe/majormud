@@ -162,6 +162,91 @@ fn delete_player_purges_everything() {
     assert!(loaded.spellbook.is_empty());
 }
 
+/// The schema as first shipped (commit 02f029a): the shape of a live
+/// `state.sqlite` from before base stats, HP, hunger/thirst, coins, and
+/// lawful were added to the player table.
+const OLD_SCHEMA: &str = "
+CREATE TABLE account (
+    name          TEXT PRIMARY KEY COLLATE NOCASE,
+    password_hash TEXT NOT NULL,
+    gender        TEXT NOT NULL CHECK (gender IN ('M', 'F'))
+) STRICT;
+CREATE TABLE player (
+    name        TEXT PRIMARY KEY COLLATE NOCASE,
+    gender      TEXT NOT NULL CHECK (gender IN ('M', 'F')),
+    race        INTEGER NOT NULL,
+    class       INTEGER NOT NULL,
+    level       INTEGER NOT NULL,
+    intellect   INTEGER NOT NULL,
+    wisdom      INTEGER NOT NULL,
+    strength    INTEGER NOT NULL,
+    health      INTEGER NOT NULL,
+    agility     INTEGER NOT NULL,
+    charm       INTEGER NOT NULL,
+    cp_unspent  INTEGER NOT NULL,
+    cp_lifetime INTEGER NOT NULL,
+    lives       INTEGER NOT NULL,
+    experience  INTEGER NOT NULL,
+    map         INTEGER NOT NULL,
+    room        INTEGER NOT NULL
+) STRICT;
+";
+
+#[test]
+fn old_database_is_migrated_on_open() {
+    let path = std::env::temp_dir().join(format!(
+        "mud_state_migrate_{}.sqlite",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+
+    // A database written by the original server: old player table, one
+    // character saved by the old 17-column save_player.
+    {
+        let conn = rusqlite::Connection::open(&path).expect("create old db");
+        conn.execute_batch(OLD_SCHEMA).expect("old schema");
+        conn.execute(
+            "INSERT INTO player (name, gender, race, class, level,
+                 intellect, wisdom, strength, health, agility, charm,
+                 cp_unspent, cp_lifetime, lives, experience, map, room)
+             VALUES ('Daniela', 'F', 2, 1, 3,
+                 30, 50, 50, 50, 30, 30,
+                 100, 100, 9, 500, 1, 1)",
+            [],
+        )
+        .expect("old-shaped player row");
+    }
+
+    let db = StateDb::open(&path).expect("open migrates old schema");
+
+    // (a) Saving a modern player must succeed against the migrated table.
+    let modern = player("Newbie");
+    db.save_player(&modern).expect("modern save succeeds");
+    let loaded = db.load_player("Newbie").expect("query").expect("found");
+    assert_eq!(loaded, modern);
+
+    // (b) The old row loads, with base stats backfilled from the effective
+    // stats and current_hp backfilled to conscious.
+    let old = db.load_player("Daniela").expect("query").expect("found");
+    assert_eq!(old.base_stats, old.stats, "b_* backfilled from effective");
+    assert_eq!(old.stats.wisdom, 50);
+    assert_eq!(old.stats.intellect, 30);
+    assert_eq!(old.current_hp, 1, "loads conscious, not downed");
+    assert_eq!(old.level, 3);
+    assert_eq!(old.experience, 500);
+    assert!(!old.lawful);
+    assert_eq!(old.coins, Default::default());
+    drop(db);
+
+    // (c) Reopening is idempotent: same data, still writable.
+    let db = StateDb::open(&path).expect("reopen migrated db");
+    let again = db.load_player("Daniela").expect("query").expect("found");
+    assert_eq!(again, old);
+    db.save_player(&player("Second")).expect("save after reopen");
+
+    let _ = std::fs::remove_file(&path);
+}
+
 #[test]
 fn shop_stock_save_and_load_roundtrip() {
     let db = db();

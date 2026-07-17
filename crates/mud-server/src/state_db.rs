@@ -3,7 +3,9 @@
 //! This is the standalone server's replacement for the Worldgroup account
 //! system and the WCCUSER2 player file. Single writer (the server); passwords
 //! are argon2id hashes. The player schema mirrors `mud_core::game::Player`
-//! field-for-field and grows with it.
+//! field-for-field and grows with it; databases written by older servers
+//! gain any missing columns on open (see [`TABLES`] and
+//! `StateDb::add_missing_columns`).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -51,75 +53,124 @@ pub enum CreateAccountError {
     Other(StateError),
 }
 
-const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS account (
-    name          TEXT PRIMARY KEY COLLATE NOCASE,
-    password_hash TEXT NOT NULL,
-    gender        TEXT NOT NULL CHECK (gender IN ('M', 'F'))
-) STRICT;
-CREATE TABLE IF NOT EXISTS player (
-    name         TEXT PRIMARY KEY COLLATE NOCASE,
-    gender       TEXT NOT NULL CHECK (gender IN ('M', 'F')),
-    race         INTEGER NOT NULL,
-    class        INTEGER NOT NULL,
-    level        INTEGER NOT NULL,
-    intellect    INTEGER NOT NULL,
-    wisdom       INTEGER NOT NULL,
-    strength     INTEGER NOT NULL,
-    health       INTEGER NOT NULL,
-    agility      INTEGER NOT NULL,
-    charm        INTEGER NOT NULL,
-    b_intellect  INTEGER NOT NULL,
-    b_wisdom     INTEGER NOT NULL,
-    b_strength   INTEGER NOT NULL,
-    b_health     INTEGER NOT NULL,
-    b_agility    INTEGER NOT NULL,
-    b_charm      INTEGER NOT NULL,
-    hp_base      INTEGER NOT NULL,
-    current_hp   INTEGER NOT NULL,
-    current_mana INTEGER NOT NULL,
-    hunger       INTEGER NOT NULL,
-    thirst       INTEGER NOT NULL,
-    runic        INTEGER NOT NULL,
-    platinum     INTEGER NOT NULL,
-    gold         INTEGER NOT NULL,
-    silver       INTEGER NOT NULL,
-    copper       INTEGER NOT NULL,
-    lawful       INTEGER NOT NULL CHECK (lawful IN (0, 1)),
-    cp_unspent   INTEGER NOT NULL,
-    cp_lifetime  INTEGER NOT NULL,
-    lives        INTEGER NOT NULL,
-    experience   INTEGER NOT NULL,
-    map          INTEGER NOT NULL,
-    room         INTEGER NOT NULL
-) STRICT;
-CREATE TABLE IF NOT EXISTS bankbook (
-    name    TEXT NOT NULL COLLATE NOCASE,
-    shop    INTEGER NOT NULL,
-    balance INTEGER NOT NULL,
-    PRIMARY KEY (name, shop)
-) STRICT;
-CREATE TABLE IF NOT EXISTS shop_stock (
-    shop INTEGER NOT NULL,
-    slot INTEGER NOT NULL,
-    now  INTEGER NOT NULL,
-    PRIMARY KEY (shop, slot)
-) STRICT;
-CREATE TABLE IF NOT EXISTS player_item (
-    name   TEXT NOT NULL COLLATE NOCASE,
-    kind   TEXT NOT NULL CHECK (kind IN ('inv', 'worn', 'weapon')),
-    slot   INTEGER NOT NULL,
-    item   INTEGER NOT NULL,
-    uses   INTEGER NOT NULL,
-    PRIMARY KEY (name, kind, slot)
-) STRICT;
-CREATE TABLE IF NOT EXISTS player_spell (
-    name TEXT NOT NULL COLLATE NOCASE,
-    spell INTEGER NOT NULL,
-    temporary INTEGER NOT NULL CHECK (temporary IN (0, 1)),
-    PRIMARY KEY (name, spell)
-) STRICT;
-";
+/// One table of the canonical schema. `StateDb::init` both creates missing
+/// tables from this and `ALTER TABLE ... ADD COLUMN`s any column missing
+/// from a pre-existing table, so this is the single source of truth for the
+/// on-disk shape — add new columns here and old databases pick them up on
+/// the next open.
+struct TableDef {
+    name: &'static str,
+    /// `(column name, type + column constraints)` in canonical order.
+    columns: &'static [(&'static str, &'static str)],
+    /// Trailing table-level constraint (composite PRIMARY KEY), or `""`.
+    constraint: &'static str,
+}
+
+const TABLES: &[TableDef] = &[
+    TableDef {
+        name: "account",
+        columns: &[
+            ("name", "TEXT PRIMARY KEY COLLATE NOCASE"),
+            ("password_hash", "TEXT NOT NULL"),
+            ("gender", "TEXT NOT NULL CHECK (gender IN ('M', 'F'))"),
+        ],
+        constraint: "",
+    },
+    TableDef {
+        name: "player",
+        columns: &[
+            ("name", "TEXT PRIMARY KEY COLLATE NOCASE"),
+            ("gender", "TEXT NOT NULL CHECK (gender IN ('M', 'F'))"),
+            ("race", "INTEGER NOT NULL"),
+            ("class", "INTEGER NOT NULL"),
+            ("level", "INTEGER NOT NULL"),
+            ("intellect", "INTEGER NOT NULL"),
+            ("wisdom", "INTEGER NOT NULL"),
+            ("strength", "INTEGER NOT NULL"),
+            ("health", "INTEGER NOT NULL"),
+            ("agility", "INTEGER NOT NULL"),
+            ("charm", "INTEGER NOT NULL"),
+            ("b_intellect", "INTEGER NOT NULL"),
+            ("b_wisdom", "INTEGER NOT NULL"),
+            ("b_strength", "INTEGER NOT NULL"),
+            ("b_health", "INTEGER NOT NULL"),
+            ("b_agility", "INTEGER NOT NULL"),
+            ("b_charm", "INTEGER NOT NULL"),
+            ("hp_base", "INTEGER NOT NULL"),
+            ("current_hp", "INTEGER NOT NULL"),
+            ("current_mana", "INTEGER NOT NULL"),
+            ("hunger", "INTEGER NOT NULL"),
+            ("thirst", "INTEGER NOT NULL"),
+            ("runic", "INTEGER NOT NULL"),
+            ("platinum", "INTEGER NOT NULL"),
+            ("gold", "INTEGER NOT NULL"),
+            ("silver", "INTEGER NOT NULL"),
+            ("copper", "INTEGER NOT NULL"),
+            ("lawful", "INTEGER NOT NULL CHECK (lawful IN (0, 1))"),
+            ("cp_unspent", "INTEGER NOT NULL"),
+            ("cp_lifetime", "INTEGER NOT NULL"),
+            ("lives", "INTEGER NOT NULL"),
+            ("experience", "INTEGER NOT NULL"),
+            ("map", "INTEGER NOT NULL"),
+            ("room", "INTEGER NOT NULL"),
+        ],
+        constraint: "",
+    },
+    TableDef {
+        name: "bankbook",
+        columns: &[
+            ("name", "TEXT NOT NULL COLLATE NOCASE"),
+            ("shop", "INTEGER NOT NULL"),
+            ("balance", "INTEGER NOT NULL"),
+        ],
+        constraint: "PRIMARY KEY (name, shop)",
+    },
+    TableDef {
+        name: "shop_stock",
+        columns: &[
+            ("shop", "INTEGER NOT NULL"),
+            ("slot", "INTEGER NOT NULL"),
+            ("now", "INTEGER NOT NULL"),
+        ],
+        constraint: "PRIMARY KEY (shop, slot)",
+    },
+    TableDef {
+        name: "player_item",
+        columns: &[
+            ("name", "TEXT NOT NULL COLLATE NOCASE"),
+            ("kind", "TEXT NOT NULL CHECK (kind IN ('inv', 'worn', 'weapon'))"),
+            ("slot", "INTEGER NOT NULL"),
+            ("item", "INTEGER NOT NULL"),
+            ("uses", "INTEGER NOT NULL"),
+        ],
+        constraint: "PRIMARY KEY (name, kind, slot)",
+    },
+    TableDef {
+        name: "player_spell",
+        columns: &[
+            ("name", "TEXT NOT NULL COLLATE NOCASE"),
+            ("spell", "INTEGER NOT NULL"),
+            ("temporary", "INTEGER NOT NULL CHECK (temporary IN (0, 1))"),
+        ],
+        constraint: "PRIMARY KEY (name, spell)",
+    },
+];
+
+fn create_table_sql(table: &TableDef) -> String {
+    let mut parts: Vec<String> = table
+        .columns
+        .iter()
+        .map(|(name, def)| format!("{name} {def}"))
+        .collect();
+    if !table.constraint.is_empty() {
+        parts.push(table.constraint.to_string());
+    }
+    format!(
+        "CREATE TABLE IF NOT EXISTS {} ({}) STRICT",
+        table.name,
+        parts.join(", ")
+    )
+}
 
 pub struct StateDb {
     conn: Connection,
@@ -150,8 +201,64 @@ impl StateDb {
     }
 
     fn init(conn: Connection) -> Result<StateDb, StateError> {
-        conn.execute_batch(SCHEMA)?;
+        for table in TABLES {
+            conn.execute_batch(&create_table_sql(table))?;
+        }
+        Self::add_missing_columns(&conn)?;
         Ok(StateDb { conn })
+    }
+
+    /// Brings a database written by an older server up to the canonical
+    /// schema. `CREATE TABLE IF NOT EXISTS` never touches an existing
+    /// table, so every column added after a table first shipped must be
+    /// `ALTER TABLE ... ADD COLUMN`ed in here — without this, `save_player`
+    /// fails ("table player has no column named ...") on every save
+    /// against an old file and the character silently stops persisting.
+    fn add_missing_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
+        for table in TABLES {
+            let existing: std::collections::HashSet<String> = conn
+                .prepare("SELECT name FROM pragma_table_info(?1)")?
+                .query_map(params![table.name], |r| r.get(0))?
+                .collect::<Result<_, _>>()?;
+            for (col, def) in table.columns {
+                if existing.contains(*col) {
+                    continue;
+                }
+                // STRICT + NOT NULL: ADD COLUMN requires an explicit
+                // default. Migrated tables keep the DEFAULT clause; every
+                // write names all columns, so it is never consulted again.
+                let default = if def.starts_with("TEXT") { "''" } else { "0" };
+                conn.execute_batch(&format!(
+                    "ALTER TABLE {} ADD COLUMN {col} {def} DEFAULT {default}",
+                    table.name
+                ))?;
+                Self::backfill(conn, table.name, col)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Targeted backfill for freshly added player columns where the zero
+    /// default would be wrong. Only pre-migration rows are affected; both
+    /// choices are documented approximations.
+    fn backfill(conn: &Connection, table: &str, col: &str) -> Result<(), rusqlite::Error> {
+        if table != "player" {
+            return Ok(());
+        }
+        if let Some(effective) = col.strip_prefix("b_") {
+            // Old rows never stored base stats. Effective stats equal the
+            // base copy except while buffs are active (creation sets both
+            // from the race template; buffs modify `stats` only), so the
+            // effective column is the least-wrong source — worst case, a
+            // buff active at save time gets baked into the base.
+            conn.execute(&format!("UPDATE player SET {col} = {effective}"), [])?;
+        } else if col == "current_hp" {
+            // 0 HP would load the character downed and writhing (and
+            // rolling toward the death floor); 1 HP loads them conscious
+            // and slow-tick regeneration heals them back to max.
+            conn.execute("UPDATE player SET current_hp = 1", [])?;
+        }
+        Ok(())
     }
 
     pub fn create_account(
