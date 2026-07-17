@@ -1275,6 +1275,16 @@ impl Core {
             self.output_line(session, &text::not_unequipped(target.trim()));
             return Resolution::Handled;
         };
+        {
+            let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+                return Resolution::FallThrough;
+            };
+            let item = &self.content.items[&player.inventory[pos].0];
+            if !self.user_can_use(player, item) {
+                self.output_line(session, text::MAY_NOT_USE_WEAPON);
+                return Resolution::Handled;
+            }
+        }
         let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
             return Resolution::FallThrough;
         };
@@ -1314,7 +1324,12 @@ impl Core {
                 return Resolution::FallThrough;
             };
             let id = player.inventory[pos].0;
-            self.content.items[&id].worn_on
+            let item = &self.content.items[&id];
+            if !self.user_can_use(player, item) {
+                self.output_line(session, text::MAY_NOT_WEAR);
+                return Resolution::Handled;
+            }
+            item.worn_on
         };
         let dual = |a: i16, b: i16| (a == 4 || a == 0xd) && (b == 4 || b == 0xd)
             || (a == 0xe || a == 0x11) && (b == 0xe || b == 0x11);
@@ -1516,24 +1531,122 @@ impl Core {
     /// The shop in the player's room, if any.
     fn shop_here(&self, session: SessionId) -> Option<crate::content::ShopId> {
         let room = self.player(session).location;
-        self.content.rooms.get(&room)?.shop
+        let room = self.content.rooms.get(&room)?;
+        // Only rooms with type 1 are shop-active (room+0x43c == 1): the
+        // Silvermere Temple Healer (type 3) carries an inert shopnum.
+        if room.room_type != 1 {
+            return None;
+        }
+        room.shop
+    }
+
+    /// `user_can_use` (0x1fced): class/race allowlists (a match bypasses
+    /// the permission matrix), AntiMagic vs Magical, MinLevel/MaxLevel
+    /// abilities, then the class weapon/armour matrix. The alignment
+    /// ability gates (Good/Evil/Neutral vs legal level) await the crime
+    /// system — no legal points exist yet.
+    fn user_can_use(&self, player: &Player, item: &crate::content::Item) -> bool {
+        // Item type 0xb requires a class from a config list; no type-11
+        // items ship in the 1.11p data.
+        if item.item_type == 11 {
+            return false;
+        }
+        let Some(class) = self.content.classes.get(&player.class) else {
+            return false;
+        };
+        let bag = self.ability_bag(player);
+        if bag.value(Ability::AntiMagic) != 0
+            && item.abilities.iter().any(|(a, _)| *a == Ability::Magical)
+        {
+            return false;
+        }
+        for (ability, value) in &item.abilities {
+            match ability {
+                Ability::MinLevel if i32::from(player.level) < i32::from(*value) => {
+                    return false;
+                }
+                Ability::MaxLevel if i32::from(*value) < i32::from(player.level) => {
+                    return false;
+                }
+                _ => {}
+            }
+        }
+        let mut listed = false;
+        let mut allowed = false;
+        if !item.classes.is_empty() {
+            listed = true;
+            if item.classes.contains(&player.class) {
+                allowed = true;
+            } else {
+                return false;
+            }
+        }
+        if !item.races.is_empty() {
+            listed = true;
+            if item.races.contains(&player.race) {
+                allowed = true;
+            } else {
+                return false;
+            }
+        }
+        if listed && allowed {
+            return true; // explicit allowlist match bypasses the matrix
+        }
+        match item.item_type {
+            0 => {
+                if class.armour_code < item.armour_req {
+                    return false;
+                }
+                // Weapon codes 0/2/4 also forbid the Off-Hand slot.
+                if matches!(class.weapon_code, 0 | 2 | 4) && item.worn_on == 12 {
+                    return false;
+                }
+                true
+            }
+            1 => match class.weapon_code {
+                8 => true,
+                9 => {
+                    // Config triple: quarterstaff (100), dagger (68), 0.
+                    item.id == crate::content::ItemId(100)
+                        || item.id == crate::content::ItemId(68)
+                }
+                7 => matches!(item.weapon_type, 0 | 1),
+                6 => matches!(item.weapon_type, 2 | 3),
+                5 => matches!(item.weapon_type, 1 | 3),
+                4 => matches!(item.weapon_type, 0 | 2),
+                code => i32::from(item.weapon_type) == i32::from(code),
+            },
+            _ => true,
+        }
     }
 
     /// `display_shop_items`: shelf price = cost x (markup+100)/100 — the
     /// Charm haggle applies only at purchase (economy.md §2.1).
     fn list_command(&mut self, session: SessionId) -> Resolution {
         let Some(shop_id) = self.shop_here(session) else {
-            return Resolution::FallThrough;
+            // Unlike buy/sell, bare LIST refuses instead of falling to say
+            // (oracle_healer_gates.raw at the Temple Healer).
+            self.output_line(session, text::NOT_IN_SHOP_LIST);
+            return Resolution::Handled;
         };
         let shop = &self.content.shops[&shop_id];
         let counts = self.shop_stock.get(&shop_id).copied().unwrap_or_default();
-        let mut out = String::from(text::SHOP_HEADER);
-        out.push('\n');
+        // The header prints lazily on the first stocked row, and
+        // zero-stock rows are hidden — an empty shop lists nothing at all
+        // (display_shop_items 0x487xx; healer shops are silent).
+        let mut out = String::new();
         for (i, slot) in shop.stock.iter().enumerate() {
             let Some(item_id) = slot.item else { continue };
+            if counts[i] == 0 {
+                continue;
+            }
             let Some(item) = self.content.items.get(&item_id) else {
                 continue;
             };
+            if out.is_empty() {
+                out.push_str(text::SHOP_HEADER);
+                out.push('\n');
+            }
             // Shelf value in the item's OWN cost denomination (oracle:
             // "4 gold crowns" for a 2-gold lantern at markup 100).
             let shelf = i64::from(item.cost) * (i64::from(shop.markup) + 100) / 100;
@@ -1548,9 +1661,15 @@ impl Core {
                 )
             };
             out.push_str(&row);
+            let usable = self.user_can_use(self.player(session), item);
+            if !usable {
+                out.push_str(text::CANT_USE_SUFFIX);
+            }
             out.push('\n');
         }
-        self.output(session, &out);
+        if !out.is_empty() {
+            self.output(session, &out);
+        }
         Resolution::Handled
     }
 
@@ -1575,6 +1694,11 @@ impl Core {
             return Resolution::FallThrough;
         };
         let shop = self.content.shops[&shop_id].clone();
+        // Healer shops (type 5) sell services, not items (economy.md §2;
+        // strings VERIFIED oracle_healer2.raw).
+        if shop.shop_type == 5 {
+            return self.buy_healer_service(session, &want);
+        }
         let slot = shop.stock.iter().enumerate().find(|(_, s)| {
             s.item.is_some_and(|id| {
                 self.content
@@ -1633,6 +1757,69 @@ impl Core {
             text::bought_for(&item.name, &listing)
         };
         self.output_line(session, &msg);
+        Resolution::Handled
+    }
+
+    /// Healer services: `buy healing` = (max−cur)×2 copper, full heal;
+    /// `buy curing`/`buy cure poison` = 25 silver if poisoned (poison is
+    /// M5) or 15 SILVER when not — the constants ride in the silver arg
+    /// of check_currency (live: 150 copper, oracle_healer2.raw).
+    fn buy_healer_service(&mut self, session: SessionId, want: &str) -> Resolution {
+        let ratios = self.config.coin_ratios;
+        if word_prefix_match("healing", want) {
+            let missing = {
+                let Some(Session::InGame { player, derived, .. }) = self.sessions.get(&session)
+                else {
+                    return Resolution::FallThrough;
+                };
+                i64::from(derived.max_hp) - i64::from(player.current_hp)
+            };
+            let cost = (missing.max(0) * 2) as u64;
+            if self.player(session).coins.total_copper(ratios) < cost {
+                // ORACLE-VERIFY the cannot-afford-healing wording.
+                self.output_line(session, &text::cannot_afford("healing"));
+                return Resolution::Handled;
+            }
+            let Some(Session::InGame { player, derived, .. }) = self.sessions.get_mut(&session)
+            else {
+                return Resolution::FallThrough;
+            };
+            let spent = player.coins.deduct_copper(cost, ratios);
+            player.current_hp = derived.max_hp;
+            let coins = text::coin_listing([
+                spent.copper,
+                spent.silver,
+                spent.gold,
+                spent.platinum,
+                spent.runic,
+            ])
+            .unwrap_or_else(|| "nothing".into());
+            self.output_line(session, &text::healed(&coins));
+            return Resolution::Handled;
+        }
+        if word_prefix_match("curing", want) || word_prefix_match("cure poison", want) {
+            // Not-poisoned path only until M5 brings poison: 15 silver.
+            let cost = 15 * ratios[0];
+            if self.player(session).coins.total_copper(ratios) < cost {
+                self.output_line(session, &text::cannot_afford("curing"));
+                return Resolution::Handled;
+            }
+            let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+                return Resolution::FallThrough;
+            };
+            let spent = player.coins.deduct_copper(cost, ratios);
+            let coins = text::coin_listing([
+                spent.copper,
+                spent.silver,
+                spent.gold,
+                spent.platinum,
+                spent.runic,
+            ])
+            .unwrap_or_else(|| "nothing".into());
+            self.output_line(session, &text::not_poisoned(&coins));
+            return Resolution::Handled;
+        }
+        self.output_line(session, &text::not_known_item(want));
         Resolution::Handled
     }
 

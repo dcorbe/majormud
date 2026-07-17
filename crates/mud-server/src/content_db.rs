@@ -127,7 +127,7 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
         .collect::<Vec<_>>()
         .join(", ");
     let mut stmt = db.prepare(&format!(
-        "SELECT mapnumber, roomnumber, name, shopnum, {descs}, {exits}, {placed} FROM room"
+        "SELECT mapnumber, roomnumber, name, shopnum, {descs}, {exits}, {placed}, type FROM room"
     ))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
@@ -159,6 +159,7 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
             id,
             name: row.get(2)?,
             description,
+            room_type: to_i16("room", "type", row.get(41 + 17 * 2)?)?,
             shop: (shopnum > 0)
                 .then(|| to_u16("room", "shopnum", shopnum).map(ShopId))
                 .transpose()?,
@@ -306,7 +307,10 @@ fn load_items(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
         "SELECT number, name, {a_cols}, {b_cols}, \
          weight, type, uses, cost, costtype, minhit, maxhit, ac, weapon, \
          armour, wornon, accuracy, dr, gettable, reqstr, speed, hitmsg, \
-         missmsg, notdroppable, retainafteruses, destroyondeath FROM item"
+         missmsg, notdroppable, retainafteruses, destroyondeath, \
+         class_1, class_2, class_3, class_4, class_5, class_6, class_7, \
+         class_8, class_9, class_10, race_1, race_2, race_3, race_4, \
+         race_5, race_6, race_7, race_8, race_9, race_10 FROM item"
     ))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
@@ -323,10 +327,24 @@ fn load_items(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
             abilities.push((ability, to_i16("item", "ability value", value)?));
         }
         let base = 42;
+        let mut classes = Vec::new();
+        let mut races = Vec::new();
+        for i in 0..10 {
+            let c: i64 = row.get(base + 21 + i)?;
+            if c > 0 {
+                classes.push(ClassId(to_u16("item", "class", c)?));
+            }
+            let r: i64 = row.get(base + 31 + i)?;
+            if r > 0 {
+                races.push(RaceId(to_u16("item", "race", r)?));
+            }
+        }
         content.add_item(Item {
             id: ItemId(to_u16("item", "number", row.get(0)?)?),
             name: row.get(1)?,
             abilities,
+            classes,
+            races,
             weight: to_i16("item", "weight", row.get(base)?)?,
             item_type: to_i16("item", "type", row.get(base + 1)?)?,
             uses: to_i16("item", "uses", row.get(base + 2)?)?,
@@ -479,7 +497,8 @@ fn stat_block(
 
 fn load_classes(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
     let mut stmt = db.prepare(&format!(
-        "SELECT number, name, {}, {}, minhp, maxhp, magictype, magiclvl, exp, combat FROM class",
+        "SELECT number, name, {}, {}, minhp, maxhp, magictype, magiclvl, exp, combat, \
+         weapon, armour FROM class",
         ability_cols("abilitya"),
         ability_cols("abilityb"),
     ))?;
@@ -495,6 +514,8 @@ fn load_classes(db: &Connection, content: &mut Content) -> Result<(), LoadError>
             casting_factor: to_i16("class", "magiclvl", row.get(25)?)?,
             exp_base: to_i16("class", "exp", row.get(26)?)?,
             combat_factor: to_i16("class", "combat", row.get(27)?)?,
+            weapon_code: to_i16("class", "weapon", row.get(28)?)?,
+            armour_code: to_i16("class", "armour", row.get(29)?)?,
         });
     }
     Ok(())

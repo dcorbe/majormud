@@ -602,3 +602,35 @@ known 1g 9c purse before patching).
   ("3 sickle", singular name).
 - Still unverified: cannot-afford wording, crit message, caster
   prompt/Mana sheet line (M5), encumbrance descriptor bands.
+
+## Addendum — healer services & user_can_use verified (2026-07-16)
+
+- **Correction to §2**: the healer curing constants ride in the SILVER
+  argument of check_currency — live cost when not poisoned is 15 silver
+  = 150 copper ("You hand over 1 gold crown, 4 silver nobles, 10 copper
+  farthings and find that you were not poisoned!"). Healing: "You hand
+  over 8 copper farthings and all your wounds are healed." ((max−cur)×2
+  copper; at full HP: "You hand over nothing and ..."). The hand-over
+  list is deduct_currency's spent multiset.
+- **Shops only operate in rooms with `type == 1`** (room+0x43c): the
+  Silvermere Temple Healer (room 527, type 3, shopnum 4) refuses LIST
+  ("You cannot LIST if you are not in a shop!") and lets `buy healing`
+  fall to say; the healer NPC there answers said phrases instead (the
+  textblock system — "The healer casts cure poison on you!"). The
+  shop-active healer is Newhaven 2190 (type 1).
+- **List rows**: zero-stock rows are HIDDEN and the header prints lazily
+  on the first stocked row — an empty(-stock) shop lists nothing at all
+  (why healer LIST is silent). Rows failing user_can_use append
+  " (You can't use)" (spells get " (Too powerful)" — M5).
+- **user_can_use (0x1fced)**: buying is NOT gated (a Warrior can buy the
+  Paladin-only amulet); equipping is: wear → "You may not wear that
+  item!", arm → "You may not use that weapon." Order: type 0xb needs a
+  config class (no type-11 items ship); alignment ability gates
+  (Good/Evil/NotGood/NotEvil/Neutral vs get_legal_level band — awaits
+  the crime system); AntiMagic(51) player vs Magical(28) item; MinLevel
+  135 / MaxLevel 136 (value arrays); item class_1..10 / race_1..10
+  allowlists (a match BYPASSES the matrix, a miss refuses); then armor:
+  class.armour >= item.armour, weapon codes 0/2/4 forbid Off-Hand
+  (wornon 12); weapons: class.weapon code = capability set {0..3 that
+  class, 4=1H, 5=2H, 6=sharp, 7=blunt, 8=all, 9=only config items
+  quarterstaff(100)/dagger(68) — Mage/Mystic}. Other item types pass.

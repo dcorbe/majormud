@@ -16,6 +16,7 @@ fn world() -> Content {
         id: RoomId { map: 1, room: 1 },
         name: "Town Gates".into(),
         description: vec![],
+        room_type: 0,
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
@@ -78,6 +79,8 @@ fn world() -> Content {
         casting_factor: 0,
         exp_base: 0,
         combat_factor: 6,
+        weapon_code: 8,
+        armour_code: 9,
     });
     content
 }

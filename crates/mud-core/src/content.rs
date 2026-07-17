@@ -120,6 +120,10 @@ pub struct Room {
     /// Display lines, from the record's seven fixed `desc_N` line fields
     /// (trailing empty lines trimmed).
     pub description: Vec<String>,
+    /// `room+0x43c` (`type` column): 1 = shop-active. Rooms with a
+    /// `shopnum` but another type (e.g. the Silvermere Temple Healer,
+    /// type 3) refuse LIST/buy — the shop reference is inert there.
+    pub room_type: i16,
     /// The shop operating in this room (`shopnum` column), if any.
     pub shop: Option<ShopId>,
     /// Statically placed items (fixtures and initial floor stock).
@@ -198,6 +202,12 @@ pub struct Item {
     pub id: ItemId,
     pub name: String,
     pub abilities: Vec<AbilityValue>,
+    /// `+0x324[10]` — class allowlist (`class_1..10`): when non-empty,
+    /// only these classes can use the item — and a match bypasses the
+    /// weapon/armour permission matrix (user_can_use 0x1fced).
+    pub classes: Vec<ClassId>,
+    /// `+0x344[10]` — race allowlist (`race_1..10`), same semantics.
+    pub races: Vec<RaceId>,
     /// `+0x2f2` — weight units (coins weigh 1/3 each, separately).
     pub weight: i16,
     /// `+0x2f4` — 0 armor, 1 weapon, 6 light, 7 stackable, 0xb class-locked…
@@ -320,6 +330,13 @@ pub struct Class {
     /// `class+0x48` — the weapon/combat factor feeding accuracy and
     /// compute_energy_used (`combat` column).
     pub combat_factor: i16,
+    /// `class+0x44` — weapon permission code (`weapon` column): 0-3 one
+    /// weapon class, 4 = one-handed, 5 = two-handed, 6 = sharp,
+    /// 7 = blunt, 8 = all, 9 = only the config items (quarterstaff 100,
+    /// dagger 68).
+    pub weapon_code: i16,
+    /// `class+0x46` — max wearable armour weight class (`armour` column).
+    pub armour_code: i16,
 }
 
 /// Dangling references present in the shipped 1.11p data itself. The original

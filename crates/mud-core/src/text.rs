@@ -281,6 +281,20 @@ pub fn sold_for(name: &str, price: &str) -> String {
 pub fn cannot_sell_here(name: &str) -> String {
     format!("You cannot sell {name} here.")
 }
+pub const NOT_IN_SHOP_LIST: &str = "You cannot LIST if you are not in a shop!";
+/// Appended to a list row when user_can_use fails (items; spells get
+/// " (Too powerful)" — M5).
+pub const CANT_USE_SUFFIX: &str = " (You can't use)";
+pub const MAY_NOT_WEAR: &str = "You may not wear that item!";
+pub const MAY_NOT_USE_WEAPON: &str = "You may not use that weapon.";
+
+// --- healer strings (VERIFIED oracle_healer2.raw) ---
+pub fn healed(coins: &str) -> String {
+    format!("You hand over {coins} and all your wounds are healed.")
+}
+pub fn not_poisoned(coins: &str) -> String {
+    format!("You hand over {coins} and find that you were not poisoned!")
+}
 
 /// A copper amount as coin words.
 pub fn copper_amount(total: u64) -> String {

@@ -23,6 +23,7 @@ fn world_with_slot(slot: ShopStock) -> Content {
         id: RoomId { map: 1, room: 1 },
         name: "Shop".into(),
         description: vec![],
+        room_type: 1,
         shop: Some(ShopId(45)),
         placed_items: vec![],
         exits: Default::default(),
@@ -79,6 +80,8 @@ fn world_with_slot(slot: ShopStock) -> Content {
         casting_factor: 0,
         exp_base: 0,
         combat_factor: 6,
+        weapon_code: 8,
+        armour_code: 9,
     });
     content
 }

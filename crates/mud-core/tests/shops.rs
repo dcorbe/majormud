@@ -13,6 +13,7 @@ fn world() -> Content {
         id: RoomId { map: 1, room: 1 },
         name: "Weapons Shop".into(),
         description: vec![],
+        room_type: 1,
         shop: Some(ShopId(45)),
         placed_items: vec![],
         exits: Default::default(),
@@ -28,6 +29,7 @@ fn world() -> Content {
         id: RoomId { map: 1, room: 2 },
         name: "Outside".into(),
         description: vec![],
+        room_type: 0,
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
@@ -107,6 +109,8 @@ fn world() -> Content {
         casting_factor: 0,
         exp_base: 0,
         combat_factor: 6,
+        weapon_code: 8,
+        armour_code: 9,
     });
     content
 }
@@ -274,7 +278,9 @@ fn selling_something_the_shop_does_not_stock_is_refused() {
 }
 
 #[test]
-fn shop_commands_outside_a_shop_fall_through_to_say() {
+fn outside_a_shop_list_refuses_and_buy_says() {
+    // oracle_healer_gates.raw at the Temple Healer: LIST refuses outright,
+    // buy falls through to say.
     let mut core = Core::new(world(), config());
     let s = create(&mut core, "Dain");
     core.input(s, "s");
@@ -282,8 +288,14 @@ fn shop_commands_outside_a_shop_fall_through_to_say() {
     core.input(s, "list");
     let shown = text_to(&core.drain_events(), s);
     assert!(
-        shown.contains("You say \"list\""),
-        "ORACLE-VERIFY outside-shop behavior: {shown:?}"
+        shown.contains("You cannot LIST if you are not in a shop!"),
+        "got: {shown:?}"
+    );
+    core.input(s, "buy healing");
+    let shown = text_to(&core.drain_events(), s);
+    assert!(
+        shown.contains("You say \"buy healing\""),
+        "buy says: {shown:?}"
     );
 }
 

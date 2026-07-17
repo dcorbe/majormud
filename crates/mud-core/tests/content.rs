@@ -10,6 +10,7 @@ fn room(map: u16, num: u16) -> Room {
         id: RoomId { map, room: num },
         name: format!("room {map}/{num}"),
         description: vec![],
+        room_type: 0,
         shop: None,
         placed_items: vec![],
         exits: Default::default(),

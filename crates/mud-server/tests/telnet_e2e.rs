@@ -17,6 +17,7 @@ fn world() -> Content {
         id: RoomId { map: 1, room: 1 },
         name: "Town Gates".into(),
         description: vec!["You are before the massive town gates.".into()],
+        room_type: 0,
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
@@ -30,6 +31,7 @@ fn world() -> Content {
         id: RoomId { map: 1, room: 2 },
         name: "Town Square".into(),
         description: vec![],
+        room_type: 1,
         shop: Some(ShopId(45)),
         placed_items: vec![],
         exits: Default::default(),
@@ -107,6 +109,8 @@ fn world() -> Content {
         casting_factor: 0,
         exp_base: 0,
         combat_factor: 6,
+        weapon_code: 8,
+        armour_code: 9,
     });
     content
 }
