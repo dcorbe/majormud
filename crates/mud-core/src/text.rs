@@ -432,6 +432,74 @@ pub fn gain_experience(amount: u64) -> String {
     format!("You gain {amount} experience.")
 }
 
+/// Which audience a `castmsgb` line addresses. The discriminant is the
+/// line index within the message record: line 1 → caster, line 2 → target,
+/// line 3 → everyone else in the room.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CastAudience {
+    Caster = 0,
+    Target = 1,
+    Room = 2,
+}
+
+/// Substitution arguments for a cast message. Absent arguments (no target,
+/// no damage roll) are skipped, so target-less templates consume a prefix
+/// of the per-audience order.
+pub struct CastMsgArgs<'a> {
+    pub caster: &'a str,
+    pub target: Option<&'a str>,
+    pub spell: &'a str,
+    pub damage: Option<i32>,
+}
+
+/// VERIFIED (oracle §8.6 + mmud_wgnt.sqlite messages 3242/2/7): renders one
+/// line of a spell's `castmsgb` record, substituting `%s`/`%d` left to right
+/// from the audience-appropriate argument order:
+///
+/// - caster line: spell, target, damage (the caster never appears);
+/// - target line: caster, spell, damage;
+/// - room line: caster, spell, target, damage.
+///
+/// `%d` and `%s` both accept the damage integer — message 3242's room line
+/// uses `%s` for the number. Returns `None` for a missing or empty line
+/// (message 1, the empty message, renders nothing). A `%` not followed by
+/// `s`/`d`, or a placeholder beyond the available arguments, passes through
+/// unchanged. `castmsga` is the empty message on every sampled spell, so
+/// callers render `castmsgb` only and flag any spell shipping a non-empty
+/// `castmsga`.
+pub fn render_cast_line(
+    msg: &crate::content::Message,
+    audience: CastAudience,
+    args: &CastMsgArgs<'_>,
+) -> Option<String> {
+    let line = msg.lines.get(audience as usize)?;
+    if line.is_empty() {
+        return None;
+    }
+    let damage = args.damage.map(|d| d.to_string());
+    let damage = damage.as_deref();
+    let order: [Option<&str>; 4] = match audience {
+        CastAudience::Caster => [Some(args.spell), args.target, damage, None],
+        CastAudience::Target => [Some(args.caster), Some(args.spell), damage, None],
+        CastAudience::Room => [Some(args.caster), Some(args.spell), args.target, damage],
+    };
+    let mut next_arg = order.into_iter().flatten();
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '%'
+            && matches!(chars.peek(), Some('s' | 'd'))
+            && let Some(arg) = next_arg.next()
+        {
+            chars.next();
+            out.push_str(arg);
+            continue;
+        }
+        out.push(c);
+    }
+    Some(out)
+}
+
 /// VERIFIED (DLL): coin denomination names, low to high.
 pub const COIN_NAMES: [(&str, &str); 5] = [
     ("copper farthing", "copper farthings"),
