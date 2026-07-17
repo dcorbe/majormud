@@ -452,13 +452,26 @@ pub struct CastMsgArgs<'a> {
     pub damage: Option<i32>,
 }
 
-/// VERIFIED (oracle §8.6 + mmud_wgnt.sqlite messages 3242/2/7): renders one
-/// line of a spell's `castmsgb` record, substituting `%s`/`%d` left to right
-/// from the audience-appropriate argument order:
+/// VERIFIED (oracle §8.6 + mmud_wgnt.sqlite messages 3242/2/7) **for spells
+/// with `msgstyle & 1 == 0` ONLY**: renders one line of a spell's `castmsgb`
+/// record, substituting `%s`/`%d` left to right from the audience-appropriate
+/// argument order:
 ///
 /// - caster line: spell, target, damage (the caster never appears);
 /// - target line: caster, spell, damage;
 /// - room line: caster, spell, target, damage.
+///
+/// Spells with `msgstyle & 1 == 1` (~441 shipped, incl. fireball/deathtouch)
+/// bind (target, damage) / (damage) / (target, damage) with NO spell-name
+/// slot — callers MUST check `msgstyle` and refuse/flag odd styles until a
+/// second order table lands, or the mis-bind is silent ("magic missile takes
+/// 13 fire damage!").
+///
+/// Caller obligations: for self-casts pass `target = Some(caster_name)` and
+/// do NOT deliver the Target line to anyone (oracle: `c blur` prints the
+/// caster line only); damage spells must pass `damage: Some(_)` or `%d`
+/// leaks literally; `damage: Some` without a resolved target mis-binds
+/// targeted templates ("You cast blur on 13!").
 ///
 /// `%d` and `%s` both accept the damage integer — message 3242's room line
 /// uses `%s` for the number. Returns `None` for a missing or empty line

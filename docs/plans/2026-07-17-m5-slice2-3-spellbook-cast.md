@@ -50,10 +50,16 @@ single-target effects: a mage kills a monster with magic missile end to end.
   (`cast magic missile`); `c mami` does NOT resolve (§8.6).
 - Caster prompt `[HP=n/MA=n]:` already works (M2); mana deltas confirmed live.
 
-**Cast-message model (checked against mmud_wgnt.sqlite):** `castmsga` is 1
-(the empty message) on all sampled spells — render `castmsgb` only, flag if a
-spell ships a non-1 `castmsga`. `castmsgb` message record = 3 audience lines:
-line1 → caster, line2 → target, line3 → room. Examples:
+**Cast-message model (checked against mmud_wgnt.sqlite; AMENDED by Task-10
+review):** `castmsga` is 1 (the empty message) on all sampled spells — render
+`castmsgb` only, flag if a spell ships a non-1 `castmsga`. `castmsgb` message
+record = 3 audience lines: line1 → caster, line2 → target, line3 → room.
+**The arg orders below hold only for `msgstyle & 1 == 0` spells** (all slice-3
+starters). ~441 spells with `msgstyle & 1 == 1` (fireball 120, deathtouch 58,
+chaos storm 140, righteousness 347…) bind (target, damage)/(damage)/(target,
+damage) with no spell-name slot — Task 11's caller must check `msgstyle` and
+flag/refuse odd styles loudly (Spell doesn't load the column yet; add it when
+first needed). Examples (msgstyle-even):
 - msg 3242 (magic missile): `You fire a %s at %s for %d damage!` /
   `%s fires a %s at you for %d damage!` / `%s fires a %s at %s for %s damage!`
   (note line3's damage is `%s`).
