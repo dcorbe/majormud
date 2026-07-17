@@ -563,3 +563,42 @@ purse.
   top-up for dented interval-0 slots). No timed slot's interval exceeds
   720 min, so leaving the event list running continuously instead of
   re-randomizing it daily is behaviorally indistinguishable.
+
+## Addendum — M4 VERIFY tags cleared (2026-07-16, oracle_m4_verify.raw)
+
+Oracle purse patched via MBBSEmu's sqlite-converted WCCUSERS.DB (drawers
+found at disk 0x603..0x613 high→low — the stored record is the DOS
+layout, offsets differ from the WG3-NT in-memory struct; anchored by the
+known 1g 9c purse before patching).
+
+- **Shop list rows**: `name %-30` + `qty %-10` + price VALUE right-aligned
+  width 4 + ` ` + denomination label. The value is the shelf price in the
+  item's OWN cost denomination: `cost × (markup+100)/100` ("4 gold
+  crowns" for a 2-gold lantern at markup 100). Free rows: three-space
+  gutter + "Free". Quantity column shows live stock.
+- **Paid buy**: "You just bought X for <coins>." where <coins> is the
+  multiset actually handed over — `deduct_currency` (0x1edca) exact:
+  repeat { greedy high→low spend while one whole coin ≤ remainder; break
+  ONE coin of the smallest non-empty denomination above copper } until
+  paid. Change-making is player-visible: the same 104c sickle printed
+  "9 silver nobles, 14 copper farthings" and then "1 gold crown, 4
+  copper farthings" on consecutive buys (both traced and matched
+  exactly). Buying does NOT re-mint the purse.
+- **Sell**: "You sold X for N copper farthings." (proceeds always in
+  copper; sellback = base × (Charm/2+25)/100), then `cleanup_currency`
+  re-mints the ENTIRE purse greedily (496 gold became 4 platinum...).
+- **Out of stock**: "You cannot buy X here!"
+- **Equip**: arm/wield/equip all print "You are now holding X." (1H and
+  2H alike); re-arm: "You do not have X left unequipped." Minimum
+  abbreviations: ar=arm, wie=wield (wi says!), eq=equip, wea=wear
+  (we says), rem=remove (re says). Wear: "You are now wearing X.";
+  remove: "You have removed X."
+- **Carrying line**: coins high→low, then WORN items suffixed with their
+  wear-location name ("chain coif (Head)") from the location table at
+  0x4801dc (Nowhere, Worn, Head, Hands, Finger, Feet, Arms, Back, Neck,
+  Legs, Waist, Torso, Off-Hand, Wrist, Ears, Eyes, Face), then the armed
+  weapon — "(Two handed)" iff type==1 && weapontype∈{1,3}, else
+  "(Weapon Hand)" — then loose items grouped with a count prefix
+  ("3 sickle", singular name).
+- Still unverified: cannot-afford wording, crit message, caster
+  prompt/Mana sheet line (M5), encumbrance descriptor bands.

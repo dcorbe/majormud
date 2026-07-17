@@ -106,8 +106,8 @@ const VERBS: [(&str, usize, Verb); 35] = [
     ("get", 1, Verb::WithArgs(Command::Get)),       // ORACLE: g/ge/get
     ("drop", 2, Verb::WithArgs(Command::Drop)),
     ("inventory", 1, Verb::Plain(|| Command::Inventory)), // ORACLE: i
-    ("arm", 3, Verb::WithArgs(Command::Arm)),
-    ("wield", 2, Verb::WithArgs(Command::Arm)),
+    ("arm", 2, Verb::WithArgs(Command::Arm)),       // ORACLE: ar arms
+    ("wield", 3, Verb::WithArgs(Command::Arm)),     // ORACLE: wi says, wie arms
     ("equip", 2, Verb::WithArgs(Command::Arm)),     // ORACLE: eq
     ("wear", 3, Verb::WithArgs(Command::Wear)),     // min 3: "we" says (oracle)
     ("remove", 3, Verb::WithArgs(Command::Remove)),

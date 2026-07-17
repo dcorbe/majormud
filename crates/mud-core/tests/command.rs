@@ -124,3 +124,13 @@ fn direction_word_minimums_match_the_oracle() {
     assert_eq!(parse("ne"), Command::Move(Direction::NorthEast));
     assert_eq!(parse("sw"), Command::Move(Direction::SouthWest));
 }
+
+#[test]
+fn equip_verb_minimums_match_the_oracle() {
+    // oracle_m4_verify.raw: "ar dagger" arms, "wi quarterstaff" SAYS,
+    // "wie dagger" arms, "eq quarterstaff" arms.
+    assert_eq!(parse("ar dagger"), Command::Arm("dagger".into()));
+    assert_eq!(parse("wie dagger"), Command::Arm("dagger".into()));
+    assert_eq!(parse("eq staff"), Command::Arm("staff".into()));
+    assert!(!matches!(parse("wi staff"), Command::Arm(_)), "wi is not wield");
+}

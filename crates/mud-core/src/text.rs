@@ -216,41 +216,65 @@ pub fn now_holding(name: &str) -> String {
 pub fn not_unequipped(name: &str) -> String {
     format!("You do not have {name} left unequipped.")
 }
-/// ORACLE-VERIFY wording.
 pub fn now_wearing(name: &str) -> String {
     format!("You are now wearing {name}.")
 }
-/// ORACLE-VERIFY wording.
 pub fn removed_item(name: &str) -> String {
-    format!("You removed {name}.")
+    format!("You have removed {name}.")
+}
+
+/// The worn-location name table (`PTR_s_Nowhere_004801dc`), indexed by
+/// item `wornon`; rendered as the worn suffix ("chain coif (Head)").
+pub const WORN_LOCATIONS: [&str; 17] = [
+    "Nowhere", "Worn", "Head", "Hands", "Finger", "Feet", "Arms", "Back",
+    "Neck", "Legs", "Waist", "Torso", "Off-Hand", "Wrist", "Ears", "Eyes",
+    "Face",
+];
+
+pub fn worn_location(worn_on: i16) -> &'static str {
+    WORN_LOCATIONS
+        .get(usize::try_from(worn_on).unwrap_or(0))
+        .copied()
+        .unwrap_or("Nowhere")
 }
 pub fn not_wearing(name: &str) -> String {
     format!("You are not wearing {name}.")
 }
 
-// --- shop strings (list format VERIFIED oracle_m4_items.raw) ---
+// --- shop strings (list format + wordings VERIFIED oracle_m4_verify.raw) ---
 pub const SHOP_HEADER: &str = "The following items are for sale here:\n\nItem                          Quantity    Price\n------------------------------------------------------";
 
-/// One list row: name %-30, quantity %-12, then the price column.
-pub fn shop_row(name: &str, quantity: i16, price: &str) -> String {
-    format!("{name:<30}{quantity:<13}{price}")
+/// One free row: name %-30, quantity %-10, three-space gutter, "Free".
+pub fn shop_row_free(name: &str, quantity: i16) -> String {
+    format!("{name:<30}{quantity:<10}   Free")
+}
+
+/// One priced row: the price VALUE is in the item's own cost denomination
+/// (shelf = cost x (markup+100)/100), right-aligned width 4, then the
+/// denomination label ("lantern ... 40           4 gold crowns").
+pub fn shop_row_priced(name: &str, quantity: i16, value: i64, denomination: usize) -> String {
+    let (one, many) = COIN_NAMES[denomination.min(4)];
+    let label = if value == 1 { one } else { many };
+    format!("{name:<30}{quantity:<10}{value:>4} {label}")
 }
 
 pub fn bought_free(name: &str) -> String {
     format!("You just bought {name} for nothing.")
 }
-/// ORACLE-VERIFY the paid wording.
-pub fn bought_for(name: &str, price: &str) -> String {
-    format!("You just bought {name} for {price}.")
+/// `coins` = the coins actually handed over (deduct_currency's tell line).
+pub fn bought_for(name: &str, coins: &str) -> String {
+    format!("You just bought {name} for {coins}.")
 }
 pub fn not_known_item(name: &str) -> String {
     format!("{name} is not a known item.")
+}
+pub fn cannot_buy_here(name: &str) -> String {
+    format!("You cannot buy {name} here!")
 }
 /// ORACLE-VERIFY wording.
 pub fn cannot_afford(name: &str) -> String {
     format!("You cannot afford {name}.")
 }
-/// ORACLE-VERIFY wording.
 pub fn sold_for(name: &str, price: &str) -> String {
     format!("You sold {name} for {price}.")
 }

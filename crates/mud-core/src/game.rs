@@ -165,38 +165,39 @@ impl Coins {
         let _ = (&mut silver, &mut gold, &mut platinum);
     }
 
-    /// `deduct_currency`: remove a copper amount, spending the LARGEST
-    /// whole coins first (oracle: depositing 100 from 11s+49c hands over
-    /// exactly "10 silver nobles"), then breaking one higher coin into
-    /// change when a remainder is due. Caller checks affordability.
-    pub fn deduct_copper(&mut self, amount: u64, ratios: [u64; 4]) {
+    /// `deduct_currency` (0x1edca), exact: repeat { greedily spend each
+    /// denomination high->low while one whole coin fits the remainder;
+    /// then break ONE coin of the smallest non-empty denomination above
+    /// copper } until paid. Returns the coins actually handed over — the
+    /// original prints them ("You just bought sickle for 9 silver nobles,
+    /// 14 copper farthings.", oracle_m4_verify.raw, change-making
+    /// visible). Caller checks affordability.
+    pub fn deduct_copper(&mut self, amount: u64, ratios: [u64; 4]) -> Coins {
         debug_assert!(self.total_copper(ratios) >= amount);
         let per_silver = ratios[0];
         let per_gold = per_silver * ratios[1];
         let per_platinum = per_gold * ratios[2];
         let per_runic = per_platinum * ratios[3];
         let mut due = amount;
+        let mut spent = Coins::default();
 
-        let mut pay_whole = |drawer: &mut u32, per: u64| {
-            let take = (u64::from(*drawer)).min(due / per);
-            *drawer -= take as u32;
-            due -= take * per;
-        };
-        pay_whole(&mut self.runic, per_runic);
-        pay_whole(&mut self.platinum, per_platinum);
-        pay_whole(&mut self.gold, per_gold);
-        pay_whole(&mut self.silver, per_silver);
-        pay_whole(&mut self.copper, 1);
-
-        // Remainder: break the smallest non-empty higher coin downward.
-        loop {
+        while due > 0 {
+            let mut pay = |drawer: &mut u32, spent: &mut u32, per: u64| {
+                while per <= due && *drawer > 0 {
+                    *drawer -= 1;
+                    *spent += 1;
+                    due -= per;
+                }
+            };
+            pay(&mut self.runic, &mut spent.runic, per_runic);
+            pay(&mut self.platinum, &mut spent.platinum, per_platinum);
+            pay(&mut self.gold, &mut spent.gold, per_gold);
+            pay(&mut self.silver, &mut spent.silver, per_silver);
+            pay(&mut self.copper, &mut spent.copper, 1);
             if due == 0 {
-                return;
+                break;
             }
-            if u64::from(self.copper) >= due {
-                self.copper -= due as u32;
-                return;
-            }
+            // Break one coin of the smallest non-empty higher denomination.
             if self.silver > 0 {
                 self.silver -= 1;
                 self.copper += ratios[0] as u32;
@@ -206,11 +207,14 @@ impl Coins {
             } else if self.platinum > 0 {
                 self.platinum -= 1;
                 self.gold += ratios[2] as u32;
-            } else {
+            } else if self.runic > 0 {
                 self.runic -= 1;
                 self.platinum += ratios[3] as u32;
+            } else {
+                break; // insufficient (guarded by check_currency upstream)
             }
         }
+        spent
     }
 }
 
@@ -1462,22 +1466,20 @@ impl Core {
         let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
             return;
         };
-        let before = player.coins;
-        player.coins.deduct_copper(amount, ratios);
-        let after = player.coins;
+        let spent = player.coins.deduct_copper(amount, ratios);
         match player.bankbooks.iter_mut().find(|(id, _)| *id == bank.0) {
             Some((_, b)) => *b += amount,
             None => player.bankbooks.push((bank.0, amount)),
         }
-        // Report the actual coins handed over (largest first).
-        let spent = [
-            before.copper.saturating_sub(after.copper),
-            before.silver.saturating_sub(after.silver),
-            before.gold.saturating_sub(after.gold),
-            before.platinum.saturating_sub(after.platinum),
-            before.runic.saturating_sub(after.runic),
-        ];
-        let coins = text::coin_listing(spent).unwrap_or_else(|| "nothing".into());
+        // Report the actual coins handed over (deduct_currency tell line).
+        let coins = text::coin_listing([
+            spent.copper,
+            spent.silver,
+            spent.gold,
+            spent.platinum,
+            spent.runic,
+        ])
+        .unwrap_or_else(|| "nothing".into());
         self.output_line(session, &text::deposited(&coins));
     }
 
@@ -1532,15 +1534,20 @@ impl Core {
             let Some(item) = self.content.items.get(&item_id) else {
                 continue;
             };
-            let base = self.item_base_copper(item);
-            let shelf = base * (i64::from(shop.markup) + 100) / 100;
-            let price = if shelf == 0 {
-                "Free".to_string()
+            // Shelf value in the item's OWN cost denomination (oracle:
+            // "4 gold crowns" for a 2-gold lantern at markup 100).
+            let shelf = i64::from(item.cost) * (i64::from(shop.markup) + 100) / 100;
+            let row = if shelf == 0 {
+                text::shop_row_free(&item.name, counts[i])
             } else {
-                // ORACLE-VERIFY the price column rendering.
-                text::copper_amount(shelf as u64)
+                text::shop_row_priced(
+                    &item.name,
+                    counts[i],
+                    shelf,
+                    item.cost_denomination as usize,
+                )
             };
-            out.push_str(&text::shop_row(&item.name, counts[i], &price));
+            out.push_str(&row);
             out.push('\n');
         }
         self.output(session, &out);
@@ -1584,8 +1591,7 @@ impl Core {
         let item = self.content.items[&item_id].clone();
         let counts = self.shop_stock.entry(shop_id).or_default();
         if counts[idx] < 1 {
-            // ORACLE-VERIFY out-of-stock wording.
-            self.output_line(session, &text::not_known_item(target.trim()));
+            self.output_line(session, &text::cannot_buy_here(&item.name));
             return Resolution::Handled;
         }
 
@@ -1605,14 +1611,26 @@ impl Core {
         let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
             return Resolution::FallThrough;
         };
-        if price > 0 {
-            player.coins.deduct_copper(price as u64, ratios);
-        }
+        let spent = if price > 0 {
+            player.coins.deduct_copper(price as u64, ratios)
+        } else {
+            Coins::default()
+        };
         player.inventory.push((item_id, item.uses));
         let msg = if price == 0 {
             text::bought_free(&item.name)
         } else {
-            text::bought_for(&item.name, &text::copper_amount(price as u64))
+            // The coins actually handed over, high->low (deduct_currency
+            // tell line: "for 2 gold crowns, 8 copper farthings").
+            let listing = text::coin_listing([
+                spent.copper,
+                spent.silver,
+                spent.gold,
+                spent.platinum,
+                spent.runic,
+            ])
+            .unwrap_or_else(|| text::copper_amount(price as u64));
+            text::bought_for(&item.name, &listing)
         };
         self.output_line(session, &msg);
         Resolution::Handled
@@ -1833,28 +1851,47 @@ impl Core {
         {
             names.push(coins);
         }
+        // Worn items first, suffixed with their wear location; then the
+        // armed weapon with its hand suffix; then loose inventory grouped
+        // by item with a count prefix ("3 sickle") — the original's
+        // aggregate-array walk (oracle_m4_verify.raw).
+        for (id, _) in &player.worn {
+            if let Some(item) = self.content.items.get(id) {
+                names.push(format!(
+                    "{} ({})",
+                    item.name,
+                    text::worn_location(item.worn_on)
+                ));
+            }
+        }
         if let Some((id, _)) = player.weapon
             && let Some(item) = self.content.items.get(&id)
         {
-            let hands = if item.weapon_type == 1 || item.weapon_type == 3 {
+            let hands = if item.item_type == 1
+                && (item.weapon_type == 1 || item.weapon_type == 3)
+            {
                 "(Two handed)"
             } else {
-                "(Weapon in hand)" // ORACLE-VERIFY the one-handed suffix
+                "(Weapon Hand)"
             };
             names.push(format!("{} {hands}", item.name));
         }
-        for (id, _) in &player.worn {
-            if let Some(item) = self.content.items.get(id) {
-                // ORACLE-VERIFY the worn suffix.
-                names.push(format!("{} (Worn)", item.name));
+        let mut grouped: Vec<(crate::content::ItemId, i32)> = Vec::new();
+        for (id, _) in &player.inventory {
+            match grouped.iter_mut().find(|(gid, _)| gid == id) {
+                Some((_, n)) => *n += 1,
+                None => grouped.push((*id, 1)),
             }
         }
-        names.extend(
-            player
-                .inventory
-                .iter()
-                .filter_map(|(id, _)| self.content.items.get(id).map(|i| i.name.clone())),
-        );
+        for (id, n) in grouped {
+            if let Some(item) = self.content.items.get(&id) {
+                if n > 1 {
+                    names.push(format!("{n} {}", item.name));
+                } else {
+                    names.push(item.name.clone());
+                }
+            }
+        }
         if names.is_empty() {
             out.push_str(text::CARRYING_NOTHING);
             out.push('\n');

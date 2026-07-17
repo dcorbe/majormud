@@ -154,10 +154,11 @@ fn list_matches_the_oracle_format() {
         shown.contains("quarterstaff                  31           Free\n"),
         "free row: {shown:?}"
     );
-    // Shelf price = 100 * 150/100 = 150 copper, no Charm factor.
+    // Shelf = cost x 150/100 = 150, shown in the item's own denomination
+    // (copper), value right-aligned width 4 (oracle_m4_verify.raw).
     assert!(
-        shown.contains("dagger                        5            150 copper farthings\n"),
-        "ORACLE-VERIFY price rendering: {shown:?}"
+        shown.contains("dagger                        5          150 copper farthings\n"),
+        "price rendering: {shown:?}"
     );
 }
 
@@ -283,5 +284,87 @@ fn shop_commands_outside_a_shop_fall_through_to_say() {
     assert!(
         shown.contains("You say \"list\""),
         "ORACLE-VERIFY outside-shop behavior: {shown:?}"
+    );
+}
+
+#[test]
+fn paid_purchase_reports_the_coins_handed_over() {
+    // oracle_m4_verify.raw: "You just bought lantern for 4 gold crowns,
+    // 1 silver noble, 6 copper farthings." — the deduct_currency multiset.
+    let mut core = Core::new(world(), config());
+    let s = create(&mut core, "Dain");
+    core.set_coins(
+        s,
+        mud_core::game::Coins { runic: 0, platinum: 0, gold: 1, silver: 5, copper: 0 },
+    );
+    core.input(s, "buy dagger"); // 150 copper at neutral charm
+    let shown = text_to(&core.drain_events(), s);
+    assert!(
+        shown.contains("You just bought dagger for 1 gold crown, 5 silver nobles."),
+        "coins handed over: {shown:?}"
+    );
+}
+
+#[test]
+fn out_of_stock_matches_the_oracle() {
+    // oracle_m4_verify.raw: "You cannot buy sickle here!"
+    let mut content = world();
+    let shop = content.shops.get_mut(&ShopId(45)).unwrap();
+    shop.stock[1].max = 1; // boot fills shelves to max
+    let mut core = Core::new(content, config());
+    let s = create(&mut core, "Dain");
+    core.give_copper(s, 1000);
+    core.input(s, "buy dagger");
+    core.drain_events();
+    core.input(s, "buy dagger");
+    let shown = text_to(&core.drain_events(), s);
+    assert!(
+        shown.contains("You cannot buy dagger here!"),
+        "out of stock: {shown:?}"
+    );
+}
+
+#[test]
+fn priced_rows_render_in_the_item_cost_denomination() {
+    // oracle_m4_verify.raw column model: name %-30, qty %-10, price value
+    // right-aligned width 4 in the item's OWN cost denomination, then the
+    // denomination label ("lantern ... 40           4 gold crowns").
+    let mut content = world();
+    content.add_item(Item {
+        id: ItemId(176),
+        name: "lantern".into(),
+        weight: 40,
+        item_type: 6,
+        uses: -1,
+        cost: 2,
+        cost_denomination: 2, // 2 gold base
+        gettable: 1,
+        ..Item::default()
+    });
+    let shop = content.shops.get_mut(&ShopId(45)).unwrap();
+    shop.stock[2] = ShopStock {
+        item: Some(ItemId(176)),
+        max: 40,
+        now: 40,
+        ..ShopStock::default()
+    };
+    shop.markup = 100;
+    let mut core = Core::new(content, config());
+    let s = create(&mut core, "Dain");
+    core.input(s, "list");
+    let shown = text_to(&core.drain_events(), s);
+    assert!(
+        shown.contains("lantern                       40           4 gold crowns\n"),
+        "denominated price row: {shown:?}"
+    );
+    // dagger: 100 copper base, markup 100 -> 200 in copper denomination.
+    assert!(
+        shown.contains("dagger                        5          200 copper farthings\n"),
+        "copper price row: {shown:?}"
+    );
+    // quarterstaff stays a Free row (three-space gutter before Free).
+    assert!(
+        shown.contains("quarterstaff                  31           Free\n"),
+        "free row: {shown:?}"
     );
 }

@@ -189,21 +189,22 @@ fn wear_and_remove_armor() {
     let shown = text_to(&core.drain_events(), s);
     assert!(
         shown.contains("You are now wearing iron helmet."),
-        "ORACLE-VERIFY wording; got: {shown:?}"
+        "got: {shown:?}"
     );
 
     core.input(s, "i");
     let shown = text_to(&core.drain_events(), s);
+    // oracle_m4_verify.raw: worn items carry their location name.
     assert!(
-        shown.contains("You are carrying iron helmet (Worn)\n"),
+        shown.contains("You are carrying iron helmet (Head)\n"),
         "got: {shown:?}"
     );
 
     core.input(s, "remove helmet");
     let shown = text_to(&core.drain_events(), s);
     assert!(
-        shown.contains("You removed iron helmet."),
-        "ORACLE-VERIFY wording; got: {shown:?}"
+        shown.contains("You have removed iron helmet."),
+        "got: {shown:?}"
     );
 }
 
@@ -255,4 +256,55 @@ fn dropping_the_armed_weapon_unarms_it() {
 
     let (fighter, _) = core.combat_debug(s);
     assert_eq!(fighter.max_damage, 4, "back to fists");
+}
+
+#[test]
+fn carrying_line_suffixes_and_grouping_match_the_oracle() {
+    // oracle_m4_verify.raw: "chain coif (Head), dagger (Weapon Hand),
+    // quarterstaff, 3 sickle" — worn first (location name), armed weapon
+    // next (hand suffix), then loose items grouped with a count prefix.
+    let mut content = world();
+    content.add_item(Item {
+        id: ItemId(74),
+        name: "sickle".into(),
+        weight: 30,
+        item_type: 1,
+        uses: -1,
+        weapon_type: 0, // one-handed
+        gettable: 1,
+        ..Item::default()
+    });
+    let mut core = Core::new(content, config());
+    let s = create(&mut core, "Dain");
+    core.give_item(s, ItemId(200));
+    core.give_item(s, ItemId(100));
+    core.give_item(s, ItemId(74));
+    core.give_item(s, ItemId(74));
+    core.give_item(s, ItemId(74));
+    core.input(s, "wear helmet");
+    core.input(s, "arm sickle");
+    core.drain_events();
+
+    core.input(s, "i");
+    let shown = text_to(&core.drain_events(), s);
+    assert!(
+        shown.contains(
+            "You are carrying iron helmet (Head), sickle (Weapon Hand), quarterstaff, 2 sickle\n"
+        ),
+        "worn -> armed -> grouped loose: {shown:?}"
+    );
+
+    // Two-handed weapons get the other suffix.
+    core.input(s, "arm quarterstaff");
+    core.drain_events();
+    core.input(s, "i");
+    let shown = text_to(&core.drain_events(), s);
+    assert!(
+        shown.contains("quarterstaff (Two handed)"),
+        "2H suffix: {shown:?}"
+    );
+    assert!(
+        shown.contains("3 sickle"),
+        "unarmed sickles regroup: {shown:?}"
+    );
 }

@@ -289,3 +289,37 @@ fn balance_persists_on_the_player() {
         .expect("persisted");
     assert_eq!(persisted.bankbooks, vec![(8u16, 100u64)]);
 }
+
+#[test]
+fn deduct_spends_exactly_like_the_original() {
+    // Three consecutive purchases traced live (oracle_m4_verify.raw):
+    // the message lists the true coins handed over, change-making
+    // included (deduct_currency 0x1edca: greedy pass, break ONE smallest
+    // higher coin, repeat full pass).
+    let ratios = CoreConfig::default().coin_ratios;
+    let mut purse = Coins { runic: 0, platinum: 25, gold: 2, silver: 1, copper: 4 };
+
+    // Dagger, 208 copper: "2 gold crowns, 8 copper farthings."
+    let spent = purse.deduct_copper(208, ratios);
+    assert_eq!((spent.gold, spent.silver, spent.copper), (2, 0, 8));
+    assert_eq!(
+        (purse.platinum, purse.gold, purse.silver, purse.copper),
+        (25, 0, 0, 6)
+    );
+
+    // Sickle, 104 copper: "9 silver nobles, 14 copper farthings."
+    let spent = purse.deduct_copper(104, ratios);
+    assert_eq!((spent.gold, spent.silver, spent.copper), (0, 9, 14));
+    assert_eq!(
+        (purse.platinum, purse.gold, purse.silver, purse.copper),
+        (24, 99, 0, 2)
+    );
+
+    // Sickle again, 104 copper: "1 gold crown, 4 copper farthings."
+    let spent = purse.deduct_copper(104, ratios);
+    assert_eq!((spent.gold, spent.silver, spent.copper), (1, 0, 4));
+    assert_eq!(
+        (purse.platinum, purse.gold, purse.silver, purse.copper),
+        (24, 97, 9, 8)
+    );
+}
