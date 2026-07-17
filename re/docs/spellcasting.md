@@ -724,3 +724,83 @@ You receive the following:
   persists exp/coins/spells; re-entry prints
   `Last time you were on, you disconnected while playing.` /
   `The gods have punished you appropriately.`
+
+### 8.9 Cast edges (bare cast, abbreviations, targeting)
+
+Measured 2026-07-17: `oracle_cast_edges.raw` (run 1, driver
+`oracle_cast_edges.py`) and `oracle_cast_edges2.raw` (run 2,
+`oracle_cast_edges2.py`). Vexil L2 (HP 29, Mana 18), book = blur / magic
+missile / illuminate. Empty-room probes on Newhaven, Narrow Road (`look`
+confirmed no `Also here:` before every cast); monster probes in the Arena.
+
+- **Bare `cast` (and bare `c`) print a syntax line** — not an error, not
+  speech:
+
+  ```
+  cast
+  Syntax: CAST {spell} [{target}]
+  ```
+
+- **Name resolution = exact shortname OR per-word prefix of the full
+  name.** Shortname matching is exact-only; name matching accepts a prefix
+  of each typed word against the corresponding name word (one letter
+  suffices):
+
+  | probe | result |
+  |---|---|
+  | `c mm`  | `You do not know how to cast mm.` (shortname prefix ✗) |
+  | `c mmi` | `You do not know how to cast mmi.` (run 2 — still ✗) |
+  | `c mmis` | resolves (exact shortname, §8.6) |
+  | `c m` / `c magic` / `c magic mi` | all resolve (name word-prefix) |
+  | `c bl` / `c b` | resolve to blur |
+
+  `c magic mi` proves the trailing `mi` is consumed by name matching, not
+  read as a target: in the empty room it printed `You must specify a
+  target...` (below), where an unmatched word would have printed
+  `You do not see mi here!`. (`c mami` failing, §8.6, is consistent:
+  `mami` is not a prefix of `magic`.)
+- **Offensive bare cast NEVER auto-picks a monster** — unlike `attack`.
+  In the empty room, in a room with a live (unengaged, even attacking-us)
+  giant rat, and even while melee-ENGAGED with it, `c mmis` gives:
+
+  ```
+  c mmis
+  You must specify a target for that spell!
+  ```
+
+  Mana unchanged. The engaged case additionally printed `*Combat Off*`
+  before the refusal — the bare cast broke off the melee engagement, then
+  failed target resolution (run 2).
+- **The guilt line is the friendly-NPC-present case** of the same bare
+  offensive cast. Run 2, Weapons Shop with only Nathaniel:
+
+  ```
+  c mmis
+  You are overcome with a feeling of guilt and break off your attack.
+  ```
+
+  Mana unchanged. Matches §8.6's `cast magic missile` next to Rayth. So:
+  friendly NPC in room → guilt; otherwise (empty OR monsters only) →
+  `You must specify a target for that spell!`. There is no "no effect"
+  family.
+- **Trailing words are the target, not garbage.** Everything after the
+  matched spell name is looked up as one target string among room
+  entities:
+
+  ```
+  cast blur extra trailing words
+  You do not see extra trailing words here!
+  ```
+
+  Mana unchanged (blur did not self-cast).
+- **Prefix bonus (blur is the book's only b-spell):** `c bl` resolved and
+  missed its roll — `You attempt to cast blur, but fail.` with prompt mana
+  14→12: blur costs 4, fail charged 2 — **half-mana-on-fail confirmed for
+  even costs** (complements §8.6's mmis 1→0 floor). `c b` resolved and
+  cast (`You cast blur on Vexil!`, mana 12→8, full 4).
+- **Incidental (slice 4 + Task 11):** blur expiry line is
+  `The effects of blur wear off.` An engaged offensive cast **auto-repeats
+  each combat round like `attack`**: after `c mmis rat` failed its roll,
+  the next round fired `You fire a magic missile at big giant rat for 6
+  damage!` with no further input, charging mana normally (run 2; the same
+  unprompted re-fire is visible in `oracle_spell_cast.raw`).
