@@ -984,3 +984,33 @@ fn a_blur_slot_makes_the_defender_dodge() {
         "stored Dodge 5: dodges appear under the same script"
     );
 }
+
+#[test]
+fn a_worn_dodge_item_feeds_the_defender_parry() {
+    // The dodgeAbil defender term was motivated by M4 items (it was
+    // missing entirely — worn Dodge never reached parry). Pin the item
+    // path, not just the spell-slot path: same script, the Dodge rides a
+    // worn item instead of a slot.
+    let mut content = arena(rat(16, 0, 0), 30, 30);
+    add_rat_messages(&mut content);
+    content.add_item(Item {
+        id: ItemId(500),
+        name: "cloak of shadows".into(),
+        worn_on: 7,
+        abilities: vec![(Ability::from_id(34).unwrap(), 5)],
+        ..Item::default()
+    });
+    let mut core = Core::new(content, config());
+    core.spawn_monster(MonsterId(1), RoomId { map: 1, room: 1 });
+    let mut player = dwarf("Dain");
+    player.worn = vec![(ItemId(500), -1)];
+    let s = core.attach_player(player);
+    core.drain_events();
+    core.input(s, "attack rat");
+    core.drain_events();
+    let shown = text_to(&run_rounds(&mut core, 20), s);
+    assert!(
+        shown.matches("but you dodge out of the way!").count() > 0,
+        "worn Dodge 5 produces dodges under the same script: {shown:?}"
+    );
+}

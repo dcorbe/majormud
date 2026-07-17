@@ -14,7 +14,9 @@ use crate::ability::Ability;
 use crate::content::StatBlock;
 
 /// Accumulated ability modifiers: the sum of every active `(ability, value)`
-/// pair affecting the player.
+/// pair affecting the player. May contain metadata ids (DescMsg,
+/// RemovesSpell, EndCast, ...) from spell ability tables — query specific
+/// ids, never iterate the contents.
 #[derive(Debug, Clone, Default)]
 pub struct AbilityBag {
     values: BTreeMap<Ability, i32>,

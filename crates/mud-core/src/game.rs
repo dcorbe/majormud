@@ -1098,15 +1098,27 @@ impl Core {
         // Metadata rows (DescMsg 115, StartMsg 120, RemovesSpell 122,
         // EndCast 151, KillSpell 153, GiveTempSpell 160, CastOnEnd% 164)
         // accumulate harmlessly and are NOT filtered: every bag consumer
-        // queries specific ability ids, none of which are metadata —
-        // exactly like the DLL, whose update_dynamic_with_ability switch
-        // falls through for ids it does not handle. Unknown spell ids
-        // (content changed under a save) contribute nothing.
+        // queries specific ability ids, none of which are metadata — the
+        // DLL's update_dynamic_with_ability switch likewise ignores them.
+        // EXCEPTION: NegateAbility (124/0x7c) is special-cased by the DLL —
+        // skipped in the main fold, then post-passed through
+        // negate_dynamic_with_ability on the row's VALUE (decompiled
+        // 37743-37745, 37837-37855; spec §4). Five shipped duration spells
+        // carry it (497/972 card-angel, 745 sunstone bracelet, 1322 hold
+        // immune — with value 0, which substitution would corrupt — and
+        // 1323 fear immune). KNOWN-DIVERGENCE: the negation post-pass
+        // lands when its targets (HoldPerson/Fear flags) are modeled.
+        // Unknown spell ids (content changed under a save) contribute
+        // nothing.
+        let negate = Ability::from_id(124).expect("NegateAbility in the enum");
         for slot in &player.active_spells {
             let Some(spell) = slot.spell.and_then(|id| self.content.spells.get(&id)) else {
                 continue;
             };
             for (ability, value) in &spell.abilities {
+                if *ability == negate {
+                    continue;
+                }
                 let v = match *value {
                     0 => i32::from(slot.value),
                     v => i32::from(v),
@@ -1184,6 +1196,8 @@ impl Core {
             })
             .filter_map(|v| u16::try_from(v).ok())
             .filter_map(|id| self.content.messages.get(&crate::content::MessageId(id)))
+            // ORACLE-VERIFY: skipping empty/missing DescMsg line3 is
+            // inferred, not measured (spell 776 ships a (DescMsg, 0) row).
             .filter_map(|m| m.lines.get(2).filter(|l| !l.is_empty()).cloned())
             .collect();
         let sheet = text::stat_sheet(&text::SheetData {
