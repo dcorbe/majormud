@@ -36,6 +36,7 @@ in `cast_no_target`/`add_cast_spell_to_user`:
 | `+0xc0` | min base value | |
 | `+0xc2` | max base value | |
 | `+0xc4` | **target mode** | `<3` = offensive/combat-scoped; `>=3` = benign/self |
+| `+0xc6` | **save class** (`typeofresists`) | 0 = no save; 1 = save only if the target has AntiMagic (51/0x33); 2 = target always gets a save (see §3 saving throw). Shipped data: 1121/167/91 spells |
 | `+0xc8` | **base success chance %** | `>=200` ⇒ auto-succeed (skip roll) |
 | `+0xca` | duration per-level multiplier (word) | duration = mult × level |
 | `+0xcc` | **match/delivery type** | drives targeting (see `get_spell_match_type`) |
@@ -139,6 +140,27 @@ Order of operations:
 7. **On success** — deduct **full round cost and full mana**. Then compute the
    effect magnitude and apply the ability table (§4).
 
+**Target saving throw (targeted casts, success only).** After a successful
+success roll and before any effect, `cast_user_target` (gate lines
+41712-41733; resist message/cost block 42984-43009) and `cast_monster_target`
+(structurally identical) give the **resolved target** a resist check driven by
+spell `+0xc6`:
+
+- The target's **SpellImmu** (139/0x8b) is read (line 41556) and the predicate
+  `FUN_0043e3db` (72500) forces the resist outcome — working assumption:
+  SpellImmu ⇒ auto-resist (flagged, needs one confirmation pass).
+- Otherwise a save is rolled when `+0xc6 == 2` (always) or `+0xc6 == 1` **and**
+  the target has **AntiMagic** (51/0x33): resisted when
+  `genrdn(1,100) <= min(targetSC(+0xc2) / 2, 98)`.
+
+A resisted cast deducts the full round cost but only **half mana** (like a
+failed roll), applies no effects, and prints the "You resisted %s's %s" /
+"%s resisted %s's %s" family (distinct from the plain-failure strings, which
+for targeted casts read "You attempt to cast %s at %s, but…" /
+"%s attempted to cast %s on you, b…"). Most spells (1121/1379) carry
+`+0xc6 == 0` — no save. **This corrects §6, which previously claimed the
+player-initiated cast path has no target resist check.**
+
 **Magnitude roll (success only).** Effective level `L = min(player+0x94,
 spell+0xa2)`. Per-level scaling: `minScale = spell+0xf2 * L / spell+0xf3`,
 `maxScale = spell+0xf6 * L / spell+0xf7` (guarded against zero denominators).
@@ -190,7 +212,11 @@ element (`get_spell_random_modifier`): it reads spell `+0xd0` and returns the
 target's resistance ability value — **Rcol** (3), **Rfir** (5), **ResistStone**
 (65/0x41), **Rlit** (66/0x42), **ResistWater** (147/0x93), **ImmuPoison**
 (21/0x15). Applied as `V' = ((100 - resist) * V) / 100`. (The function name says
-"random" but it is the *resistance* modifier.)
+"random" but it is the *resistance* modifier.) Two boundary behaviors confirmed
+from the function body (38634-38664): the switch has **no case for element 4**
+— element-4 damage ("pure magic", e.g. magic missile) is unresistable and lands
+at full value — and the whole modifier returns 0 unless the spell's target mode
+`+0xc4 < 3`, so benign-mode spells never apply elemental resistance.
 
 **Duration effects.** `add_cast_spell_to_user(terminal, spellId, duration,
 value, spellPtr, casterTerminal, casterPtr, applyFlag)`:
@@ -342,11 +368,13 @@ casting:
 3. **Success chance** — a flat per-spell percentage from
    `template+0x13e+attackIdx*2` (or 100 for a forced/`-1` cast), compared to
    `genrdn(0,100)`. There is no player-SC term.
-4. **Saving throw** — the *target* gets a resist check the player path lacks:
-   **SpellImmu** (139/0x8b) and level (`spell+0xbe` vs the save DC at
-   `template+0x190+attackIdx*2`), plus **AntiMagic** (51/0x33) and the target's
-   `+0xc2` (SC/resist stat) halved as a roll. Success prints "You resisted %s's
-   cast of %s" and halves/negates the effect.
+4. **Saving throw** — the *target* gets a resist check (cf. the player-cast
+   saving throw in §3, corrected — both paths save): **SpellImmu** (139/0x8b)
+   and level (`spell+0xbe` vs the save DC at `template+0x190+attackIdx*2`),
+   plus **AntiMagic** (51/0x33) and the target's `+0xc2` (SC/resist stat)
+   halved as a roll. Success prints "You resisted %s's cast of %s" and
+   halves/negates the effect. Whether this path also honors the spell's
+   `+0xc6` save class is unverified.
 5. **Effect entry** — `monster_add_cast_spell_to_user` writes the **same** player
    active-spell slots (`+0x40/+0x54/+0x68`) but with a simpler policy: refresh
    only if the new value **exceeds** the current slot value; no caster-level
@@ -372,6 +400,21 @@ hard-zeroed), and monster spell damage still routes through
 
 ## 7. Unresolved / flagged
 
+- **Scaling-pair labels resolved via editor columns:** the decoded `.VIR`
+  columns name `+0xf2/+0xf3` `maxincrease/lvlsmaxincr` and `+0xf6/+0xf7`
+  `minincrease/lvlsminincr` — the reverse of §3's minScale/maxScale variable
+  names. Under the editor names §3's bound formula reads
+  `lo = min(minBase + minScale, maxBase + maxScale)` — min pairs with min,
+  max with max, which is self-consistent. Editor naming is adopted; §3's
+  variable names are historical. Verified against `_raw` blobs for all 1379
+  spells (byte pairs at those offsets equal the columns). Note magic missile
+  ships `maxincrease=1, lvlsmaxincr=0` — the zero-denominator guard makes it
+  contribute 0; zero denominators are legal shipped data, not a load error.
+- **Spell-reference ability values** (EndCast 151, RemovesSpell 122,
+  KillSpell 153, GiveTempSpell 160): value 0 is the "none" sentinel (14
+  shipped slots carry it); every nonzero reference resolves to a real spell.
+- **`FUN_0043e3db`** (72500) — the auto-resist predicate in the §3 saving
+  throw; assumed to be the SpellImmu evaluation, needs a confirmation pass.
 - **Player `+0x94`** — the cast path uses it consistently as the caster's
   spell-casting level/power (eligibility gate *and* value/duration scaling input).
   `records.md` labels `+0x94` "gender / reroll flag (checked `<2`)". Both cannot

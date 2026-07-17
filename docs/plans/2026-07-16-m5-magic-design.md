@@ -81,6 +81,13 @@ boot test proving every real spell validates (the M0 pattern). No behavior.
   effect. Success: full costs, then magnitude
   `L = min(power, level_cap)`, scaled bounds from the fraction pairs,
   `V = genrdn(0, hi-lo+1) + lo`.
+- **Target saving throw** (found during planning; spec §3 corrected): on a
+  successful targeted cast, the target saves per the spell's save class
+  (`typeofresists` +0xc6): 0 = never, 1 = only if target has AntiMagic,
+  2 = always — roll `genrdn(1,100) <= min(targetSC/2, 98)`; SpellImmu
+  auto-resists. Resist costs the caster like a failure (full round, half
+  mana) with the "You resisted %s's %s" message family. Applies to both
+  user- and monster-target player casts.
 - **Instant handlers (single-target):** Damage (element-resisted, routed
   through the M3 kill/exp-split path), Heal, Drain, EnergyLevel,
   hunger/thirst.
@@ -140,9 +147,10 @@ boot test proving every real spell validates (the M0 pattern). No behavior.
 - **Economics:** no mana, no round pool, no half-cost-on-fail. Flat
   per-attack success % vs `genrdn(0,100)`; forced casts (index −1) always
   fire.
-- **Saving throw** (targets of monster casts only): SpellImmu (139), spell
-  power vs the attack's save DC, AntiMagic (51), target SC halved as a roll.
-  Save prints "You resisted %s's cast of %s" and halves/negates.
+- **Saving throw**: like the player-cast save (slice 3) but extended with
+  the template's per-attack save DC vs spell power, and not gated on the
+  spell's save class (unverified — check during this slice). Save prints
+  "You resisted %s's cast of %s" and halves/negates.
 - **Effect entry:** same player 10-slot array, simpler policy — refresh only
   if the new value exceeds the current; fixed duration, no caster scaling,
   no AlterSpLength. Spells targeting monsters use the monster **5-slot**
