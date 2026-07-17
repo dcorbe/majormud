@@ -146,6 +146,14 @@ pub const MEDITATION_BLOCKED: &str = "You may not perform any commands while wai
 /// VERIFIED (oracle): syntax lines for argument commands invoked bare.
 pub const SYNTAX_AID: &str = "Syntax: AID {user name}";
 pub const SYNTAX_GET: &str = "Syntax: GET {Item Name}";
+/// VERIFIED (spellcasting.md §8.9): bare `cast`/`c`.
+pub const SYNTAX_CAST: &str = "Syntax: CAST {spell} [{target}]";
+
+/// VERIFIED (spellcasting.md §8.6): the cast argument that resolved to no
+/// learned spell, echoed verbatim.
+pub fn dont_know_cast(arg: &str) -> String {
+    format!("You do not know how to cast {arg}.")
+}
 
 /// VERIFIED (oracle, first line; remainder ORACLE-VERIFY).
 pub const HELP_BANNER: &str = "Type HELP followed by a topic for help on that topic";

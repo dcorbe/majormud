@@ -1053,6 +1053,9 @@ impl Core {
                     self.say(session, line.trim());
                 }
             }
+            // Cast never falls through to say: an unresolvable spell prints
+            // the do-not-know line (MEASURED §8.6/§8.9).
+            Command::Cast(args) => self.cast_command(session, &args),
             Command::Aid(target) => {
                 if self.aid_command(session, &target) == Resolution::FallThrough {
                     self.say(session, line.trim());
@@ -1702,6 +1705,69 @@ impl Core {
             return SpellGate::TooPowerful;
         }
         SpellGate::Ok
+    }
+
+    /// Resolves a cast argument against the learned book (MEASURED,
+    /// spellcasting.md §8.9): candidates are the player's spellbook only.
+    /// A spell matches on exact shortname (whole first word) OR per-word
+    /// name prefix (each typed word prefixes a name word — the item/monster
+    /// `word_prefix_match`, reused verbatim). The name match is greedy:
+    /// the longest run of leading words that still matches is consumed
+    /// (`c magic mi` consumes both words), and the ENTIRE remainder is
+    /// returned as the target string, spacing preserved. Ambiguity resolves
+    /// to the first match in book (spell-id) order — ORACLE-VERIFY: the
+    /// original's tie-break is unmeasured.
+    pub fn resolve_spell_from_book(
+        &self,
+        player: &Player,
+        args: &str,
+    ) -> Option<(SpellId, String)> {
+        // Leading words with their end offsets, so the remainder keeps the
+        // caller's exact spacing.
+        let mut words: Vec<(&str, usize)> = Vec::new();
+        let mut pos = 0;
+        for w in args.split_whitespace() {
+            let start = pos + args[pos..].find(w).expect("word came from args");
+            pos = start + w.len();
+            words.push((w, pos));
+        }
+        let spells: Vec<&crate::content::Spell> = player
+            .spellbook
+            .keys()
+            .filter_map(|id| self.content.spells.get(id))
+            .collect();
+        for take in (1..=words.len()).rev() {
+            let typed = words[..take]
+                .iter()
+                .map(|(w, _)| w.to_ascii_lowercase())
+                .collect::<Vec<_>>()
+                .join(" ");
+            for spell in &spells {
+                let hit = word_prefix_match(&spell.name, &typed)
+                    || (take == 1 && spell.short_name.eq_ignore_ascii_case(&typed));
+                if hit {
+                    let target = args[words[take - 1].1..].trim().to_string();
+                    return Some((spell.id, target));
+                }
+            }
+        }
+        None
+    }
+
+    /// `cast` — parsing and book resolution (spellcasting.md §8.9). The
+    /// gates and the roll land with Tasks 8-9.
+    fn cast_command(&mut self, session: SessionId, args: &str) {
+        let args = args.trim();
+        if args.is_empty() {
+            // MEASURED (§8.9): bare cast is a syntax line, not an error.
+            self.output_line(session, text::SYNTAX_CAST);
+            return;
+        }
+        let resolved = self.resolve_spell_from_book(self.player(session), args);
+        let Some((_spell, _target)) = resolved else {
+            self.output_line(session, &text::dont_know_cast(args));
+            return;
+        };
     }
 
     /// The eligibility annotation for one shop row (spellcasting.md §8.3):
