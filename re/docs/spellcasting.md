@@ -199,7 +199,8 @@ Selected instant handlers (ability id → field), player target:
 
 | ability | id | instant effect |
 |---------|----|----------------|
-| Damage | 1 | HP `+0xb0 -= V`; routes through the combat kill path — `check_kill_user` / `distribute_experience` (matches `combat.md`). Resisted by element (see below). |
+| Damage | 1 | HP `+0xb0 -= V`; routes through the combat kill path — `check_kill_user` / `distribute_experience` (matches `combat.md`). Resisted by element (see below). MR is ignored. |
+| Damage(-MR) | 17/0x11 | Like Damage, but `V` is scaled by the target's **MR** first — the SAME stat the saving throw reads (monster: M.R.(36) modifiers + template `mr` word, floored at 1, `cast_monster_target` 43387-43392; player: `user+0xc2`). Both paths first boost `V` by the caster's **AlterSpDmg** (165/0xa5) percent (43940-43941; plain Damage gets the identical boost via the 39025-39030 helper). Without **AntiMagic** (51) on the target: `red = clamp((MR-50)/2, 0, 50)` (43946-43954); if `red == 0` the damage is instead **amplified**: `V' = V + V*(50-MR)/100` (43974-43975) — a floor-MR target takes +49%, MR 50 is the unchanged pivot; else `V' = V - V*red/100` (43982). With AntiMagic: `red = clamp(MR/2, 0, 75)` (43957-43968), no amplification (`red == 0` ⇒ `V' = V`, 43978). All divisions truncate toward zero. Monster-target body 43937-43993; player-target twin `cast_no_target` 40137-40198. **This is the damage path the shipped attack spells predominantly use**: of the 336 instant (`duration=0`) offensive (`spelltype<3`) spells, 171 carry 17 (magic missile — spell 1 — included, value 0 = rolled magnitude; no shipped 17 slot carries a fixed value) vs 98 carrying plain Damage(1). |
 | Enslave | 6 | `silly_spell` placeholder in WG3-NT (charm on players not implemented here) |
 | Drain | 8 | target HP `-= V`, caster HP `+= V` (capped at caster max `+0xae`); kill-checked |
 | EnergyLevel | 11/0xb | round pool `+0xba += V` (capped at max `+0xb8`) |

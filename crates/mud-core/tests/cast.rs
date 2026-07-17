@@ -19,8 +19,8 @@ use mud_core::content::{
 };
 use mud_core::command::{parse, Command};
 use mud_core::game::{
-    cast_roll_succeeds, monster_save_resists, spell_magnitude, Core, CoreConfig, Event, Gender,
-    Player, SessionId,
+    cast_roll_succeeds, damage_mr, monster_save_resists, spell_magnitude, Core, CoreConfig, Event,
+    Gender, Player, SessionId,
 };
 
 const MAGE: ClassId = ClassId(1);
@@ -65,12 +65,19 @@ const CHARGE: SpellId = SpellId(160);
 const FEAST: SpellId = SpellId(170);
 /// Offensive fixed Drain(9), round cost 1000: HP steal, caster cap, kill.
 const LEECH: SpellId = SpellId(180);
+/// Fixed Damage(-MR)(100), round cost 1000: the MR-scaling probe — the
+/// ability the shipped attack spells actually carry.
+const MRBOLT: SpellId = SpellId(190);
+/// Fixed Damage(100) twin of mrbolt: the "1 ignores MR entirely" contrast.
+const RAWBOLT: SpellId = SpellId(200);
 
 const RAT: MonsterId = MonsterId(7);
 const EMBER: MonsterId = MonsterId(8);
 const WARDED: MonsterId = MonsterId(9);
 const IMMUNE: MonsterId = MonsterId(10);
 const FRAIL: MonsterId = MonsterId(11);
+/// mr 150, no AntiMagic: the Damage(-MR) reduction cap probe (50%).
+const SHELLED: MonsterId = MonsterId(12);
 
 const TOWER: RoomId = RoomId { map: 1, room: 1 };
 /// `attributes & 1` — the protected-room (guilt line) fixture.
@@ -169,6 +176,11 @@ fn world() -> Content {
     immune.abilities = vec![(Ability::SpellImmu, 5)];
     content.add_monster(immune);
     content.add_monster(monster(FRAIL, "frail bat", 5));
+    let mut shelled = monster(SHELLED, "shelled horror", 1000);
+    // mr 150, no AntiMagic: Damage(-MR) reduction clamp((150-50)/2,0,50)
+    // = the 50% cap.
+    shelled.magic_resist = 150;
+    content.add_monster(shelled);
     // The mmis castmsgb shape (message 3242; line 3's damage is %s).
     content.add_message(Message {
         id: MessageId(900),
@@ -330,6 +342,22 @@ fn world() -> Content {
     leech.mana_cost = 1;
     leech.round_cost = 1000; // one fire per combat round
     leech.cast_msg_b = Some(MessageId(900));
+    // Slice-4 MR fixtures: fixed values so the MR scale is the only
+    // variable (a fixed value bypasses the magnitude roll and elemental
+    // resist, but NOT the Damage(-MR) scale — decompile 43941-43983
+    // applies it to local_2c whichever way that was selected).
+    let mut mrbolt = spell(MRBOLT, "mrbolt", "mrbo");
+    mrbolt.target_mode = TargetMode::Offensive0;
+    mrbolt.element = Element::Magic;
+    mrbolt.abilities = vec![(Ability::DamageMR, 100)];
+    mrbolt.mana_cost = 1;
+    mrbolt.round_cost = 1000;
+    mrbolt.cast_msg_b = Some(MessageId(900));
+    let mut rawbolt = mrbolt.clone();
+    rawbolt.id = RAWBOLT;
+    rawbolt.name = "rawbolt".into();
+    rawbolt.short_name = "rawb".into();
+    rawbolt.abilities = vec![(Ability::Damage, 100)];
     content.add_spell(mmis);
     content.add_spell(blur);
     content.add_spell(illu);
@@ -348,6 +376,8 @@ fn world() -> Content {
     content.add_spell(charge);
     content.add_spell(feast);
     content.add_spell(leech);
+    content.add_spell(mrbolt);
+    content.add_spell(rawbolt);
     content
 }
 
@@ -403,6 +433,8 @@ fn full_book() -> BTreeMap<SpellId, bool> {
         CHARGE,
         FEAST,
         LEECH,
+        MRBOLT,
+        RAWBOLT,
     ] {
         book.insert(id, false);
     }
@@ -1110,6 +1142,86 @@ fn antimagic_monster_resists_and_caster_pays_half_mana() {
     );
     assert_eq!(core.monster_hp(m), Some(1000), "no damage on resist");
     assert_eq!(core.current_mana(s), 4, "half of mana 4 charged");
+}
+
+#[test]
+fn damage_mr_formula_matches_the_decompile() {
+    // Decompile cast_monster_target 43941-43983. Without AntiMagic (51):
+    // reduction% = clamp((MR-50)/2, 0, 50); a zero reduction instead
+    // AMPLIFIES by (50-MR)% — low-MR targets take up to +49%.
+    assert_eq!(damage_mr(100, 1, false), 149); // the engine's MR floor
+    assert_eq!(damage_mr(100, 30, false), 120); // the giant rat / filthbug
+    assert_eq!(damage_mr(10, 30, false), 12); // 10*20/100 = 2
+    assert_eq!(damage_mr(4, 30, false), 4); // 4*20/100 truncates to 0
+    assert_eq!(damage_mr(100, 50, false), 100); // the pivot: unchanged
+    assert_eq!(damage_mr(100, 51, false), 99); // (51-50)/2=0 -> -1% amp
+    assert_eq!(damage_mr(50, 51, false), 50); // 50*-1/100 truncates to 0
+    assert_eq!(damage_mr(100, 52, false), 99); // reduction 1%
+    assert_eq!(damage_mr(100, 100, false), 75); // reduction 25%
+    assert_eq!(damage_mr(100, 150, false), 50); // reduction hits the cap
+    assert_eq!(damage_mr(100, 500, false), 50); // capped at 50%
+    // With AntiMagic: reduction% = clamp(MR/2, 0, 75), never amplifies.
+    assert_eq!(damage_mr(100, 1, true), 100); // 1/2=0 -> unchanged, no amp
+    assert_eq!(damage_mr(100, 30, true), 85);
+    assert_eq!(damage_mr(100, 100, true), 50);
+    assert_eq!(damage_mr(100, 150, true), 25); // reduction hits the cap
+    assert_eq!(damage_mr(100, 500, true), 25); // capped at 75%
+}
+
+#[test]
+fn damage_mr_scales_by_the_targets_mr() {
+    // mrbolt: fixed Damage(-MR)(100). The shelled horror's mr 150 hits the
+    // 50% reduction cap: exactly 50 lands, in the message and on the HP.
+    let (mut core, s, m) = arena(SHELLED);
+    cast(&mut core, s, "c mrbo horror");
+    let round = fire_round(&mut core, s);
+    assert!(
+        round.contains("You fire a mrbolt at shelled horror for 50 damage!\n"),
+        "got: {round:?}"
+    );
+    assert_eq!(core.monster_hp(m), Some(950));
+}
+
+#[test]
+fn damage_mr_amplifies_against_a_low_mr_monster() {
+    // The rat template's mr 0 floors to the engine's 1 (decompile
+    // 43387-43392), so the zero reduction AMPLIFIES: 100 + 100*49/100.
+    let (mut core, s, m) = arena(RAT);
+    cast(&mut core, s, "c mrbo rat");
+    let round = fire_round(&mut core, s);
+    assert!(
+        round.contains("You fire a mrbolt at giant rat for 149 damage!\n"),
+        "got: {round:?}"
+    );
+    assert_eq!(core.monster_hp(m), Some(851));
+}
+
+#[test]
+fn damage_mr_differs_from_plain_damage_exactly_by_the_mr_scale() {
+    // Same monster, same fixed 100: Damage (1) ignores MR entirely (the
+    // ability-table contract), Damage(-MR) (17) halves against mr 150.
+    let (mut core, s, m) = arena(SHELLED);
+    cast(&mut core, s, "c rawb horror");
+    let round = fire_round(&mut core, s);
+    assert!(
+        round.contains("You fire a rawbolt at shelled horror for 100 damage!\n"),
+        "got: {round:?}"
+    );
+    assert_eq!(core.monster_hp(m), Some(900));
+}
+
+#[test]
+fn damage_mr_antimagic_branch_caps_reduction_at_75() {
+    // The warded golem: AntiMagic + mr 500 -> clamp(250, 0, 75) = 75%.
+    // mrbolt is SaveClass::None, so no save intervenes: 25 damage.
+    let (mut core, s, m) = arena(WARDED);
+    cast(&mut core, s, "c mrbo golem");
+    let round = fire_round(&mut core, s);
+    assert!(
+        round.contains("You fire a mrbolt at warded golem for 25 damage!\n"),
+        "got: {round:?}"
+    );
+    assert_eq!(core.monster_hp(m), Some(975));
 }
 
 #[test]

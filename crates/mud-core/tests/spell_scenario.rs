@@ -8,9 +8,11 @@
 //!
 //! Determinism: `CoreConfig::rng_seed` drives every genrdn stream (success
 //! rolls + magnitude). Under SEED both 70%-chance rolls succeed and the
-//! kill lands on combat round 2 (fires of 10 then 12 damage against 20 HP);
-//! the round bound exists so a broken driver fails with a message instead
-//! of spinning. The failed-roll path is covered in tests/cast.rs.
+//! kill lands on combat round 2 (raw magnitudes 10 then 12, Damage(-MR)
+//! amplified by +20% against the filthbug's mr 30 into fires of 12 then 14
+//! against 20 HP); the round bound exists so a broken driver fails with a
+//! message instead of spinning. The failed-roll path is covered in
+//! tests/cast.rs.
 
 use std::collections::BTreeMap;
 
@@ -74,8 +76,10 @@ fn world() -> Content {
         trigger_msg: None,
     });
     content.add_room(lair);
-    // A silent punching bag (no attack forms): 20 HP dies in 2-5 fires of
-    // the 4..=13 mmis magnitude.
+    // A silent punching bag (no attack forms): 20 HP dies in 2-4 fires of
+    // the MR-scaled mmis. mr 30 is the REAL filthbug's (monster 3) — with
+    // no AntiMagic the Damage(-MR) reduction is 0, so every fire is
+    // amplified by (50-30)% = +20%.
     content.add_monster(Monster {
         id: FILTHBUG,
         name: "nasty filthbug".into(),
@@ -87,7 +91,7 @@ fn world() -> Content {
         exp_multi: 1,
         armour_class: 0,
         damage_resist: 0,
-        magic_resist: 0,
+        magic_resist: 30,
         bs_defence: 0,
         energy: 0,
         coins: [0; 5],
@@ -156,16 +160,18 @@ fn world() -> Content {
         weapon_code: 8,
         armour_code: 9,
     });
-    // The real mmis shape: rolled Damage over 4..=13 (bounds 4..12,
-    // max_increase 1/0 = the zero-denominator guard), base_chance 15,
-    // mana 1 (a failed roll deducts floor(1/2) = 0), Magic = unresistable.
+    // The real mmis shape: rolled Damage(-MR) (17, value 0 — the ability
+    // the real spell 1 carries, NOT plain Damage) over 4..=13 (bounds
+    // 4..12, max_increase 1/0 = the zero-denominator guard), base_chance
+    // 15, mana 1 (a failed roll deducts floor(1/2) = 0), Magic =
+    // unresistable.
     let mmis = Spell {
         id: MAGIC_MISSILE,
         name: "magic missile".into(),
         short_name: "mmis".into(),
         cast_msg_a: None,
         cast_msg_b: Some(MessageId(900)),
-        abilities: vec![(Ability::Damage, 0)],
+        abilities: vec![(Ability::DamageMR, 0)],
         level_cap: 0,
         round_cost: 100,
         required_power: 1,
@@ -313,10 +319,11 @@ fn mage_learns_scroll_casts_and_kills() {
         ("lair", "Dusty Cellar\nAlso here: nasty filthbug.\nObvious exits: south\n"),
         // §8.6: the opening cast engages without firing.
         ("engaged", "*Combat Engaged*"),
-        // Round 1 under SEED: a 10-damage fire (magnitude 4..=13).
-        ("first fire", "You fire a magic missile at nasty filthbug for 10 damage!\n"),
-        // Round 2 under SEED: the killing 12-damage fire.
-        ("killing fire", "You fire a magic missile at nasty filthbug for 12 damage!\n"),
+        // Round 1 under SEED: raw magnitude 10 (of 4..=13), Damage(-MR)
+        // amplified against mr 30: 10 + 10*20/100 = 12.
+        ("first fire", "You fire a magic missile at nasty filthbug for 12 damage!\n"),
+        // Round 2 under SEED: raw 12 -> 12 + 12*20/100 = 14, the kill.
+        ("killing fire", "You fire a magic missile at nasty filthbug for 14 damage!\n"),
         // M3 death path: death line, exp split, disengage — in order.
         ("death", "The nasty filthbug is dead.\n"),
         ("exp", "You gain 12 experience.\n"),

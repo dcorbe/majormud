@@ -375,6 +375,40 @@ pub fn monster_save_resists(save_stat: i32, roll: &mut impl FnMut(i32, i32) -> i
     roll(1, 100) <= (save_stat / 2).min(98)
 }
 
+/// The Damage(-MR) (17) scale — the damage path the shipped attack spells
+/// predominantly carry (magic missile included). `mr` is the SAME stat the
+/// saving throw reads (M.R.(36) modifiers + the template `mr` word, floored
+/// at 1); `anti_magic` = the target carries AntiMagic (51). Decompile
+/// `cast_monster_target` 43937-43993 (player-target twin `cast_no_target`
+/// 40137-40198):
+///
+/// - without AntiMagic: `reduction% = clamp((mr-50)/2, 0, 50)`; when that
+///   is 0 the damage is instead AMPLIFIED by `(50-mr)%` — a floor-MR
+///   target takes +49%, and MR 50 is the unchanged pivot;
+/// - with AntiMagic: `reduction% = clamp(mr/2, 0, 75)`, no amplification.
+///
+/// Divisions truncate toward zero (the DLL's signed idiv; Rust `/`
+/// matches). DIVERGENCE (slice 5): the DLL first boosts the amount by the
+/// caster's AlterSpDmg(165) percent (43940-43941; plain Damage gets the
+/// same boost via FUN_0043fef4 39025) — no user-ability aggregation feeds
+/// spells yet, so both paths skip it alike.
+pub fn damage_mr(amount: i32, mr: i32, anti_magic: bool) -> i32 {
+    let reduction = if anti_magic {
+        (mr / 2).clamp(0, 75)
+    } else {
+        ((mr - 50) / 2).clamp(0, 50)
+    };
+    if reduction == 0 {
+        if anti_magic {
+            amount
+        } else {
+            amount + amount * (50 - mr) / 100
+        }
+    } else {
+        amount - amount * reduction / 100
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     Output { session: SessionId, text: String },
@@ -2190,12 +2224,13 @@ impl Core {
             })
     }
 
-    /// The monster-side save stat (decompile cast_monster_target
-    /// 43640-43648): M.R.(36) ability modifiers plus the template's `mr`
-    /// column, floored at 1. ORACLE-VERIFY: the `mr` column's identity as
-    /// the template word the DLL reads rests on the Nightmare field-map
-    /// ordering; the starter spells are all SaveClass::None, so no live
-    /// save was measurable.
+    /// The monster-side MR stat, `local_34` (decompile cast_monster_target
+    /// 43387-43392): M.R.(36) ability modifiers plus the template's `mr`
+    /// column, floored at 1. Read by BOTH the saving throw (43600-43614)
+    /// and the Damage(-MR) scale (43946-43982). ORACLE-VERIFY: the `mr`
+    /// column's identity as the template word the DLL reads rests on the
+    /// Nightmare field-map ordering; the starter spells are all
+    /// SaveClass::None, so no live save was measurable.
     fn monster_save_stat(&self, id: MonsterInstanceId) -> i32 {
         let mr = self
             .monsters
@@ -2264,14 +2299,15 @@ impl Core {
         // only on a successful roll, and only when the save class grants
         // one — Always, or IfAntiMagic against a monster carrying
         // AntiMagic (51).
+        let anti_magic = self
+            .monsters
+            .get(&monster_id)
+            .and_then(|m| self.content.monsters.get(&m.template))
+            .is_some_and(|t| t.abilities.iter().any(|(a, _)| *a == Ability::AntiMagic));
         let save_allowed = match spell.save_class {
             crate::content::SaveClass::None => false,
             crate::content::SaveClass::Always => true,
-            crate::content::SaveClass::IfAntiMagic => self
-                .monsters
-                .get(&monster_id)
-                .and_then(|m| self.content.monsters.get(&m.template))
-                .is_some_and(|t| t.abilities.iter().any(|(a, _)| *a == Ability::AntiMagic)),
+            crate::content::SaveClass::IfAntiMagic => anti_magic,
         };
         let resisted = succeeded && save_allowed && {
             let stat = self.monster_save_stat(monster_id);
@@ -2333,18 +2369,21 @@ impl Core {
         let rng = &mut self.rng;
         let magnitude = spell_magnitude(&spell, level, resist, &mut |lo, hi| rng.roll(lo, hi));
 
-        // Offensive instant abilities (spec §4 table): Damage (1) and
-        // Drain (8) — the area match types and the remaining offensive
-        // abilities land in slice 5. A non-zero ability value is a FIXED
-        // amount that bypasses both the magnitude roll and the resist
-        // scaling; value 0 means "use the rolled magnitude" (decompile
-        // 43711-43717: slot value == 0 selects the rolled local_20).
-        // Combined totals assume at most one harm slot per spell — true for
-        // ALL shipped data (zero spells carry Damage+Drain or multiple harm
-        // slots). The DLL applies per-slot, a kill STOPS its loop (skipping
-        // later slots' caster heal), and the message prints the first
-        // slot's amount — slice 5 must not inherit this combined model if
-        // multi-slot content ever appears.
+        // Offensive instant abilities (spec §4 table): Damage (1),
+        // Damage(-MR) (17) and Drain (8) — the area match types and the
+        // remaining offensive abilities land in slice 5. A non-zero
+        // ability value is a FIXED amount that bypasses both the magnitude
+        // roll and the resist scaling (but NOT the 17 MR scale, which the
+        // DLL applies to the fixed-or-rolled amount alike); value 0 means
+        // "use the rolled magnitude" (decompile 43711-43717: slot value
+        // == 0 selects the rolled local_20). Combined totals assume at
+        // most one harm slot per spell — true for ALL shipped data (zero
+        // spells carry two of Damage/Drain/DamageMR). The DLL applies
+        // per-slot, a kill STOPS its loop (skipping later slots' caster
+        // heal), and the message prints the first slot's amount — slice 5
+        // must not inherit this combined model if multi-slot content ever
+        // appears.
+        let mr = self.monster_save_stat(monster_id);
         let mut damage_total = 0i32;
         let mut drain_total = 0i32;
         let mut harms = false;
@@ -2356,6 +2395,14 @@ impl Core {
             match ability {
                 Ability::Damage => {
                     damage_total += amount;
+                    harms = true;
+                }
+                // Damage(-MR) (17): the dominant attack-spell damage
+                // (magic missile included) — the amount scaled by the
+                // target's MR, the same stat the save reads (damage_mr;
+                // decompile 43937-43993).
+                Ability::DamageMR => {
+                    damage_total += damage_mr(amount, mr, anti_magic);
                     harms = true;
                 }
                 // Drain (8): the target loses it, the caster gains it
