@@ -52,8 +52,22 @@ Character: Oracle Delver, Dwarf Warrior, not Lawful, default stats.
     any blocking wait on one leaves the other's character unattended in
     combat (this killed a character twice).
 
+- Duration expedition (2026-07-17, blur timing) added more:
+  - **The game clock's wall-time depends on the emulator's environment.**
+    MBBSEmu restarted with its console GUI writing to a non-tty ran the
+    whole game clock ~1.74x slow (blur 70-tick duration 212s → 369s, mana
+    regen 30s/point → ~52s). Run MBBSEmu inside a real pty (tmux pane) for
+    any wall-clock measurement, and cross-check with the mana-regen cadence.
+  - Name validation is not always ~10 min: Zinvar's validation completed in
+    ~30 s on the same DB where earlier characters took ~10 min.
+  - The FSD stat editor's Given Name field arrives prefilled with the BBS
+    account name and typing APPENDS — send backspaces first to replace it.
+
 ## Scripts
 
 - `mudlib.py` — session driver (login, expect, capture).
 - `oracle_m1_capture.py` — the M1 capture: creation, room display,
   movement, errors, quit. Produces `oracle_m1.raw` + sections JSON.
+- `oracle_blur_duration.py` — interactive FIFO-driven session with
+  millisecond-timestamped clean log (for wall-clock measurements); commands
+  `send`/`raw`/`quit` echoed into a FIFO, raw capture + timing log split.

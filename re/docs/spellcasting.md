@@ -544,6 +544,12 @@ Owned scroll, eligible spell (`oracle_spell_learning.raw`,
 
   Both verbs reach the same handler (identical learn sentence); only the
   epilogue differs.
+
+  *Correction (2026-07-17, `oracle_blur_duration.raw`):* the disintegrate
+  line is not verb-bound — `use scroll of blur` printed it too, while
+  `use scroll of illuminate` in the same session printed only the learn
+  line + blank. Which epilogue appears varies by scroll (or roll), not by
+  `use` vs `read`.
 - `read <scroll>` when you own none (shop shelf nearby) prints the item's
   description paragraph and learns nothing:
 
@@ -979,3 +985,104 @@ for 45 damage!`), miss `Poop swings at carrion beast!`, `Poop wields
 quarterstaff!` / `Poop removes dagger.`, `Poop breaks off combat.`,
 `Poop picks up quarterstaff.`, `Poop just disconnected!!!`, and the
 third-person move-fail `Oracle ran into the wall to the up.`
+
+### 8.11 Duration timing (oracle-measured)
+
+Measured 2026-07-17. Character: **Zinvar Duskmere, Human Mage** (fresh
+roll on the freed `Vexil`/test123 BBS account; the Given Name FSD field
+comes prefilled with the account name and typing appends — backspace it
+out first). Transcripts: `oracle_blur_duration.raw` (raw capture) and
+`oracle_blur_duration_timing.log` (millisecond-timestamped clean lines —
+the raw capture has no timestamps; the timing lives here). Driver:
+`tools/oracle/oracle_blur_duration.py` (interactive FIFO session).
+Blur record: duration 70, duration_per_level 0, duration_increase (0,0),
+level_cap 0 — re-verified in `re/mmud_wgnt.sqlite` during this run, so
+every measurement below is the same flat 70-tick spell.
+
+**Tick length.** Wall clock from the `You cast blur on Zinvar!` line to
+the async `The effects of blur wear off.` line:
+
+| run | char level | emulator process | elapsed | s/tick (70) |
+|---|---|---|---|---|
+| 1 | L1 | original (tmux pty) | 211.97 s | 3.028 |
+| 2 | L1 | original (tmux pty) | 213.78 s | 3.054 |
+| 3 | L1, refreshed at +110.03 s | original (tmux pty) | 214.36 s from recast | 3.062 |
+| 4 | L2 | restarted, GUI on non-tty | 369.43 s | 5.278 |
+| 5 | L2 | restarted, GUI on non-tty | 268.12 s | 3.830 |
+| 6 | L2 | restarted in tmux pty | 282.16 s | 4.031 |
+
+Runs 1-3 are tightly grouped: **~3.03-3.06 s per tick, i.e. a ~3 s
+upkeep cycle — NOT the 5 s energy round** (blur 70 ticks ≈ 3½ minutes).
+**Runs 4-6 (all after emulator restarts, all at L2) did NOT converge**
+(268-369 s), and the mana-regen cadence in the same windows shows the
+emulator's world clock itself was the moving part: consecutive +2 regen
+events arrived every **31 s, dead stable,** in the original process, but
+39-66 s (run 4), ~40 s (run 5) and ~34 s (run 6) after restarts —
+i.e. the whole game clock ran slow and erratically in the restarted
+processes (worst with the console GUI writing to a non-tty), so the DLL
+plausibly counted the same 70 ticks that simply arrived late. The regen
+slowdown fully accounts for runs 4-5; run 6's excess (282 s against a
+regen cadence only ~10% slow) is NOT fully explained — either the fresh
+world's routine pass ran slower than its regen pass, or there is a real
+level/world-state term in the duration that the record's all-zero
+scaling fields don't show. **Best-supported reading: 70 ticks at ~3 s
+per tick (3.03-3.06 measured over three consistent runs); the L2
+divergence is emulator scheduling, with a residual unresolved wobble —
+re-measure L1 vs L2 back-to-back in ONE long-lived process before
+trusting any level dependence (ORACLE-VERIFY).** Recommendation for the
+M5 slice-4 `Job::Upkeep` constant: **3 s nominal.** Input does not
+alter tick flow: run 1 polled `look` every 60 s + an `st`, run 2 was
+near-idle (one `look`), same duration within one tick.
+
+**Cast-time line order** (raw bytes, first cast): command echo, then
+
+```
+You cast blur on Zinvar!            <- castmsgb, bright blue (1;34), CRLF
+[HP=26/MA=8]:                       <- prompt, mana ALREADY deducted
+\x1b[79D\x1b[K                      <- prompt line erased in place
+You are blurred!                    <- DescMsg line3, bright blue, CRLF
+[HP=26/MA=8]:                       <- fresh prompt
+```
+
+DescMsg line3 goes out through the async-message path (erase pending
+prompt, print, re-prompt) — net visible order: castmsgb line, line3,
+prompt. The wear-off line uses the same path, in yellow (0;33):
+`The effects of blur wear off.` printed with no input pending.
+
+**Recast while active = silent full refresh.** `c blur` mid-buff
+(+110.03 s in) produced byte-identical output to a first cast — both
+lines, no "already have" variant anywhere — and charged full mana
+(12→8). The timer resets to full: expiry came 214.36 s after the
+*recast* (324.38 s after the original cast), squarely one full duration
+from the refresh. For slice 4: a normal player self-recast takes the
+refresh-in-place branch; no special message exists.
+
+**`st` line.** While active, the sheet appends `You are blurred!`
+(DescMsg line3) directly after the `MagicRes` row; after expiry the line
+is gone. Bonus: the sheet row labeled **Martial Arts rose by exactly the
+stored magnitude** while blurred (13→18, blur value 5 = Dodge 34) and
+reverted on expiry — the Dodge contribution is visible there, so slice 4
+can assert on it.
+
+**Failed cast charges half mana, truncated — nonzero case.** `You
+attempt to cast blur, but fail.` (cyan 0;36) with prompt mana 14→12
+(blur costs 4 → charged 2). Confirms §8.6's mmis-based truncation
+reading; the deduction shows up via a prompt refresh a beat after the
+fail line.
+
+**Illuminate does NOT enter the status sheet — because it is not a
+duration spell.** Trained L2 (exp patch per §8.8, `WCCUSERS.DB.bak-zinvar-preL2`
+kept), bought the scroll (`You just bought scroll of illuminate for
+4 gold crowns, 8 copper farthings.`), learned, cast with blur active:
+`You cast illuminate!`, and `st` still showed only `You are blurred!`.
+The record explains it: illuminate has **duration 0** with RoomIllu
+(148) value 4012 — room light is its own mechanism, no active slot, and
+no wear-off line was ever observed for it. The `st` suffix is strictly
+"DescMsg line3 of each occupied active slot", not "any lingering
+effect". (Multi-slot ordering with two DescMsg spells remains
+ORACLE-VERIFY — no second slotted buff is learnable at L2 mage.)
+
+Also observed: name validation on character save took ~30 s this time
+(previous characters took ~10 min on the same DB — the polling walk is
+evidently not a fixed cost), and `Poop just left the Realm.` is the
+clean-logout counterpart to §8.10's `Poop just disconnected!!!`.
