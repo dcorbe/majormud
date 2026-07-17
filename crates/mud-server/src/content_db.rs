@@ -397,12 +397,13 @@ fn load_spells(db: &Connection, content: &mut Content) -> Result<(), LoadError> 
                 levels: to_u8("spell", nb, row.get(ib)?)?,
             })
         };
+        let num = to_u16("spell", "number", row.get(0)?)?;
         let target_mode = field("spelltype", 30)?;
         let save_class = field("typeofresists", 31)?;
         let match_type = field("target", 34)?;
         let element = field("typeofattack", 36)?;
         content.add_spell(Spell {
-            id: SpellId(to_u16("spell", "number", row.get(0)?)?),
+            id: SpellId(num),
             name: row.get(1)?,
             short_name: row.get(2)?,
             cast_msg_a: opt_message("spell", "castmsga", row.get(3)?)?,
@@ -413,17 +414,19 @@ fn load_spells(db: &Connection, content: &mut Content) -> Result<(), LoadError> 
             required_power: field("level", 27)?,
             min_base: field("min", 28)?,
             max_base: field("max", 29)?,
-            target_mode: TargetMode::from_i16(target_mode)
-                .ok_or_else(|| invalid("spell", format!("spelltype = {target_mode}")))?,
-            save_class: SaveClass::from_i16(save_class)
-                .ok_or_else(|| invalid("spell", format!("typeofresists = {save_class}")))?,
+            target_mode: TargetMode::from_i16(target_mode).ok_or_else(|| {
+                invalid("spell", format!("spell {num}: spelltype = {target_mode}"))
+            })?,
+            save_class: SaveClass::from_i16(save_class).ok_or_else(|| {
+                invalid("spell", format!("spell {num}: typeofresists = {save_class}"))
+            })?,
             base_chance: field("difficulty", 32)?,
             duration_per_level: field("undefined01", 33)?,
             match_type: MatchType::from_i16(match_type)
-                .ok_or_else(|| invalid("spell", format!("target = {match_type}")))?,
+                .ok_or_else(|| invalid("spell", format!("spell {num}: target = {match_type}")))?,
             duration: field("duration", 35)?,
             element: Element::from_i16(element)
-                .ok_or_else(|| invalid("spell", format!("typeofattack = {element}")))?,
+                .ok_or_else(|| invalid("spell", format!("spell {num}: typeofattack = {element}")))?,
             class_gate_group: field("magerya", 37)?,
             mana_cost: field("mana", 38)?,
             max_increase: pair("maxincrease", 39, "lvlsmaxincr", 40)?,

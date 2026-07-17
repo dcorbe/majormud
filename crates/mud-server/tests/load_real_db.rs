@@ -33,6 +33,30 @@ fn magic_missile_cast_fields_load_exactly() {
     assert_eq!(mm.duration_increase, ScalePair::NONE);
 }
 
+// Barkskin (spell 34) exists as a second pin because magic missile cannot
+// disambiguate the adjacent column clusters: on spell 1 the (magerya, mana,
+// mageryb) and (duration, undefined01) and scale-pair columns share values
+// (mostly 0/1), so a transposed SELECT column order would still pass the
+// magic-missile test. Barkskin has distinct values in every cluster:
+// level=7, magerya=3, mana=15, mageryb=0, duration=40, undefined01=0,
+// minincrease=(10,10), durincrease=(1,1).
+#[test]
+fn barkskin_disambiguates_adjacent_columns() {
+    use mud_core::content::{ScalePair, SpellId};
+    let content = content_db::load(&db_path()).expect("load content db");
+    let bark = &content.spells[&SpellId(34)];
+    assert_eq!(bark.name, "barkskin");
+    assert_eq!(bark.required_power, 7);
+    assert_eq!(bark.class_gate_group, 3);
+    assert_eq!(bark.mana_cost, 15);
+    assert_eq!(bark.required_class_level, 0);
+    assert_eq!(bark.duration, 40);
+    assert_eq!(bark.duration_per_level, 0);
+    assert_eq!(bark.min_increase, ScalePair { per: 10, levels: 10 });
+    assert_eq!(bark.duration_increase, ScalePair { per: 1, levels: 1 });
+    assert_eq!(bark.max_increase, ScalePair { per: 10, levels: 10 });
+}
+
 #[test]
 fn full_database_loads_and_validates() {
     let content = content_db::load(&db_path()).expect("load content db");

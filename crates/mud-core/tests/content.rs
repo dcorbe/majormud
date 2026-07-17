@@ -63,7 +63,7 @@ fn spell(n: u16) -> Spell {
         max_base: 0,
         target_mode: TargetMode::Benign,
         save_class: SaveClass::None,
-        base_chance: 200,
+        base_chance: 200, // >= 200 = auto-succeed: cast fixtures are deterministic by default
         duration_per_level: 0,
         match_type: MatchType::Single0,
         duration: 0,
