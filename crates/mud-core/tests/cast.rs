@@ -79,13 +79,32 @@ const VEIL: SpellId = SpellId(210);
 /// The amethyst-pendant-effect stand-in (blur's RemovesSpell target 157):
 /// only ever pre-seeded into a slot, never cast.
 const WARD: SpellId = SpellId(220);
-/// KillSpell(WARD) twin of veil — the suppress-EndCast dispel. Task 6
-/// honors the chain distinction; today both merely clear the slot.
+/// KillSpell(WARD) twin of veil — the suppress-EndCast dispel.
 const REAP: SpellId = SpellId(230);
 /// INSTANT dispel (cure-poison model): duration 0, [(Heal, 5),
 /// (RemovesSpell, WARD)] — the pre-pass runs for instant casts too, and a
 /// successful dispel's early return skips the Heal.
 const PURGE: SpellId = SpellId(240);
+// --- slice-4 Task 6 termination fixtures ---
+/// Stat-buff duration (the bard-song model, e.g. 45 song of brilliance):
+/// (Intel, 0) — the 44-49 hard-write family flows through
+/// effective_stats, reversal = recompute.
+const ANTHEM: SpellId = SpellId(250);
+/// Instant RemovesSpell(ANTHEM): the stat-reversal probe.
+const UNSING: SpellId = SpellId(260);
+/// EndCast chain head: (EndCast, ECHO), NO CastOnEnd row — pct defaults
+/// to 100 (decompile 44830).
+const CHIME: SpellId = SpellId(270);
+/// The chained spell: a cost-free benign duration buff with its own
+/// DescMsg — entered by the mode-2 forced cast.
+const ECHO: SpellId = SpellId(280);
+/// Instant RemovesSpell(CHIME): a dispel that HONORS the chain.
+const UNBIND: SpellId = SpellId(290);
+/// Instant KillSpell(CHIME): a dispel that SUPPRESSES the chain.
+const SEVER: SpellId = SpellId(300);
+/// (GiveTempSpell, ILLUMINATE) duration spell: termination purges the
+/// temporary book entry (the slice-2 flag).
+const GIFT: SpellId = SpellId(310);
 
 const RAT: MonsterId = MonsterId(7);
 const EMBER: MonsterId = MonsterId(8);
@@ -255,6 +274,31 @@ fn world() -> Content {
             "The shimmering ward fades.".into(),
             String::new(),
             "A shimmering ward surrounds you!".into(),
+        ],
+    });
+    // Anthem/chime/echo DescMsgs (wear-off line1 + active line3).
+    content.add_message(Message {
+        id: MessageId(906),
+        lines: vec![
+            "The anthem fades.".into(),
+            String::new(),
+            "An anthem lifts you!".into(),
+        ],
+    });
+    content.add_message(Message {
+        id: MessageId(907),
+        lines: vec![
+            "The chime fades.".into(),
+            String::new(),
+            "A chime rings around you!".into(),
+        ],
+    });
+    content.add_message(Message {
+        id: MessageId(908),
+        lines: vec![
+            "The echo fades.".into(),
+            String::new(),
+            "An echo follows you!".into(),
         ],
     });
     content.add_race(Race {
@@ -430,6 +474,36 @@ fn world() -> Content {
     // Instant dispel (cure-poison model): duration 0 stays the default.
     let mut purge = spell(PURGE, "purge", "purg");
     purge.abilities = vec![(Ability::Heal, 5), (Ability::RemovesSpell, 220)];
+    // Task 6 termination fixtures (all cost-free, base_chance 200).
+    let mut anthem = spell(ANTHEM, "anthem", "anth");
+    anthem.duration = 70;
+    anthem.min_base = 5;
+    anthem.max_base = 5;
+    anthem.abilities = vec![(Ability::Intel, 0), (Ability::DescMsg, 906)];
+    let mut unsing = spell(UNSING, "unsing", "unsi");
+    unsing.abilities = vec![(Ability::RemovesSpell, 250)];
+    let mut chime = spell(CHIME, "chime", "chim");
+    chime.duration = 70;
+    chime.abilities = vec![(Ability::EndCast, 280), (Ability::DescMsg, 907)];
+    let mut echo = spell(ECHO, "echo", "echo");
+    echo.duration = 70;
+    echo.min_base = 5;
+    echo.max_base = 5;
+    echo.abilities = vec![(Ability::Dodge, 0), (Ability::DescMsg, 908)];
+    let mut unbind = spell(UNBIND, "unbind", "unbi");
+    unbind.abilities = vec![(Ability::RemovesSpell, 270)];
+    let mut sever = spell(SEVER, "sever", "seve");
+    sever.abilities = vec![(Ability::KillSpell, 270)];
+    let mut gift = spell(GIFT, "gift", "gift");
+    gift.duration = 70;
+    gift.abilities = vec![(Ability::GiveTempSpell, 10)]; // -> ILLUMINATE
+    content.add_spell(anthem);
+    content.add_spell(unsing);
+    content.add_spell(chime);
+    content.add_spell(echo);
+    content.add_spell(unbind);
+    content.add_spell(sever);
+    content.add_spell(gift);
     content.add_spell(veil);
     content.add_spell(ward);
     content.add_spell(reap);
@@ -516,6 +590,9 @@ fn full_book() -> BTreeMap<SpellId, bool> {
         WARD,
         REAP,
         PURGE,
+        UNSING,
+        UNBIND,
+        SEVER,
     ] {
         book.insert(id, false);
     }
@@ -1881,7 +1958,8 @@ fn removes_spell_pre_pass_dispels_and_ends_the_cast() {
     // amethyst pendant's effect on cast (anti-stacking). Decompile
     // cast_no_target 39472-39494: a FOUND dispel prints the success lines,
     // clears the slot, runs the termination, and RETURNS — the cast ends;
-    // veil does NOT enter a slot. The chain is honored in Task 6.
+    // veil does NOT enter a slot. RemovesSpell honors the chain (ward
+    // simply has no EndCast row).
     // ORACLE-VERIFY: blur-over-157 live probe (st should NOT show blurred).
     let mut core = Core::new(world(), CoreConfig::default());
     let mut vexil = player("Vexil", MAGE, full_book());
@@ -1916,9 +1994,9 @@ fn removes_spell_pre_pass_dispels_and_ends_the_cast() {
 #[test]
 fn kill_spell_pre_pass_also_dispels_and_ends_the_cast() {
     // KillSpell (153) dispels too; it differs from RemovesSpell only by
-    // suppressing the victim's EndCast chain — Task 6's distinction, both
-    // merely clear the slot today. The same 39494 early return applies:
-    // reap does NOT enter a slot on the dispel cast.
+    // suppressing the victim's EndCast chain (see
+    // kill_spell_dispel_suppresses_the_chain). The same 39494 early
+    // return applies: reap does NOT enter a slot on the dispel cast.
     let mut core = Core::new(world(), CoreConfig::default());
     let mut vexil = player("Vexil", MAGE, full_book());
     vexil.active_spells[0] = ActiveSpell { spell: Some(WARD), value: 2, remaining: 40 };
@@ -2001,4 +2079,139 @@ fn melee_attack_replaces_a_cast_engagement() {
     let round = fire_round(&mut core, s);
     assert!(!round.contains("You fire"), "no re-fire after attack: {round:?}");
     assert_eq!(core.current_mana(s), mana, "no further mana charges");
+}
+
+// --- termination engine (slice 4 Task 6; spec §5, decompile
+// --- perform_spell_termination_player_upkeep 44814-44900) ---
+
+#[test]
+fn dispel_prints_the_wear_off_line_after_the_success_lines() {
+    // DLL order (39481-39494): display_spell_success FIRST, then clear +
+    // terminate — the dispelling cast's own lines precede the victim's
+    // DescMsg line1 wear-off. The wear-off goes to the OWNER only
+    // (44833-44844); the room hears nothing (ORACLE-VERIFY: no measured
+    // room-side wear-off; blur's msg-68 line2 is empty).
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut vexil = player("Vexil", MAGE, full_book());
+    vexil.active_spells[0] = ActiveSpell { spell: Some(WARD), value: 2, remaining: 40 };
+    let s = core.attach_player(vexil);
+    let watcher = core.attach_player(player("Grunt", WARRIOR, BTreeMap::new()));
+    core.drain_events();
+    core.input(s, "c veil");
+    let events = core.drain_events();
+    let shown = text_to(&events, s);
+    let cast_line = shown.find("You cast veil on Vexil!").expect("castmsgb");
+    let active = shown.find("You are veiled!").expect("DescMsg line3");
+    let wear = shown
+        .find("The shimmering ward fades.")
+        .expect("ward's DescMsg line1");
+    assert!(cast_line < active && active < wear, "order: {shown:?}");
+    let seen = text_to(&events, watcher);
+    assert!(!seen.contains("fades"), "owner-only wear-off: {seen:?}");
+}
+
+#[test]
+fn stat_buff_termination_reverts_through_the_recompute() {
+    // The 44-49 hard-write family (spec §5 step 2, reversal 44858-44875):
+    // our entry never direct-writes — the buff rides the ability bag into
+    // effective_stats, so the sheet shows it while the slot lives and the
+    // termination's recompute drops it (KNOWN-DIVERGENCE in mechanism,
+    // identical observable). Anthem: (Intel, 0) stored 5 on a base-0
+    // fixture -> Intellect row 5, MagicRes (5 + 0*3)/4 = 1.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut vexil = player("Vexil", MAGE, full_book());
+    vexil.active_spells[0] = ActiveSpell { spell: Some(ANTHEM), value: 5, remaining: 40 };
+    let s = core.attach_player(vexil);
+    core.drain_events();
+    core.input(s, "st");
+    let sheet = text_to(&core.drain_events(), s);
+    assert!(sheet.contains("Intellect:  5"), "buffed Intel: {sheet:?}");
+    assert!(sheet.contains("An anthem lifts you!"), "st line: {sheet:?}");
+    let shown = cast(&mut core, s, "c unsing");
+    assert!(shown.contains("The anthem fades.\n"), "wear-off: {shown:?}");
+    let p = core.player_snapshot(s);
+    assert_eq!(p.find_active(ANTHEM), None, "slot cleared");
+    assert_eq!(p.stats.intellect, 0, "base stats never direct-written");
+    core.input(s, "st");
+    let sheet = text_to(&core.drain_events(), s);
+    assert!(sheet.contains("Intellect:  0"), "buff reverted: {sheet:?}");
+    assert!(!sheet.contains("anthem"), "st line gone: {sheet:?}");
+}
+
+#[test]
+fn endcast_chain_fires_on_removes_spell_dispel() {
+    // RemovesSpell terminates WITH the chain honored (39491: chainFlag =
+    // ability == 0x7a). Chime carries (EndCast, ECHO) and no CastOnEnd
+    // row -> pct 100 (44830): the forced mode-2 cast enters echo's slot
+    // with a fresh roll and prints its own success lines.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut vexil = player("Vexil", MAGE, full_book());
+    vexil.active_spells[0] = ActiveSpell { spell: Some(CHIME), value: 5, remaining: 40 };
+    let s = core.attach_player(vexil);
+    core.drain_events();
+    let shown = cast(&mut core, s, "c unbind");
+    assert!(shown.contains("The chime fades.\n"), "wear-off: {shown:?}");
+    assert!(
+        shown.contains("An echo follows you!\n"),
+        "chained cast's active line: {shown:?}"
+    );
+    let p = core.player_snapshot(s);
+    assert_eq!(p.find_active(CHIME), None, "chime slot cleared");
+    let idx = p.find_active(ECHO).expect("chained spell entered");
+    assert!((5..=6).contains(&p.active_spells[idx].value), "fresh roll");
+    assert_eq!(p.active_spells[idx].remaining, 70, "fresh duration");
+}
+
+#[test]
+fn kill_spell_dispel_suppresses_the_chain() {
+    // KillSpell (153) is the chainFlag-0 dispel: the wear-off line and
+    // reversal still run, the EndCast chain does not (44891: the flag
+    // gates ONLY the chain).
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut vexil = player("Vexil", MAGE, full_book());
+    vexil.active_spells[0] = ActiveSpell { spell: Some(CHIME), value: 5, remaining: 40 };
+    let s = core.attach_player(vexil);
+    core.drain_events();
+    let shown = cast(&mut core, s, "c sever");
+    assert!(shown.contains("The chime fades.\n"), "wear-off still prints: {shown:?}");
+    assert!(!shown.contains("echo"), "no chained cast: {shown:?}");
+    let p = core.player_snapshot(s);
+    assert_eq!(p.find_active(CHIME), None, "chime slot cleared");
+    assert_eq!(p.find_active(ECHO), None, "chain suppressed");
+}
+
+#[test]
+fn death_terminates_all_slots_chain_suppressed_and_purges_temp() {
+    // Player death terminates every occupied slot in slot order with the
+    // chain SUPPRESSED (decompile check_kill_user death branch
+    // 13053-13066: chainFlag '\0' — unlike the reroll path 10404-10419's
+    // '\x01'), and GiveTempSpell purges the temporary book entry
+    // (44883-44885) while a permanent entry survives. Driven through the
+    // M3 bleed: HP -199 hits the -200 floor on the next slow tick.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut book = full_book();
+    book.insert(ILLUMINATE, true); // temporary (the slice-2 flag)
+    let mut vexil = player("Vexil", MAGE, book);
+    vexil.active_spells[0] = ActiveSpell { spell: Some(CHIME), value: 5, remaining: 40 };
+    vexil.active_spells[1] = ActiveSpell { spell: Some(BLUR), value: 5, remaining: 40 };
+    vexil.active_spells[2] = ActiveSpell { spell: Some(GIFT), value: 1, remaining: 40 };
+    vexil.current_hp = -199;
+    let s = core.attach_player(vexil);
+    core.drain_events();
+    for _ in 0..30 {
+        core.tick();
+    }
+    let shown = text_to(&core.drain_events(), s);
+    assert!(shown.contains("You have been killed!"), "died: {shown:?}");
+    let chime = shown.find("The chime fades.").expect("chime wear-off");
+    let blur = shown
+        .find("The effects of blur wear off.")
+        .expect("blur wear-off");
+    assert!(chime < blur, "slot order: {shown:?}");
+    assert!(!shown.contains("echo"), "death suppresses the chain: {shown:?}");
+    let p = core.player_snapshot(s);
+    assert!(p.active_spells.iter().all(|s| s.spell.is_none()), "all slots cleared");
+    assert_eq!(p.lives, 8, "miracle respawn");
+    assert!(!p.spellbook.contains_key(&ILLUMINATE), "temp entry purged");
+    assert!(p.spellbook.contains_key(&BLUR), "permanent entries survive");
 }

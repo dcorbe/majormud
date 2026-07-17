@@ -934,6 +934,10 @@ impl Core {
             };
             let (max_hp, max_mana) = (derived.max_hp, derived.max_mana);
             let bag = self.ability_bag(player);
+            // Regen reads the EFFECTIVE stats (+0xa2..: slow_update's
+            // formulas consume the buffed fields the DLL direct-writes;
+            // we fold from the bag — see effective_stats).
+            let stats = self.effective_stats(player, &bag);
             let caster = self
                 .content
                 .classes
@@ -973,7 +977,7 @@ impl Core {
             // HP: only while alive and below max (0 < HP < max).
             if player.current_hp > 0 && player.current_hp < max_hp {
                 let mut base =
-                    (i32::from(player.level) + 20) * i32::from(player.stats.health) / 750;
+                    (i32::from(player.level) + 20) * i32::from(stats.health) / 750;
                 if base < 2 {
                     base = 1;
                 }
@@ -988,10 +992,10 @@ impl Core {
             if player.current_mana < max_mana {
                 let (group, tier) = caster.unwrap_or((0, 0));
                 let stat = match group {
-                    1 => i32::from(player.stats.intellect),
-                    2 => i32::from(player.stats.wisdom),
-                    3 => (i32::from(player.stats.wisdom) + i32::from(player.stats.intellect)) / 2,
-                    4 => i32::from(player.stats.charm),
+                    1 => i32::from(stats.intellect),
+                    2 => i32::from(stats.wisdom),
+                    3 => (i32::from(stats.wisdom) + i32::from(stats.intellect)) / 2,
+                    4 => i32::from(stats.charm),
                     _ => 0,
                 };
                 let mut regen = (i32::from(player.level) + 20) * stat * (i32::from(tier) + 2)
@@ -1129,9 +1133,43 @@ impl Core {
         abilities
     }
 
+    /// The effective stats the DLL keeps at `+0xa2..+0xac`: base stats
+    /// plus every accumulated stat-buff ability (Intel 44 .. Charm 49)
+    /// from the bag. The DLL direct-writes these six at cast
+    /// (cast_no_target 40757-40773: `+0xa2 += v` right after
+    /// add_cast_spell_to_user) and reverses them at termination
+    /// (perform_spell_termination_player_upkeep 44858-44875); we fold
+    /// them from the bag at read time instead, so a cleared slot simply
+    /// vanishes on the next recompute with no reversal bookkeeping.
+    /// KNOWN-DIVERGENCE (mechanism, not outcome): the DLL re-applies the
+    /// direct write on every refresh recast WITHOUT reversing the
+    /// previous one — its stat buffs stack across recasts until a single
+    /// stored-value reversal at termination; the bag contributes exactly
+    /// once per slot. Direct readers of `player.stats` not yet folded
+    /// (combat fighter builders, player_energy_used, the CHA shop-price
+    /// haggle) keep reading base stats — no stat-buff duration spell is
+    /// castable before bard support (all 12 learnable carriers are bard
+    /// songs), and the one shipped stat ITEM (331 "Indiana Jones hat",
+    /// +30 Charm) awaits the same sweep. Values clamp at 0: our fields
+    /// are u16 where the DLL's signed shorts can go negative.
+    fn effective_stats(&self, player: &Player, bag: &AbilityBag) -> StatBlock {
+        let fold = |base: u16, ability: Ability| -> u16 {
+            clamp_counter(i32::from(base) + bag.value(ability))
+        };
+        StatBlock {
+            intellect: fold(player.stats.intellect, Ability::Intel),
+            wisdom: fold(player.stats.wisdom, Ability::Wisdom),
+            strength: fold(player.stats.strength, Ability::Strength),
+            health: fold(player.stats.health, Ability::Health),
+            agility: fold(player.stats.agility, Ability::Agility),
+            charm: fold(player.stats.charm, Ability::Charm),
+        }
+    }
+
     /// `update_dynamic_stats` + `calculate_secondary_stats`.
     fn derive_for(&self, player: &Player) -> Derived {
         let abilities = self.ability_bag(player);
+        let stats = self.effective_stats(player, &abilities);
         let class = self.content.classes.get(&player.class);
         let race_hp = self
             .content
@@ -1140,7 +1178,7 @@ impl Core {
             .map_or(0, |r| i32::from(r.hp_per_level));
         derive(&StatInputs {
             level: i32::from(player.level),
-            stats: player.stats,
+            stats,
             health_base: i32::from(player.base_stats.health),
             hp_base: i32::from(player.hp_base),
             class_hp_per_level: class.map_or(0, |c| i32::from(c.hp_per_level)),
@@ -1200,6 +1238,11 @@ impl Core {
             // inferred, not measured (spell 776 ships a (DescMsg, 0) row).
             .filter_map(|m| m.lines.get(2).filter(|l| !l.is_empty()).cloned())
             .collect();
+        // The sheet's six stat rows show the EFFECTIVE stats (+0xa2..;
+        // buffs included — the DLL direct-writes them, we fold from the
+        // bag, see effective_stats).
+        let bag = self.ability_bag(player);
+        let stats = self.effective_stats(player, &bag);
         let sheet = text::stat_sheet(&text::SheetData {
             name: &player.name,
             race,
@@ -1212,7 +1255,7 @@ impl Core {
             hp_max: derived.max_hp,
             armour_class: 0, // get_armour_rating: no equipment until M4
             armour_max: 0,
-            stats: player.stats,
+            stats,
             derived,
             active_lines: &active_lines,
         });
@@ -2226,7 +2269,6 @@ impl Core {
             return;
         };
         let spellcasting = derived.spellcasting;
-        let max_hp = derived.max_hp;
         let level = player.level;
         let caster_name = player.name.clone();
         let room = player.location;
@@ -2294,45 +2336,60 @@ impl Core {
             return;
         }
         player.current_mana -= mana_cost;
+        self.benign_success_effects(session, &spell, magnitude, duration);
+    }
+
+    /// Everything a SUCCESSFUL benign cast does after its costs are paid
+    /// — shared verbatim by the command path and the mode-2 forced cast
+    /// (`forced_cast`): the dispel pre-pass, the instant apply loop or
+    /// duration slot entry, then the success lines.
+    fn benign_success_effects(
+        &mut self,
+        session: SessionId,
+        spell: &crate::content::Spell,
+        magnitude: i32,
+        duration: i32,
+    ) {
+        let Some(Session::InGame { derived, .. }) = self.sessions.get(&session) else {
+            return;
+        };
+        let max_hp = derived.max_hp;
         // RemovesSpell (122) / KillSpell (153) pre-pass on the target's
         // own slots (spec §3): the named spell is dispelled — blur (129)
         // removes the amethyst pendant's effect 157 (anti-stacking). The
         // pre-pass loop (decompile cast_no_target 39463-39572) runs for
         // EVERY benign cast — it is NOT duration-gated; 17 shipped instant
         // spells (cure-poison family) carry dispel abilities. RemovesSpell
-        // honors the victim's EndCast chain, KillSpell suppresses it —
-        // Task 6's distinction; both merely clear the slot today.
-        let mut dispelled = false;
+        // honors the victim's EndCast chain, KillSpell suppresses it
+        // (39491: chainFlag = `ability == 0x7a`).
         for (ability, value) in &spell.abilities {
             let honor_endcast = match ability {
                 Ability::RemovesSpell => true,
                 Ability::KillSpell => false,
                 _ => continue,
             };
+            // First find wins: the DLL returns from inside the slot scan
+            // (39494) without visiting later ability slots.
             if let Ok(id) = u16::try_from(*value)
                 && id != 0
                 && let Some(idx) = self.player(session).find_active(SpellId(id))
             {
-                self.clear_active_slot(session, idx, honor_endcast);
-                dispelled = true;
-                // First find wins: the DLL returns from inside the slot
-                // scan (39494) without visiting later ability slots.
-                break;
+                // Early return (decompile 39472-39494, match types
+                // 1/2/6): a FOUND dispel prints display_spell_success
+                // FIRST (39481-39483), then clears the slot and runs the
+                // termination path (wear-off line + chain), recomputes,
+                // and RETURNS — the cast ends. The return precedes the
+                // apply loop (39573), so the caster's spell is neither
+                // applied (instant effects included) nor entered into a
+                // slot; only the success lines print.
+                // ORACLE-VERIFY: blur-over-157 live probe (st should NOT
+                // show blurred).
+                self.emit_cast_success_lines(session, spell);
+                self.terminate_active_spell(session, idx, honor_endcast);
+                return;
             }
         }
-        if dispelled {
-            // Early return (decompile 39472-39494, match types 1/2/6): a
-            // FOUND dispel prints display_spell_success, clears the slot,
-            // runs the termination path, recomputes, and RETURNS — the
-            // cast ends. The return precedes the apply loop (39573), so
-            // the caster's spell is neither applied (instant effects
-            // included) nor entered into a slot; only the success lines
-            // below still print.
-            // ORACLE-VERIFY: blur-over-157 live probe (st should NOT show
-            // blurred).
-            let snapshot = Box::new(self.player(session).clone());
-            self.events.push(Event::Persist(snapshot));
-        } else if spell.duration == 0 {
+        if spell.duration == 0 {
             // Instant apply loop (spec §4 table, self-target): iterate the
             // ability slots; a non-zero slot value is a FIXED amount, 0
             // means the rolled V — pinned on BOTH paths (offensive
@@ -2388,11 +2445,11 @@ impl Core {
                     return;
                 };
                 let slot = ActiveSpell {
-                    spell: Some(spell_id),
+                    spell: Some(spell.id),
                     value: magnitude as i16,
                     remaining: duration,
                 };
-                if let Some(idx) = player.find_active(spell_id) {
+                if let Some(idx) = player.find_active(spell.id) {
                     // VERIFIED (§8.11): a mid-buff recast is a SILENT
                     // full refresh — byte-identical output to a first
                     // cast (castmsgb + the DescMsg active line below, no
@@ -2421,10 +2478,23 @@ impl Core {
                 // lost, the full costs stay paid (the success roll
                 // passed), and display_spell_success is never reached —
                 // no castmsgb, no active line, no room broadcast.
-                self.output_line(session, &text::cast_fail(&spell_name));
+                let fail = text::cast_fail(&spell.name);
+                self.output_line(session, &fail);
                 return;
             }
         }
+        self.emit_cast_success_lines(session, spell);
+    }
+
+    /// `display_spell_success` for a benign self-cast (decompile
+    /// 38004-38011): the castmsgb fan-out, then the DescMsg (115) line3
+    /// active line on duration casts.
+    fn emit_cast_success_lines(&mut self, session: SessionId, spell: &crate::content::Spell) {
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+            return;
+        };
+        let caster_name = player.name.clone();
+        let room = player.location;
         // Cast messages: castmsgb only (castmsga is the empty message on
         // every sampled spell — the Task-10 renderer contract). Slice-3
         // benign casts are SELF-ONLY: target = the caster, the caster line
@@ -2469,20 +2539,208 @@ impl Core {
         }
     }
 
-    /// Minimal targeted active-slot removal — the RemovesSpell/KillSpell
-    /// pre-pass route (spec §3). Task 6: full termination
-    /// (`perform_spell_termination_player_upkeep`) replaces this body —
-    /// DescMsg line1, hard-write reversal, the EndCast chain when
-    /// `honor_endcast` (RemovesSpell honors it, KillSpell suppresses).
-    /// Today it clears the slot and recomputes.
-    fn clear_active_slot(&mut self, session: SessionId, idx: usize, honor_endcast: bool) {
-        let _ = honor_endcast; // Task 6 consumes it
-        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
-            player.active_spells[idx] = ActiveSpell::default();
+    /// `perform_spell_termination_player_upkeep` (decompile 44814-44900;
+    /// spec §5) — runs once when a spell leaves a slot: upkeep expiry, a
+    /// targeted dispel (RemovesSpell honors the EndCast chain, KillSpell
+    /// suppresses it), or death (chain suppressed). Clears the slot FIRST
+    /// and terminates with the stored value — every DLL call site zeroes
+    /// `+0x40/+0x54/+0x68` before the call (13053-13060 death,
+    /// 19819-19823 expiry, 39487-39492 dispel; spec §5).
+    fn terminate_active_spell(&mut self, session: SessionId, idx: usize, honor_endcast: bool) {
+        let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+            return;
+        };
+        let slot = player.active_spells[idx];
+        let Some(spell_id) = slot.spell else {
+            return;
+        };
+        player.active_spells[idx] = ActiveSpell::default();
+        let stored = i32::from(slot.value);
+        let Some(spell) = self.content.spells.get(&spell_id).cloned() else {
+            // Unknown spell id (content changed under a save): the DLL
+            // clears the slot but skips termination when get_spell_data
+            // fails (13056-13060). Recompute + persist the bare clear.
+            self.refresh_derived(session);
+            let snapshot = Box::new(self.player(session).clone());
+            self.events.push(Event::Persist(snapshot));
+            return;
+        };
+        // 1. The wear-off line: DescMsg (115) message line1, to the OWNER
+        //    only (44824-44844: get_spell_ability_value(0x73) — the RAW
+        //    row value, no stored-value substitution — then prf(line1,
+        //    spellName) + prompt on the owner's terminal; %s binds the
+        //    spell name). MEASURED §8.11: `The effects of blur wear off.`
+        //    arrives via the async redraw path — our output_line is the
+        //    same net line. Room line2: the DLL emits NOTHING to the room
+        //    (44840 prints line1 only) — ORACLE-VERIFY, no room-side
+        //    wear-off was ever measured.
+        if let Some(msg_val) = spell
+            .abilities
+            .iter()
+            .find_map(|(a, v)| (*a == Ability::DescMsg).then_some(*v))
+            && let Ok(id) = u16::try_from(msg_val)
+            && let Some(msg) = self.content.messages.get(&crate::content::MessageId(id))
+            && let Some(line) = msg.lines.first().filter(|l| !l.is_empty())
+        {
+            let line = line.replacen("%s", &spell.name, 1);
+            self.output_line(session, &line);
         }
-        // The cleared slot's contribution vanishes from the next recompute
-        // (spec §4) — refresh the cached derived stats now.
+        // 2. Hard-write reversal + chain metadata (44846-44890). Value =
+        //    the stored slot value unless the ability row carries its own
+        //    nonzero value (44849-44852 — the same per-ability override
+        //    convention as the recurring upkeep handlers, spec §5).
+        let mut chain: i32 = 0;
+        // CastOnEnd% default 100 when the row is absent (44830).
+        let mut pct: i32 = 100;
+        for (ability, row) in &spell.abilities {
+            let v = if *row != 0 { i32::from(*row) } else { stored };
+            match ability {
+                // Poison (19): `+0xbe -= v`, floored 0 (44853-44857) —
+                // SLICE 5: the poison field lands with the death
+                // system's DoT; nothing to reverse until then.
+                Ability::Poison => {}
+                // Stat buffs 44-49 (44858-44875 subtract from the
+                // effective stats +0xa2..+0xac): NO explicit reversal
+                // here — our cast entry never direct-writes; the buff
+                // lives in the ability bag and effective_stats folds it
+                // on every recompute, so clearing the slot above already
+                // removed it (KNOWN-DIVERGENCE in mechanism, identical
+                // observable — see effective_stats).
+                Ability::Intel
+                | Ability::Wisdom
+                | Ability::Strength
+                | Ability::Health
+                | Ability::Agility
+                | Ability::Charm => {}
+                // AlterHP (88): the DLL subtracts BOTH max (+0xae) and
+                // current (+0xb0) HP (44876-44879). The max half is
+                // bag-fed here (derive adds AlterHP into max_hp) and
+                // vanishes with the recompute below. The CURRENT-HP half
+                // is a real hard write — but our cast entry never adds
+                // it, so there is nothing to subtract: exactly ONE
+                // shipped duration spell carries 88 (746 "increase HP",
+                // named by no LearnSp scroll — a monster-cast payload),
+                // unreachable until slice-6 monster casting brings the
+                // add-at-entry/subtract-here pair together.
+                Ability::AlterHP => {}
+                // GiveTempSpell (160): purge_spell_from_spellbook
+                // (44883-44885) — only a `temporary` book entry (the
+                // slice-2 flag) is removed; a permanently learned copy
+                // of the same spell survives.
+                Ability::GiveTempSpell => {
+                    if let Ok(id) = u16::try_from(v)
+                        && let Some(Session::InGame { player, .. }) =
+                            self.sessions.get_mut(&session)
+                        && player.spellbook.get(&SpellId(id)) == Some(&true)
+                    {
+                        player.spellbook.remove(&SpellId(id));
+                    }
+                }
+                // EndCast (151) / CastOnEnd% (164) go through the SAME
+                // override convention (44880-44882, 44886-44888): a
+                // zero-value row substitutes the stored slot value as
+                // the chained spell id / percentage. One shipped
+                // duration spell rides that quirk (935 "sysop jail
+                // time", (EndCast, 0)).
+                Ability::EndCast => chain = v,
+                Ability::CastOnEnd => pct = v,
+                _ => {}
+            }
+        }
+        // 3. Recompute + persist the cleared slot / purged book. (The DLL
+        //    runs calculate_secondary_stats AFTER the chain, 44896 — but
+        //    the chained cast's own slot entry recomputes for itself, so
+        //    refreshing first is observably identical.)
         self.refresh_derived(session);
+        let snapshot = Box::new(self.player(session).clone());
+        self.events.push(Event::Persist(snapshot));
+        // 4. EndCast chain (44891-44895): only when this termination
+        //    honors it, the id resolves, and genrdn(0,100) < pct.
+        if honor_endcast
+            && chain != 0
+            && self.rng.roll(0, 100) < pct
+            && let Ok(id) = u16::try_from(chain)
+        {
+            self.forced_cast(session, SpellId(id));
+        }
+    }
+
+    /// `cast_no_target(..., mode 2)` — the forced follow-up cast an
+    /// EndCast chain fires (spec §5 step 4). The decompile's mode-2
+    /// branches pin what a forced cast skips and what it still pays:
+    /// - confusion / downed / NoMagic / Kai-block gates are all
+    ///   `param_3 == '\0'`-gated (39118, 39125, 39133, 39147) — skipped;
+    /// - the class-school gate still applies, SILENTLY (39239-39243:
+    ///   wrong magery group or casting factor below the spell's class
+    ///   level → bare `return 0`);
+    /// - round-energy, mana and level gates still apply WITH their
+    ///   refusal lines (39253-39281: the triple check is unconditional;
+    ///   energy prints the already-cast line, then mana, then level);
+    /// - NO success roll and NO one-cast-per-round flag: modes 1/2 set
+    ///   the success local unconditionally (39247), and the `+0x700 & 4`
+    ///   round flag is only consulted in the mode-0 benign branch
+    ///   (39344-39355);
+    /// - the always-success path deducts the FULL round cost and mana
+    ///   (39400-39408; mana floored at 0).
+    ///
+    /// Slice-4 scope: benign self-cast only — no shipped EndCast chain is
+    /// reachable by a player cast (48 duration spells carry EndCast 151;
+    /// none is named by any LearnSp scroll), and offensive chain targets
+    /// need slice-6 monster slots.
+    fn forced_cast(&mut self, session: SessionId, spell_id: SpellId) {
+        let Some(spell) = self.content.spells.get(&spell_id).cloned() else {
+            return;
+        };
+        if spell.target_mode.is_offensive() {
+            // SLICE 6: an offensive forced cast needs a target monster
+            // slot; nothing shipped can reach this today (see above).
+            return;
+        }
+        let Some(Session::InGame { player, energy, .. }) = self.sessions.get(&session) else {
+            return;
+        };
+        // Class-school gate (39239-39243): silent refusal.
+        if self.spell_gate(player, &spell) == SpellGate::WrongClass {
+            return;
+        }
+        let round_cost = i32::from(spell.round_cost);
+        let mana_cost = i32::from(spell.mana_cost);
+        // The unconditional triple gate (39253), refusal lines in the
+        // decompile's order (39264-39281): round energy prints the
+        // already-cast line, then mana, then level-vs-required-power.
+        if *energy < round_cost {
+            self.output_line(session, text::ALREADY_CAST);
+            return;
+        }
+        if player.current_mana < mana_cost {
+            self.output_line(session, text::NOT_ENOUGH_MANA);
+            return;
+        }
+        if i32::from(player.level) < i32::from(spell.required_power) {
+            self.output_line(session, text::SPELL_TOO_POWERFUL);
+            return;
+        }
+        let level = player.level;
+        let alter_sp_length = if spell.duration == 0 {
+            0
+        } else {
+            self.ability_bag(player).value(Ability::AlterSpLength)
+        };
+        // No success roll (39247): magnitude and duration always land.
+        let rng = &mut self.rng;
+        let magnitude = spell_magnitude(&spell, level, 0, &mut |lo, hi| rng.roll(lo, hi));
+        let duration = if spell.duration != 0 {
+            let rng = &mut self.rng;
+            spell_duration(&spell, level, alter_sp_length, &mut |lo, hi| rng.roll(lo, hi))
+        } else {
+            0
+        };
+        // Full costs on the always-success path (39400-39408).
+        if let Some(Session::InGame { player, energy, .. }) = self.sessions.get_mut(&session) {
+            *energy -= round_cost;
+            player.current_mana -= mana_cost.max(0);
+        }
+        self.benign_success_effects(session, &spell, magnitude, duration);
     }
 
     /// A live monster's template name (empty if the instance is gone).
@@ -3976,6 +4234,16 @@ impl Core {
         self.broadcast_to_room(died_in, Some(session), &format!("{name} is dead."));
         self.break_combat_silent(session);
         self.release_monster_targets(session);
+        // Death terminates every occupied slot, in slot order, with the
+        // EndCast chain SUPPRESSED (decompile check_kill_user's death
+        // branch 13053-13066 passes chainFlag '\0'; the stats-reset /
+        // reroll path 10404-10419 is the one that passes '\x01').
+        // Wear-off lines print to the dying player (44833-44844 prf to
+        // the owner's terminal), and the recompute leaves the respawn
+        // max HP buff-free.
+        for idx in 0..10 {
+            self.terminate_active_spell(session, idx, false);
+        }
 
         let Some(Session::InGame { player, derived, aided, .. }) =
             self.sessions.get_mut(&session)
