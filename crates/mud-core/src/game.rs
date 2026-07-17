@@ -1720,7 +1720,11 @@ impl Core {
     /// (`c magic mi` consumes both words), and the ENTIRE remainder is
     /// returned as the target string, spacing preserved. Ambiguity resolves
     /// to the first match in book (spell-id) order — ORACLE-VERIFY: the
-    /// original's tie-break is unmeasured.
+    /// original's tie-break is unmeasured. ORACLE-VERIFY: word_prefix_match
+    /// anchors typed words at ANY starting name word (`c missile` resolves
+    /// magic missile here); every §8.9 probe was leading-anchored, so
+    /// mid-name anchoring is unmeasured for spells (probe: `c missile`,
+    /// `c mi`).
     pub fn resolve_spell_from_book(
         &self,
         player: &Player,
@@ -1773,19 +1777,24 @@ impl Core {
             self.output_line(session, text::SYNTAX_CAST);
             return;
         }
-        // Gate 2: one cast per round — before resolution (spec §3 order),
-        // even for energy-0 spells (MEASURED §8.6).
-        if let Some(Session::InGame { cast_this_round: true, .. }) = self.sessions.get(&session)
-        {
-            self.output_line(session, text::ALREADY_CAST);
-            return;
-        }
-        // Gate 3: resolve against the learned book.
+        // Gate 2: resolve against the learned book. Resolution comes BEFORE
+        // the already-cast check: the DLL dispatcher resolves the spell and
+        // passes a pointer into cast_no_target, whose mode-2 flag "skips
+        // confusion/fear/round checks" — so the round gate lives inside,
+        // after resolution. ORACLE-VERIFY: second-cast-unknown ordering
+        // unmeasured (probe: `c blur` then `c zzz` in one round).
         let resolved = self.resolve_spell_from_book(self.player(session), args);
         let Some((spell_id, _target)) = resolved else {
             self.output_line(session, &text::dont_know_cast(args));
             return;
         };
+        // Gate 3: one cast per round — even for energy-0 spells
+        // (MEASURED §8.6).
+        if let Some(Session::InGame { cast_this_round: true, .. }) = self.sessions.get(&session)
+        {
+            self.output_line(session, text::ALREADY_CAST);
+            return;
+        }
         let spell = &self.content.spells[&spell_id];
         // Gate 4: level vs required_power (spec §2) — unreachable via
         // scroll-learned books, reachable via slice-4 temp spells.

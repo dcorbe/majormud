@@ -346,9 +346,11 @@ fn second_cast_in_the_same_round_is_blocked() {
 }
 
 #[test]
-fn already_cast_beats_no_mana_and_resolution() {
-    // Spec §3: the per-round gate fires before the spell is even resolved,
-    // so it also beats the mana gate (ordering unmeasured; spec order).
+fn already_cast_beats_no_mana_but_not_resolution() {
+    // Resolution precedes the per-round gate (DLL structure: the dispatcher
+    // resolves and passes a spell pointer into cast_no_target, where the
+    // round gate lives). ORACLE-VERIFY: second-cast-unknown unmeasured —
+    // probe `c blur` then `c zzz` in one round.
     let mut core = Core::new(world(), CoreConfig::default());
     let s = core.attach_player(player("Vexil", MAGE, full_book()));
     core.set_current_mana(s, 0);
@@ -358,8 +360,8 @@ fn already_cast_beats_no_mana_and_resolution() {
     assert!(no_mana.contains(ALREADY_CAST), "got: {no_mana:?}");
     assert!(!no_mana.contains("enough mana"), "got: {no_mana:?}");
     let unknown = cast(&mut core, s, "c zzz");
-    assert!(unknown.contains(ALREADY_CAST), "got: {unknown:?}");
-    assert!(!unknown.contains("do not know"), "got: {unknown:?}");
+    assert!(unknown.contains("do not know"), "got: {unknown:?}");
+    assert!(!unknown.contains(ALREADY_CAST), "got: {unknown:?}");
 }
 
 #[test]
