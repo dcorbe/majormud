@@ -435,3 +435,260 @@ hard-zeroed), and monster spell damage still routes through
   (`+0xf8/+0xf9/+0xca`) and the AlterSpLength percentage are WG3-NT; the classic
   16-bit build is believed to use a simpler fixed-duration model, but no 16-bit
   binary was read for this spec. WG3-NT is authoritative.
+
+## 8. Learning & listings (oracle-measured)
+
+Measured 2026-07-17 against WCCMMUD 1.11p under MBBSEmu (`tools/oracle/`).
+Character: **Vexil Arcanum, Human Mage** (disposable; BBS account
+`Vexil`/test123), rolled with default 40s (CP 100). Transcripts in
+`re/oracle/`:
+
+- `oracle_spell_learning.raw` — creation, first `spells`, shop listing,
+  verb hunt, unknown-spell failures. (Driver: `oracle_spell_learning.py`.)
+- `oracle_spell_cast.raw` — read-vs-use control, paid buy, too-high learn,
+  blur self-casts, magic-missile combat casts. (`oracle_spell_cast.py`.)
+- `oracle_spell_train.raw` — exp-patched train test, gate-is-level proof,
+  insufficient-mana failure. (`oracle_spell_train.py`.)
+
+### 8.1 The verdict: scrolls are the only path — training grants nothing
+
+- Fresh Mage L1, first command (`oracle_spell_learning.raw`):
+
+  ```
+  spells
+  You have no spells.
+  ```
+
+- After training L1→L2 with two spells known and the level-2 mage spell
+  *illuminate* deliberately never learned (`oracle_spell_train.raw`): the
+  `spells` output before and after `train` is **byte-identical** (blur +
+  magic missile only). Illuminate did not appear. **Leveling never inserts
+  spells; the LearnSp(42) scroll ability is the sole acquisition path.**
+
+### 8.2 Caster baseline (creation defaults)
+
+Human Mage, all stats 40 (`oracle_spell_learning.raw`): HP 26, **Mana
+12/12**, Spellcasting 43, Lives/CP 9/100, exp for L2 = 1400. After training
+to L2 (`oracle_spell_train.raw`): HP max 29, **Mana 18**, Spellcasting 45,
+CP 110. Caster prompt carries mana: `[HP=26/MA=12]:` (updates immediately
+on cast; a Warrior's prompt is `[HP=n]:` only). `health`:
+
+```
+Health:    26/26    [100%]  Mana:  12/12  [100%]
+```
+
+Race/class creation menus are flat numbered lists (no CP price per class);
+Mage and Priest differ only in the exp-table modifier (both +40 per
+WCCCLASS `exp`).
+
+### 8.3 Shop listing — `(Too powerful)` / `(You can't use)` suffixes
+
+Newhaven Spell Shop (room 1/2144, shop 48), Mage L1
+(`oracle_spell_learning.raw`):
+
+```
+The following items are for sale here:
+
+Item                          Quantity    Price
+------------------------------------------------------
+scroll of magic missile       120          Free
+scroll of illuminate          100          4 gold crowns (Too powerful)
+scroll of blur                105          Free
+scroll of smite               60           8 gold crowns (Too powerful)
+scroll of cause harm          125          Free (You can't use)
+scroll of minor healing       140          Free (You can't use)
+scroll of bless               110          4 gold crowns (You can't use)
+scroll of vine strike         118          Free (You can't use)
+scroll of starlight           95           Free (You can't use)
+scroll of mend                80           8 gold crowns (You can't use)
+songsheet of valour           100          4 gold crowns (You can't use)
+songsheet of misfortune       82           8 gold crowns (You can't use)
+songsheet of discord          65           8 gold crowns (You can't use)
+```
+
+- `(Too powerful)` = scroll teaches a same-class spell whose `level`
+  (+0xbe, required power) exceeds the character's **level**: illuminate
+  (level 2) and smite (level 3) at char L1. At char L2 illuminate's suffix
+  disappears while smite's remains (`oracle_spell_train.raw`) — the gate is
+  the character level, not Spellcasting (43→45 across the same test).
+- `(You can't use)` = wrong magery group (priest/druid/bard scrolls to a
+  mage). Same annotation the M4 equipment gates use.
+- Free rows (`cost=0`) show `Free`; priced rows show shelf price in the
+  item's own cost denomination (4 gold crowns = cost 4, costtype 2).
+
+### 8.4 Learning verbs (checklist 4)
+
+Owned scroll, eligible spell (`oracle_spell_learning.raw`,
+`oracle_spell_cast.raw`):
+
+- `learn <scroll>` is **not a verb** — falls through to say:
+  `You say "learn scroll of magic missile"`.
+- `use <scroll>` learns and consumes; prints the learn line plus a blank
+  line:
+
+  ```
+  use scroll of magic missile
+  You read scroll of magic missile and learn the spell magic missile.
+
+  ```
+
+- `read <scroll>` (owned) learns, consumes, and adds a destruction line
+  (`oracle_spell_cast.raw`):
+
+  ```
+  read scroll of blur
+  You read scroll of blur and learn the spell blur.
+  Its magic used, the scroll disintegrates.
+  ```
+
+  Both verbs reach the same handler (identical learn sentence); only the
+  epilogue differs.
+- `read <scroll>` when you own none (shop shelf nearby) prints the item's
+  description paragraph and learns nothing:
+
+  ```
+  This parchment is inscribed with runes of magic, but exactly what is written
+  can only be learned by reading it.
+  ```
+
+- **Too-high scroll** (smite, level 3, char L1 and L2 both —
+  `oracle_spell_cast.raw` / `oracle_spell_train.raw`):
+
+  ```
+  use scroll of smite
+  You may not use that item!
+  ```
+
+  The scroll is **not consumed** (still in inventory) and the book is
+  unchanged. The level gate fires at learn time; a too-high spell can never
+  enter the book, so there is no separate "cast too high" state to reach.
+  After training to L2 the same character's `use scroll of illuminate`
+  succeeds — pinning the gate to level.
+
+- Purchases (M4 cross-check): free rows print
+  `You just bought scroll of magic missile for nothing.`; paid rows print
+  the deduct_currency multiset, e.g.
+  `You just bought scroll of smite for 8 gold crowns, 1 silver noble, 6 copper farthings.`
+  (markup on an 8-gold scroll at Charm 40).
+
+### 8.5 `spells` listing format
+
+After learning (`oracle_spell_train.raw`, final state):
+
+```
+spells
+You have the following spells:
+Level Mana Short Spell Name
+  1   4    blur  blur                          
+  1   1    mmis  magic missile                 
+  2   4    illu  illuminate                    
+```
+
+- Columns: `Level` = spell `level` (+0xbe), `Mana` = mana cost, `Short` =
+  4-char shortname column, `Spell Name` padded to a fixed width with
+  trailing spaces.
+- Ordering: level ascending, then name (blur before magic missile even
+  though magic missile was learned first — not insertion order).
+- The on-disk book mirrors the display order: WCCUSERS record word array at
+  disk +0x474 read `[1]` after learning magic missile and `[129, 1]` after
+  adding blur (blur spell id 129 inserted before mmis id 1).
+
+### 8.6 Cast strings (checklist 7 & 8)
+
+All from `oracle_spell_cast.raw` unless noted.
+
+- Unknown / unlearned spell (both echo the argument verbatim; learned-book
+  lookup, so an unlearned real spell reads the same as garbage):
+
+  ```
+  cast zzz
+  You do not know how to cast zzz.
+  ```
+
+  (`c smit` while smite is unlearned gives the same sentence.) Resolution
+  accepts the shortname (`c mmis`, `c blur`, `c illu`) and the full name
+  (`cast magic missile`); `c mami` does not resolve.
+- Offensive cast with no target in a room with only a friendly NPC
+  (Rayth, the Newhaven spell-shop keeper — `oracle_spell_learning.raw`):
+
+  ```
+  cast magic missile
+  You are overcome with a feeling of guilt and break off your attack.
+  ```
+
+- Successful offensive cast at a monster (engages combat like `attack`;
+  re-casting mid-combat toggles `*Combat Off*` / `*Combat Engaged*`):
+
+  ```
+  c mmis filthbug
+  *Combat Engaged*
+  You fire a magic missile at nasty filthbug for 13 damage!
+  ```
+
+  Prompt mana dropped 6→5 (mmis costs 1). Kill epilogue:
+
+  ```
+  You fire a magic missile at nasty filthbug for 10 damage!
+  The filthbug collapses, its legs curling tightly around it.
+  You gain 12 experience.
+  *Combat Off*
+  ```
+
+- **Failed cast roll** (SC check missed): `You attempt to cast magic
+  missile, but fail.` — prompt mana unchanged (mmis mana 1; the
+  half-mana-on-fail charge truncates to 0).
+- Benign self-target (blur, match `target=2`, no argument):
+
+  ```
+  c blur
+  You cast blur on Vexil!
+  You are blurred!
+  ```
+
+  Prompt 12→8. The buff persists: `st` appends `You are blurred!` after the
+  stat sheet (`oracle_spell_train.raw`). Illuminate (match `target=1`)
+  prints just `You cast illuminate!`.
+- **One spell per round**, even for `energy=0` spells (blur):
+
+  ```
+  c blur
+  You have already cast a spell this round!
+  ```
+
+- **Insufficient mana** (`oracle_spell_train.raw`, mana 0 vs blur cost 4):
+
+  ```
+  c blur
+  You do not have enough mana to cast that spell.
+  ```
+
+### 8.7 Train strings (checklist 6)
+
+`oracle_spell_train.raw`, Adventurer's Guild (room 1/2147, shop 38 type 8,
+markup 0):
+
+```
+train
+You hand over 5 silver nobles and you receive training to attain level 2.
+You receive the following:
+10 additional character points
+```
+
+- Cost printed for L1→2 at markup 0 was **5 silver nobles** (50 copper) —
+  the `(markup+100)*level*5/100` formula's result is denominated in
+  **silver**, matching the healer-services finding (economy.md).
+- No spell line in the receipt; `spells` before/after identical (§8.1).
+- Retry without exp: `You do not have the required experience to train yet!`
+
+### 8.8 Expedition staging notes (for future oracle runs)
+
+- Fresh characters start with **0 coins** (`Wealth: 0 copper farthings`).
+- WCCUSERS.DB staging offsets (DOS disk record, sqlite `data_t.data`,
+  emulator stopped, `.bak` kept): coin drawers dword×5 at +0x603 high→low
+  (economy.md), **experience dword at +0x3c** with a second copy at
+  +0x46f (patch both), spellbook word array at +0x474. Purse and exp
+  patches verified in-game (`Wealth: 5250`, `Exp: 1500 ... [107%]`).
+- Disconnecting in combat skips the exit save but the module still
+  persists exp/coins/spells; re-entry prints
+  `Last time you were on, you disconnected while playing.` /
+  `The gods have punished you appropriately.`
