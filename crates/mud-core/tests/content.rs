@@ -196,3 +196,13 @@ fn save_class_maps_typeofresists() {
     assert_eq!(SaveClass::from_i16(2), Some(SaveClass::Always));
     assert_eq!(SaveClass::from_i16(3), None);
 }
+
+#[test]
+fn scale_pair_guards_zero_denominator() {
+    use mud_core::content::ScalePair;
+    // Magic missile ships per=1, levels=0 — the engine's guard yields 0.
+    assert_eq!(ScalePair { per: 1, levels: 0 }.scaled(10), 0);
+    assert_eq!(ScalePair { per: 3, levels: 2 }.scaled(10), 15);
+    assert_eq!(ScalePair { per: 1, levels: 3 }.scaled(8), 2); // integer division
+    assert_eq!(ScalePair::NONE.scaled(50), 0);
+}

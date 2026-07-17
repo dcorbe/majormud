@@ -424,6 +424,29 @@ impl SaveClass {
     }
 }
 
+/// A per-level scaling fraction: `per` points per `levels` levels
+/// (numerator/denominator byte pairs at spell `+0xf2/f3`, `+0xf6/f7`,
+/// `+0xf8/f9`). The engine guards zero denominators — they contribute 0
+/// (magic missile ships one; spellcasting.md §7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScalePair {
+    pub per: u8,
+    pub levels: u8,
+}
+
+impl ScalePair {
+    pub const NONE: ScalePair = ScalePair { per: 0, levels: 0 };
+
+    /// `per * level / levels`, 0 when the denominator is 0.
+    pub fn scaled(self, level: i32) -> i32 {
+        if self.levels == 0 {
+            0
+        } else {
+            i32::from(self.per) * level / i32::from(self.levels)
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Spell {
     pub id: SpellId,
