@@ -18,6 +18,11 @@ const WARRIOR: ClassId = ClassId(2);
 const MAGIC_MISSILE: SpellId = SpellId(20);
 const BLUR: SpellId = SpellId(30);
 const ILLUMINATE: SpellId = SpellId(10);
+/// Free in every dimension (mana 0, round cost 0, level 1) — the gate
+/// tests' "this cast passes" probe.
+const SPARK: SpellId = SpellId(40);
+/// Round cost above the full player pool (1000): the energy-gate probe.
+const HEAVY: SpellId = SpellId(50);
 
 fn spell(id: SpellId, name: &str, short: &str) -> Spell {
     Spell {
@@ -103,9 +108,14 @@ fn world() -> Content {
     let mut illu = spell(ILLUMINATE, "illuminate", "illu");
     illu.mana_cost = 4;
     illu.required_power = 2;
+    let spark = spell(SPARK, "spark", "spar");
+    let mut heavy = spell(HEAVY, "heavy bolt", "hbol");
+    heavy.round_cost = 2000;
     content.add_spell(mmis);
     content.add_spell(blur);
     content.add_spell(illu);
+    content.add_spell(spark);
+    content.add_spell(heavy);
     content
 }
 
@@ -138,12 +148,15 @@ fn player(name: &str, class: ClassId, spellbook: BTreeMap<SpellId, bool>) -> Pla
     }
 }
 
-/// The standard fixture book: magic missile, blur, illuminate.
+/// The standard fixture book: every fixture spell, including the
+/// too-powerful illuminate (reachable in slice 4+ via temp spells).
 fn full_book() -> BTreeMap<SpellId, bool> {
     let mut book = BTreeMap::new();
     book.insert(MAGIC_MISSILE, false);
     book.insert(BLUR, false);
     book.insert(ILLUMINATE, false);
+    book.insert(SPARK, false);
+    book.insert(HEAVY, false);
     book
 }
 
@@ -286,4 +299,138 @@ fn unresolved_cast_prints_do_not_know_never_says() {
         shown.contains("You do not know how to cast fireball at rat.\n"),
         "got: {shown:?}"
     );
+}
+
+// --- cast gates (Task 8; spec §3 order, strings §8.6) ---
+
+const ALREADY_CAST: &str = "You have already cast a spell this round!";
+
+/// Drives one energy round (the Job::Energy cadence is 5 ticks).
+fn energy_round(core: &mut Core) {
+    for _ in 0..5 {
+        core.tick();
+    }
+    core.drain_events();
+}
+
+fn cast(core: &mut Core, s: SessionId, line: &str) -> String {
+    core.input(s, line);
+    text_to(&core.drain_events(), s)
+}
+
+#[test]
+fn mortally_wounded_blocks_cast() {
+    // Gate 1: M3's downed-band command gating, reused.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut vexil = player("Vexil", MAGE, full_book());
+    vexil.current_hp = 0;
+    let s = core.attach_player(vexil);
+    core.drain_events();
+    let shown = cast(&mut core, s, "c spark");
+    assert!(
+        shown.contains("You may not do that while you are mortally wounded!\n"),
+        "got: {shown:?}"
+    );
+}
+
+#[test]
+fn second_cast_in_the_same_round_is_blocked() {
+    // MEASURED (§8.6): one cast per round, even for energy-0 spells.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(player("Vexil", MAGE, full_book()));
+    core.drain_events();
+    let first = cast(&mut core, s, "c spark");
+    assert!(!first.contains(ALREADY_CAST), "first cast passes: {first:?}");
+    let second = cast(&mut core, s, "c spark");
+    assert!(second.contains(ALREADY_CAST), "got: {second:?}");
+}
+
+#[test]
+fn already_cast_beats_no_mana_and_resolution() {
+    // Spec §3: the per-round gate fires before the spell is even resolved,
+    // so it also beats the mana gate (ordering unmeasured; spec order).
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(player("Vexil", MAGE, full_book()));
+    core.set_current_mana(s, 0);
+    core.drain_events();
+    cast(&mut core, s, "c spark");
+    let no_mana = cast(&mut core, s, "c blur");
+    assert!(no_mana.contains(ALREADY_CAST), "got: {no_mana:?}");
+    assert!(!no_mana.contains("enough mana"), "got: {no_mana:?}");
+    let unknown = cast(&mut core, s, "c zzz");
+    assert!(unknown.contains(ALREADY_CAST), "got: {unknown:?}");
+    assert!(!unknown.contains("do not know"), "got: {unknown:?}");
+}
+
+#[test]
+fn too_powerful_spell_is_refused_without_blocking_the_round() {
+    // Gate 4 (spec §2): level < required_power. Unreachable via
+    // scroll-learned books; reachable via slice-4 temp spells.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(player("Vexil", MAGE, full_book()));
+    core.drain_events();
+    let shown = cast(&mut core, s, "c illu");
+    assert!(
+        shown.contains("This spell is too powerful for you.\n"),
+        "got: {shown:?}"
+    );
+    // A refused cast does not set the per-round flag.
+    let next = cast(&mut core, s, "c spark");
+    assert!(!next.contains(ALREADY_CAST), "flag not set: {next:?}");
+}
+
+#[test]
+fn insufficient_round_energy_is_a_silent_noop() {
+    // Gate 5: exactly like an M3 attack without energy — no message was
+    // ever measured; the cast is a no-op within the round.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(player("Vexil", MAGE, full_book()));
+    core.drain_events();
+    let shown = cast(&mut core, s, "c heavy");
+    assert!(
+        !shown.contains("You"),
+        "no message, just the prompt: {shown:?}"
+    );
+    // And it does not consume the round.
+    let next = cast(&mut core, s, "c spark");
+    assert!(!next.contains(ALREADY_CAST), "flag not set: {next:?}");
+}
+
+#[test]
+fn insufficient_mana_is_refused_with_the_oracle_string() {
+    // Gate 6 (MEASURED §8.6). Blur costs 4; give the mage 3.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(player("Vexil", MAGE, full_book()));
+    core.set_current_mana(s, 3);
+    core.drain_events();
+    let shown = cast(&mut core, s, "c blur");
+    assert!(
+        shown.contains("You do not have enough mana to cast that spell.\n"),
+        "got: {shown:?}"
+    );
+    let next = cast(&mut core, s, "c spark");
+    assert!(!next.contains(ALREADY_CAST), "flag not set: {next:?}");
+}
+
+#[test]
+fn gates_check_but_never_deduct() {
+    // Mana and energy deduction happen at roll time (Task 9), not here.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(player("Vexil", MAGE, full_book()));
+    core.drain_events();
+    cast(&mut core, s, "c blur");
+    assert_eq!(core.current_mana(s), 6, "mana untouched until the roll");
+}
+
+#[test]
+fn cast_flag_resets_on_the_energy_round() {
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(player("Vexil", MAGE, full_book()));
+    core.drain_events();
+    cast(&mut core, s, "c spark");
+    let blocked = cast(&mut core, s, "c spark");
+    assert!(blocked.contains(ALREADY_CAST), "got: {blocked:?}");
+    energy_round(&mut core);
+    let after = cast(&mut core, s, "c spark");
+    assert!(!after.contains(ALREADY_CAST), "new round: {after:?}");
 }

@@ -341,6 +341,10 @@ enum Session {
         aided: bool,
         /// Combat energy pool (`+0xba`; max/regen `+0xb8` = 1000 default).
         energy: i32,
+        /// One cast per combat round, even for energy-0 spells (MEASURED
+        /// §8.6); set whether the roll then succeeds or fails, cleared by
+        /// `energy_round`.
+        cast_this_round: bool,
     },
 }
 
@@ -850,7 +854,7 @@ impl Core {
         self.broadcast_to_others(id, &text::entered_realm(&player.name));
         let derived = self.derive_for(&player);
         self.sessions
-            .insert(id, Session::InGame { player: Box::new(player), derived, exiting: None, target: None, aided: false, energy: PLAYER_ENERGY_MAX });
+            .insert(id, Session::InGame { player: Box::new(player), derived, exiting: None, target: None, aided: false, energy: PLAYER_ENERGY_MAX, cast_this_round: false });
         self.show_room(id);
         self.show_prompt(id);
         id
@@ -1754,20 +1758,65 @@ impl Core {
         None
     }
 
-    /// `cast` — parsing and book resolution (spellcasting.md §8.9). The
-    /// gates and the roll land with Tasks 8-9.
+    /// `cast` — parsing, book resolution (spellcasting.md §8.9) and the
+    /// slice-3 gates in spec §3 order. Missing spec-§3 gates that join with
+    /// their systems later, in order: confusion, fear, MageBind.
     fn cast_command(&mut self, session: SessionId, args: &str) {
+        // Gate 1: the downed band blocks casting like attack/movement.
+        if self.player(session).current_hp < 1 {
+            self.output_line(session, text::MORTALLY_WOUNDED);
+            return;
+        }
         let args = args.trim();
         if args.is_empty() {
             // MEASURED (§8.9): bare cast is a syntax line, not an error.
             self.output_line(session, text::SYNTAX_CAST);
             return;
         }
+        // Gate 2: one cast per round — before resolution (spec §3 order),
+        // even for energy-0 spells (MEASURED §8.6).
+        if let Some(Session::InGame { cast_this_round: true, .. }) = self.sessions.get(&session)
+        {
+            self.output_line(session, text::ALREADY_CAST);
+            return;
+        }
+        // Gate 3: resolve against the learned book.
         let resolved = self.resolve_spell_from_book(self.player(session), args);
-        let Some((_spell, _target)) = resolved else {
+        let Some((spell_id, _target)) = resolved else {
             self.output_line(session, &text::dont_know_cast(args));
             return;
         };
+        let spell = &self.content.spells[&spell_id];
+        // Gate 4: level vs required_power (spec §2) — unreachable via
+        // scroll-learned books, reachable via slice-4 temp spells.
+        if i32::from(self.player(session).level) < i32::from(spell.required_power) {
+            self.output_line(session, text::SPELL_TOO_POWERFUL);
+            return;
+        }
+        // Gate 5: round energy — exactly like an M3 attack without energy,
+        // a silent no-op within the round (no measured message). The
+        // deduction itself happens at roll time (Task 9).
+        let round_cost = i32::from(spell.round_cost);
+        let mana_cost = spell.mana_cost;
+        let Some(Session::InGame { energy, player, .. }) = self.sessions.get(&session) else {
+            return;
+        };
+        if *energy < round_cost {
+            return;
+        }
+        // Gate 6: mana (MEASURED §8.6) — checked here, deducted at roll
+        // time (full on success, half rounded down on a failed roll).
+        if player.current_mana < i32::from(mana_cost) {
+            self.output_line(session, text::NOT_ENOUGH_MANA);
+            return;
+        }
+        // All gates passed: the round is spent whether the roll then
+        // succeeds or fails (MEASURED §8.6).
+        if let Some(Session::InGame { cast_this_round, .. }) = self.sessions.get_mut(&session) {
+            *cast_this_round = true;
+        }
+        // Task 9: success roll + mana/energy costs; Task 11: targeting,
+        // damage, engagement.
     }
 
     /// The eligibility annotation for one shop row (spellcasting.md §8.3):
@@ -2491,13 +2540,17 @@ impl Core {
     /// drivers in a coin-flipped order (anti first-strike bias).
     fn energy_round(&mut self) {
         // energy_update_character: cur += max; clamp unless in autocombat.
+        // The new round also re-arms the one-cast-per-round gate.
         let sessions: Vec<SessionId> = self.sessions.keys().copied().collect();
         for id in &sessions {
-            if let Some(Session::InGame { energy, target, .. }) = self.sessions.get_mut(id) {
+            if let Some(Session::InGame { energy, target, cast_this_round, .. }) =
+                self.sessions.get_mut(id)
+            {
                 *energy += PLAYER_ENERGY_MAX;
                 if target.is_none() && *energy > PLAYER_ENERGY_MAX {
                     *energy = PLAYER_ENERGY_MAX;
                 }
+                *cast_this_round = false;
             }
         }
         // energy_update_monster: always clamps.
@@ -3149,7 +3202,7 @@ impl Core {
         self.broadcast_to_others(session, &text::entered_realm(&player.name));
         let derived = self.derive_for(&player);
         self.sessions
-            .insert(session, Session::InGame { player: Box::new(player), derived, exiting: None, target: None, aided: false, energy: PLAYER_ENERGY_MAX });
+            .insert(session, Session::InGame { player: Box::new(player), derived, exiting: None, target: None, aided: false, energy: PLAYER_ENERGY_MAX, cast_this_round: false });
         // Oracle: first entry shows the stat sheet, not the room.
         self.show_sheet(session);
         self.show_prompt(session);

@@ -155,6 +155,15 @@ pub fn dont_know_cast(arg: &str) -> String {
     format!("You do not know how to cast {arg}.")
 }
 
+/// VERIFIED (spellcasting.md §8.6): one cast per combat round.
+pub const ALREADY_CAST: &str = "You have already cast a spell this round!";
+/// VERIFIED (spellcasting.md §8.6): the mana gate.
+pub const NOT_ENOUGH_MANA: &str = "You do not have enough mana to cast that spell.";
+/// DLL string (spec §2 level gate). ORACLE-VERIFY: unreachable via
+/// scroll-learned books, so never observed live; reachable via slice-4
+/// temp spells.
+pub const SPELL_TOO_POWERFUL: &str = "This spell is too powerful for you.";
+
 /// VERIFIED (oracle, first line; remainder ORACLE-VERIFY).
 pub const HELP_BANNER: &str = "Type HELP followed by a topic for help on that topic";
 
