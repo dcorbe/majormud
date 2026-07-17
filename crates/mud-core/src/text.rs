@@ -164,6 +164,19 @@ pub const NOT_ENOUGH_MANA: &str = "You do not have enough mana to cast that spel
 /// temp spells.
 pub const SPELL_TOO_POWERFUL: &str = "This spell is too powerful for you.";
 
+/// VERIFIED (oracle §8.6/§8.9): the caster's failed success-roll line.
+pub fn cast_fail(spell: &str) -> String {
+    format!("You attempt to cast {spell}, but fail.")
+}
+
+/// DLL string 00485be0 ("%s attempted to cast %s, but failed."), emitted to
+/// the room beside the caster's fail line (decompiled 39015/39375/43647).
+/// ORACLE-VERIFY: the template is DLL-exact, but single-session captures
+/// cannot show the observer side live.
+pub fn cast_fail_room(caster: &str, spell: &str) -> String {
+    format!("{caster} attempted to cast {spell}, but failed.")
+}
+
 /// VERIFIED (oracle, first line; remainder ORACLE-VERIFY).
 pub const HELP_BANNER: &str = "Type HELP followed by a topic for help on that topic";
 

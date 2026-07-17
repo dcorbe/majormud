@@ -1,7 +1,8 @@
 //! Tests for the `cast` command: parsing (§8.9 bare/abbreviation behavior),
 //! book-only spell resolution (exact shortname OR per-word name prefix,
-//! remainder-as-target), and the slice-3 cast gates (spec §3 order,
-//! oracle strings from spellcasting.md §8.6/§8.9).
+//! remainder-as-target), the slice-3 cast gates (spec §3 order, oracle
+//! strings from spellcasting.md §8.6/§8.9), and the success roll + costs
+//! (spec §3 steps 5-7: full costs on success, half mana on a failed roll).
 
 use std::collections::BTreeMap;
 
@@ -10,7 +11,7 @@ use mud_core::content::{
     Class, ClassId, Content, Element, MatchType, Race, RaceId, Room, RoomId, SaveClass,
     ScalePair, Spell, SpellId, StatBlock, TargetMode,
 };
-use mud_core::game::{Core, CoreConfig, Event, Gender, Player, SessionId};
+use mud_core::game::{cast_roll_succeeds, Core, CoreConfig, Event, Gender, Player, SessionId};
 
 const MAGE: ClassId = ClassId(1);
 const WARRIOR: ClassId = ClassId(2);
@@ -23,6 +24,8 @@ const ILLUMINATE: SpellId = SpellId(10);
 const SPARK: SpellId = SpellId(40);
 /// Round cost above the full player pool (1000): the energy-gate probe.
 const HEAVY: SpellId = SpellId(50);
+/// Rollable (base_chance 15, mana 4, round cost 100): the failed-roll probe.
+const JINX: SpellId = SpellId(60);
 
 fn spell(id: SpellId, name: &str, short: &str) -> Spell {
     Spell {
@@ -103,19 +106,26 @@ fn world() -> Content {
 
     let mut mmis = spell(MAGIC_MISSILE, "magic missile", "mmis");
     mmis.mana_cost = 1;
+    mmis.base_chance = 15; // the real mmis base: rollable, floor(1/2)=0 mana
     let mut blur = spell(BLUR, "blur", "blur");
     blur.mana_cost = 4;
+    blur.round_cost = 100;
     let mut illu = spell(ILLUMINATE, "illuminate", "illu");
     illu.mana_cost = 4;
     illu.required_power = 2;
     let spark = spell(SPARK, "spark", "spar");
     let mut heavy = spell(HEAVY, "heavy bolt", "hbol");
     heavy.round_cost = 2000;
+    let mut jinx = spell(JINX, "jinx", "jinx");
+    jinx.mana_cost = 4;
+    jinx.round_cost = 100;
+    jinx.base_chance = 15;
     content.add_spell(mmis);
     content.add_spell(blur);
     content.add_spell(illu);
     content.add_spell(spark);
     content.add_spell(heavy);
+    content.add_spell(jinx);
     content
 }
 
@@ -157,6 +167,7 @@ fn full_book() -> BTreeMap<SpellId, bool> {
     book.insert(ILLUMINATE, false);
     book.insert(SPARK, false);
     book.insert(HEAVY, false);
+    book.insert(JINX, false);
     book
 }
 
@@ -415,13 +426,16 @@ fn insufficient_mana_is_refused_with_the_oracle_string() {
 }
 
 #[test]
-fn gates_check_but_never_deduct() {
-    // Mana and energy deduction happen at roll time (Task 9), not here.
+fn refused_casts_deduct_nothing() {
+    // A cast stopped by a gate never reaches the roll: no mana, no energy.
     let mut core = Core::new(world(), CoreConfig::default());
     let s = core.attach_player(player("Vexil", MAGE, full_book()));
+    core.set_current_mana(s, 3); // blur costs 4 -> mana-gate refusal
     core.drain_events();
+    let energy = core.round_energy(s);
     cast(&mut core, s, "c blur");
-    assert_eq!(core.current_mana(s), 6, "mana untouched until the roll");
+    assert_eq!(core.current_mana(s), 3, "refusal deducts no mana");
+    assert_eq!(core.round_energy(s), energy, "refusal deducts no energy");
 }
 
 #[test]
@@ -435,4 +449,112 @@ fn cast_flag_resets_on_the_energy_round() {
     energy_round(&mut core);
     let after = cast(&mut core, s, "c spark");
     assert!(!after.contains(ALREADY_CAST), "new round: {after:?}");
+}
+
+// --- success roll + costs (Task 9; spec §3 steps 5-7) ---
+
+/// Scripted roll source (the tests/combat.rs injection pattern): pops from
+/// the front; panics if exhausted or out of the requested range.
+fn rolls(values: &[i32]) -> impl FnMut(i32, i32) -> i32 + '_ {
+    let mut it = values.iter().copied();
+    move |lo, hi| {
+        let v = it.next().expect("script exhausted");
+        assert!(v >= lo && v <= hi, "scripted roll {v} outside [{lo},{hi}]");
+        v
+    }
+}
+
+#[test]
+fn roll_below_chance_succeeds_at_chance_fails() {
+    // chance = min(SC + base, 98) = 20 + 15 = 35; success is roll < chance.
+    assert!(cast_roll_succeeds(20, 15, &mut rolls(&[34])));
+    assert!(!cast_roll_succeeds(20, 15, &mut rolls(&[35])));
+}
+
+#[test]
+fn chance_caps_at_98_so_top_rolls_still_fail() {
+    // SC 90 + base 60 = 150 -> capped at 98: 97 succeeds, 98/99 fail.
+    assert!(cast_roll_succeeds(90, 60, &mut rolls(&[97])));
+    assert!(!cast_roll_succeeds(90, 60, &mut rolls(&[98])));
+    assert!(!cast_roll_succeeds(90, 60, &mut rolls(&[99])));
+}
+
+#[test]
+fn base_chance_200_skips_the_roll_entirely() {
+    // Spec §3 step 5: >= 200 auto-succeeds; the roll source must never fire.
+    let mut no_roll = |_: i32, _: i32| -> i32 { panic!("auto-succeed rolled") };
+    assert!(cast_roll_succeeds(-500, 200, &mut no_roll));
+}
+
+#[test]
+fn successful_cast_deducts_full_mana_and_round_energy() {
+    // blur: mana 4, round cost 100, base_chance 200 -> deterministic
+    // success. Spec §3 step 7: full costs. No cast message until Task 11 —
+    // success is observable via the deductions only.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(player("Vexil", MAGE, full_book()));
+    core.drain_events();
+    let energy = core.round_energy(s);
+    cast(&mut core, s, "c blur");
+    assert_eq!(core.current_mana(s), 2, "full mana cost 4 deducted");
+    assert_eq!(core.round_energy(s), energy - 100, "full round cost");
+}
+
+// The failed-roll tests cast through a non-caster (Grunt): caster_group 0
+// makes the SC stat term -150, so chance = min(SC + 15, 98) is negative and
+// a rollable spell can NEVER succeed — seed-proof determinism, same trick as
+// the restock boundary rows. (cast_command has no wrong-class gate by
+// design: book membership IS the class gate; Grunt's book is a fixture.)
+
+#[test]
+fn failed_roll_prints_fail_line_half_mana_full_energy() {
+    // Spec §3 step 6: jinx mana 4 -> 2 deducted (§8.9: blur 4 -> 2), full
+    // round cost 100, and the round is spent (MEASURED §8.6).
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(player("Grunt", WARRIOR, full_book()));
+    core.drain_events();
+    let energy = core.round_energy(s);
+    let shown = cast(&mut core, s, "c jinx");
+    assert!(
+        shown.contains("You attempt to cast jinx, but fail.\n"),
+        "got: {shown:?}"
+    );
+    assert_eq!(core.current_mana(s), 4, "half of mana 4 deducted");
+    assert_eq!(core.round_energy(s), energy - 100, "full round cost");
+    let next = cast(&mut core, s, "c spark");
+    assert!(next.contains(ALREADY_CAST), "failure spends the round: {next:?}");
+}
+
+#[test]
+fn failed_roll_half_mana_floors_to_zero() {
+    // mmis mana 1 -> floor(1/2) = 0 deducted (oracle-confirmed §8.6: the
+    // prompt mana was unchanged across a failed mmis).
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(player("Grunt", WARRIOR, full_book()));
+    core.drain_events();
+    let shown = cast(&mut core, s, "c mmis");
+    assert!(
+        shown.contains("You attempt to cast magic missile, but fail.\n"),
+        "got: {shown:?}"
+    );
+    assert_eq!(core.current_mana(s), 6, "floor(1/2) = 0 mana deducted");
+}
+
+#[test]
+fn failed_roll_broadcasts_the_room_line_to_others_only() {
+    // DLL string 00485be0: "%s attempted to cast %s, but failed."
+    // (ORACLE-VERIFY: single-session captures cannot show the observer side.)
+    let mut core = Core::new(world(), CoreConfig::default());
+    let caster = core.attach_player(player("Grunt", WARRIOR, full_book()));
+    let watcher = core.attach_player(player("Vexil", MAGE, full_book()));
+    core.drain_events();
+    core.input(caster, "c jinx");
+    let events = core.drain_events();
+    let seen = text_to(&events, watcher);
+    assert!(
+        seen.contains("Grunt attempted to cast jinx, but failed.\n"),
+        "got: {seen:?}"
+    );
+    let own = text_to(&events, caster);
+    assert!(!own.contains("attempted"), "caster-only line: {own:?}");
 }

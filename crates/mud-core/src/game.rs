@@ -299,6 +299,25 @@ impl Rng {
     }
 }
 
+/// The cast success roll (spec §3 step 5; decompiled 38150+ family):
+/// `base_chance >= 200` auto-succeeds without consuming a roll; otherwise
+/// `chance = min(SC + base_chance, 98)` and the cast succeeds when
+/// `genrdn(0,100) < chance`. There is no floor: a chance at or below 0
+/// (possible only with negative SC, i.e. a non-caster) never succeeds.
+/// `roll(lo, hi)` must return a uniform value in `[lo, hi]` — the
+/// `calculate_attack` injection seam, so tests can script rolls.
+pub fn cast_roll_succeeds(
+    spellcasting: i32,
+    base_chance: i16,
+    roll: &mut impl FnMut(i32, i32) -> i32,
+) -> bool {
+    if base_chance >= 200 {
+        return true;
+    }
+    let chance = (spellcasting + i32::from(base_chance)).min(98);
+    roll(0, 100) < chance
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     Output { session: SessionId, text: String },
@@ -839,6 +858,14 @@ impl Core {
     pub fn set_current_mana(&mut self, session: SessionId, mana: i32) {
         if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
             player.current_mana = mana;
+        }
+    }
+
+    /// The remaining round-energy pool (0 for sessions not in game).
+    pub fn round_energy(&self, session: SessionId) -> i32 {
+        match self.sessions.get(&session) {
+            Some(Session::InGame { energy, .. }) => *energy,
+            _ => 0,
         }
     }
 
@@ -1804,18 +1831,22 @@ impl Core {
         }
         // Gate 5: round energy — exactly like an M3 attack without energy,
         // a silent no-op within the round (no measured message). The
-        // deduction itself happens at roll time (Task 9).
+        // deduction itself happens at roll time below.
         let round_cost = i32::from(spell.round_cost);
-        let mana_cost = spell.mana_cost;
-        let Some(Session::InGame { energy, player, .. }) = self.sessions.get(&session) else {
+        let mana_cost = i32::from(spell.mana_cost);
+        let base_chance = spell.base_chance;
+        let spell_name = spell.name.clone();
+        let Some(Session::InGame { energy, player, derived, .. }) = self.sessions.get(&session)
+        else {
             return;
         };
+        let spellcasting = derived.spellcasting;
         if *energy < round_cost {
             return;
         }
         // Gate 6: mana (MEASURED §8.6) — checked here, deducted at roll
         // time (full on success, half rounded down on a failed roll).
-        if player.current_mana < i32::from(mana_cost) {
+        if player.current_mana < mana_cost {
             self.output_line(session, text::NOT_ENOUGH_MANA);
             return;
         }
@@ -1824,8 +1855,30 @@ impl Core {
         if let Some(Session::InGame { cast_this_round, .. }) = self.sessions.get_mut(&session) {
             *cast_this_round = true;
         }
-        // Task 9: success roll + mana/energy costs; Task 11: targeting,
-        // damage, engagement.
+        // Success roll (spec §3 step 5): the seeded game genrdn drives it;
+        // `cast_roll_succeeds` is the injectable seam for tests.
+        let rng = &mut self.rng;
+        let succeeded = cast_roll_succeeds(spellcasting, base_chance, &mut |lo, hi| {
+            rng.roll(lo, hi)
+        });
+        let Some(Session::InGame { energy, player, .. }) = self.sessions.get_mut(&session) else {
+            return;
+        };
+        // Both outcomes pay the full round cost (spec §3 steps 6-7).
+        *energy -= round_cost;
+        if succeeded {
+            player.current_mana -= mana_cost;
+            // Task 11: effects + messages — success is silent until then,
+            // observable only via the deductions.
+        } else {
+            // Half mana rounded down (mmis 1 -> 0 oracle-confirmed §8.6;
+            // blur 4 -> 2 §8.9), no effects applied.
+            player.current_mana -= mana_cost / 2;
+            let caster = player.name.clone();
+            let room = player.location;
+            self.output_line(session, &text::cast_fail(&spell_name));
+            self.broadcast_to_room(room, Some(session), &text::cast_fail_room(&caster, &spell_name));
+        }
     }
 
     /// The eligibility annotation for one shop row (spellcasting.md §8.3):
