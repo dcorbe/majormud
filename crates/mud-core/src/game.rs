@@ -59,9 +59,11 @@ fn encum_ability() -> Ability {
     Ability::from_id(96).expect("Encum is in the enum")
 }
 
-/// Clamps an i32 into the u16 counter range — the hunger/thirst fields
-/// (`+0xce`/`+0xd0`) are words; Alterhunger/AlterThirst deltas saturate
-/// instead of wrapping.
+/// Clamps an i32 into the u16 counter range for the hunger/thirst word
+/// fields (`+0xce`/`+0xd0`). DIVERGENCE: the DLL does a raw wrapping
+/// 16-bit add (decompiled 40073/40111); we saturate. Unreachable with
+/// shipped data — no instant spell carries Alterhunger/AlterThirst, and
+/// no shipped value approaches the bounds.
 fn clamp_counter(v: i32) -> u16 {
     u16::try_from(v.clamp(0, i32::from(u16::MAX))).expect("clamped into range")
 }
@@ -2100,8 +2102,8 @@ impl Core {
         if spell.duration == 0 {
             // Instant apply loop (spec §4 table, self-target): iterate the
             // ability slots; a non-zero slot value is a FIXED amount, 0
-            // means the rolled V — the offensive convention (decompile
-            // 43711-43717).
+            // means the rolled V — pinned on BOTH paths (offensive
+            // decompile 43711-43717; benign cast_no_target loop ~39577).
             for (ability, value) in &spell.abilities {
                 let amount = match *value {
                     0 => magnitude,
@@ -2114,6 +2116,10 @@ impl Core {
                     }
                     // EnergyLevel (11): round pool += V, capped at max.
                     Ability::EnergyLevel => {
+                        // ORACLE-VERIFY: spec §4 caps at the pool max, but
+                        // the decompiled benign branch (case 0xb, ~39960)
+                        // is an uncapped add — the cap may belong only to
+                        // the §5 per-tick handler.
                         *energy = (*energy + amount).min(PLAYER_ENERGY_MAX);
                     }
                     // Alterhunger (15) / AlterThirst (16): the +0xce/+0xd0
@@ -2333,6 +2339,12 @@ impl Core {
         // amount that bypasses both the magnitude roll and the resist
         // scaling; value 0 means "use the rolled magnitude" (decompile
         // 43711-43717: slot value == 0 selects the rolled local_20).
+        // Combined totals assume at most one harm slot per spell — true for
+        // ALL shipped data (zero spells carry Damage+Drain or multiple harm
+        // slots). The DLL applies per-slot, a kill STOPS its loop (skipping
+        // later slots' caster heal), and the message prints the first
+        // slot's amount — slice 5 must not inherit this combined model if
+        // multi-slot content ever appears.
         let mut damage_total = 0i32;
         let mut drain_total = 0i32;
         let mut harms = false;
