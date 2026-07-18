@@ -2545,6 +2545,14 @@ impl Core {
         let mana_cost = i32::from(spell.mana_cost);
         let base_chance = spell.base_chance;
         let spell_name = spell.name.clone();
+        // Target RESOLUTION is match-type-driven (the §8.13 refusal
+        // matrix): area types leave the single-target paths entirely —
+        // an explicit word refuses kind-keyed, a bare cast sweeps the
+        // room. Everything below this dispatch is single-target.
+        if spell.match_type.room_wide() {
+            self.area_cast(session, &spell, &target);
+            return;
+        }
         let offensive = spell.target_mode.is_offensive();
         let mut monster = None;
         if offensive {
@@ -2917,6 +2925,240 @@ impl Core {
         }
         player.current_mana -= mana_cost;
         self.benign_success_effects(session, target_id, spell, magnitude, duration);
+    }
+
+    /// The room-wide arm of `cast_no_target` (match types 3/5/9/10/11/12/
+    /// 13; MEASURED §8.13 for match 12 — flash 51 and stinking cloud 131).
+    ///
+    /// Target law (the §8.13 correction to spec §4's grouping): players
+    /// are NEVER area targets — measured alone, with players present, and
+    /// with an explicit player word. The sweep covers the decompile's
+    /// monster set (3/5/9/11/12); 10/13 iterate players ONLY in the
+    /// decompile, and with players excluded they collect nothing, so the
+    /// no-effect refusal fires unconditionally. ORACLE-VERIFY: whether 13
+    /// really excludes players like 12 is unsettled (the lowest learnable
+    /// 13 is priest chant L6 — §8.13 left it open); revisit before bard/
+    /// priest support.
+    fn area_cast(&mut self, session: SessionId, spell: &crate::content::Spell, target: &str) {
+        let room = self.player(session).location;
+        // Explicit target words refuse KIND-KEYED before any cost
+        // (MEASURED §8.13: `c flash oracle` -> "on a user!", `c stnk cat`
+        // -> "on a monster!", both uncharged).
+        let words = target.trim();
+        if !words.is_empty() {
+            let want = words.to_ascii_lowercase();
+            let player_hit = self
+                .in_game_sessions()
+                .filter(|(_, p)| p.location == room)
+                .any(|(_, p)| word_prefix_match(&p.name, &want));
+            if player_hit {
+                self.output_line(session, text::MAY_NOT_CAST_ON_USER);
+                return;
+            }
+            if self.find_monster(room, words).is_some() {
+                self.output_line(session, text::MAY_NOT_CAST_ON_MONSTER);
+                return;
+            }
+            // ORACLE-VERIFY: an unmatched word was not measured on the
+            // area path — the room-lookup refusal, like every other path.
+            self.output_line(session, &text::do_not_see_here(words));
+            return;
+        }
+        // Room protection (§3 step 2) precedes target counting for
+        // offensive modes — the same guilt gate and round-cost-only
+        // charging as the single-target paths. ORACLE-VERIFY: every
+        // learnable area is benign-mode (spelltype 3), so this leg is
+        // decompile-mirrored only.
+        let round_cost = i32::from(spell.round_cost);
+        if spell.target_mode.is_offensive()
+            && self.content.rooms.get(&room).is_some_and(|r| r.protected())
+        {
+            if let Some(Session::InGame { energy, .. }) = self.sessions.get_mut(&session)
+                && *energy >= round_cost
+            {
+                *energy -= round_cost;
+            }
+            self.output_line(session, text::CAST_GUILT);
+            return;
+        }
+        // Target counting (§3 step 3): live monsters only.
+        let targets: Vec<MonsterInstanceId> = if spell.match_type.hits_monsters() {
+            self.monsters
+                .iter()
+                .filter(|(_, m)| m.location == room && m.current_hp > 0)
+                .map(|(id, _)| *id)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if targets.is_empty() {
+            // MEASURED (§8.13): a real pre-charge gate — mana unchanged,
+            // the round not spent.
+            self.output_line(session, text::SPELL_NO_EFFECT_IN_ROOM);
+            return;
+        }
+        // Costs and the roll at the command, like the benign self path
+        // (MEASURED §8.13: flash/stinking cloud mana moved at the
+        // prompt). Offensive-mode areas charge here too — the engage-only
+        // convention belongs to the single-target monster path.
+        let Some(Session::InGame { energy, player, derived, .. }) = self.sessions.get(&session)
+        else {
+            return;
+        };
+        let spellcasting = derived.spellcasting;
+        let level = player.level;
+        let caster_name = player.name.clone();
+        let caster_max_hp = derived.max_hp;
+        let mana_cost = i32::from(spell.mana_cost);
+        if *energy < round_cost {
+            return; // silent no-op within the round, like the self path
+        }
+        if player.current_mana < mana_cost {
+            self.output_line(session, self.not_enough_mana_line(session));
+            return;
+        }
+        if let Some(Session::InGame { cast_this_round, .. }) = self.sessions.get_mut(&session) {
+            *cast_this_round = true;
+        }
+        let rng = &mut self.rng;
+        let succeeded = cast_roll_succeeds(spellcasting, spell.base_chance, &mut |lo, hi| {
+            rng.roll(lo, hi)
+        });
+        // ONE magnitude roll (elemental resist joins PER TARGET below);
+        // match types 3/5/9/10 split it by the target count (spec §3) —
+        // fixture-only, no learnable 3/5/9/10 spell ships.
+        let magnitude = if succeeded {
+            let rng = &mut self.rng;
+            let v = spell_magnitude(spell, level, 0, &mut |lo, hi| rng.roll(lo, hi));
+            if spell.match_type.splits_magnitude() {
+                v / i32::try_from(targets.len()).unwrap_or(1).max(1)
+            } else {
+                v
+            }
+        } else {
+            0
+        };
+        let Some(Session::InGame { energy, player, .. }) = self.sessions.get_mut(&session)
+        else {
+            return;
+        };
+        *energy -= round_cost;
+        if !succeeded {
+            // ORACLE-VERIFY: no area fail was measured — the untargeted
+            // cast_no_target fail pair, half mana rounded down.
+            player.current_mana -= (mana_cost / 2).max(0);
+            self.output_line(session, &text::cast_fail(&spell.name));
+            self.broadcast_to_room(
+                room,
+                Some(session),
+                &text::cast_fail_room(&caster_name, &spell.name),
+            );
+            return;
+        }
+        player.current_mana -= mana_cost;
+        // Fan-out (MEASURED §8.13): the caster line and ONE room line —
+        // NO per-target lines, NO damage numbers, NO combat engagement.
+        // Both come from the spell's own castmsgb pair (flash's room line
+        // mirrors the caster text, the clouds use the generic "on the
+        // room!" frame); the record's target line fires for no one, and
+        // the target/damage args stay unbound.
+        if let Some(msg) = spell.cast_msg_b.and_then(|id| self.content.messages.get(&id)) {
+            let args = text::CastMsgArgs {
+                caster: &caster_name,
+                target: None,
+                spell: &spell.name,
+                damage: None,
+            };
+            let odd = spell.msg_style & 1 == 1;
+            let caster_line = text::render_cast_line(msg, text::CastAudience::Caster, &args, odd);
+            let room_line = text::render_cast_line(msg, text::CastAudience::Room, &args, odd);
+            if let Some(line) = caster_line {
+                self.output_line(session, &line);
+            }
+            if let Some(line) = room_line {
+                self.broadcast_to_room(room, Some(session), &line);
+            }
+        }
+        if spell.duration != 0 {
+            // SLICE 6: duration areas enter MONSTER active-spell slots
+            // (add_cast_spell_to_monster, the 5-slot monster table) — our
+            // instances carry none yet, so nothing applies per monster.
+            // MEASURED (§8.13): the 20-tick stinking-cloud slots die
+            // silently with zero player-visible effect, so the observable
+            // surface is complete without them.
+            return;
+        }
+        // Instant apply, PER MONSTER (spec §4: each target gets its own
+        // elemental modifier ((100-resist)*V)/100 keyed on the spell's
+        // element — the same final scale spell_magnitude applies on the
+        // single-target path; fixed non-zero rows bypass roll and resist
+        // alike). No saving throw here: the §3 save gate lives in the
+        // targeted entry points, not cast_no_target's area loop.
+        let mut kills: Vec<MonsterInstanceId> = Vec::new();
+        for monster_id in targets {
+            let resist = spell
+                .element
+                .resist_ability()
+                .map_or(0, |a| self.monster_ability_value(monster_id, a));
+            let mr = self.monster_save_stat(monster_id);
+            let anti_magic = self
+                .monsters
+                .get(&monster_id)
+                .and_then(|m| self.content.monsters.get(&m.template))
+                .is_some_and(|t| t.abilities.iter().any(|(a, _)| *a == Ability::AntiMagic));
+            let mut damage_total = 0i32;
+            let mut drain_total = 0i32;
+            let mut harms = false;
+            for (ability, value) in &spell.abilities {
+                let amount = match *value {
+                    0 => (100 - resist) * magnitude / 100,
+                    v => i32::from(v),
+                };
+                match ability {
+                    Ability::Damage => {
+                        damage_total += amount;
+                        harms = true;
+                    }
+                    Ability::DamageMR => {
+                        damage_total += damage_mr(amount, mr, anti_magic);
+                        harms = true;
+                    }
+                    Ability::Drain => {
+                        drain_total += amount;
+                        harms = true;
+                    }
+                    // Poison and the monster-side debuff table: SLICE 6
+                    // (no monster poison counter or dynamic-effect fields
+                    // yet; §8.13 measured zero observable effect).
+                    _ => {}
+                }
+            }
+            if !harms {
+                continue;
+            }
+            let dead = {
+                let Some(m) = self.monsters.get_mut(&monster_id) else {
+                    continue;
+                };
+                m.current_hp -= damage_total + drain_total;
+                // Retaliation lock like every damaging path — but NO
+                // caster-side engagement (MEASURED §8.13: no *Combat
+                // Engaged*; evil warnings/crime = SLICE 7).
+                m.target = Some(session);
+                m.current_hp <= 0
+            };
+            if drain_total != 0
+                && let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session)
+            {
+                player.current_hp = (player.current_hp + drain_total).min(caster_max_hp);
+            }
+            if dead {
+                kills.push(monster_id);
+            }
+        }
+        for monster_id in kills {
+            self.monster_killed(monster_id, session);
+        }
     }
 
     /// Everything a SUCCESSFUL benign cast does after its costs are paid

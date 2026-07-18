@@ -365,7 +365,10 @@ impl MatchType {
         matches!(self, MatchType::Item6 | MatchType::Item7)
     }
 
-    /// Iterates every valid player in the room (§4).
+    /// Room-wide (area) match types — the decompile's §4 grouping says
+    /// these iterate every valid player, but MEASURED §8.13 (match 12)
+    /// shows players are NEVER area targets: the live sweep is the
+    /// monster side only (see [`MatchType::hits_monsters`]).
     pub fn room_wide(self) -> bool {
         matches!(
             self,
