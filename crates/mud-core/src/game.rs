@@ -478,6 +478,34 @@ pub fn monster_save_resists(save_stat: i32, roll: &mut impl FnMut(i32, i32) -> i
     roll(1, 100) <= (save_stat / 2).min(98)
 }
 
+/// The monster cast-chance roll (decompile `monster_cast` 22983 entry roll,
+/// compared at 23033-23040): a flat per-form percentage (`attackminhcastper`,
+/// `template+0x13e+idx*2`; hard 100 for a forced `idx == -1` cast, 23009-
+/// 23011) beats `genrdn(0,100)` on STRICT less-than — `roll < chance`. No
+/// caster or target stat term (spec §6.3). A 0% form never fires; a 100%
+/// form still loses to the inclusive top roll (genrdn spans 0..=100).
+pub fn monster_cast_chance_passes(
+    chance: i16,
+    roll: &mut impl FnMut(i32, i32) -> i32,
+) -> bool {
+    roll(0, 100) < i32::from(chance)
+}
+
+/// The player saving throw against a monster cast (decompile `monster_cast`
+/// 23044-23056; spec §6.4): rolled only when the chance roll passed and the
+/// spell's save class grants one (`Always`, or `IfAntiMagic` on a player
+/// carrying AntiMagic 51): `genrdn(1, 100) <= min(save_stat / 2, 97)`
+/// resists. `save_stat` is the DLL's player `+0xc2` — the MAX magic-resist
+/// word (`leveling.md`: `(Int + Wis*3)/4 + M.R.(36) modifiers`), i.e. our
+/// `Derived::magic_resist` — the same stat DamageMR(17) scales by, NOT the
+/// spellcasting skill. NOTE the cap: 97 here (23048-23052: `mr/2 < 0x62 ?
+/// mr/2 : 0x61`) versus the player-cast path's 98 (43606-43612,
+/// [`monster_save_resists`]) — a genuine one-off DLL asymmetry, mirrored
+/// faithfully.
+pub fn player_save_resists(save_stat: i32, roll: &mut impl FnMut(i32, i32) -> i32) -> bool {
+    roll(1, 100) <= (save_stat / 2).min(97)
+}
+
 /// The Damage(-MR) (17) scale — the damage path the shipped attack spells
 /// predominantly carry (magic missile included). `mr` is the SAME stat the
 /// saving throw reads (M.R.(36) modifiers + the template `mr` word, floored
@@ -5071,8 +5099,20 @@ impl Core {
             let Some(form) = form else {
                 continue; // action 0: no attack this swing
             };
+            if form.kind == 2 {
+                // The driver's cast arm (decompile 26796-26806):
+                // monster_cast return 2 = the victim died — the swing
+                // loop stops; 1 = on to the next swing. The return-0
+                // melee-form-0 fallback (26805-26813) is unreachable with
+                // shipped data (every kind-2 form names a live spell) and
+                // is not mirrored — a bad form skips to the next swing.
+                if self.monster_cast_at_player(id, template, location, &form, victim) {
+                    return;
+                }
+                continue;
+            }
             if form.kind != 1 {
-                continue; // cast/rob forms arrive in M5+
+                continue; // rob forms (kind 3) arrive with M6+ theft
             }
             let Some(mi) = self.monsters.get_mut(&id) else {
                 return;
@@ -5293,6 +5333,392 @@ impl Core {
         };
         // The DLL touppers the first byte of every composed line.
         (text::capitalize_first(v), text::capitalize_first(r))
+    }
+
+    /// `monster_cast` (decompile 0x27cc3, 22949-23785; spec §6) — one
+    /// kind-2 attack form fired at the engaged player. Returns `true` when
+    /// the victim died (the DLL's return 2). Shape:
+    ///
+    /// 1. Spell from the form's `accuracy` word (`template+0x12e`, 23000);
+    ///    an unresolvable id skips the swing.
+    /// 2. Whole-cast match-type gate {0,2,6,8} (23015-23016), then the
+    ///    target-mode split (23033/23777-23779): mode >= 3 routes to
+    ///    `monster_cast_area` — SLICE 6 PENDING (area/breath casts, e.g.
+    ///    mummy's `breathes` 84; the single-target path covers every
+    ///    mode-<3 form, hellhound's breath 78 included).
+    /// 3. Energy: the form's cost word (`template+0x190`) gates against
+    ///    the monster pool (23041) — an unaffordable cast is SILENT and
+    ///    moves to the next swing (23773-23775 return 1), unlike the melee
+    ///    arm's loop break. Landing pays full (23123); a resist OR fizzle
+    ///    pays half, floored at 1 for a nonzero cost (23065, 23075-23087,
+    ///    23758-23770).
+    /// 4. Chance/save: [`monster_cast_chance_passes`] then the resist
+    ///    ladder — SpellImmu auto-resist (23026-23029 + FUN_0043e3db
+    ///    23042-23061, §7: same `required_power < value` comparison as the
+    ///    player command gate at 43630), which is NOT gated on the chance
+    ///    roll (23066 tests bVar3 first — an immune target sees the resist
+    ///    family even for a fizzled attempt); then [`player_save_resists`]
+    ///    only when the chance roll passed and the save class grants one.
+    /// 5. Magnitude (23124-23143): L = the form's cast level
+    ///    (`attackmaxhcastlvl`, `template+0x148`) — the DLL applies NO
+    ///    level_cap clamp here (no `+0xa2` read anywhere in monster_cast,
+    ///    unlike the player path's 43668-43704), so the raw cast level
+    ///    scales the bounds; the roll and elemental-resist scale otherwise
+    ///    match [`spell_magnitude`]. Duration (23144-23148) is the
+    ///    divide-first scaling with NO genrdn band and NO AlterSpLength
+    ///    (spec §6.5 — fixed duration).
+    /// 6. Instant slots apply per the §4 table at the PLAYER (23150-23740);
+    ///    duration slots print the fan-out only — the 10-slot entry
+    ///    (`monster_add_cast_spell_to_user`) is Task 3.
+    ///
+    /// The DLL recomputes the victim's secondary stats after every cast
+    /// (23774); nothing bag-fed changes before the Task-3 slot entry, so
+    /// the recompute joins that task.
+    fn monster_cast_at_player(
+        &mut self,
+        id: MonsterInstanceId,
+        template: crate::content::MonsterId,
+        location: RoomId,
+        form: &crate::content::AttackForm,
+        victim: SessionId,
+    ) -> bool {
+        use crate::content::{MatchType, SaveClass, TargetMode};
+        let Ok(raw_id) = u16::try_from(form.accuracy) else {
+            return false;
+        };
+        let Some(spell) = self.content.spells.get(&SpellId(raw_id)).cloned() else {
+            return false; // unknown id: skip (the DLL would return 0)
+        };
+        if !matches!(
+            spell.match_type,
+            MatchType::Single0 | MatchType::Single2 | MatchType::Item6 | MatchType::Special8
+        ) {
+            return false;
+        }
+        if spell.target_mode == TargetMode::Benign {
+            // SLICE 6 PENDING: monster_cast_area (23778-23779) — the
+            // mode-3 area/breath sibling, cast level passed through.
+            return false;
+        }
+
+        let (victim_name, mr, max_hp) = match self.sessions.get(&victim) {
+            Some(Session::InGame { player, derived, .. }) => {
+                (player.name.clone(), derived.magic_resist, derived.max_hp)
+            }
+            _ => return false,
+        };
+        // One bag read covers every target-side term the DLL fetches
+        // piecemeal: SpellImmu 139 (23028), AntiMagic 51 (23045/23309),
+        // ImmuPoison 21 (23388), the elemental resist (23093-23117 — the
+        // case table maps +0xd0 exactly onto Element::resist_ability).
+        let bag = self.ability_bag(self.player(victim));
+        let immu = bag.value(Ability::SpellImmu);
+        let anti_magic = bag.value(Ability::AntiMagic) != 0;
+        let immune_poison = bag.value(Ability::ImmuPoison) != 0;
+        let resist_pct = spell
+            .element
+            .resist_ability()
+            .map_or(0, |a| bag.value(a));
+        let monster_name = self.monster_name(id);
+
+        let cost = i32::from(form.energy);
+        {
+            let Some(mi) = self.monsters.get_mut(&id) else {
+                return false;
+            };
+            if mi.energy < cost {
+                return false; // silent, next swing (23041 / 23773-23775)
+            }
+        }
+
+        let rng = &mut self.rng;
+        let passed =
+            monster_cast_chance_passes(form.min_damage, &mut |lo, hi| rng.roll(lo, hi));
+
+        // SpellImmu (139) auto-resist — evaluated BEFORE and independent
+        // of the chance roll (23026-23029; bVar4 never gates it).
+        let mut resisted = immu > 0 && i32::from(spell.required_power) < immu;
+        if !resisted && passed {
+            let save_allowed = match spell.save_class {
+                SaveClass::None => false,
+                SaveClass::Always => true,
+                SaveClass::IfAntiMagic => anti_magic,
+            };
+            if save_allowed {
+                let rng = &mut self.rng;
+                resisted = player_save_resists(mr, &mut |lo, hi| rng.roll(lo, hi));
+            }
+        }
+
+        if resisted || !passed {
+            // Half the energy cost, floored at 1 when nonzero (23075-23087
+            // resist twin 23758-23770).
+            if cost != 0
+                && let Some(mi) = self.monsters.get_mut(&id)
+            {
+                mi.energy -= (cost / 2).max(1);
+            }
+            let (v, r) = if resisted {
+                (
+                    text::you_resisted_monster_cast(&monster_name, &spell.name),
+                    text::resisted_monster_cast_room(&victim_name, &monster_name, &spell.name),
+                )
+            } else {
+                (
+                    text::monster_cast_fizzle(&monster_name, &spell.name),
+                    text::monster_cast_fizzle_room(&monster_name, &spell.name, &victim_name),
+                )
+            };
+            self.output_line(victim, &v);
+            self.broadcast_to_room(location, Some(victim), &r);
+            return false;
+        }
+
+        // Landed: full energy cost (23123).
+        if let Some(mi) = self.monsters.get_mut(&id) {
+            mi.energy -= cost;
+        }
+
+        // Magnitude (23124-23143): raw cast level, no level_cap clamp.
+        let l = i32::from(form.max_damage);
+        let hi = i32::from(spell.max_base) + spell.max_increase.scaled(l);
+        let lo = (i32::from(spell.min_base) + spell.min_increase.scaled(l)).min(hi);
+        let rolled = self.rng.roll(0, hi - lo + 1) + lo;
+        let magnitude = (100 - resist_pct) * rolled / 100;
+        // Duration (23144-23148): divide-first scaling, fixed (no band).
+        let duration =
+            i32::from(spell.duration) + spell.duration_increase.scaled_duration(l);
+
+        let mut duration_entered = false;
+        for (ability, value) in &spell.abilities {
+            // Per-slot fixed value overrides the rolled-and-resisted
+            // magnitude (23153-23155).
+            let amount = if *value != 0 { i32::from(*value) } else { magnitude };
+            if duration != 0 {
+                // The monster path's no-op case set is only {0,6,23,26,52}
+                // (23158-23161, 23432-23435) — every OTHER slot tries the
+                // 10-slot entry through the once-flag (bVar5); Poison's
+                // case is ImmuPoison-gated wholesale (23387-23388).
+                if matches!(ability.id(), 6 | 23 | 26 | 52)
+                    || (*ability == Ability::Poison && immune_poison)
+                {
+                    continue;
+                }
+                if !duration_entered {
+                    duration_entered = true;
+                    // Task 3: player-slot entry — monster_add_cast_spell_
+                    // to_user (21777-21802): refresh only if the new value
+                    // EXCEEDS the current, fixed duration, poison hard-
+                    // write at entry, victim recompute. Until then only
+                    // the fan-out prints.
+                    self.monster_cast_display(&spell, &monster_name, victim, location, amount);
+                }
+                continue;
+            }
+            match ability {
+                // Damage (1): HP -= v (23164-23179).
+                Ability::Damage => {
+                    if self.monster_cast_damage(victim, amount, amount, &spell, &monster_name)
+                    {
+                        return true;
+                    }
+                }
+                // Drain (8): the victim loses v, the monster gains it
+                // capped at the template max (23207-23228) — heal first,
+                // then display, then the kill check.
+                Ability::Drain => {
+                    let cap = self
+                        .content
+                        .monsters
+                        .get(&template)
+                        .map_or(0, |t| t.hitpoints);
+                    if let Some(mi) = self.monsters.get_mut(&id) {
+                        mi.current_hp = (mi.current_hp + amount).min(cap);
+                    }
+                    if self.monster_cast_damage(victim, amount, amount, &spell, &monster_name)
+                    {
+                        return true;
+                    }
+                }
+                // EnergyLevel (11): round pool += v (23231-23238; the DLL
+                // add is uncapped like the benign instant's — we keep the
+                // same documented cap as that path).
+                Ability::EnergyLevel => {
+                    if let Some(Session::InGame { energy, .. }) =
+                        self.sessions.get_mut(&victim)
+                    {
+                        *energy = (*energy + amount).min(PLAYER_ENERGY_MAX);
+                    }
+                    self.monster_cast_display(&spell, &monster_name, victim, location, amount);
+                }
+                // Alterhunger (15) / AlterThirst (16): counter adds with
+                // NO success display (23269-23303 carry none).
+                Ability::Alterhunger => {
+                    if let Some(Session::InGame { player, .. }) =
+                        self.sessions.get_mut(&victim)
+                    {
+                        player.hunger = clamp_counter(i32::from(player.hunger) + amount);
+                    }
+                }
+                Ability::AlterThirst => {
+                    if let Some(Session::InGame { player, .. }) =
+                        self.sessions.get_mut(&victim)
+                    {
+                        player.thirst = clamp_counter(i32::from(player.thirst) + amount);
+                    }
+                }
+                // Damage(-MR) (17): scaled by the victim's MR — the same
+                // +0xc2 word the save halves (23305-23341 is byte-for-byte
+                // the damage_mr ladder); the display arg stays the
+                // PRE-scale amount (23343 passes local_8, not local_5c).
+                Ability::DamageMR => {
+                    let dealt = damage_mr(amount, mr, anti_magic);
+                    if self.monster_cast_damage(victim, dealt, amount, &spell, &monster_name) {
+                        return true;
+                    }
+                }
+                // Heal (18): capped at max HP; the display shows the
+                // CAPPED amount (23358-23372).
+                Ability::Heal => {
+                    let healed = {
+                        let Some(Session::InGame { player, .. }) =
+                            self.sessions.get_mut(&victim)
+                        else {
+                            continue;
+                        };
+                        let healed = if max_hp < player.current_hp + amount {
+                            max_hp - player.current_hp
+                        } else {
+                            amount
+                        };
+                        player.current_hp += healed;
+                        healed
+                    };
+                    self.monster_cast_display(&spell, &monster_name, victim, location, healed);
+                }
+                // Poison (19): ImmuPoison gates the WHOLE case (23387-
+                // 23388); the counter is SET-IF-GREATER (23390-23392).
+                Ability::Poison => {
+                    if immune_poison {
+                        continue;
+                    }
+                    if let Some(Session::InGame { player, .. }) =
+                        self.sessions.get_mut(&victim)
+                    {
+                        let v = clamp_poison(amount);
+                        if player.poison < v {
+                            player.poison = v;
+                        }
+                    }
+                    self.monster_cast_display(&spell, &monster_name, victim, location, amount);
+                }
+                // Cure Poison (20): counter subtract (23411-23418; floored
+                // at 0 like every player-side write — the DLL's raw
+                // subtract here relies on FUN_0043fca7, unresolved).
+                Ability::CurePoison => {
+                    if let Some(Session::InGame { player, .. }) =
+                        self.sessions.get_mut(&victim)
+                    {
+                        player.poison = clamp_poison(i32::from(player.poison) - amount);
+                    }
+                    self.monster_cast_display(&spell, &monster_name, victim, location, amount);
+                }
+                // Summon (12): SLICE 6 (Task 5) — generate_monster with
+                // the caster's target inherited (23251-23267).
+                Ability::Summon => {}
+                // Every remaining case is duration-armed only (the
+                // `local_28 != 0` guards) or a no-op break in the DLL.
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// One landed damage slot: HP subtract, success display, the kill
+    /// check and the crossing "drops to the ground" announce — in the
+    /// DLL's order (23164-23179: subtract, display, check_kill_user →
+    /// return 2, then FUN_0043c91d only when the victim survived and
+    /// crossed below 1). Returns `true` when the victim died. `dealt` is
+    /// what leaves the HP pool; `shown` what the success lines print
+    /// (they differ for DamageMR).
+    fn monster_cast_damage(
+        &mut self,
+        victim: SessionId,
+        dealt: i32,
+        shown: i32,
+        spell: &crate::content::Spell,
+        monster_name: &str,
+    ) -> bool {
+        let (was_up, now_hp, victim_name, room) = {
+            let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&victim) else {
+                return false;
+            };
+            let was_up = player.current_hp >= 1;
+            player.current_hp -= dealt;
+            (was_up, player.current_hp, player.name.clone(), player.location)
+        };
+        self.monster_cast_display(spell, monster_name, victim, room, shown);
+        if now_hp <= DEATH_FLOOR {
+            self.player_killed(victim);
+            return true;
+        }
+        if was_up && now_hp < 1 {
+            self.output_line(victim, &text::drops_to_ground(&victim_name));
+            self.broadcast_to_room(room, Some(victim), &text::drops_to_ground(&victim_name));
+        }
+        false
+    }
+
+    /// `monster_display_spell_success` (decompile 21663-21772): the victim
+    /// gets castmsgb LINE 2 — the target-audience line — rendered with the
+    /// monster's name as the caster arg, the room gets LINE 3; there is no
+    /// caster line (the caster has no terminal). The odd `msg_style`
+    /// branch (21735-21769) binds the same reduced orders as the player
+    /// renderer. A spell without a castmsgb record falls back to the
+    /// default pair "%s cast %s on you." / "%s cast %s on %s." (21687-
+    /// 21689, strings 00481277/0048128a). Every rendered line is
+    /// first-letter capitalized (21710/21729). StartMsg(120) prelude and
+    /// DescMsg(115) active lines (21692-21716) join with the Task-3
+    /// duration entry — no shipped instant monster payload carries either.
+    fn monster_cast_display(
+        &mut self,
+        spell: &crate::content::Spell,
+        monster_name: &str,
+        victim: SessionId,
+        location: RoomId,
+        damage: i32,
+    ) {
+        let victim_name = self.player(victim).name.clone();
+        let (victim_line, room_line) = if let Some(msg) =
+            spell.cast_msg_b.and_then(|id| self.content.messages.get(&id))
+        {
+            let args = text::CastMsgArgs {
+                caster: monster_name,
+                target: Some(&victim_name),
+                spell: &spell.name,
+                damage: Some(damage),
+            };
+            let odd = spell.msg_style & 1 == 1;
+            (
+                text::render_cast_line(msg, text::CastAudience::Target, &args, odd),
+                text::render_cast_line(msg, text::CastAudience::Room, &args, odd),
+            )
+        } else {
+            (
+                Some(text::monster_cast_default(monster_name, &spell.name)),
+                Some(text::monster_cast_default_room(
+                    monster_name,
+                    &spell.name,
+                    &victim_name,
+                )),
+            )
+        };
+        if let Some(line) = victim_line {
+            self.output_line(victim, &text::capitalize_first(line));
+        }
+        if let Some(line) = room_line {
+            self.broadcast_to_room(location, Some(victim), &text::capitalize_first(line));
+        }
     }
 
     /// `check_kill_monster` + `distribute_experience` (`death.md` §4/§5).

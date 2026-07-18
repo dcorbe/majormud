@@ -323,6 +323,50 @@ pub fn cast_resisted_room(target: &str, caster: &str, spell: &str) -> String {
     format!("{target} resisted {caster}'s {spell}.")
 }
 
+// --- monster casts (monster_cast 0x27cc3; spellcasting.md §6). The DLL
+// --- prefixes each with an ANSI prompt-redraw blob (DAT_004812d1), not
+// --- part of the message text. All decompile-extracted; strings read
+// --- from the binary at their cited addresses.
+
+/// DLL 004812fb ("You resisted %s's cast of %s.") — the victim's line of
+/// the monster-cast resist family (decompile monster_cast 23067-23068);
+/// %s slots are the monster's instance name (no article) and the spell.
+pub fn you_resisted_monster_cast(monster: &str, spell: &str) -> String {
+    format!("You resisted {monster}'s cast of {spell}.")
+}
+
+/// DLL 0048131a ("%s resisted %s's cast of %s.") — the room line beside
+/// [`you_resisted_monster_cast`] (23071-23074).
+pub fn resisted_monster_cast_room(victim: &str, monster: &str, spell: &str) -> String {
+    format!("{victim} resisted {monster}'s cast of {spell}.")
+}
+
+/// DLL 00481338 ("The %s attempted to cast %s at you, but failed.") — the
+/// victim's line when the monster's cast-chance roll fails (23749-23752):
+/// a monster fizzle is NOT silent, unlike a player's out-of-mana round.
+pub fn monster_cast_fizzle(monster: &str, spell: &str) -> String {
+    format!("The {monster} attempted to cast {spell} at you, but failed.")
+}
+
+/// DLL 00481369 ("The %s attempted to cast %s at %s, but failed.") — the
+/// room line beside [`monster_cast_fizzle`] (23753-23757).
+pub fn monster_cast_fizzle_room(monster: &str, spell: &str, victim: &str) -> String {
+    format!("The {monster} attempted to cast {spell} at {victim}, but failed.")
+}
+
+/// DLL 00481277 ("%s cast %s on you.") — monster_display_spell_success's
+/// victim-line fallback when the spell has no castmsgb record (21687-21689).
+/// Note the PERIOD: the player-side default twins (00485978) end likewise.
+pub fn monster_cast_default(monster: &str, spell: &str) -> String {
+    format!("{monster} cast {spell} on you.")
+}
+
+/// DLL 0048128a ("%s cast %s on %s.") — the room-line fallback beside
+/// [`monster_cast_default`].
+pub fn monster_cast_default_room(monster: &str, spell: &str, victim: &str) -> String {
+    format!("{monster} cast {spell} on {victim}.")
+}
+
 /// VERIFIED (oracle, first line; remainder ORACLE-VERIFY).
 pub const HELP_BANNER: &str = "Type HELP followed by a topic for help on that topic";
 
