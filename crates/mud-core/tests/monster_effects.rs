@@ -561,10 +561,18 @@ fn offensive_instant_summon_spawns_into_the_casters_room() {
 #[test]
 fn benign_instant_summon_spawns_into_the_casters_room() {
     // cast_no_target case 0xc (40035-40051): instant benign Summon
-    // spawns immediately at the command.
+    // spawns immediately at the command. The display call (40040-40042)
+    // passes the LITERAL "everyone" as the target string — the caster
+    // and room lines read "... on everyone", and no target-private line
+    // is sent.
     let (mut core, s, _m) = setup(&[SUMSELF]);
     core.input(s, "cast pet rat");
-    core.drain_events();
+    let events = core.drain_events();
+    let shown = text_to(&events, s);
+    assert!(
+        shown.contains("You cast pet rat on everyone!"),
+        "summon display targets 'everyone': {shown:?}"
+    );
     core.input(s, "look");
     let events = core.drain_events();
     let look = text_to(&events, s);
@@ -586,5 +594,11 @@ fn alter_sp_dmg_matches_the_dll_truncation() {
     assert_eq!(alter_sp_dmg(10, 25), 12);
     assert_eq!(alter_sp_dmg(10, 50), 15);
     assert_eq!(alter_sp_dmg(7, 50), 10); // 7*50/100 = 3
-    assert_eq!(alter_sp_dmg(10, -25), 8); // -250/100 = -2, toward zero
+    // Negative pct pins the DamageMR-INLINE form only (43940-43941:
+    // V + V*pct/100 = 10 + (-250/100) = 10 + -2 = 8, toward zero).
+    // FUN_0043fef4's plain-Damage form (pct+100)*V/100 = 75*10/100 would
+    // give 7 — the two forms diverge on negatives, but no shipped
+    // negative-165 carrier exists, so the plain-Damage form is
+    // unreachable with a negative boost.
+    assert_eq!(alter_sp_dmg(10, -25), 8);
 }

@@ -3512,7 +3512,7 @@ impl Core {
                 // param_6 here is uVar1 — the RAW rolled magnitude, no
                 // slot-value override (39482-39484: the pre-pass sits
                 // before the apply loop's per-slot local_9c rewrite).
-                self.emit_cast_success_lines(session, target_id, spell, magnitude);
+                self.emit_cast_success_lines(session, target_id, spell, magnitude, false);
                 self.terminate_active_spell(target_id, idx, honor_endcast);
                 return;
             }
@@ -3539,11 +3539,14 @@ impl Core {
         // non-zero, else leaves the rolled magnitude).
         let gated =
             |a: Ability| ability_case_is_noop(a) || (immune_poison && a == Ability::Poison);
-        let display_damage = spell
-            .abilities
-            .iter()
-            .find(|(a, _)| !gated(*a))
-            .map_or(magnitude, |(_, v)| if *v != 0 { i32::from(*v) } else { magnitude });
+        let driving = spell.abilities.iter().find(|(a, _)| !gated(*a));
+        let display_damage =
+            driving.map_or(magnitude, |(_, v)| if *v != 0 { i32::from(*v) } else { magnitude });
+        // Summon (12) drives its own display call (cast_no_target case
+        // 0xc, 40040-40042): the target string is the LITERAL "everyone"
+        // — the caster/room lines read "... on everyone" and the
+        // target-private line is skipped.
+        let everyone_target = driving.is_some_and(|(a, _)| *a == Ability::Summon);
         if immune_poison
             && !spell
                 .abilities
@@ -3708,7 +3711,7 @@ impl Core {
                 self.summon_spawn(value, room);
             }
         }
-        self.emit_cast_success_lines(session, target_id, spell, display_damage);
+        self.emit_cast_success_lines(session, target_id, spell, display_damage, everyone_target);
     }
 
     /// `cast_item_target` (decompile 0x49232), scoped to the LEARNABLE
@@ -3838,19 +3841,28 @@ impl Core {
     /// target, param_6)`; odd caster line 38068 `prf(local_60, target,
     /// param_6)`) — annointed hands (744) and minor healing (13) both
     /// carry a `%d` that binds the heal roll.
+    ///
+    /// `everyone_target`: the Summon (12) display call passes the literal
+    /// "everyone" as the target string (cast_no_target 40040-40042) and
+    /// sends no target-private line.
     fn emit_cast_success_lines(
         &mut self,
         session: SessionId,
         target_id: SessionId,
         spell: &crate::content::Spell,
         damage: i32,
+        everyone_target: bool,
     ) {
         let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
             return;
         };
         let caster_name = player.name.clone();
         let room = player.location;
-        let target_name = self.player(target_id).name.clone();
+        let target_name = if everyone_target {
+            "everyone".to_string()
+        } else {
+            self.player(target_id).name.clone()
+        };
         // Cast messages: castmsgb only (castmsga is the empty message on
         // every sampled spell — the Task-10 renderer contract). Fan-out
         // (MEASURED §8.6 self / §8.13 player-target): the caster line
@@ -3878,7 +3890,8 @@ impl Core {
             if let Some(line) = caster_line {
                 self.output_line(session, &line);
             }
-            if target_id != session
+            if !everyone_target
+                && target_id != session
                 && let Some(line) = target_line
             {
                 self.output_line(target_id, &line);
