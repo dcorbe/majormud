@@ -1258,3 +1258,151 @@ abort — cosmetic). Note the row DID appear on disk mid-session on the
 second roll, so the first-session loss may have been a
 write-buffering anomaly of that long-lived process; treat graceful
 SIGINT as mandatory either way.
+
+### 8.13 Player targets & areas (oracle-measured)
+
+Expedition 2026-07-17 (M5 slice-5 Task 2). Three interleaved sessions,
+one FIFO driver process each (`oracle_kai_mystic.py`, separate scratch
+dirs — independent processes make the strict-interleave rule
+structural): caster **Zinvar Duskmere** (acct Vexil, Human Mage,
+patched L2→L8), target **Oracle** (Dwarf Warrior L1 — **1 life left**,
+handled with zero damage exposure), observer **Kaimon Sable** (Mystic
+L3). Transcripts: `oracle_ptargets_zinvar.raw` / `_oracle.raw` /
+`_kaimon.raw` + matching `*_timing.log` (ms-stamped clean lines).
+
+**Staging (extends §8.8).** Emulator stopped with `kill -INT`,
+`WCCUSERS.DB.bak-zinvar-preL8` kept. Patched exp 46000 at +0x3c AND
++0x46f, 501 gold at +0x60b (gold = third of the five high→low drawers
+at +0x603). Live checks matched the §"records.md exp curve" (seed
+10*(40+100)=1400 for Human Mage) exactly: `exp` read
+`Exp needed for next level: 0 (2800)` at L2 and `27021 (73021) [63%]`
+at L8. Six `train`s at the generic Newhaven Adventurer's Guild
+(room 1/2147, shop 38): receipts `You hand over 1 gold crown and you
+receive training to attain level 3.` … L4 `1 gold crown, 5 silver
+nobles`, L5 `2 gold crowns`, L6 `2 gold crowns, 50 copper farthings`,
+L7 `3 gold crowns`, L8 `3 gold crowns, 4 silver nobles, 10 copper
+farthings`; each grants only `10 additional character points` (mage
+train teaches nothing — §8.1 confirmed through L8). L8 Human Mage,
+all-40 stats: HP 51, Mana 54, Spellcasting 57, CP 170, MA 14 base.
+
+**Scroll sourcing (data + live).** `scroll of flash` (item 297,
+LearnSp 51) and `scroll of stinking cloud` (item 374, LearnSp 131) are
+stocked ONLY by shop 9 "Mage Spell Shop" = room 1/398 **Magic Shoppe,
+Silvermere** (Mystic Alley, south off River St; ornate street sign at
+the River St/Mystic Alley intersection). Newhaven's Spell Shop (48)
+does not carry them. Shelf list prints `scroll of flash  14  90 gold
+crowns` / `scroll of stinking cloud  22  250 gold crowns`, with
+`(Too powerful)` suffixed to >L8 stock; paid prices carried the Charm-40
+premium: `You just bought scroll of flash for 91 gold crowns, 7 silver
+nobles, 10 copper farthings.` and `...stinking cloud for 255 gold
+crowns.` `use` learns: `You read scroll of flash and learn the spell
+flash.` (followed by a blank line only) but the stinking cloud scroll
+adds `Its magic used, the scroll disintegrates.` — the destroy line is
+per-item, not part of the learn frame.
+
+**Ferry + level gate (route ops).** Southbound: Newhaven Docks
+(1/2149) text-trigger `row skiff` (`go manhole`-style type-10 exit) →
+`You climb into one of the skiffs, and row to Silvermere.` → Small
+Pier 2335 → plain walking into town. Northbound the pocket is
+LEVEL-GATED: at Silvermere Docks 33 the north exit (type **15**)
+refused the L8 mage with `You have progressed too far to go through
+this exit!` — L1 Oracle and L3 Kaimon walked the same exits home
+plainly (and the type-5 exit 2335→2149 is a plain walk for them; no
+return trigger phrase needed). **Zinvar is permanently out of
+Newhaven.** Exit type 15 = level gate; the room-17 manhole confirmed
+type 10 = text-trigger with phrases in the para1 message
+(`go manhole|go man|enter manhole`).
+
+**Player-target benign cast (blur, match 2, save 0) — the string
+table.** All casts at Silvermere Docks (1/33), all three sessions
+capturing:
+
+| view | success | fail (half mana) |
+|---|---|---|
+| caster | `You cast blur on Oracle!` (mana −4) | `You attempt to cast blur at Oracle, but fail.` (−2) |
+| target | `Zinvar casts blur upon you!` + async `You are blurred!` | **nothing** — the target does not see a failed attempt |
+| room | `Zinvar casts blur on Oracle!` | `Zinvar attempted to cast blur at Oracle, but failed.` |
+
+- **Slot on the TARGET:** Oracle's `st` appends `You are blurred!`
+  after the MagicRes row, and his Martial Arts row read 10 → **15**
+  while blurred → 10 after expiry (blur's Dodge(34)+5 surfaces in the
+  MA line; same +5 visible on the caster's own sheet).
+- **Refresh recast** prints the identical success triple; wear-off
+  came ~217 s after the LAST refresh (70 ticks) — refresh resets the
+  duration on a player target. `The effects of blur wear off.` is seen
+  by the TARGET only (Kaimon, in-room, saw nothing at expiry).
+- Blur landed on a MagicRes-55 dwarf every time — save-class 0 does no
+  player-MR roll (three successes, one ordinary skill-roll fail).
+- **Name resolution on players** is the §8.9 word-prefix rule:
+  `c blur ora` resolved to Oracle. `cast blur zzz` with three players
+  present still prints `You do not see zzz here!` (players searched,
+  no match — same string as the empty room).
+- **Own-name targeting:** `c blur zinvar` → caster `You cast blur on
+  Zinvar!`, own DescMsg fires (`You are blurred!` after the prompt),
+  room sees `Zinvar casts blur on Zinvar!` — the third-person frame
+  keeps the name, no reflexive form. (The §8.9 bare `c b` self-cast
+  "on Vexil" line was that era's character name, not the account —
+  both are the character's first name.)
+- Benign blur at a monster: `c blur cat` →
+  `You may not cast that spell on a monster!`, uncharged.
+
+**Area casts (flash 51 & stinking cloud 131, match 12) — players are
+NOT targets.** Measured at Intersection of Brass St. & River St.
+(1/17, attributes 2 = unprotected, region-6 spawns):
+
+- With NO monster in the room — alone AND with players present —
+  both spells refuse: `Your spell has no effect in this room!`,
+  mana unchanged. Players never count as area targets: **no PvP
+  path through match-12 areas.**
+- With three black cats + two other players present:
+  - flash — caster `You cast flash, blinding everyone in the room!`
+    (mana −10); both players got the mirrored room line `Zinvar casts
+    flash, blinding everyone in the room!`. NO per-target lines, NO
+    damage lines, NO combat engagement, players not blinded (`look`
+    fine, `st` clean, HP untouched). The 9999/9999 min/max never
+    surfaces — flash is a pure monster-debuff area (BlindUser/AC/
+    Accuracy payload applies silently to monsters).
+  - stinking cloud — caster `You cast stinking cloud, enveloping the
+    room in a foul stench!` (mana −10); room view is the GENERIC frame
+    `Zinvar casts stinking cloud on the room!` (unlike flash the room
+    text does not mirror the caster message — both come from the
+    spell's own message pair). Again: no per-target lines, no damage,
+    no engagement, nothing in either player's `st`, and NO expiry line
+    on any player view (the 20-tick monster-side slots die silently).
+- Explicit target words are refused before any casting, uncharged:
+  `c flash oracle` → `You may not cast that spell on a user!`;
+  `c stnk cat` → `You may not cast that spell on a monster!`.
+
+**Slice-5 implementation notes.** (1) Match-12 area iteration must
+skip players entirely — the "12/13 iterate valid players" grouping in
+the plan is wrong for 12 (13 = players remains ORACLE-VERIFY; no
+learnable 13 below priest chant L6). (2) The empty-target refusal
+`Your spell has no effect in this room!` is a real pre-charge gate.
+(3) Area casts do not engage combat when the payload is debuff-only.
+(4) Player-target explicit-word refusals are target-kind-keyed
+("user"/"monster") and also pre-charge.
+
+**Incidentals.** Realm-entry broadcast `Kaimon just entered the
+Realm.` (counterpart of §8.11's left/§8.10's disconnected lines);
+wandering arrivals `A black cat slinks into the room from the west.`
+(and `A angry black cat ...` — sic, article not adjusted, adjective
+prefixes appear on base names: also saw `large filthy beggar` for
+monster 776 "filthy beggar"); melee kill of that beggar in unprotected
+Silvermere street produced zero evil/crime output (alignment-3 target)
+and dropped `5 copper drop to the ground.` + death blurb `The pitiful
+begger lets out a hacking cough and drops dead` (sic); the L8-patched,
+just-trained character got `You have progressed too far without
+training to acquire anymore experience!` on the kill at 63% toward L9
+— cause unresolved (banked-exp gate vs demo-mode cap), ORACLE-OPEN;
+Sewer Tunnel 1/607 (light −175) stayed `The room is very dark - you
+can't see anything` even after a successful `You cast illuminate!` —
+RoomIllu 4012 does not overcome a −175 room, so illuminate is not a
+darkness solvent at this magnitude.
+
+**Character end states:** Zinvar Duskmere — L8 mage, HP 51/51, ~145
+gold, book blur/illuminate/flash/stinking cloud, parked at Silvermere
+Docks (1/33), CANNOT return to Newhaven; Oracle — untouched (35/35,
+never in any blast), back at Newhaven Healer (1/2190), 1 life;
+Kaimon — untouched, back at Newhaven Adventurer's Guild (1/2147).
+All three exited via `x` (meditation logout, `Your character has been
+saved.`; observers see `<Name> just left the Realm.`).

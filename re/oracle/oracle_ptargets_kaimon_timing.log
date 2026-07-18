@@ -1,0 +1,650 @@
+1784335509.199 !! driver connected raw=/home/daniel/bbs/re/oracle/oracle_ptargets_kaimon.raw
+1784335509.237 RX ╔══════════════════════════════════════════════════════════╗
+1784335509.237 RX ║█████████████████▄███████▄███████▄████████████████████████║
+1784335509.237 RX ║██████████████▀▀██████▀▀██████▀▀▀▀███▀▀▀▀█████████████████║
+1784335509.237 RX ║██████████████████▀███████▀███████████████████████████████║
+1784335509.237 RX ║███▀███▀██████▀▀██████▀▀███▀▀▀▀██████▀▀▀████▀███▀█████████║
+1784335509.237 RX ║████▀▀▀███████████▀███████▀██████████████████▀▀▀████▀████▀║
+1784335509.237 RX ║▀▀▀█████▀▀▀▀▀▀▀▀▀▀█▀▀▀▀▀▀▀█▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀█████▀▀▀█▀▀▀▀▀║
+1784335509.237 RX ║██████████████╘═╡ The MajorBBS Emulator ╞═╛███████████████║
+1784335509.237 RX ║████████████████│ By: MBBSEmu Community │█████████████████║
+1784335509.237 RX ║                │https://www.mbbsemu.com│                 ║
+1784335509.237 RX ╚══════════════════════════════════════════════════════════╝
+1784335509.238 RX  
+1784335509.238 RX Enter Username or enter "NEW" to create a new Account
+1784335510.225 PART Username:  ²
+1784335965.435 TX Kaimon
+1784335965.441 RX Kaimon
+1784335965.442 PART Password: 
+1784335967.436 TX test123
+1784335967.461 RX *******
+1784335967.461 RX 
+1784335967.461 RX Fantasy awaits you in MajorMUD v1.11p-WG!
+1784335967.461 RX 
+1784335967.462 RX 
+1784335967.462 RX Please select one of the following:
+1784335967.462 RX 
+1784335967.462 RX    A ... MajorMUD
+1784335967.462 RX 
+1784335967.462 RX Main Menu
+1784335967.462 PART Make your selection (X to exit): 
+1784335970.439 TX A
+1784335970.442 RX A
+1784335970.466 RX 
+1784335970.466 RX  M A J O R  M U D v1.11p-WG (Dec 30 2005 14:20:05)
+1784335970.466 RX {Realm Of Legends}
+1784335970.466 RX *ANSI RECOMMENDED*
+1784335970.466 RX 
+1784335970.466 RX [E] . Enter the Realm
+1784335970.466 RX [H] . Help
+1784335970.466 RX [A] . About the Game
+1784335970.466 RX [C] . Game Counts
+1784335970.466 RX [T] . Topten Adventurers
+1784335970.466 RX [G] . Topten Gangs
+1784335970.466 RX [W] . Who's in the Realm
+1784335970.466 RX [R] . Release Notes
+1784335970.466 RX [I] . Information
+1784335970.466 RX [X] . Exit Game
+1784335970.466 RX 
+1784335970.466 PART [MAJORMUD]: 
+1784335973.441 TX E
+1784335973.510 RX E
+1784335973.514 RX 
+1784335973.514 RX MajorMUD - ROL
+1784335973.514 RX 
+1784335973.514 RX =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+1784335973.514 RX 
+1784335973.514 RX Newhaven, Adventurer's Guild
+1784335973.515 RX     This nicely crafted room is well furnished and decorated with things that
+1784335973.515 RX you have never seen before, from strange exotic weapons, to swirling vials of
+1784335973.515 RX liquid. A well toned man, stands in front of a practice mat with his arms
+1784335973.515 RX crossed. He stands up lightly at your approach, looks you up and down, and
+1784335973.515 RX breaks into a lopsided grin. 
+1784335973.515 RX Also here: Corwyn.
+1784335973.515 RX Obvious exits: south
+1784335973.515 PART [HP=35/KAI=2]:
+1784335988.487 TX s
+1784335988.491 RX s
+1784335989.539 RX Newhaven, Narrow Road
+1784335989.539 RX     This narrow road is quite plain save for the various lanterns hanging from
+1784335989.539 RX the trees around, and a large stone stairwell leading downwards. You hear the
+1784335989.539 RX clash of steel below you, and cries of pain and triumph accompanying it. Stone
+1784335989.539 RX buildings lie to your north and west. 
+1784335989.539 RX Also here: Oracle.
+1784335989.539 RX Obvious exits: north, east, west, down
+1784335990.289 TX e
+1784335990.357 RX [HP=35/KAI=2]:e
+1784335990.663 RX Oracle just left to the east.
+1784335990.665 RX [HP=35/KAI=2]:Newhaven, Narrow Path
+1784335990.667 RX     This narrow path is fairly plain, save for the small lanterns hanging from
+1784335990.667 RX the trees around. North of you lies a strangely decorated shop, and a beat-up
+1784335990.667 RX shack labeled "General Store" lies to your south. The path leads east and west
+1784335990.667 RX from here. 
+1784335990.667 RX Also here: Oracle.
+1784335990.667 RX Obvious exits: north, south, east, west
+1784335990.667 PART [HP=35/KAI=2]:
+1784335992.092 TX e
+1784335992.098 RX e
+1784335992.910 RX Oracle just left to the east.
+1784335992.911 RX [HP=35/KAI=2]:Newhaven, Village Entrance
+1784335992.912 RX     Welcome to Newhaven! You are standing at the crude wooden gates of the
+1784335992.912 RX village entrance, in the middle of a dusty path. A low wooden palisade
+1784335992.912 RX surrounds the village, to protect against creatures of the night and random
+1784335992.912 RX raiders. You can see small buildings to the north and south, and a dusty path
+1784335992.912 RX that leads to the west and southeast. 
+1784335992.912 RX You notice large sign, newbie manual here.
+1784335992.912 RX Also here: Oracle.
+1784335992.912 RX Obvious exits: north, south, west, southeast
+1784335993.891 TX se
+1784335993.895 RX [HP=35/KAI=2]:se
+1784335993.947 RX Oracle just left to the southeast.
+1784335993.948 RX [HP=35/KAI=2]:Newhaven, Forest Path
+1784335993.949 RX     The trees become very thick around you now, and you can barely see where
+1784335993.949 RX you're going due to the only light source being from the village behind you and
+1784335993.949 RX the light shining through the trees. You hear the sound of rippling water south
+1784335993.949 RX of here. 
+1784335993.949 RX Also here: Oracle.
+1784335993.949 RX Obvious exits: south, northwest
+1784335993.949 PART [HP=35/KAI=2]:
+1784335995.698 TX s
+1784335995.698 RX s
+1784335996.055 RX Oracle just left to the south.
+1784335996.056 RX [HP=35/KAI=2]:Newhaven, Docks
+1784335996.057 RX     You stand at the southernmost edge of Newhaven. The view from here is
+1784335996.057 RX amazing. As you stare out across the Silver river you behold such sights as the
+1784335996.057 RX notorious Port Blackwater to the west, and the fabled town of Silvermere
+1784335996.057 RX southwards. A large half-shaven man sits off in the corner, with what looks to
+1784335996.057 RX be a fishing rod, and there are a number of small skiffs tied to the dock for
+1784335996.057 RX use in reaching the docks of Silvermere. 
+1784335996.057 RX Also here: Oracle, ferryman.
+1784335996.057 RX Obvious exits: north
+1784335996.057 PART [HP=35/KAI=2]:
+1784335997.493 TX look
+1784335997.548 RX look
+1784335997.549 RX Newhaven, Docks
+1784335997.549 RX     You stand at the southernmost edge of Newhaven. The view from here is
+1784335997.549 RX amazing. As you stare out across the Silver river you behold such sights as the
+1784335997.549 RX notorious Port Blackwater to the west, and the fabled town of Silvermere
+1784335997.549 RX southwards. A large half-shaven man sits off in the corner, with what looks to
+1784335997.549 RX be a fishing rod, and there are a number of small skiffs tied to the dock for
+1784335997.549 RX use in reaching the docks of Silvermere. 
+1784335997.549 RX Also here: Oracle, ferryman.
+1784335997.549 RX Obvious exits: north
+1784335997.551 RX [HP=35/KAI=2]:Oracle is looking around the room.
+1784335997.551 PART [HP=35/KAI=2]:
+1784336007.262 RX Oracle climbs into one of the skiffs, and rows out into the river.
+1784336007.262 PART [HP=35/KAI=2]:
+1784336009.749 TX row skiff
+1784336009.762 RX row skiff
+1784336009.765 RX You climb into one of the skiffs, and row to Silvermere.
+1784336009.765 RX Small Pier
+1784336009.765 RX     This is a small, haphazardly constructed wooden pier, supported by rotting
+1784336009.765 RX pillars over the swift waters of the river. Tied to the far end are a
+1784336009.765 RX half-dozen skiffs of varying size. 
+1784336009.765 RX Also here: Oracle.
+1784336009.765 RX Obvious exits: north, south
+1784336009.765 PART [HP=35/KAI=2]:[HP=35/KAI=2]:
+1784336012.960 RX Oracle just left to the south.
+1784336012.960 PART [HP=35/KAI=2]:
+1784336014.052 TX s
+1784336014.227 RX s
+1784336015.159 RX Docks
+1784336015.159 RX     This is a cobblestoned street. It is dimly lit by guttering lanterns hung
+1784336015.159 RX from tall posts. There are large open crates piled here, all empty. The boat
+1784336015.159 RX berths are empty also, echoing the effect of the recent decrease in traffic to
+1784336015.159 RX and from Silvermere. A small wooden pier pokes out into the river to the north.
+1784336015.159 RX 
+1784336015.159 RX Also here: Oracle.
+1784336015.159 RX Obvious exits: north, south
+1784336015.159 PART [HP=35/KAI=2]:
+1784336016.226 RX Oracle just left to the south.
+1784336016.226 PART [HP=35/KAI=2]:
+1784336017.654 TX s
+1784336017.723 RX s
+1784336018.436 RX Docks
+1784336018.436 RX     This is a cobblestoned street. It is dimly lit by guttering lanterns hung
+1784336018.436 RX from tall posts. There are large open crates piled here, all empty. The boat
+1784336018.436 RX berths are empty also, echoing the effect of the recent decrease in traffic to
+1784336018.436 RX and from Silvermere. 
+1784336018.436 RX Also here: Zinvar, Oracle.
+1784336018.436 RX Obvious exits: north, south, east, west
+1784336018.436 PART [HP=35/KAI=2]:
+1784336019.979 RX Oracle is looking around the room.
+1784336019.979 PART [HP=35/KAI=2]:
+1784336037.385 RX Zinvar casts blur on Oracle!
+1784336037.385 PART [HP=35/KAI=2]:
+1784336060.951 RX Zinvar attempted to cast blur at Oracle, but failed.
+1784336060.951 PART [HP=35/KAI=2]:
+1784336068.268 RX Zinvar casts blur on Oracle!
+1784336068.268 PART [HP=35/KAI=2]:
+1784336093.836 RX Zinvar casts blur on Zinvar!
+1784336093.836 PART [HP=35/KAI=2]:
+1784336095.791 TX st
+1784336095.928 RX st
+1784336095.929 RX Name: Kaimon Sable                     Lives/CP:      9/120  
+1784336095.929 RX Race: Human       Exp: 6000            Perception:     40
+1784336095.929 RX Class: Mystic     Level: 3             Stealth:        47
+1784336095.929 RX Hits:    35/35    Armour Class:   0/0  Thievery:        0
+1784336095.929 RX Kai:      2/2                          Traps:           0
+1784336095.929 RX                                        Picklocks:       0
+1784336095.929 RX Strength:  40     Agility: 40          Tracking:        0
+1784336095.929 RX Intellect: 40     Health:  40          Martial Arts:  102
+1784336095.929 RX Willpower: 40     Charm:   40          MagicRes:       40
+1784336095.930 PART [HP=35/KAI=2]:
+1784336126.261 RX Zinvar just left to the south.
+1784336126.261 PART [HP=35/KAI=2]:
+1784336137.838 RX You hear movement to the south.
+1784336137.838 PART [HP=35/KAI=2]:
+1784336143.315 RX You hear movement to the south.
+1784336143.315 PART [HP=35/KAI=2]:
+1784336497.383 TX s
+1784336497.384 RX s
+1784336498.134 RX River Street
+1784336498.134 RX     This is a cobblestoned street. It is dimly lit by guttering lanterns hung
+1784336498.134 RX from tall posts. To the north you can see the entrance to the Wharf district,
+1784336498.134 RX which leads to the city's docks. River street continues to the east and west
+1784336498.134 RX here. To the south is the side of a massive warehouse. 
+1784336498.134 RX Also here: guardsman, happy guardsman.
+1784336498.134 RX Obvious exits: north, east, west
+1784336498.984 TX e
+1784336498.984 RX [HP=35/KAI=2]:e
+1784336499.160 RX River Street
+1784336499.160 RX     This is a cobblestoned street. It is dimly lit by guttering lanterns hung
+1784336499.160 RX from tall posts. To the north you can see the entrance to the Wharf district,
+1784336499.160 RX which leads to the city's docks. To the south is a small alleyway. River street
+1784336499.160 RX continues to the east and west. 
+1784336499.160 RX Obvious exits: north, south, east, west
+1784336499.160 PART [HP=35/KAI=2]:
+1784336500.585 TX e
+1784336500.587 RX e
+1784336501.210 RX River Street
+1784336501.210 RX     This is a cobblestoned street. It is dimly lit by guttering lanterns hung
+1784336501.210 RX from tall posts. To the north is the city wall, and to the south there is a
+1784336501.210 RX tall, rickety house, whose door is set with a tarnished brass knocker. There
+1784336501.210 RX seems to be no-one home, as there are no light lit. River street continues to
+1784336501.210 RX the east and west. 
+1784336501.210 RX Obvious exits: east, west
+1784336502.187 TX e
+1784336502.187 RX [HP=35/KAI=2]:e
+1784336502.238 RX River Street
+1784336502.239 RX     This is a cobblestoned street. It is dimly lit by guttering lanterns hung
+1784336502.239 RX from tall posts. The city wall is to the north, towering over twenty feet above
+1784336502.239 RX you. River street is fairly quiet, but is well-used as it intersects many main
+1784336502.239 RX streets. It continues to the east and west. 
+1784336502.239 RX Obvious exits: east, west
+1784336502.239 PART [HP=35/KAI=2]:
+1784336503.788 TX e
+1784336503.789 RX e
+1784336504.290 RX Intersection of River St. & Mystic Alley
+1784336504.290 RX     This is a cobblestoned street. It is dimly lit by guttering lanterns hung
+1784336504.290 RX from tall posts. The city wall is to the north, towering over twenty feet above
+1784336504.290 RX you. River street is fairly quiet, but is well-used as it intersects many main
+1784336504.290 RX streets. It continues to the east and west. An ornate metal sign is attached to
+1784336504.290 RX one of the lamp-posts, reading "Magic Shoppe" in a thin, spidery script. 
+1784336504.291 RX Obvious exits: south, east, west
+1784336504.291 PART [HP=35/KAI=2]:
+1784336505.389 TX e
+1784336505.394 RX e
+1784336506.355 RX River Street
+1784336506.355 RX     This is a cobblestoned street. It is dimly lit by guttering lanterns hung
+1784336506.355 RX from tall posts. The city wall is to the north, towering over twenty feet above
+1784336506.355 RX you. River street is fairly quiet, but is well-used as it intersects many main
+1784336506.355 RX streets. It continues to the east and west. You can see a junction off to the
+1784336506.355 RX east. 
+1784336506.355 RX Obvious exits: east, west
+1784336506.996 TX e
+1784336506.996 RX [HP=35/KAI=2]:e
+1784336507.370 RX Intersection of Guild St. & River St.
+1784336507.370 RX     This is a cobblestoned street. It is dimly lit by guttering lanterns hung
+1784336507.370 RX from tall posts. The city wall is to the north, towering over twenty feet above
+1784336507.370 RX you. River street is fairly quiet, but is well-used as it intersects many main
+1784336507.370 RX streets. It continues to the east and west. The broad expanse of Guild street
+1784336507.370 RX goes off to the south here, heading towards, and ending in, the town square.
+1784336507.370 RX You can make out the entrance to a low wooden building off to the south. 
+1784336507.370 RX Also here: large guardsman.
+1784336507.370 RX Obvious exits: south, east, west
+1784336507.370 PART [HP=35/KAI=2]:
+1784336508.596 TX e
+1784336508.597 RX e
+1784336509.421 RX River Street
+1784336509.422 RX     This is a cobblestoned street. It is dimly lit by guttering lanterns hung
+1784336509.422 RX from tall posts. The city wall is to the north, towering over twenty feet above
+1784336509.422 RX you. River street is fairly quiet, but is well-used as it intersects many main
+1784336509.422 RX streets. It continues to the east and west. The side of a seedy inn stands to
+1784336509.422 RX your south, and an intersection is to the west. 
+1784336509.422 RX Obvious exits: east, west
+1784336510.197 TX e
+1784336510.199 RX [HP=35/KAI=2]:e
+1784336510.444 RX River Street
+1784336510.444 RX     This is a cobblestoned street. It is dimly lit by guttering lanterns hung
+1784336510.444 RX from tall posts. The city wall is to the north, towering over twenty feet above
+1784336510.444 RX you. River street is fairly quiet, but is well-used as it intersects many main
+1784336510.444 RX streets. It continues to the east and west. There is a seedy-looking wooden
+1784336510.444 RX structure to the south, and a sign over the open door reads "The Wailing Hound
+1784336510.444 RX Tavern". 
+1784336510.444 RX Obvious exits: south, east, west
+1784336510.444 PART [HP=35/KAI=2]:
+1784336511.799 TX e
+1784336511.799 RX e
+1784336512.478 RX River Street
+1784336512.478 RX     This is a cobblestoned street. It is dimly lit by guttering lanterns hung
+1784336512.478 RX from tall posts. The city wall is to the north, towering over twenty feet above
+1784336512.478 RX you. River street is fairly quiet, but is well-used as it intersects many main
+1784336512.478 RX streets. It continues to the east and west. 
+1784336512.478 RX Obvious exits: east, west
+1784336513.400 TX e
+1784336513.401 RX [HP=35/KAI=2]:e
+1784336513.496 RX Intersection of Brass St. & River St.
+1784336513.496 RX     This is a cobblestoned street. It is dimly lit by guttering lanterns hung
+1784336513.496 RX from tall posts. The city wall is to the north, towering over twenty feet above
+1784336513.496 RX you. River street is fairly quiet, but is well-used as it intersects many main
+1784336513.496 RX streets. It continues to the east and west. Brass street arrows off to the
+1784336513.496 RX south here. There is a manhole set in the ground here. 
+1784336513.497 RX You notice 5 copper farthings here.
+1784336513.497 RX Also here: Zinvar.
+1784336513.497 RX Obvious exits: south, east, west
+1784336513.497 PART [HP=35/KAI=2]:
+1784336515.001 TX look
+1784336515.003 RX look
+1784336515.003 RX Intersection of Brass St. & River St.
+1784336515.003 RX     This is a cobblestoned street. It is dimly lit by guttering lanterns hung
+1784336515.003 RX from tall posts. The city wall is to the north, towering over twenty feet above
+1784336515.003 RX you. River street is fairly quiet, but is well-used as it intersects many main
+1784336515.003 RX streets. It continues to the east and west. Brass street arrows off to the
+1784336515.003 RX south here. There is a manhole set in the ground here. 
+1784336515.003 RX You notice 5 copper farthings here.
+1784336515.003 RX Also here: Zinvar.
+1784336515.003 RX Obvious exits: south, east, west
+1784336515.003 PART [HP=35/KAI=2]:
+1784336553.465 RX You hear movement below you!
+1784336553.465 PART [HP=35/KAI=2]:
+1784336566.795 RX You hear movement to the west.
+1784336566.795 PART [HP=35/KAI=2]:
+1784336567.821 RX Oracle walks into the room from the west.
+1784336567.821 PART [HP=35/KAI=2]:
+1784336569.362 RX Oracle is looking around the room.
+1784336569.362 PART [HP=35/KAI=2]:
+1784336622.578 RX Zinvar is looking around the room.
+1784336622.578 PART [HP=35/KAI=2]:
+1784336681.584 RX A black cat slinks into the room from the west.
+1784336681.584 PART [HP=35/KAI=2]:
+1784336707.125 RX A black cat slinks into the room from the west.
+1784336707.125 PART [HP=35/KAI=2]:
+1784336721.309 RX Zinvar is looking around the room.
+1784336721.309 PART [HP=35/KAI=2]:
+1784336745.281 RX Zinvar casts flash, blinding everyone in the room!
+1784336745.281 PART [HP=35/KAI=2]:
+1784336748.113 RX A angry black cat slinks into the room from the west.
+1784336748.113 PART [HP=35/KAI=2]:
+1784336762.783 TX look
+1784336762.787 RX look
+1784336762.787 RX Intersection of Brass St. & River St.
+1784336762.787 RX     This is a cobblestoned street. It is dimly lit by guttering lanterns hung
+1784336762.787 RX from tall posts. The city wall is to the north, towering over twenty feet above
+1784336762.787 RX you. River street is fairly quiet, but is well-used as it intersects many main
+1784336762.787 RX streets. It continues to the east and west. Brass street arrows off to the
+1784336762.787 RX south here. There is a manhole set in the ground here. 
+1784336762.787 RX You notice 5 copper farthings here.
+1784336762.787 RX Also here: Zinvar, Oracle, black cat, black cat, angry black cat.
+1784336762.787 RX Obvious exits: south, east, west
+1784336762.787 PART [HP=35/KAI=2]:
+1784336765.285 TX st
+1784336765.286 RX st
+1784336765.287 RX Name: Kaimon Sable                     Lives/CP:      9/120  
+1784336765.287 RX Race: Human       Exp: 6000            Perception:     40
+1784336765.287 RX Class: Mystic     Level: 3             Stealth:        47
+1784336765.287 RX Hits:    35/35    Armour Class:   0/0  Thievery:        0
+1784336765.287 RX Kai:      2/2                          Traps:           0
+1784336765.287 RX                                        Picklocks:       0
+1784336765.287 RX Strength:  40     Agility: 40          Tracking:        0
+1784336765.287 RX Intellect: 40     Health:  40          Martial Arts:  102
+1784336765.287 RX Willpower: 40     Charm:   40          MagicRes:       40
+1784336765.287 PART [HP=35/KAI=2]:
+1784336780.608 RX Zinvar casts stinking cloud on the room!
+1784336780.608 PART [HP=35/KAI=2]:
+1784336823.025 RX Zinvar is looking around the room.
+1784336823.025 PART [HP=35/KAI=2]:
+1784336825.038 RX You hear movement below you!
+1784336825.038 PART [HP=35/KAI=2]:
+1784336983.039 TX st
+1784336983.043 RX st
+1784336983.043 RX Name: Kaimon Sable                     Lives/CP:      9/120  
+1784336983.043 RX Race: Human       Exp: 6000            Perception:     40
+1784336983.043 RX Class: Mystic     Level: 3             Stealth:        47
+1784336983.043 RX Hits:    35/35    Armour Class:   0/0  Thievery:        0
+1784336983.043 RX Kai:      2/2                          Traps:           0
+1784336983.043 RX                                        Picklocks:       0
+1784336983.043 RX Strength:  40     Agility: 40          Tracking:        0
+1784336983.043 RX Intellect: 40     Health:  40          Martial Arts:  102
+1784336983.043 RX Willpower: 40     Charm:   40          MagicRes:       40
+1784336983.043 PART [HP=35/KAI=2]:
+1784337001.160 TX w
+1784337001.162 RX w
+1784337001.414 RX Oracle just left to the west.
+1784337001.416 RX [HP=35/KAI=2]:River Street
+1784337001.417 RX     This is a cobblestoned street. It is dimly lit by guttering lanterns hung
+1784337001.417 RX from tall posts. The city wall is to the north, towering over twenty feet above
+1784337001.417 RX you. River street is fairly quiet, but is well-used as it intersects many main
+1784337001.417 RX streets. It continues to the east and west. 
+1784337001.417 RX Also here: Oracle.
+1784337001.417 RX Obvious exits: east, west
+1784337001.417 PART [HP=35/KAI=2]:
+1784337002.861 TX w
+1784337002.864 RX w
+1784337003.464 RX Oracle just left to the west.
+1784337003.465 RX [HP=35/KAI=2]:River Street
+1784337003.465 RX     This is a cobblestoned street. It is dimly lit by guttering lanterns hung
+1784337003.465 RX from tall posts. The city wall is to the north, towering over twenty feet above
+1784337003.465 RX you. River street is fairly quiet, but is well-used as it intersects many main
+1784337003.465 RX streets. It continues to the east and west. There is a seedy-looking wooden
+1784337003.465 RX structure to the south, and a sign over the open door reads "The Wailing Hound
+1784337003.465 RX Tavern". 
+1784337003.465 RX Also here: Oracle.
+1784337003.465 RX Obvious exits: south, east, west
+1784337003.466 PART [HP=35/KAI=2]:
+1784337004.563 TX w
+1784337004.565 RX w
+1784337005.518 RX Oracle just left to the west.
+1784337005.519 RX [HP=35/KAI=2]:River Street
+1784337005.519 RX     This is a cobblestoned street. It is dimly lit by guttering lanterns hung
+1784337005.519 RX from tall posts. The city wall is to the north, towering over twenty feet above
+1784337005.519 RX you. River street is fairly quiet, but is well-used as it intersects many main
+1784337005.519 RX streets. It continues to the east and west. The side of a seedy inn stands to
+1784337005.519 RX your south, and an intersection is to the west. 
+1784337005.519 RX Also here: Oracle.
+1784337005.519 RX Obvious exits: east, west
+1784337006.264 TX w
+1784337006.266 RX [HP=35/KAI=2]:w
+1784337006.544 RX Oracle just left to the west.
+1784337006.545 RX [HP=35/KAI=2]:Intersection of Guild St. & River St.
+1784337006.546 RX     This is a cobblestoned street. It is dimly lit by guttering lanterns hung
+1784337006.546 RX from tall posts. The city wall is to the north, towering over twenty feet above
+1784337006.546 RX you. River street is fairly quiet, but is well-used as it intersects many main
+1784337006.546 RX streets. It continues to the east and west. The broad expanse of Guild street
+1784337006.546 RX goes off to the south here, heading towards, and ending in, the town square.
+1784337006.546 RX You can make out the entrance to a low wooden building off to the south. 
+1784337006.546 RX Also here: Oracle, large guardsman.
+1784337006.546 RX Obvious exits: south, east, west
+1784337006.546 PART [HP=35/KAI=2]:
+1784337007.965 TX w
+1784337007.966 RX w
+1784337008.594 RX Oracle just left to the west.
+1784337008.595 RX [HP=35/KAI=2]:River Street
+1784337008.595 RX     This is a cobblestoned street. It is dimly lit by guttering lanterns hung
+1784337008.595 RX from tall posts. The city wall is to the north, towering over twenty feet above
+1784337008.595 RX you. River street is fairly quiet, but is well-used as it intersects many main
+1784337008.595 RX streets. It continues to the east and west. You can see a junction off to the
+1784337008.595 RX east. 
+1784337008.595 RX Also here: Oracle.
+1784337008.595 RX Obvious exits: east, west
+1784337008.595 PART [HP=35/KAI=2]:
+1784337009.667 TX w
+1784337009.670 RX w
+1784337010.647 RX Oracle just left to the west.
+1784337010.648 RX [HP=35/KAI=2]:Intersection of River St. & Mystic Alley
+1784337010.648 RX     This is a cobblestoned street. It is dimly lit by guttering lanterns hung
+1784337010.648 RX from tall posts. The city wall is to the north, towering over twenty feet above
+1784337010.648 RX you. River street is fairly quiet, but is well-used as it intersects many main
+1784337010.648 RX streets. It continues to the east and west. An ornate metal sign is attached to
+1784337010.648 RX one of the lamp-posts, reading "Magic Shoppe" in a thin, spidery script. 
+1784337010.648 RX Also here: Oracle.
+1784337010.648 RX Obvious exits: south, east, west
+1784337011.368 TX w
+1784337011.370 RX [HP=35/KAI=2]:w
+1784337011.674 RX Oracle just left to the west.
+1784337011.675 RX [HP=35/KAI=2]:River Street
+1784337011.675 RX     This is a cobblestoned street. It is dimly lit by guttering lanterns hung
+1784337011.675 RX from tall posts. The city wall is to the north, towering over twenty feet above
+1784337011.675 RX you. River street is fairly quiet, but is well-used as it intersects many main
+1784337011.675 RX streets. It continues to the east and west. 
+1784337011.676 RX Also here: Oracle.
+1784337011.676 RX Obvious exits: east, west
+1784337011.676 PART [HP=35/KAI=2]:
+1784337013.070 TX w
+1784337013.071 RX w
+1784337013.725 RX Oracle just left to the west.
+1784337013.728 RX [HP=35/KAI=2]:River Street
+1784337013.729 RX     This is a cobblestoned street. It is dimly lit by guttering lanterns hung
+1784337013.729 RX from tall posts. To the north is the city wall, and to the south there is a
+1784337013.729 RX tall, rickety house, whose door is set with a tarnished brass knocker. There
+1784337013.729 RX seems to be no-one home, as there are no light lit. River street continues to
+1784337013.729 RX the east and west. 
+1784337013.729 RX Also here: Oracle.
+1784337013.729 RX Obvious exits: east, west
+1784337013.729 PART [HP=35/KAI=2]:
+1784337014.771 TX w
+1784337014.773 RX w
+1784337015.778 RX Oracle just left to the west.
+1784337015.780 RX [HP=35/KAI=2]:River Street
+1784337015.780 RX     This is a cobblestoned street. It is dimly lit by guttering lanterns hung
+1784337015.780 RX from tall posts. To the north you can see the entrance to the Wharf district,
+1784337015.780 RX which leads to the city's docks. To the south is a small alleyway. River street
+1784337015.780 RX continues to the east and west. 
+1784337015.780 RX Also here: Oracle.
+1784337015.780 RX Obvious exits: north, south, east, west
+1784337016.473 TX w
+1784337016.473 RX [HP=35/KAI=2]:w
+1784337016.805 RX Oracle just left to the west.
+1784337016.805 RX [HP=35/KAI=2]:River Street
+1784337016.805 RX     This is a cobblestoned street. It is dimly lit by guttering lanterns hung
+1784337016.805 RX from tall posts. To the north you can see the entrance to the Wharf district,
+1784337016.805 RX which leads to the city's docks. River street continues to the east and west
+1784337016.805 RX here. To the south is the side of a massive warehouse. 
+1784337016.806 RX Also here: Oracle, guardsman, happy guardsman.
+1784337016.806 RX Obvious exits: north, east, west
+1784337016.806 PART [HP=35/KAI=2]:
+1784337018.182 TX n
+1784337018.206 RX n
+1784337018.858 RX Oracle just left to the north.
+1784337018.861 RX [HP=35/KAI=2]:Docks
+1784337018.862 RX     This is a cobblestoned street. It is dimly lit by guttering lanterns hung
+1784337018.862 RX from tall posts. There are large open crates piled here, all empty. The boat
+1784337018.862 RX berths are empty also, echoing the effect of the recent decrease in traffic to
+1784337018.862 RX and from Silvermere. 
+1784337018.862 RX Also here: Oracle.
+1784337018.862 RX Obvious exits: north, south, east, west
+1784337018.862 PART [HP=35/KAI=2]:
+1784337020.187 RX Oracle is looking around the room.
+1784337020.187 PART [HP=35/KAI=2]:
+1784337030.555 TX n
+1784337030.556 RX n
+1784337031.121 RX Docks
+1784337031.121 RX     This is a cobblestoned street. It is dimly lit by guttering lanterns hung
+1784337031.121 RX from tall posts. There are large open crates piled here, all empty. The boat
+1784337031.121 RX berths are empty also, echoing the effect of the recent decrease in traffic to
+1784337031.121 RX and from Silvermere. A small wooden pier pokes out into the river to the north.
+1784337031.121 RX 
+1784337031.122 RX Obvious exits: north, south
+1784337031.122 PART [HP=35/KAI=2]:
+1784337033.174 RX Oracle walks into the room from the south.
+1784337033.174 PART [HP=35/KAI=2]:
+1784337034.557 TX n
+1784337034.560 RX n
+1784337035.222 RX Small Pier
+1784337035.222 RX     This is a small, haphazardly constructed wooden pier, supported by rotting
+1784337035.222 RX pillars over the swift waters of the river. Tied to the far end are a
+1784337035.222 RX half-dozen skiffs of varying size. 
+1784337035.224 RX Obvious exits: north, south
+1784337035.224 PART [HP=35/KAI=2]:
+1784337037.270 RX Oracle walks into the room from the south.
+1784337037.270 PART [HP=35/KAI=2]:
+1784337038.559 TX n
+1784337038.561 RX n
+1784337039.327 RX You hop in one of the skiffs, and row to Newhaven.
+1784337039.327 RX Newhaven, Docks
+1784337039.328 RX     You stand at the southernmost edge of Newhaven. The view from here is
+1784337039.328 RX amazing. As you stare out across the Silver river you behold such sights as the
+1784337039.328 RX notorious Port Blackwater to the west, and the fabled town of Silvermere
+1784337039.328 RX southwards. A large half-shaven man sits off in the corner, with what looks to
+1784337039.328 RX be a fishing rod, and there are a number of small skiffs tied to the dock for
+1784337039.328 RX use in reaching the docks of Silvermere. 
+1784337039.328 RX Also here: ferryman.
+1784337039.328 RX Obvious exits: north
+1784337039.328 PART [HP=35/KAI=2]:
+1784337041.373 RX Oracle rows up to the dock.
+1784337041.373 PART [HP=35/KAI=2]:
+1784337043.563 TX look
+1784337043.564 RX look
+1784337043.564 RX Newhaven, Docks
+1784337043.564 RX     You stand at the southernmost edge of Newhaven. The view from here is
+1784337043.564 RX amazing. As you stare out across the Silver river you behold such sights as the
+1784337043.564 RX notorious Port Blackwater to the west, and the fabled town of Silvermere
+1784337043.564 RX southwards. A large half-shaven man sits off in the corner, with what looks to
+1784337043.564 RX be a fishing rod, and there are a number of small skiffs tied to the dock for
+1784337043.564 RX use in reaching the docks of Silvermere. 
+1784337043.564 RX Also here: Oracle, ferryman.
+1784337043.565 RX Obvious exits: north
+1784337043.565 PART [HP=35/KAI=2]:
+1784337059.221 TX n
+1784337059.224 RX n
+1784337059.848 RX Oracle just left to the north.
+1784337059.850 RX [HP=35/KAI=2]:Newhaven, Forest Path
+1784337059.850 RX     The trees become very thick around you now, and you can barely see where
+1784337059.850 RX you're going due to the only light source being from the village behind you and
+1784337059.850 RX the light shining through the trees. You hear the sound of rippling water south
+1784337059.850 RX of here. 
+1784337059.850 RX Also here: Oracle.
+1784337059.850 RX Obvious exits: south, northwest
+1784337059.850 PART [HP=35/KAI=2]:
+1784337061.047 TX nw
+1784337061.051 RX nw
+1784337061.905 RX Oracle just left to the northwest.
+1784337061.911 RX [HP=35/KAI=2]:Newhaven, Village Entrance
+1784337061.918 RX     Welcome to Newhaven! You are standing at the crude wooden gates of the
+1784337061.918 RX village entrance, in the middle of a dusty path. A low wooden palisade
+1784337061.918 RX surrounds the village, to protect against creatures of the night and random
+1784337061.918 RX raiders. You can see small buildings to the north and south, and a dusty path
+1784337061.918 RX that leads to the west and southeast. 
+1784337061.918 RX You notice large sign, newbie manual here.
+1784337061.918 RX Also here: Oracle.
+1784337061.918 RX Obvious exits: north, south, west, southeast
+1784337062.837 TX w
+1784337062.839 RX [HP=35/KAI=2]:w
+1784337062.921 RX Oracle just left to the west.
+1784337062.924 RX [HP=35/KAI=2]:Newhaven, Narrow Path
+1784337062.924 RX     This narrow path is fairly plain, save for the small lanterns hanging from
+1784337062.924 RX the trees around. North of you lies a strangely decorated shop, and a beat-up
+1784337062.924 RX shack labeled "General Store" lies to your south. The path leads east and west
+1784337062.924 RX from here. 
+1784337062.924 RX Also here: Oracle.
+1784337062.924 RX Obvious exits: north, south, east, west
+1784337062.924 PART [HP=35/KAI=2]:
+1784337064.638 TX w
+1784337064.641 RX w
+1784337064.979 RX Oracle just left to the west.
+1784337064.980 RX [HP=35/KAI=2]:Newhaven, Narrow Road
+1784337064.980 RX     This narrow road is quite plain save for the various lanterns hanging from
+1784337064.980 RX the trees around, and a large stone stairwell leading downwards. You hear the
+1784337064.980 RX clash of steel below you, and cries of pain and triumph accompanying it. Stone
+1784337064.980 RX buildings lie to your north and west. 
+1784337064.980 RX Also here: Oracle.
+1784337064.980 RX Obvious exits: north, east, west, down
+1784337064.980 PART [HP=35/KAI=2]:
+1784337066.439 TX n
+1784337066.448 RX n
+1784337067.025 RX Oracle just left to the west.
+1784337067.033 RX [HP=35/KAI=2]:Newhaven, Adventurer's Guild
+1784337067.034 RX     This nicely crafted room is well furnished and decorated with things that
+1784337067.034 RX you have never seen before, from strange exotic weapons, to swirling vials of
+1784337067.034 RX liquid. A well toned man, stands in front of a practice mat with his arms
+1784337067.034 RX crossed. He stands up lightly at your approach, looks you up and down, and
+1784337067.034 RX breaks into a lopsided grin. 
+1784337067.034 RX Also here: Corwyn.
+1784337067.034 RX Obvious exits: south
+1784337067.034 PART [HP=35/KAI=2]:
+1784337068.941 TX look
+1784337068.945 RX look
+1784337068.945 RX Newhaven, Adventurer's Guild
+1784337068.945 RX     This nicely crafted room is well furnished and decorated with things that
+1784337068.945 RX you have never seen before, from strange exotic weapons, to swirling vials of
+1784337068.945 RX liquid. A well toned man, stands in front of a practice mat with his arms
+1784337068.945 RX crossed. He stands up lightly at your approach, looks you up and down, and
+1784337068.945 RX breaks into a lopsided grin. 
+1784337068.945 RX Also here: Corwyn.
+1784337068.945 RX Obvious exits: south
+1784337068.945 PART [HP=35/KAI=2]:
+1784337105.302 TX x
+1784337105.306 RX x
+1784337105.307 RX You will exit after a period of silent meditation.
+1784337106.009 PART ....
+1784337107.038 PART ...
+1784337108.062 PART ...
+1784337109.089 PART ...
+1784337110.113 PART ...
+1784337111.149 RX Zinvar just left the Realm.
+1784337111.153 RX [HP=35/KAI=2]:Oracle just left the Realm.
+1784337111.157 RX [HP=35/KAI=2]:
+1784337111.157 RX Your character has been saved. If you have any comments or suggestions, please
+1784337111.157 RX leave them in E-mail to Sysop. Thanks.
+1784337111.157 RX 
+1784337111.157 PART [MAJORMUD]: 
+1784337137.318 TX X
+1784337137.330 RX X
+1784337137.330 RX 
+1784337137.330 RX Please select one of the following:
+1784337137.330 RX 
+1784337137.330 RX    A ... MajorMUD
+1784337137.330 RX 
+1784337137.330 RX Main Menu
+1784337137.330 PART Make your selection (X to exit): 
+1784337140.317 !! driver quit
