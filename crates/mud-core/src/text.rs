@@ -186,6 +186,31 @@ pub const MUST_SPECIFY_TARGET: &str = "You must specify a target for that spell!
 pub const CAST_GUILT: &str =
     "You are overcome with a feeling of guilt and break off your attack.";
 
+// --- item-target casts (cast_item_target 0x49232, DetectMagic case 0x1a
+// --- 44620-44667). All decompile-only — ORACLE-VERIFY (detect magic IS
+// --- learnable live: scroll 121, Newhaven Mage Spell Shop). Banding is on
+// --- the ITEM's Magical(28) value: 1 / 2-3 / 4-5 / 6+ / absent.
+pub fn glows_faintly(item: &str) -> String {
+    format!("{item} glows faintly, indicating a small amount of magic within.")
+}
+pub fn glows_softly(item: &str) -> String {
+    format!("{item} glows softly, indicating a good amount of magic within.")
+}
+pub fn glows_brightly(item: &str) -> String {
+    format!("{item} glows brightly, indicating a large amount of magic within.")
+}
+pub fn blinding_aura(item: &str) -> String {
+    format!(
+        "You are almost blinded by the aura from {item}, indicating immense magical properties!"
+    )
+}
+pub const NO_MAGIC_IN_ITEM: &str = "You detect no magic in that item!";
+/// DLL 0x4864e4 ("%s casts %s on %s.") — the item-cast room line (note the
+/// PERIOD; the castmsgb room lines end in bangs).
+pub fn casts_spell_on(caster: &str, spell: &str, target: &str) -> String {
+    format!("{caster} casts {spell} on {target}.")
+}
+
 /// DLL string 00485de3 ("Your spell has no effect on %s.") — the SpellImmu
 /// (139) refusal on a monster target (decompile cast_monster_target
 /// 43630-43638). ORACLE-VERIFY: no starter spell/monster pair reaches it.

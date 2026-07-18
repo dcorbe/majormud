@@ -2409,6 +2409,26 @@ impl Core {
                 return;
             }
         } else if !target.is_empty() {
+            // Item-target spells (match 6/7 -> cast_item_target, decompile
+            // 0x49232; the dispatcher's find_action_target kind-8 arm at
+            // 59314): resolve the target against the CARRIED inventory.
+            // ORACLE-VERIFY: whether ground/worn items also match, and the
+            // "You are not carrying %s!" kind-4 refusal, are unmeasured —
+            // an unmatched name falls to the do-not-see refusal below.
+            if spell.match_type.is_item() {
+                let want = target.trim().to_ascii_lowercase();
+                let found = self.player(session).inventory.iter().find_map(|(id, _)| {
+                    self.content
+                        .items
+                        .get(id)
+                        .filter(|i| word_prefix_match(&i.name, &want))
+                        .map(|_| *id)
+                });
+                if let Some(item_id) = found {
+                    self.fire_item_cast(session, &spell, item_id);
+                    return;
+                }
+            }
             // MEASURED (§8.9): a non-empty target string on a benign spell
             // does a room-entity lookup that can fail — "cast blur extra
             // trailing words" -> the do-not-see refusal, no self-cast, no
@@ -2752,6 +2772,117 @@ impl Core {
             }
         }
         self.emit_cast_success_lines(session, spell);
+    }
+
+    /// `cast_item_target` (decompile 0x49232), scoped to the LEARNABLE
+    /// surface — DATA (slice-5 Task 6 check, re/mmud_wgnt.sqlite): of the
+    /// 53 shipped match-6/7 spells exactly two are named by a LearnSp(42)
+    /// item — detect magic (24, mage L5; scroll 121 sold at the Newhaven
+    /// Mage Spell Shop 9) and song of lore (41, bard) — and both carry
+    /// only DetectMagic(26). The skeleton mirrors the benign command path
+    /// (silent energy refusal, NOT_ENOUGH_MANA, one-cast-per-round set,
+    /// roll, full/half costs — ORACLE-VERIFY: the DLL's own triple gate
+    /// prints the already-cast line for an energy shortage instead); the
+    /// fail lines are the same cast_no_target pair (44694-44700).
+    fn fire_item_cast(
+        &mut self,
+        session: SessionId,
+        spell: &crate::content::Spell,
+        item_id: crate::content::ItemId,
+    ) {
+        let Some(Session::InGame { energy, player, derived, .. }) = self.sessions.get(&session)
+        else {
+            return;
+        };
+        let spellcasting = derived.spellcasting;
+        let level = player.level;
+        let caster_name = player.name.clone();
+        let room = player.location;
+        let round_cost = i32::from(spell.round_cost);
+        let mana_cost = i32::from(spell.mana_cost);
+        if *energy < round_cost {
+            return;
+        }
+        if player.current_mana < mana_cost {
+            self.output_line(session, text::NOT_ENOUGH_MANA);
+            return;
+        }
+        if let Some(Session::InGame { cast_this_round, .. }) = self.sessions.get_mut(&session) {
+            *cast_this_round = true;
+        }
+        // Roll, then magnitude (44450 genrdn(0,100); 44540 the min/max
+        // roll) — the same seeded order as every other cast path.
+        let rng = &mut self.rng;
+        let succeeded = cast_roll_succeeds(spellcasting, spell.base_chance, &mut |lo, hi| {
+            rng.roll(lo, hi)
+        });
+        let magnitude = if succeeded {
+            let rng = &mut self.rng;
+            spell_magnitude(spell, level, 0, &mut |lo, hi| rng.roll(lo, hi))
+        } else {
+            0
+        };
+        let Some(Session::InGame { energy, player, .. }) = self.sessions.get_mut(&session)
+        else {
+            return;
+        };
+        *energy -= round_cost;
+        if !succeeded {
+            // Half mana rounded toward zero, clamped non-negative
+            // (44676-44689), and the cast_no_target fail lines.
+            player.current_mana -= (mana_cost / 2).max(0);
+            self.output_line(session, &text::cast_fail(&spell.name));
+            self.broadcast_to_room(
+                room,
+                Some(session),
+                &text::cast_fail_room(&caster_name, &spell.name),
+            );
+            return;
+        }
+        // Success charges the FULL mana, clamped non-negative (44521-44526
+        // — unlike the benign self-cast path, the item path never grants
+        // mana on a pathological negative cost).
+        player.current_mana -= mana_cost.max(0);
+        let Some(item) = self.content.items.get(&item_id).cloned() else {
+            return;
+        };
+        for (ability, row) in &spell.abilities {
+            // The per-ability override convention holds here too (44553-
+            // 44556); DetectMagic ignores the amount (it reads the ITEM).
+            let _amount = match *row {
+                0 => magnitude,
+                v => i32::from(v),
+            };
+            // DetectMagic (26, case 0x1a 44620-44667): band on the item's
+            // Magical(28) value, then the room announce. The duration != 0
+            // arm is silly_spell — unreachable, no learnable match-6/7
+            // spell carries a duration. Every OTHER ability × match-6/7
+            // pairing in the DLL is either silly_spell (a joke refusal) or
+            // a deep item-mutation case (Lore 162, ...) — none is carried
+            // by a learnable spell (data check above); they land if a
+            // future data pass ever surfaces one.
+            if *ability != Ability::DetectMagic || spell.duration != 0 {
+                continue;
+            }
+            let magical = item
+                .abilities
+                .iter()
+                .find_map(|(a, v)| (*a == Ability::Magical).then_some(i32::from(*v)))
+                .unwrap_or(0);
+            let line = match magical {
+                1 => text::glows_faintly(&item.name),
+                2..=3 => text::glows_softly(&item.name),
+                4..=5 => text::glows_brightly(&item.name),
+                v if v >= 6 => text::blinding_aura(&item.name),
+                _ => text::NO_MAGIC_IN_ITEM.to_string(),
+            };
+            self.output_line(session, &line);
+            self.broadcast_to_room(
+                room,
+                Some(session),
+                &text::casts_spell_on(&caster_name, &spell.name, &item.name),
+            );
+        }
     }
 
     /// `display_spell_success` for a benign self-cast (decompile
