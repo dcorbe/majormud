@@ -519,12 +519,9 @@ pub fn player_save_resists(save_stat: i32, roll: &mut impl FnMut(i32, i32) -> i3
 /// - with AntiMagic: `reduction% = clamp(mr/2, 0, 75)`, no amplification.
 ///
 /// Divisions truncate toward zero (the DLL's signed idiv; Rust `/`
-/// matches). DIVERGENCE (SLICE 6+): the DLL first boosts the amount by
-/// the caster's AlterSpDmg(165) percent (43940-43941; plain Damage gets
-/// the same boost via FUN_0043fef4 39025) — no user-ability aggregation
-/// feeds spells yet, so both paths skip it alike; revisit when caster
-/// ability aggregation lands (monster casters in slice 6 already
-/// aggregate via monster_ability_value).
+/// matches). The caster's AlterSpDmg(165) boost applies to `amount`
+/// BEFORE this scale ([`alter_sp_dmg`], wired at every call site) — the
+/// slice-4 divergence note is closed.
 pub fn damage_mr(amount: i32, mr: i32, anti_magic: bool) -> i32 {
     let reduction = if anti_magic {
         (mr / 2).clamp(0, 75)
@@ -540,6 +537,21 @@ pub fn damage_mr(amount: i32, mr: i32, anti_magic: bool) -> i32 {
     } else {
         amount - amount * reduction / 100
     }
+}
+
+/// The caster's AlterSpDmg(165) percent boost on spell damage: `V += V *
+/// pct / 100`. The DLL applies it at every PLAYER Damage(1)/Damage-MR(17)
+/// computation — DamageMR inline (`cast_monster_target` 43940-43941,
+/// `cast_user_target` 42139-42141, `cast_no_target` 40151-40152 and the
+/// area/default-target legs 40304-40305), plain Damage through
+/// `FUN_0043fef4` (39025-39030: `(pct+100)*V/100`, same value as this
+/// form on every non-negative product; the sole shipped carrier is item
+/// 504 "multicoloured sash", +10). Drain(8) is never boosted. The
+/// monster-cast twin (`monster_cast`) reads NO 0xa5 at all — the monster
+/// fold is wired at our monster damage sites anyway, observably
+/// identical because zero shipped monsters carry 165.
+pub fn alter_sp_dmg(amount: i32, pct: i32) -> i32 {
+    amount + amount * pct / 100
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1256,10 +1268,10 @@ impl Core {
                         }
                     }
                     // Fear (60): genrdn(0,100) < v => flee a random exit
-                    // via move_monster (44957-44960). SLICE 6 PENDING
-                    // (Task 5): our monsters have NO movement machinery
-                    // yet (M6 wander owns move_monster) — the flee lands
-                    // with it or with Task 5's Fear work.
+                    // via move_monster (44957-44960). M6 PENDING: our
+                    // monsters have NO movement machinery (M6 wander owns
+                    // move_monster) — the player-side flee is live
+                    // (upkeep_player); the monster flee lands with M6.
                     Ability::Fear => {}
                     _ => {}
                 }
@@ -1326,6 +1338,7 @@ impl Core {
             let stored = i32::from(player.active_spells[idx].value);
             let mut visible = false;
             let mut crossed_down = false;
+            let mut fear_rows: Vec<i32> = Vec::new();
             let remaining;
             {
                 let Some(Session::InGame { player, energy, .. }) =
@@ -1389,11 +1402,18 @@ impl Core {
                                     clamp_poison(i32::from(player.poison) - v);
                             }
                         }
-                        // Fear (60): genrdn(0,100) < v => flee a random
-                        // exit (44788-44793) — SLICE 6 (every Fear
-                        // carrier is a monster-attack payload) with the
-                        // fear flag; move_user needs the flee plumbing.
-                        Ability::Fear => {}
+                        // Fear (60): genrdn(0,100) < v ⇒ flee out a
+                        // random valid exit (44788-44793: roll, then
+                        // pick_valid_random_direction, then move_user
+                        // MODE 6 — which has no mode-6 branch anywhere in
+                        // move_user, i.e. a plain forced move: NO fear-
+                        // specific line, just the standard leave/arrive
+                        // broadcasts and the destination render).
+                        // Deferred past the borrow; the DLL rolls
+                        // in-handler, but no shipped Fear carrier (397/
+                        // 822/836) pairs Fear with another recurring row,
+                        // so the order is unobservable.
+                        Ability::Fear => fear_rows.push(v),
                         // HealMana (150): mana += v, floored at 0 then
                         // capped at max — the DLL's sequential pair
                         // (44795-44805), not a clamp.
@@ -1408,6 +1428,14 @@ impl Core {
                             visible = true;
                         }
                         _ => {}
+                    }
+                }
+            }
+            for v in fear_rows {
+                if self.rng.roll(0, 100) < v {
+                    let room = self.player(session).location;
+                    if let Some(dir) = self.pick_valid_random_direction(room) {
+                        self.move_player(session, dir);
                     }
                 }
             }
@@ -3350,6 +3378,13 @@ impl Core {
         // spell!" is unreachable), even though flash/stinking cloud/
         // poison cloud all ship typeofresists 2.
         let mut kills: Vec<MonsterInstanceId> = Vec::new();
+        // AlterSpDmg(165): the area apply loop reads the caster's bag per
+        // damage row like the targeted paths (cast_no_target FUN_0043fef4
+        // at 39626, DamageMR at 40304-40305 — re-read per target in the
+        // DLL, one value here).
+        let boost = self
+            .ability_bag(self.player(session))
+            .value(Ability::AlterSpDmg);
         for monster_id in targets {
             let resist = spell
                 .element
@@ -3371,17 +3406,20 @@ impl Core {
                 };
                 match ability {
                     Ability::Damage => {
-                        damage_total += amount;
+                        damage_total += alter_sp_dmg(amount, boost);
                         harms = true;
                     }
                     Ability::DamageMR => {
-                        damage_total += damage_mr(amount, mr, anti_magic);
+                        damage_total += damage_mr(alter_sp_dmg(amount, boost), mr, anti_magic);
                         harms = true;
                     }
                     Ability::Drain => {
                         drain_total += amount;
                         harms = true;
                     }
+                    // Summon (12) is silly_spell on every AREA match
+                    // (cast_no_target 40058-40064: the 3/5/9/10-0xd arm)
+                    // — a deliberate no-op, not a pending gap.
                     // SLICE 6 PENDING (close-out): the instant-area arms
                     // for the remaining monster-side abilities (Poison
                     // set-if-greater included — the counter and slots
@@ -3518,6 +3556,9 @@ impl Core {
             // the costs stay paid (the roll already succeeded).
             return;
         }
+        // Summon(12) rows collected in the instant loop; spawned after
+        // the session borrow drops.
+        let mut summons: Vec<i32> = Vec::new();
         if spell.duration == 0 {
             // Instant apply loop (spec §4 table, on the resolved target):
             // iterate the ability slots; a non-zero slot value is a FIXED
@@ -3571,14 +3612,15 @@ impl Core {
                     Ability::CurePoison => {
                         player.poison = clamp_poison(i32::from(player.poison) - amount);
                     }
-                    // Summon (12): SLICE 6 — DATA (slice-5 Task 6 check,
-                    // re/mmud_wgnt.sqlite): 87 shipped spells carry
-                    // Summon(12); ZERO are named by any LearnSp(42) item —
-                    // all are monster-attack payloads (raptor summon,
-                    // calls for aid, ...). No player cast can reach this
-                    // arm before slice-6 monster casting; the spawn-side
-                    // wiring (owned tag = aggression marker) lands there.
-                    Ability::Summon => {}
+                    // Summon (12): generate_monster into the caster's
+                    // room (cast_no_target case 0xc, 40035-40051) —
+                    // instant matches 1/2/6 only; every AREA match is
+                    // silly_spell. DATA (slice-5 Task 6 check): all 87
+                    // Summon carriers are monster-attack payloads, ZERO
+                    // learnable — fixture-reachable only. Spawned after
+                    // the loop (the borrow); the caster-name/pet tag is
+                    // M6 (see summon_spawn).
+                    Ability::Summon => summons.push(amount),
                     // Remaining benign instants land with their systems.
                     _ => {}
                 }
@@ -3658,6 +3700,12 @@ impl Core {
                 let fail = text::cast_fail(&spell.name);
                 self.output_line(session, &fail);
                 return;
+            }
+        }
+        if !summons.is_empty() {
+            let room = self.player(session).location;
+            for value in summons {
+                self.summon_spawn(value, room);
             }
         }
         self.emit_cast_success_lines(session, target_id, spell, display_damage);
@@ -4084,6 +4132,41 @@ impl Core {
         self.benign_success_effects(session, session, &spell, magnitude, duration);
     }
 
+    /// One Summon(12) row: the fixed-or-rolled value IS the template id,
+    /// spawned into the given room (every apply loop passes it straight
+    /// to `generate_monster`: monster single 23259, player self 40044,
+    /// player-at-monster 43911). An unknown template spawns nothing, like
+    /// generate_monster's 0 return. The DLL then tags the spawn — victim
+    /// name into the target word (23263, monster casts), caster name/pet
+    /// links on the player paths (40048-40050, 43915-43925) — M6 PENDING
+    /// (LOUD): the tag only matters to monster aggression/AI, which does
+    /// not exist yet; until M6 the summon stands idle.
+    fn summon_spawn(&mut self, template: i32, room: RoomId) {
+        if let Ok(id) = u16::try_from(template) {
+            self.spawn_monster(crate::content::MonsterId(id), room);
+        }
+    }
+
+    /// `pick_valid_random_direction` (decompile 67383-67421): scan the
+    /// ten exit slots in storage order; an exit qualifies when its TYPE is
+    /// one of {0, 2, 5, 7, 11, 19, 24} (closed doors, action exits and
+    /// the rest never). The FIRST qualifying exit is held and every LATER
+    /// one replaces it on `genrdn(0,100) < 40` — a front-weighted
+    /// reservoir, not a uniform pick. `None` when no exit qualifies.
+    fn pick_valid_random_direction(&mut self, room: RoomId) -> Option<Direction> {
+        let r = self.content.rooms.get(&room)?;
+        let mut held = None;
+        for d in Direction::ALL {
+            let qualifies = r.exits[d as usize]
+                .as_ref()
+                .is_some_and(|e| matches!(e.exit_type, 0 | 2 | 5 | 7 | 11 | 19 | 24));
+            if qualifies && (held.is_none() || self.rng.roll(0, 100) < 40) {
+                held = Some(d);
+            }
+        }
+        held
+    }
+
     /// A live monster's template name (empty if the instance is gone).
     fn monster_name(&self, id: MonsterInstanceId) -> String {
         self.monsters
@@ -4348,11 +4431,12 @@ impl Core {
         let magnitude = spell_magnitude(&spell, level, resist, &mut |lo, hi| rng.roll(lo, hi));
 
         // Offensive abilities (spec §4 table): Damage (1), Damage(-MR)
-        // (17) and Drain (8) instant; the duration table enters the
-        // monster's 5 slots below (the area twins live in `area_cast`).
-        // Still SLICE 6 (Task 5): the instant Enslave/Summon and the
-        // benign-at-monster instant arms (Heal/EnergyLevel/CurePoison,
-        // cast_monster_target 43824-43882/44131-44160). A non-zero
+        // (17), Drain (8) and Summon (12) instant; the duration table
+        // enters the monster's 5 slots below (the area twins live in
+        // `area_cast`). Still SLICE 6 PENDING (close-out): the instant
+        // Enslave (M6 charm state) and the benign-at-monster instant
+        // arms (Heal/EnergyLevel/CurePoison, cast_monster_target
+        // 43824-43882/44131-44160). A non-zero
         // ability value is a FIXED amount that bypasses both the magnitude
         // roll and the resist scaling (but NOT the 17 MR scale, which the
         // DLL applies to the fixed-or-rolled amount alike); value 0 means
@@ -4365,6 +4449,12 @@ impl Core {
         // slice-5 area loop shares this combined model, and neither copy
         // must survive if multi-slot content ever appears.
         let mr = self.monster_save_stat(monster_id);
+        // AlterSpDmg(165), from the caster's bag (get_user_ability_value
+        // 0xa5): boosts Damage via FUN_0043fef4 (43740) and DamageMR
+        // inline BEFORE the MR scale (43940-43941). Never Drain.
+        let boost = self
+            .ability_bag(self.player(session))
+            .value(Ability::AlterSpDmg);
         // Duration scaling for the slot entry (`add_cast_spell_to_monster`
         // 38238-38256 — the spell_duration twin: level-cap clamp, divide-
         // first increase, band roll, AlterSpLength from the caster's bag).
@@ -4394,15 +4484,16 @@ impl Core {
                 // duration spell's damage row lands instantly at cast —
                 // the recurring copy comes from the slot at upkeep.
                 Ability::Damage => {
-                    damage_total += amount;
+                    damage_total += alter_sp_dmg(amount, boost);
                     harms = true;
                 }
                 // Damage(-MR) (17): the dominant attack-spell damage
-                // (magic missile included) — the amount scaled by the
-                // target's MR, the same stat the save reads (damage_mr;
-                // decompile 43937-43993). No duration gate either (44287).
+                // (magic missile included) — the boosted amount scaled by
+                // the target's MR, the same stat the save reads
+                // (damage_mr; decompile 43937-43993). No duration gate
+                // either (44287).
                 Ability::DamageMR => {
-                    damage_total += damage_mr(amount, mr, anti_magic);
+                    damage_total += damage_mr(alter_sp_dmg(amount, boost), mr, anti_magic);
                     harms = true;
                 }
                 // Drain (8): instant when duration 0 (target loses it,
@@ -4441,8 +4532,13 @@ impl Core {
                     }
                     self.recompute_monster_effects(monster_id);
                 }
-                // Summon (12): the instant arm is SLICE 6 Task 5; the
-                // duration arm is silly_spell in the DLL (43902-43906).
+                // Summon (12): the instant arm spawns the named monster
+                // into the caster's room (cast_monster_target 43903-
+                // 43926); the duration arm is silly_spell — a no-op here
+                // (43927-43929).
+                Ability::Summon if duration == 0 => {
+                    self.summon_spawn(amount, room);
+                }
                 Ability::Summon => {}
                 // Every other row in a DURATION cast drives the one slot
                 // entry (the cast_monster_target default arm, 43778-43799
@@ -5888,29 +5984,62 @@ impl Core {
         let duration =
             i32::from(spell.duration) + spell.duration_increase.scaled_duration(l);
 
+        // AlterSpDmg(165) from the monster fold — OUR wiring, not the
+        // DLL's: monster_cast reads no 0xa5 anywhere (the boost is a
+        // player-cast-path exclusive), but zero shipped monsters carry
+        // 165, so folding it here is observably identical and closes the
+        // slice-4 note symmetrically with the player sites.
+        let boost = self.monster_ability_value(id, Ability::AlterSpDmg);
         let mut duration_entered = false;
         for (ability, value) in &spell.abilities {
             // Per-slot fixed value overrides the rolled-and-resisted
             // magnitude (23153-23155).
             let amount = if *value != 0 { i32::from(*value) } else { magnitude };
             if duration != 0 {
-                // The monster path's no-op case set is only {0,6,23,26,52}
-                // (23158-23161, 23432-23435) — every OTHER slot tries the
-                // 10-slot entry through the once-flag (bVar5); Poison's
-                // case is ImmuPoison-gated wholesale (23387-23388).
+                // The duration-arm no-op set: the plain breaks {0,6,23,
+                // 26,52} (23158-23161, 23432-23435) PLUS the instant-only
+                // cases Drain(8) and Summon(12), whose arms are gated
+                // `local_28 == 0` with NO else (23207-23229, 23251-23267)
+                // — dead rows in a duration cast. Every OTHER slot tries
+                // the 10-slot entry through the once-flag (bVar5);
+                // Poison's case is ImmuPoison-gated wholesale
+                // (23387-23388).
                 if matches!(ability.id(), 6 | 23 | 26 | 52)
+                    || matches!(ability, Ability::Drain | Ability::Summon)
                     || (*ability == Ability::Poison && immune_poison)
                 {
                     continue;
                 }
+                // DamageMR (17) carries NO duration gate at all (23305-
+                // 23356): it deals its instant MR-scaled damage even
+                // mid-duration-cast and never drives the slot entry.
+                if *ability == Ability::DamageMR {
+                    let shown = alter_sp_dmg(amount, boost);
+                    let dealt = damage_mr(shown, mr, anti_magic);
+                    if self.monster_cast_damage(victim, dealt, shown, &spell, &monster_name) {
+                        return true;
+                    }
+                    continue;
+                }
                 if !duration_entered {
                     // monster_add_cast_spell_to_user (21777-21816): an
-                    // active slot refreshes ONLY when the new value
-                    // EXCEEDS the stored one (21795: `stored < new`,
+                    // active slot refreshes ONLY when the entering row's
+                    // flag allows it AND the new value EXCEEDS the stored
+                    // one (21795-21801: `param_7 != 0 && stored < new`,
                     // strict); otherwise -2. No active slot → the first
                     // free one; none → -1. Value AND duration write
                     // together; the success display fires only on a real
-                    // write.
+                    // write. The stat-write family Intel..Charm (44-49,
+                    // cases 0x2c-0x31) passes the '\0' NO-REFRESH flag
+                    // (23436-23477 and the 0x2e-0x31 twins): a same-id
+                    // recast ALWAYS aborts — live via spell 238 "spits"
+                    // (serpentkin), whose rows are Agility/Strength/
+                    // Intel. Every other row passes '\x01'. (The DLL also
+                    // hard-writes the stat words +0xa2.. immediately +
+                    // calculate_secondary_stats; our slot fold applies
+                    // the same rows at the refresh_derived below — the
+                    // documented mechanism divergence, same outcome.)
+                    let refresh = !matches!(ability.id(), 44..=49);
                     let entered = {
                         let Some(Session::InGame { player, .. }) =
                             self.sessions.get_mut(&victim)
@@ -5923,7 +6052,7 @@ impl Core {
                             remaining: duration,
                         };
                         if let Some(idx) = player.find_active(spell.id) {
-                            if i32::from(player.active_spells[idx].value) < amount {
+                            if refresh && i32::from(player.active_spells[idx].value) < amount {
                                 player.active_spells[idx] = slot;
                                 true
                             } else {
@@ -5964,10 +6093,11 @@ impl Core {
                 continue;
             }
             match ability {
-                // Damage (1): HP -= v (23164-23179).
+                // Damage (1): HP -= v (23164-23179), AlterSpDmg-boosted
+                // (our fold wiring — see `boost` above).
                 Ability::Damage => {
-                    if self.monster_cast_damage(victim, amount, amount, &spell, &monster_name)
-                    {
+                    let v = alter_sp_dmg(amount, boost);
+                    if self.monster_cast_damage(victim, v, v, &spell, &monster_name) {
                         return true;
                     }
                 }
@@ -6015,13 +6145,15 @@ impl Core {
                         player.thirst = clamp_counter(i32::from(player.thirst) + amount);
                     }
                 }
-                // Damage(-MR) (17): scaled by the victim's MR — the same
-                // +0xc2 word the save halves (23305-23341 is byte-for-byte
-                // the damage_mr ladder); the display arg stays the
-                // PRE-scale amount (23343 passes local_8, not local_5c).
+                // Damage(-MR) (17): the boosted amount scaled by the
+                // victim's MR — the same +0xc2 word the save halves
+                // (23305-23341 is byte-for-byte the damage_mr ladder);
+                // the display arg stays the PRE-scale amount (23343
+                // passes local_8, not local_5c).
                 Ability::DamageMR => {
-                    let dealt = damage_mr(amount, mr, anti_magic);
-                    if self.monster_cast_damage(victim, dealt, amount, &spell, &monster_name) {
+                    let shown = alter_sp_dmg(amount, boost);
+                    let dealt = damage_mr(shown, mr, anti_magic);
+                    if self.monster_cast_damage(victim, dealt, shown, &spell, &monster_name) {
                         return true;
                     }
                 }
@@ -6071,9 +6203,42 @@ impl Core {
                     }
                     self.monster_cast_display(&spell, &monster_name, victim, location, amount);
                 }
-                // Summon (12): SLICE 6 (Task 5) — generate_monster with
-                // the caster's target inherited (23251-23267).
-                Ability::Summon => {}
+                // Summon (12), case 0xc (23251-23267): ONE room-wide
+                // line first — monster_display_spell_success(-1, ...,
+                // "everyone", v): usernum -1 skips the victim line and
+                // tell_room excludes nobody, so the whole room (victim
+                // included) sees the castmsgb room line with "everyone"
+                // in the target slot — then generate_monster with the
+                // row value as the template id. The victim-name tag on
+                // the spawn (23263) is M6 (see summon_spawn).
+                Ability::Summon => {
+                    let line = if let Some(msg) =
+                        spell.cast_msg_b.and_then(|mid| self.content.messages.get(&mid))
+                    {
+                        let args = text::CastMsgArgs {
+                            caster: &monster_name,
+                            target: Some("everyone"),
+                            spell: &spell.name,
+                            damage: Some(amount),
+                        };
+                        text::render_cast_line(
+                            msg,
+                            text::CastAudience::Room,
+                            &args,
+                            spell.msg_style & 1 == 1,
+                        )
+                    } else {
+                        Some(text::monster_cast_default_room(
+                            &monster_name,
+                            &spell.name,
+                            "everyone",
+                        ))
+                    };
+                    if let Some(line) = line {
+                        self.broadcast_to_room(location, None, &text::capitalize_first(line));
+                    }
+                    self.summon_spawn(amount, location);
+                }
                 // Every remaining case is duration-armed only (the
                 // `local_28 != 0` guards) or a no-op break in the DLL.
                 _ => {}

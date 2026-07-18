@@ -4,13 +4,13 @@
 
 use mud_core::ability::Ability;
 use mud_core::content::{
-    AttackForm, Class, ClassId, Content, Element, MatchType, Message, MessageId, Monster,
-    MonsterId, Race, RaceId, Room, RoomId, SaveClass, ScalePair, Spell, SpellId, StatBlock,
-    TargetMode,
+    AttackForm, Class, ClassId, Content, Direction, Element, Exit, MatchType, Message,
+    MessageId, Monster, MonsterId, Race, RaceId, Room, RoomId, SaveClass, ScalePair, Spell,
+    SpellId, StatBlock, TargetMode,
 };
 use mud_core::game::{
-    monster_cast_chance_passes, player_save_resists, Core, CoreConfig, Event, Gender, Player,
-    SessionId,
+    monster_cast_chance_passes, player_save_resists, ActiveSpell, Core, CoreConfig, Event,
+    Gender, Player, SessionId,
 };
 
 const ARENA: RoomId = RoomId { map: 1, room: 1 };
@@ -46,6 +46,25 @@ const BREATH: SpellId = SpellId(908);
 /// Match-12 (AreaC) offensive — routes to monster_cast_area in the DLL
 /// (23777-23779), pending here: the corrected-marker state probe.
 const GUST: SpellId = SpellId(909);
+/// Instant fixed (Summon, 8 = RAPTOR) — the spawn + "everyone" line probe
+/// (case 0xc, 23251-23267).
+const SUMMONER: SpellId = SpellId(910);
+/// Duration 40 fixed (Drain, 50) + (Summon, 8) — both cases are gated
+/// `local_28 == 0` with NO else arm (23207-23229 / 23251-23267): dead rows
+/// in a duration cast.
+const DURDEAD: SpellId = SpellId(911);
+/// Duration 40 (DamageMR, 100) + (Poison, 6) — DamageMR carries NO
+/// duration gate (23305-23356): instant damage mid-duration-cast.
+const MRVENOM: SpellId = SpellId(912);
+/// Duration 50 fixed (Intel, 10) — the stat family (44-49, cases
+/// 0x2c-0x31) enters with the NO-REFRESH flag (23436-23477).
+const SAPMIND: SpellId = SpellId(913);
+/// Duration 30 fixed (Fear, 200) — the recurring flee (44788-44793).
+const PANIC: SpellId = SpellId(914);
+/// The Summon payload template.
+const RAPTOR: MonsterId = MonsterId(8);
+/// One valid exit north of ARENA — the fear-flee destination.
+const LAIR: RoomId = RoomId { map: 1, room: 2 };
 
 fn spell(id: SpellId, name: &str) -> Spell {
     Spell {
@@ -119,7 +138,7 @@ fn shaman(spell_id: SpellId, cast_pct: i16, cost: i16) -> Monster {
 
 fn world(monster: Monster) -> Content {
     let mut content = Content::default();
-    content.add_room(Room {
+    let mut arena = Room {
         id: ARENA,
         name: "Arena".into(),
         description: vec![],
@@ -128,8 +147,41 @@ fn world(monster: Monster) -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+    };
+    arena.exits[Direction::North as usize] =
+        Some(Exit { dest: LAIR, exit_type: 0, trigger_msg: None });
+    content.add_room(arena);
+    content.add_room(Room {
+        id: LAIR,
+        name: "Lair".into(),
+        description: vec![],
+        room_type: 0,
+        attributes: 0,
+        shop: None,
+        placed_items: vec![],
+        exits: Default::default(),
     });
     content.add_monster(monster);
+    // The Summon(12) payload: an inert template (no attack forms).
+    content.add_monster(Monster {
+        id: RAPTOR,
+        name: "raptor".into(),
+        move_msg: None,
+        death_msg: None,
+        abilities: vec![],
+        hitpoints: 30,
+        experience: 10,
+        exp_multi: 1,
+        armour_class: 5,
+        damage_resist: 0,
+        magic_resist: 0,
+        bs_defence: 0,
+        energy: 0,
+        coins: [0; 5],
+        weapon: None,
+        loot: vec![],
+        attacks: [AttackForm::default(); 5],
+    });
     for (id, name, abilities) in [
         (HUMAN, "Human", vec![]),
         (WARDED, "Warded", vec![(Ability::SpellImmu, 50)]),
@@ -219,8 +271,24 @@ fn world(monster: Monster) -> Content {
     let mut gust = spell(GUST, "choking gust");
     gust.abilities = vec![(Ability::Damage, 5)];
     gust.match_type = MatchType::AreaC;
-    for s in [hammer, sledge, mrbolt, venom, savebolt, leech, lingering, fleeting, breath, gust]
-    {
+    let mut summoner = spell(SUMMONER, "summon pet");
+    summoner.abilities = vec![(Ability::Summon, RAPTOR.0 as i16)];
+    let mut durdead = spell(DURDEAD, "grasping shadows");
+    durdead.abilities = vec![(Ability::Drain, 50), (Ability::Summon, RAPTOR.0 as i16)];
+    durdead.duration = 40;
+    let mut mrvenom = spell(MRVENOM, "searing venom");
+    mrvenom.abilities = vec![(Ability::DamageMR, 100), (Ability::Poison, 6)];
+    mrvenom.duration = 40;
+    let mut sapmind = spell(SAPMIND, "sap mind");
+    sapmind.abilities = vec![(Ability::Intel, 10)];
+    sapmind.duration = 50;
+    let mut panic = spell(PANIC, "panic");
+    panic.abilities = vec![(Ability::Fear, 200)];
+    panic.duration = 30;
+    for s in [
+        hammer, sledge, mrbolt, venom, savebolt, leech, lingering, fleeting, breath, gust,
+        summoner, durdead, mrvenom, sapmind, panic,
+    ] {
         content.add_spell(s);
     }
     content
@@ -774,4 +842,114 @@ fn melee_and_cast_forms_share_the_weight_table() {
         shown.contains("Kobold shaman cast hammer on you."),
         "cast form starved: {shown:?}"
     );
+}
+
+// --- Task 5: Summon / Fear / AlterSpDmg + the duration-arm exceptions ---
+
+#[test]
+fn summon_spawns_the_named_monster_with_the_everyone_line() {
+    let mut core = Core::new(world(shaman(SUMMONER, 101, 600)), config());
+    let (s, _m) = engage(&mut core, HUMAN);
+    let events = run_rounds(&mut core, 1);
+    let shown = text_to(&events, s);
+    // monster_display_spell_success(-1, ..., "everyone", v) at 23255-23258:
+    // usernum -1 skips the victim line, tell_room excludes nobody — ONE
+    // room-wide line with "everyone" in the target slot, victim included.
+    assert!(
+        shown.contains("Kobold shaman cast summon pet on everyone."),
+        "got: {shown:?}"
+    );
+    assert!(!shown.contains("on you."), "no victim-private line: {shown:?}");
+    core.input(s, "look");
+    let events = core.drain_events();
+    let look = text_to(&events, s);
+    assert!(look.contains("raptor"), "the raptor stands in the room: {look:?}");
+}
+
+#[test]
+fn duration_drain_and_summon_rows_are_dead() {
+    // Cases 8 and 0xc are gated `local_28 == 0` with NO else arm
+    // (23207-23229 / 23251-23267): a duration cast's Drain/Summon rows do
+    // nothing at all — no entry, no damage, no spawn, no lines. The
+    // energy cost stays paid (23123 runs before the loop).
+    let mut core = Core::new(world(shaman(DURDEAD, 101, 600)), config());
+    let (s, m) = engage(&mut core, HUMAN);
+    let before = core.current_hp(s);
+    let events = run_rounds(&mut core, 1);
+    let shown = text_to(&events, s);
+    assert!(!shown.contains("grasping shadows"), "silent: {shown:?}");
+    assert_eq!(core.current_hp(s), before, "no drain landed");
+    let slots = core.player_snapshot(s).active_spells;
+    assert!(slots.iter().all(|sl| sl.spell.is_none()), "no entry: {slots:?}");
+    assert_eq!(core.monster_energy(m), Some(400), "full cost stays paid");
+    core.input(s, "look");
+    let events = core.drain_events();
+    let look = text_to(&events, s);
+    assert!(!look.contains("raptor"), "no spawn: {look:?}");
+}
+
+#[test]
+fn damage_mr_ignores_the_duration_gate_and_never_drives_the_entry() {
+    // Case 0x11 (23305-23356) carries no local_28 gate: the (DamageMR,
+    // 100) row lands instantly even at duration 40 — MR 0 amplifies by
+    // (50-0)% to 150 — while the Poison row still drives the one slot
+    // entry and the counter hard-write.
+    let mut core = Core::new(world(shaman(MRVENOM, 101, 600)), config());
+    let (s, _m) = engage(&mut core, HUMAN);
+    run_rounds(&mut core, 1);
+    assert_eq!(core.current_hp(s), 200 - 150, "instant MR-scaled damage");
+    let slots = core.player_snapshot(s).active_spells;
+    assert_eq!(slots[0].spell, Some(MRVENOM), "Poison row entered: {slots:?}");
+    assert_eq!(slots[0].value, 6, "slot stores the Poison row value");
+    assert_eq!(core.poison(s), 6, "counter hard-written");
+}
+
+#[test]
+fn stat_rows_use_the_no_refresh_entry_flag() {
+    // The Intel..Charm family (44-49, cases 0x2c-0x31) calls
+    // monster_add_cast_spell_to_user with the '\0' flag (23436-23477): a
+    // same-id active slot ALWAYS aborts — even though 10 exceeds the
+    // stored 1 (21795 only refreshes under a non-zero flag). The abort
+    // refunds the full energy cost and prints nothing (23183-23188).
+    let mut core = Core::new(world(shaman(SAPMIND, 101, 600)), config());
+    let m = core.spawn_monster(MonsterId(7), ARENA).expect("shaman spawns");
+    let mut dain = player("Dain", HUMAN);
+    dain.active_spells[0] =
+        ActiveSpell { spell: Some(SAPMIND), value: 1, remaining: 1000 };
+    let s = core.attach_player(dain);
+    core.input(s, "attack shaman");
+    core.drain_events();
+    let events = run_rounds(&mut core, 1);
+    let shown = text_to(&events, s);
+    assert!(!shown.contains("sap mind"), "aborted silently: {shown:?}");
+    let slots = core.player_snapshot(s).active_spells;
+    assert_eq!(slots[0].value, 1, "slot untouched: {slots:?}");
+    assert_eq!(core.monster_energy(m), Some(1000), "full refund");
+}
+
+#[test]
+fn monster_alter_sp_dmg_boosts_damage_casts() {
+    // Wired through the monster ability fold: 5 + 5*50/100 = 7. (The
+    // DLL's monster_cast reads no 0xa5 — zero shipped monsters carry
+    // AlterSpDmg, so the fold read is observably identical.)
+    let mut boosted = shaman(HAMMER, 101, 600);
+    boosted.abilities = vec![(Ability::AlterSpDmg, 50)];
+    let mut core = Core::new(world(boosted), config());
+    let (s, _m) = engage(&mut core, HUMAN);
+    run_rounds(&mut core, 1);
+    assert_eq!(core.current_hp(s), 200 - 7);
+}
+
+#[test]
+fn fear_slot_flees_the_player_out_a_valid_exit() {
+    // PANIC enters the slot on the first round (t5); the next upkeep
+    // (t6) rolls genrdn(0,100) < 200 — always — and forces a move out
+    // the one valid exit (44788-44793: move_user mode 6, which prints
+    // NOTHING fear-specific — the standard movement observables only).
+    let mut core = Core::new(world(shaman(PANIC, 101, 600)), config());
+    let (s, _m) = engage(&mut core, HUMAN);
+    let events = run_rounds(&mut core, 2);
+    assert_eq!(core.player_snapshot(s).location, LAIR, "fled north");
+    let shown = text_to(&events, s);
+    assert!(shown.contains("Lair"), "the flee renders the destination: {shown:?}");
 }
