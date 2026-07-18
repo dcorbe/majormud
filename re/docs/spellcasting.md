@@ -370,18 +370,36 @@ casting:
 1. **Spell source** — the spell is selected from the monster template's spell-
    attack list at `template+0x12e+attackIdx*2`; when `attackIdx == -1` a spell id
    is passed directly (scripted cast).
-2. **No mana / no round pool** — monsters do not pay `+0x602`/`+0xba`; there is
-   no resource-shortage abort and no half-mana-on-fail.
+2. **No mana / no round pool — but an ENERGY gate (corrected during slice
+   6)** — monsters do not pay `+0x602`/`+0xba`, but each cast form carries a
+   per-form **energy cost** at `template+0x190+attackIdx*2` (previously
+   mis-read as a save DC — see item 4): the cast is gated on the monster's
+   energy pool at 23041 — an unaffordable form is skipped **silently**
+   (next swing, 23773-23775) — charged in FULL when the cast lands (23123)
+   and at HALF (floored at 1 when nonzero) on a resist or fizzle
+   (23075-23087 / 23758-23770).
 3. **Success chance** — a flat per-spell percentage from
-   `template+0x13e+attackIdx*2` (or 100 for a forced/`-1` cast), compared to
-   `genrdn(0,100)`. There is no player-SC term.
-4. **Saving throw** — the *target* gets a resist check (cf. the player-cast
-   saving throw in §3, corrected — both paths save): **SpellImmu** (139/0x8b)
-   and level (`spell+0xbe` vs the save DC at `template+0x190+attackIdx*2`),
-   plus **AntiMagic** (51/0x33) and the target's `+0xc2` (SC/resist stat)
-   halved as a roll. Success prints "You resisted %s's cast of %s" and
-   halves/negates the effect. Whether this path also honors the spell's
-   `+0xc6` save class is unverified.
+   `template+0x13e+attackIdx*2` (or 100 for a forced/`-1` cast), passed on
+   STRICT `genrdn(0,100) < percent` (corrected during slice 6: the
+   comparison is strict less-than — a 0% form never fires, and a 100% form
+   still loses to the inclusive top roll). There is no player-SC term. A
+   failed roll is NOT silent (corrected during slice 6): it prints
+   "The %s attempted to cast %s at you, but failed." to the victim plus the
+   room twin "The %s attempted to cast %s at %s, but failed." (23749-23757),
+   and charges half energy.
+4. **Saving throw (corrected during slice 6 — `+0x190` is the form ENERGY
+   cost, item 2, NOT a save DC)** — the *target*'s resist check is:
+   **SpellImmu** (139/0x8b) auto-resists when `spell+0xbe < value`,
+   evaluated BEFORE and independent of the chance roll (23026-23029/23066)
+   — an immune target resists even a cast that would have fizzled.
+   Otherwise the save is gated on the spell's `+0xc6` save class (2 =
+   always, 1 = only if the target carries AntiMagic 51/0x33; verified
+   during slice 6 — this line previously flagged the `+0xc6` gate
+   unverified): resisted when `genrdn(1,100) <= min(targetMR(+0xc2)/2, 97)`
+   — note the **97** cap (23048-23052) versus the player-cast path's 98
+   (43600-43614), a genuine one-off DLL asymmetry. A resist prints
+   "You resisted %s's cast of %s." / "%s resisted %s's cast of %s." and
+   charges HALF the energy cost (item 2).
 5. **Effect entry** — `monster_add_cast_spell_to_user` writes the **same** player
    active-spell slots (`+0x40/+0x54/+0x68`) but with a simpler policy: refresh
    only if the new value **exceeds** the current slot value; no caster-level
@@ -389,6 +407,17 @@ casting:
    `monster_add_duration_spell_to_room` / `monster_cast_area` are the room
    variants. `add_cast_spell_to_monster` (used when a spell targets a monster)
    writes the 5 monster slots and sets the dirty byte `+0x140`.
+   Additions (corrected during slice 6): a monster→player entry ABORT (-1
+   both slot scans full, -2 refresh rejected by the not-greater rule)
+   refunds the **full** energy cost and aborts the whole cast silently
+   (23183-23188) — and because this path attempts entry BEFORE the
+   Poison(19) hard-write (23404-23407; the player-cast path writes poison
+   first), an aborted entry skips the poison counter write. The stat rows
+   Intel..Charm (44-49) enter with the no-refresh flag — a same-id recast
+   ALWAYS aborts (23436-23553). In a duration cast, Drain(8) and Summon(12)
+   are dead rows (instant-only arms, 23207/23251) while DamageMR(17) deals
+   its instant MR-scaled damage even mid-duration-cast and never drives the
+   slot entry (23305).
 6. **Monster upkeep** — `medium_update_monster` ticks the 5 monster slots
    (decrement `+0x15e`, `perform_routine_spell_monster_upkeep`, terminate at 0).
    `perform_routine_spell_monster_upkeep` handles a reduced set: Damage (1) HP
@@ -398,10 +427,19 @@ casting:
    charm: reset name/owner bit `+0x128 & ~1`, flags `+0x140`/`+0x116`) and Poison
    (19/0x13, `+0x14 -= v`). Monsters have **no** stat-buff reversal, mana, or
    EndCast chaining.
+   Addition (corrected during slice 6): the monster poison counter `+0x14`
+   is dealt as HP damage on each slow pass with **no** immediate death
+   check (19276-19279) — a poisoned monster dies only in the
+   strictly-negative post-walk sweep.
 
 Monster-side critical hits do not exist (see `combat.md`: monster fighter crit is
 hard-zeroed), and monster spell damage still routes through
 `check_kill_monster` / `distribute_experience` like player-cast damage.
+
+Oracle coverage (§8.14): the cast-hit fan-out (victim line with damage,
+room line without) is measured live; the resist and fail lines of items
+3-4 remain decompile-sourced (ORACLE-OPEN — no reachable sub-100% or
+resistable caster).
 
 ---
 
@@ -422,6 +460,10 @@ hard-zeroed), and monster spell damage still routes through
   shipped slots carry it); every nonzero reference resolves to a real spell.
 - **`FUN_0043e3db`** (72500) — the auto-resist predicate in the §3 saving
   throw; assumed to be the SpellImmu evaluation, needs a confirmation pass.
+  Corroborated during slice 6: the monster→player path evaluates SpellImmu
+  INLINE with the same shape — auto-resist when `spell+0xbe < value`,
+  independent of the chance roll (23026-23029; §6.4) — but the player-path
+  predicate identity itself is still unread.
 - **Player `+0x94`** — the cast path uses it consistently as the caster's
   spell-casting level/power (eligibility gate *and* value/duration scaling input).
   `records.md` labels `+0x94` "gender / reroll flag (checked `<2`)". Both cannot
