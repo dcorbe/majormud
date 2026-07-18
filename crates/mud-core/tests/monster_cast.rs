@@ -486,6 +486,61 @@ fn duration_casts_print_but_enter_no_slot_yet() {
     assert!(snapshot.active_spells.iter().all(|slot| slot.spell.is_none()));
 }
 
+// --- energy accounting (the 23041 gate; 23123 full; 23758-23770 half) ---
+
+#[test]
+fn a_fizzled_cast_charges_half_the_form_energy_floored_at_one() {
+    // A failed chance roll pays cost/2, floored at 1 for a nonzero cost
+    // (23758-23770): {1,2,3} all charge 1, 100 charges 50. One energy
+    // round refills to the 1000 template max, then the swings spend —
+    // read after the round, before the next refill.
+    for (cost, charge) in [(1i16, 1i32), (2, 1), (3, 1), (100, 50)] {
+        let mut core = Core::new(world(shaman(HAMMER, 0, cost)), config());
+        let (s, m) = engage(&mut core, HUMAN);
+        let events = run_rounds(&mut core, 1);
+        let shown = text_to(&events, s);
+        let fizzles =
+            shown.matches("attempted to cast hammer at you, but failed.").count() as i32;
+        assert!(fizzles > 0, "cost {cost}: no fizzles: {shown:?}");
+        assert_eq!(
+            core.monster_energy(m),
+            Some(1000 - fizzles * charge),
+            "cost {cost} charges {charge} per fizzle ({fizzles} fizzles)"
+        );
+    }
+}
+
+#[test]
+fn a_landed_cast_charges_the_full_form_energy() {
+    // Landing pays the whole cost word (23123). 1000-point pool at cost
+    // 400: after the second cast 200 < 400, and the remaining swings are
+    // silent skips — never a partial or half charge.
+    let mut core = Core::new(world(shaman(HAMMER, 101, 400)), config());
+    let (s, m) = engage(&mut core, HUMAN);
+    let events = run_rounds(&mut core, 1);
+    let shown = text_to(&events, s);
+    let casts = shown.matches("Kobold shaman cast hammer on you.").count() as i32;
+    assert!(casts > 0, "got: {shown:?}");
+    assert_eq!(core.monster_energy(m), Some(1000 - casts * 400));
+}
+
+#[test]
+fn an_unaffordable_cast_is_a_silent_skip_before_the_resist_ladder() {
+    // The ENTIRE cast — chance roll, SpellImmu resist, every line, all
+    // charging — sits inside the energy gate (23041 wraps 23042-23770).
+    // A WARDED (SpellImmu 50) victim proves the ordering: were the
+    // resist block outside the gate, the resist family would print.
+    let mut monster = shaman(HAMMER, 101, 400);
+    monster.energy = 300; // pool max/regen 300: the 400 cast never affords
+    let mut core = Core::new(world(monster), config());
+    let (s, m) = engage(&mut core, WARDED);
+    let events = run_rounds(&mut core, 3);
+    let shown = text_to(&events, s);
+    assert!(!shown.contains("hammer"), "got: {shown:?}");
+    assert!(!shown.contains("resisted"), "got: {shown:?}");
+    assert_eq!(core.monster_energy(m), Some(300), "nothing charged");
+}
+
 // --- form selection ---
 
 #[test]

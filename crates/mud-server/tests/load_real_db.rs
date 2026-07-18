@@ -79,6 +79,41 @@ fn full_database_loads_and_validates() {
 }
 
 #[test]
+fn kind2_cast_forms_all_resolve_within_the_dispatch() {
+    // Pins the "no melee-slot-0 fallback needed" claim (spellcasting.md §6;
+    // decompile monster_cast 23015-23016 + 23777-23779, driver 26805-26813)
+    // against the shipped data: the driver's return-0 fallback fires only
+    // for an unresolvable spell id, and every kind-2 form resolves. The
+    // match-type census is exact — singles {0,2,6,8} take the live
+    // single-target path (only 0 and 8 ship); everything else (1, 11, 12
+    // here) is the match-gate ELSE that routes to monster_cast_area,
+    // slice-6 pending. No shipped form falls outside the two buckets.
+    use mud_core::content::SpellId;
+    use std::collections::BTreeMap;
+    let content = content_db::load(&db_path()).expect("load content db");
+    let mut census: BTreeMap<i16, u32> = BTreeMap::new();
+    for monster in content.monsters.values() {
+        for form in &monster.attacks {
+            if form.kind != 2 {
+                continue;
+            }
+            let id = u16::try_from(form.accuracy)
+                .unwrap_or_else(|_| panic!("monster {:?}: negative spell id", monster.id));
+            let spell = content.spells.get(&SpellId(id)).unwrap_or_else(|| {
+                panic!("monster {:?}: kind-2 form names missing spell {id}", monster.id)
+            });
+            *census.entry(spell.match_type as i16).or_default() += 1;
+        }
+    }
+    assert_eq!(
+        census,
+        BTreeMap::from([(0, 13), (1, 1), (8, 393), (11, 1), (12, 99)]),
+        "kind-2 form match-type census drifted"
+    );
+    assert_eq!(census.values().sum::<u32>(), 507);
+}
+
+#[test]
 fn known_content_spot_checks() {
     let content = content_db::load(&db_path()).expect("load content db");
 

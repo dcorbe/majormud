@@ -796,6 +796,11 @@ impl Core {
         self.monsters.get(&id).map(|m| m.current_hp)
     }
 
+    /// Test/inspection: a live monster's current energy pool (`mon+0x16`).
+    pub fn monster_energy(&self, id: MonsterInstanceId) -> Option<i32> {
+        self.monsters.get(&id).map(|m| m.energy)
+    }
+
     /// Test hook: mutable access to loaded content.
     pub fn content_mut(&mut self) -> &mut Content {
         &mut self.content
@@ -5353,12 +5358,16 @@ impl Core {
     ///    pays half, floored at 1 for a nonzero cost (23065, 23075-23087,
     ///    23758-23770).
     /// 4. Chance/save: [`monster_cast_chance_passes`] then the resist
-    ///    ladder — SpellImmu auto-resist (23026-23029 + FUN_0043e3db
-    ///    23042-23061, §7: same `required_power < value` comparison as the
-    ///    player command gate at 43630), which is NOT gated on the chance
-    ///    roll (23066 tests bVar3 first — an immune target sees the resist
-    ///    family even for a fizzled attempt); then [`player_save_resists`]
-    ///    only when the chance roll passed and the save class grants one.
+    ///    ladder — SpellImmu auto-resist (23026-23029: the ability read IS
+    ///    the confirmed `required_power < value` comparison, like the
+    ///    player command gate at 43630; the OR'd FUN_0043e3db call at
+    ///    23042-23061 is a separate predicate whose body scans the 20
+    ///    worn-item slots, decompiled 37879-37908 — possibly item-granted
+    ///    spell immunity, unmirrored here; ORACLE-VERIFY, spec §7 hedge).
+    ///    The resist is NOT gated on the chance roll (23066 tests bVar3
+    ///    first — an immune target sees the resist family even for a
+    ///    fizzled attempt); then [`player_save_resists`] only when the
+    ///    chance roll passed and the save class grants one.
     /// 5. Magnitude (23124-23143): L = the form's cast level
     ///    (`attackmaxhcastlvl`, `template+0x148`) — the DLL applies NO
     ///    level_cap clamp here (no `+0xa2` read anywhere in monster_cast,
