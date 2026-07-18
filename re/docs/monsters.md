@@ -238,7 +238,14 @@ aggressive monster mostly sits and ambushes; a placid one drifts. Global fairnes
 `check_monster_confusion` (`0x29812`; monster ability `0x47`) — a confused monster fumbles
 ("*looks around stupidly*") and does not move. The chosen direction comes from
 `pick_valid_random_direction`, and is rejected if it equals `mon+0x132` (the
-**last-move direction**, i.e. monsters avoid immediately doubling back).
+**last-move direction** — the SAME direction as the previous step, i.e. no two
+consecutive steps in a straight line until the 30 s slow tick clears the memory;
+ping-ponging straight back IS allowed. Corrects the earlier "avoids doubling
+back" gloss — slice M6-2, verified in the corridor test). Order in the default
+path (19346-19360): fairness cap → wander roll → confusion → cap increment →
+pick → same-direction reject; the water path (19364-19371) consumes the cap
+slot *before* its confusion check and skips the cap entirely while the
+monster's `mon+0x140` byte is set.
 
 If a monster instead has a **directed-travel order** (`mon+0x22 != 0`, a target
 coordinate — used by patrols / summoned / monster-vs-monster) it steps toward that coord
@@ -255,11 +262,15 @@ any failure returns 0 (stayed put):
    cannot move; instead its prone timer (`mon+0x168`) ticks down.
 3. **Herd / leash by pack** (`mon+0x148`, the herd-mode field, values 1/2/3):
    * `3` = **fully stationary** — bound to its lair, never takes an exit.
-   * `1`/`2` = **pack members** — a monster will refuse to leave if a same-herd packmate
-     (matched on `knmsr+0x6c` herd id, with a `knmsr+0x58` rank test) is present and holds
-     the room; conversely, when a leader *does* move it **drags followers** the same
-     direction (recursive `move_monster(..., herdFlag=1)`, up to `knmsr+0xac` of them). Packs
-     move as a unit.
+   * `1`/`2` = **pack members**, precise semantics (21445-21462, 21611-21631;
+     herd id matched on `knmsr+0x6c`, rank = `mon+0x08` ← `knmsr+0x58`):
+     a **mode-2** monster refuses to leave while ANY same-herd mode-1 packmate
+     is in the room (it moves only when dragged); a **mode-1** monster refuses
+     only while a HIGHER-RANKED same-herd mode-1 is present. When a mode-1
+     monster does move it **drags** same-herd packmates — every mode-2 plus
+     lower-ranked mode-1s — the same direction (recursive
+     `move_monster(..., herdFlag=1)`, up to `knmsr+0xac` of them). Packs move
+     as a unit behind the highest-ranked mode-1.
 4. **Leash by zone** — the core wander bound. The destination room is
    `room+0x338+dir*4` (the exit's dest room, per `vir_schemas.md`). The step is allowed
    only if the destination's **`room+0x560` zone id equals the monster's `mon+0x12c`**, or

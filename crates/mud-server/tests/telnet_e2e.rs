@@ -28,6 +28,7 @@ fn world() -> Content {
         dest: RoomId { map: 1, room: 2 },
         exit_type: 0,
         trigger_msg: None,
+        ..Default::default()
     });
     let mut square = Room {
         id: RoomId { map: 1, room: 2 },
@@ -44,6 +45,7 @@ fn world() -> Content {
         dest: RoomId { map: 1, room: 1 },
         exit_type: 0,
         trigger_msg: None,
+        ..Default::default()
     });
     content.add_room(gates);
     content.add_room(square);

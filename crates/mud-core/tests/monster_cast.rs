@@ -183,7 +183,7 @@ fn world(monster: Monster) -> Content {
         ..Default::default()
     };
     arena.exits[Direction::North as usize] =
-        Some(Exit { dest: LAIR, exit_type: 0, trigger_msg: None });
+        Some(Exit { dest: LAIR, exit_type: 0, trigger_msg: None, ..Default::default() });
     content.add_room(arena);
     content.add_room(Room {
         id: LAIR,

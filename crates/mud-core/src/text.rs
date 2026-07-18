@@ -79,6 +79,25 @@ pub fn walks_in_from(name: &str, direction: Direction) -> String {
     }
 }
 
+/// VERIFIED (oracle + DLL 0x48105a "%s%s moves into the room from the %s."):
+/// wander-arrival broadcast — bare instance name, e.g. "happy guardsman
+/// moves into the room from the east." (the format's second %s is an
+/// invisible ANSI junk sequence). Distinct from the spawn/player arrival
+/// "walks into the room from" line.
+pub fn monster_moves_in_from(name: &str, direction: Direction) -> String {
+    match direction {
+        Direction::Up => format!("{name} moves into the room from above."),
+        Direction::Down => format!("{name} moves into the room from below."),
+        d => format!("{name} moves into the room from the {}.", direction_shown(d)),
+    }
+}
+
+/// VERIFIED (DLL 0x481399): the confusion fumble line,
+/// check_monster_confusion — bare instance name.
+pub fn monster_confused_fumble(name: &str) -> String {
+    format!("{name} looks around stupidly and foams at the mouth!")
+}
+
 /// VERIFIED (DLL + oracle): character-creation prompts. Blank input gets the
 /// "choose a race/class" wording; a wrong entry gets the "valid" wording.
 pub const CHOOSE_RACE: &str = "Please choose a race from the following list:";

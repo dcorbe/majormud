@@ -111,11 +111,13 @@ fn world() -> Content {
         dest: LAIR,
         exit_type: 0,
         trigger_msg: None,
+        ..Default::default()
     });
     shop_room.exits[Direction::East as usize] = Some(Exit {
         dest: PIT,
         exit_type: 0,
         trigger_msg: None,
+        ..Default::default()
     });
     content.add_room(shop_room);
     let mut pit = Room {
@@ -133,6 +135,7 @@ fn world() -> Content {
         dest: SHOP_ROOM,
         exit_type: 0,
         trigger_msg: None,
+        ..Default::default()
     });
     content.add_room(pit);
     let mut lair = Room {
@@ -150,6 +153,7 @@ fn world() -> Content {
         dest: SHOP_ROOM,
         exit_type: 0,
         trigger_msg: None,
+        ..Default::default()
     });
     content.add_room(lair);
     // A silent punching bag (no attack forms): 20 HP dies in 2-4 fires of

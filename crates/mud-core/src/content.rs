@@ -101,7 +101,7 @@ pub struct StatBlock {
     pub charm: u16,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Exit {
     pub dest: RoomId,
     /// Raw `roomtype_N` value; semantics per type are handled by later
@@ -111,6 +111,14 @@ pub struct Exit {
     /// Type 10: the pipe-separated trigger phrases live in this message
     /// ("borrow skiff|go skiff|row skiff" — oracle).
     pub trigger_msg: Option<MessageId>,
+    /// Raw `para1_N` (`room+0x374+d*4`): damage for types 9/0x18, the
+    /// secret gate for 7/0xb (monsters.md §3 move_monster switch). Types
+    /// 8/10 fold theirs into `dest`/`trigger_msg` at load.
+    pub param: i32,
+    /// `para2_N` (`room+0x39c+d*2`) nonzero = door closed (type 2/9;
+    /// shipped doors all start closed). Runtime open/close arrives with
+    /// the player door commands.
+    pub door_closed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

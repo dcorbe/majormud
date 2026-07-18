@@ -86,6 +86,19 @@ ids validate at boot (all 485+29 resolve).
 Deliverable: full-DB boot test proves the world data coherent; every later
 slice reads typed fields with disk-verified provenance comments.
 
+**Slice 2 COMPLETE (2026-07-18):** move_monster's full gate ladder + the
+medium-tick wander decision live (15 wander tests + fear-flee), monster slow
+tick gains HP regen + the last-move reset. Discoveries, all spec-corrected:
+the walk-arrival broadcast is "walks into the room from ..." ("just arrived
+from" appears in ZERO captures — it never was the walk line; divergent since
+M1, fixed); monster wander arrivals use a THIRD string, "moves into the room
+from the ..." (bare name); the anti-backtrack memory blocks two consecutive
+SAME-direction steps (straight lines), not returning — ping-pong is legal;
+herd semantics pinned (mode-2 held by any mode-1, mode-1 held by higher
+rank, mode-1 drags mode-2 + lower ranks, rank = expmulti); water-path cap
+quirks; confusion fumble line + ConfuseMsg override. M5's monster Fear-flee
+marker closed. Exit model gains `param` (para1) + `door_closed` (para2).
+
 ## Slice 2 — Wander & leash (3 s medium tick)
 
 - **Instance fields:** `MonsterInstance` gains aggression, behaviour,

@@ -752,6 +752,23 @@ pub(crate) struct MonsterInstance {
     /// `get_monster_ability_value`'s slot walk, 37187-37215): value-0 rows
     /// substitute the stored slot value. Rebuilt when `needs_recompute`.
     pub slot_bag: AbilityBag,
+    /// `mon+0x108` ← template `follow`: aggression 0-100. Wander chance is
+    /// `(100 - aggression)/2`; pursuit follow-rolls use it in M6 slice 3.
+    pub aggression: i16,
+    /// `mon+0x106` ← template `alignment`: the §4 behaviour-mode taxonomy
+    /// (consumed by the slice-3 aggression driver).
+    #[allow(dead_code)] // read from M6 slice 3 (FUN_00423863)
+    pub behaviour: i16,
+    /// `mon+0x12c` ← template `group`: roam/zone class — the wander leash
+    /// key (0/2 stationary, 5 water, 0x25/0x26 free roamers, else zone id).
+    pub roam_class: i16,
+    /// `mon+0x148` ← template `type`: herd mode (0 none, 1/2 pack, 3 lair).
+    pub herd_mode: i16,
+    /// `mon+0x08` ← template `expmulti` (dual-use): pack herd rank.
+    pub herd_rank: i32,
+    /// `mon+0x132`: last wander direction — the anti-backtrack memory,
+    /// cleared by the 30 s slow tick (decompile 19274).
+    pub last_move_dir: Option<crate::content::Direction>,
 }
 
 /// A scheduled shop-slot restock, due at an absolute tick. Events live
@@ -789,6 +806,9 @@ pub struct Core {
     restock_counter: u8,
     /// Set while an action-exit trigger routes through move_player.
     action_exit_pass: bool,
+    /// `DAT_0047fb90`: wander attempts this medium tick (cap 3), reset
+    /// once per pass in `upkeep_update` (monsters.md §3).
+    wander_budget: u8,
 }
 
 impl Core {
@@ -815,6 +835,7 @@ impl Core {
             restock_events: Vec::new(),
             restock_counter: 0,
             action_exit_pass: false,
+            wander_budget: 0,
         };
         // First run of the world: every shelf full, and each timed slot's
         // first event lands at genrdn(1, max(2, interval)) minutes so the
@@ -880,6 +901,9 @@ impl Core {
         }
         let id = MonsterInstanceId(self.next_monster);
         self.next_monster += 1;
+        let tpl = &self.content.monsters[&template];
+        let (aggression, behaviour) = (tpl.aggression, tpl.behaviour);
+        let (roam_class, herd_mode, herd_rank) = (tpl.roam_class, tpl.herd_mode, tpl.exp_multi);
         self.monsters.insert(
             id,
             MonsterInstance {
@@ -893,9 +917,26 @@ impl Core {
                 poison: 0,
                 needs_recompute: false,
                 slot_bag: AbilityBag::default(),
+                aggression,
+                behaviour,
+                roam_class,
+                herd_mode,
+                herd_rank,
+                last_move_dir: None,
             },
         );
         Some(id)
+    }
+
+    /// Test/inspection: a live monster's current room.
+    pub fn monster_location(&self, id: MonsterInstanceId) -> Option<RoomId> {
+        self.monsters.get(&id).map(|m| m.location)
+    }
+
+    /// Test hook: drive one `move_monster` step directly (the wander and
+    /// pursuit paths call the same gate ladder).
+    pub fn debug_move_monster(&mut self, id: MonsterInstanceId, dir: crate::content::Direction) -> bool {
+        self.move_monster(id, dir, false)
     }
 
     /// Test/inspection: a live monster's current HP (`None` once dead/gone).
@@ -1248,18 +1289,27 @@ impl Core {
                 player.current_mana = (player.current_mana + regen).clamp(0, max_mana);
             }
         }
-        // Monster poison (`slow_update_monster` 19270-19281): a positive
-        // counter deals its value in HP each slow pass. NO death check
-        // here — the DLL leaves the corpse for the next medium pass's
-        // HP < 0 sweep, and so do we. (The same function's HP-regen half
-        // reads a template regen word, `mon+0x130`, that our loader does
-        // not carry yet — it joins with M6 monster lifecycles.)
+        // `slow_update_monster` (19270-19284), in order: clear the
+        // anti-backtrack memory (`mon+0x132 = 0xffff`), deal the poison
+        // counter as HP damage, then regen `mon+0x130` capped at max HP.
+        // NO death check here — the DLL leaves the corpse for the next
+        // medium pass's HP < 0 sweep, and so do we.
         let monsters: Vec<MonsterInstanceId> = self.monsters.keys().copied().collect();
         for id in monsters {
-            if let Some(m) = self.monsters.get_mut(&id)
-                && m.poison > 0
-            {
+            let Some(m) = self.monsters.get_mut(&id) else {
+                continue;
+            };
+            m.last_move_dir = None;
+            if m.poison > 0 {
                 m.current_hp -= i32::from(m.poison);
+            }
+            let (max_hp, regen) = self
+                .content
+                .monsters
+                .get(&m.template)
+                .map_or((0, 0), |t| (t.hitpoints, i32::from(t.hp_regen)));
+            if m.current_hp < max_hp {
+                m.current_hp = (m.current_hp + regen).min(max_hp);
             }
         }
     }
@@ -1272,9 +1322,14 @@ impl Core {
         for id in sessions {
             self.upkeep_player(id);
         }
+        // `medium_update_monsters` (0x21b31) resets the wander fairness
+        // counter (DAT_0047fb90) once per pass, then each monster runs
+        // spell upkeep -> env-death -> wander in one function.
+        self.wander_budget = 0;
         let monsters: Vec<MonsterInstanceId> = self.monsters.keys().copied().collect();
         for id in monsters {
             self.upkeep_monster(id);
+            self.wander_monster(id);
         }
     }
 
@@ -1296,6 +1351,7 @@ impl Core {
             .and_then(|m| self.content.monsters.get(&m.template))
             .map_or(0, |t| t.energy);
         for idx in 0..5 {
+            let mut fear_flee = false;
             let (spell_id, stored, remaining) = {
                 let Some(m) = self.monsters.get_mut(&id) else {
                     return;
@@ -1342,11 +1398,14 @@ impl Core {
                         }
                     }
                     // Fear (60): genrdn(0,100) < v => flee a random exit
-                    // via move_monster (44957-44960). M6 PENDING: our
-                    // monsters have NO movement machinery (M6 wander owns
-                    // move_monster) — the player-side flee is live
-                    // (upkeep_player); the monster flee lands with M6.
-                    Ability::Fear => {}
+                    // via move_monster (44957-44960; the roll draws here,
+                    // the step executes after the slot's ability walk —
+                    // observably identical, no other arm emits output).
+                    Ability::Fear => {
+                        if self.rng.roll(0, 100) < v {
+                            fear_flee = true;
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1376,6 +1435,12 @@ impl Core {
                     }
                 }
             }
+            if fear_flee
+                && let Some(from) = self.monsters.get(&id).map(|m| m.location)
+                && let Some(dir) = self.pick_valid_random_direction(from)
+            {
+                self.move_monster(id, dir, false);
+            }
         }
         self.recompute_monster_effects(id);
         // The post-walk death sweep (19327-19339): STRICTLY negative — a
@@ -1383,6 +1448,221 @@ impl Core {
         if self.monsters.get(&id).is_some_and(|m| m.current_hp < 0) {
             self.monster_killed(id, None);
         }
+    }
+
+    /// The wander half of `medium_update_monster` (decompile 19339-19372;
+    /// monsters.md §3). Gated to monsters with no target lock and no
+    /// directed-travel order; switches on the roam class:
+    /// 0/2 stationary; 5 water (no aggression roll, budget consumed before
+    /// the confusion check); default rolls `genrdn(0,100) <
+    /// (100-aggression)/2` then checks confusion, then consumes budget.
+    /// The chosen direction is rejected (budget already spent) when it
+    /// equals the last-move memory.
+    fn wander_monster(&mut self, id: MonsterInstanceId) {
+        let Some(m) = self.monsters.get(&id) else {
+            return;
+        };
+        if m.target.is_some() {
+            return; // locked on (`mon+0x1a`); pursuit owns movement
+        }
+        let (roam, aggression, from, last) =
+            (m.roam_class, m.aggression, m.location, m.last_move_dir);
+        match roam {
+            0 | 2 => return,
+            5 => {
+                // Water path (19364-19371): cap first (the mon+0x140
+                // dirty-byte bypass is unmodeled — PLAUSIBLE quirk),
+                // budget consumed before the confusion check.
+                if self.wander_budget >= 3 {
+                    return;
+                }
+                self.wander_budget += 1;
+                if self.monster_confusion_fumble(id) {
+                    return;
+                }
+            }
+            _ => {
+                // Default path (19346-19360): cap, roll, confusion, budget.
+                if self.wander_budget >= 3 {
+                    return;
+                }
+                let roll = self.rng.roll(0, 100);
+                if roll >= (100 - i32::from(aggression)) / 2 {
+                    return;
+                }
+                if self.monster_confusion_fumble(id) {
+                    return;
+                }
+                self.wander_budget += 1;
+            }
+        }
+        let Some(dir) = self.pick_valid_random_direction(from) else {
+            return;
+        };
+        if Some(dir) == last {
+            return; // anti-backtrack (mon+0x132), budget already spent
+        }
+        self.move_monster(id, dir, false);
+    }
+
+    /// `check_monster_confusion` (0x29812): Confusion (0x47) value beats
+    /// `genrdn(0,100)` => the fumble line — ConfuseMsg (0x65) names a
+    /// custom message (first line, %s = instance name), else the stock
+    /// "looks around stupidly" text — and the move is forfeited.
+    fn monster_confusion_fumble(&mut self, id: MonsterInstanceId) -> bool {
+        let confusion = self.monster_ability_value(id, Ability::Confusion);
+        if confusion <= 0 || self.rng.roll(0, 100) >= confusion {
+            return false;
+        }
+        let name = self.monster_name(id);
+        let room = self.monsters[&id].location;
+        let custom = self.monster_ability_value(id, Ability::ConfuseMsg);
+        let line = u16::try_from(custom)
+            .ok()
+            .and_then(|id| self.content.messages.get(&crate::content::MessageId(id)))
+            .and_then(|msg| msg.lines.first())
+            .map(|l| l.replace("%s", &name));
+        let line = line.unwrap_or_else(|| text::monster_confused_fumble(&name));
+        self.broadcast_to_room(room, None, &line);
+        true
+    }
+
+    /// `move_monster` (0x252f3; monsters.md §3): one gated step. Returns
+    /// true only when the monster changed rooms. `herd_flag` marks a pack
+    /// drag — it skips the hold check and the recursive drag.
+    fn move_monster(
+        &mut self,
+        id: MonsterInstanceId,
+        dir: crate::content::Direction,
+        herd_flag: bool,
+    ) -> bool {
+        let Some(m) = self.monsters.get(&id) else {
+            return false;
+        };
+        let (from, roam, my_mode, my_rank, template) =
+            (m.location, m.roam_class, m.herd_mode, m.herd_rank, m.template);
+        // Gate 1: immobility — HoldPerson (0x4a) never moves; Slowness
+        // (0x44) skips ~half of all calls. (The prone branch, mon+0x128
+        // bit 8, lands with the mechanic that can knock monsters prone.)
+        if self.monster_ability_value(id, Ability::HoldPerson) > 0 {
+            return false;
+        }
+        if self.monster_ability_value(id, Ability::Slowness) > 0 && self.rng.roll(0, 100) <= 0x31 {
+            return false;
+        }
+        // Gate 2: herd hold (herdFlag==0, own mode 1/2): refuse while a
+        // same-herd mode-1 packmate holds the room — any mode-1 for a
+        // mode-2 monster, a HIGHER-RANKED mode-1 for a mode-1.
+        let my_herd = self.content.monsters[&template].herd_id;
+        if !herd_flag && (my_mode == 1 || my_mode == 2) {
+            let held = self.monsters.iter().any(|(oid, o)| {
+                *oid != id
+                    && o.location == from
+                    && o.herd_mode == 1
+                    && (my_mode != 1 || my_rank < o.herd_rank)
+                    && self
+                        .content
+                        .monsters
+                        .get(&o.template)
+                        .is_some_and(|t| t.herd_id == my_herd)
+            });
+            if held {
+                return false;
+            }
+        }
+        // Gate 3: lair (mode 3) never takes an exit.
+        if my_mode == 3 {
+            return false;
+        }
+        let Some(exit) = self
+            .content
+            .rooms
+            .get(&from)
+            .and_then(|r| r.exits[dir as usize].clone())
+        else {
+            return false;
+        };
+        // Gate 4: exit-type switch (blocked types checked before the zone
+        // gate — order swapped from the DLL, observably identical since
+        // both merely refuse the step).
+        match exit.exit_type {
+            1 | 3 | 4 | 6 | 8 | 0xc => return false,
+            2 if exit.door_closed && roam != 0x26 => return false,
+            7 | 0xb if exit.param != 0 && roam != 5 && roam != 0x26 => return false,
+            _ => {}
+        }
+        // Gate 5: zone leash — dest zone must match the roam class, or a
+        // free-roam class applies (0x25: flagless non-type-5 rooms only;
+        // 0x26: unconditional; 5: water rooms via non-0x13 exits).
+        let Some(dest_room) = self.content.rooms.get(&exit.dest) else {
+            return false;
+        };
+        let allowed = i32::from(dest_room.spawn_zone) == i32::from(roam)
+            || (roam == 0x25 && dest_room.attributes == 0 && dest_room.room_type != 5)
+            || roam == 0x26
+            || (roam == 5 && dest_room.attributes & 2 != 0 && exit.exit_type != 0x13);
+        if !allowed {
+            return false;
+        }
+        // Room cap: add_monster_to_room fails on a full 15-slot list.
+        let occupants = self
+            .monsters
+            .values()
+            .filter(|o| o.location == exit.dest)
+            .count();
+        if occupants >= 15 {
+            return false;
+        }
+        // Damage exits (9/0x18): crossing costs genrdn(dmg/2, dmg+1).
+        // Type 9 may leave HP negative (the medium sweep collects the
+        // corpse); 0x18 floors at 0.
+        if matches!(exit.exit_type, 9 | 0x18) {
+            let dmg = self.rng.roll(exit.param / 2, exit.param + 1);
+            let m = self.monsters.get_mut(&id).expect("checked above");
+            m.current_hp -= dmg;
+            if exit.exit_type == 0x18 {
+                m.current_hp = m.current_hp.max(0);
+            }
+        }
+        // The step: anti-backtrack memory, relocation, both-room lines.
+        let name = self.monster_name(id);
+        let dest = exit.dest;
+        {
+            let m = self.monsters.get_mut(&id).expect("checked above");
+            m.last_move_dir = Some(dir);
+            m.location = dest;
+        }
+        self.broadcast_to_room(from, None, &text::left_via(&name, dir));
+        self.broadcast_to_room(dest, None, &text::monster_moves_in_from(&name, dir.opposite()));
+        // Drag (21611-21631): a mode-1 mover pulls same-herd packmates —
+        // mode 2, or lower-ranked mode 1 — from the old room, up to the
+        // template follower cap.
+        if !herd_flag && my_mode == 1 {
+            let cap = usize::from(
+                u16::try_from(self.content.monsters[&template].follower_cap.max(0))
+                    .unwrap_or(0),
+            );
+            let followers: Vec<MonsterInstanceId> = self
+                .monsters
+                .iter()
+                .filter(|(oid, o)| {
+                    **oid != id
+                        && o.location == from
+                        && (o.herd_mode == 2 || (o.herd_mode == 1 && o.herd_rank < my_rank))
+                        && self
+                            .content
+                            .monsters
+                            .get(&o.template)
+                            .is_some_and(|t| t.herd_id == my_herd)
+                })
+                .map(|(oid, _)| *oid)
+                .take(cap)
+                .collect();
+            for f in followers {
+                self.move_monster(f, dir, true);
+            }
+        }
+        true
     }
 
     /// One player's slot walk (decompile 19807-19830, per non-empty slot):

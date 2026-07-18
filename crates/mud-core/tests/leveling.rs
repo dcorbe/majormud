@@ -57,6 +57,7 @@ fn world() -> Content {
             dest: RoomId { map: 1, room: 2 },
             exit_type: 0,
             trigger_msg: None,
+            ..Default::default()
         });
     content.add_room(entrance);
     let mut guild = Room {

@@ -88,6 +88,7 @@ fn resolved_exits_pass_validation() {
         dest: RoomId { map: 1, room: 2 },
         exit_type: 0,
         trigger_msg: None,
+        ..Default::default()
     });
     let mut content = Content::default();
     content.add_room(a);
@@ -102,6 +103,7 @@ fn dangling_exit_is_reported() {
         dest: RoomId { map: 9, room: 9 },
         exit_type: 0,
         trigger_msg: None,
+        ..Default::default()
     });
     let mut content = Content::default();
     content.add_room(a);

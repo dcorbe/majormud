@@ -25,6 +25,7 @@ fn world() -> Content {
         dest: RoomId { map: 1, room: 2 },
         exit_type: 10,
         trigger_msg: Some(MessageId(8564)),
+        ..Default::default()
     });
     content.add_room(dock);
     content.add_room(Room {
@@ -53,6 +54,7 @@ fn world() -> Content {
         dest: RoomId { map: 1, room: 1 },
         exit_type: 0,
         trigger_msg: None,
+        ..Default::default()
     });
     content.add_room(bank_room);
     content.add_message(Message {
