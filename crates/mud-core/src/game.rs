@@ -641,7 +641,9 @@ const UPKEEP_INTERVAL: u64 = 3;
 /// Player energy pool max/regen (`DAT_00482cd0` default).
 const PLAYER_ENERGY_MAX: i32 = 1000;
 /// The two-stage death gate: HP at/below this kills (`DAT_00482cf0`;
-/// ORACLE: -200 in the stock config — died at -204, survived -196).
+/// ORACLE: -200 in the stock config — died at -204, survived -196;
+/// §8.14 re-confirmed the FLAT bound on a 56-maxhp character with four
+/// kills at -200/-202/-209/-225 — §8.10's ~7x-maxhp fit was coincidence).
 pub const DEATH_FLOOR: i32 = -200;
 
 /// A live monster in the world (ephemeral — evaporates on restart, like the
@@ -1086,7 +1088,9 @@ impl Core {
             player.hunger = player.hunger.saturating_sub(1);
             player.thirst = player.thirst.saturating_sub(1);
 
-            // Poison (`regeneration.md` §4; decompile 19518-19533): a
+            // Poison (`regeneration.md` §4; decompile 19518-19533;
+            // MEASURED §8.14 at a patched counter 5 — the line, the
+            // counter damage and the regen all in one slow tick): a
             // positive counter prints "You feel ill.", deals its value in
             // HP damage, announces the drop when HP crosses from above 0
             // to below 0 (19526-19528: FUN_0043c91d, the same announce as
@@ -1284,11 +1288,12 @@ impl Core {
                     let v = if *row != 0 { i32::from(*row) } else { stored };
                     match ability {
                         // Enslave (6): release the charm — owner name,
-                        // follow flags (44991-44995). SLICE 6 PENDING
-                        // (Task 5): monster charm/ownership is not
-                        // modeled yet (no Enslave cast lands one), so
-                        // there is nothing to release; the reversal
-                        // arrives with the charm state itself.
+                        // follow flags (44991-44995). M6 PENDING
+                        // (retagged at the slice-6 close-out): monster
+                        // charm/ownership state ships with M6 pets/
+                        // aggro (the Summon owner tag lands there too);
+                        // until an Enslave cast can CREATE a charm
+                        // there is nothing to release here.
                         Ability::Enslave => {}
                         // Poison (19): counter -= v, floored 0
                         // (45003-45008).
@@ -1705,6 +1710,11 @@ impl Core {
         // active, gone after expiry). DescMsg-less spells add no line.
         // ORACLE-VERIFY: multi-buff ordering unmeasured live; slot order
         // chosen (the DLL iterates the slot array).
+        // MISSING (MEASURED §8.14): a bare positive poison counter — no
+        // slot needed — appends "You are Poisoned!" to the sheet (seen
+        // live at a patched counter with zero active spells; gone after
+        // the cure). Not rendered yet: the poison sheet line joins the
+        // M5 close-out punch list.
         let active_lines: Vec<String> = player
             .active_spells
             .iter()
@@ -3420,13 +3430,16 @@ impl Core {
                     // Summon (12) is silly_spell on every AREA match
                     // (cast_no_target 40058-40064: the 3/5/9/10-0xd arm)
                     // — a deliberate no-op, not a pending gap.
-                    // SLICE 6 PENDING (close-out): the instant-area arms
-                    // for the remaining monster-side abilities (Poison
-                    // set-if-greater included — the counter and slots
-                    // exist now; the single-target twin already writes
-                    // it). §8.13 measured zero observable effect from the
-                    // shipped learnable areas, all of whose harm rows are
-                    // covered above.
+                    // M6 PENDING (retagged at the slice-6 close-out):
+                    // the instant-area arms for the remaining
+                    // monster-side abilities (Poison set-if-greater
+                    // included — the counter and slots exist; the
+                    // single-target twin already writes it). No shipped
+                    // LEARNABLE area carries any of them — §8.13
+                    // measured zero observable effect and every harm
+                    // row is covered above — so the gap is fixture-only
+                    // today; wire the arms with M6's monster content
+                    // pass.
                     _ => {}
                 }
             }
@@ -4012,9 +4025,11 @@ impl Core {
                 // is a real hard write — but our cast entry never adds
                 // it, so there is nothing to subtract: exactly ONE
                 // shipped duration spell carries 88 (746 "increase HP",
-                // named by no LearnSp scroll — a monster-cast payload),
-                // unreachable until slice-6 monster casting brings the
-                // add-at-entry/subtract-here pair together.
+                // named by no LearnSp scroll AND by no kind-2 attack
+                // form — the DB census finds no caster), so the pair
+                // stays unreachable even with slice-6 monster casting
+                // live; wire add-at-entry and subtract-here together if
+                // content ever names it.
                 Ability::AlterHP => {}
                 // GiveTempSpell (160): purge_spell_from_spellbook
                 // (44883-44885) — only a `temporary` book entry (the
@@ -4087,15 +4102,20 @@ impl Core {
     ///
     /// Slice-4 scope: benign self-cast only — no shipped EndCast chain is
     /// reachable by a player cast (48 duration spells carry EndCast 151;
-    /// none is named by any LearnSp scroll), and offensive chain targets
-    /// need slice-6 monster slots.
+    /// none is named by any LearnSp scroll). Monster slots exist since
+    /// slice 6, but the offensive arm stays M6-pending for lack of any
+    /// reachable trigger (the gate below).
     fn forced_cast(&mut self, session: SessionId, spell_id: SpellId) {
         let Some(spell) = self.content.spells.get(&spell_id).cloned() else {
             return;
         };
         if spell.target_mode.is_offensive() {
-            // SLICE 6: an offensive forced cast needs a target monster
-            // slot; nothing shipped can reach this today (see above).
+            // M6 PENDING (retagged at the slice-6 close-out): the
+            // offensive forced-cast arm (an EndCast chain firing at a
+            // monster). Monster slots exist since slice 6, but no
+            // shipped trigger reaches this — all 48 EndCast carriers
+            // are unlearnable (see the doc above) — so the arm stays a
+            // silent refusal until a reachable trigger ships.
             return;
         }
         let Some(Session::InGame { player, energy, .. }) = self.sessions.get(&session) else {
@@ -4446,10 +4466,13 @@ impl Core {
         // Offensive abilities (spec §4 table): Damage (1), Damage(-MR)
         // (17), Drain (8) and Summon (12) instant; the duration table
         // enters the monster's 5 slots below (the area twins live in
-        // `area_cast`). Still SLICE 6 PENDING (close-out): the instant
-        // Enslave (M6 charm state) and the benign-at-monster instant
-        // arms (Heal/EnergyLevel/CurePoison, cast_monster_target
-        // 43824-43882/44131-44160). A non-zero
+        // `area_cast`). M6 PENDING (retagged at the slice-6 close-out):
+        // the instant Enslave (needs the M6 charm state) and the
+        // benign-at-monster instant arms (Heal/EnergyLevel/CurePoison,
+        // cast_monster_target 43824-43882/44131-44160) — the command
+        // path refuses benign-at-monster outright (§8.13
+        // MAY_NOT_CAST_ON_MONSTER), so only the M6-pending forced-cast
+        // route could ever reach them. A non-zero
         // ability value is a FIXED amount that bypasses both the magnitude
         // roll and the resist scaling (but NOT the 17 MR scale, which the
         // DLL applies to the fixed-or-rolled amount alike); value 0 means
@@ -4591,7 +4614,8 @@ impl Core {
         // %s." is castmsgb line1 for every group-5 spell), and the
         // per-round invoke flag IS cast_this_round (the measured string
         // differs only in wording). Melee + invoke same-round interplay
-        // stays ORACLE-VERIFY (slice 6).
+        // stays ORACLE-VERIFY (the §8.14 expedition ran a mage, not a
+        // mystic — an M6+ expedition item).
         if let Some(msg) = spell.cast_msg_b.and_then(|id| self.content.messages.get(&id)) {
             let args = text::CastMsgArgs {
                 caster: &caster_name,
@@ -4815,7 +4839,11 @@ impl Core {
     /// terminates poison-carrying slots) or 15 SILVER when not — the
     /// constants ride in the silver arg of check_currency (live: 150
     /// copper, oracle_healer2.raw; the 25-silver poisoned price is
-    /// decompile-only — ORACLE-VERIFY, needs a poisoned live probe).
+    /// decompile-only — STILL ORACLE-VERIFY: §8.14's live poisoned cure
+    /// ran through the Silvermere TEMPLE healer, a textblock service
+    /// with its own menu and prices — Cure Poison 10 gold, "The healer
+    /// casts cure poison on you!" — not this healer-shop path; the cure
+    /// itself, counter to zero + zero further ticks, is measured).
     fn buy_healer_service(&mut self, session: SessionId, want: &str) -> Resolution {
         let ratios = self.config.coin_ratios;
         if word_prefix_match("healing", want) {
@@ -5603,6 +5631,12 @@ impl Core {
                 // melee-form-0 fallback (26805-26813) is unreachable with
                 // shipped data (every kind-2 form names a live spell) and
                 // is not mirrored — a bad form skips to the next swing.
+                // M6 PENDING (§8.14 divergence note): the live cast form
+                // RETARGETS freely — the moaning spirit alternated casts
+                // between an unengaged bystander and a downed body, per
+                // round, independent of melee engagement — while we fire
+                // only at the engagement target. Faithful retargeting
+                // needs the M6 aggro/room-target model.
                 if self.monster_cast_at_player(id, template, location, &form, victim) {
                     return;
                 }
@@ -5840,9 +5874,12 @@ impl Core {
     ///    an unresolvable id skips the swing.
     /// 2. Whole-cast match-type gate {0,2,6,8} (23015-23016): matches
     ///    OUTSIDE the set route to `monster_cast_area` (23777-23779) —
-    ///    SLICE 6 PENDING, marker at the gate. Target MODE never routes:
-    ///    a mode-3 single like mummy's `breathes` (84, match 0) resolves
-    ///    right here; mode only gates the elemental-resist scale (23091).
+    ///    NOT IMPLEMENTED; 101 shipped forms are inert (see the LOUD
+    ///    marker at the gate below — the M5 close-out left the
+    ///    implement-now-vs-defer-to-M6 decision open). Target MODE never
+    ///    routes: a mode-3 single like mummy's `breathes` (84, match 0)
+    ///    resolves right here; mode only gates the elemental-resist
+    ///    scale (23091).
     /// 3. Energy: the form's cost word (`template+0x190`) gates against
     ///    the monster pool (23041) — an unaffordable cast is SILENT and
     ///    moves to the next swing (23773-23775 return 1), unlike the melee
@@ -5895,13 +5932,35 @@ impl Core {
             spell.match_type,
             MatchType::Single0 | MatchType::Single2 | MatchType::Item6 | MatchType::Special8
         ) {
-            // SLICE 6 PENDING: monster_cast_area (23777-23779). The DLL
-            // routes on MATCH TYPE alone — this else covers every form
-            // outside {0,2,6,8}, NOT target mode (a mode-3 single like the
-            // mummy's `breathes` 84 stays on the single path above).
-            // Census (load_real_db.rs kind-2 sweep): match 1 x1, 11 x1,
-            // 12 x99 — 101 shipped forms (the breath weapons) skip
-            // silently here until the area sibling lands.
+            // ============================================================
+            // NOT IMPLEMENTED: `monster_cast_area` (the DLL sibling that
+            // monster_cast 23777-23779 routes every match ∉ {0,2,6,8}
+            // into). This was slice-6 scope and did NOT land — the M5
+            // close-out left the decision open: implement now vs defer
+            // to M6 (design doc 2026-07-16-m5-magic-design.md, slice-6
+            // status). Until it lands, these forms skip SILENTLY here —
+            // no lines, no energy spend, no damage.
+            //
+            // Blast radius (census pinned by load_real_db.rs
+            // `kind2_cast_forms_all_resolve_within_the_dispatch`): match
+            // 1 x1 (hooded man 1000 `blacknight`), match 11 x1 (wererat
+            // plague-crafter 361 `plague`), match 12 x99 — 101 shipped
+            // forms are INERT: adult red dragon 185 `dragonfire`,
+            // Zanthus the Lich 215 `hellstorm`, ice sorceress 108
+            // `freeze`, high druid 122 `chaos storm`, gorgon 222's
+            // greenish cloud, efreeti 416's whirlwind of fire, and every
+            // other area-breath/storm caster deal NO cast damage at all.
+            // (The mummy's `breathes` 84 and the death dog's scream 83
+            // are match 0 — they resolve on the live single path above,
+            // NOT here.) The skip-silently behavior itself is pinned by
+            // tests/monster_cast.rs
+            // `area_match_forms_skip_silently_pending_monster_cast_area`.
+            // The routing gate is DLL-faithful; only the area sibling is
+            // missing. Whoever implements it: mirror monster_cast_area
+            // from the decompile (room-wide player sweep, per-victim
+            // save, the §8.14 fan-out shapes), then flip the census test
+            // and the marker test.
+            // ============================================================
             return false;
         }
 
@@ -6303,10 +6362,17 @@ impl Core {
         false
     }
 
-    /// `monster_display_spell_success` (decompile 21663-21772): the victim
-    /// gets castmsgb LINE 2 — the target-audience line — rendered with the
-    /// monster's name as the caster arg, the room gets LINE 3; there is no
-    /// caster line (the caster has no terminal). The odd `msg_style`
+    /// `monster_display_spell_success` (decompile 21663-21772; the hit
+    /// fan-out MEASURED §8.14): the victim gets castmsgb LINE 2 — the
+    /// target-audience line — rendered with the monster's name as the
+    /// caster arg, the room gets LINE 3; there is no caster line (the
+    /// caster has no terminal). §8.14 pinned the shape live on a
+    /// simultaneous victim/room pair (moaning spirit's `draws the
+    /// breath` 82): the victim line carries the damage number, the room
+    /// line does not — message data, the inverse of the melee pair
+    /// (§8.10 room melee lines DO print damage) — and the grammar varies
+    /// per record (bare `Moaning spirit draws ...` vs the dragonfish's
+    /// `The fat dragonfish breathes ...`). The odd `msg_style`
     /// branch (21735-21769) binds the same reduced orders as the player
     /// renderer. A spell without a castmsgb record falls back to the
     /// default pair "%s cast %s on you." / "%s cast %s on %s." (21687-

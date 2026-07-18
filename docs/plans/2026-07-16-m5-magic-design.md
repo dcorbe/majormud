@@ -50,6 +50,46 @@ converts through `ratios[0]` like the healer services (§8.12's
 copper-only mystic paid 50/100 copper for the receipts' 5/10; we had been
 charging the raw value as copper). Next: slice 6 (monster casting).
 
+Slice 6 STATUS (2026-07-18) — landed, with ONE known open item. What
+landed: the kind-2 cast dispatch in the monster attack driver (flat
+success % as a strict `genrdn(0,100) <` compare, the whole cast inside
+the form's energy gate — full cost on a landed cast, half floored at 1
+on a resist/fizzle, silent skip when unaffordable); the player-side
+saving throw (SpellImmu auto-resist independent of the chance roll,
+`min(mr/2, 97)` — the 97 cap is one BELOW the player-cast path's 98);
+the instant-effect table at the player (Damage/DamageMR/Drain/Poison/
+Summon/EnergyLevel/hunger/thirst) and the duration entry via the
+`monster_add_cast_spell_to_user` semantics (refresh only if the new
+value EXCEEDS the stored one, fixed duration, display only on a real
+write, full refund + silent abort on a rejected entry, poison
+hard-write AFTER the entry — these §6 spec corrections are commit
+4952ce0); monster 5-slot arrays with reduced upkeep and a termination
+that reverses only Enslave + Poison, no EndCast chain; live poison
+delivery end to end; Summon spawns; player-side Fear-flee; AlterSpDmg
+folds. Oracle §8.14 measured the hit fan-out live (victim castmsgb line
+WITH the damage number, room line WITHOUT — a simultaneous pair; no
+cast-level scaling beyond the record band for spells 82/359), the full
+poison lifecycle (`st` "You are Poisoned!", "You feel ill." ticks net
+of regen, temple-healer cure), the flat -200 death floor, and free
+per-round cast retargeting (an M6-tagged divergence note sits in the
+driver); the resist and fizzle lines stay decompile-only — every
+reachable caster carried a 100% form. Goldens: tests/monster_cast.rs
+(30 tests) + the spell_scenario slice-6 companion (65% caster fight +
+venom lifecycle, seeded).
+
+KNOWN OPEN ITEM (decision pending — implement now vs defer to M6):
+`monster_cast_area`, the DLL sibling that every kind-2 form with match
+∉ {0,2,6,8} routes into (monster_cast 23777-23779), is NOT implemented.
+Census (pinned by load_real_db.rs): match 1 x1, 11 x1, 12 x99 — 101
+shipped forms are inert (dragonfire, hellstorm, chaos storm, the gorgon
+breath...; the mummy's `breathes` 84 and death dog's scream 83 are
+match 0 and LIVE on the single path). Until it lands those casters deal
+no cast damage at all; the skip is silent before the energy gate. Loud
+marker at the gate in `monster_cast_at_player`; the census test and the
+skip test flip when it lands. Also on the close-out punch list: the
+`st` "You are Poisoned!" bare-counter sheet line (MEASURED §8.14, not
+rendered yet — ordering vs the DescMsg active lines is unmeasured).
+
 ## Slice 1 — Content layer: the full Spell record
 
 `Spell` in `content.rs` grows from 6 fields to the full cast-path record,

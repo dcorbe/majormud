@@ -325,8 +325,13 @@ pub fn cast_resisted_room(target: &str, caster: &str, spell: &str) -> String {
 
 // --- monster casts (monster_cast 0x27cc3; spellcasting.md §6). The DLL
 // --- prefixes each with an ANSI prompt-redraw blob (DAT_004812d1), not
-// --- part of the message text. All decompile-extracted; strings read
-// --- from the binary at their cited addresses.
+// --- part of the message text. The HIT fan-out is MEASURED (§8.14:
+// --- castmsgb victim line WITH damage / room line per the record,
+// --- typically without — moaning spirit 82, dragonfish 359); the
+// --- resist/fizzle families and the record-less default pair below
+// --- remain decompile-extracted, read from the binary at their cited
+// --- addresses (every §8.14-reachable caster carried a 100% form and
+// --- never rolled a resist).
 
 /// DLL 004812fb ("You resisted %s's cast of %s.") — the victim's line of
 /// the monster-cast resist family (decompile monster_cast 23067-23068);
@@ -599,14 +604,18 @@ pub fn not_poisoned(coins: &str) -> String {
 
 /// DLL string 0xbd28d (" and your poisoning is cured.") — the healer's
 /// poisoned curing purchase. Trailing PERIOD, unlike [`not_poisoned`]'s
-/// bang. ORACLE-VERIFY: no poisoned live capture exists yet.
+/// bang. ORACLE-VERIFY: still no capture of THIS string — §8.14's live
+/// poisoned cure went through the Silvermere Temple healer, a TEXTBLOCK
+/// service (10 gold, "The healer casts cure poison on you!"), not the
+/// healer-shop path this string belongs to.
 pub fn poisoning_cured(coins: &str) -> String {
     format!("You hand over {coins} and your poisoning is cured.")
 }
 
-/// DLL string 0xc775d ("You feel ill.") — the slow-tick poison line
-/// (`regeneration.md` §4, decompile 19518-19524). ORACLE-VERIFY: never
-/// measured live (needs a poisoned character).
+/// VERIFIED (§8.14, patched-counter lifecycle): the slow-tick poison line
+/// (`regeneration.md` §4, decompile 19518-19524; DLL string 0xc775d) —
+/// measured live at counter 5: the line + counter damage + regen in the
+/// SAME tick (net -4), zero ticks after the healer cure.
 pub const YOU_FEEL_ILL: &str = "You feel ill.";
 
 /// A copper amount as coin words.

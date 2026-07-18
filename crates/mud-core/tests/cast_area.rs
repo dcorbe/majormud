@@ -5,8 +5,9 @@
 //! refusal is a real pre-charge gate; explicit target words refuse
 //! kind-keyed before any cost; success prints the caster line and ONE
 //! room line (no per-target lines, no damage numbers, no engagement);
-//! duration areas die silently on the monster side until slice-6 monster
-//! slots exist. Magnitude splits by target count for 3/5/9/10 only.
+//! duration areas enter the monsters' 5-slot tables silently (slice 6 —
+//! no player view ever hears the monster leg). Magnitude splits by
+//! target count for 3/5/9/10 only.
 
 use std::collections::BTreeMap;
 
@@ -154,8 +155,9 @@ fn world() -> Content {
             "%s casts %s on the room!".into(),
         ],
     });
-    // A DescMsg record that must NEVER print on the area path (monster
-    // slots are slice 6; §8.13: nothing on any player view).
+    // A DescMsg record that must NEVER print on the area path (the
+    // entries land in MONSTER slots, which have no terminal; §8.13:
+    // nothing on any player view).
     content.add_message(Message {
         id: MessageId(953),
         lines: vec![
@@ -421,8 +423,14 @@ fn area_success_mirrored_lines_no_per_target_output_no_engagement() {
             "no player slot entries"
         );
     }
-    // Duration areas apply nothing to monsters until slice-6 slots.
-    assert_eq!(core.monster_hp(rat), Some(1000), "monster untouched");
+    // The duration debuff entered the RAT's 5-slot table silently
+    // (slice 6); its HP is untouched.
+    assert_eq!(core.monster_hp(rat), Some(1000), "monster HP untouched");
+    let slots = core.monster_active_spells(rat).expect("rat lives");
+    assert!(
+        slots.iter().any(|s| s.spell == Some(GLARE)),
+        "glare entered the monster slots: {slots:?}"
+    );
 }
 
 #[test]
@@ -458,7 +466,9 @@ fn area_generic_room_frame_and_silent_monster_side() {
 fn poison_cloud_family_no_longer_self_poisons() {
     // The Task-5 regression note: match-12 poison areas routed through
     // the benign SELF path and poisoned the caster. The area path must
-    // leave the caster clean (monster poison counters are slice 6).
+    // leave the caster clean (the duration entry rides the MONSTERS'
+    // slots since slice 6; the area leg never hard-writes poison —
+    // game.rs area_cast, decompile 38701-38746).
     let (mut core, zin, _, _) = stage();
     core.spawn_monster(RAT, TOWER).expect("fixture template");
     core.drain_events();

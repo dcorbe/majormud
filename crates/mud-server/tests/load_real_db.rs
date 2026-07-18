@@ -86,8 +86,10 @@ fn kind2_cast_forms_all_resolve_within_the_dispatch() {
     // for an unresolvable spell id, and every kind-2 form resolves. The
     // match-type census is exact — singles {0,2,6,8} take the live
     // single-target path (only 0 and 8 ship); everything else (1, 11, 12
-    // here) is the match-gate ELSE that routes to monster_cast_area,
-    // slice-6 pending. No shipped form falls outside the two buckets.
+    // here) is the match-gate ELSE that routes to monster_cast_area —
+    // NOT IMPLEMENTED, the M5 close-out's known open gap (loud marker in
+    // game.rs monster_cast_at_player; those 101 forms are inert). No
+    // shipped form falls outside the two buckets.
     use mud_core::content::SpellId;
     use std::collections::BTreeMap;
     let content = content_db::load(&db_path()).expect("load content db");

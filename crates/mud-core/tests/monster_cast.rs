@@ -1,6 +1,10 @@
 //! Monster casting — the kind-2 attack-form dispatch, the player-side
 //! saving throw and the instant-effect table (`re/docs/spellcasting.md` §6;
 //! decompile `monster_cast` 22949-23785, driver cast branch 26796-26806).
+//! The hit fan-out (victim castmsgb line with damage, room line per the
+//! record — typically without) is MEASURED §8.14; the resist and fizzle
+//! families remain decompile-only (every §8.14-reachable caster carried a
+//! 100% form and never rolled a resist).
 
 use mud_core::ability::Ability;
 use mud_core::content::{
@@ -725,10 +729,14 @@ fn benign_mode_single_match_forms_take_the_single_target_path() {
 
 #[test]
 fn area_match_forms_skip_silently_pending_monster_cast_area() {
-    // Corrected routing marker: match ∉ {0,2,6,8} routes to
-    // monster_cast_area in the DLL (23777-23779). Census
-    // (load_real_db.rs): match 1 x1, 11 x1, 12 x99 — 101 shipped forms
-    // wait there; until it lands they skip before the energy gate.
+    // Pins the KNOWN OPEN GAP (see the loud marker in game.rs
+    // monster_cast_at_player): match ∉ {0,2,6,8} routes to
+    // monster_cast_area in the DLL (23777-23779), which we do NOT
+    // implement — M5 closed with the implement-vs-defer-to-M6 decision
+    // open. Census (load_real_db.rs): match 1 x1, 11 x1, 12 x99 — 101
+    // shipped forms (dragonfire, hellstorm, chaos storm, ...) are inert;
+    // until the sibling lands they skip before the energy gate. When it
+    // lands, THIS TEST must flip to assert the area fan-out instead.
     let mut core = Core::new(world(shaman(GUST, 101, 400)), config());
     let (s, m) = engage(&mut core, HUMAN);
     let before = core.current_hp(s);

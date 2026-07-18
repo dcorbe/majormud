@@ -28,14 +28,21 @@
 //! surface (pre-charge no-effect refusal with a player present, the
 //! caster + single room fan-out lines, per-monster damage with a kill,
 //! the bystander untouched).
+//!
+//! The slice-6 companion (`caster_monster_fight_and_the_live_poison_
+//! lifecycle`, MEASURED §8.14 where noted): a 65% caster monster lands
+//! and fizzles casts at the player (victim line WITH the damage number,
+//! room line WITHOUT — the record-8455 fan-out), then a venom caster
+//! runs the live poison lifecycle end to end (slot entry, counter
+//! hard-write, the "You feel ill." slow tick, termination reversal).
 
 use std::collections::BTreeMap;
 
 use mud_core::ability::Ability;
 use mud_core::content::{
-    Class, ClassId, Content, Direction, Element, Exit, Item, ItemId, MatchType, Message,
-    MessageId, Monster, MonsterId, Race, RaceId, Room, RoomId, SaveClass, ScalePair, Shop, ShopId,
-    ShopStock, Spell, SpellId, StatBlock, TargetMode,
+    AttackForm, Class, ClassId, Content, Direction, Element, Exit, Item, ItemId, MatchType,
+    Message, MessageId, Monster, MonsterId, Race, RaceId, Room, RoomId, SaveClass, ScalePair,
+    Shop, ShopId, ShopStock, Spell, SpellId, StatBlock, TargetMode,
 };
 use mud_core::game::{Core, CoreConfig, Event, Gender, Player, SessionId};
 
@@ -53,10 +60,30 @@ const FILTHBUG: MonsterId = MonsterId(7);
 const SHOCKWAVE: SpellId = SpellId(140);
 /// The 5 HP area-kill probe (dies to any 12..=13 sweep roll).
 const WISP: MonsterId = MonsterId(8);
+/// The slice-6 caster monster (§8.14's moaning spirit 66): one kind-2
+/// form, 65% (the dark cleric's sub-100 band — the fizzle probe), spell
+/// DRAW_BREATH at cast level 8.
+const SPIRIT: MonsterId = MonsterId(9);
+/// The venom caster (§8.14's tentacled abomination 37 shape): kind-2
+/// form at 101% (deterministic), spell SPIT_VENOM.
+const HORROR: MonsterId = MonsterId(10);
+/// The real `draws the breath` (82, MEASURED §8.14): instant Drain,
+/// bounds 4..12 with zero scaling pairs (no visible cast-level scaling
+/// observed live), castmsgb = the record-8455 mirror — victim line WITH
+/// the damage number, room line WITHOUT one.
+const DRAW_BREATH: SpellId = SpellId(150);
+/// The real `spits a stream of venom` (79) shape: duration Poison(6) +
+/// the record-8575 DescMsg ("You feel ill." entry line / "The effects of
+/// the poison wear off!" expiry). Duration fixture-shortened 100 -> 12 so
+/// the lifecycle (entry, one slow tick, expiry) fits one test window.
+const SPIT_VENOM: SpellId = SpellId(151);
 
 /// Newhaven-shaped shop room (protected, shop-active) with the lair north.
 const SHOP_ROOM: RoomId = RoomId { map: 1, room: 1 };
 const LAIR: RoomId = RoomId { map: 1, room: 2 };
+/// The venom caster's den, east of the shop (LAIR keeps its single south
+/// exit — the round-1 golden pins that exits line).
+const PIT: RoomId = RoomId { map: 1, room: 3 };
 
 /// The seed the whole transcript is pinned under ("MMUD_WG!", the
 /// CoreConfig default — restated here so the golden numbers below cannot
@@ -84,7 +111,28 @@ fn world() -> Content {
         exit_type: 0,
         trigger_msg: None,
     });
+    shop_room.exits[Direction::East as usize] = Some(Exit {
+        dest: PIT,
+        exit_type: 0,
+        trigger_msg: None,
+    });
     content.add_room(shop_room);
+    let mut pit = Room {
+        id: PIT,
+        name: "Slimy Pit".into(),
+        description: vec![],
+        room_type: 0,
+        attributes: 0,
+        shop: None,
+        placed_items: vec![],
+        exits: Default::default(),
+    };
+    pit.exits[Direction::West as usize] = Some(Exit {
+        dest: SHOP_ROOM,
+        exit_type: 0,
+        trigger_msg: None,
+    });
+    content.add_room(pit);
     let mut lair = Room {
         id: LAIR,
         name: "Dusty Cellar".into(),
@@ -144,6 +192,84 @@ fn world() -> Content {
         loot: vec![],
         attacks: Default::default(),
     });
+    // §8.14's moaning spirit shape: cast-only (no melee form), 65% cast
+    // success — the dark cleric/priest band the expedition could NOT
+    // reach live (every reachable caster was 100%), so the fizzle line
+    // here rests on the decompile strings (00481338/00481369). Energy
+    // 400 of the 1000 pool bounds it to 2-4 attempts per round.
+    content.add_monster(Monster {
+        id: SPIRIT,
+        name: "moaning spirit".into(),
+        move_msg: None,
+        death_msg: None,
+        abilities: vec![],
+        hitpoints: 400,
+        experience: 30,
+        exp_multi: 1,
+        armour_class: 0,
+        damage_resist: 0,
+        magic_resist: 0,
+        bs_defence: 0,
+        energy: 1000,
+        coins: [0; 5],
+        weapon: None,
+        loot: vec![],
+        attacks: [
+            AttackForm {
+                kind: 2,
+                accuracy: DRAW_BREATH.0 as i16, // spell id
+                weight: 100,
+                min_damage: 65, // cast success %
+                max_damage: 8,  // cast level (§8.14: spirit form lvl 8)
+                hit_msg: None,
+                dodge_msg: None,
+                miss_msg: None,
+                energy: 400,
+            },
+            AttackForm::default(),
+            AttackForm::default(),
+            AttackForm::default(),
+            AttackForm::default(),
+        ],
+    });
+    // The venom caster: 101% keeps the seeded transcript free of fizzle
+    // noise (the abomination's own % is unmeasured — it sits 71 rooms
+    // deep, §8.14 survey).
+    content.add_monster(Monster {
+        id: HORROR,
+        name: "tentacled horror".into(),
+        move_msg: None,
+        death_msg: None,
+        abilities: vec![],
+        hitpoints: 400,
+        experience: 30,
+        exp_multi: 1,
+        armour_class: 0,
+        damage_resist: 0,
+        magic_resist: 0,
+        bs_defence: 0,
+        energy: 1000,
+        coins: [0; 5],
+        weapon: None,
+        loot: vec![],
+        attacks: [
+            AttackForm {
+                kind: 2,
+                accuracy: SPIT_VENOM.0 as i16,
+                weight: 100,
+                min_damage: 101, // always passes genrdn(0,100) < pct
+                max_damage: 6,   // cast level (duration is flat anyway)
+                hit_msg: None,
+                dodge_msg: None,
+                miss_msg: None,
+                energy: 400,
+            },
+            AttackForm::default(),
+            AttackForm::default(),
+            AttackForm::default(),
+            AttackForm::default(),
+        ],
+    });
     // The mmis castmsgb shape (message 3242; line 3's damage is %s).
     content.add_message(Message {
         id: MessageId(900),
@@ -183,6 +309,43 @@ fn world() -> Content {
             "You cast %s on the room!".into(),
             "%s casts %s on you!".into(),
             "%s casts %s on the room!".into(),
+        ],
+    });
+    // The `draws the breath` castmsgb — the REAL record 8455, verbatim
+    // (MEASURED §8.14: "Moaning spirit draws the breath from your body
+    // for 11 damage!" / room "Moaning spirit draws the breath from
+    // Zinvar's body!"). Even-style target line binds (caster, spell,
+    // damage); the room line binds (caster, spell, target) and carries
+    // NO damage slot — the victim alone sees the number, the exact
+    // inverse of the melee pair (§8.10 room lines DO print damage).
+    content.add_message(Message {
+        id: MessageId(906),
+        lines: vec![
+            "You %s from %s for %d damage!".into(),
+            "%s %s from your body for %d damage!".into(),
+            "%s %s from %s's body!".into(),
+        ],
+    });
+    // The venom-family DescMsg — the REAL record 8575, verbatim: line1
+    // the wear-off, line3 the entry active line (§8.14 pinned the tick
+    // line "You feel ill." live; the DescMsg strings themselves are
+    // DB-read).
+    content.add_message(Message {
+        id: MessageId(907),
+        lines: vec![
+            "The effects of the poison wear off!".into(),
+            String::new(),
+            "You feel ill.".into(),
+        ],
+    });
+    // The `spits a stream of venom` castmsgb — the REAL record 8446,
+    // verbatim: no damage slot on any line (the payload is pure poison).
+    content.add_message(Message {
+        id: MessageId(908),
+        lines: vec![
+            "You %s at %s!".into(),
+            "The %s %s at you!".into(),
+            "The %s %s at %s!".into(),
         ],
     });
     content.add_item(Item {
@@ -358,6 +521,73 @@ fn world() -> Content {
         msg_style: 0,
     };
     content.add_spell(shockwave);
+    // The real `draws the breath` (82) shape: instant (Drain, 0) rolled
+    // over the record band 4..12, every ScalePair NONE (§8.14: rolls
+    // 4,5,8,11,12,12 all inside 4..12 at cast level 8 — no visible
+    // scaling), msg_style 32 (even), MODE 3 like the mummy's breathes
+    // (routing keys on MATCH 0 alone; mode only skips the elemental
+    // scale). SaveClass::None: §8.14 never captured a resist (8 casts,
+    // zero resist lines) and the resist family stays decompile-only.
+    let draw_breath = Spell {
+        id: DRAW_BREATH,
+        name: "draws the breath".into(),
+        short_name: "drbr".into(),
+        cast_msg_a: None,
+        cast_msg_b: Some(MessageId(906)),
+        abilities: vec![(Ability::Drain, 0)],
+        level_cap: 0,
+        round_cost: 0,
+        required_power: 5,
+        min_base: 4,
+        max_base: 12,
+        target_mode: TargetMode::Benign,
+        save_class: SaveClass::None,
+        base_chance: 0, // the monster path never reads difficulty
+        duration_per_level: 0,
+        match_type: MatchType::Single0,
+        duration: 0,
+        element: Element::Magic,
+        class_gate_group: 0,
+        mana_cost: 0,
+        max_increase: ScalePair::NONE,
+        required_class_level: 1,
+        min_increase: ScalePair::NONE,
+        duration_increase: ScalePair::NONE,
+        msg_style: 32,
+    };
+    content.add_spell(draw_breath);
+    // The real `spits a stream of venom` (79) shape: offensive duration
+    // Poison(6) + DescMsg, duration 12 (real: 100 — shortened so entry,
+    // one slow tick and expiry fit one window; §6.5 fixed duration, no
+    // caster scaling either way).
+    let spit_venom = Spell {
+        id: SPIT_VENOM,
+        name: "spits a stream of venom".into(),
+        short_name: "spit".into(),
+        cast_msg_a: None,
+        cast_msg_b: Some(MessageId(908)),
+        abilities: vec![(Ability::Poison, 6), (Ability::DescMsg, 907)],
+        level_cap: 0,
+        round_cost: 0,
+        required_power: 5,
+        min_base: 6,
+        max_base: 10,
+        target_mode: TargetMode::Offensive1,
+        save_class: SaveClass::None,
+        base_chance: 0,
+        duration_per_level: 0,
+        match_type: MatchType::Single0,
+        duration: 12,
+        element: Element::Magic,
+        class_gate_group: 0,
+        mana_cost: 0,
+        max_increase: ScalePair::NONE,
+        required_class_level: 1,
+        min_increase: ScalePair::NONE,
+        duration_increase: ScalePair::NONE,
+        msg_style: 32,
+    };
+    content.add_spell(spit_venom);
     content
 }
 
@@ -444,6 +674,17 @@ fn drive_all(core: &mut Core, s: SessionId, views: &mut [(SessionId, String)], l
     let events = core.drain_events();
     for (sid, transcript) in views.iter_mut() {
         transcript.push_str(&text_to(&events, *sid));
+    }
+}
+
+/// Runs `n` raw game ticks, fanning every drained event into its view.
+fn tick_all(core: &mut Core, views: &mut [(SessionId, String)], n: usize) {
+    for _ in 0..n {
+        core.tick();
+        let events = core.drain_events();
+        for (sid, transcript) in views.iter_mut() {
+            transcript.push_str(&text_to(&events, *sid));
+        }
     }
 }
 
@@ -834,4 +1075,158 @@ fn area_cast_sweeps_monsters_and_spares_the_bystander() {
         "no slot on the bystander"
     );
     assert_eq!(core.current_mana(ora), 10, "bystander mana untouched");
+}
+
+/// Slice-6 golden scenario (MEASURED §8.14 for the hit fan-out and the
+/// poison lifecycle; the fizzle family is decompile-only — every §8.14
+/// caster in reach carried a 100% form): Vexil engages the moaning
+/// spirit (kind-2 form, 65%, `draws the breath` — instant Drain with
+/// the record-8455 castmsgb), with Kaimon watching. Under SEED the 65%
+/// band produces both outcomes: landed casts (victim line WITH the
+/// damage number, room line WITHOUT — the exact inverse of §8.10's
+/// melee pair) and the "attempted to cast ... but failed." fizzle pair.
+/// Then the venom phase: the tentacled horror's duration cast enters
+/// Vexil's slot (value 6, fixed duration — §6.5), hard-writes the
+/// poison counter, the slow tick prints "You feel ill." and deals the
+/// counter in HP, and the slot expiry reverses the counter to zero with
+/// the DescMsg wear-off line (victim-private, like every expiry).
+#[test]
+fn caster_monster_fight_and_the_live_poison_lifecycle() {
+    let config = CoreConfig {
+        rng_seed: SEED,
+        ..CoreConfig::default()
+    };
+    let mut core = Core::new(world(), config);
+    let vex = core.attach_player(mage());
+    let kai = core.attach_player(body("Kaimon"));
+    core.spawn_monster(SPIRIT, LAIR).expect("fixture template");
+    core.spawn_monster(HORROR, PIT).expect("fixture template");
+    // 200 HP soaks the whole scenario without regen interference (regen
+    // only fires below the derived max).
+    core.set_current_hp(vex, 200);
+    core.drain_events();
+
+    let mut views = vec![(vex, String::new()), (kai, String::new())];
+
+    // --- Phase 1: the 65% caster (ticks 1..=15, rounds t5/t10/t15) ---
+    drive_all(&mut core, vex, &mut views, "n");
+    drive_all(&mut core, kai, &mut views, "n");
+    drive_all(&mut core, vex, &mut views, "attack spirit");
+    tick_all(&mut core, &mut views, 15);
+
+    let (vex_p1, kai_p1) = (views[0].1.clone(), views[1].1.clone());
+    let landed = vex_p1.matches("from your body for").count();
+    let fizzled = vex_p1
+        .matches("The moaning spirit attempted to cast draws the breath at you, but failed.")
+        .count();
+    assert_eq!(landed, 4, "SEED landed casts: {vex_p1:?}");
+    assert_eq!(fizzled, 5, "SEED fizzles: {vex_p1:?}");
+    // HP accounting: every landed drain shows the exact amount it dealt
+    // (SEED rolls 12, 12, 4, 5 — all inside the record band 4..12).
+    assert_eq!(core.current_hp(vex), 200 - 33, "SEED drain total: {vex_p1:?}");
+    // Victim view, in order: the engagement, a landed line (WITH the
+    // damage number), and a fizzle line.
+    assert_in_order(
+        &vex_p1,
+        &[
+            ("engaged", "*Combat Engaged*"),
+            (
+                "landed cast",
+                "Moaning spirit draws the breath from your body for 12 damage!\n",
+            ),
+            (
+                "fizzle",
+                "The moaning spirit attempted to cast draws the breath at you, but failed.\n",
+            ),
+        ],
+    );
+    // Room view: the landed room line has NO damage number (§8.14 — the
+    // simultaneous victim/room pair), the fizzle pair names the victim.
+    assert!(
+        kai_p1.contains("Moaning spirit draws the breath from Vexil's body!\n"),
+        "room hit line: {kai_p1:?}"
+    );
+    assert!(
+        !kai_p1.contains("body for"),
+        "no damage number in any room cast line: {kai_p1:?}"
+    );
+    assert!(
+        kai_p1.contains(
+            "The moaning spirit attempted to cast draws the breath at Vexil, but failed.\n"
+        ),
+        "room fizzle line: {kai_p1:?}"
+    );
+    // The victim's second-person lines stay private.
+    assert!(!kai_p1.contains("your body"), "room: {kai_p1:?}");
+
+    // --- Phase 2: the venom lifecycle (entry t20, slow tick t30, the
+    // 12-tick duration expires on the t54 upkeep — one tick short of the
+    // t55 round, where the live caster would legally re-poison) ---
+    for (_, transcript) in views.iter_mut() {
+        transcript.clear();
+    }
+    drive_all(&mut core, vex, &mut views, "s");
+    drive_all(&mut core, vex, &mut views, "e");
+    drive_all(&mut core, kai, &mut views, "s");
+    drive_all(&mut core, kai, &mut views, "e");
+    drive_all(&mut core, vex, &mut views, "attack horror");
+    let hp_before_venom = core.current_hp(vex);
+    tick_all(&mut core, &mut views, 5); // t20: the entry round
+
+    // Slot entry (monster_add_cast_spell_to_user semantics): value 6,
+    // the FIXED duration (no caster scaling), poison hard-written after
+    // the successful entry.
+    let p = core.player_snapshot(vex);
+    let idx = p.find_active(SPIT_VENOM).expect("venom entered a slot");
+    assert_eq!(p.active_spells[idx].value, 6);
+    assert_eq!(p.active_spells[idx].remaining, 12, "fixed duration");
+    assert_eq!(core.poison(vex), 6, "counter hard-written at entry");
+    assert_eq!(core.current_hp(vex), hp_before_venom, "poison deals nothing at entry");
+
+    // Through the t30 slow tick to the t54 expiry upkeep.
+    tick_all(&mut core, &mut views, 34);
+    assert_eq!(core.poison(vex), 0, "termination reversed the counter");
+    let p = core.player_snapshot(vex);
+    assert!(
+        p.active_spells.iter().all(|slot| slot.spell.is_none()),
+        "slot empty after expiry"
+    );
+    // Exactly one slow tick fired while poisoned: -6 HP, no more.
+    assert_eq!(core.current_hp(vex), hp_before_venom - 6, "one poison tick");
+
+    let [(_, vex_p2), (_, kai_p2)] = &views[..] else {
+        unreachable!()
+    };
+    // Victim view, in order: the castmsgb entry line, the DescMsg active
+    // line, the slow-tick poison line (the same "You feel ill." — §8.14
+    // measured the tick line live), then the wear-off.
+    assert_in_order(
+        vex_p2,
+        &[
+            ("venom line", "The tentacled horror spits a stream of venom at you!\n"),
+            ("entry active line", "You feel ill.\n"),
+            ("slow-tick line", "You feel ill.\n"),
+            ("wear-off", "The effects of the poison wear off!\n"),
+        ],
+    );
+    assert_eq!(
+        vex_p2.matches("You feel ill.").count(),
+        2,
+        "entry + exactly one slow tick: {vex_p2:?}"
+    );
+    // Repeat casts while the slot holds 6 abort silently (6 never
+    // EXCEEDS 6): one venom line total.
+    assert_eq!(
+        vex_p2.matches("spits a stream of venom at you!").count(),
+        1,
+        "set-if-greater rejects the refresh silently: {vex_p2:?}"
+    );
+    // Room view: the third-person cast line only — the poison tick and
+    // the wear-off are victim-private.
+    assert!(
+        kai_p2.contains("The tentacled horror spits a stream of venom at Vexil!\n"),
+        "room venom line: {kai_p2:?}"
+    );
+    assert!(!kai_p2.contains("You feel ill."), "tick is private: {kai_p2:?}");
+    assert!(!kai_p2.contains("wear off"), "expiry is private: {kai_p2:?}");
 }
