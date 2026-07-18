@@ -33,6 +33,7 @@ fn thug(loot: Vec<LootSlot>) -> Monster {
         weapon: Some(ItemId(92)),
         loot,
         attacks: [AttackForm::default(); 5],
+        ..Default::default()
     }
 }
 
@@ -47,6 +48,7 @@ fn world(loot: Vec<LootSlot>) -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     content.add_item(Item {
         id: ItemId(1356),

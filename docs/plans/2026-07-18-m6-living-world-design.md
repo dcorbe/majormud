@@ -40,6 +40,22 @@ quirk) — building the spawner first would mean re-goldening it when
 aggression lands. Unique timers last: a spawner refinement plus the
 milestone's only persistence work.
 
+**Slice 1 COMPLETE (2026-07-18):** all offsets pinned and disk-verified (monsters.md
+§2 copy map, vir_schemas.md spawn blocks) — behaviour←`alignment`@0xae,
+aggression←`follow`@0x6e, roam/zone←`group`@0x54 (dual-use mongen region),
+herd mode←`type`@0xaa, herd id←`something3`@0x6c, follower cap←`nothing2`@0xac,
+forced monster = u4@0x468 (`bynumber>>16` — Nightmare misframe). Constants
+extracted: spawn kick **5 s**, default respawn **5 min** (`delay` override,
+minutes), respawn clock = minutes-since-midnight with +1440 midnight wrap
+(`DAT_0047963a` = boot minute, not a threshold), fairness cap 3/medium-tick,
+spawn-disable = crash-recovery flag only. Discoveries: lair/permanent monsters
+(shopkeepers — `permnpc`) are generated at **module boot**, not player approach
+(slice 4 must do the same); spawn-type-2 rooms bypass the respawn timer; monster
+HP copied from the word@0x78 (doc corrected); `expmulti`@0x58 doubles as pack
+herd rank. Room/Monster structs + loader extended with pin tests
+(Slimy Sewer Tunnel 9/42, Gurbultis 27) and distribution tripwires; boss/forced
+ids validate at boot (all 485+29 resolve).
+
 ## Slice 1 — Schemas & constants (zero behavior change)
 
 - **Offset pinning:** from the decompile, pin which WCCKNMSR disk offsets

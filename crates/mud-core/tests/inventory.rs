@@ -46,6 +46,7 @@ fn world() -> Content {
             quantity: 1,
         }],
         exits: Default::default(),
+        ..Default::default()
     });
     content.add_item(quarterstaff());
     content.add_item(manual());

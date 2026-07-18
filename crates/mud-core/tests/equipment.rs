@@ -51,6 +51,7 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     content.add_item(quarterstaff());
     content.add_item(helmet());

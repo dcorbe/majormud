@@ -18,6 +18,7 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     };
     // Type-10 action exit south, phrases in message 8564.
     dock.exits[mud_core::content::Direction::South as usize] = Some(Exit {
@@ -35,6 +36,7 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     let mut bank_room = Room {
         id: RoomId { map: 1, room: 297 },
@@ -45,6 +47,7 @@ fn world() -> Content {
         shop: Some(ShopId(8)),
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     };
     bank_room.exits[mud_core::content::Direction::North as usize] = Some(Exit {
         dest: RoomId { map: 1, room: 1 },

@@ -15,6 +15,7 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     content.add_race(Race {
         id: RaceId(2),

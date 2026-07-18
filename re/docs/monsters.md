@@ -110,12 +110,17 @@ generate_monster(room#, map,
 ### Respawn timing after a kill
 
 On a monster's death `check_kill_monster` (`0x24eb7`, see `death.md` §4) decrements
-`room+0x606` and stamps **`room+0x562 = FUN_0046c3b8()`** (a future time), nudged up by
-`0x5a0` if below `DAT_0047963a`. `generate_monster` refuses to spawn while that timer has
-not elapsed (`0x24361` lines checking `room+0x562` against `now()+FUN_0046c3b8()` minus the
-`room+0x5bc`/`DAT_00482d0c` interval). So a slain monster's slot only refills after its
-room-level cooldown — this is the classic MajorMUD "respawn timer," per-room, not
-per-monster.
+`room+0x606` and stamps `room+0x562` with the kill time in **minutes-since-midnight**:
+`FUN_0046c3b8(now())` = `(t>>11)*60 + ((t&0x7FF)>>5)` from the DOS-packed time (the
+2-second field is discarded). The `+0x5a0` nudge is **1440 = minutes per day**: applied
+when the stamp falls numerically before the module boot minute `DAT_0047963a` (set once
+in `init__wccmmud` — it is the boot time, not a threshold), keeping the minute clock
+monotonic across midnight. `generate_monster` normalizes "now" the same way
+(lines 20912-20916) and refuses to spawn until more than `room+0x5bc` minutes — or
+**`DAT_00482d0c` = 5 minutes** when zero — have elapsed past the stamp
+(lines 20918-20922). Spawn-type-2 rooms (`room+0x43c == 2`) bypass the timer entirely
+(line 20909). So a slain monster's slot refills after a per-room cooldown — the classic
+MajorMUD "respawn timer," per-room, not per-monster.
 
 **Caps, summarised:** at most **15 live monsters per room** (the `room+0x400` array size,
 enforced by `add_monster_to_room`), further limited by the room's own spawn-count cap
@@ -143,22 +148,31 @@ instance. Sequence:
    (`genrdn(1,100)` with 0x1d/0x62 thresholds — later matches can displace earlier ones).
    With `param_4` set, that exact monster number is used.
 3. **World-population throttle.** If the template carries a spawn counter
-   (`knmsr+0xa6 != 0`): refuse if the counter is exhausted (`knmsr+0xa6 ≤ knmsr+0x54`), and
-   for "1 remaining" apply a real-time cooldown computed from the last-kill stamp
-   (`knmsr+0xb4/+0xb6`, minutes via `calc_minutes_difference`). On success bump
-   `knmsr+0x54` and mark the template dirty. This is the mechanism behind limited-population
-   / rare monsters.
+   (`knmsr+0xa6 != 0`, the `gamelimit` column): refuse if the counter is exhausted
+   (`knmsr+0xa6 ≤ knmsr+0xa8`, `active`), and for "1 remaining" apply a real-time
+   cooldown of `knmsr+0xb2 × 60` minutes (`regentime`, line 20995) computed from the
+   last-kill stamp (`knmsr+0xb4/+0xb6` = `datekilled`/`timekilled`, minutes via
+   `calc_minutes_difference`). On success bump `knmsr+0xa8` and mark the template
+   dirty. This is the mechanism behind limited-population / rare monsters.
+   *(Corrects the earlier `+0x54`-as-active-count reading — `+0x54` is the roam/zone
+   class, §3, and doubles as the mongen region.)*
 4. **Allocate** an instance id (`get_unique_active_monster_number`), zero a 400-byte
    instance struct, then copy template fields into it (name, level, stats, attack table,
-   energy, the behaviour fields of §3/§4). **HP is copied straight from the template
-   (`knmsr[0x18]/[0x19]` → instance current/max HP); it is _not_ rolled.** The only
-   randomised values at birth are the **five coin piles** (`mon+0x3c..0x40` =
-   runic/plat/gold/silver/copper), each `lngrnd(0, knmsr_maxCoin+1)`.
+   energy, the behaviour fields of §3/§4 — full copy map below). **HP is copied
+   straight from the template (the word at `knmsr+0x78`, `hitpoints`, → both instance
+   current HP `+0x18` and max HP `+0x104`, lines 21019/21028); it is _not_ rolled.**
+   The only randomised values at birth are the **five coin piles**
+   (`mon+0xf0/f4/f8/fc/100` = runic/plat/gold/silver/copper), each
+   `lngrnd(0, knmsr_maxCoin+1)` from the maxes at `knmsr+0x108..0x118`
+   (lines 21042-21056). *(Corrects the earlier `knmsr[0x18]/[0x19]`-as-HP and
+   `mon+0x3c` coin claims — the `+0x60`/`+0x64` dwords are the `something2`/
+   `weaponnumber` pair copied to `mon+0xac/+0xb0`.)*
 5. **Carried inventory.** For each of 10 template item slots (`knmsr+0x30·i`): unless a
    per-slot drop-chance roll (`genrdn(1,100)` vs `knmsr+0xfc+i`) fails, attach the item via
    `add_logical_to_monster` (this is the same loot the monster later drops on death).
-6. **Name.** Copy `knmsr+0x34` (template name), or if `knmsr+0x49` (name-generator id) is
-   set, roll a random name via `get_random_name`.
+6. **Name.** Copy `knmsr+0x36` (template name — one word past the earlier `+0x34`
+   guess; lines 21104-21107), or if the dword at `knmsr+0x124` (name-generator id,
+   `piVar5[0x49]`) is set, roll a random name via `get_random_name`.
 7. **Insert & place.** Store the record (`dfaInsertDup`, retrying up to 4 fresh ids on
    collision) and `add_monster_to_room` (§5). Bump `room+0x606` (or set the boss flag if
    this is the room's unique). Pick a **random valid entry direction** (loop over 8 exits,
@@ -166,6 +180,39 @@ instance. Sequence:
    south.*"), then `tell_room` + `display_entry_movement`.
 
 Returns the new instance id, or 0 on any gate failure.
+
+### Template → instance copy map (disk-verified 2026-07-18, slice M6-1)
+
+Pinned from `generate_monster`'s copy block (decompile lines 21012-21111) and
+cross-checked against the consumers (§3/§4) and the sqlite column layout
+(Nightmare `MonsterRecType` — its offsets match the WG3-NT logical record;
+`load_known_monster_into_buffer`/`save_known_monster_from_buffer` read/write the
+raw Btrieve record with no repacking, so **disk offsets == in-memory offsets**;
+independently proven by `load_monster_quickreferences` stepping raw records with
+the same +0x54/+0x5c reads):
+
+| mon | ← knmsr | column | meaning | line |
+|-----|---------|--------|---------|------|
+| `+0x08` | `+0x58` (u4) | `expmulti` | herd rank (dual-use with the exp multiplier) | 21013 |
+| `+0x16`/`+0x114` | `+0x7a` | `energy` | current / max energy | 21018/21031 |
+| `+0x18`/`+0x104` | `+0x78` | `hitpoints` | current / max HP | 21019/21028 |
+| `+0x106` | `+0xae` | `alignment` | **behaviour mode** (§4 taxonomy) | 21029 |
+| `+0x108` | `+0x6e` | `follow` | **aggression** 0-100 | 21030 |
+| `+0x10a`/`+0x10c` | `+0x68`/`+0x6a` | `dr`/`ac` | damage resist / armour class | 21026/21025 |
+| `+0x110` | `+0x74` | `experience` | exp worth (fed to `distribute_experience`) | 21024 |
+| `+0x12c` | `+0x54` | `group` | **roam/zone class** = mongen region | 21032 |
+| `+0x130` | `+0x7c` | `hpregen` | HP regen per slow tick | 21020 |
+| `+0x148` | `+0xaa` | `type` | **herd/leash mode** (0 none, 1/2 pack, 3 lair) | 21033 |
+| `+0xac`/`+0xb0` | `+0x60`/`+0x64` | `something2`/`weaponnumber` | combat pair | 21070/21071 |
+| `+0xb4+4i` | `+0xc0+4i` | `itemnumber_i` | carried item (roll vs `+0xfc+i` `itemdropper_i`) | 21074-21093 |
+
+Template fields read in place (not copied): `+0x6c` `something3` herd id and
+`+0xac` `nothing2` follower cap (move_monster pack logic), `+0xa6`/`+0xa8`
+`gamelimit`/`active` population pair, `+0xb2` `regentime` cooldown factor,
+`+0xb4/+0xb6` kill stamps, `+0xb8` `movemsg` arrival-message id, `+0xbc`
+`deathmsg`, `+0x5c` `index` level (mongen candidate table). PLAUSIBLE only:
+`+0x1be`/`+0x1ae` spawn-/death-time triggers for `FUN_00429bca`; the
+`mon+0x134/+0x136/+0x138/+0x13c ← knmsr+0x1b0..+0x1b8` copies (meaning unchased).
 
 ---
 
@@ -362,13 +409,16 @@ Consolidated from the functions above (offsets are byte offsets into the instanc
 | `+0x16` | current energy (attack budget) — `combat_rounds.md` |
 | `+0x18` | **current HP** (short) |
 | `+0x1a` | **aggro target name** (string; empty = no target) |
-| `+0x22` | directed-travel / paralysis word (patrol coord; 0 = free) |
+| `+0x88` | directed-travel / paralysis word (int-idx 0x22; patrol coord; 0 = free) |
 | `+0x38…` | room **location trail** (9-deep history) |
-| `+0x3c…+0x40` | coin piles (runic/plat/gold/silver/copper) |
-| `+0x8e` | monster **name** (display) |
+| `+0x8e` | monster **name** (display; terminator at `+0xab`) |
+| `+0xf0…+0x100` | coin piles (runic/plat/gold/silver/copper; rolled at spawn) |
 | `+0x104` | **max HP** (short) |
 | `+0x106` | **behaviour mode** (§4 taxonomy) |
 | `+0x108` | **aggression** rating 0–100 (int-idx 0x42) |
+| `+0x110` | **experience worth** (← `knmsr+0x74`; fed to `distribute_experience`) |
+| `+0x120` | home/spawn room (read by `check_kill_monster`) |
+| `+0x12e` | engaged-user number (0xffff = none; set on attack, cleared per energy tick) |
 | `+0x114` | max/regen **energy** — `combat_rounds.md` |
 | `+0x116` | attack-suppression flag (byte) |
 | `+0x124` | **pursuit give-up counter** (byte; >15 ⇒ drop target/despawn) |
@@ -386,23 +436,38 @@ Consolidated from the functions above (offsets are byte offsets into the instanc
 
 ## 7. Open / uncertain items
 
-* **Interval literals.** The spawn cadence `DAT_00482ca8`, the respawn-timer constants
-  `FUN_0046c3b8`/`DAT_0047963a`/`0x5a0`/`DAT_00482d0c`, and the wander fairness cap are all
-  `.data`/helper values not extracted here — mechanism certain, numbers not.
+*(Slice M6-1, 2026-07-18: the interval literals and the template→instance offset map are
+CLOSED — values below and the §2 copy-map table; extraction method: static `.data` reads
+from `wccmmud.dll` validated against the four known metronome globals, plus a full
+decompile pass over `generate_monster`.)*
+
+* **Interval literals — CLOSED.** Spawn cadence `DAT_00482ca8` = **5 s** (static `.data`;
+  a sysop `configure genrate` override exists but is gated to BTURNO `07356801`, the
+  Metropolis dev system). Default respawn `DAT_00482d0c` = **5 minutes** (`configure
+  minwait`, same gate). `DAT_0047963a` = the module **boot minute** (not a constant);
+  `0x5a0` = 1440 minutes/day midnight wrap; `FUN_0046c3b8` = DOS-packed-time →
+  minutes-since-midnight (§1). Wander fairness cap: compare is `DAT_0047fb90 < 3`,
+  reset to 0 in `medium_update_monsters` (0x21b31) once per 3 s tick; the case-5
+  water/roamer path additionally bypasses the cap when `(char)mon[0x50] != 0`.
+  `DAT_00482134` (global spawn disable) is the **crash-recovery flag**: set during the
+  recovery rebuild in `preload_and_generate_buffers`, cleared when recovery completes —
+  and temporarily zeroed around the **boot-time lair/permanent `generate_monster`
+  calls** (lines 27702-27717), i.e. lair/permanent monsters are populated at module
+  boot, not on player approach.
 * **HP is not rolled.** `generate_monster` copies template HP directly; only coins (and
   which carried items attach) are randomised at birth. If a per-monster HP range exists it
   would have to live in the template as pre-rolled min/max the engine picks elsewhere — not
   seen in this function. Flagged for template-schema follow-up.
-* **Template → instance offset map** for the behaviour fields (which WCCKNMSR offset feeds
-  `mon+0x106`/`+0x108`/`+0x12c`/`+0x148`) is partly obscured by stack aliasing in the
-  decompiled `generate_monster`. `mon+0x12c` (roam class) clearly derives from `knmsr[0x15]`
-  (template `+0x54`, whose special values 5/0x25 are tested in the spawn gate); the others
-  are copied but their exact template offsets were not all pinned. Cross-check against
-  `vir_schemas.md` WCCKNMSR when that map is re-derived at the page+6 frame.
+* **Template → instance offset map — CLOSED.** See the §2 copy-map table:
+  `mon+0x106` ← `knmsr+0xae` (`alignment`), `+0x108` ← `+0x6e` (`follow`),
+  `+0x12c` ← `+0x54` (`group` — dual-use as the mongen region matched against
+  `room+0x560`), `+0x148` ← `+0xaa` (`type`), `+0x130` ← `+0x7c` (`hpregen`).
 * **`mon+0x22` dual use.** It reads as both a paralysis gate (medium-tick wander skips when
   nonzero) and a directed-travel coordinate (moves toward it, or `attack_monster_monster`
   for monster-vs-monster). The two uses share the field; the disambiguating flag was not
-  fully chased.
+  fully chased. (Byte offset is `+0x88` — the doc's `+0x22` is the decompile's int-index.)
+* **`DAT_004906c9 == 2`** blocks spawning of roam classes 5/0x25 (line 20976) — some
+  config/holiday mode, not identified.
 * **`mon+0x116` and `mon+0x128` bit 1** ("suppress attack" / "charmed") are named from
   usage, not symbols.
 * **Class-5 vs the tautological gate** in `FUN_00423863` line ~20371

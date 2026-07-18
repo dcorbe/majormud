@@ -47,6 +47,7 @@ fn kobold() -> Monster {
             AttackForm::default(),
             AttackForm::default(),
         ],
+        ..Default::default()
     }
 }
 
@@ -61,6 +62,7 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     content.add_monster(kobold());
     content.add_race(Race {
@@ -315,6 +317,7 @@ fn moving_away_breaks_combat() {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     let mut core = Core::new(content, config());
     let s = create(&mut core, "Dain");
@@ -494,6 +497,7 @@ fn rat(accuracy: i16, min: i16, max: i16) -> Monster {
             AttackForm::default(),
             AttackForm::default(),
         ],
+        ..Default::default()
     }
 }
 

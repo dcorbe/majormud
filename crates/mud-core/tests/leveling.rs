@@ -50,6 +50,7 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     };
     entrance.exits[mud_core::content::Direction::North as usize] =
         Some(mud_core::content::Exit {
@@ -67,6 +68,7 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     };
     guild.shop = Some(ShopId(38));
     content.add_room(guild);

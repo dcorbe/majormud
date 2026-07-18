@@ -105,6 +105,7 @@ fn world() -> Content {
         shop: Some(ShopId(48)),
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     };
     shop_room.exits[Direction::North as usize] = Some(Exit {
         dest: LAIR,
@@ -126,6 +127,7 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     };
     pit.exits[Direction::West as usize] = Some(Exit {
         dest: SHOP_ROOM,
@@ -142,6 +144,7 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     };
     lair.exits[Direction::South as usize] = Some(Exit {
         dest: SHOP_ROOM,
@@ -171,6 +174,7 @@ fn world() -> Content {
         weapon: None,
         loot: vec![],
         attacks: Default::default(),
+        ..Default::default()
     });
     // The area-kill probe: dies to any 12..=13 shockwave roll.
     content.add_monster(Monster {
@@ -191,6 +195,7 @@ fn world() -> Content {
         weapon: None,
         loot: vec![],
         attacks: Default::default(),
+        ..Default::default()
     });
     // §8.14's moaning spirit shape: cast-only (no melee form), 65% cast
     // success — the dark cleric/priest band the expedition could NOT
@@ -231,6 +236,7 @@ fn world() -> Content {
             AttackForm::default(),
             AttackForm::default(),
         ],
+        ..Default::default()
     });
     // The venom caster: 101% keeps the seeded transcript free of fizzle
     // noise (the abomination's own % is unmeasured — it sits 71 rooms
@@ -269,6 +275,7 @@ fn world() -> Content {
             AttackForm::default(),
             AttackForm::default(),
         ],
+        ..Default::default()
     });
     // The mmis castmsgb shape (message 3242; line 3's damage is %s).
     content.add_message(Message {

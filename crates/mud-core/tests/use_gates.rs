@@ -20,6 +20,7 @@ fn base_content() -> Content {
         shop: Some(ShopId(33)),
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     content.add_race(Race {
         id: RaceId(2),

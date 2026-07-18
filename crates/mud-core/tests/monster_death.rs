@@ -26,6 +26,7 @@ fn dying_rat() -> Monster {
         weapon: None,
         loot: vec![],
         attacks: [AttackForm::default(); 5],
+        ..Default::default()
     }
 }
 
@@ -40,6 +41,7 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     content.add_monster(dying_rat());
     content.add_race(Race {

@@ -42,6 +42,7 @@ fn executioner() -> Monster {
             AttackForm::default(),
             AttackForm::default(),
         ],
+        ..Default::default()
     }
 }
 
@@ -56,6 +57,7 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     content.add_room(Room {
         id: RoomId { map: 1, room: 2190 },
@@ -66,6 +68,7 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     content.add_monster(executioner());
     content.add_race(Race {

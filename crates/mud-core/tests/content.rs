@@ -16,6 +16,7 @@ fn room(map: u16, num: u16) -> Room {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -45,6 +46,7 @@ fn monster(id: u16) -> Monster {
         weapon: None,
         loot: vec![],
         attacks: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -159,6 +161,66 @@ fn known_dangling_spell_message_is_allowlisted() {
     s.cast_msg_b = Some(MessageId(3499));
     content.add_spell(s);
     assert_eq!(content.validate(), vec![]);
+}
+
+#[test]
+fn dangling_boss_monster_is_reported() {
+    // monsters.md §1/§2: room+0x5c8 (`permnpc`) names the room's unique/boss
+    // template; a nonzero id must resolve.
+    let mut r = room(1, 1);
+    r.boss_monster = Some(MonsterId(77));
+    let mut content = Content::default();
+    content.add_room(r);
+    assert_eq!(
+        content.validate(),
+        vec![ContentError::DanglingRoomMonster {
+            room: RoomId { map: 1, room: 1 },
+            field: "permnpc",
+            monster: MonsterId(77),
+        }]
+    );
+}
+
+#[test]
+fn dangling_forced_monster_is_reported() {
+    // monsters.md §1: room+0x466 (`bynumber`) forces the spawn template.
+    let mut r = room(1, 1);
+    r.forced_monster = Some(MonsterId(88));
+    let mut content = Content::default();
+    content.add_room(r);
+    assert_eq!(
+        content.validate(),
+        vec![ContentError::DanglingRoomMonster {
+            room: RoomId { map: 1, room: 1 },
+            field: "bynumber",
+            monster: MonsterId(88),
+        }]
+    );
+}
+
+#[test]
+fn resolved_room_monster_refs_pass() {
+    let mut r = room(1, 1);
+    r.boss_monster = Some(MonsterId(77));
+    r.forced_monster = Some(MonsterId(88));
+    let mut content = Content::default();
+    content.add_room(r);
+    content.add_monster(monster(77));
+    content.add_monster(monster(88));
+    assert_eq!(content.validate(), vec![]);
+}
+
+#[test]
+fn room_spawn_fields_default_inert() {
+    // A default room neither spawns nor leashes: no zone, no caps, no boss.
+    let r = Room::default();
+    assert_eq!(r.spawn_zone, 0);
+    assert_eq!(r.spawn_cap, 0);
+    assert_eq!(r.min_level, 0);
+    assert_eq!(r.max_level, 0);
+    assert_eq!(r.respawn_delay, 0);
+    assert_eq!(r.forced_monster, None);
+    assert_eq!(r.boss_monster, None);
 }
 
 #[test]

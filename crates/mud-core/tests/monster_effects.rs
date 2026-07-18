@@ -93,6 +93,7 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     let mut rat = Monster {
         id: RAT,
@@ -112,6 +113,7 @@ fn world() -> Content {
         weapon: None,
         loot: vec![],
         attacks: [AttackForm::default(); 5],
+        ..Default::default()
     };
     rat.abilities = vec![];
     content.add_monster(rat);

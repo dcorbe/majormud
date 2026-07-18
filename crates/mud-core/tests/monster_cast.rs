@@ -165,6 +165,7 @@ fn shaman(spell_id: SpellId, cast_pct: i16, cost: i16) -> Monster {
             AttackForm::default(),
             AttackForm::default(),
         ],
+        ..Default::default()
     }
 }
 
@@ -179,6 +180,7 @@ fn world(monster: Monster) -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     };
     arena.exits[Direction::North as usize] =
         Some(Exit { dest: LAIR, exit_type: 0, trigger_msg: None });
@@ -192,6 +194,7 @@ fn world(monster: Monster) -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     content.add_monster(monster);
     // The Summon(12) payload: an inert template (no attack forms).
@@ -213,6 +216,7 @@ fn world(monster: Monster) -> Content {
         weapon: None,
         loot: vec![],
         attacks: [AttackForm::default(); 5],
+        ..Default::default()
     });
     for (id, name, abilities) in [
         (HUMAN, "Human", vec![]),

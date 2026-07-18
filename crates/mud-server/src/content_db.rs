@@ -131,7 +131,8 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
         .collect::<Vec<_>>()
         .join(", ");
     let mut stmt = db.prepare(&format!(
-        "SELECT mapnumber, roomnumber, name, shopnum, {descs}, {exits}, {placed}, type, attributes FROM room"
+        "SELECT mapnumber, roomnumber, name, shopnum, {descs}, {exits}, {placed}, type, attributes, \
+         monstertype, maxregen, minindex, maxindex, delay, permnpc, bynumber FROM room"
     ))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
@@ -170,6 +171,27 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
                 .transpose()?,
             placed_items,
             exits: Default::default(),
+            spawn_zone: to_i16("room", "monstertype", row.get(77)?)?,
+            spawn_cap: to_i16("room", "maxregen", row.get(78)?)?,
+            min_level: to_i16("room", "minindex", row.get(79)?)?,
+            max_level: to_i16("room", "maxindex", row.get(80)?)?,
+            respawn_delay: to_i16("room", "delay", row.get(81)?)?,
+            // Forced spawn is the u4 at room+0x468 (generate_monster
+            // 20168/20233); Nightmare's `bynumber` Long@0x466 straddles it
+            // by two bytes, so the id is the column's high word.
+            forced_monster: {
+                let bynumber: i64 = row.get(83)?;
+                let forced = (bynumber >> 16) & 0xffff;
+                (forced > 0)
+                    .then(|| to_u16("room", "bynumber", forced).map(MonsterId))
+                    .transpose()?
+            },
+            boss_monster: {
+                let permnpc: i64 = row.get(82)?;
+                (permnpc > 0)
+                    .then(|| to_u16("room", "permnpc", permnpc).map(MonsterId))
+                    .transpose()?
+            },
         };
         for d in 0..10 {
             let dest: i64 = row.get(11 + d * 3)?;
@@ -222,7 +244,8 @@ fn load_monsters(db: &Connection, content: &mut Content) -> Result<(), LoadError
         "SELECT number, name, movemsg, deathmsg, {}, {}, \
          hitpoints, experience, expmulti, ac, dr, mr, bsdefence, energy, \
          runic, platinum, gold, silver, copper, {attack_cols}, \
-         weaponnumber, {loot_cols} FROM monster",
+         weaponnumber, {loot_cols}, \"index\", \"group\", follow, alignment, \
+         type, something3, nothing2, gamelimit, hpregen, regentime FROM monster",
         ability_cols("abilitya"),
         ability_cols("abilityb"),
     ))?;
@@ -249,6 +272,7 @@ fn load_monsters(db: &Connection, content: &mut Content) -> Result<(), LoadError
             id => Some(ItemId(id)),
         };
         let mut loot = Vec::new();
+        let loot_end = weapon_col + 1 + 10 * 3;
         for i in 0..10 {
             let base = weapon_col + 1 + i * 3;
             let item = to_u16("monster", "itemnumber", row.get(base)?)?;
@@ -289,6 +313,16 @@ fn load_monsters(db: &Connection, content: &mut Content) -> Result<(), LoadError
             weapon,
             loot,
             attacks,
+            level: to_i16("monster", "index", row.get(loot_end)?)?,
+            roam_class: to_i16("monster", "group", row.get(loot_end + 1)?)?,
+            aggression: to_i16("monster", "follow", row.get(loot_end + 2)?)?,
+            behaviour: to_i16("monster", "alignment", row.get(loot_end + 3)?)?,
+            herd_mode: to_i16("monster", "type", row.get(loot_end + 4)?)?,
+            herd_id: to_i16("monster", "something3", row.get(loot_end + 5)?)?,
+            follower_cap: to_i16("monster", "nothing2", row.get(loot_end + 6)?)?,
+            game_limit: to_i16("monster", "gamelimit", row.get(loot_end + 7)?)?,
+            hp_regen: to_i16("monster", "hpregen", row.get(loot_end + 8)?)?,
+            unique_cooldown: to_i16("monster", "regentime", row.get(loot_end + 9)?)?,
         });
     }
     Ok(())
