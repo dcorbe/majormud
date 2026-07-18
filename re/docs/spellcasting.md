@@ -432,6 +432,57 @@ casting:
    check (19276-19279) — a poisoned monster dies only in the
    strictly-negative post-walk sweep.
 
+7. **Area casting (`monster_cast_area`, 22037-22943; implemented during the
+   slice-6 close-out)** — every kind-2 form whose spell match is outside
+   {0,2,6,8} routes here (23777-23779); shipped census: match 1 ×1
+   (blacknight), 11 ×1 (plague), 12 ×99. The model, in DLL order:
+   - **Players only.** `monster_count_valid_targets` (21827-21886) sweeps
+     the terminal list for players in the monster's room; its monster
+     counter out-param is never incremented — **monsters are never area
+     victims** (no monster-vs-monster area path exists). Each player rolls
+     the save THERE, before energy or fizzle: save class 2 always, class 1
+     only with AntiMagic (51), then `genrdn(1,100) <= min(MR/2, 97)`. A
+     saver is dropped **silently** (no resist line exists in this path),
+     and zero survivors abort the cast unpaid. **SpellImmu (139) is never
+     read** — unlike the single path's auto-resist.
+   - **Energy/fizzle** — the same gate/charging as item 2, once per cast
+     (never per victim), but a fizzle here is **silent** (no "attempted to
+     cast" pair, 22106-22126).
+   - **One magnitude roll per cast** (22133-22150), divided by the
+     survivor count for match 3/5/9/10 and left whole for 11/12/13
+     (22152-22171). Row-value overrides feed only the {1,2,4,6} self arms
+     and Summon; every per-victim arm uses the (divided) roll — a fixed
+     damage row value is ignored room-wide.
+   - **Effects** with a once-per-cast display latch (the first landing row
+     prints per victim; later rows are silent): instant Damage(1) hits
+     only match **5/10/13** (22212-22218) — the shipped match-12 Damage
+     carriers (flesh-eating gas 766, hail of stones 772, icy breath 895,
+     sand breath 538, ...) deal **nothing** in the DLL; the live area
+     damage is DamageMR(17), which has no match filter and no duration
+     gate, with per-victim elemental resist then the MR ladder — and the
+     display shows the **post-MR dealt** amount (22624-22628), where the
+     single path shows pre-scale (23343). Drain(8) feeds the monster
+     capped at the template max. The stat family 44-49 and
+     Alterhunger/AlterThirst are **no-ops** here. RemovesSpell/KillSpell
+     run as a pre-pass that dispels the named spell from every survivor
+     AND clears the victim's target flag — a dispelled player drops out of
+     the rest of the cast (solid fog 256/282).
+   - **Duration** rows go through `monster_add_duration_spell_to_room`
+     (21892-21965), at most once per cast: each survivor gets one slot
+     (`monster_add_cast_spell_to_user` refresh-if-greater) holding the
+     per-victim scaled ROLLED value and the RAW duration word; an entry
+     failure before any success aborts the cast with **no refund** (the
+     single path refunds). Match {1,2,4,6} self-slots the MONSTER's 5-slot
+     table instead (FUN_004262d6; blacknight 1220 = Picklocks 200 on the
+     hooded man).
+   - **§8.14 reconciliation:** the dragonfish's `breathes burning steam`
+     (359, match 12, DamageMR 10-30) is an AREA cast — the measured
+     single-victim line (`The fat dragonfish breathes burning steam on you
+     for 27 damage!`) is this room sweep with exactly one occupant:
+     per-victim display, undivided match-12 magnitude, post-MR amount. The
+     area path with N occupants produces N victim/room pairs — never
+     measured live with more than one player present (ORACLE-OPEN).
+
 Monster-side critical hits do not exist (see `combat.md`: monster fighter crit is
 hard-zeroed), and monster spell damage still routes through
 `check_kill_monster` / `distribute_experience` like player-cast damage.

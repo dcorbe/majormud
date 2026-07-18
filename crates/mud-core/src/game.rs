@@ -92,6 +92,47 @@ fn ability_case_is_noop(ability: Ability) -> bool {
     )
 }
 
+/// The `monster_cast_area` effect-loop no-op set — ability rows whose
+/// case is a plain `break` (or an unmirrored call) in the area sibling
+/// (decompile 22236-22906): the explicit no-op cases 0/6/15/16/23/26/
+/// 44-49/52 (22246-22258 — note Alterhunger/AlterThirst and the whole
+/// stat family DO NOTHING here, unlike the single path), 52 (the
+/// `!= 0x34` wrap), 73/86 and the subtract-ladder exclusions 80/81/84/
+/// 97/98/101 (22807-22824), the metadata band 108-115 + 120 + 122
+/// (22826-22832 — 122 is consumed by the pre-pass instead), 148/153
+/// (22834-22843), and 143 = ClearItem whose FUN_0046c241 call is
+/// unmirrored (no shipped area spell carries it). Every OTHER id falls
+/// to the duration-only default arm.
+fn area_ability_case_is_noop(ability: Ability) -> bool {
+    matches!(
+        ability.id(),
+        0 | 6 | 15 | 16 | 23 | 26 | 44..=49 | 52 | 73 | 80 | 81 | 84 | 86 | 97 | 98 | 101
+            | 108..=115 | 120 | 122 | 143 | 148 | 153
+    )
+}
+
+/// One save-failed area victim (`monster_count_valid_targets`' 0x10
+/// flag): a snapshot of every target-side term the `monster_cast_area`
+/// arms read piecemeal — MR + AntiMagic for the DamageMR ladder,
+/// ImmuPoison for the Poison/CurePoison gates, the per-victim elemental
+/// resist (offensive casts only), and the caps.
+struct AreaTarget {
+    session: SessionId,
+    mr: i32,
+    anti_magic: bool,
+    immune_poison: bool,
+    resist_pct: i32,
+    max_hp: i32,
+    max_mana: i32,
+}
+
+/// The per-victim elemental scale the area arms repeat (`local_24 =
+/// (100 - resist) * local_1c / 100` under `spelltype < 3`; benign-mode
+/// casts pass the divided roll through untouched).
+fn area_scaled(base: i32, resist_pct: i32, offensive: bool) -> i32 {
+    if offensive { (100 - resist_pct) * base / 100 } else { base }
+}
+
 /// HPRegen (123): percent modifier to slow-tick HP regen.
 fn hp_regen_ability() -> Ability {
     Ability::from_id(123).expect("HPRegen is in the enum")
@@ -504,6 +545,35 @@ pub fn monster_cast_chance_passes(
 /// faithfully.
 pub fn player_save_resists(save_stat: i32, roll: &mut impl FnMut(i32, i32) -> i32) -> bool {
     roll(1, 100) <= (save_stat / 2).min(97)
+}
+
+/// The per-target save of an AREA monster cast — rolled inside
+/// `monster_count_valid_targets` (decompile 21850-21868), BEFORE the
+/// energy charge and the fizzle roll: a saving player is silently
+/// excluded from the valid-target set (never flagged 0x10) — there is no
+/// resist line anywhere in the area path, and a room where EVERYONE
+/// saves aborts the cast entirely (0 targets → return 0, nothing
+/// charged, 22102-22105). The gate is the spell's save class (`+0xc6`):
+/// class 2 always rolls, class 1 only when THIS target carries AntiMagic
+/// (51), class 0 never — then the shared [`player_save_resists`] formula
+/// (97 cap). NOTE: unlike the single-target path (23026-23029), the area
+/// path never reads SpellImmu (139) — an auto-resisting target is swept
+/// like anyone else. (The count function's other exclusion, the
+/// FUN_0043e3db worn-item predicate, is unmirrored here — the same spec
+/// §7 hedge as the single path.)
+pub fn monster_area_target_saves(
+    save_class: crate::content::SaveClass,
+    anti_magic: bool,
+    save_stat: i32,
+    roll: &mut impl FnMut(i32, i32) -> i32,
+) -> bool {
+    use crate::content::SaveClass;
+    let allowed = match save_class {
+        SaveClass::None => false,
+        SaveClass::Always => true,
+        SaveClass::IfAntiMagic => anti_magic,
+    };
+    allowed && player_save_resists(save_stat, roll)
 }
 
 /// The Damage(-MR) (17) scale — the damage path the shipped attack spells
@@ -5873,10 +5943,8 @@ impl Core {
     /// 1. Spell from the form's `accuracy` word (`template+0x12e`, 23000);
     ///    an unresolvable id skips the swing.
     /// 2. Whole-cast match-type gate {0,2,6,8} (23015-23016): matches
-    ///    OUTSIDE the set route to `monster_cast_area` (23777-23779) —
-    ///    NOT IMPLEMENTED; 101 shipped forms are inert (see the LOUD
-    ///    marker at the gate below — the M5 close-out left the
-    ///    implement-now-vs-defer-to-M6 decision open). Target MODE never
+    ///    OUTSIDE the set route to [`Self::monster_cast_area`]
+    ///    (23777-23779) — the room-wide sibling. Target MODE never
     ///    routes: a mode-3 single like mummy's `breathes` (84, match 0)
     ///    resolves right here; mode only gates the elemental-resist
     ///    scale (23091).
@@ -5932,36 +6000,13 @@ impl Core {
             spell.match_type,
             MatchType::Single0 | MatchType::Single2 | MatchType::Item6 | MatchType::Special8
         ) {
-            // ============================================================
-            // NOT IMPLEMENTED: `monster_cast_area` (the DLL sibling that
-            // monster_cast 23777-23779 routes every match ∉ {0,2,6,8}
-            // into). This was slice-6 scope and did NOT land — the M5
-            // close-out left the decision open: implement now vs defer
-            // to M6 (design doc 2026-07-16-m5-magic-design.md, slice-6
-            // status). Until it lands, these forms skip SILENTLY here —
-            // no lines, no energy spend, no damage.
-            //
-            // Blast radius (census pinned by load_real_db.rs
-            // `kind2_cast_forms_all_resolve_within_the_dispatch`): match
-            // 1 x1 (hooded man 1000 `blacknight`), match 11 x1 (wererat
-            // plague-crafter 361 `plague`), match 12 x99 — 101 shipped
-            // forms are INERT: adult red dragon 185 `dragonfire`,
-            // Zanthus the Lich 215 `hellstorm`, ice sorceress 108
-            // `freeze`, high druid 122 `chaos storm`, gorgon 222's
-            // greenish cloud, efreeti 416's whirlwind of fire, and every
-            // other area-breath/storm caster deal NO cast damage at all.
-            // (The mummy's `breathes` 84 and the death dog's scream 83
-            // are match 0 — they resolve on the live single path above,
-            // NOT here.) The skip-silently behavior itself is pinned by
-            // tests/monster_cast.rs
-            // `area_match_forms_skip_silently_pending_monster_cast_area`.
-            // The routing gate is DLL-faithful; only the area sibling is
-            // missing. Whoever implements it: mirror monster_cast_area
-            // from the decompile (room-wide player sweep, per-victim
-            // save, the §8.14 fan-out shapes), then flip the census test
-            // and the marker test.
-            // ============================================================
-            return false;
+            // The match-gate ELSE (23777-23779): every match ∉ {0,2,6,8}
+            // routes to the area sibling — 101 shipped forms (match 1 x1
+            // hooded man `blacknight`, match 11 x1 wererat `plague`,
+            // match 12 x99: dragonfire, hellstorm, chaos storm, the
+            // dragonfish steam §8.14 measured, ...). The sweep ignores
+            // the engaged victim entirely — it re-collects the room.
+            return self.monster_cast_area(id, template, location, form, &spell);
         }
 
         let (victim_name, mr, max_hp) = match self.sessions.get(&victim) {
@@ -6088,7 +6133,7 @@ impl Core {
                 if *ability == Ability::DamageMR {
                     let shown = alter_sp_dmg(amount, boost);
                     let dealt = damage_mr(shown, mr, anti_magic);
-                    if self.monster_cast_damage(victim, dealt, shown, &spell, &monster_name) {
+                    if self.monster_cast_damage(victim, dealt, shown, &spell, &monster_name, true) {
                         return true;
                     }
                     continue;
@@ -6169,7 +6214,7 @@ impl Core {
                 // (our fold wiring — see `boost` above).
                 Ability::Damage => {
                     let v = alter_sp_dmg(amount, boost);
-                    if self.monster_cast_damage(victim, v, v, &spell, &monster_name) {
+                    if self.monster_cast_damage(victim, v, v, &spell, &monster_name, true) {
                         return true;
                     }
                 }
@@ -6185,7 +6230,7 @@ impl Core {
                     if let Some(mi) = self.monsters.get_mut(&id) {
                         mi.current_hp = (mi.current_hp + amount).min(cap);
                     }
-                    if self.monster_cast_damage(victim, amount, amount, &spell, &monster_name)
+                    if self.monster_cast_damage(victim, amount, amount, &spell, &monster_name, true)
                     {
                         return true;
                     }
@@ -6225,7 +6270,7 @@ impl Core {
                 Ability::DamageMR => {
                     let shown = alter_sp_dmg(amount, boost);
                     let dealt = damage_mr(shown, mr, anti_magic);
-                    if self.monster_cast_damage(victim, dealt, shown, &spell, &monster_name) {
+                    if self.monster_cast_damage(victim, dealt, shown, &spell, &monster_name, true) {
                         return true;
                     }
                 }
@@ -6284,31 +6329,13 @@ impl Core {
                 // row value as the template id. The victim-name tag on
                 // the spawn (23263) is M6 (see summon_spawn).
                 Ability::Summon => {
-                    let line = if let Some(msg) =
-                        spell.cast_msg_b.and_then(|mid| self.content.messages.get(&mid))
-                    {
-                        let args = text::CastMsgArgs {
-                            caster: &monster_name,
-                            target: Some("everyone"),
-                            spell: &spell.name,
-                            damage: Some(amount),
-                        };
-                        text::render_cast_line(
-                            msg,
-                            text::CastAudience::Room,
-                            &args,
-                            spell.msg_style & 1 == 1,
-                        )
-                    } else {
-                        Some(text::monster_cast_default_room(
-                            &monster_name,
-                            &spell.name,
-                            "everyone",
-                        ))
-                    };
-                    if let Some(line) = line {
-                        self.broadcast_to_room(location, None, &text::capitalize_first(line));
-                    }
+                    self.monster_room_wide_cast_line(
+                        &spell,
+                        &monster_name,
+                        location,
+                        "everyone",
+                        amount,
+                    );
                     self.summon_spawn(amount, location);
                 }
                 // Every remaining case is duration-armed only (the
@@ -6333,7 +6360,9 @@ impl Core {
     /// return 2, then FUN_0043c91d only when the victim survived and
     /// crossed below 1). Returns `true` when the victim died. `dealt` is
     /// what leaves the HP pool; `shown` what the success lines print
-    /// (they differ for DamageMR).
+    /// (they differ for DamageMR). `display` is the area path's once-latch
+    /// (local_25): a suppressed row still damages and kill-checks but
+    /// prints no success pair — the single path always passes `true`.
     fn monster_cast_damage(
         &mut self,
         victim: SessionId,
@@ -6341,6 +6370,7 @@ impl Core {
         shown: i32,
         spell: &crate::content::Spell,
         monster_name: &str,
+        display: bool,
     ) -> bool {
         let (was_up, now_hp, victim_name, room) = {
             let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&victim) else {
@@ -6350,7 +6380,9 @@ impl Core {
             player.current_hp -= dealt;
             (was_up, player.current_hp, player.name.clone(), player.location)
         };
-        self.monster_cast_display(spell, monster_name, victim, room, shown);
+        if display {
+            self.monster_cast_display(spell, monster_name, victim, room, shown);
+        }
         if now_hp <= DEATH_FLOOR {
             self.player_killed(victim);
             return true;
@@ -6462,6 +6494,812 @@ impl Core {
             let line = line.clone();
             self.output_line(victim, &line);
         }
+    }
+
+    /// The room-wide-only success line (`monster_display_spell_success`
+    /// with usernum -1, 21738-21745 skip the victim block and tell_room
+    /// excludes nobody): ONE castmsgb room line with `target` in the
+    /// target slot, seen by everyone present. The Summon arm passes the
+    /// literal "everyone" (23255-23258 / area 22511-22514); the area
+    /// self-Heal and self-CurePoison arms pass the monster's OWN name
+    /// (`param_1 + 0x8e`, 22659-22662 / 22770-22772).
+    fn monster_room_wide_cast_line(
+        &mut self,
+        spell: &crate::content::Spell,
+        monster_name: &str,
+        location: RoomId,
+        target: &str,
+        amount: i32,
+    ) {
+        let line = if let Some(msg) =
+            spell.cast_msg_b.and_then(|mid| self.content.messages.get(&mid))
+        {
+            let args = text::CastMsgArgs {
+                caster: monster_name,
+                target: Some(target),
+                spell: &spell.name,
+                damage: Some(amount),
+            };
+            text::render_cast_line(
+                msg,
+                text::CastAudience::Room,
+                &args,
+                spell.msg_style & 1 == 1,
+            )
+        } else {
+            Some(text::monster_cast_default_room(monster_name, &spell.name, target))
+        };
+        if let Some(line) = line {
+            self.broadcast_to_room(location, None, &text::capitalize_first(line));
+        }
+    }
+
+    /// `monster_cast_area` (decompile 22037-22943) — the room-wide
+    /// sibling every kind-2 form with match ∉ {0,2,6,8} routes into
+    /// (23777-23779). Returns `true` when any victim died (the DLL's
+    /// return 2). Shape, in DLL order:
+    ///
+    /// 1. **Entry roll** (22073): the fizzle roll is drawn before
+    ///    anything else. **Energy gate** (22100): an unaffordable form is
+    ///    a silent skip to the next swing, like the single path.
+    /// 2. **Target collection + per-target save**
+    ///    (`monster_count_valid_targets` 21827-21886, called 22102):
+    ///    PLAYERS ONLY — the sweep walks the terminal list for players in
+    ///    the monster's room (the count function's monster out-param is
+    ///    never incremented; monsters are NEVER area victims, so no
+    ///    monster-vs-monster arm exists to mirror). Each player rolls
+    ///    [`monster_area_target_saves`] THERE: a saver is silently
+    ///    dropped (no resist line exists in the area path), and ZERO
+    ///    survivors abort the whole cast unpaid (22103-22105).
+    /// 3. **Fizzle** (22106-22126): half the cost floored at 1, NO lines
+    ///    — the single path's "attempted to cast" pair (23749-23757) has
+    ///    no area counterpart. **Landing** charges the full cost ONCE per
+    ///    cast (22128-22131), never per victim.
+    /// 4. **Magnitude** (22133-22150): ONE roll for the whole cast —
+    ///    bounds scaled by the form's cast level through the AlterSpDmg-
+    ///    style min/max increase pairs, exactly the single path's
+    ///    formula. The divide switch (22152-22171) splits the roll by the
+    ///    survivor count for match 3/5/9/10 (+ the unreachable defaults)
+    ///    and leaves 11/12/13 UNDIVIDED. Duration (22172-22178) is base +
+    ///    divide-first scaling; the room entries below nonetheless store
+    ///    the RAW duration word.
+    /// 5. **Dispel pre-pass** (22180-22233): RemovesSpell(122) /
+    ///    KillSpell(153) rows run before the effect loop — every
+    ///    survivor's slots are scanned for the named spell; a removal
+    ///    displays the cast's success pair once per row (first removal
+    ///    only), terminates the slot, and clears the victim's 0x10 target
+    ///    flag (22225): a dispelled victim is OUT of the rest of the
+    ///    cast (solid fog 256/282 are the shipped carriers).
+    /// 6. **Effect loop** (22236-22906) with the once-display latch
+    ///    `local_25`: the first landing row displays per victim; later
+    ///    rows apply silently. Per-victim scale: offensive-mode casts
+    ///    reduce by THAT victim's elemental resist (the repeated local_24
+    ///    ladder); Heal/Poison/CurePoison/HealMana skip the scale
+    ///    (local_1c direct). Arms:
+    ///    - Damage(1): instant only for match 5/10/13 (22212-22218 —
+    ///      match 11/12 Damage rows are DEAD: flesh-eating gas 766, hail
+    ///      of stones 772, icy breath 895 et al deal nothing, and the
+    ///      latch still trips, 22268); duration rows room-enter; the
+    ///      {1,2,4,6} self group self-slots on duration.
+    ///    - Drain(8): instant only; victim loses, monster gains capped at
+    ///      the template max (22357-22434).
+    ///    - EnergyLevel(11) / Heal(18) / Poison(19) / CurePoison(20) /
+    ///      HealMana(150): per-victim adds with the same clamp semantics
+    ///      as the single path (Poison set-if-greater + ImmuPoison gate;
+    ///      the duration-armed Poison hard-writes BEFORE the room entry,
+    ///      22702-22748); Heal/CurePoison also carry {1,2,(4),6} SELF
+    ///      arms on the monster (22639-22711 / 22758-22806).
+    ///    - Summon(12): match {1,2,6} only — the "everyone" line + spawn,
+    ///      and it never trips the latch (22505-22525).
+    ///    - DamageMR(17): NO duration gate (22527-22637); the display
+    ///      shows the POST-MR dealt amount (uVar11 at 22624-22628) — the
+    ///      single path shows the PRE-scale amount (23343), a genuine
+    ///      asymmetry (§8.14 dragonfish lines are post-scale).
+    ///    - Everything else: duration-only via the default arm (22819-
+    ///      22843) or a no-op ([`area_ability_case_is_noop`]) — note the
+    ///      stat family 44-49 and Alterhunger/AlterThirst DO NOTHING
+    ///      here, unlike the single path.
+    /// 7. **Room duration entry** (`monster_add_duration_spell_to_room`
+    ///    21892-21965, guarded by the latch at every arm, e.g.
+    ///    22346-22352): fires at most once per cast — each survivor gets
+    ///    one slot holding the per-victim scaled ROLLED value (row
+    ///    overrides never apply) with refresh-only-if-greater; a failed
+    ///    entry BEFORE any success aborts the remaining cast with NO
+    ///    energy refund (the single path refunds, 23183-23188); failures
+    ///    after a success are tolerated.
+    /// 8. The {1,2,4,6} self group writes the MONSTER's own 5-slot table
+    ///    (FUN_004262d6 21970-22005) — blacknight 1220 (match 1) is the
+    ///    shipped carrier. The self-entry's value/duration arguments are
+    ///    Ghidra-invisible (stack artifact); we pass the row-or-rolled
+    ///    amount + the scaled duration — ORACLE-OPEN.
+    ///
+    /// §8.14 reconciliation: the dragonfish's `breathes burning steam`
+    /// (359, match 12, DamageMR 10-30) went through THIS path live and
+    /// produced a single-victim-looking line — that is the room sweep
+    /// with exactly one occupant, per-victim display, undivided match-12
+    /// magnitude, post-MR amount. AlterSpDmg folding at the damage arms
+    /// is our documented wiring, same as the single path (zero shipped
+    /// monsters carry 165). The end-of-cast monster_update_room_users_
+    /// stats (22934) is covered by the per-entry refresh_derived calls.
+    fn monster_cast_area(
+        &mut self,
+        id: MonsterInstanceId,
+        template: crate::content::MonsterId,
+        location: RoomId,
+        form: &crate::content::AttackForm,
+        spell: &crate::content::Spell,
+    ) -> bool {
+        use crate::content::MatchType;
+        // 1. Entry roll (22073) + energy gate (22100).
+        let chance_roll = self.rng.roll(0, 100);
+        let cost = i32::from(form.energy);
+        match self.monsters.get(&id) {
+            Some(mi) if mi.energy >= cost => {}
+            _ => return false, // silent skip, next swing
+        }
+        // 2. monster_count_valid_targets (22102): collect + save.
+        let sids: Vec<SessionId> = self.sessions.keys().copied().collect();
+        let mut victims: Vec<AreaTarget> = Vec::new();
+        for sid in sids {
+            let Some(Session::InGame { player, derived, .. }) = self.sessions.get(&sid)
+            else {
+                continue;
+            };
+            if player.location != location {
+                continue;
+            }
+            let bag = self.ability_bag(player);
+            let mr = derived.magic_resist;
+            let max_hp = derived.max_hp;
+            let max_mana = derived.max_mana;
+            let anti_magic = bag.value(Ability::AntiMagic) != 0;
+            let immune_poison = bag.value(Ability::ImmuPoison) != 0;
+            let resist_pct = if spell.target_mode.is_offensive() {
+                spell.element.resist_ability().map_or(0, |a| bag.value(a))
+            } else {
+                0
+            };
+            let rng = &mut self.rng;
+            if monster_area_target_saves(spell.save_class, anti_magic, mr, &mut |lo, hi| {
+                rng.roll(lo, hi)
+            }) {
+                continue; // silently excluded — no resist line
+            }
+            victims.push(AreaTarget {
+                session: sid,
+                mr,
+                anti_magic,
+                immune_poison,
+                resist_pct,
+                max_hp,
+                max_mana,
+            });
+        }
+        if victims.is_empty() {
+            return false; // 0 survivors: nothing charged (22103-22105)
+        }
+        // 3. Fizzle (strict roll < percent, like the single path).
+        if chance_roll >= i32::from(form.min_damage) {
+            if cost != 0
+                && let Some(mi) = self.monsters.get_mut(&id)
+            {
+                mi.energy -= (cost / 2).max(1);
+            }
+            return false; // SILENT (22106-22126)
+        }
+        if let Some(mi) = self.monsters.get_mut(&id) {
+            mi.energy -= cost; // full cost, once per cast (22128-22131)
+        }
+        let monster_name = self.monster_name(id);
+        // 4. One magnitude roll for the whole cast (22133-22150).
+        let l = i32::from(form.max_damage);
+        let hi = i32::from(spell.max_base) + spell.max_increase.scaled(l);
+        let lo = (i32::from(spell.min_base) + spell.min_increase.scaled(l)).min(hi);
+        let total = self.rng.roll(0, hi - lo + 1) + lo;
+        let per_base = if matches!(
+            spell.match_type,
+            MatchType::AreaB | MatchType::AreaC | MatchType::AreaD
+        ) {
+            total
+        } else {
+            total / victims.len() as i32 // the divide switch (22152-22171)
+        };
+        let dur_total = i32::from(spell.duration) + spell.duration_increase.scaled_duration(l);
+        let raw_dur = i32::from(spell.duration);
+        let boost = self.monster_ability_value(id, Ability::AlterSpDmg);
+        let offensive = spell.target_mode.is_offensive();
+        let area = spell.match_type.room_wide();
+        let self_group = matches!(
+            spell.match_type,
+            MatchType::Single1 | MatchType::Single2 | MatchType::Special4 | MatchType::Item6
+        );
+        let mut any_died = false;
+        // 5. Dispel pre-pass (22180-22233), area matches only.
+        if area {
+            for (ability, value) in &spell.abilities {
+                let honor = match ability {
+                    Ability::RemovesSpell => true,
+                    Ability::KillSpell => false,
+                    _ => continue,
+                };
+                let Ok(rid) = u16::try_from(*value) else {
+                    continue;
+                };
+                if rid == 0 {
+                    continue;
+                }
+                let mut row_displayed = false;
+                let mut kept = Vec::with_capacity(victims.len());
+                for t in std::mem::take(&mut victims) {
+                    if !self.area_victim_present(t.session, location) {
+                        kept.push(t);
+                        continue;
+                    }
+                    let mut dispelled = false;
+                    while let Some(idx) = self.player(t.session).find_active(SpellId(rid)) {
+                        // One display per ROW — the first removal across
+                        // all victims (the inner local_25, 22203-22212).
+                        if !row_displayed {
+                            self.monster_cast_display(
+                                spell,
+                                &monster_name,
+                                t.session,
+                                location,
+                                total,
+                            );
+                            row_displayed = true;
+                        }
+                        self.terminate_active_spell(t.session, idx, honor);
+                        dispelled = true;
+                    }
+                    if !dispelled {
+                        kept.push(t); // flag kept (22225 clears it on removal)
+                    }
+                }
+                victims = kept;
+            }
+        }
+        // 6. The effect loop with the once-display latch (local_25).
+        let mut displayed = false;
+        for (ability, value) in &spell.abilities {
+            // Row overrides feed only the SELF arms and Summon (local_18
+            // at 22239-22242); the per-victim arms use the divided roll.
+            let amount_self = if *value != 0 { i32::from(*value) } else { total };
+            match ability {
+                Ability::Damage => {
+                    if self_group {
+                        if dur_total != 0 {
+                            self.monster_self_slot_entry(id, spell.id, amount_self, dur_total);
+                        }
+                    } else if area {
+                        if raw_dur == 0 {
+                            // Match 5/10/13 only (22212-22218): 11/12
+                            // Damage rows iterate nobody — DEAD.
+                            if matches!(
+                                spell.match_type,
+                                MatchType::Area5 | MatchType::Area10 | MatchType::AreaD
+                            ) {
+                                for t in &victims {
+                                    if !self.area_victim_present(t.session, location) {
+                                        continue;
+                                    }
+                                    let v = alter_sp_dmg(
+                                        area_scaled(per_base, t.resist_pct, offensive),
+                                        boost,
+                                    );
+                                    any_died |= self.monster_cast_damage(
+                                        t.session,
+                                        v,
+                                        v,
+                                        spell,
+                                        &monster_name,
+                                        !displayed,
+                                    );
+                                }
+                            }
+                            displayed = true; // trips even when dead (22268)
+                        } else {
+                            if !displayed
+                                && !self.monster_area_room_entry(
+                                    &victims,
+                                    spell,
+                                    per_base,
+                                    &monster_name,
+                                    location,
+                                )
+                            {
+                                return any_died; // abort, energy kept (22347-22352)
+                            }
+                            displayed = true;
+                        }
+                    }
+                }
+                Ability::Drain => {
+                    // Instant-only (no duration else-arm, 22357-22434).
+                    if area && raw_dur == 0 {
+                        let cap = self
+                            .content
+                            .monsters
+                            .get(&template)
+                            .map_or(0, |t| t.hitpoints);
+                        for t in &victims {
+                            if !self.area_victim_present(t.session, location) {
+                                continue;
+                            }
+                            let v = area_scaled(per_base, t.resist_pct, offensive);
+                            if let Some(mi) = self.monsters.get_mut(&id) {
+                                mi.current_hp = (mi.current_hp + v).min(cap);
+                            }
+                            any_died |= self.monster_cast_damage(
+                                t.session,
+                                v,
+                                v,
+                                spell,
+                                &monster_name,
+                                !displayed,
+                            );
+                        }
+                        displayed = true;
+                    }
+                }
+                Ability::EnergyLevel => {
+                    if area {
+                        if raw_dur == 0 {
+                            for t in &victims {
+                                if !self.area_victim_present(t.session, location) {
+                                    continue;
+                                }
+                                let v = area_scaled(per_base, t.resist_pct, offensive);
+                                if let Some(Session::InGame { energy, .. }) =
+                                    self.sessions.get_mut(&t.session)
+                                {
+                                    *energy = (*energy + v).min(PLAYER_ENERGY_MAX);
+                                }
+                                if !displayed {
+                                    self.monster_cast_display(
+                                        spell,
+                                        &monster_name,
+                                        t.session,
+                                        location,
+                                        v,
+                                    );
+                                }
+                            }
+                            displayed = true;
+                        } else {
+                            if !displayed
+                                && !self.monster_area_room_entry(
+                                    &victims,
+                                    spell,
+                                    per_base,
+                                    &monster_name,
+                                    location,
+                                )
+                            {
+                                return any_died;
+                            }
+                            displayed = true;
+                        }
+                    }
+                }
+                Ability::Summon => {
+                    // Match {1,2,6} only; never trips the latch (22505-
+                    // 22525).
+                    if matches!(
+                        spell.match_type,
+                        MatchType::Single1 | MatchType::Single2 | MatchType::Item6
+                    ) && raw_dur == 0
+                    {
+                        if !displayed {
+                            self.monster_room_wide_cast_line(
+                                spell,
+                                &monster_name,
+                                location,
+                                "everyone",
+                                amount_self,
+                            );
+                        }
+                        self.summon_spawn(amount_self, location);
+                    }
+                }
+                Ability::DamageMR => {
+                    if self_group {
+                        if dur_total != 0 {
+                            self.monster_self_slot_entry(id, spell.id, amount_self, dur_total);
+                        }
+                    } else if area {
+                        // NO duration gate (22527-22637); display = the
+                        // POST-MR dealt amount (22624-22628).
+                        for t in &victims {
+                            if !self.area_victim_present(t.session, location) {
+                                continue;
+                            }
+                            let shown = alter_sp_dmg(
+                                area_scaled(per_base, t.resist_pct, offensive),
+                                boost,
+                            );
+                            let dealt = damage_mr(shown, t.mr, t.anti_magic);
+                            any_died |= self.monster_cast_damage(
+                                t.session,
+                                dealt,
+                                dealt,
+                                spell,
+                                &monster_name,
+                                !displayed,
+                            );
+                        }
+                        displayed = true;
+                    }
+                }
+                Ability::Heal => {
+                    if self_group {
+                        if dur_total == 0 {
+                            // Self-heal capped at the template max, ONE
+                            // room-wide line naming the monster
+                            // (22655-22668).
+                            let cap = self
+                                .content
+                                .monsters
+                                .get(&template)
+                                .map_or(0, |t| t.hitpoints);
+                            let healed = {
+                                let Some(mi) = self.monsters.get_mut(&id) else {
+                                    continue;
+                                };
+                                let healed = amount_self.min(cap - mi.current_hp);
+                                mi.current_hp += healed;
+                                healed
+                            };
+                            if !displayed {
+                                let name = monster_name.clone();
+                                self.monster_room_wide_cast_line(
+                                    spell,
+                                    &monster_name,
+                                    location,
+                                    &name,
+                                    healed,
+                                );
+                            }
+                            displayed = true;
+                        } else {
+                            self.monster_self_slot_entry(id, spell.id, amount_self, dur_total);
+                        }
+                    } else if area {
+                        if raw_dur == 0 {
+                            // Unscaled (local_1c direct — no elemental
+                            // reduction on heals, 22671-22694).
+                            for t in &victims {
+                                if !self.area_victim_present(t.session, location) {
+                                    continue;
+                                }
+                                let healed = {
+                                    let Some(Session::InGame { player, .. }) =
+                                        self.sessions.get_mut(&t.session)
+                                    else {
+                                        continue;
+                                    };
+                                    let healed = per_base.min(t.max_hp - player.current_hp);
+                                    player.current_hp += healed;
+                                    healed
+                                };
+                                if !displayed {
+                                    self.monster_cast_display(
+                                        spell,
+                                        &monster_name,
+                                        t.session,
+                                        location,
+                                        healed,
+                                    );
+                                }
+                            }
+                            displayed = true;
+                        } else {
+                            if !displayed
+                                && !self.monster_area_room_entry(
+                                    &victims,
+                                    spell,
+                                    per_base,
+                                    &monster_name,
+                                    location,
+                                )
+                            {
+                                return any_died;
+                            }
+                            displayed = true;
+                        }
+                    }
+                }
+                Ability::Poison => {
+                    if self_group {
+                        if dur_total != 0 {
+                            self.monster_self_slot_entry(id, spell.id, amount_self, dur_total);
+                        }
+                    } else if area {
+                        // ImmuPoison gates per victim; the counter is
+                        // set-if-greater on the UNSCALED roll, and the
+                        // duration arm hard-writes BEFORE the room entry
+                        // (22702-22757).
+                        for t in &victims {
+                            if !self.area_victim_present(t.session, location)
+                                || t.immune_poison
+                            {
+                                continue;
+                            }
+                            if let Some(Session::InGame { player, .. }) =
+                                self.sessions.get_mut(&t.session)
+                            {
+                                let v = clamp_poison(per_base);
+                                if player.poison < v {
+                                    player.poison = v;
+                                }
+                            }
+                            if raw_dur == 0 && !displayed {
+                                self.monster_cast_display(
+                                    spell,
+                                    &monster_name,
+                                    t.session,
+                                    location,
+                                    per_base,
+                                );
+                            }
+                        }
+                        if raw_dur != 0
+                            && !displayed
+                            && !self.monster_area_room_entry(
+                                &victims,
+                                spell,
+                                per_base,
+                                &monster_name,
+                                location,
+                            )
+                        {
+                            return any_died;
+                        }
+                        displayed = true;
+                    }
+                }
+                Ability::CurePoison => {
+                    if matches!(
+                        spell.match_type,
+                        MatchType::Single1 | MatchType::Single2 | MatchType::Item6
+                    ) {
+                        // Self-cure {1,2,6}, no duration gate; the room
+                        // line shows local_1c (22758-22775).
+                        if let Some(mi) = self.monsters.get_mut(&id) {
+                            mi.poison = (i32::from(mi.poison) - amount_self).max(0) as i16;
+                        }
+                        if !displayed {
+                            let name = monster_name.clone();
+                            self.monster_room_wide_cast_line(
+                                spell,
+                                &monster_name,
+                                location,
+                                &name,
+                                per_base,
+                            );
+                        }
+                        displayed = true;
+                    } else if area {
+                        if raw_dur == 0 {
+                            for t in &victims {
+                                if !self.area_victim_present(t.session, location)
+                                    || t.immune_poison
+                                {
+                                    continue;
+                                }
+                                if let Some(Session::InGame { player, .. }) =
+                                    self.sessions.get_mut(&t.session)
+                                {
+                                    player.poison =
+                                        clamp_poison(i32::from(player.poison) - per_base);
+                                }
+                                if !displayed {
+                                    self.monster_cast_display(
+                                        spell,
+                                        &monster_name,
+                                        t.session,
+                                        location,
+                                        per_base,
+                                    );
+                                }
+                            }
+                            displayed = true;
+                        } else {
+                            if !displayed
+                                && !self.monster_area_room_entry(
+                                    &victims,
+                                    spell,
+                                    per_base,
+                                    &monster_name,
+                                    location,
+                                )
+                            {
+                                return any_died;
+                            }
+                            displayed = true;
+                        }
+                    }
+                }
+                Ability::HealMana => {
+                    // Case 0x96 (22855-22906): area only, unscaled,
+                    // clamped into [0, max mana].
+                    if area {
+                        if raw_dur == 0 {
+                            for t in &victims {
+                                if !self.area_victim_present(t.session, location) {
+                                    continue;
+                                }
+                                let delta = {
+                                    let Some(Session::InGame { player, .. }) =
+                                        self.sessions.get_mut(&t.session)
+                                    else {
+                                        continue;
+                                    };
+                                    let cur = player.current_mana;
+                                    let delta = if per_base < 1 {
+                                        if cur + per_base < 0 { -cur } else { per_base }
+                                    } else if t.max_mana < cur + per_base {
+                                        t.max_mana - cur
+                                    } else {
+                                        per_base
+                                    };
+                                    player.current_mana += delta;
+                                    delta
+                                };
+                                if !displayed {
+                                    self.monster_cast_display(
+                                        spell,
+                                        &monster_name,
+                                        t.session,
+                                        location,
+                                        delta,
+                                    );
+                                }
+                            }
+                            displayed = true;
+                        } else {
+                            if !displayed
+                                && !self.monster_area_room_entry(
+                                    &victims,
+                                    spell,
+                                    per_base,
+                                    &monster_name,
+                                    location,
+                                )
+                            {
+                                return any_died;
+                            }
+                            displayed = true;
+                        }
+                    }
+                }
+                _ => {
+                    // The duration-only default arm (22819-22843) or a
+                    // plain no-op.
+                    if area_ability_case_is_noop(*ability) {
+                        continue;
+                    }
+                    if self_group {
+                        if dur_total != 0 {
+                            self.monster_self_slot_entry(id, spell.id, amount_self, dur_total);
+                        }
+                    } else if area && raw_dur != 0 {
+                        if !displayed
+                            && !self.monster_area_room_entry(
+                                &victims,
+                                spell,
+                                per_base,
+                                &monster_name,
+                                location,
+                            )
+                        {
+                            return any_died;
+                        }
+                        displayed = true;
+                    }
+                }
+            }
+        }
+        any_died
+    }
+
+    /// `monster_add_duration_spell_to_room` (decompile 21892-21965):
+    /// every surviving victim gets ONE slot entry — the per-victim
+    /// elemental-scaled ROLLED value (row overrides never reach here),
+    /// the RAW spell duration word as the remaining ticks, always with
+    /// the refresh-if-greater flag (no stat-family no-refresh here). A
+    /// real write displays through `monster_add_cast_spell_to_user`'s own
+    /// success call and recomputes; a failed entry before ANY success
+    /// returns `false` — the caller aborts the cast WITHOUT an energy
+    /// refund (21952-21956 → 22347-22352). Failures after a success are
+    /// tolerated. No poison hard-write lives here (the area Poison arm
+    /// does its own, before this).
+    fn monster_area_room_entry(
+        &mut self,
+        victims: &[AreaTarget],
+        spell: &crate::content::Spell,
+        base: i32,
+        monster_name: &str,
+        location: RoomId,
+    ) -> bool {
+        let offensive = spell.target_mode.is_offensive();
+        let raw_dur = i32::from(spell.duration);
+        let mut any = false;
+        for t in victims {
+            if !self.area_victim_present(t.session, location) {
+                continue;
+            }
+            let v = area_scaled(base, t.resist_pct, offensive);
+            let entered = {
+                let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&t.session)
+                else {
+                    continue;
+                };
+                let slot = ActiveSpell {
+                    spell: Some(spell.id),
+                    value: v as i16,
+                    remaining: raw_dur,
+                };
+                if let Some(idx) = player.find_active(spell.id) {
+                    if i32::from(player.active_spells[idx].value) < v {
+                        player.active_spells[idx] = slot;
+                        true
+                    } else {
+                        false
+                    }
+                } else if let Some(idx) = player.first_free_slot() {
+                    player.active_spells[idx] = slot;
+                    true
+                } else {
+                    false
+                }
+            };
+            if entered {
+                any = true;
+                self.monster_cast_display(spell, monster_name, t.session, location, v);
+                self.refresh_derived(t.session);
+                let snapshot = Box::new(self.player(t.session).clone());
+                self.events.push(Event::Persist(snapshot));
+            } else if !any {
+                return false;
+            }
+        }
+        any
+    }
+
+    /// `FUN_004262d6` (decompile 21970-22005) — the monster's OWN 5-slot
+    /// duration table (`+0x14a/+0x154/+0x15e`): a same-id slot is
+    /// overwritten unconditionally, else the first empty one; a full
+    /// table silently loses the entry. No display. The value/duration
+    /// arguments are stack artifacts in the decompile — we pass the
+    /// row-or-rolled amount and the scaled duration (ORACLE-OPEN;
+    /// blacknight 1220 is the only shipped carrier).
+    fn monster_self_slot_entry(
+        &mut self,
+        id: MonsterInstanceId,
+        spell: SpellId,
+        value: i32,
+        remaining: i32,
+    ) {
+        let Some(mi) = self.monsters.get_mut(&id) else {
+            return;
+        };
+        let slot = ActiveSpell { spell: Some(spell), value: value as i16, remaining };
+        if let Some(idx) = mi.active_spells.iter().position(|s| s.spell == Some(spell)) {
+            mi.active_spells[idx] = slot;
+        } else if let Some(idx) = mi.active_spells.iter().position(|s| s.spell.is_none()) {
+            mi.active_spells[idx] = slot;
+        }
+    }
+
+    /// The per-loop re-check every area arm carries (`get_player` + the
+    /// room compare + the 0x10 flag): a victim who died or left between
+    /// rows drops out of later applications.
+    fn area_victim_present(&self, session: SessionId, location: RoomId) -> bool {
+        matches!(
+            self.sessions.get(&session),
+            Some(Session::InGame { player, .. }) if player.location == location
+        )
     }
 
     /// `check_kill_monster` + `distribute_experience` (`death.md` §4/§5).
