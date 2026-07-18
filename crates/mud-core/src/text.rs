@@ -100,10 +100,20 @@ pub fn exp_line(exp: u64, level: u16, needed: u64) -> String {
     format!("Exp: {exp} Level: {level} Exp needed for next level: {needed} ({remaining}) [{percent}%]")
 }
 
-/// VERIFIED (oracle): the health command line.
-pub fn health_line(current: i32, max: i32) -> String {
+/// VERIFIED (oracle): the health command line. The mana clause appears
+/// whenever the max pool is non-zero (show_health 0x34af7 gates on
+/// `+0x600 != 0`), captioned `Kai:` for caster group 5 and `Mana:`
+/// otherwise — MEASURED §8.2 (mage) / §8.12 (mystic, absent at L1 where
+/// max kai is 0).
+pub fn health_line(current: i32, max: i32, mana: i32, mana_max: i32, caster_group: i16) -> String {
     let percent = if max == 0 { 0 } else { current * 100 / max };
-    format!("Health:{current:>6}/{max:<6}[{percent}%]")
+    let mut line = format!("Health:{current:>6}/{max:<6}[{percent}%]");
+    if mana_max != 0 {
+        let caption = if caster_group == 5 { "Kai:" } else { "Mana:" };
+        let mana_percent = mana * 100 / mana_max;
+        line.push_str(&format!("  {caption}{mana:>4}/{mana_max:<4}[{mana_percent}%]"));
+    }
+    line
 }
 
 /// VERIFIED (oracle/DLL): training messages.
@@ -111,12 +121,21 @@ pub const TRAIN_WRONG_ROOM: &str = "You must be in an appropriate training room 
 pub const TRAIN_NO_EXP: &str = "You do not have the required experience to train yet!";
 pub const TRAIN_NO_MONEY: &str = "You do not have the money required for your training.";
 
-/// VERIFIED (DLL): " and you receive training to attain level %d." — the
-/// leading fragment follows the payment sentence; ORACLE-VERIFY the full
-/// combined line once a fund run is captured.
-pub fn train_success(level: u16) -> String {
-    format!("you receive training to attain level {level}.")
+/// VERIFIED (§8.7/§8.12 receipts): the payment sentence lists the coins
+/// actually handed over ("5 silver nobles" mage, "50 copper farthings"
+/// mystic — the deduct_currency change-making, same as buy).
+pub fn train_hand_over(coins: &str, level: u16) -> String {
+    format!("You hand over {coins} and you receive training to attain level {level}.")
 }
+/// VERIFIED (oracle_spell_train.raw / §8.12): the receipt header.
+pub const TRAIN_RECEIVE_HEADER: &str = "You receive the following:";
+/// VERIFIED (oracle_spell_train.raw / §8.12): the CP line.
+pub fn train_cp_line(cp: u16) -> String {
+    format!("{cp} additional character points")
+}
+/// VERIFIED (§8.12): the kai grant header, after the CP line; one power
+/// name per line follows.
+pub const KAI_LEARN_HEADER: &str = "You learn the following Kai abilities:";
 
 /// VERIFIED (oracle): the Lawful prompt (verbatim, including the double
 /// space before [Yes/No]).
@@ -159,6 +178,44 @@ pub fn dont_know_cast(arg: &str) -> String {
 pub const ALREADY_CAST: &str = "You have already cast a spell this round!";
 /// VERIFIED (spellcasting.md §8.6): the mana gate.
 pub const NOT_ENOUGH_MANA: &str = "You do not have enough mana to cast that spell.";
+
+// --- kai/mystic wording (VERIFIED oracle_kai_mystic*.raw; spellcasting.md
+// §8.12) — the caster_group-5 variants of the cast surfaces. ---
+
+/// VERIFIED (§8.12): the mystic `cast` hard refusal — before any argument
+/// parsing; note the double space after "KAI!".
+pub const KAI_NO_CAST: &str = "You may not cast... You are KAI!  You must invoke your powers.";
+/// VERIFIED (§8.12): the mystic `spells` redirect (single space there).
+pub const KAI_NO_SPELLS: &str =
+    "You may not list your spells. You are KAI! You must list your powers.";
+/// ORACLE-VERIFY: a non-kai `powers` is unmeasured — the parallel of the
+/// kai `spells` redirect, chosen by symmetry.
+pub const NON_KAI_NO_POWERS: &str =
+    "You may not list your powers. You are not KAI! You must list your spells.";
+/// ORACLE-VERIFY: a non-kai `invoke` is unmeasured — the parallel of the
+/// kai `cast` refusal, chosen by symmetry (double space kept).
+pub const NON_KAI_NO_INVOKE: &str =
+    "You may not invoke... You are not KAI!  You must cast your spells.";
+/// VERIFIED (§8.12): bare invoke.
+pub const SYNTAX_INVOKE: &str = "Syntax: INVOKE {power} [{target}]";
+/// VERIFIED (§8.12): the kai-specific mana gate wording.
+pub const NOT_ENOUGH_KAI: &str = "You do not have enough kai to invoke that power.";
+/// VERIFIED (§8.12): the one-per-round flag, invoke wording — checked
+/// with kai still in the pool, charges nothing.
+pub const ALREADY_INVOKED: &str = "You have already invoked a power this round!";
+/// VERIFIED (§8.12): the empty `powers` reply.
+pub const NO_POWERS: &str = "You have no powers.";
+/// VERIFIED (§8.12): the `powers` header pair — Mana becomes Kai, "Spell
+/// Name" stays.
+pub const POWERS_HEADER: &str = "You have the following powers:\nLevel Kai  Short Spell Name";
+
+/// VERIFIED (§8.12, byte-exact): one `powers` row. Unlike `spell_row`'s
+/// left-aligned 6-wide short column, the kai short is RIGHT-aligned width
+/// 4 with a two-space gutter (visible on `owl`; invisible in §8.5 where
+/// every mage shortname is exactly 4 chars).
+pub fn power_row(level: i16, kai: i16, short: &str, name: &str) -> String {
+    format!("{level:>3}{kai:>4}    {short:>4}  {name:<30}")
+}
 /// DLL string (spec §2 level gate). ORACLE-VERIFY: unreachable via
 /// scroll-learned books, so never observed live; reachable via slice-4
 /// temp spells.
@@ -723,12 +780,18 @@ pub fn coin_pile_names(piles: [u32; 5]) -> Option<String> {
     }
 }
 
-/// VERIFIED (oracle): the status prompt. Caster/Kai variants ORACLE-VERIFY.
-pub fn prompt(hp: i32, mana: i32, caster_group: i16) -> String {
-    match caster_group {
-        1..=4 => format!("[HP={hp}/MA={mana}]:"),
-        5 => format!("[HP={hp}/KAI={mana}]:"),
-        _ => format!("[HP={hp}]:"),
+/// VERIFIED (oracle): the status prompt. The mana segment appears only
+/// while the max pool is non-zero (MEASURED §8.12: the L1 mystic prompt
+/// is `[HP=28]:`, KAI from L2; §8.2 mage `[HP=26/MA=12]:`; warrior
+/// HP-only) — the same `+0x600 != 0` gate as show_health.
+pub fn prompt(hp: i32, mana: i32, max_mana: i32, caster_group: i16) -> String {
+    if max_mana == 0 {
+        return format!("[HP={hp}]:");
+    }
+    if caster_group == 5 {
+        format!("[HP={hp}/KAI={mana}]:")
+    } else {
+        format!("[HP={hp}/MA={mana}]:")
     }
 }
 
@@ -750,12 +813,16 @@ pub struct SheetData<'a> {
     /// DescMsg line3 of each active duration spell, in slot order —
     /// appended after the MagicRes row (MEASURED §8.11).
     pub active_lines: &'a [String],
+    pub mana_current: i32,
+    pub mana_max: i32,
+    pub caster_group: i16,
 }
 
 /// VERIFIED (oracle): the nine-line status sheet, byte-exact to the
 /// transcript except the whitelisted Martial Arts WG3-NT/DOS divergence.
 /// Three columns at 0/18/39; right column label+value is 18 wide.
-/// Non-caster layout; the caster Mana/Spellcasting line is ORACLE-VERIFY.
+/// Non-caster layout + the measured kai row (§8.12); the groups 1-4
+/// Mana/Spellcasting line is still ORACLE-VERIFY.
 pub fn stat_sheet(d: &SheetData<'_>) -> String {
     let mut out = String::new();
     let mut row = |left: String, mid: String, right: String| {
@@ -787,8 +854,16 @@ pub fn stat_sheet(d: &SheetData<'_>) -> String {
         format!("Armour Class:{:>4}/{}", d.armour_class, d.armour_max),
         format!("Thievery:{:>9}", d.derived.thievery),
     );
+    // MEASURED (§8.12): the mystic mana row fills the Traps row's left
+    // column (`Kai:      0/1`; 0/0 at L1 — shown regardless of max).
+    // ORACLE-VERIFY: the groups 1-4 `Mana:` analog is unmeasured; the
+    // non-caster blank is oracle-verified, so only group 5 renders.
     row(
-        String::new(),
+        if d.caster_group == 5 {
+            format!("Kai:{:>7}/{}", d.mana_current, d.mana_max)
+        } else {
+            String::new()
+        },
         String::new(),
         format!("Traps:{:>12}", d.derived.find_traps),
     );

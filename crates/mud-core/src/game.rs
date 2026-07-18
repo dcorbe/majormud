@@ -1437,7 +1437,7 @@ impl Core {
     }
 
     fn show_prompt(&mut self, session: SessionId) {
-        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+        let Some(Session::InGame { player, derived, .. }) = self.sessions.get(&session) else {
             return;
         };
         let caster_group = self
@@ -1445,7 +1445,12 @@ impl Core {
             .classes
             .get(&player.class)
             .map_or(0, |c| c.caster_group);
-        let prompt = text::prompt(player.current_hp, player.current_mana, caster_group);
+        let prompt = text::prompt(
+            player.current_hp,
+            player.current_mana,
+            derived.max_mana,
+            caster_group,
+        );
         self.output(session, &prompt);
     }
 
@@ -1505,6 +1510,13 @@ impl Core {
             stats,
             derived,
             active_lines: &active_lines,
+            mana_current: player.current_mana,
+            mana_max: derived.max_mana,
+            caster_group: self
+                .content
+                .classes
+                .get(&player.class)
+                .map_or(0, |c| c.caster_group),
         });
         self.output(session, &sheet);
     }
@@ -1604,6 +1616,7 @@ impl Core {
             Command::Experience => self.show_experience(session),
             Command::Health => self.show_health(session),
             Command::Spells => self.spells_command(session),
+            Command::Powers => self.powers_command(session),
             Command::Train => self.train_level(session),
             // Argument commands do best-effort resolution; when they cannot
             // intuit the target, the whole line is said aloud (the parser's
@@ -1614,8 +1627,10 @@ impl Core {
                 }
             }
             // Cast never falls through to say: an unresolvable spell prints
-            // the do-not-know line (MEASURED §8.6/§8.9).
+            // the do-not-know line (MEASURED §8.6/§8.9). Invoke is its kai
+            // twin (§8.12).
             Command::Cast(args) => self.cast_command(session, &args),
+            Command::Invoke(args) => self.invoke_command(session, &args),
             Command::Aid(target) => {
                 if self.aid_command(session, &target) == Resolution::FallThrough {
                     self.say(session, line.trim());
@@ -1666,7 +1681,18 @@ impl Core {
         let Some(Session::InGame { player, derived, .. }) = self.sessions.get(&session) else {
             return;
         };
-        let line = text::health_line(player.current_hp, derived.max_hp);
+        let caster_group = self
+            .content
+            .classes
+            .get(&player.class)
+            .map_or(0, |c| c.caster_group);
+        let line = text::health_line(
+            player.current_hp,
+            derived.max_hp,
+            player.current_mana,
+            derived.max_mana,
+            caster_group,
+        );
         self.output_line(session, &line);
     }
 
@@ -1674,6 +1700,11 @@ impl Core {
     /// sort by required power ascending, then name; display order is
     /// computed here, not stored. Format VERIFIED oracle_spell_train.raw.
     fn spells_command(&mut self, session: SessionId) {
+        // MEASURED (§8.12): mystics are redirected before any listing.
+        if self.is_kai(session) {
+            self.output_line(session, text::KAI_NO_SPELLS);
+            return;
+        }
         let player = self.player(session);
         let mut known: Vec<_> = player
             .spellbook
@@ -1699,6 +1730,43 @@ impl Core {
             out.push('\n');
         }
         // The table ends with a blank line (oracle; unlike exp/health).
+        out.push('\n');
+        self.output(session, &out);
+    }
+
+    /// `powers` — the kai book listing (MEASURED §8.12): same shape as
+    /// `spells` (sort, trailing blank line) with the Kai header and the
+    /// right-aligned short column; empty book is a single line.
+    fn powers_command(&mut self, session: SessionId) {
+        if !self.is_kai(session) {
+            // ORACLE-VERIFY: unmeasured parallel of the kai redirect.
+            self.output_line(session, text::NON_KAI_NO_POWERS);
+            return;
+        }
+        let player = self.player(session);
+        let mut known: Vec<_> = player
+            .spellbook
+            .keys()
+            .filter_map(|id| self.content.spells.get(id))
+            .collect();
+        if known.is_empty() {
+            self.output_line(session, text::NO_POWERS);
+            return;
+        }
+        known.sort_by(|a, b| {
+            (a.required_power, &a.name).cmp(&(b.required_power, &b.name))
+        });
+        let mut out = String::from(text::POWERS_HEADER);
+        out.push('\n');
+        for spell in known {
+            out.push_str(&text::power_row(
+                spell.required_power,
+                spell.mana_cost,
+                &spell.short_name,
+                &spell.name,
+            ));
+            out.push('\n');
+        }
         out.push('\n');
         self.output(session, &out);
     }
@@ -1757,10 +1825,35 @@ impl Core {
             .map_or(0, |c| i32::from(c.hp_seed));
         let roll = self.rng.roll(0, hp_seed);
         let lives_grant = self.config.lives_per_level;
+        // Kai grant (MEASURED §8.12): training a caster_group-5 class
+        // inserts every magery-group-5 power whose required_power equals
+        // the NEW level into the ordinary spellbook (swan at L2, owl at
+        // L3 — the shipped data has exactly one power per level). The
+        // §8.1 mage control measured NOTHING, so the grant is keyed on
+        // the class group. ORACLE-VERIFY: classes other than mage/mystic
+        // are unmeasured; multi-grant ordering (no shipped case) is by
+        // spell id.
+        let next_level = self.player(session).level + 1;
+        let grants: Vec<(SpellId, String)> = if self.caster_group(session) == 5 {
+            let mut grants: Vec<(SpellId, String)> = self
+                .content
+                .spells
+                .values()
+                .filter(|s| {
+                    s.class_gate_group == 5
+                        && i32::from(s.required_power) == i32::from(next_level)
+                })
+                .map(|s| (s.id, s.name.clone()))
+                .collect();
+            grants.sort_by_key(|(id, _)| *id);
+            grants
+        } else {
+            Vec::new()
+        };
         let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
             unreachable!("train dispatched from in-game session");
         };
-        player.coins.deduct_copper(cost, ratios);
+        let spent = player.coins.deduct_copper(cost, ratios);
         player.level += 1;
         let new_level = player.level;
         let cp = match new_level {
@@ -1774,13 +1867,46 @@ impl Core {
             player.hp_base += roll as u16;
         }
         player.lives = (player.lives + lives_grant).min(9);
+        for (id, _) in &grants {
+            // Permanent book entry — the same insertion the scroll path
+            // uses (§8.12: the on-disk +0x474 word array gained the id).
+            player.spellbook.insert(*id, false);
+        }
 
-        // Mode-2 recompute: derived stats refresh, current HP/mana kept.
+        // Mode-2 recompute: derived stats refresh, current HP/mana kept
+        // (MEASURED §8.12: training does NOT refill the kai pool).
         let refreshed = self.derive_for(self.player(session));
         if let Some(Session::InGame { derived, .. }) = self.sessions.get_mut(&session) {
             *derived = refreshed;
         }
-        self.output_line(session, &text::train_success(new_level));
+        let snapshot = Box::new(self.player(session).clone());
+        self.events.push(Event::Persist(snapshot));
+        // The receipt (MEASURED §8.7/§8.12): payment sentence with the
+        // coins actually handed over, the CP line, then the kai grants —
+        // one power name per line.
+        let coins = text::coin_listing([
+            spent.copper,
+            spent.silver,
+            spent.gold,
+            spent.platinum,
+            spent.runic,
+        ])
+        .unwrap_or_else(|| "nothing".into());
+        let mut out = text::train_hand_over(&coins, new_level);
+        out.push('\n');
+        out.push_str(text::TRAIN_RECEIVE_HEADER);
+        out.push('\n');
+        out.push_str(&text::train_cp_line(cp));
+        out.push('\n');
+        if !grants.is_empty() {
+            out.push_str(text::KAI_LEARN_HEADER);
+            out.push('\n');
+            for (_, name) in &grants {
+                out.push_str(name);
+                out.push('\n');
+            }
+        }
+        self.output(session, &out);
     }
 
 
@@ -2328,12 +2454,51 @@ impl Core {
             self.output_line(session, text::MORTALLY_WOUNDED);
             return;
         }
+        // Kai-block (decompile cast_no_target 39147, after the downed gate
+        // 39125): MEASURED §8.12 — bare, garbage, known-power and
+        // full-name forms all refuse before any argument parsing.
+        if self.is_kai(session) {
+            self.output_line(session, text::KAI_NO_CAST);
+            return;
+        }
         let args = args.trim();
         if args.is_empty() {
             // MEASURED (§8.9): bare cast is a syntax line, not an error.
             self.output_line(session, text::SYNTAX_CAST);
             return;
         }
+        self.cast_resolved(session, args);
+    }
+
+    /// `invoke` — the kai cast verb (§8.12): same pipeline, kai wording.
+    /// The refusal/resolution strings inside are shared with cast (the
+    /// unknown line still says "cast", MEASURED); only the mana and
+    /// one-per-round refusals swap to the kai variants, via the keyed
+    /// helpers.
+    fn invoke_command(&mut self, session: SessionId, args: &str) {
+        // ORACLE-VERIFY: the downed-band ordering is unmeasured for
+        // invoke; mirrored from cast (the DLL gates sit in the shared
+        // cast_no_target).
+        if self.player(session).current_hp < 1 {
+            self.output_line(session, text::MORTALLY_WOUNDED);
+            return;
+        }
+        if !self.is_kai(session) {
+            // ORACLE-VERIFY: unmeasured parallel of the kai cast refusal.
+            self.output_line(session, text::NON_KAI_NO_INVOKE);
+            return;
+        }
+        let args = args.trim();
+        if args.is_empty() {
+            // MEASURED (§8.12): bare invoke is a syntax line.
+            self.output_line(session, text::SYNTAX_INVOKE);
+            return;
+        }
+        self.cast_resolved(session, args);
+    }
+
+    /// The shared cast/invoke pipeline, after the verb-specific gates.
+    fn cast_resolved(&mut self, session: SessionId, args: &str) {
         // Gate 2: resolve against the learned book. Resolution comes BEFORE
         // the already-cast check: the DLL dispatcher resolves the spell and
         // passes a pointer into cast_no_target, whose mode-2 flag "skips
@@ -2353,7 +2518,10 @@ impl Core {
         // is unmeasured — we currently block it here.
         if let Some(Session::InGame { cast_this_round: true, .. }) = self.sessions.get(&session)
         {
-            self.output_line(session, text::ALREADY_CAST);
+            // MEASURED §8.12: the kai variant fires with kai still in the
+            // pool and charges nothing — same flag, same position; the
+            // invoke round flag IS cast_this_round (`+0x700 & 4`).
+            self.output_line(session, self.already_cast_line(session));
             return;
         }
         let spell = self.content.spells[&spell_id].clone();
@@ -2538,10 +2706,11 @@ impl Core {
         if *energy < round_cost {
             return;
         }
-        // Gate 6: mana (MEASURED §8.6) — checked here, deducted at roll
-        // time (full on success, half rounded down on a failed roll).
+        // Gate 6: mana (MEASURED §8.6; kai wording §8.12) — checked here,
+        // deducted at roll time (full on success, half rounded down on a
+        // failed roll).
         if player.current_mana < mana_cost {
-            self.output_line(session, text::NOT_ENOUGH_MANA);
+            self.output_line(session, self.not_enough_mana_line(session));
             return;
         }
         // All gates passed: the round is spent whether the roll then
@@ -2583,6 +2752,8 @@ impl Core {
             // blur 4 -> 2 §8.9), no effects applied.
             // DLL clamps the halved cost at 0 (decompiled 39387) — a
             // negative mana_cost must not refund on failure.
+            // ORACLE-VERIFY: the kai fail wording is unmeasured (§8.12
+            // never rolled a failure — the mystic sc term is 500).
             player.current_mana -= (mana_cost / 2).max(0);
             self.output_line(session, &text::cast_fail(&spell_name));
             self.broadcast_to_room(room, Some(session), &text::cast_fail_room(&caster_name, &spell_name));
@@ -2857,13 +3028,14 @@ impl Core {
         let mana_cost = i32::from(spell.mana_cost);
         if *energy < round_cost {
             // 44397-44409: the energy leg of the triple gate prints the
-            // already-cast line ("cast a spell" wording for non-mystics)
+            // already-cast line (kai wording keyed like every refusal;
+            // unreachable for mystics — no group-5 item-target spell)
             // and charges nothing.
-            self.output_line(session, text::ALREADY_CAST);
+            self.output_line(session, self.already_cast_line(session));
             return;
         }
         if player.current_mana < mana_cost {
-            self.output_line(session, text::NOT_ENOUGH_MANA);
+            self.output_line(session, self.not_enough_mana_line(session));
             return;
         }
         if let Some(Session::InGame { cast_this_round, .. }) = self.sessions.get_mut(&session) {
@@ -3200,11 +3372,11 @@ impl Core {
         // decompile's order (39264-39281): round energy prints the
         // already-cast line, then mana, then level-vs-required-power.
         if *energy < round_cost {
-            self.output_line(session, text::ALREADY_CAST);
+            self.output_line(session, self.already_cast_line(session));
             return;
         }
         if player.current_mana < mana_cost {
-            self.output_line(session, text::NOT_ENOUGH_MANA);
+            self.output_line(session, self.not_enough_mana_line(session));
             return;
         }
         if i32::from(player.level) < i32::from(spell.required_power) {
@@ -3460,9 +3632,13 @@ impl Core {
         // decompile-only; the lowest learnable odd spells are annointed
         // hands L10 / dancing blades L11 / fireball L15, none measured
         // live).
-        // slice-5: kai/mystic message variants ("invoke a power"/"kai"
-        // instead of "cast a spell"/"mana", spec §2) + the per-round
-        // invoke flag — a mystic casting today gets mage wording.
+        // Kai wording (§8.12, resolved): the refusal variants are keyed
+        // on caster_group 5 (already_cast_line/not_enough_mana_line), the
+        // success verb line lives in the MESSAGE DATA ("You invoke the
+        // %s." is castmsgb line1 for every group-5 spell), and the
+        // per-round invoke flag IS cast_this_round (the measured string
+        // differs only in wording). Melee + invoke same-round interplay
+        // stays ORACLE-VERIFY (slice 6).
         if let Some(msg) = spell.cast_msg_b.and_then(|id| self.content.messages.get(&id)) {
             let args = text::CastMsgArgs {
                 caster: &caster_name,
@@ -5260,6 +5436,37 @@ impl Core {
         match &self.sessions[&session] {
             Session::InGame { player, .. } => player,
             _ => unreachable!("caller guarantees an in-game session"),
+        }
+    }
+
+    /// The player's class caster group (`class+0x40`; 5 = kai/mystic).
+    fn caster_group(&self, session: SessionId) -> i16 {
+        self.content
+            .classes
+            .get(&self.player(session).class)
+            .map_or(0, |c| c.caster_group)
+    }
+
+    /// caster_group == 5 — the kai wording/gating key (§8.12).
+    fn is_kai(&self, session: SessionId) -> bool {
+        self.caster_group(session) == 5
+    }
+
+    /// The one-cast-per-round refusal, kai wording for mystics (§8.12).
+    fn already_cast_line(&self, session: SessionId) -> &'static str {
+        if self.is_kai(session) {
+            text::ALREADY_INVOKED
+        } else {
+            text::ALREADY_CAST
+        }
+    }
+
+    /// The mana-gate refusal, kai wording for mystics (§8.12).
+    fn not_enough_mana_line(&self, session: SessionId) -> &'static str {
+        if self.is_kai(session) {
+            text::NOT_ENOUGH_KAI
+        } else {
+            text::NOT_ENOUGH_MANA
         }
     }
 
