@@ -2619,15 +2619,50 @@ impl Core {
                     return;
                 }
             }
-            // MEASURED (§8.9): a non-empty target string on a benign spell
-            // does a room-entity lookup that can fail — "cast blur extra
-            // trailing words" -> the do-not-see refusal, no self-cast, no
-            // mana, before any cost. Slice 3 benign casts are SELF-ONLY,
-            // so every lookup here fails; explicit friendly targets
-            // (match types with a target slot) land in slice 5.
-            // ORACLE-VERIFY: targeting a real other player is unmeasured.
-            self.output_line(session, &text::do_not_see_here(&target));
-            return;
+            // Player-target resolution (match 1/2 benign; MEASURED §8.13):
+            // players in the caster's room match by the §8.9 word-prefix
+            // rule (`c blur ora` -> Oracle). The refusal matrix is
+            // match-type-keyed: only the single-target types carry a
+            // target slot — match 0 benign has none, so its lookup always
+            // falls to the do-not-see refusal (MEASURED §8.9: "cast blur
+            // extra trailing words", no self-cast, no mana, pre-cost).
+            let single_target = matches!(
+                spell.match_type,
+                crate::content::MatchType::Single1 | crate::content::MatchType::Single2
+            );
+            let room = self.player(session).location;
+            let want = target.trim().to_ascii_lowercase();
+            let found = if single_target {
+                self.in_game_sessions()
+                    .filter(|(_, p)| p.location == room)
+                    .find(|(_, p)| word_prefix_match(&p.name, &want))
+                    .map(|(id, _)| id)
+            } else {
+                None
+            };
+            match found {
+                Some(target_id) if target_id != session => {
+                    self.benign_target_cast(session, target_id, &spell);
+                    return;
+                }
+                Some(_) => {
+                    // Own name = a plain self-cast (MEASURED §8.13: the
+                    // castmsgb frames keep the name — "You cast blur on
+                    // Zinvar!" / "Zinvar casts blur on Zinvar!" — which
+                    // is exactly what the self path renders). Fall
+                    // through to the benign self tail below.
+                }
+                None => {
+                    if single_target && self.find_monster(room, &target).is_some() {
+                        // MEASURED (§8.13): `c blur cat` — benign single
+                        // targets are players only, uncharged.
+                        self.output_line(session, text::MAY_NOT_CAST_ON_MONSTER);
+                        return;
+                    }
+                    self.output_line(session, &text::do_not_see_here(&target));
+                    return;
+                }
+            }
         }
         if let Some(monster_id) = monster {
             // SpellImmu (139): a monster immune to spells at or below this
@@ -2765,21 +2800,141 @@ impl Core {
             return;
         }
         player.current_mana -= mana_cost;
-        self.benign_success_effects(session, &spell, magnitude, duration);
+        self.benign_success_effects(session, session, &spell, magnitude, duration);
+    }
+
+    /// `cast_user_target` for a benign spell at ANOTHER player (decompile
+    /// save gate 41712-41733, resist block 42984-43009; MEASURED §8.13).
+    /// The gate/cost/roll skeleton mirrors the benign self tail of
+    /// `cast_resolved`; the effects land on the TARGET.
+    fn benign_target_cast(
+        &mut self,
+        session: SessionId,
+        target_id: SessionId,
+        spell: &crate::content::Spell,
+    ) {
+        let Some(Session::InGame { energy, player, derived, .. }) = self.sessions.get(&session)
+        else {
+            return;
+        };
+        let spellcasting = derived.spellcasting;
+        let level = player.level;
+        let caster_name = player.name.clone();
+        let room = player.location;
+        let round_cost = i32::from(spell.round_cost);
+        let mana_cost = i32::from(spell.mana_cost);
+        if *energy < round_cost {
+            return; // silent, like the self path (no measured message)
+        }
+        if player.current_mana < mana_cost {
+            self.output_line(session, self.not_enough_mana_line(session));
+            return;
+        }
+        // AlterSpLength reads through the TARGET's bag —
+        // add_cast_spell_to_user runs on the target terminal (decompile
+        // 38165), and the two bags coincide on every measured (self-)cast.
+        // ORACLE-VERIFY: never separable live so far.
+        let alter_sp_length = if spell.duration == 0 {
+            0
+        } else {
+            self.ability_bag(self.player(target_id)).value(Ability::AlterSpLength)
+        };
+        if let Some(Session::InGame { cast_this_round, .. }) = self.sessions.get_mut(&session) {
+            *cast_this_round = true;
+        }
+        let target_name = self.player(target_id).name.clone();
+        let rng = &mut self.rng;
+        let succeeded = cast_roll_succeeds(spellcasting, spell.base_chance, &mut |lo, hi| {
+            rng.roll(lo, hi)
+        });
+        // Saving throw (success only; spec §3): Always, or IfAntiMagic
+        // when the target's bag carries AntiMagic (51), rolled against
+        // the player MR analog (`user+0xc2` = the MagicRes stat).
+        // MEASURED §8.13: blur (typeofresists 1) never rolled against
+        // the AntiMagic-less MagicRes-55 dwarf — three straight lands.
+        let save_allowed = match spell.save_class {
+            crate::content::SaveClass::None => false,
+            crate::content::SaveClass::Always => true,
+            crate::content::SaveClass::IfAntiMagic => {
+                self.ability_bag(self.player(target_id)).value(Ability::AntiMagic) != 0
+            }
+        };
+        let resisted = succeeded && save_allowed && {
+            let stat = match self.sessions.get(&target_id) {
+                Some(Session::InGame { derived, .. }) => derived.magic_resist,
+                _ => 0,
+            };
+            let rng = &mut self.rng;
+            monster_save_resists(stat, &mut |lo, hi| rng.roll(lo, hi))
+        };
+        let landed = succeeded && !resisted;
+        let magnitude = if landed {
+            let rng = &mut self.rng;
+            spell_magnitude(spell, level, 0, &mut |lo, hi| rng.roll(lo, hi))
+        } else {
+            0
+        };
+        let duration = if landed && spell.duration != 0 {
+            let rng = &mut self.rng;
+            spell_duration(spell, level, alter_sp_length, &mut |lo, hi| rng.roll(lo, hi))
+        } else {
+            0
+        };
+        let Some(Session::InGame { energy, player, .. }) = self.sessions.get_mut(&session)
+        else {
+            return;
+        };
+        *energy -= round_cost;
+        if !succeeded {
+            // MEASURED (§8.13): caster "You attempt to cast blur at
+            // Oracle, but fail." + room "...attempted to cast blur at
+            // Oracle, but failed."; the TARGET sees NOTHING. Half mana
+            // rounded down, clamped non-negative like every fail path.
+            player.current_mana -= (mana_cost / 2).max(0);
+            self.output_line(session, &text::cast_fail_at(&spell.name, &target_name));
+            self.broadcast_to_room_except(
+                room,
+                &[session, target_id],
+                &text::cast_fail_at_room(&caster_name, &spell.name, &target_name),
+            );
+            return;
+        }
+        if resisted {
+            // A resist pays like a failed roll — full round cost, half
+            // mana (spec §3). ORACLE-VERIFY strings: the DLL resist
+            // family; whether the target's second-person line is
+            // delivered (unlike the suppressed fail line) is unmeasured
+            // — the family ships one, so we deliver it.
+            player.current_mana -= (mana_cost / 2).max(0);
+            self.output_line(session, &text::cast_resisted(&spell.name, &target_name));
+            self.output_line(target_id, &text::you_resisted(&caster_name, &spell.name));
+            self.broadcast_to_room_except(
+                room,
+                &[session, target_id],
+                &text::cast_resisted_room(&target_name, &caster_name, &spell.name),
+            );
+            return;
+        }
+        player.current_mana -= mana_cost;
+        self.benign_success_effects(session, target_id, spell, magnitude, duration);
     }
 
     /// Everything a SUCCESSFUL benign cast does after its costs are paid
-    /// — shared verbatim by the command path and the mode-2 forced cast
-    /// (`forced_cast`): the dispel pre-pass, the instant apply loop or
-    /// duration slot entry, then the success lines.
+    /// — shared by the self-cast command path (`target == session`), the
+    /// player-target path (`benign_target_cast`) and the mode-2 forced
+    /// cast (`forced_cast`): the dispel pre-pass, the instant apply loop
+    /// or duration slot entry, then the success lines. Every effect —
+    /// dispel, hard-write, apply loop, slot entry — lands on the TARGET;
+    /// only the fan-out geometry involves the caster.
     fn benign_success_effects(
         &mut self,
         session: SessionId,
+        target_id: SessionId,
         spell: &crate::content::Spell,
         magnitude: i32,
         duration: i32,
     ) {
-        let Some(Session::InGame { derived, .. }) = self.sessions.get(&session) else {
+        let Some(Session::InGame { derived, .. }) = self.sessions.get(&target_id) else {
             return;
         };
         let max_hp = derived.max_hp;
@@ -2801,7 +2956,7 @@ impl Core {
             // (39494) without visiting later ability slots.
             if let Ok(id) = u16::try_from(*value)
                 && id != 0
-                && let Some(idx) = self.player(session).find_active(SpellId(id))
+                && let Some(idx) = self.player(target_id).find_active(SpellId(id))
             {
                 // Early return (decompile 39472-39494, match types
                 // 1/2/6): a FOUND dispel prints display_spell_success
@@ -2816,8 +2971,8 @@ impl Core {
                 // param_6 here is uVar1 — the RAW rolled magnitude, no
                 // slot-value override (39482-39484: the pre-pass sits
                 // before the apply loop's per-slot local_9c rewrite).
-                self.emit_cast_success_lines(session, spell, magnitude);
-                self.terminate_active_spell(session, idx, honor_endcast);
+                self.emit_cast_success_lines(session, target_id, spell, magnitude);
+                self.terminate_active_spell(target_id, idx, honor_endcast);
                 return;
             }
         }
@@ -2834,7 +2989,7 @@ impl Core {
         // only Poison + no-op slots (DescMsg 115 / NonMagicalSpell 144),
         // so an immune target gets nothing at all from them.
         let immune_poison = spell.abilities.iter().any(|(a, _)| *a == Ability::Poison)
-            && self.ability_bag(self.player(session)).value(Ability::ImmuPoison) != 0;
+            && self.ability_bag(self.player(target_id)).value(Ability::ImmuPoison) != 0;
         // The driving slot: the first non-noop, non-gated ability. Its
         // fixed-or-rolled value is display_spell_success's param_6 — the
         // damage arg of the success lines (every case passes its own
@@ -2861,11 +3016,12 @@ impl Core {
             return;
         }
         if spell.duration == 0 {
-            // Instant apply loop (spec §4 table, self-target): iterate the
-            // ability slots; a non-zero slot value is a FIXED amount, 0
-            // means the rolled V — pinned on BOTH paths (offensive
-            // decompile 43711-43717; benign cast_no_target loop ~39577).
-            let Some(Session::InGame { energy, player, .. }) = self.sessions.get_mut(&session)
+            // Instant apply loop (spec §4 table, on the resolved target):
+            // iterate the ability slots; a non-zero slot value is a FIXED
+            // amount, 0 means the rolled V — pinned on BOTH paths
+            // (offensive decompile 43711-43717; benign loop ~39577).
+            let Some(Session::InGame { energy, player, .. }) =
+                self.sessions.get_mut(&target_id)
             else {
                 return;
             };
@@ -2945,7 +3101,7 @@ impl Core {
                         v => i32::from(v),
                     });
                     if let Some(Session::InGame { player, .. }) =
-                        self.sessions.get_mut(&session)
+                        self.sessions.get_mut(&target_id)
                         && player.poison < v
                     {
                         player.poison = v;
@@ -2957,7 +3113,7 @@ impl Core {
             // stores the 16-bit rolled magnitude as the slot value
             // (decompile 38180/38195: `(undefined2)param_4`).
             let entered = {
-                let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session)
+                let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&target_id)
                 else {
                     return;
                 };
@@ -2982,11 +3138,12 @@ impl Core {
                 }
             };
             if entered {
-                let snapshot = Box::new(self.player(session).clone());
+                let snapshot = Box::new(self.player(target_id).clone());
                 self.events.push(Event::Persist(snapshot));
-                // The slot now feeds the ability bag: recompute cached
-                // derived stats (update_dynamic_stats runs after apply).
-                self.refresh_derived(session);
+                // The slot now feeds the TARGET's ability bag: recompute
+                // their cached derived stats (MEASURED §8.13: Oracle's
+                // st/MA row moved while blurred).
+                self.refresh_derived(target_id);
             } else {
                 // ORACLE-VERIFY slot overflow (unmeasured live;
                 // decompile-backed): both slot scans exhausted →
@@ -3000,7 +3157,7 @@ impl Core {
                 return;
             }
         }
-        self.emit_cast_success_lines(session, spell, display_damage);
+        self.emit_cast_success_lines(session, target_id, spell, display_damage);
     }
 
     /// `cast_item_target` (decompile 0x49232), scoped to the LEARNABLE
@@ -3121,9 +3278,10 @@ impl Core {
         }
     }
 
-    /// `display_spell_success` for a benign self-cast (decompile
-    /// 38004-38011): the castmsgb fan-out, then the DescMsg (115) line3
-    /// active line on duration casts. `damage` is the function's param_6
+    /// `display_spell_success` for a benign cast (decompile 38004-38011):
+    /// the castmsgb fan-out, then the DescMsg (115) line3 active line on
+    /// duration casts — both keyed on the resolved TARGET (`target_id ==
+    /// session` for a self-cast). `damage` is the function's param_6
     /// — the caller's fixed-or-rolled magnitude, bound into any `%d` slot
     /// of the message (even caster line 37988 `prf(local_60, spellName,
     /// target, param_6)`; odd caster line 38068 `prf(local_60, target,
@@ -3132,6 +3290,7 @@ impl Core {
     fn emit_cast_success_lines(
         &mut self,
         session: SessionId,
+        target_id: SessionId,
         spell: &crate::content::Spell,
         damage: i32,
     ) {
@@ -3140,16 +3299,18 @@ impl Core {
         };
         let caster_name = player.name.clone();
         let room = player.location;
+        let target_name = self.player(target_id).name.clone();
         // Cast messages: castmsgb only (castmsga is the empty message on
-        // every sampled spell — the Task-10 renderer contract). Slice-3
-        // benign casts are SELF-ONLY: target = the caster, the caster line
-        // always prints, the TARGET line goes to no one (oracle §8.6:
-        // `c blur` printed the caster line only), and the room line goes
-        // to everyone else in the room.
+        // every sampled spell — the Task-10 renderer contract). Fan-out
+        // (MEASURED §8.6 self / §8.13 player-target): the caster line
+        // always prints; the TARGET line goes to the resolved target
+        // only when it is another player (a self-cast delivers it to no
+        // one — `c blur` printed the caster line only); the room line
+        // goes to everyone else.
         if let Some(msg) = spell.cast_msg_b.and_then(|id| self.content.messages.get(&id)) {
             let args = text::CastMsgArgs {
                 caster: &caster_name,
-                target: Some(&caster_name),
+                target: Some(&target_name),
                 spell: &spell.name,
                 damage: Some(damage),
             };
@@ -3161,12 +3322,18 @@ impl Core {
             // roll as the damage arg. ORACLE-VERIFY: unmeasured live.
             let odd = spell.msg_style & 1 == 1;
             let caster_line = text::render_cast_line(msg, text::CastAudience::Caster, &args, odd);
+            let target_line = text::render_cast_line(msg, text::CastAudience::Target, &args, odd);
             let room_line = text::render_cast_line(msg, text::CastAudience::Room, &args, odd);
             if let Some(line) = caster_line {
                 self.output_line(session, &line);
             }
+            if target_id != session
+                && let Some(line) = target_line
+            {
+                self.output_line(target_id, &line);
+            }
             if let Some(line) = room_line {
-                self.broadcast_to_room(room, Some(session), &line);
+                self.broadcast_to_room_except(room, &[session, target_id], &line);
             }
         }
         // Cast-time active line: message line3 of the spell's DescMsg (115)
@@ -3177,6 +3344,9 @@ impl Core {
         // prompt in place and prints line3 + a fresh prompt — the net
         // visible order (castmsgb, line3, prompt) is exactly what our
         // single end-of-command prompt produces.
+        // ... and it goes to the TARGET (MEASURED §8.13: "You are
+        // blurred!" arrived async on Oracle's terminal, never the
+        // caster's).
         if spell.duration != 0
             && let Some(msg_val) = spell
                 .abilities
@@ -3187,7 +3357,7 @@ impl Core {
             && let Some(line) = msg.lines.get(2).filter(|l| !l.is_empty())
         {
             let line = line.clone();
-            self.output_line(session, &line);
+            self.output_line(target_id, &line);
         }
     }
 
@@ -3408,7 +3578,7 @@ impl Core {
             *energy -= round_cost;
             player.current_mana -= mana_cost.max(0);
         }
-        self.benign_success_effects(session, &spell, magnitude, duration);
+        self.benign_success_effects(session, session, &spell, magnitude, duration);
     }
 
     /// A live monster's template name (empty if the instance is gone).
@@ -5643,9 +5813,19 @@ impl Core {
     }
 
     fn broadcast_to_room(&mut self, room: RoomId, exclude: Option<SessionId>, text: &str) {
+        match exclude {
+            Some(s) => self.broadcast_to_room_except(room, &[s], text),
+            None => self.broadcast_to_room_except(room, &[], text),
+        }
+    }
+
+    /// Room broadcast excluding a SET of sessions — the targeted-cast
+    /// fan-outs exclude both the caster and the target (§8.13: the
+    /// target's view is its own line or, on a fail, nothing).
+    fn broadcast_to_room_except(&mut self, room: RoomId, exclude: &[SessionId], text: &str) {
         let recipients: Vec<SessionId> = self
             .in_game_sessions()
-            .filter(|(id, p)| Some(*id) != exclude && p.location == room)
+            .filter(|(id, p)| !exclude.contains(id) && p.location == room)
             .map(|(id, _)| id)
             .collect();
         for session in recipients {

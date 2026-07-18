@@ -79,6 +79,9 @@ const BALM: SpellId = SpellId(400);
 /// The minor healing (13, mage L1) model: EVEN benign instant whose
 /// caster line carries a %d — real message 15.
 const MERCY: SpellId = SpellId(410);
+/// Benign match-2 instant with SaveClass::Always — the player-target
+/// saving-throw machinery probe (no learnable spell ships one).
+const HUSH: SpellId = SpellId(420);
 // --- slice-4 Task 3 duration fixtures (base_chance 200 = deterministic) ---
 /// The blur (129) model: duration 70 flat, magnitude bounds 5..5, abilities
 /// [(Dodge, 0), (DescMsg, 903), (RemovesSpell, WARD)] — slot entry, the
@@ -408,7 +411,12 @@ fn world() -> Content {
     blur.round_cost = 100;
     // The real blur (129) record: duration 70 flat, magnitude bounds 5..5,
     // Dodge value 0 = "store the rolled V", DescMsg 68 (fixture 904),
-    // RemovesSpell -> the amethyst pendant's effect 157 (fixture WARD).
+    // RemovesSpell -> the amethyst pendant's effect 157 (fixture WARD),
+    // match 2 (explicit player target, §8.13), typeofresists 1 —
+    // IfAntiMagic never rolls against an AntiMagic-less target (§8.13:
+    // blur landed on the MagicRes-55 dwarf every time).
+    blur.match_type = MatchType::Single2;
+    blur.save_class = SaveClass::IfAntiMagic;
     blur.duration = 70;
     blur.min_base = 5;
     blur.max_base = 5;
@@ -429,6 +437,9 @@ fn world() -> Content {
     jinx.mana_cost = 4;
     jinx.round_cost = 100;
     jinx.base_chance = 15;
+    // Match 2: the targeted-fail probe (§8.13 fail triple) — the bare
+    // `c jinx` self-cast form still works through the empty target.
+    jinx.match_type = MatchType::Single2;
     // Task 11 offensive fixtures. Damage value 0 = "use the rolled
     // magnitude" (a non-zero value is a fixed, unresisted amount).
     let mut zap = spell(ZAP, "zap", "zapp");
@@ -525,11 +536,23 @@ fn world() -> Content {
     balm.max_base = 10;
     balm.cast_msg_b = Some(MessageId(910));
     // The minor-healing model (even benign instant, rolled heal, %d).
+    // Match 2 like the real record (13, mage L1) — the instant-at-target
+    // probe.
     let mut mercy = spell(MERCY, "mercy", "merc");
+    mercy.match_type = MatchType::Single2;
     mercy.abilities = vec![(Ability::Heal, 0)];
     mercy.min_base = 10;
     mercy.max_base = 10;
     mercy.cast_msg_b = Some(MessageId(911));
+    // The save-class machinery probe (spec §3, cast_user_target
+    // 41712-41733): benign match-2 instant with an ALWAYS save — no
+    // learnable spell ships one (blur is IfAntiMagic), fixture-only.
+    let mut hush = spell(HUSH, "hush", "hush");
+    hush.match_type = MatchType::Single2;
+    hush.save_class = SaveClass::Always;
+    hush.mana_cost = 4;
+    hush.abilities = vec![(Ability::Heal, 5)];
+    hush.cast_msg_b = Some(MessageId(901));
     // Slice-4 duration fixtures. veil mirrors real blur (mana 4, round
     // cost 100, duration 70 flat, magnitude 5..5, Dodge value 0 = "store
     // the rolled V", RemovesSpell -> the pendant effect).
@@ -554,7 +577,10 @@ fn world() -> Content {
     reap.duration = 70;
     reap.abilities = vec![(Ability::KillSpell, 220)];
     // Instant dispel (cure-poison model): duration 0 stays the default.
+    // Match 2 like the real cure-poison family — the dispel pre-pass
+    // runs on the TARGET's slots (§3 match types 1/2/6).
     let mut purge = spell(PURGE, "purge", "purg");
+    purge.match_type = MatchType::Single2;
     purge.abilities = vec![(Ability::Heal, 5), (Ability::RemovesSpell, 220)];
     // Task 6 termination fixtures (all cost-free, base_chance 200).
     let mut anthem = spell(ANTHEM, "anthem", "anth");
@@ -650,6 +676,7 @@ fn world() -> Content {
     content.add_spell(rawbolt);
     content.add_spell(balm);
     content.add_spell(mercy);
+    content.add_spell(hush);
     content
 }
 
@@ -711,6 +738,7 @@ fn full_book() -> BTreeMap<SpellId, bool> {
         RAWBOLT,
         BALM,
         MERCY,
+        HUSH,
         VEIL,
         WARD,
         REAP,
@@ -2717,4 +2745,283 @@ fn temp_spell_purges_when_the_granting_effect_expires() {
         ),
         "Persist after purge"
     );
+}
+
+// --- player-target benign casts (slice-5 Task 4; MEASURED §8.13) ---
+
+/// The §8.13 three-view stage: Zinvar (mage caster), Oracle (warrior
+/// target), Kaimon (observer), all in the Tower.
+fn trio() -> (Core, SessionId, SessionId, SessionId) {
+    let mut core = Core::new(world(), CoreConfig::default());
+    let zin = core.attach_player(player("Zinvar", MAGE, full_book()));
+    let ora = core.attach_player(hardy("Oracle", WARRIOR));
+    let kai = core.attach_player(player("Kaimon", WARRIOR, BTreeMap::new()));
+    core.drain_events();
+    (core, zin, ora, kai)
+}
+
+#[test]
+fn blur_at_player_prints_the_three_views_and_slots_on_the_target() {
+    // MEASURED (§8.13): caster "You cast blur on Oracle!", target
+    // "Zinvar casts blur upon you!" + the async DescMsg line3, room
+    // "Zinvar casts blur on Oracle!". Full mana at the prompt.
+    let (mut core, zin, ora, kai) = trio();
+    core.input(zin, "c blur oracle");
+    let events = core.drain_events();
+    let caster = text_to(&events, zin);
+    assert!(caster.contains("You cast blur on Oracle!\n"), "caster: {caster:?}");
+    assert!(!caster.contains("You are blurred!"), "line3 is the TARGET's: {caster:?}");
+    let target = text_to(&events, ora);
+    assert!(target.contains("Zinvar casts blur upon you!\n"), "target: {target:?}");
+    assert!(target.contains("You are blurred!\n"), "target line3: {target:?}");
+    let room = text_to(&events, kai);
+    assert!(room.contains("Zinvar casts blur on Oracle!\n"), "room: {room:?}");
+    assert!(!room.contains("upon you"), "no target line to the room: {room:?}");
+    assert_eq!(core.current_mana(zin), 2, "full mana 4 at the prompt");
+    // The slot enters on the TARGET (Oracle's st/dodge/persist).
+    assert!(core.player_snapshot(ora).find_active(BLUR).is_some(), "target slot");
+    assert_eq!(core.player_snapshot(zin).find_active(BLUR), None, "no caster slot");
+    assert!(
+        events.iter().any(|e| matches!(e, Event::Persist(p) if p.name == "Oracle")),
+        "the target's snapshot persists"
+    );
+}
+
+#[test]
+fn player_target_resolves_by_name_prefix() {
+    // MEASURED (§8.13): `c blur ora` resolved to Oracle (§8.9 word-prefix
+    // rule on players).
+    let (mut core, zin, ora, _) = trio();
+    let shown = cast(&mut core, zin, "c blur ora");
+    assert!(shown.contains("You cast blur on Oracle!\n"), "got: {shown:?}");
+    assert!(core.player_snapshot(ora).find_active(BLUR).is_some());
+}
+
+#[test]
+fn unmatched_target_with_players_present_is_do_not_see() {
+    // MEASURED (§8.13): three players present, still "You do not see zzz
+    // here!" — players searched, no match, uncharged.
+    let (mut core, zin, _, _) = trio();
+    let shown = cast(&mut core, zin, "c blur zzz");
+    assert!(shown.contains("You do not see zzz here!\n"), "got: {shown:?}");
+    assert_eq!(core.current_mana(zin), 6, "uncharged");
+    let next = cast(&mut core, zin, "c spark");
+    assert!(!next.contains(ALREADY_CAST), "refusal does not spend the round");
+}
+
+#[test]
+fn benign_cast_at_a_monster_is_refused_uncharged() {
+    // MEASURED (§8.13): `c blur cat` -> "You may not cast that spell on a
+    // monster!", uncharged (match 2 = players only).
+    let (mut core, zin, _, _) = trio();
+    core.spawn_monster(RAT, TOWER).expect("fixture template");
+    core.drain_events();
+    let shown = cast(&mut core, zin, "c blur rat");
+    assert!(
+        shown.contains("You may not cast that spell on a monster!\n"),
+        "got: {shown:?}"
+    );
+    assert_eq!(core.current_mana(zin), 6, "uncharged");
+    let next = cast(&mut core, zin, "c spark");
+    assert!(!next.contains(ALREADY_CAST), "refusal does not spend the round");
+}
+
+#[test]
+fn own_name_targeting_is_a_self_cast_with_target_form_lines() {
+    // MEASURED (§8.13): `c blur zinvar` -> caster "You cast blur on
+    // Zinvar!" + own DescMsg line3; room "Zinvar casts blur on Zinvar!"
+    // (the third-person frame keeps the name, no reflexive form).
+    let (mut core, zin, _, kai) = trio();
+    core.input(zin, "c blur zinvar");
+    let events = core.drain_events();
+    let caster = text_to(&events, zin);
+    assert!(caster.contains("You cast blur on Zinvar!\n"), "caster: {caster:?}");
+    assert!(caster.contains("You are blurred!\n"), "own line3: {caster:?}");
+    let room = text_to(&events, kai);
+    assert!(room.contains("Zinvar casts blur on Zinvar!\n"), "room: {room:?}");
+    assert!(core.player_snapshot(zin).find_active(BLUR).is_some(), "own slot");
+}
+
+#[test]
+fn targeted_fail_shows_caster_and_room_lines_but_nothing_to_the_target() {
+    // MEASURED (§8.13): fail triple — caster "You attempt to cast blur at
+    // Oracle, but fail." (half mana), room "Zinvar attempted to cast blur
+    // at Oracle, but failed.", target NOTHING. Grunt's caster_group 0
+    // makes every rollable spell fail (the §8.6 determinism trick).
+    let mut core = Core::new(world(), CoreConfig::default());
+    let grunt = core.attach_player(player("Grunt", WARRIOR, full_book()));
+    let ora = core.attach_player(hardy("Oracle", WARRIOR));
+    let kai = core.attach_player(player("Kaimon", WARRIOR, BTreeMap::new()));
+    core.drain_events();
+    core.input(grunt, "c jinx oracle");
+    let events = core.drain_events();
+    let caster = text_to(&events, grunt);
+    assert!(
+        caster.contains("You attempt to cast jinx at Oracle, but fail.\n"),
+        "caster: {caster:?}"
+    );
+    let target = text_to(&events, ora);
+    assert!(
+        !target.contains("jinx"),
+        "the target does not see a failed attempt: {target:?}"
+    );
+    let room = text_to(&events, kai);
+    assert!(
+        room.contains("Grunt attempted to cast jinx at Oracle, but failed.\n"),
+        "room: {room:?}"
+    );
+    assert_eq!(core.current_mana(grunt), 4, "half of mana 4 deducted");
+    assert_eq!(core.player_snapshot(ora).find_active(JINX), None, "no slot");
+}
+
+#[test]
+fn recast_at_the_target_refreshes_the_slot_with_the_identical_triple() {
+    // MEASURED (§8.13): a refresh recast prints the identical success
+    // triple and resets the duration on the player target.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut zinvar = player("Zinvar", MAGE, full_book());
+    zinvar.current_mana = 20; // two full blur casts
+    let zin = core.attach_player(zinvar);
+    let ora = core.attach_player(hardy("Oracle", WARRIOR));
+    let kai = core.attach_player(player("Kaimon", WARRIOR, BTreeMap::new()));
+    core.drain_events();
+    core.input(zin, "c blur oracle");
+    core.drain_events();
+    // Let the slot decay a few upkeep ticks, then clear the round flag.
+    ticks(&mut core, 9);
+    let before = core.player_snapshot(ora);
+    let idx = before.find_active(BLUR).expect("slot entered");
+    assert!(before.active_spells[idx].remaining < 70, "decayed");
+    core.drain_events();
+    core.input(zin, "c blur oracle");
+    let events = core.drain_events();
+    assert!(text_to(&events, zin).contains("You cast blur on Oracle!\n"));
+    assert!(text_to(&events, ora).contains("Zinvar casts blur upon you!\n"));
+    assert!(text_to(&events, kai).contains("Zinvar casts blur on Oracle!\n"));
+    let after = core.player_snapshot(ora);
+    let idx = after.find_active(BLUR).expect("still one slot");
+    assert_eq!(after.active_spells[idx].remaining, 70, "duration reset");
+}
+
+#[test]
+fn always_save_class_lets_the_player_target_resist() {
+    // Spec §3 (cast_user_target 41712-41733, resist block 42984-43009;
+    // ORACLE-VERIFY strings — no learnable benign spell carries a save):
+    // resisted when genrdn(1,100) <= min(targetMR/2, 98); half mana, no
+    // effects; the resist family replaces the fail lines. Oracle's wis
+    // 400 derives MR 300 -> the capped 98% roll (seed-deterministic).
+    let mut core = Core::new(world(), CoreConfig::default());
+    let zin = core.attach_player(player("Zinvar", MAGE, full_book()));
+    let mut oracle = hardy("Oracle", WARRIOR);
+    oracle.stats.wisdom = 400;
+    oracle.base_stats.wisdom = 400;
+    oracle.current_hp = 5;
+    let ora = core.attach_player(oracle);
+    let kai = core.attach_player(player("Kaimon", WARRIOR, BTreeMap::new()));
+    core.drain_events();
+    core.input(zin, "c hush oracle");
+    let events = core.drain_events();
+    let caster = text_to(&events, zin);
+    assert!(
+        caster.contains("You attempt to cast hush at Oracle, but the spell is resisted.\n"),
+        "caster: {caster:?}"
+    );
+    let target = text_to(&events, ora);
+    assert!(
+        target.contains("You resisted Zinvar's hush.\n"),
+        "target: {target:?}"
+    );
+    let room = text_to(&events, kai);
+    assert!(
+        room.contains("Oracle resisted Zinvar's hush.\n"),
+        "room: {room:?}"
+    );
+    assert_eq!(core.current_mana(zin), 4, "half mana like a failed roll");
+    assert_eq!(core.player_snapshot(ora).current_hp, 5, "no heal applied");
+}
+
+#[test]
+fn if_antimagic_save_never_rolls_against_a_plain_player() {
+    // MEASURED (§8.13): blur (typeofresists 1) landed on the MagicRes-55
+    // dwarf every time — no AntiMagic, no roll, even against a huge MR.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let zin = core.attach_player(player("Zinvar", MAGE, full_book()));
+    let mut oracle = hardy("Oracle", WARRIOR);
+    oracle.stats.wisdom = 400;
+    oracle.base_stats.wisdom = 400;
+    let ora = core.attach_player(oracle);
+    core.drain_events();
+    let shown = cast(&mut core, zin, "c blur oracle");
+    assert!(shown.contains("You cast blur on Oracle!\n"), "got: {shown:?}");
+    assert!(core.player_snapshot(ora).find_active(BLUR).is_some(), "landed");
+}
+
+#[test]
+fn instant_heal_lands_on_the_target() {
+    // The heal family at a target (plan Task 4): mercy's rolled 10..=11
+    // heals ORACLE, not the caster, and enters no slot.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let zin = core.attach_player(player("Zinvar", MAGE, full_book()));
+    let mut oracle = hardy("Oracle", WARRIOR);
+    oracle.current_hp = 5;
+    let ora = core.attach_player(oracle);
+    core.drain_events();
+    let caster_hp = core.player_snapshot(zin).current_hp;
+    core.input(zin, "c mercy oracle");
+    let events = core.drain_events();
+    let caster = text_to(&events, zin);
+    assert!(
+        caster.contains("You cast mercy on Oracle, healing 1"),
+        "caster %d binds the heal roll: {caster:?}"
+    );
+    let target = text_to(&events, ora);
+    assert!(target.contains("Zinvar casts mercy on you!\n"), "target: {target:?}");
+    let healed = core.player_snapshot(ora).current_hp;
+    assert!((15..=16).contains(&healed), "target healed 10..=11: {healed}");
+    assert_eq!(core.player_snapshot(zin).current_hp, caster_hp, "caster HP untouched");
+    assert_eq!(core.player_snapshot(ora).find_active(MERCY), None, "instant");
+}
+
+#[test]
+fn dispel_pre_pass_runs_on_the_target_and_ends_the_cast() {
+    // Spec §3: purge's RemovesSpell(WARD) dispels the TARGET's ward —
+    // success lines print, the target sees the wear-off line, and the
+    // early return skips purge's own Heal.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let zin = core.attach_player(player("Zinvar", MAGE, full_book()));
+    let mut oracle = hardy("Oracle", WARRIOR);
+    oracle.current_hp = 5;
+    oracle.active_spells[0] = ActiveSpell { spell: Some(WARD), value: 5, remaining: 70 };
+    let ora = core.attach_player(oracle);
+    core.drain_events();
+    core.input(zin, "c purge oracle");
+    let events = core.drain_events();
+    let target = text_to(&events, ora);
+    assert!(
+        target.contains("The shimmering ward fades.\n"),
+        "target wear-off: {target:?}"
+    );
+    let after = core.player_snapshot(ora);
+    assert_eq!(after.find_active(WARD), None, "ward dispelled");
+    assert_eq!(after.current_hp, 5, "the dispel early-return skips the Heal");
+}
+
+#[test]
+fn target_slot_expiry_prints_the_wear_off_to_the_target_only() {
+    // MEASURED (§8.13): "The effects of blur wear off." is seen by the
+    // TARGET only — the in-room observer saw nothing at expiry.
+    let (mut core, zin, ora, kai) = trio();
+    core.input(zin, "c blur oracle");
+    core.drain_events();
+    // blur duration 70 upkeep ticks, one per 3 scheduler ticks.
+    ticks(&mut core, 214);
+    let events = core.drain_events();
+    let target = text_to(&events, ora);
+    assert!(
+        target.contains("The effects of blur wear off.\n"),
+        "target: {target:?}"
+    );
+    assert!(!text_to(&events, zin).contains("wear off"), "caster silent");
+    assert!(!text_to(&events, kai).contains("wear off"), "observer silent");
+    assert_eq!(core.player_snapshot(ora).find_active(BLUR), None, "slot gone");
 }

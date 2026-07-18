@@ -238,6 +238,40 @@ pub fn cast_fail_room(caster: &str, spell: &str) -> String {
 /// bare-cast form — empty room or monsters-only room alike.
 pub const MUST_SPECIFY_TARGET: &str = "You must specify a target for that spell!";
 
+/// VERIFIED (§8.13): a benign single-target cast at a monster (`c blur
+/// cat`) and an area cast with an explicit monster word (`c stnk cat`)
+/// both refuse with this, uncharged.
+pub const MAY_NOT_CAST_ON_MONSTER: &str = "You may not cast that spell on a monster!";
+
+/// VERIFIED (§8.13): an area cast with an explicit player word
+/// (`c flash oracle`), uncharged.
+pub const MAY_NOT_CAST_ON_USER: &str = "You may not cast that spell on a user!";
+
+/// VERIFIED (§8.13): an area cast with no valid target in the room —
+/// a real pre-charge gate (mana unchanged), fired alone AND with other
+/// players present (players never count as area targets).
+pub const SPELL_NO_EFFECT_IN_ROOM: &str = "Your spell has no effect in this room!";
+
+/// VERIFIED (§8.13): the caster's failed-roll line for a TARGETED cast
+/// ("at Oracle" — the target-less form is [`cast_fail`]).
+pub fn cast_fail_at(spell: &str, target: &str) -> String {
+    format!("You attempt to cast {spell} at {target}, but fail.")
+}
+
+/// VERIFIED (§8.13): the room line beside [`cast_fail_at`]. The TARGET
+/// sees neither — a failed attempt is invisible to its victim.
+pub fn cast_fail_at_room(caster: &str, spell: &str, target: &str) -> String {
+    format!("{caster} attempted to cast {spell} at {target}, but failed.")
+}
+
+/// The target's own line of the resist family (spec §3 "You resisted
+/// %s's %s"; caster/room siblings [`cast_resisted`]/[`cast_resisted_room`]).
+/// ORACLE-VERIFY: no learnable benign spell carries a save class, so the
+/// player-target form was never measurable live.
+pub fn you_resisted(caster: &str, spell: &str) -> String {
+    format!("You resisted {caster}'s {spell}.")
+}
+
 /// VERIFIED (spellcasting.md §8.6/§8.9): bare offensive cast in a
 /// protected room (room `attributes & 1` — the Newhaven shops).
 pub const CAST_GUILT: &str =
