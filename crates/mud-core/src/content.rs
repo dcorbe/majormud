@@ -124,12 +124,27 @@ pub struct Room {
     /// `shopnum` but another type (e.g. the Silvermere Temple Healer,
     /// type 3) refuse LIST/buy — the shop reference is inert there.
     pub room_type: i16,
+    /// `room+0x564` (`attributes` column) — room-flags byte: bit `0x1`
+    /// protected (no attacking; the Newhaven shops carry it), `0x2`
+    /// patrollable, `0x4` build-permitted, `0x40` ganghouse (gangs.md).
+    pub attributes: i16,
     /// The shop operating in this room (`shopnum` column), if any.
     pub shop: Option<ShopId>,
     /// Statically placed items (fixtures and initial floor stock).
     pub placed_items: Vec<PlacedItem>,
     /// Indexed by `Direction as usize`.
     pub exits: [Option<Exit>; 10],
+}
+
+impl Room {
+    /// Protected room (`attributes & 1`, room+0x564 bit 1): offensive
+    /// magic bare-cast here prints the guilt line instead of target
+    /// resolution (decompile `cast_no_target` 39168-39184; verified
+    /// against the content DB — Newhaven Spell/Weapons Shops carry 1,
+    /// the §8.9 must-specify probe rooms carry 0).
+    pub fn protected(&self) -> bool {
+        self.attributes & 1 != 0
+    }
 }
 
 /// A statically placed room item (`roomitems_N` + qty).
@@ -153,7 +168,14 @@ pub struct AttackForm {
     pub min_damage: i16,
     /// Melee max damage / cast level (`attackmaxhcastlvl`).
     pub max_damage: i16,
+    /// `attackhitmsg` — line 1 victim hit, line 2 room hit, line 3 the
+    /// monster's death line.
     pub hit_msg: Option<MessageId>,
+    /// `attackdodgemsg` — line 1 victim glance, line 2 room glance, line 3
+    /// victim "dodge" (the parry, result 3).
+    pub dodge_msg: Option<MessageId>,
+    /// `attackmissmsg` — line 1 room "dodge", line 2 victim plain miss,
+    /// line 3 room plain miss.
     pub miss_msg: Option<MessageId>,
     /// EU spent per swing (`attackenergy`).
     pub energy: i16,
@@ -201,6 +223,9 @@ pub struct Monster {
 pub struct Item {
     pub id: ItemId,
     pub name: String,
+    /// `desc1..desc9` — the description paragraph, stored pre-wrapped but
+    /// re-flowed as a word stream at render (`text::item_description`).
+    pub description: Vec<String>,
     pub abilities: Vec<AbilityValue>,
     /// `+0x324[10]` — class allowlist (`class_1..10`): when non-empty,
     /// only these classes can use the item — and a match bypasses the
@@ -247,6 +272,228 @@ pub struct Item {
     pub destroy_on_death: i16,
 }
 
+/// Damage element (`spell+0xd0`, `typeofattack`). Resistance keying per
+/// `get_spell_random_modifier` (spellcasting.md §4): element 4 has no switch
+/// case — unresistable "pure magic" (e.g. magic missile) — and the modifier
+/// only applies at all when the spell's target mode is offensive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Element {
+    Cold = 0,
+    Fire = 1,
+    Stone = 2,
+    Lightning = 3,
+    Magic = 4,
+    Water = 5,
+    Poison = 6,
+}
+
+impl Element {
+    pub fn from_i16(v: i16) -> Option<Element> {
+        Some(match v {
+            0 => Element::Cold,
+            1 => Element::Fire,
+            2 => Element::Stone,
+            3 => Element::Lightning,
+            4 => Element::Magic,
+            5 => Element::Water,
+            6 => Element::Poison,
+            _ => return None,
+        })
+    }
+
+    /// The ability that resists this element; `None` for Magic (unresistable).
+    pub fn resist_ability(self) -> Option<Ability> {
+        let id = match self {
+            Element::Cold => 3,       // Rcol
+            Element::Fire => 5,       // Rfir
+            Element::Stone => 65,     // ResistStone
+            Element::Lightning => 66, // Rlit
+            Element::Magic => return None,
+            Element::Water => 147,    // ResistWater
+            Element::Poison => 21,    // ImmuPoison
+        };
+        Some(Ability::from_id(id).expect("resist abilities are in the enum"))
+    }
+}
+
+/// Spell match/delivery type (`spell+0xcc`, `target`) — selects the cast
+/// entry point and target iteration (spellcasting.md §1, §3, §4). Variant
+/// names are placeholders pending semantic pinning; the predicates encode
+/// the decompile's groupings. Shipped data uses {0,1,2,4,6,7,8,11,12,13};
+/// 3/5/9/10 are engine-valid but unused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchType {
+    Single0 = 0,
+    Single1 = 1,
+    Single2 = 2,
+    Area3 = 3,
+    Special4 = 4,
+    Area5 = 5,
+    Item6 = 6,
+    Item7 = 7,
+    Special8 = 8,
+    Area9 = 9,
+    Area10 = 10,
+    AreaB = 11,
+    AreaC = 12,
+    AreaD = 13,
+}
+
+impl MatchType {
+    pub fn from_i16(v: i16) -> Option<MatchType> {
+        Some(match v {
+            0 => MatchType::Single0,
+            1 => MatchType::Single1,
+            2 => MatchType::Single2,
+            3 => MatchType::Area3,
+            4 => MatchType::Special4,
+            5 => MatchType::Area5,
+            6 => MatchType::Item6,
+            7 => MatchType::Item7,
+            8 => MatchType::Special8,
+            9 => MatchType::Area9,
+            10 => MatchType::Area10,
+            11 => MatchType::AreaB,
+            12 => MatchType::AreaC,
+            13 => MatchType::AreaD,
+            _ => return None,
+        })
+    }
+
+    /// Requires an item target (`cast_item_target`, §3).
+    pub fn is_item(self) -> bool {
+        matches!(self, MatchType::Item6 | MatchType::Item7)
+    }
+
+    /// Room-wide (area) match types — the decompile's §4 grouping says
+    /// these iterate every valid player, but MEASURED §8.13 (match 12)
+    /// shows players are NEVER area targets: the live sweep is the
+    /// monster side only (see [`MatchType::hits_monsters`]).
+    pub fn room_wide(self) -> bool {
+        matches!(
+            self,
+            MatchType::Area3
+                | MatchType::Area5
+                | MatchType::Area9
+                | MatchType::Area10
+                | MatchType::AreaB
+                | MatchType::AreaC
+                | MatchType::AreaD
+        )
+    }
+
+    /// Also iterates the room's monsters (§4: 3/5/9/0xb/0xc).
+    pub fn hits_monsters(self) -> bool {
+        matches!(
+            self,
+            MatchType::Area3
+                | MatchType::Area5
+                | MatchType::Area9
+                | MatchType::AreaB
+                | MatchType::AreaC
+        )
+    }
+
+    /// Magnitude is divided by the target count (§3: 3/5/9/10).
+    pub fn splits_magnitude(self) -> bool {
+        matches!(
+            self,
+            MatchType::Area3 | MatchType::Area5 | MatchType::Area9 | MatchType::Area10
+        )
+    }
+}
+
+/// Target mode (`spell+0xc4`, `spelltype`): `< 3` = offensive/combat-scoped,
+/// `>= 3` = benign/self (spellcasting.md §1). Shipped data uses 0, 1, 3.
+/// Deliberately stricter than the engine's `< 3` threshold: out-of-domain
+/// values (e.g. 4) are load errors, not benign.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetMode {
+    Offensive0 = 0,
+    Offensive1 = 1,
+    Offensive2 = 2,
+    Benign = 3,
+}
+
+impl TargetMode {
+    pub fn from_i16(v: i16) -> Option<TargetMode> {
+        Some(match v {
+            0 => TargetMode::Offensive0,
+            1 => TargetMode::Offensive1,
+            2 => TargetMode::Offensive2,
+            3 => TargetMode::Benign,
+            _ => return None,
+        })
+    }
+
+    pub fn is_offensive(self) -> bool {
+        !matches!(self, TargetMode::Benign)
+    }
+}
+
+/// Save class (`spell+0xc6`, `typeofresists`) — when the target of a
+/// successful targeted cast gets a saving throw (spellcasting.md §3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveClass {
+    /// No save (1121 shipped spells).
+    None = 0,
+    /// Save only if the target has AntiMagic (51).
+    IfAntiMagic = 1,
+    /// Target always gets a save.
+    Always = 2,
+}
+
+impl SaveClass {
+    pub fn from_i16(v: i16) -> Option<SaveClass> {
+        Some(match v {
+            0 => SaveClass::None,
+            1 => SaveClass::IfAntiMagic,
+            2 => SaveClass::Always,
+            _ => return None,
+        })
+    }
+}
+
+/// A per-level scaling fraction: `per` points per `levels` levels
+/// (numerator/denominator byte pairs at spell `+0xf2/f3`, `+0xf6/f7`,
+/// `+0xf8/f9`). The engine guards zero denominators — they contribute 0
+/// (magic missile ships one; spellcasting.md §7). The two formulas differ
+/// under integer division: [`ScalePair::scaled`] is the min/max-bound
+/// formula (`per * L / levels`, §3) while [`ScalePair::scaled_duration`]
+/// is the duration formula (`(L / levels) * per`, §4), which truncates
+/// before multiplying.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScalePair {
+    pub per: u8,
+    pub levels: u8,
+}
+
+impl ScalePair {
+    pub const NONE: ScalePair = ScalePair { per: 0, levels: 0 };
+
+    /// Min/max-bound scaling (`+0xf2/f3`, `+0xf6/f7`, spellcasting.md §3):
+    /// `per * level / levels`, 0 when the denominator is 0.
+    pub fn scaled(self, level: i32) -> i32 {
+        if self.levels == 0 {
+            0
+        } else {
+            i32::from(self.per) * level / i32::from(self.levels)
+        }
+    }
+
+    /// Duration scaling (`+0xf8/f9`, spellcasting.md §4 step 1 of
+    /// `add_cast_spell_to_user`): `(level / levels) * per`, 0 when the
+    /// denominator is 0. Divides first, so it truncates more aggressively
+    /// than [`ScalePair::scaled`].
+    pub fn scaled_duration(self, level: i32) -> i32 {
+        if self.levels == 0 {
+            0
+        } else {
+            level / i32::from(self.levels) * i32::from(self.per)
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Spell {
     pub id: SpellId,
@@ -255,6 +502,51 @@ pub struct Spell {
     pub cast_msg_a: Option<MessageId>,
     pub cast_msg_b: Option<MessageId>,
     pub abilities: Vec<AbilityValue>,
+    /// `+0xa2` `levelcap` — caster level is clamped to this before scaling.
+    pub level_cap: i16,
+    /// `+0xbc` `energy` — round-action cost, deducted from the round pool.
+    pub round_cost: i16,
+    /// `+0xbe` `level` — required caster spell power ("too powerful for you").
+    pub required_power: i16,
+    /// `+0xc0` `min` — base magnitude lower bound.
+    pub min_base: i16,
+    /// `+0xc2` `max` — base magnitude upper bound.
+    pub max_base: i16,
+    /// `+0xc4` `spelltype`.
+    pub target_mode: TargetMode,
+    /// `+0xc6` `typeofresists` — target saving-throw class.
+    pub save_class: SaveClass,
+    /// `+0xc8` `difficulty` — base success chance %; `>= 200` auto-succeeds.
+    pub base_chance: i16,
+    /// `+0xca` `undefined01` — duration-per-level multiplier (duration max
+    /// = this × effective level; spellcasting.md §4).
+    pub duration_per_level: i16,
+    /// `+0xcc` `target`.
+    pub match_type: MatchType,
+    /// `+0xce` `duration` — base duration in ticks; 0 = instant.
+    pub duration: i16,
+    /// `+0xd0` `typeofattack`.
+    pub element: Element,
+    /// `+0xd6` `magerya` — class-gate group; 0 = ungated.
+    pub class_gate_group: i16,
+    /// `+0xf0` `mana` — mana cost (half is charged on a failed roll).
+    pub mana_cost: i16,
+    /// `+0xf2/+0xf3` `maxincrease/lvlsmaxincr` — max-bound per-level scaling.
+    pub max_increase: ScalePair,
+    /// `+0xf4` `mageryb` — required level within the class.
+    pub required_class_level: i16,
+    /// `+0xf6/+0xf7` `minincrease/lvlsminincr` — min-bound per-level scaling.
+    pub min_increase: ScalePair,
+    /// `+0xf8/+0xf9` `durincrease/lvlsdurincr` — duration per-level scaling.
+    pub duration_increase: ScalePair,
+    /// `msgstyle` (`+0xa4`) — castmsgb argument-order style, keyed on
+    /// `& 1` ([`crate::text::render_cast_line`]'s `odd_style`). Even:
+    /// caster (spell, target, damage) / target (caster, spell, damage) /
+    /// room (caster, spell, target, damage). Odd (~441 shipped spells,
+    /// incl. fireball 120 / deathtouch 58): caster (target, damage) /
+    /// target (damage) / room (target, damage) — no spell-name slot, no
+    /// caster name (decompile display_spell_success 0x3e433 else-branch).
+    pub msg_style: i16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -375,6 +667,13 @@ pub enum ContentError {
         monster: MonsterId,
         item: ItemId,
     },
+    DanglingSpellRef {
+        spell: SpellId,
+        ability: Ability,
+        /// The raw ability value. Kept as `i16` (not `SpellId`) so negative
+        /// values are reported honestly instead of wrapped through `as u16`.
+        referenced: i16,
+    },
 }
 
 /// All static content, keyed for deterministic iteration.
@@ -476,6 +775,29 @@ impl Content {
                     errors.push(ContentError::DanglingSpellMessage {
                         spell: spell.id,
                         message: msg,
+                    });
+                }
+            }
+        }
+
+        // EndCast (151), RemovesSpell (122), KillSpell (153) and
+        // GiveTempSpell (160) values name other spells; 0 = none.
+        let spell_refs = [122, 151, 153, 160].map(|id| Ability::from_id(id).expect("in the enum"));
+        for spell in self.spells.values() {
+            for &(ability, value) in &spell.abilities {
+                if !spell_refs.contains(&ability) {
+                    continue;
+                }
+                let resolves = match u16::try_from(value) {
+                    Ok(0) => true, // none sentinel
+                    Ok(v) => self.spells.contains_key(&SpellId(v)),
+                    Err(_) => false, // negative: structurally dangling
+                };
+                if !resolves {
+                    errors.push(ContentError::DanglingSpellRef {
+                        spell: spell.id,
+                        ability,
+                        referenced: value,
                     });
                 }
             }

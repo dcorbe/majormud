@@ -1,0 +1,116 @@
+### V-start ('look')
+look
+Newhaven, Weapons Shop
+    This dusky old shop carries a small assortment of weapons suitable for the
+young adventurer. Torches line the walls, illuminating the room with a smoky,
+flickering glow. A stocky, mustached man stands behind a counter here, waiting
+to provide weaponry to novice adventurers. You can exit the shop through a
+doorway to the south. 
+Also here: Nathaniel.
+Obvious exits: sPouth
+[HP=29/MA=15]:
+
+### V-arena ('look')
+look
+Newhaven, Arena
+    This huge room is has been carved into the earth with crude work- manship.
+The blood-soaked floor is covered in broken, rusted weaponry and some things
+better left unmentioned. A huge iron gate sits in the west wall, and behind it
+you can hear the growling of some unfathomable beast. A large black door is set
+in the northern wall. 
+Obvious exits: closed door north, uQp
+[HP=29/MA=17]:
+
+### O-start ('look')
+look
+Newhaven, Healer
+    This small, stark stone chamber is bereft of even the simple ornamentation,
+and its bare walls gleam in the bright light of the torches lining its walls. A
+short, stocky man with a black beard sits behind a large stone table at the far
+end of the room. There is an iron washbasin and some simple, utilitarian items
+used in the healing profession lie at his side. You can exit the chamber to the
+east, where faint sounds of metal hitting metal can be heard. 
+You notice small sign here.
+Also here: healer.
+Obvious exits: eXast
+[HP=35]:
+
+### O-arena ('look')
+A nasty acid slime oozes into the room from nowhere.
+[HP=35]:The acid slime whips you with its pseudopod for 2 damage!
+[HP=33]:Acid burns you for 1 damage!
+[HP=32]:The nasty acid slime whips you with its pseudopod for 4 damage!
+[HP=28]:Acid burns you for 2 damage!
+[HP=26]:look
+Newhaven, Arena
+    This huge room is has been carved into the earth with crude work- manship.
+The blood-soaked floor is covered in broken, rusted weaponry and some things
+better left unmentioned. A huge iron gate sits in the west wall, and behind it
+you can hear the growling of some unfathomable beast. A large black door is set
+in the northern wall. 
+Also here: Vexil, acid slime, nasty acid slime.
+Obvious exits: closed door north, uQp
+[HP=26]:
+
+[V] A acid slime oozes into the room from nowhere.
+[HP=29/MA=17]:The acid slime flails at you!
+[HP=29/MA=17]:Oracle just entered the Realm.
+[HP=29/MA=17]:The acid slime whips you with its pseudopod for 9 damage!
+[HP=20/MA=17]:Acid burns you for 1 damage!
+[HP=19/MA=17]:Oracle walks into the room from above.
+[HP=19/MA=17]:A nasty acid slime oozes into the room from nowhere.
+[HP=19/MA=17]:The acid slime whips Oracle with its pseudopod for 2 damage!
+[HP=19/MA=17]:Oracle is burned by acid for 1 damage!
+[HP=19/MA=17]:The nasty acid slime whips Oracle with its pseudopod for 4 damage!
+[HP=19/MA=17]:Oracle is burned by acid for 2 damage!
+[HP=19/MA=17]:Oracle is looking around the room.
+[HP=19/MA=17]:The acid slime whips Oracle with its pseudopod for 6 damage!
+[HP=19/MA=17]:Oracle is burned by acid for 1 damage!
+[HP=19/MA=17]:The nasty acid slime whips you with its pseudopod for 3 damage!
+[HP=16/MA=17]:Acid burns you for 3 damage!
+[HP=13/MA=17]:
+[O] The acid slime whips you with its pseudopod for 6 damage!
+[HP=20]:Acid burns you for 1 damage!
+[HP=19]:The nasty acid slime whips Vexil with its pseudopod for 3 damage!
+[HP=19]:Vexil is burned by acid for 3 damage!
+[HP=19]:The acid slime lashes at Vexil, but he dodges out of the way!
+[HP=19]:The nasty acid slime whips Vexil with its pseudopod for 9 damage!
+[HP=19]:Vexil is burned by acid for 2 damage!
+[HP=19]:[HP=20]:
+--- Vexil retreating to rest (HP=13)
+### Vexil-rest-health ('health')
+health
+Health:     3/29    [10%]  Mana:  18/18  [100%]
+[HP=3/MA=18]:
+
+### Vexil-rest-health ('health')
+The effects of blur wear off.
+[HP=3/MA=18]:[HP=4/MA=18]:health
+Health:     4/29    [13%]  Mana:  18/18  [100%]
+[HP=4/MA=18]:
+
+### Vexil-rest-health ('health')
+health
+Health:     4/29    [13%]  Mana:  18/18  [100%]
+[HP=4/MA=18]:
+
+### Vexil-rest-health ('health')
+[HP=5/MA=18]:health
+Health:     5/29    [17%]  Mana:  18/18  [100%]
+[HP=5/MA=18]:
+
+### Vexil-rest-health ('health')
+health
+Health:     5/29    [17%]  Mana:  18/18  [100%]
+[HP=5/MA=18]:
+
+### Vexil-rest-health ('health')
+[HP=6/MA=18]:health
+Health:     6/29    [20%]  Mana:  18/18  [100%]
+[HP=6/MA=18]:
+
+### Vexil-rest-health ('health')
+health
+Health:     6/29    [20%]  Mana:  18/18  [100%]
+[HP=6/MA=18]:
+

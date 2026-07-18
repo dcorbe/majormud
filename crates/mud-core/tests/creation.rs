@@ -17,6 +17,7 @@ fn world() -> Content {
         name: "Town Gates".into(),
         description: vec![],
         room_type: 0,
+        attributes: 0,
         shop: None,
         placed_items: vec![],
         exits: Default::default(),

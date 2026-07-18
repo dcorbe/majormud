@@ -3,6 +3,7 @@
 use mud_core::ability::Ability;
 use mud_core::content::{
     Content, ContentError, Direction, Exit, Message, MessageId, Monster, MonsterId, Room, RoomId,
+    Spell, SpellId,
 };
 
 fn room(map: u16, num: u16) -> Room {
@@ -11,6 +12,7 @@ fn room(map: u16, num: u16) -> Room {
         name: format!("room {map}/{num}"),
         description: vec![],
         room_type: 0,
+        attributes: 0,
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
@@ -43,6 +45,37 @@ fn monster(id: u16) -> Monster {
         weapon: None,
         loot: vec![],
         attacks: Default::default(),
+    }
+}
+
+fn spell(n: u16) -> Spell {
+    use mud_core::content::{Element, MatchType, SaveClass, ScalePair, TargetMode};
+    Spell {
+        id: SpellId(n),
+        name: format!("spell {n}"),
+        short_name: String::new(),
+        cast_msg_a: None,
+        cast_msg_b: None,
+        abilities: vec![],
+        level_cap: 0,
+        round_cost: 0,
+        required_power: 0,
+        min_base: 0,
+        max_base: 0,
+        target_mode: TargetMode::Benign,
+        save_class: SaveClass::None,
+        base_chance: 200, // >= 200 = auto-succeed: cast fixtures are deterministic by default
+        duration_per_level: 0,
+        match_type: MatchType::Single0,
+        duration: 0,
+        element: Element::Cold,
+        class_gate_group: 0,
+        mana_cost: 0,
+        max_increase: ScalePair::NONE,
+        required_class_level: 0,
+        min_increase: ScalePair::NONE,
+        duration_increase: ScalePair::NONE,
+        msg_style: 0, // even = the render_cast_line contract
     }
 }
 
@@ -120,16 +153,11 @@ fn known_dangling_refs_are_allowlisted() {
 fn known_dangling_spell_message_is_allowlisted() {
     // Spell 1055 "BCNS" references cast message 3499, which does not exist
     // in the shipped data.
-    use mud_core::content::{Spell, SpellId};
     let mut content = Content::default();
-    content.add_spell(Spell {
-        id: SpellId(1055),
-        name: "BCNS".into(),
-        short_name: String::new(),
-        cast_msg_a: None,
-        cast_msg_b: Some(MessageId(3499)),
-        abilities: vec![],
-    });
+    let mut s = spell(1055);
+    s.name = "BCNS".into();
+    s.cast_msg_b = Some(MessageId(3499));
+    content.add_spell(s);
     assert_eq!(content.validate(), vec![]);
 }
 
@@ -150,5 +178,157 @@ fn ability_pairs_use_the_generated_enum() {
     m.abilities = vec![(Ability::from_id(21).unwrap(), 0)];
     let mut content = Content::default();
     content.add_monster(m);
+    assert_eq!(content.validate(), vec![]);
+}
+
+#[test]
+fn element_maps_ids_and_resist_abilities() {
+    use mud_core::content::Element;
+    assert_eq!(Element::from_i16(4), Some(Element::Magic));
+    assert_eq!(Element::from_i16(7), None);
+    assert_eq!(Element::Magic.resist_ability(), None); // no case 4 in get_spell_random_modifier
+    assert_eq!(Element::Cold.resist_ability(), Some(Ability::from_id(3).unwrap())); // Rcol
+    assert_eq!(Element::Fire.resist_ability(), Some(Ability::from_id(5).unwrap())); // Rfir
+    assert_eq!(Element::Stone.resist_ability(), Some(Ability::from_id(65).unwrap())); // ResistStone
+    assert_eq!(Element::Lightning.resist_ability(), Some(Ability::from_id(66).unwrap())); // Rlit
+    assert_eq!(Element::Water.resist_ability(), Some(Ability::from_id(147).unwrap())); // ResistWater
+    assert_eq!(Element::Poison.resist_ability(), Some(Ability::from_id(21).unwrap())); // ImmuPoison
+}
+
+#[test]
+fn match_type_predicates_follow_spec_groupings() {
+    use mud_core::content::MatchType;
+    assert_eq!(MatchType::from_i16(14), None);
+    assert_eq!(MatchType::from_i16(-1), None);
+    let mt = |n| MatchType::from_i16(n).unwrap();
+    // spellcasting.md §3/§4 groupings
+    for n in [6, 7] { assert!(mt(n).is_item()); }
+    for n in [3, 5, 9, 10, 11, 12, 13] { assert!(mt(n).room_wide()); }
+    for n in [3, 5, 9, 11, 12] { assert!(mt(n).hits_monsters()); }
+    for n in [3, 5, 9, 10] { assert!(mt(n).splits_magnitude()); }
+    for n in [0, 1, 2, 4, 8] { assert!(!mt(n).room_wide() && !mt(n).is_item()); }
+    assert!(!mt(10).hits_monsters());
+    assert!(!mt(13).hits_monsters());
+    assert!(!mt(11).splits_magnitude());
+}
+
+#[test]
+fn target_mode_offensive_threshold_is_three() {
+    use mud_core::content::TargetMode;
+    assert!(TargetMode::from_i16(0).unwrap().is_offensive());
+    assert!(TargetMode::from_i16(2).unwrap().is_offensive());
+    assert!(!TargetMode::from_i16(3).unwrap().is_offensive());
+    assert_eq!(TargetMode::from_i16(4), None);
+}
+
+#[test]
+fn save_class_maps_typeofresists() {
+    use mud_core::content::SaveClass;
+    assert_eq!(SaveClass::from_i16(0), Some(SaveClass::None));
+    assert_eq!(SaveClass::from_i16(1), Some(SaveClass::IfAntiMagic));
+    assert_eq!(SaveClass::from_i16(2), Some(SaveClass::Always));
+    assert_eq!(SaveClass::from_i16(3), None);
+}
+
+#[test]
+fn scale_pair_guards_zero_denominator() {
+    use mud_core::content::ScalePair;
+    // Magic missile ships per=1, levels=0 — the engine's guard yields 0.
+    assert_eq!(ScalePair { per: 1, levels: 0 }.scaled(10), 0);
+    assert_eq!(ScalePair { per: 3, levels: 2 }.scaled(10), 15);
+    assert_eq!(ScalePair { per: 1, levels: 3 }.scaled(8), 2); // integer division
+    assert_eq!(ScalePair::NONE.scaled(50), 0);
+}
+
+#[test]
+fn scale_pair_duration_divides_before_multiplying() {
+    use mud_core::content::ScalePair;
+    // §3 min/max: per * L / levels (multiply-first) vs
+    // §5 duration: (L / levels) * per (divide-first). per=2, levels=3, L=8
+    // distinguishes them: 2*8/3 = 5 but (8/3)*2 = 4.
+    let p = ScalePair { per: 2, levels: 3 };
+    assert_eq!(p.scaled(8), 5);
+    assert_eq!(p.scaled_duration(8), 4);
+    // Zero-denominator guard (spell+0xf9 == 0 contributes nothing).
+    assert_eq!(ScalePair { per: 2, levels: 0 }.scaled_duration(8), 0);
+    assert_eq!(ScalePair::NONE.scaled_duration(50), 0);
+}
+
+#[test]
+fn dangling_spell_reference_fails_validation() {
+    use mud_core::content::ContentError;
+    let mut content = Content::default();
+    let mut s = spell(1);
+    // EndCast (151) pointing at a spell that doesn't exist.
+    s.abilities = vec![(Ability::from_id(151).unwrap(), 999)];
+    content.add_spell(s);
+    assert_eq!(
+        content.validate(),
+        vec![ContentError::DanglingSpellRef {
+            spell: SpellId(1),
+            ability: Ability::from_id(151).unwrap(),
+            referenced: 999,
+        }]
+    );
+}
+
+#[test]
+fn negative_spell_reference_is_dangling() {
+    use mud_core::content::ContentError;
+    let mut content = Content::default();
+    let mut s = spell(1);
+    // Negative values can never name a spell (ids are u16); they must be
+    // reported structurally, not wrapped through `as u16`.
+    s.abilities = vec![(Ability::from_id(151).unwrap(), -1)];
+    content.add_spell(s);
+    assert_eq!(
+        content.validate(),
+        vec![ContentError::DanglingSpellRef {
+            spell: SpellId(1),
+            ability: Ability::from_id(151).unwrap(),
+            referenced: -1,
+        }]
+    );
+}
+
+#[test]
+fn dangling_give_temp_spell_reference_fails_validation() {
+    use mud_core::content::ContentError;
+    let mut content = Content::default();
+    let mut s = spell(1);
+    // GiveTempSpell (160) pointing at a spell that doesn't exist.
+    s.abilities = vec![(Ability::from_id(160).unwrap(), 999)];
+    content.add_spell(s);
+    assert_eq!(
+        content.validate(),
+        vec![ContentError::DanglingSpellRef {
+            spell: SpellId(1),
+            ability: Ability::from_id(160).unwrap(),
+            referenced: 999,
+        }]
+    );
+}
+
+#[test]
+fn zero_spell_reference_is_the_none_sentinel() {
+    // 14 shipped slots carry EndCast/RemovesSpell value 0 = "none".
+    let mut content = Content::default();
+    let mut s = spell(1);
+    s.abilities = vec![(Ability::from_id(151).unwrap(), 0)];
+    content.add_spell(s);
+    assert_eq!(content.validate(), vec![]);
+}
+
+#[test]
+fn resolving_spell_references_pass() {
+    let mut content = Content::default();
+    let mut s = spell(1);
+    s.abilities = vec![
+        (Ability::from_id(122).unwrap(), 2), // RemovesSpell -> spell 2
+        (Ability::from_id(153).unwrap(), 2), // KillSpell -> spell 2
+        (Ability::from_id(160).unwrap(), 2), // GiveTempSpell -> spell 2
+    ];
+    content.add_spell(s);
+    content.add_spell(spell(2));
     assert_eq!(content.validate(), vec![]);
 }

@@ -23,11 +23,22 @@ pub enum Command {
     Status,
     Experience,
     Health,
+    /// `spells` — list the learned spellbook.
+    Spells,
+    /// `powers` — the kai listing (spellcasting.md §8.12); a non-kai
+    /// class gets the redirect refusal.
+    Powers,
+    /// `invoke [power [target]]` — the kai cast verb (§8.12). No
+    /// abbreviation: `in`/`inv` fall through to say (MEASURED).
+    Invoke(String),
     Help,
     Top,
     Train,
     /// `attack [target]` — empty target means auto-pick.
     Attack(String),
+    /// `cast [spell [target]]` — bare form prints the syntax line; a cast
+    /// NEVER auto-picks a target (spellcasting.md §8.9).
+    Cast(String),
     /// `aid <player>` — stabilize a downed player.
     Aid(String),
     /// `get <item or coins>`.
@@ -41,6 +52,10 @@ pub enum Command {
     Wear(String),
     /// `remove <worn armor>`.
     Remove(String),
+    /// `use <item>` — LearnSp scrolls today; charged items later.
+    Use(String),
+    /// `read <item>` — like `use`, plus the unowned-item description path.
+    Read(String),
     /// Shop commands.
     List,
     Buy(String),
@@ -63,7 +78,7 @@ pub enum Resolution {
 
 /// Exact-match aliases, checked before the verb table (single/double letter
 /// shortcuts that must not be shadowed by prefix matching).
-const ALIASES: [(&str, Command); 12] = [
+const ALIASES: [(&str, Command); 13] = [
     ("n", Command::Move(Direction::North)),
     ("s", Command::Move(Direction::South)),
     ("e", Command::Move(Direction::East)),
@@ -76,6 +91,9 @@ const ALIASES: [(&str, Command); 12] = [
     ("d", Command::Move(Direction::Down)),
     ("l", Command::Look),
     ("x", Command::Quit),
+    // `i` is inventory (oracle) but `in`/`inv` are SAY (MEASURED §8.12,
+    // oracle_kai_mystic.raw) — an exact alias, not a min-1 prefix.
+    ("i", Command::Inventory),
 ];
 
 /// Verb constructors for the table.
@@ -90,7 +108,7 @@ enum Verb {
 /// All direction minimums are ORACLE-verified (oracle_directions.raw):
 /// north/south/west = full word, east = 3 (eat blocks 2), down = 3,
 /// up = 2, diagonals = 6. Hand-authored asymmetry is the original's.
-const VERBS: [(&str, usize, Verb); 35] = [
+const VERBS: [(&str, usize, Verb); 41] = [
     ("north", 5, Verb::Plain(|| Command::Move(Direction::North))),
     ("south", 5, Verb::Plain(|| Command::Move(Direction::South))),
     ("east", 3, Verb::Plain(|| Command::Move(Direction::East))),
@@ -102,15 +120,28 @@ const VERBS: [(&str, usize, Verb); 35] = [
     ("up", 2, Verb::Plain(|| Command::Move(Direction::Up))),
     ("down", 3, Verb::Plain(|| Command::Move(Direction::Down))),
     ("attack", 1, Verb::WithArgs(Command::Attack)), // ORACLE: a/at/att
+    // Min 1 like attack, so `c` and `c args` both cast (MEASURED §8.9).
+    // ORACLE-VERIFY: only c/cast measured; ca/cas assumed by prefix model.
+    ("cast", 1, Verb::WithArgs(Command::Cast)),
+    // MEASURED (§8.12): no abbreviation — `in`/`inv` say. invo/invok are
+    // ORACLE-VERIFY (the no-abbreviation model sends them to say too).
+    ("invoke", 6, Verb::WithArgs(Command::Invoke)),
     ("aid", 2, Verb::WithArgs(Command::Aid)),       // ORACLE: ai
     ("get", 1, Verb::WithArgs(Command::Get)),       // ORACLE: g/ge/get
     ("drop", 2, Verb::WithArgs(Command::Drop)),
-    ("inventory", 1, Verb::Plain(|| Command::Inventory)), // ORACLE: i
+    // `i` moved to the exact aliases: `in`/`inv` are SAY (MEASURED
+    // §8.12). ORACLE-VERIFY: the 4+ prefixes (inve...) are unmeasured.
+    ("inventory", 4, Verb::Plain(|| Command::Inventory)),
     ("arm", 2, Verb::WithArgs(Command::Arm)),       // ORACLE: ar arms
     ("wield", 3, Verb::WithArgs(Command::Arm)),     // ORACLE: wi says, wie arms
     ("equip", 2, Verb::WithArgs(Command::Arm)),     // ORACLE: eq
     ("wear", 3, Verb::WithArgs(Command::Wear)),     // min 3: "we" says (oracle)
     ("remove", 3, Verb::WithArgs(Command::Remove)),
+    // ORACLE-VERIFY min abbrev: unmeasured; "u" is the up alias, so 2.
+    ("use", 2, Verb::WithArgs(Command::Use)),
+    // ORACLE-VERIFY min abbrev: unmeasured; 2 cannot shadow remove's
+    // oracle minimum of 3 ("rem" is not a prefix of "read").
+    ("read", 2, Verb::WithArgs(Command::Read)),
     ("list", 2, Verb::Plain(|| Command::List)),
     ("buy", 2, Verb::WithArgs(Command::Buy)),
     ("sell", 3, Verb::WithArgs(Command::Sell)),
@@ -123,6 +154,11 @@ const VERBS: [(&str, usize, Verb); 35] = [
     ("status", 2, Verb::Plain(|| Command::Status)), // ORACLE: st/sta/stat
     ("help", 3, Verb::Plain(|| Command::Help)),     // ORACLE: hel (before health)
     ("health", 2, Verb::Plain(|| Command::Health)), // ORACLE: he
+    // ORACLE-VERIFY min abbrev: unmeasured; 2 is unambiguous ("s" is the
+    // south alias, "st" hits status first).
+    ("spells", 2, Verb::Plain(|| Command::Spells)),
+    // ORACLE-VERIFY min abbrev: unmeasured; 2 is unambiguous.
+    ("powers", 2, Verb::Plain(|| Command::Powers)),
     ("top", 2, Verb::Plain(|| Command::Top)),       // ORACLE: to (t says)
     ("train", 4, Verb::Plain(|| Command::Train)),   // ORACLE: trai (tra says)
     ("quit", 1, Verb::Plain(|| Command::Quit)),     // ORACLE: q

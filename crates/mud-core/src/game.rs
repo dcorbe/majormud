@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use crate::ability::Ability;
 use crate::command::{parse, Command, Resolution};
-use crate::content::{ClassId, Content, Direction, RaceId, RoomId, ShopStock, StatBlock};
+use crate::content::{ClassId, Content, Direction, RaceId, RoomId, ShopStock, SpellId, StatBlock};
 use crate::stats::{derive, AbilityBag, Derived, StatInputs};
 use crate::text;
 use crate::tick::TickScheduler;
@@ -57,6 +57,80 @@ fn accuracy_ability(id: u16) -> Ability {
 /// Encum (96): percent modifier to carry capacity.
 fn encum_ability() -> Ability {
     Ability::from_id(96).expect("Encum is in the enum")
+}
+
+/// Clamps an i32 into the u16 counter range for the hunger/thirst word
+/// fields (`+0xce`/`+0xd0`). DIVERGENCE: the DLL does a raw wrapping
+/// 16-bit add (decompiled 40073/40111); we saturate. Unreachable with
+/// shipped data — no instant spell carries Alterhunger/AlterThirst, and
+/// no shipped value approaches the bounds.
+fn clamp_counter(v: i32) -> u16 {
+    u16::try_from(v.clamp(0, i32::from(u16::MAX))).expect("clamped into range")
+}
+
+/// The poison counter (`+0xbe`, a DLL `short`): every write site floors at
+/// 0 (there is no negative poison); the i16 ceiling is our saturation —
+/// the DLL would wrap, unreachable with shipped values.
+fn clamp_poison(v: i32) -> i16 {
+    i16::try_from(v.clamp(0, i32::from(i16::MAX))).expect("clamped into range")
+}
+
+/// Ability slots whose `cast_no_target` apply-loop case is an empty
+/// `break` (the shared case list right after the loop head, decompile
+/// 39590-39611: 0x17/0x1a/0x34/0x50/0x56/0x61/0x62/0x65/0x6c-0x73/0x78/
+/// 0x7a/0x90/0x99), plus EndCast (0x97) / CastOnEnd% (0xa4) whose cases
+/// only stash the chain locals (41197-41216). None of these slots ever
+/// reaches a `display_spell_success` or `add_cast_spell_to_user` call —
+/// they are metadata for other phases (the dispel pre-pass, DescMsg,
+/// targeting predicates, the chain). Every OTHER slot is a "driver": the
+/// first one to run prints the success display with ITS fixed-or-rolled
+/// value as the damage arg and flips the once-flag (`local_49`).
+fn ability_case_is_noop(ability: Ability) -> bool {
+    matches!(
+        ability.id(),
+        23 | 26 | 52 | 80 | 86 | 97 | 98 | 101 | 108..=115 | 120 | 122 | 144 | 151 | 153 | 164
+    )
+}
+
+/// The `monster_cast_area` effect-loop no-op set — ability rows whose
+/// case is a plain `break` (or an unmirrored call) in the area sibling
+/// (decompile 22236-22906): the explicit no-op cases 0/6/15/16/23/26/
+/// 44-49/52 (22246-22258 — note Alterhunger/AlterThirst and the whole
+/// stat family DO NOTHING here, unlike the single path), 52 (the
+/// `!= 0x34` wrap), 73/86 and the subtract-ladder exclusions 80/81/84/
+/// 97/98/101 (22807-22824), the metadata band 108-115 + 120 + 122
+/// (22826-22832 — 122 is consumed by the pre-pass instead), 148/153
+/// (22834-22843), and 143 = ClearItem whose FUN_0046c241 call is
+/// unmirrored (no shipped area spell carries it). Every OTHER id falls
+/// to the duration-only default arm.
+fn area_ability_case_is_noop(ability: Ability) -> bool {
+    matches!(
+        ability.id(),
+        0 | 6 | 15 | 16 | 23 | 26 | 44..=49 | 52 | 73 | 80 | 81 | 84 | 86 | 97 | 98 | 101
+            | 108..=115 | 120 | 122 | 143 | 148 | 153
+    )
+}
+
+/// One save-failed area victim (`monster_count_valid_targets`' 0x10
+/// flag): a snapshot of every target-side term the `monster_cast_area`
+/// arms read piecemeal — MR + AntiMagic for the DamageMR ladder,
+/// ImmuPoison for the Poison/CurePoison gates, the per-victim elemental
+/// resist (offensive casts only), and the caps.
+struct AreaTarget {
+    session: SessionId,
+    mr: i32,
+    anti_magic: bool,
+    immune_poison: bool,
+    resist_pct: i32,
+    max_hp: i32,
+    max_mana: i32,
+}
+
+/// The per-victim elemental scale the area arms repeat (`local_24 =
+/// (100 - resist) * local_1c / 100` under `spelltype < 3`; benign-mode
+/// casts pass the divided roll through untouched).
+fn area_scaled(base: i32, resist_pct: i32, offensive: bool) -> i32 {
+    if offensive { (100 - resist_pct) * base / 100 } else { base }
 }
 
 /// HPRegen (123): percent modifier to slow-tick HP regen.
@@ -116,6 +190,65 @@ pub struct Player {
     pub lives: u16,
     pub experience: u64,
     pub location: RoomId,
+    /// Learned spells; `true` = temporary (GiveTempSpell 160, purged when
+    /// the granting effect terminates — see `terminate_active_spell`).
+    /// Display order is computed at render (level, then name), not
+    /// storage order.
+    pub spellbook: BTreeMap<SpellId, bool>,
+    /// `+0xbe` — the poison counter (a `short` in the DLL). Each slow tick
+    /// with a positive counter prints "You feel ill." and deals that much
+    /// HP damage (`regeneration.md` §4, decompile 19518-19533). Written
+    /// set-if-greater by Poison(19) at cast application, reduced by
+    /// CurePoison(20), the poison spell's termination, the healer's curing
+    /// service, and zeroed by death (13066). Never negative.
+    pub poison: i16,
+    /// Active duration-spell slots (`spellcasting.md` §1: id `+0x40+i*2`,
+    /// value `+0x54+i*2`, remaining ticks `+0x68+i*2` — 10 slots each).
+    /// An array, not a Vec: slot exhaustion is observable (an 11th buff
+    /// finds no free slot).
+    pub active_spells: [ActiveSpell; 10],
+}
+
+/// One player active-spell slot (`spellcasting.md` §1). `spell` is `None`
+/// for an empty slot (the DLL's id 0); `value` is the stored potency fed to
+/// upkeep and the dynamic-stat recompute (`+0x54`); `remaining` counts down
+/// in upkeep ticks (`+0x68`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ActiveSpell {
+    pub spell: Option<SpellId>,
+    pub value: i16,
+    pub remaining: i32,
+}
+
+impl Player {
+    /// Index of the first empty active-spell slot (`spellcasting.md` §4
+    /// step 3: "write into the first empty slot"), or `None` when all 10
+    /// are occupied.
+    pub fn first_free_slot(&self) -> Option<usize> {
+        self.active_spells.iter().position(|s| s.spell.is_none())
+    }
+
+    /// Index of the slot holding `spell`, if it is currently active
+    /// (`spellcasting.md` §4 step 2: recast refreshes in place).
+    pub fn find_active(&self, spell: SpellId) -> Option<usize> {
+        self.active_spells
+            .iter()
+            .position(|s| s.spell == Some(spell))
+    }
+}
+
+/// Why a spell can('t) be learned/used by this character.
+/// [`Core::spell_gate`] covers gates 1-2 (spellcasting.md §2); the
+/// alignment lattice (gate 3) is deferred with M4's other alignment
+/// gates — no starter scroll carries one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpellGate {
+    Ok,
+    /// Wrong magery group, or the class can't ever cast this deep.
+    WrongClass,
+    /// Right class, character level below spell.required_power (+0xbe).
+    /// Oracle-proven level gate (spellcasting.md §8.3).
+    TooPowerful,
 }
 
 /// The five coin denominations, high to low (`+0x610..+0x620`). All prices
@@ -281,6 +414,216 @@ impl Rng {
     }
 }
 
+/// The cast success roll (spec §3 step 5; decompiled 39300-39340):
+/// `base_chance >= 200` auto-succeeds; otherwise
+/// `chance = min(SC + base_chance, 98)` and the cast succeeds when
+/// `genrdn(0,100) < chance`. DELIBERATE DIVERGENCE: the DLL rolls
+/// `genrdn(0,100)` unconditionally and discards it on auto-success
+/// (39300); we skip the roll — outcomes identical, and RNG-stream parity
+/// with the DLL's generator is unattainable anyway. There is no floor: a
+/// chance at or below 0 (possible only with negative SC, i.e. a
+/// non-caster) never succeeds.
+/// `roll(lo, hi)` must return a uniform value in `[lo, hi]` — the
+/// `calculate_attack` injection seam, so tests can script rolls.
+pub fn cast_roll_succeeds(
+    spellcasting: i32,
+    base_chance: i16,
+    roll: &mut impl FnMut(i32, i32) -> i32,
+) -> bool {
+    if base_chance >= 200 {
+        return true;
+    }
+    let chance = (spellcasting + i32::from(base_chance)).min(98);
+    roll(0, 100) < chance
+}
+
+/// The offensive-cast magnitude roll (decompile `cast_monster_target`
+/// 43668-43704, identical block in `cast_user_target` 41783-41811; spec §3):
+///
+/// - `L` = caster level, clamped to `level_cap` — the DLL clamp is
+///   `cap < 1 || level <= cap ? level : cap`, so a cap at or below 0 means
+///   UNCAPPED and a positive cap gives `min(level, cap)`.
+/// - `hi = max_base + max_increase.scaled(L)`,
+///   `lo = min_base + min_increase.scaled(L)`; inverted data does not swap —
+///   the DLL lowers `lo` to `hi` and keeps `hi` (`lo = min(lo, hi)`).
+/// - `V = genrdn(0, hi - lo + 1) + lo`. genrdn is inclusive of BOTH ends,
+///   so V spans `lo ..= hi + 1` — one MORE than the printed bounds. This is
+///   not a bug in our port: the oracle observed mmis damage 13 at L1 bounds
+///   4..12 (§8.6), which is exactly `lo 4 + top roll 9`.
+/// - Resist: `V = (100 - resist) * V / 100` (integer division; resist 0
+///   passes V through). The caller supplies the target's elemental resist —
+///   0 for Element::Magic, which has no resist ability (spec §4).
+///
+/// `roll(lo, hi)` must return a uniform value in `[lo, hi]` — the same
+/// injectable seam as `cast_roll_succeeds`.
+pub fn spell_magnitude(
+    spell: &crate::content::Spell,
+    caster_level: u16,
+    resist: i32,
+    roll: &mut impl FnMut(i32, i32) -> i32,
+) -> i32 {
+    let level = i32::from(caster_level);
+    let cap = i32::from(spell.level_cap);
+    let l = if cap < 1 || level <= cap { level } else { cap };
+    let hi = i32::from(spell.max_base) + spell.max_increase.scaled(l);
+    let lo = (i32::from(spell.min_base) + spell.min_increase.scaled(l)).min(hi);
+    let v = roll(0, hi - lo + 1) + lo;
+    (100 - resist) * v / 100
+}
+
+/// The duration roll for a successful duration-spell cast (decompile
+/// `add_cast_spell_to_user` 38148-38166, twin `add_cast_spell_to_monster`
+/// 38238-38256; spec §4 step 1):
+///
+/// - `L` = caster level with the SAME clamp as [`spell_magnitude`]:
+///   `cap < 1 || level <= cap ? level : cap` (cap at or below 0 = uncapped).
+/// - `base = duration + duration_increase.scaled_duration(L)` — the
+///   divide-first `(L / levels) * per` scaling.
+/// - `max = duration_per_level * L`; only when `base < max` (strict — the
+///   DLL's `base <= max && base != max`) is the band rolled:
+///   `duration = genrdn(base, max + 1)`. genrdn is inclusive of BOTH ends
+///   (the §8.6 magnitude finding), so the result spans `base ..= max + 1`.
+/// - AlterSpLength (166) — the CASTER's accumulated ability percentage —
+///   applies last: `duration = (alter + 100) * duration / 100` (integer
+///   division). ORACLE-VERIFY: this term's placement is inferred through a
+///   Ghidra return-register artifact (the decompile reuses the register at
+///   38165-38166), not a clean data-flow — probe with an AlterSpLength
+///   race/item live.
+///
+/// Blur (129): all scaling zero → 70 flat. `roll(lo, hi)` is the same
+/// injectable uniform-`[lo, hi]` seam as [`spell_magnitude`]. The DLL
+/// stores the slot value AND duration as 16-bit words; our slots keep the
+/// i32 result (values in range agree).
+pub fn spell_duration(
+    spell: &crate::content::Spell,
+    caster_level: u16,
+    alter_sp_length: i32,
+    roll: &mut impl FnMut(i32, i32) -> i32,
+) -> i32 {
+    let level = i32::from(caster_level);
+    let cap = i32::from(spell.level_cap);
+    let l = if cap < 1 || level <= cap { level } else { cap };
+    let base = i32::from(spell.duration) + spell.duration_increase.scaled_duration(l);
+    let max = i32::from(spell.duration_per_level) * l;
+    let duration = if base < max { roll(base, max + 1) } else { base };
+    (alter_sp_length + 100) * duration / 100
+}
+
+/// The monster saving throw against a player's successful offensive cast
+/// (decompile `cast_monster_target` 43594-43614; spec §3). Rolled only when
+/// the spell's save class grants one (`Always`, or `IfAntiMagic` on a
+/// monster with AntiMagic 51): `genrdn(1, 100) <= min(save_stat / 2, 98)`
+/// resists. The halving truncates toward zero, so `save_stat` 1 (the
+/// engine's floor) never resists.
+pub fn monster_save_resists(save_stat: i32, roll: &mut impl FnMut(i32, i32) -> i32) -> bool {
+    roll(1, 100) <= (save_stat / 2).min(98)
+}
+
+/// The monster cast-chance roll (decompile `monster_cast` 22983 entry roll,
+/// compared at 23033-23040): a flat per-form percentage (`attackminhcastper`,
+/// `template+0x13e+idx*2`; hard 100 for a forced `idx == -1` cast, 23009-
+/// 23011) beats `genrdn(0,100)` on STRICT less-than — `roll < chance`. No
+/// caster or target stat term (spec §6.3). A 0% form never fires; a 100%
+/// form still loses to the inclusive top roll (genrdn spans 0..=100).
+pub fn monster_cast_chance_passes(
+    chance: i16,
+    roll: &mut impl FnMut(i32, i32) -> i32,
+) -> bool {
+    roll(0, 100) < i32::from(chance)
+}
+
+/// The player saving throw against a monster cast (decompile `monster_cast`
+/// 23044-23056; spec §6.4): rolled only when the chance roll passed and the
+/// spell's save class grants one (`Always`, or `IfAntiMagic` on a player
+/// carrying AntiMagic 51): `genrdn(1, 100) <= min(save_stat / 2, 97)`
+/// resists. `save_stat` is the DLL's player `+0xc2` — the MAX magic-resist
+/// word (`leveling.md`: `(Int + Wis*3)/4 + M.R.(36) modifiers`), i.e. our
+/// `Derived::magic_resist` — the same stat DamageMR(17) scales by, NOT the
+/// spellcasting skill. NOTE the cap: 97 here (23048-23052: `mr/2 < 0x62 ?
+/// mr/2 : 0x61`) versus the player-cast path's 98 (43606-43612,
+/// [`monster_save_resists`]) — a genuine one-off DLL asymmetry, mirrored
+/// faithfully.
+pub fn player_save_resists(save_stat: i32, roll: &mut impl FnMut(i32, i32) -> i32) -> bool {
+    roll(1, 100) <= (save_stat / 2).min(97)
+}
+
+/// The per-target save of an AREA monster cast — rolled inside
+/// `monster_count_valid_targets` (decompile 21850-21868), BEFORE the
+/// energy charge and the fizzle roll: a saving player is silently
+/// excluded from the valid-target set (never flagged 0x10) — there is no
+/// resist line anywhere in the area path, and a room where EVERYONE
+/// saves aborts the cast entirely (0 targets → return 0, nothing
+/// charged, 22102-22105). The gate is the spell's save class (`+0xc6`):
+/// class 2 always rolls, class 1 only when THIS target carries AntiMagic
+/// (51), class 0 never — then the shared [`player_save_resists`] formula
+/// (97 cap). NOTE: unlike the single-target path (23026-23029), the area
+/// path never reads SpellImmu (139) — an auto-resisting target is swept
+/// like anyone else. (The count function's other exclusion, the
+/// FUN_0043e3db worn-item predicate, is unmirrored here — the same spec
+/// §7 hedge as the single path.)
+pub fn monster_area_target_saves(
+    save_class: crate::content::SaveClass,
+    anti_magic: bool,
+    save_stat: i32,
+    roll: &mut impl FnMut(i32, i32) -> i32,
+) -> bool {
+    use crate::content::SaveClass;
+    let allowed = match save_class {
+        SaveClass::None => false,
+        SaveClass::Always => true,
+        SaveClass::IfAntiMagic => anti_magic,
+    };
+    allowed && player_save_resists(save_stat, roll)
+}
+
+/// The Damage(-MR) (17) scale — the damage path the shipped attack spells
+/// predominantly carry (magic missile included). `mr` is the SAME stat the
+/// saving throw reads (M.R.(36) modifiers + the template `mr` word, floored
+/// at 1); `anti_magic` = the target carries AntiMagic (51). Decompile
+/// `cast_monster_target` 43937-43993 (player-target twin `cast_no_target`
+/// 40137-40198):
+///
+/// - without AntiMagic: `reduction% = clamp((mr-50)/2, 0, 50)`; when that
+///   is 0 the damage is instead AMPLIFIED by `(50-mr)%` — a floor-MR
+///   target takes +49%, and MR 50 is the unchanged pivot;
+/// - with AntiMagic: `reduction% = clamp(mr/2, 0, 75)`, no amplification.
+///
+/// Divisions truncate toward zero (the DLL's signed idiv; Rust `/`
+/// matches). The caster's AlterSpDmg(165) boost applies to `amount`
+/// BEFORE this scale ([`alter_sp_dmg`], wired at every call site) — the
+/// slice-4 divergence note is closed.
+pub fn damage_mr(amount: i32, mr: i32, anti_magic: bool) -> i32 {
+    let reduction = if anti_magic {
+        (mr / 2).clamp(0, 75)
+    } else {
+        ((mr - 50) / 2).clamp(0, 50)
+    };
+    if reduction == 0 {
+        if anti_magic {
+            amount
+        } else {
+            amount + amount * (50 - mr) / 100
+        }
+    } else {
+        amount - amount * reduction / 100
+    }
+}
+
+/// The caster's AlterSpDmg(165) percent boost on spell damage: `V += V *
+/// pct / 100`. The DLL applies it at every PLAYER Damage(1)/Damage-MR(17)
+/// computation — DamageMR inline (`cast_monster_target` 43940-43941,
+/// `cast_user_target` 42139-42141, `cast_no_target` 40151-40152 and the
+/// area/default-target legs 40304-40305), plain Damage through
+/// `FUN_0043fef4` (39025-39030: `(pct+100)*V/100`, same value as this
+/// form on every non-negative product; the sole shipped carrier is item
+/// 504 "multicoloured sash", +10). Drain(8) is never boosted. The
+/// monster-cast twin (`monster_cast`) reads NO 0xa5 at all — the monster
+/// fold is wired at our monster damage sites anyway, observably
+/// identical because zero shipped monsters carry 165.
+pub fn alter_sp_dmg(amount: i32, pct: i32) -> i32 {
+    amount + amount * pct / 100
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     Output { session: SessionId, text: String },
@@ -323,6 +666,16 @@ enum Session {
         aided: bool,
         /// Combat energy pool (`+0xba`; max/regen `+0xb8` = 1000 default).
         energy: i32,
+        /// One cast per combat round, even for energy-0 spells (MEASURED
+        /// §8.6); set whether the roll then succeeds or fails, cleared by
+        /// `energy_round`.
+        cast_this_round: bool,
+        /// The spell an offensive-cast engagement re-fires each combat
+        /// round in place of melee swings (the DLL threads the spell id
+        /// through `engage_autocombat`, decompile 43469; the unprompted
+        /// re-fire is MEASURED §8.9). `Some` only while `target` is
+        /// `Some`; cleared with it, and replaced by a melee `attack`.
+        casting: Option<SpellId>,
     },
 }
 
@@ -334,6 +687,9 @@ enum Job {
     Slow,
     /// `background_energy`, every 5 s: the combat round.
     Energy,
+    /// The "medium/routine update" pass (spec §5): active-spell duration
+    /// decay, recurring per-tick effects, expiry termination.
+    Upkeep,
     /// One meditation dot for a pending exit.
     ExitStep(SessionId),
     /// The nightly-cleanup stand-in: Worldgroup restarted the module every
@@ -348,10 +704,16 @@ const SLOW_INTERVAL: u64 = 30;
 const CLEANUP_INTERVAL: u64 = 86_400;
 /// The combat-round cadence (`background_energy`).
 const ENERGY_INTERVAL: u64 = 5;
+/// The duration-upkeep cadence. MEASURED (spellcasting.md §8.11:
+/// 3.03-3.06 s/tick over three clean runs) — a ~3 s routine cycle, NOT
+/// the 5 s energy round; blur's 70 ticks ≈ 3½ minutes.
+const UPKEEP_INTERVAL: u64 = 3;
 /// Player energy pool max/regen (`DAT_00482cd0` default).
 const PLAYER_ENERGY_MAX: i32 = 1000;
 /// The two-stage death gate: HP at/below this kills (`DAT_00482cf0`;
-/// ORACLE: -200 in the stock config — died at -204, survived -196).
+/// ORACLE: -200 in the stock config — died at -204, survived -196;
+/// §8.14 re-confirmed the FLAT bound on a 56-maxhp character with four
+/// kills at -200/-202/-209/-225 — §8.10's ~7x-maxhp fit was coincidence).
 pub const DEATH_FLOOR: i32 = -200;
 
 /// A live monster in the world (ephemeral — evaporates on restart, like the
@@ -371,6 +733,25 @@ pub(crate) struct MonsterInstance {
     /// Carried loot, rolled once at spawn (`generate_monster` step 5:
     /// carry iff genrdn(1,100) <= dropper). All of it drops at death.
     pub items: Vec<(crate::content::ItemId, i16)>,
+    /// The 5 monster active-spell slots (`mon+0x14a` id / `+0x154` value /
+    /// `+0x15e` remaining; spec §6.5-6.6). NOT persisted: instances are
+    /// ephemeral until M6, exactly like the original's in-memory monster
+    /// records — a restart clears them with the monster itself.
+    pub active_spells: [ActiveSpell; 5],
+    /// The poison counter (`mon+0x14`): set-if-greater by Poison(19)
+    /// casts, dealt as HP damage each slow pass (`slow_update_monster`
+    /// 19276-19279), reduced by the CurePoison(20) upkeep handler and the
+    /// Poison termination.
+    pub poison: i16,
+    /// The dirty byte (`mon+0x140`): set by every slot/effect write; keys
+    /// [`Core::recompute_monster_effects`]. The DLL rebuilds lazily at the
+    /// next record touch; we recompute eagerly at each write site —
+    /// observably identical.
+    pub needs_recompute: bool,
+    /// Cached fold of the 5 slots' ability rows (the monster half of
+    /// `get_monster_ability_value`'s slot walk, 37187-37215): value-0 rows
+    /// substitute the stored slot value. Rebuilt when `needs_recompute`.
+    pub slot_bag: AbilityBag,
 }
 
 /// A scheduled shop-slot restock, due at an absolute tick. Events live
@@ -415,6 +796,7 @@ impl Core {
         let mut scheduler = TickScheduler::new();
         scheduler.schedule_in(SLOW_INTERVAL, Job::Slow);
         scheduler.schedule_in(ENERGY_INTERVAL, Job::Energy);
+        scheduler.schedule_in(UPKEEP_INTERVAL, Job::Upkeep);
         scheduler.schedule_in(CLEANUP_INTERVAL, Job::Cleanup);
         let rng = Rng(config.rng_seed | 1);
         let mut core = Core {
@@ -507,6 +889,10 @@ impl Core {
                 energy,
                 target: None,
                 items,
+                active_spells: Default::default(),
+                poison: 0,
+                needs_recompute: false,
+                slot_bag: AbilityBag::default(),
             },
         );
         Some(id)
@@ -515,6 +901,31 @@ impl Core {
     /// Test/inspection: a live monster's current HP (`None` once dead/gone).
     pub fn monster_hp(&self, id: MonsterInstanceId) -> Option<i32> {
         self.monsters.get(&id).map(|m| m.current_hp)
+    }
+
+    /// Test/inspection: a live monster's current energy pool (`mon+0x16`).
+    pub fn monster_energy(&self, id: MonsterInstanceId) -> Option<i32> {
+        self.monsters.get(&id).map(|m| m.energy)
+    }
+
+    /// Test/inspection: a live monster's 5 active-spell slots.
+    pub fn monster_active_spells(&self, id: MonsterInstanceId) -> Option<[ActiveSpell; 5]> {
+        self.monsters.get(&id).map(|m| m.active_spells)
+    }
+
+    /// Test/inspection: a live monster's poison counter (`mon+0x14`).
+    pub fn monster_poison(&self, id: MonsterInstanceId) -> Option<i16> {
+        self.monsters.get(&id).map(|m| m.poison)
+    }
+
+    /// Test hook: the slot-fed combat mapping — (evasion, soak, save
+    /// stat), i.e. `move_monster_to_fighter`'s AC/DR words plus
+    /// [`Core::monster_save_stat`] (regression coverage for the monster
+    /// ability fold).
+    pub fn monster_defense_debug(&self, id: MonsterInstanceId) -> Option<(i32, i32, i32)> {
+        self.monsters.get(&id)?;
+        let f = self.build_monster_defender(id);
+        Some((f.evasion_a, f.armor, self.monster_save_stat(id)))
     }
 
     /// Test hook: mutable access to loaded content.
@@ -600,6 +1011,10 @@ impl Core {
                 Job::Energy => {
                     self.energy_round();
                     self.scheduler.schedule_in(ENERGY_INTERVAL, Job::Energy);
+                }
+                Job::Upkeep => {
+                    self.upkeep_update();
+                    self.scheduler.schedule_in(UPKEEP_INTERVAL, Job::Upkeep);
                 }
                 Job::ExitStep(session) => self.exit_step(session),
                 Job::Cleanup => {
@@ -715,8 +1130,8 @@ impl Core {
     }
 
     /// `slow_update_characters` (`regeneration.md`): hunger/thirst decay,
-    /// HP regen, mana regen for every in-game player. (Poison and bleed/aid
-    /// join in M3 with the death system.)
+    /// poison damage, bleed/aid, HP regen, mana regen for every in-game
+    /// player.
     fn slow_update(&mut self) {
         let sessions: Vec<SessionId> = self.sessions.keys().copied().collect();
         for id in sessions {
@@ -725,6 +1140,10 @@ impl Core {
             };
             let (max_hp, max_mana) = (derived.max_hp, derived.max_mana);
             let bag = self.ability_bag(player);
+            // Regen reads the EFFECTIVE stats (+0xa2..: slow_update's
+            // formulas consume the buffed fields the DLL direct-writes;
+            // we fold from the bag — see effective_stats).
+            let stats = self.effective_stats(player, &bag);
             let caster = self
                 .content
                 .classes
@@ -738,6 +1157,38 @@ impl Core {
 
             player.hunger = player.hunger.saturating_sub(1);
             player.thirst = player.thirst.saturating_sub(1);
+
+            // Poison (`regeneration.md` §4; decompile 19518-19533;
+            // MEASURED §8.14 at a patched counter 5 — the line, the
+            // counter damage and the regen all in one slow tick): a
+            // positive counter prints "You feel ill.", deals its value in
+            // HP damage, announces the drop when HP crosses from above 0
+            // to below 0 (19526-19528: FUN_0043c91d, the same announce as
+            // the upkeep Damage crossing), then check_kill_user. The
+            // counter itself does not decay here — only CurePoison, the
+            // poison spell's termination, the healer, or death lower it.
+            // A downed poisoned player still bleeds below (the DLL's
+            // branches are chained the same way), and a living one still
+            // regenerates in the same tick.
+            if player.poison > 0 {
+                let was_up = player.current_hp > 0;
+                player.current_hp -= i32::from(player.poison);
+                let dropped = was_up && player.current_hp < 0;
+                let name = player.name.clone();
+                let room = player.location;
+                self.output_line(id, text::YOU_FEEL_ILL);
+                if dropped {
+                    self.output_line(id, &text::drops_to_ground(&name));
+                    self.broadcast_to_room(room, Some(id), &text::drops_to_ground(&name));
+                }
+                if self.player(id).current_hp <= DEATH_FLOOR {
+                    self.player_killed(id);
+                    continue;
+                }
+            }
+            let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&id) else {
+                continue;
+            };
 
             // Near-death band (HP < 1): bleed toward the floor, or recover
             // one per tick when aided (`regeneration.md` §5).
@@ -764,7 +1215,7 @@ impl Core {
             // HP: only while alive and below max (0 < HP < max).
             if player.current_hp > 0 && player.current_hp < max_hp {
                 let mut base =
-                    (i32::from(player.level) + 20) * i32::from(player.stats.health) / 750;
+                    (i32::from(player.level) + 20) * i32::from(stats.health) / 750;
                 if base < 2 {
                     base = 1;
                 }
@@ -779,10 +1230,10 @@ impl Core {
             if player.current_mana < max_mana {
                 let (group, tier) = caster.unwrap_or((0, 0));
                 let stat = match group {
-                    1 => i32::from(player.stats.intellect),
-                    2 => i32::from(player.stats.wisdom),
-                    3 => (i32::from(player.stats.wisdom) + i32::from(player.stats.intellect)) / 2,
-                    4 => i32::from(player.stats.charm),
+                    1 => i32::from(stats.intellect),
+                    2 => i32::from(stats.wisdom),
+                    3 => (i32::from(stats.wisdom) + i32::from(stats.intellect)) / 2,
+                    4 => i32::from(stats.charm),
                     _ => 0,
                 };
                 let mut regen = (i32::from(player.level) + 20) * stat * (i32::from(tier) + 2)
@@ -795,6 +1246,297 @@ impl Core {
                     regen = (pct + 100) * regen / 100;
                 }
                 player.current_mana = (player.current_mana + regen).clamp(0, max_mana);
+            }
+        }
+        // Monster poison (`slow_update_monster` 19270-19281): a positive
+        // counter deals its value in HP each slow pass. NO death check
+        // here — the DLL leaves the corpse for the next medium pass's
+        // HP < 0 sweep, and so do we. (The same function's HP-regen half
+        // reads a template regen word, `mon+0x130`, that our loader does
+        // not carry yet — it joins with M6 monster lifecycles.)
+        let monsters: Vec<MonsterInstanceId> = self.monsters.keys().copied().collect();
+        for id in monsters {
+            if let Some(m) = self.monsters.get_mut(&id)
+                && m.poison > 0
+            {
+                m.current_hp -= i32::from(m.poison);
+            }
+        }
+    }
+
+    /// The ~3 s routine pass: each in-game player's slot walk (spec §5;
+    /// decompile 19807-19830), then each live monster's
+    /// (`medium_update_monster`, spec §6.6).
+    fn upkeep_update(&mut self) {
+        let sessions: Vec<SessionId> = self.sessions.keys().copied().collect();
+        for id in sessions {
+            self.upkeep_player(id);
+        }
+        let monsters: Vec<MonsterInstanceId> = self.monsters.keys().copied().collect();
+        for id in monsters {
+            self.upkeep_monster(id);
+        }
+    }
+
+    /// `medium_update_monster`'s slot half (decompile 19308-19341), per
+    /// occupied slot: set the dirty byte, decrement remaining,
+    /// `perform_routine_spell_monster_upkeep` (0x4a263 — the REDUCED
+    /// handler set: Damage/EnergyLevel/Heal/CurePoison/Fear only), then at
+    /// 0 remaining clear the slot and
+    /// `perform_spell_termination_monster_upkeep` (0x4a45d — reverses ONLY
+    /// Enslave and Poison; no stat reversal, no wear-off lines, NO EndCast
+    /// chains). An unknown spell id still decrements but idles past both
+    /// (the get_spell_data gate at 19312-19319). After the walk: strictly
+    /// negative HP routes through the killer-less death path (19327-19339:
+    /// check_kill_monster(-1) + distribute_experience(-1, ...)).
+    fn upkeep_monster(&mut self, id: MonsterInstanceId) {
+        let max_energy = self
+            .monsters
+            .get(&id)
+            .and_then(|m| self.content.monsters.get(&m.template))
+            .map_or(0, |t| t.energy);
+        for idx in 0..5 {
+            let (spell_id, stored, remaining) = {
+                let Some(m) = self.monsters.get_mut(&id) else {
+                    return;
+                };
+                let Some(spell_id) = m.active_spells[idx].spell else {
+                    continue;
+                };
+                m.needs_recompute = true;
+                m.active_spells[idx].remaining -= 1;
+                (
+                    spell_id,
+                    i32::from(m.active_spells[idx].value),
+                    m.active_spells[idx].remaining,
+                )
+            };
+            let Some(spell) = self.content.spells.get(&spell_id).cloned() else {
+                continue; // unknown id: decrement + dirty only (19312)
+            };
+            let Some(m) = self.monsters.get_mut(&id) else {
+                return;
+            };
+            // Routine handlers (44905-44962): value = the STORED slot
+            // value unless the ability row carries its own nonzero value
+            // — the same override convention as the player tick.
+            for (ability, row) in &spell.abilities {
+                let v = if *row != 0 { i32::from(*row) } else { stored };
+                match ability {
+                    // Damage (1): HP -= v, dirty (44928-44930). No death
+                    // check per slot — the post-walk HP sweep collects it.
+                    Ability::Damage => m.current_hp -= v,
+                    // EnergyLevel (11): += v, capped at the template max
+                    // (`+0x114`; 44932-44936).
+                    Ability::EnergyLevel => {
+                        m.energy = (m.energy + v).min(max_energy);
+                    }
+                    // Heal (18): HP += v, UNCAPPED here (44941-44943 —
+                    // the monster handler carries no max clamp).
+                    Ability::Heal => m.current_hp += v,
+                    // Cure Poison (20): the odd `poison - v < poison`
+                    // guard just skips v <= 0 (44945-44951).
+                    Ability::CurePoison => {
+                        if v > 0 {
+                            m.poison = clamp_poison(i32::from(m.poison) - v);
+                        }
+                    }
+                    // Fear (60): genrdn(0,100) < v => flee a random exit
+                    // via move_monster (44957-44960). M6 PENDING: our
+                    // monsters have NO movement machinery (M6 wander owns
+                    // move_monster) — the player-side flee is live
+                    // (upkeep_player); the monster flee lands with M6.
+                    Ability::Fear => {}
+                    _ => {}
+                }
+            }
+            if remaining <= 0 {
+                // Expiry (19318-19324): clear the slot FIRST, then
+                // terminate with the stored value.
+                m.active_spells[idx] = ActiveSpell::default();
+                for (ability, row) in &spell.abilities {
+                    let v = if *row != 0 { i32::from(*row) } else { stored };
+                    match ability {
+                        // Enslave (6): release the charm — owner name,
+                        // follow flags (44991-44995). M6 PENDING
+                        // (retagged at the slice-6 close-out): monster
+                        // charm/ownership state ships with M6 pets/
+                        // aggro (the Summon owner tag lands there too);
+                        // until an Enslave cast can CREATE a charm
+                        // there is nothing to release here.
+                        Ability::Enslave => {}
+                        // Poison (19): counter -= v, floored 0
+                        // (45003-45008).
+                        Ability::Poison => {
+                            m.poison = clamp_poison(i32::from(m.poison) - v);
+                        }
+                        // NO other reversal and NO EndCast chain — the
+                        // monster termination handles exactly these two.
+                        _ => {}
+                    }
+                }
+            }
+        }
+        self.recompute_monster_effects(id);
+        // The post-walk death sweep (19327-19339): STRICTLY negative — a
+        // monster sitting at exactly 0 survives the medium pass.
+        if self.monsters.get(&id).is_some_and(|m| m.current_hp < 0) {
+            self.monster_killed(id, None);
+        }
+    }
+
+    /// One player's slot walk (decompile 19807-19830, per non-empty slot):
+    /// 1. decrement remaining (`+0x68 += -1`);
+    /// 2. `perform_routine_spell_player_upkeep` — the recurring per-tick
+    ///    effect (runs even on the expiry tick);
+    /// 3. at 0 remaining — clear the slot + terminate, chain HONORED
+    ///    (19823: chainFlag `'\x01'`);
+    /// 4. `check_kill_user` — recurring damage kills mid-loop, ending the
+    ///    player's whole pass (19826-19828 returns).
+    fn upkeep_player(&mut self, session: SessionId) {
+        for idx in 0..10 {
+            let Some(Session::InGame { player, derived, .. }) = self.sessions.get(&session)
+            else {
+                // Died out of the loop (permadeath removes the session).
+                return;
+            };
+            let Some(spell_id) = player.active_spells[idx].spell else {
+                continue;
+            };
+            // Unknown spell id (content changed under a save): the DLL
+            // gates the slot's ENTIRE processing on get_spell_data
+            // (19812-19813) — no decrement, no effect; the slot idles.
+            let Some(spell) = self.content.spells.get(&spell_id).cloned() else {
+                continue;
+            };
+            let (max_hp, max_mana) = (derived.max_hp, derived.max_mana);
+            let stored = i32::from(player.active_spells[idx].value);
+            let mut visible = false;
+            let mut crossed_down = false;
+            let mut fear_rows: Vec<i32> = Vec::new();
+            let remaining;
+            {
+                let Some(Session::InGame { player, energy, .. }) =
+                    self.sessions.get_mut(&session)
+                else {
+                    return;
+                };
+                player.active_spells[idx].remaining -= 1;
+                remaining = player.active_spells[idx].remaining;
+                // `perform_routine_spell_player_upkeep` (decompile
+                // 44712-44810): value = the STORED slot value unless the
+                // ability row carries its own nonzero value (44727-44730
+                // — the `+0xa8` per-ability override, spec §5). The DLL
+                // refreshes the prompt inside the Damage/Drain/Heal/
+                // HealMana handlers (prf_prompt per hit); we fold that
+                // into one refresh per slot below — same final line.
+                for (ability, row) in &spell.abilities {
+                    let v = if *row != 0 { i32::from(*row) } else { stored };
+                    match ability {
+                        // Damage (1) and Drain (8) are IDENTICAL at the
+                        // player tick (44739-44754): HP -= v, prompt,
+                        // drop-line when crossing below 1 — spec §5
+                        // lists no caster-side heal for Drain here (a
+                        // slot has no caster), and neither does the
+                        // decompile.
+                        Ability::Damage | Ability::Drain => {
+                            let was_up = player.current_hp >= 1;
+                            player.current_hp -= v;
+                            visible = true;
+                            if was_up && player.current_hp < 1 {
+                                crossed_down = true;
+                            }
+                        }
+                        // EnergyLevel (11): round pool += v, capped at
+                        // the pool max (44756-44760).
+                        Ability::EnergyLevel => {
+                            *energy = (*energy + v).min(PLAYER_ENERGY_MAX);
+                        }
+                        // Alterhunger (15) / AlterThirst (16): plain adds
+                        // (44735-44737, 44767-44769; u16 clamp is ours).
+                        Ability::Alterhunger => {
+                            player.hunger = clamp_counter(i32::from(player.hunger) + v);
+                        }
+                        Ability::AlterThirst => {
+                            player.thirst = clamp_counter(i32::from(player.thirst) + v);
+                        }
+                        // Heal (18): HP += v capped at max, prompt
+                        // (44770-44776).
+                        Ability::Heal => {
+                            player.current_hp = (player.current_hp + v).min(max_hp);
+                            visible = true;
+                        }
+                        // Cure Poison (20): poison -= v floor 0. The
+                        // decompile's odd guard (44778: `poison - v <
+                        // poison`) just skips v <= 0 — a zero/negative
+                        // per-tick cure is a no-op here, unlike the
+                        // instant path.
+                        Ability::CurePoison => {
+                            if v > 0 {
+                                player.poison =
+                                    clamp_poison(i32::from(player.poison) - v);
+                            }
+                        }
+                        // Fear (60): genrdn(0,100) < v ⇒ flee out a
+                        // random valid exit (44788-44793: roll, then
+                        // pick_valid_random_direction, then move_user
+                        // MODE 6 — which has no mode-6 branch anywhere in
+                        // move_user, i.e. a plain forced move: NO fear-
+                        // specific line, just the standard leave/arrive
+                        // broadcasts and the destination render).
+                        // Deferred past the borrow; the DLL rolls
+                        // in-handler, but no shipped Fear carrier (397/
+                        // 822/836) pairs Fear with another recurring row,
+                        // so the order is unobservable.
+                        Ability::Fear => fear_rows.push(v),
+                        // HealMana (150): mana += v, floored at 0 then
+                        // capped at max — the DLL's sequential pair
+                        // (44795-44805), not a clamp.
+                        Ability::HealMana => {
+                            player.current_mana += v;
+                            if player.current_mana < 0 {
+                                player.current_mana = 0;
+                            }
+                            if player.current_mana > max_mana {
+                                player.current_mana = max_mana;
+                            }
+                            visible = true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            for v in fear_rows {
+                if self.rng.roll(0, 100) < v {
+                    let room = self.player(session).location;
+                    if let Some(dir) = self.pick_valid_random_direction(room) {
+                        self.move_player(session, dir);
+                    }
+                }
+            }
+            if visible {
+                self.show_prompt(session);
+            }
+            if crossed_down {
+                // FUN_0043c91d — the drop announce the Damage/Drain
+                // handlers fire when HP crosses below 1 (44745-44747),
+                // same lines as the monster-swing crossing.
+                let name = self.player(session).name.clone();
+                let room = self.player(session).location;
+                self.output_line(session, &text::drops_to_ground(&name));
+                self.broadcast_to_room(room, Some(session), &text::drops_to_ground(&name));
+            }
+            // Expiry: the DLL checks `== 0` (19819); `<=` also catches a
+            // zero/negative entered duration (an AlterSpLength-crushed
+            // roll), which the DLL would tick past into a 16-bit wrap.
+            if remaining <= 0 {
+                self.terminate_active_spell(session, idx, true);
+            }
+            // check_kill_user (19826-19828): the M3 death path; a kill
+            // ends this player's whole pass.
+            if self.player(session).current_hp <= DEATH_FLOOR {
+                self.player_killed(session);
+                return;
             }
         }
     }
@@ -820,6 +1562,45 @@ impl Core {
         }
     }
 
+    /// The poison counter (`+0xbe`; 0 for sessions not in game).
+    pub fn poison(&self, session: SessionId) -> i16 {
+        match self.sessions.get(&session) {
+            Some(Session::InGame { player, .. }) => player.poison,
+            _ => 0,
+        }
+    }
+
+    pub fn set_poison(&mut self, session: SessionId, poison: i16) {
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+            player.poison = poison;
+        }
+    }
+
+    /// Test hook: pre-seed an active-spell slot (and recompute, since
+    /// slots feed the ability bag).
+    pub fn set_active_spell(&mut self, session: SessionId, idx: usize, slot: ActiveSpell) {
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+            player.active_spells[idx] = slot;
+            self.refresh_derived(session);
+        }
+    }
+
+    /// The derived max HP (0 for sessions not in game).
+    pub fn max_hp(&self, session: SessionId) -> i32 {
+        match self.sessions.get(&session) {
+            Some(Session::InGame { derived, .. }) => derived.max_hp,
+            _ => 0,
+        }
+    }
+
+    /// The remaining round-energy pool (0 for sessions not in game).
+    pub fn round_energy(&self, session: SessionId) -> i32 {
+        match self.sessions.get(&session) {
+            Some(Session::InGame { energy, .. }) => *energy,
+            _ => 0,
+        }
+    }
+
     pub fn content(&self) -> &Content {
         &self.content
     }
@@ -832,14 +1613,15 @@ impl Core {
         self.broadcast_to_others(id, &text::entered_realm(&player.name));
         let derived = self.derive_for(&player);
         self.sessions
-            .insert(id, Session::InGame { player: Box::new(player), derived, exiting: None, target: None, aided: false, energy: PLAYER_ENERGY_MAX });
+            .insert(id, Session::InGame { player: Box::new(player), derived, exiting: None, target: None, aided: false, energy: PLAYER_ENERGY_MAX, cast_this_round: false, casting: None });
         self.show_room(id);
         self.show_prompt(id);
         id
     }
 
-    /// The player's accumulated ability modifiers: race + class permanents
-    /// now; gear and active spells join via the same bag in later milestones.
+    /// The player's accumulated ability modifiers: race + class permanents,
+    /// worn/wielded gear, and active duration-spell slots — the
+    /// `update_dynamic_stats` from-scratch fold.
     fn ability_bag(&self, player: &Player) -> AbilityBag {
         let mut abilities = AbilityBag::default();
         if let Some(race) = self.content.races.get(&player.race) {
@@ -861,12 +1643,87 @@ impl Core {
                 }
             }
         }
+        // Occupied active-spell slots re-apply their spell's ability table
+        // on every recompute (spec §4: "The stored (id, value) in the
+        // active slot is what makes the effect persist" — when a spell
+        // leaves the slots its contribution simply vanishes on the next
+        // recompute). A value-0 ability row means "the rolled magnitude":
+        // the STORED slot value substitutes, mirroring
+        // add_cast_spell_to_user's stored potency; nonzero rows are fixed
+        // amounts (the same convention as the instant apply loop).
+        // Metadata rows (DescMsg 115, StartMsg 120, RemovesSpell 122,
+        // EndCast 151, KillSpell 153, GiveTempSpell 160, CastOnEnd% 164)
+        // accumulate harmlessly and are NOT filtered: every bag consumer
+        // queries specific ability ids, none of which are metadata — the
+        // DLL's update_dynamic_with_ability switch likewise ignores them.
+        // EXCEPTION: NegateAbility (124/0x7c) is special-cased by the DLL —
+        // skipped in the main fold, then post-passed through
+        // negate_dynamic_with_ability on the row's VALUE (decompiled
+        // 37743-37745, 37837-37855; spec §4). Five shipped duration spells
+        // carry it (497/972 card-angel, 745 sunstone bracelet, 1322 hold
+        // immune — with value 0, which substitution would corrupt — and
+        // 1323 fear immune). KNOWN-DIVERGENCE: the negation post-pass
+        // lands when its targets (HoldPerson/Fear flags) are modeled.
+        // Unknown spell ids (content changed under a save) contribute
+        // nothing.
+        let negate = Ability::from_id(124).expect("NegateAbility in the enum");
+        for slot in &player.active_spells {
+            let Some(spell) = slot.spell.and_then(|id| self.content.spells.get(&id)) else {
+                continue;
+            };
+            for (ability, value) in &spell.abilities {
+                if *ability == negate {
+                    continue;
+                }
+                let v = match *value {
+                    0 => i32::from(slot.value),
+                    v => i32::from(v),
+                };
+                abilities.add(*ability, v);
+            }
+        }
         abilities
+    }
+
+    /// The effective stats the DLL keeps at `+0xa2..+0xac`: base stats
+    /// plus every accumulated stat-buff ability (Intel 44 .. Charm 49)
+    /// from the bag. The DLL direct-writes these six at cast
+    /// (cast_no_target 40757-40773: `+0xa2 += v` right after
+    /// add_cast_spell_to_user) and reverses them at termination
+    /// (perform_spell_termination_player_upkeep 44858-44875); we fold
+    /// them from the bag at read time instead, so a cleared slot simply
+    /// vanishes on the next recompute with no reversal bookkeeping.
+    /// KNOWN-DIVERGENCE (mechanism, not outcome): the DLL re-applies the
+    /// direct write on every refresh recast WITHOUT reversing the
+    /// previous one — its stat buffs stack across recasts until a single
+    /// stored-value reversal at termination; the bag contributes exactly
+    /// once per slot. Direct readers of `player.stats` not yet folded
+    /// (combat fighter builders, player_energy_used, the CHA shop-price
+    /// haggle) keep reading base stats — no stat-buff duration spell is
+    /// castable before bard support (all 12 learnable carriers are bard
+    /// songs), and the one shipped stat ITEM (331 "Indiana Jones hat",
+    /// (Charm 49, 30) per the loader's abilitya/abilityb pairing —
+    /// checked against the content DB, its other rows are
+    /// LoyalItem/AC/Shadow) awaits the same sweep. Values clamp at 0:
+    /// our fields are u16 where the DLL's signed shorts can go negative.
+    fn effective_stats(&self, player: &Player, bag: &AbilityBag) -> StatBlock {
+        let fold = |base: u16, ability: Ability| -> u16 {
+            clamp_counter(i32::from(base) + bag.value(ability))
+        };
+        StatBlock {
+            intellect: fold(player.stats.intellect, Ability::Intel),
+            wisdom: fold(player.stats.wisdom, Ability::Wisdom),
+            strength: fold(player.stats.strength, Ability::Strength),
+            health: fold(player.stats.health, Ability::Health),
+            agility: fold(player.stats.agility, Ability::Agility),
+            charm: fold(player.stats.charm, Ability::Charm),
+        }
     }
 
     /// `update_dynamic_stats` + `calculate_secondary_stats`.
     fn derive_for(&self, player: &Player) -> Derived {
         let abilities = self.ability_bag(player);
+        let stats = self.effective_stats(player, &abilities);
         let class = self.content.classes.get(&player.class);
         let race_hp = self
             .content
@@ -875,7 +1732,7 @@ impl Core {
             .map_or(0, |r| i32::from(r.hp_per_level));
         derive(&StatInputs {
             level: i32::from(player.level),
-            stats: player.stats,
+            stats,
             health_base: i32::from(player.base_stats.health),
             hp_base: i32::from(player.hp_base),
             class_hp_per_level: class.map_or(0, |c| i32::from(c.hp_per_level)),
@@ -887,7 +1744,7 @@ impl Core {
     }
 
     fn show_prompt(&mut self, session: SessionId) {
-        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+        let Some(Session::InGame { player, derived, .. }) = self.sessions.get(&session) else {
             return;
         };
         let caster_group = self
@@ -895,7 +1752,12 @@ impl Core {
             .classes
             .get(&player.class)
             .map_or(0, |c| c.caster_group);
-        let prompt = text::prompt(player.current_hp, player.current_mana, caster_group);
+        let prompt = text::prompt(
+            player.current_hp,
+            player.current_mana,
+            derived.max_mana,
+            caster_group,
+        );
         self.output(session, &prompt);
     }
 
@@ -913,6 +1775,41 @@ impl Core {
             .classes
             .get(&player.class)
             .map_or("", |c| c.name.as_str());
+        // Each active duration spell's DescMsg (115) line3, appended after
+        // the MagicRes row (MEASURED §8.11: "You are blurred!" while
+        // active, gone after expiry). DescMsg-less spells add no line.
+        // ORACLE-VERIFY: multi-buff ordering unmeasured live; slot order
+        // chosen (the DLL iterates the slot array).
+        let mut active_lines: Vec<String> = player
+            .active_spells
+            .iter()
+            .filter_map(|s| s.spell)
+            .filter_map(|id| self.content.spells.get(&id))
+            .filter_map(|spell| {
+                spell
+                    .abilities
+                    .iter()
+                    .find_map(|(a, v)| (*a == Ability::DescMsg).then_some(*v))
+            })
+            .filter_map(|v| u16::try_from(v).ok())
+            .filter_map(|id| self.content.messages.get(&crate::content::MessageId(id)))
+            // ORACLE-VERIFY: skipping empty/missing DescMsg line3 is
+            // inferred, not measured (spell 776 ships a (DescMsg, 0) row).
+            .filter_map(|m| m.lines.get(2).filter(|l| !l.is_empty()).cloned())
+            .collect();
+        // MEASURED (§8.14): a bare positive poison counter — no slot
+        // needed — appends "You are Poisoned!" to the sheet (seen live at
+        // a patched counter with zero active spells; gone after the cure).
+        // ORACLE-OPEN: ordering vs the DescMsg active lines is unmeasured
+        // (the live capture had no simultaneous buff); appended last.
+        if player.poison > 0 {
+            active_lines.push("You are Poisoned!".into());
+        }
+        // The sheet's six stat rows show the EFFECTIVE stats (+0xa2..;
+        // buffs included — the DLL direct-writes them, we fold from the
+        // bag, see effective_stats).
+        let bag = self.ability_bag(player);
+        let stats = self.effective_stats(player, &bag);
         let sheet = text::stat_sheet(&text::SheetData {
             name: &player.name,
             race,
@@ -925,8 +1822,16 @@ impl Core {
             hp_max: derived.max_hp,
             armour_class: 0, // get_armour_rating: no equipment until M4
             armour_max: 0,
-            stats: player.stats,
+            stats,
             derived,
+            active_lines: &active_lines,
+            mana_current: player.current_mana,
+            mana_max: derived.max_mana,
+            caster_group: self
+                .content
+                .classes
+                .get(&player.class)
+                .map_or(0, |c| c.caster_group),
         });
         self.output(session, &sheet);
     }
@@ -1012,9 +1917,21 @@ impl Core {
                     self.say(session, line.trim());
                 }
             }
+            Command::Use(target) => {
+                if self.use_command(session, &target, false) == Resolution::FallThrough {
+                    self.say(session, line.trim());
+                }
+            }
+            Command::Read(target) => {
+                if self.use_command(session, &target, true) == Resolution::FallThrough {
+                    self.say(session, line.trim());
+                }
+            }
             Command::Status => self.show_sheet(session),
             Command::Experience => self.show_experience(session),
             Command::Health => self.show_health(session),
+            Command::Spells => self.spells_command(session),
+            Command::Powers => self.powers_command(session),
             Command::Train => self.train_level(session),
             // Argument commands do best-effort resolution; when they cannot
             // intuit the target, the whole line is said aloud (the parser's
@@ -1024,6 +1941,11 @@ impl Core {
                     self.say(session, line.trim());
                 }
             }
+            // Cast never falls through to say: an unresolvable spell prints
+            // the do-not-know line (MEASURED §8.6/§8.9). Invoke is its kai
+            // twin (§8.12).
+            Command::Cast(args) => self.cast_command(session, &args),
+            Command::Invoke(args) => self.invoke_command(session, &args),
             Command::Aid(target) => {
                 if self.aid_command(session, &target) == Resolution::FallThrough {
                     self.say(session, line.trim());
@@ -1074,8 +1996,94 @@ impl Core {
         let Some(Session::InGame { player, derived, .. }) = self.sessions.get(&session) else {
             return;
         };
-        let line = text::health_line(player.current_hp, derived.max_hp);
+        let caster_group = self
+            .content
+            .classes
+            .get(&player.class)
+            .map_or(0, |c| c.caster_group);
+        let line = text::health_line(
+            player.current_hp,
+            derived.max_hp,
+            player.current_mana,
+            derived.max_mana,
+            caster_group,
+        );
         self.output_line(session, &line);
+    }
+
+    /// `spells` — the learned-book listing (spellcasting.md §8.5). Rows
+    /// sort by required power ascending, then name; display order is
+    /// computed here, not stored. Format VERIFIED oracle_spell_train.raw.
+    fn spells_command(&mut self, session: SessionId) {
+        // MEASURED (§8.12): mystics are redirected before any listing.
+        if self.is_kai(session) {
+            self.output_line(session, text::KAI_NO_SPELLS);
+            return;
+        }
+        let player = self.player(session);
+        let mut known: Vec<_> = player
+            .spellbook
+            .keys()
+            .filter_map(|id| self.content.spells.get(id))
+            .collect();
+        if known.is_empty() {
+            self.output_line(session, text::NO_SPELLS);
+            return;
+        }
+        known.sort_by(|a, b| {
+            (a.required_power, &a.name).cmp(&(b.required_power, &b.name))
+        });
+        let mut out = String::from(text::SPELLS_HEADER);
+        out.push('\n');
+        for spell in known {
+            out.push_str(&text::spell_row(
+                spell.required_power,
+                spell.mana_cost,
+                &spell.short_name,
+                &spell.name,
+            ));
+            out.push('\n');
+        }
+        // The table ends with a blank line (oracle; unlike exp/health).
+        out.push('\n');
+        self.output(session, &out);
+    }
+
+    /// `powers` — the kai book listing (MEASURED §8.12): same shape as
+    /// `spells` (sort, trailing blank line) with the Kai header and the
+    /// right-aligned short column; empty book is a single line.
+    fn powers_command(&mut self, session: SessionId) {
+        if !self.is_kai(session) {
+            // ORACLE-VERIFY: unmeasured parallel of the kai redirect.
+            self.output_line(session, text::NON_KAI_NO_POWERS);
+            return;
+        }
+        let player = self.player(session);
+        let mut known: Vec<_> = player
+            .spellbook
+            .keys()
+            .filter_map(|id| self.content.spells.get(id))
+            .collect();
+        if known.is_empty() {
+            self.output_line(session, text::NO_POWERS);
+            return;
+        }
+        known.sort_by(|a, b| {
+            (a.required_power, &a.name).cmp(&(b.required_power, &b.name))
+        });
+        let mut out = String::from(text::POWERS_HEADER);
+        out.push('\n');
+        for spell in known {
+            out.push_str(&text::power_row(
+                spell.required_power,
+                spell.mana_cost,
+                &spell.short_name,
+                &spell.name,
+            ));
+            out.push('\n');
+        }
+        out.push('\n');
+        self.output(session, &out);
     }
 
     /// `train_level` (`leveling.md` §4). Gate order is oracle-confirmed:
@@ -1114,11 +2122,16 @@ impl Core {
             self.output_line(session, text::TRAIN_NO_EXP);
             return;
         }
+        // The formula value is SILVER-denominated (MEASURED §8.7: markup-0
+        // shop 38 charged "5 silver nobles" for L1->2, formula = 5; §8.12:
+        // a copper-only purse paid 50/100 copper for the same 5/10) — the
+        // same `* ratios[0]` conversion the healer services apply.
+        let ratios = self.config.coin_ratios;
         let cost = ((i64::from(shop.markup) + 100).max(0) as u64)
             * u64::from(player.level)
             * 5
-            / 100;
-        let ratios = self.config.coin_ratios;
+            / 100
+            * ratios[0];
         if self.player(session).coins.total_copper(ratios) < cost {
             self.output_line(session, text::TRAIN_NO_MONEY);
             return;
@@ -1132,10 +2145,35 @@ impl Core {
             .map_or(0, |c| i32::from(c.hp_seed));
         let roll = self.rng.roll(0, hp_seed);
         let lives_grant = self.config.lives_per_level;
+        // Kai grant (MEASURED §8.12): training a caster_group-5 class
+        // inserts every magery-group-5 power whose required_power equals
+        // the NEW level into the ordinary spellbook (swan at L2, owl at
+        // L3 — the shipped data has exactly one power per level). The
+        // §8.1 mage control measured NOTHING, so the grant is keyed on
+        // the class group. ORACLE-VERIFY: classes other than mage/mystic
+        // are unmeasured; multi-grant ordering (no shipped case) is by
+        // spell id.
+        let next_level = self.player(session).level + 1;
+        let grants: Vec<(SpellId, String)> = if self.caster_group(session) == 5 {
+            let mut grants: Vec<(SpellId, String)> = self
+                .content
+                .spells
+                .values()
+                .filter(|s| {
+                    s.class_gate_group == 5
+                        && i32::from(s.required_power) == i32::from(next_level)
+                })
+                .map(|s| (s.id, s.name.clone()))
+                .collect();
+            grants.sort_by_key(|(id, _)| *id);
+            grants
+        } else {
+            Vec::new()
+        };
         let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
             unreachable!("train dispatched from in-game session");
         };
-        player.coins.deduct_copper(cost, ratios);
+        let spent = player.coins.deduct_copper(cost, ratios);
         player.level += 1;
         let new_level = player.level;
         let cp = match new_level {
@@ -1149,13 +2187,46 @@ impl Core {
             player.hp_base += roll as u16;
         }
         player.lives = (player.lives + lives_grant).min(9);
+        for (id, _) in &grants {
+            // Permanent book entry — the same insertion the scroll path
+            // uses (§8.12: the on-disk +0x474 word array gained the id).
+            player.spellbook.insert(*id, false);
+        }
 
-        // Mode-2 recompute: derived stats refresh, current HP/mana kept.
+        // Mode-2 recompute: derived stats refresh, current HP/mana kept
+        // (MEASURED §8.12: training does NOT refill the kai pool).
         let refreshed = self.derive_for(self.player(session));
         if let Some(Session::InGame { derived, .. }) = self.sessions.get_mut(&session) {
             *derived = refreshed;
         }
-        self.output_line(session, &text::train_success(new_level));
+        let snapshot = Box::new(self.player(session).clone());
+        self.events.push(Event::Persist(snapshot));
+        // The receipt (MEASURED §8.7/§8.12): payment sentence with the
+        // coins actually handed over, the CP line, then the kai grants —
+        // one power name per line.
+        let coins = text::coin_listing([
+            spent.copper,
+            spent.silver,
+            spent.gold,
+            spent.platinum,
+            spent.runic,
+        ])
+        .unwrap_or_else(|| "nothing".into());
+        let mut out = text::train_hand_over(&coins, new_level);
+        out.push('\n');
+        out.push_str(text::TRAIN_RECEIVE_HEADER);
+        out.push('\n');
+        out.push_str(&text::train_cp_line(cp));
+        out.push('\n');
+        if !grants.is_empty() {
+            out.push_str(text::KAI_LEARN_HEADER);
+            out.push('\n');
+            for (_, name) in &grants {
+                out.push_str(name);
+                out.push('\n');
+            }
+        }
+        self.output(session, &out);
     }
 
 
@@ -1181,9 +2252,10 @@ impl Core {
         let Some(monster) = monster else {
             return Resolution::FallThrough;
         };
-        if let Some(Session::InGame { target, .. }) = self.sessions.get_mut(&session) {
+        if let Some(Session::InGame { target, casting, .. }) = self.sessions.get_mut(&session) {
             // Oracle: attacking while already engaged prints *Combat Off*
             // before the new *Combat Engaged*.
+            *casting = None; // a melee attack replaces any cast engagement
             if target.is_some() {
                 *target = None;
                 self.output_line(session, text::COMBAT_OFF);
@@ -1620,6 +2692,2082 @@ impl Core {
         }
     }
 
+    /// Spell learnability/usability gates 1-2 (spellcasting.md §2 + §8.3):
+    /// a gated spell (group != 0) needs the class's magery group to match
+    /// AND the class casting factor to reach the spell's required class
+    /// level; then the character level must reach `required_power` — the
+    /// oracle-proven level (not Spellcasting) gate. A player whose class
+    /// id resolves to nothing can't cast, matching `user_can_use`.
+    pub fn spell_gate(&self, player: &Player, spell: &crate::content::Spell) -> SpellGate {
+        let Some(class) = self.content.classes.get(&player.class) else {
+            return SpellGate::WrongClass;
+        };
+        if spell.class_gate_group != 0
+            && (class.caster_group != spell.class_gate_group
+                || class.casting_factor < spell.required_class_level)
+        {
+            return SpellGate::WrongClass;
+        }
+        if i32::from(player.level) < i32::from(spell.required_power) {
+            return SpellGate::TooPowerful;
+        }
+        SpellGate::Ok
+    }
+
+    /// Resolves a cast argument against the learned book (MEASURED,
+    /// spellcasting.md §8.9): candidates are the player's spellbook only.
+    /// A spell matches on exact shortname (whole first word) OR per-word
+    /// name prefix (each typed word prefixes a name word — the item/monster
+    /// `word_prefix_match`, reused verbatim). The name match is greedy:
+    /// the longest run of leading words that still matches is consumed
+    /// (`c magic mi` consumes both words), and the ENTIRE remainder is
+    /// returned as the target string, spacing preserved. Ambiguity resolves
+    /// to the first match in book (spell-id) order — ORACLE-VERIFY: the
+    /// original's tie-break is unmeasured. ORACLE-VERIFY: word_prefix_match
+    /// anchors typed words at ANY starting name word (`c missile` resolves
+    /// magic missile here); every §8.9 probe was leading-anchored, so
+    /// mid-name anchoring is unmeasured for spells (probe: `c missile`,
+    /// `c mi`).
+    pub fn resolve_spell_from_book(
+        &self,
+        player: &Player,
+        args: &str,
+    ) -> Option<(SpellId, String)> {
+        // Leading words with their end offsets, so the remainder keeps the
+        // caller's exact spacing.
+        let mut words: Vec<(&str, usize)> = Vec::new();
+        let mut pos = 0;
+        for w in args.split_whitespace() {
+            let start = pos + args[pos..].find(w).expect("word came from args");
+            pos = start + w.len();
+            words.push((w, pos));
+        }
+        let spells: Vec<&crate::content::Spell> = player
+            .spellbook
+            .keys()
+            .filter_map(|id| self.content.spells.get(id))
+            .collect();
+        for take in (1..=words.len()).rev() {
+            let typed = words[..take]
+                .iter()
+                .map(|(w, _)| w.to_ascii_lowercase())
+                .collect::<Vec<_>>()
+                .join(" ");
+            for spell in &spells {
+                let hit = word_prefix_match(&spell.name, &typed)
+                    || (take == 1 && spell.short_name.eq_ignore_ascii_case(&typed));
+                if hit {
+                    let target = args[words[take - 1].1..].trim().to_string();
+                    return Some((spell.id, target));
+                }
+            }
+        }
+        None
+    }
+
+    /// `cast` — parsing, book resolution (spellcasting.md §8.9) and the
+    /// slice-3 gates in spec §3 order. Missing spec-§3 gates that join with
+    /// their systems later, in order: confusion, fear, MageBind.
+    fn cast_command(&mut self, session: SessionId, args: &str) {
+        // Gate 1: the downed band blocks casting like attack/movement.
+        if self.player(session).current_hp < 1 {
+            self.output_line(session, text::MORTALLY_WOUNDED);
+            return;
+        }
+        // Kai-block (decompile cast_no_target 39147, after the downed gate
+        // 39125): MEASURED §8.12 — bare, garbage, known-power and
+        // full-name forms all refuse before any argument parsing.
+        if self.is_kai(session) {
+            self.output_line(session, text::KAI_NO_CAST);
+            return;
+        }
+        let args = args.trim();
+        if args.is_empty() {
+            // MEASURED (§8.9): bare cast is a syntax line, not an error.
+            self.output_line(session, text::SYNTAX_CAST);
+            return;
+        }
+        self.cast_resolved(session, args);
+    }
+
+    /// `invoke` — the kai cast verb (§8.12): same pipeline, kai wording.
+    /// The refusal/resolution strings inside are shared with cast (the
+    /// unknown line still says "cast", MEASURED); only the mana and
+    /// one-per-round refusals swap to the kai variants, via the keyed
+    /// helpers.
+    fn invoke_command(&mut self, session: SessionId, args: &str) {
+        // ORACLE-VERIFY: the downed-band ordering is unmeasured for
+        // invoke; mirrored from cast (the DLL gates sit in the shared
+        // cast_no_target).
+        if self.player(session).current_hp < 1 {
+            self.output_line(session, text::MORTALLY_WOUNDED);
+            return;
+        }
+        if !self.is_kai(session) {
+            // ORACLE-VERIFY: unmeasured parallel of the kai cast refusal.
+            self.output_line(session, text::NON_KAI_NO_INVOKE);
+            return;
+        }
+        let args = args.trim();
+        if args.is_empty() {
+            // MEASURED (§8.12): bare invoke is a syntax line.
+            self.output_line(session, text::SYNTAX_INVOKE);
+            return;
+        }
+        self.cast_resolved(session, args);
+    }
+
+    /// The shared cast/invoke pipeline, after the verb-specific gates.
+    fn cast_resolved(&mut self, session: SessionId, args: &str) {
+        // Gate 2: resolve against the learned book. Resolution comes BEFORE
+        // the already-cast check: the DLL dispatcher resolves the spell and
+        // passes a pointer into cast_no_target, whose mode-2 flag "skips
+        // confusion/fear/round checks" — so the round gate lives inside,
+        // after resolution. ORACLE-VERIFY: second-cast-unknown ordering
+        // unmeasured (probe: `c blur` then `c zzz` in one round).
+        let resolved = self.resolve_spell_from_book(self.player(session), args);
+        let Some((spell_id, target)) = resolved else {
+            self.output_line(session, &text::dont_know_cast(args));
+            return;
+        };
+        // Gate 3: one cast per round — even for energy-0 spells
+        // (MEASURED §8.6). ORACLE-VERIFY: the DLL scopes this flag to
+        // benign casts (offensive ones are gated by round energy instead,
+        // and their manual form only engages, below); whether a benign
+        // cast blocks a subsequent offensive ENGAGEMENT in the same round
+        // is unmeasured — we currently block it here.
+        if let Some(Session::InGame { cast_this_round: true, .. }) = self.sessions.get(&session)
+        {
+            // MEASURED §8.12: the kai variant fires with kai still in the
+            // pool and charges nothing — same flag, same position; the
+            // invoke round flag IS cast_this_round (`+0x700 & 4`).
+            self.output_line(session, self.already_cast_line(session));
+            return;
+        }
+        let spell = self.content.spells[&spell_id].clone();
+        // Gate 4: level vs required_power (spec §2) — unreachable via
+        // scroll-learned books, reachable via slice-4 temp spells.
+        if i32::from(self.player(session).level) < i32::from(spell.required_power) {
+            self.output_line(session, text::SPELL_TOO_POWERFUL);
+            return;
+        }
+        // Offensive target resolution, BEFORE the cost gates and the roll
+        // (MEASURED §8.9: the must-specify, guilt and unmatched-target
+        // refusals all left the prompt mana unchanged; in the DLL they
+        // live in the dispatcher / cast_no_target ahead of
+        // cast_monster_target's cost gates).
+        let round_cost = i32::from(spell.round_cost);
+        let mana_cost = i32::from(spell.mana_cost);
+        let base_chance = spell.base_chance;
+        let spell_name = spell.name.clone();
+        // Target RESOLUTION is match-type-driven (the §8.13 refusal
+        // matrix): area types leave the single-target paths entirely —
+        // an explicit word refuses kind-keyed, a bare cast sweeps the
+        // room. Everything below this dispatch is single-target.
+        if spell.match_type.room_wide() {
+            self.area_cast(session, &spell, &target);
+            return;
+        }
+        let offensive = spell.target_mode.is_offensive();
+        let mut monster = None;
+        if offensive {
+            let room = self.player(session).location;
+            if target.is_empty() {
+                // MEASURED (§8.9 run 2): a bare offensive cast while
+                // melee-engaged prints *Combat Off* (the engagement
+                // breaks) and THEN its refusal.
+                self.break_combat(session);
+                if self.content.rooms.get(&room).is_some_and(|r| r.protected()) {
+                    // Protected room (attributes & 1 — the Newhaven
+                    // shops): the guilt line (MEASURED §8.6/§8.9). The
+                    // DLL charges the round cost here when affordable but
+                    // never the mana (decompile cast_no_target
+                    // 39185-39195; §8.9: mana unchanged).
+                    if let Some(Session::InGame { energy, .. }) =
+                        self.sessions.get_mut(&session)
+                        && *energy >= round_cost
+                    {
+                        *energy -= round_cost;
+                    }
+                    self.output_line(session, text::CAST_GUILT);
+                    return;
+                }
+                // Empty room and monsters-only alike — an offensive cast
+                // NEVER auto-picks a target, unlike attack (MEASURED §8.9).
+                self.output_line(session, text::MUST_SPECIFY_TARGET);
+                return;
+            }
+            match self.find_monster(room, &target) {
+                Some(id) => monster = Some(id),
+                None => {
+                    // MEASURED (§8.9): the entire remainder is one target
+                    // string, echoed verbatim.
+                    self.output_line(session, &text::do_not_see_here(&target));
+                    return;
+                }
+            }
+            // The protected-room flag gates the TARGETED path too
+            // (decompile cast_monster_target 43232, guilt refusal
+            // 44290-44297 — the same room+0x564 & 1 check as the bare-cast
+            // gate above, sitting ahead of the SpellImmu and cost gates):
+            // guilt line, no engagement, and the same round-cost-only
+            // charging as the bare-cast guilt path.
+            if self.content.rooms.get(&room).is_some_and(|r| r.protected()) {
+                if let Some(Session::InGame { energy, .. }) = self.sessions.get_mut(&session)
+                    && *energy >= round_cost
+                {
+                    *energy -= round_cost;
+                }
+                self.output_line(session, text::CAST_GUILT);
+                return;
+            }
+        } else if !target.is_empty() {
+            // Item-target spells (match 6/7 -> cast_item_target, decompile
+            // 0x49232; the dispatcher's find_action_target kind-8 arm at
+            // 59314): resolve the target against the CARRIED inventory.
+            // ORACLE-VERIFY: whether ground/worn items also match, and the
+            // "You are not carrying %s!" kind-4 refusal, are unmeasured —
+            // an unmatched name falls to the do-not-see refusal below.
+            if spell.match_type.is_item() {
+                let want = target.trim().to_ascii_lowercase();
+                let found = self.player(session).inventory.iter().find_map(|(id, _)| {
+                    self.content
+                        .items
+                        .get(id)
+                        .filter(|i| word_prefix_match(&i.name, &want))
+                        .map(|_| *id)
+                });
+                if let Some(item_id) = found {
+                    self.fire_item_cast(session, &spell, item_id);
+                    return;
+                }
+            }
+            // Player-target resolution (match 1/2 benign; MEASURED §8.13):
+            // players in the caster's room match by the §8.9 word-prefix
+            // rule (`c blur ora` -> Oracle). The refusal matrix is
+            // match-type-keyed: only the single-target types carry a
+            // target slot — match 0 benign has none, so its lookup always
+            // falls to the do-not-see refusal (MEASURED §8.9: "cast blur
+            // extra trailing words", no self-cast, no mana, pre-cost).
+            let single_target = matches!(
+                spell.match_type,
+                crate::content::MatchType::Single1 | crate::content::MatchType::Single2
+            );
+            let room = self.player(session).location;
+            let want = target.trim().to_ascii_lowercase();
+            let found = if single_target {
+                self.in_game_sessions()
+                    .filter(|(_, p)| p.location == room)
+                    .find(|(_, p)| word_prefix_match(&p.name, &want))
+                    .map(|(id, _)| id)
+            } else {
+                None
+            };
+            match found {
+                Some(target_id) if target_id != session => {
+                    self.benign_target_cast(session, target_id, &spell);
+                    return;
+                }
+                Some(_) => {
+                    // Own name = a plain self-cast (MEASURED §8.13: the
+                    // castmsgb frames keep the name — "You cast blur on
+                    // Zinvar!" / "Zinvar casts blur on Zinvar!" — which
+                    // is exactly what the self path renders). Fall
+                    // through to the benign self tail below.
+                }
+                None => {
+                    if single_target && self.find_monster(room, &target).is_some() {
+                        // MEASURED (§8.13): `c blur cat` — benign single
+                        // targets are players only, uncharged.
+                        self.output_line(session, text::MAY_NOT_CAST_ON_MONSTER);
+                        return;
+                    }
+                    self.output_line(session, &text::do_not_see_here(&target));
+                    return;
+                }
+            }
+        }
+        if let Some(monster_id) = monster {
+            // SpellImmu (139): a monster immune to spells at or below this
+            // level refuses the cast before any cost or engagement
+            // (decompile cast_monster_target 43630-43638: spell level <
+            // SpellImmu value => "no effect"; the autocombat re-fire skips
+            // this check, so it lives on the command path only).
+            let immu = self.monster_ability_value(monster_id, Ability::SpellImmu);
+            if immu > 0 && i32::from(spell.required_power) < immu {
+                let name = self.monster_name(monster_id);
+                self.output_line(session, &text::spell_no_effect_on(&name));
+                return;
+            }
+            // The offensive-duration split (cast_monster_target: the
+            // engage-only block below is CONDITIONED on duration == 0,
+            // 43421-43481): a duration!=0 offensive cast resolves RIGHT
+            // NOW — roll, costs, slot entry — with NO engagement and no
+            // *Combat Engaged* (engage_autocombat appears only in the
+            // duration==0 block and the autocombat-driver re-fire).
+            // The command's triple gate messages first (43554-43580):
+            // round energy prints the already-cast line, mana its
+            // shortfall line. DATA: zero learnable spells reach this
+            // (all 65 shipped offensive-duration spells are monster
+            // payloads) — fixture-covered until content grows one.
+            if spell.duration != 0 {
+                let Some(Session::InGame { energy, player, .. }) = self.sessions.get(&session)
+                else {
+                    return;
+                };
+                if *energy < round_cost {
+                    self.output_line(session, self.already_cast_line(session));
+                    return;
+                }
+                if player.current_mana < mana_cost {
+                    self.output_line(session, self.not_enough_mana_line(session));
+                    return;
+                }
+                self.offensive_cast_attempt(session, spell_id, monster_id);
+                return;
+            }
+            // Engagement is the command's ENTIRE effect (MEASURED,
+            // oracle_spell_cast.raw 567-637 + decompile cast_monster_target
+            // 43439-43481): the manual offensive cast never rolls, charges
+            // or fires directly — it prints the *Combat Off*/*Combat
+            // Engaged* toggle, zeroes the round energy and arms `casting`;
+            // the combat round driver performs every actual cast. (§8.6's
+            // condensed example shows engage+fire together, but the raw
+            // capture shows mana UNCHANGED at the engagement prompt and the
+            // fire arriving a round later — which is also why a mid-combat
+            // re-cast is never blocked by the one-cast-per-round gate: for
+            // offensive spells the round energy IS that gate.) Mana and
+            // energy shortages are therefore not checked here either; the
+            // per-round attempt handles both silently.
+            if let Some(Session::InGame { target, .. }) = self.sessions.get_mut(&session)
+                && target.is_some()
+            {
+                *target = None;
+                self.output_line(session, text::COMBAT_OFF);
+            }
+            if let Some(Session::InGame { target, casting, energy, .. }) =
+                self.sessions.get_mut(&session)
+            {
+                *target = Some(monster_id);
+                *casting = Some(spell_id);
+                // DLL 43468: engagement zeroes the pool — the first fire
+                // waits for the next combat round's refill.
+                *energy = 0;
+            }
+            self.output_line(session, text::COMBAT_ENGAGED);
+            // Retaliation lock (transcript: the filthbug swiped back after
+            // the bare engagement, before any damage landed).
+            if let Some(m) = self.monsters.get_mut(&monster_id) {
+                m.target = Some(session);
+            }
+            return;
+        }
+        // Benign spells: roll + costs at the command, unlike offensive
+        // (MEASURED: blur's mana moved at the prompt, §8.6/§8.9).
+        // Gate 5: round energy — exactly like an M3 attack without energy,
+        // a silent no-op within the round (no measured message). The
+        // deduction itself happens at roll time below.
+        let Some(Session::InGame { energy, player, derived, .. }) = self.sessions.get(&session)
+        else {
+            return;
+        };
+        let spellcasting = derived.spellcasting;
+        let level = player.level;
+        let caster_name = player.name.clone();
+        let room = player.location;
+        // AlterSpLength (166): the caster's accumulated percentage
+        // stretches duration-spell lengths (spec §4 step 1; decompile
+        // add_cast_spell_to_user 38165 reads get_user_ability_value(0xa6)
+        // at entry time — race/class/gear AND active slots via the same
+        // bag the recompute uses).
+        let alter_sp_length = if spell.duration == 0 {
+            0
+        } else {
+            self.ability_bag(player).value(Ability::AlterSpLength)
+        };
+        if *energy < round_cost {
+            return;
+        }
+        // Gate 6: mana (MEASURED §8.6; kai wording §8.12) — checked here,
+        // deducted at roll time (full on success, half rounded down on a
+        // failed roll).
+        if player.current_mana < mana_cost {
+            self.output_line(session, self.not_enough_mana_line(session));
+            return;
+        }
+        // All gates passed: the round is spent whether the roll then
+        // succeeds or fails (MEASURED §8.6).
+        if let Some(Session::InGame { cast_this_round, .. }) = self.sessions.get_mut(&session) {
+            *cast_this_round = true;
+        }
+        // Success roll (spec §3 step 5): the seeded game genrdn drives it;
+        // `cast_roll_succeeds` is the injectable seam for tests.
+        let rng = &mut self.rng;
+        let succeeded = cast_roll_succeeds(spellcasting, base_chance, &mut |lo, hi| {
+            rng.roll(lo, hi)
+        });
+        // Magnitude (success only): the SAME roll as the offensive side
+        // (spec §3) — but benign target modes never apply elemental
+        // resistance (spec §4: the modifier returns 0 unless target mode
+        // < 3), so resist is 0 by construction.
+        let magnitude = if succeeded {
+            let rng = &mut self.rng;
+            spell_magnitude(&spell, level, 0, &mut |lo, hi| rng.roll(lo, hi))
+        } else {
+            0
+        };
+        // Duration (success only, duration spells only): spec §4 step 1,
+        // rolled from the same seeded game rng as the magnitude.
+        let duration = if succeeded && spell.duration != 0 {
+            let rng = &mut self.rng;
+            spell_duration(&spell, level, alter_sp_length, &mut |lo, hi| rng.roll(lo, hi))
+        } else {
+            0
+        };
+        let Some(Session::InGame { energy, player, .. }) = self.sessions.get_mut(&session) else {
+            return;
+        };
+        // Both outcomes pay the full round cost (spec §3 steps 6-7).
+        *energy -= round_cost;
+        if !succeeded {
+            // Half mana rounded down (mmis 1 -> 0 oracle-confirmed §8.6;
+            // blur 4 -> 2 §8.9), no effects applied.
+            // DLL clamps the halved cost at 0 (decompiled 39387) — a
+            // negative mana_cost must not refund on failure.
+            // ORACLE-VERIFY: the kai fail wording is unmeasured (§8.12
+            // never rolled a failure — the mystic sc term is 500).
+            player.current_mana -= (mana_cost / 2).max(0);
+            self.output_line(session, &text::cast_fail(&spell_name));
+            self.broadcast_to_room(room, Some(session), &text::cast_fail_room(&caster_name, &spell_name));
+            return;
+        }
+        player.current_mana -= mana_cost;
+        self.benign_success_effects(session, session, &spell, magnitude, duration);
+    }
+
+    /// `cast_user_target` for a benign spell at ANOTHER player (decompile
+    /// save gate 41712-41733, resist block 42984-43009; MEASURED §8.13).
+    /// The gate/cost/roll skeleton mirrors the benign self tail of
+    /// `cast_resolved`; the effects land on the TARGET.
+    fn benign_target_cast(
+        &mut self,
+        session: SessionId,
+        target_id: SessionId,
+        spell: &crate::content::Spell,
+    ) {
+        let Some(Session::InGame { energy, player, derived, .. }) = self.sessions.get(&session)
+        else {
+            return;
+        };
+        let spellcasting = derived.spellcasting;
+        let level = player.level;
+        let caster_name = player.name.clone();
+        let room = player.location;
+        let round_cost = i32::from(spell.round_cost);
+        let mana_cost = i32::from(spell.mana_cost);
+        if *energy < round_cost {
+            return; // silent, like the self path (no measured message)
+        }
+        if player.current_mana < mana_cost {
+            self.output_line(session, self.not_enough_mana_line(session));
+            return;
+        }
+        // AlterSpLength reads through the TARGET's bag —
+        // add_cast_spell_to_user runs on the target terminal (decompile
+        // 38165), and the two bags coincide on every measured (self-)cast.
+        // ORACLE-VERIFY: never separable live so far.
+        let alter_sp_length = if spell.duration == 0 {
+            0
+        } else {
+            self.ability_bag(self.player(target_id)).value(Ability::AlterSpLength)
+        };
+        if let Some(Session::InGame { cast_this_round, .. }) = self.sessions.get_mut(&session) {
+            *cast_this_round = true;
+        }
+        let target_name = self.player(target_id).name.clone();
+        let rng = &mut self.rng;
+        let succeeded = cast_roll_succeeds(spellcasting, spell.base_chance, &mut |lo, hi| {
+            rng.roll(lo, hi)
+        });
+        // Saving throw (success only; spec §3): Always, or IfAntiMagic
+        // when the target's bag carries AntiMagic (51), rolled against
+        // the player MR analog (`user+0xc2` = the MagicRes stat).
+        // MEASURED §8.13: blur (typeofresists 1) never rolled against
+        // the AntiMagic-less MagicRes-55 dwarf — three straight lands.
+        let save_allowed = match spell.save_class {
+            crate::content::SaveClass::None => false,
+            crate::content::SaveClass::Always => true,
+            crate::content::SaveClass::IfAntiMagic => {
+                self.ability_bag(self.player(target_id)).value(Ability::AntiMagic) != 0
+            }
+        };
+        let resisted = succeeded && save_allowed && {
+            let stat = match self.sessions.get(&target_id) {
+                Some(Session::InGame { derived, .. }) => derived.magic_resist,
+                _ => 0,
+            };
+            let rng = &mut self.rng;
+            monster_save_resists(stat, &mut |lo, hi| rng.roll(lo, hi))
+        };
+        let landed = succeeded && !resisted;
+        let magnitude = if landed {
+            let rng = &mut self.rng;
+            spell_magnitude(spell, level, 0, &mut |lo, hi| rng.roll(lo, hi))
+        } else {
+            0
+        };
+        let duration = if landed && spell.duration != 0 {
+            let rng = &mut self.rng;
+            spell_duration(spell, level, alter_sp_length, &mut |lo, hi| rng.roll(lo, hi))
+        } else {
+            0
+        };
+        let Some(Session::InGame { energy, player, .. }) = self.sessions.get_mut(&session)
+        else {
+            return;
+        };
+        *energy -= round_cost;
+        if !succeeded {
+            // MEASURED (§8.13): caster "You attempt to cast blur at
+            // Oracle, but fail." + room "...attempted to cast blur at
+            // Oracle, but failed."; the TARGET sees NOTHING. Half mana
+            // rounded down, clamped non-negative like every fail path.
+            player.current_mana -= (mana_cost / 2).max(0);
+            self.output_line(session, &text::cast_fail_at(&spell.name, &target_name));
+            self.broadcast_to_room_except(
+                room,
+                &[session, target_id],
+                &text::cast_fail_at_room(&caster_name, &spell.name, &target_name),
+            );
+            return;
+        }
+        if resisted {
+            // A resist pays like a failed roll — full round cost, half
+            // mana (spec §3). ORACLE-VERIFY strings: the DLL resist
+            // family; whether the target's second-person line is
+            // delivered (unlike the suppressed fail line) is unmeasured
+            // — the family ships one, so we deliver it.
+            player.current_mana -= (mana_cost / 2).max(0);
+            self.output_line(session, &text::cast_resisted(&spell.name, &target_name));
+            self.output_line(target_id, &text::you_resisted(&caster_name, &spell.name));
+            self.broadcast_to_room_except(
+                room,
+                &[session, target_id],
+                &text::cast_resisted_room(&target_name, &caster_name, &spell.name),
+            );
+            return;
+        }
+        player.current_mana -= mana_cost;
+        self.benign_success_effects(session, target_id, spell, magnitude, duration);
+    }
+
+    /// The room-wide arm of `cast_no_target` (match types 3/5/9/10/11/12/
+    /// 13; MEASURED §8.13 for match 12 — flash 51 and stinking cloud 131).
+    ///
+    /// Target law (the §8.13 correction to spec §4's grouping): players
+    /// are NEVER area targets — measured alone, with players present, and
+    /// with an explicit player word. NOTE the decompile's player loop is
+    /// gated on flag `+0x7c8 & 0x10` (in-room live-target sweep bit), so
+    /// "never" is flag-driven, not categorical — §8.13 measured unpartied,
+    /// out-of-combat players; ORACLE-OPEN whether the bit ever admits
+    /// players (combat sweeps, parties). The sweep covers the decompile's
+    /// monster set (3/5/9/11/12); 10/13 iterate players ONLY in the
+    /// decompile, and with players excluded they collect nothing, so the
+    /// no-effect refusal fires unconditionally. ORACLE-VERIFY: whether 13
+    /// really excludes players like 12 is unsettled (the lowest learnable
+    /// 13 is priest chant L6 — §8.13 left it open); revisit before bard/
+    /// priest support.
+    fn area_cast(&mut self, session: SessionId, spell: &crate::content::Spell, target: &str) {
+        let room = self.player(session).location;
+        // Explicit target words refuse KIND-KEYED before any cost
+        // (MEASURED §8.13: `c flash oracle` -> "on a user!", `c stnk cat`
+        // -> "on a monster!", both uncharged).
+        let words = target.trim();
+        if !words.is_empty() {
+            let want = words.to_ascii_lowercase();
+            let player_hit = self
+                .in_game_sessions()
+                .filter(|(_, p)| p.location == room)
+                .any(|(_, p)| word_prefix_match(&p.name, &want));
+            if player_hit {
+                self.output_line(session, text::MAY_NOT_CAST_ON_USER);
+                return;
+            }
+            if self.find_monster(room, words).is_some() {
+                self.output_line(session, text::MAY_NOT_CAST_ON_MONSTER);
+                return;
+            }
+            // ORACLE-VERIFY: an unmatched word was not measured on the
+            // area path — the room-lookup refusal, like every other path.
+            self.output_line(session, &text::do_not_see_here(words));
+            return;
+        }
+        // Room protection (§3 step 2) precedes target counting for
+        // offensive modes — the same guilt gate and round-cost-only
+        // charging as the single-target paths. ORACLE-VERIFY: every
+        // learnable area is benign-mode (spelltype 3), so this leg is
+        // decompile-mirrored only.
+        let round_cost = i32::from(spell.round_cost);
+        if spell.target_mode.is_offensive()
+            && self.content.rooms.get(&room).is_some_and(|r| r.protected())
+        {
+            if let Some(Session::InGame { energy, .. }) = self.sessions.get_mut(&session)
+                && *energy >= round_cost
+            {
+                *energy -= round_cost;
+            }
+            self.output_line(session, text::CAST_GUILT);
+            return;
+        }
+        // Target counting (§3 step 3): live monsters only.
+        let targets: Vec<MonsterInstanceId> = if spell.match_type.hits_monsters() {
+            self.monsters
+                .iter()
+                .filter(|(_, m)| m.location == room && m.current_hp > 0)
+                .map(|(id, _)| *id)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if targets.is_empty() {
+            // MEASURED (§8.13): a real pre-charge gate — mana unchanged,
+            // the round not spent.
+            self.output_line(session, text::SPELL_NO_EFFECT_IN_ROOM);
+            return;
+        }
+        // Costs and the roll at the command, like the benign self path
+        // (MEASURED §8.13: flash/stinking cloud mana moved at the
+        // prompt). Offensive-mode areas charge here too — the engage-only
+        // convention belongs to the single-target monster path.
+        let Some(Session::InGame { energy, player, derived, .. }) = self.sessions.get(&session)
+        else {
+            return;
+        };
+        let spellcasting = derived.spellcasting;
+        let level = player.level;
+        let caster_name = player.name.clone();
+        let caster_max_hp = derived.max_hp;
+        let mana_cost = i32::from(spell.mana_cost);
+        if *energy < round_cost {
+            return; // silent no-op within the round, like the self path
+        }
+        if player.current_mana < mana_cost {
+            self.output_line(session, self.not_enough_mana_line(session));
+            return;
+        }
+        if let Some(Session::InGame { cast_this_round, .. }) = self.sessions.get_mut(&session) {
+            *cast_this_round = true;
+        }
+        let rng = &mut self.rng;
+        let succeeded = cast_roll_succeeds(spellcasting, spell.base_chance, &mut |lo, hi| {
+            rng.roll(lo, hi)
+        });
+        // ONE magnitude roll (elemental resist joins PER TARGET below);
+        // match types 3/5/9/10 split it by the target count (spec §3) —
+        // fixture-only, no learnable 3/5/9/10 spell ships.
+        let magnitude = if succeeded {
+            let rng = &mut self.rng;
+            let v = spell_magnitude(spell, level, 0, &mut |lo, hi| rng.roll(lo, hi));
+            if spell.match_type.splits_magnitude() {
+                v / i32::try_from(targets.len()).unwrap_or(1).max(1)
+            } else {
+                v
+            }
+        } else {
+            0
+        };
+        let Some(Session::InGame { energy, player, .. }) = self.sessions.get_mut(&session)
+        else {
+            return;
+        };
+        *energy -= round_cost;
+        if !succeeded {
+            // ORACLE-VERIFY: no area fail was measured — the untargeted
+            // cast_no_target fail pair, half mana rounded down.
+            player.current_mana -= (mana_cost / 2).max(0);
+            self.output_line(session, &text::cast_fail(&spell.name));
+            self.broadcast_to_room(
+                room,
+                Some(session),
+                &text::cast_fail_room(&caster_name, &spell.name),
+            );
+            return;
+        }
+        player.current_mana -= mana_cost;
+        // Fan-out (MEASURED §8.13): the caster line and ONE room line —
+        // NO per-target lines, NO damage numbers, NO combat engagement.
+        // Both come from the spell's own castmsgb pair (flash's room line
+        // mirrors the caster text, the clouds use the generic "on the
+        // room!" frame); the record's target line fires for no one, and
+        // the target/damage args stay unbound.
+        if let Some(msg) = spell.cast_msg_b.and_then(|id| self.content.messages.get(&id)) {
+            let args = text::CastMsgArgs {
+                caster: &caster_name,
+                target: None,
+                spell: &spell.name,
+                damage: None,
+            };
+            let odd = spell.msg_style & 1 == 1;
+            let caster_line = text::render_cast_line(msg, text::CastAudience::Caster, &args, odd);
+            let room_line = text::render_cast_line(msg, text::CastAudience::Room, &args, odd);
+            if let Some(line) = caster_line {
+                self.output_line(session, &line);
+            }
+            if let Some(line) = room_line {
+                self.broadcast_to_room(room, Some(session), &line);
+            }
+        }
+        if spell.duration != 0 {
+            // Duration areas enter each monster's 5-slot table
+            // (add_duration_spell_to_room 38701-38746, monster leg): value
+            // = the magnitude with the per-monster elemental resist for
+            // offensive modes (unscaled for benign, 38712/38742), duration
+            // re-rolled PER MONSTER inside add_cast_spell_to_monster (the
+            // spell_duration twin — an independent band roll each). Slot
+            // exhaustion is silent here: the fan-out above already set the
+            // caster told-flag, which suppresses the fail line (38277:
+            // DAT_00485964 gate). No poison hard-write on the area leg.
+            // MEASURED (§8.13): no per-monster lines — display_spell_
+            // success's told-flags collapse the area fan-out to the one
+            // caster/room pair already printed.
+            let alter = self
+                .ability_bag(self.player(session))
+                .value(Ability::AlterSpLength);
+            for monster_id in targets {
+                let value = if spell.target_mode.is_offensive() {
+                    let resist = spell
+                        .element
+                        .resist_ability()
+                        .map_or(0, |a| self.monster_ability_value(monster_id, a));
+                    (100 - resist) * magnitude / 100
+                } else {
+                    magnitude
+                };
+                let rng = &mut self.rng;
+                let duration =
+                    spell_duration(spell, level, alter, &mut |lo, hi| rng.roll(lo, hi));
+                self.enter_monster_spell_slot(monster_id, spell.id, value, duration);
+            }
+            return;
+        }
+        // Instant apply, PER MONSTER (spec §4: each target gets its own
+        // elemental modifier ((100-resist)*V)/100 keyed on the spell's
+        // element — the same final scale spell_magnitude applies on the
+        // single-target path; fixed non-zero rows bypass roll and resist
+        // alike). No saving throw here: the §3 save gate lives in the
+        // targeted entry points, not cast_no_target's area loop — whose
+        // own resist branch is DEAD CODE (decompiled ~39726-39748:
+        // genrdn(1,100) < 1000 always passes; "The %s resists your
+        // spell!" is unreachable), even though flash/stinking cloud/
+        // poison cloud all ship typeofresists 2.
+        let mut kills: Vec<MonsterInstanceId> = Vec::new();
+        // AlterSpDmg(165): the area apply loop reads the caster's bag per
+        // damage row like the targeted paths (cast_no_target FUN_0043fef4
+        // at 39626, DamageMR at 40304-40305 — re-read per target in the
+        // DLL, one value here).
+        let boost = self
+            .ability_bag(self.player(session))
+            .value(Ability::AlterSpDmg);
+        for monster_id in targets {
+            let resist = spell
+                .element
+                .resist_ability()
+                .map_or(0, |a| self.monster_ability_value(monster_id, a));
+            let mr = self.monster_save_stat(monster_id);
+            let anti_magic = self
+                .monsters
+                .get(&monster_id)
+                .and_then(|m| self.content.monsters.get(&m.template))
+                .is_some_and(|t| t.abilities.iter().any(|(a, _)| *a == Ability::AntiMagic));
+            let mut damage_total = 0i32;
+            let mut drain_total = 0i32;
+            let mut harms = false;
+            for (ability, value) in &spell.abilities {
+                let amount = match *value {
+                    0 => (100 - resist) * magnitude / 100,
+                    v => i32::from(v),
+                };
+                match ability {
+                    Ability::Damage => {
+                        damage_total += alter_sp_dmg(amount, boost);
+                        harms = true;
+                    }
+                    Ability::DamageMR => {
+                        damage_total += damage_mr(alter_sp_dmg(amount, boost), mr, anti_magic);
+                        harms = true;
+                    }
+                    Ability::Drain => {
+                        drain_total += amount;
+                        harms = true;
+                    }
+                    // Summon (12) is silly_spell on every AREA match
+                    // (cast_no_target 40058-40064: the 3/5/9/10-0xd arm)
+                    // — a deliberate no-op, not a pending gap.
+                    // M6 PENDING (retagged at the slice-6 close-out):
+                    // the instant-area arms for the remaining
+                    // monster-side abilities (Poison set-if-greater
+                    // included — the counter and slots exist; the
+                    // single-target twin already writes it). No shipped
+                    // LEARNABLE area carries any of them — §8.13
+                    // measured zero observable effect and every harm
+                    // row is covered above — so the gap is fixture-only
+                    // today; wire the arms with M6's monster content
+                    // pass.
+                    _ => {}
+                }
+            }
+            if !harms {
+                continue;
+            }
+            let dead = {
+                let Some(m) = self.monsters.get_mut(&monster_id) else {
+                    continue;
+                };
+                m.current_hp -= damage_total + drain_total;
+                // Retaliation lock like every damaging path — but NO
+                // caster-side engagement (no *Combat Engaged* MEASURED
+                // §8.13 on debuff-only payloads; ORACLE-VERIFY for
+                // damaging sweeps — fixture-only today; evil warnings/
+                // crime = SLICE 7).
+                m.target = Some(session);
+                m.current_hp <= 0
+            };
+            if drain_total != 0
+                && let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session)
+            {
+                player.current_hp = (player.current_hp + drain_total).min(caster_max_hp);
+            }
+            if dead {
+                kills.push(monster_id);
+            }
+        }
+        for monster_id in kills {
+            self.monster_killed(monster_id, Some(session));
+        }
+    }
+
+    /// Everything a SUCCESSFUL benign cast does after its costs are paid
+    /// — shared by the self-cast command path (`target == session`), the
+    /// player-target path (`benign_target_cast`) and the mode-2 forced
+    /// cast (`forced_cast`): the dispel pre-pass, the instant apply loop
+    /// or duration slot entry, then the success lines. Every effect —
+    /// dispel, hard-write, apply loop, slot entry — lands on the TARGET;
+    /// only the fan-out geometry involves the caster.
+    fn benign_success_effects(
+        &mut self,
+        session: SessionId,
+        target_id: SessionId,
+        spell: &crate::content::Spell,
+        magnitude: i32,
+        duration: i32,
+    ) {
+        let Some(Session::InGame { derived, .. }) = self.sessions.get(&target_id) else {
+            return;
+        };
+        let max_hp = derived.max_hp;
+        // RemovesSpell (122) / KillSpell (153) pre-pass on the target's
+        // own slots (spec §3): the named spell is dispelled — blur (129)
+        // removes the amethyst pendant's effect 157 (anti-stacking). The
+        // pre-pass loop (decompile cast_no_target 39463-39572) runs for
+        // EVERY benign cast — it is NOT duration-gated; 17 shipped instant
+        // spells (cure-poison family) carry dispel abilities. RemovesSpell
+        // honors the victim's EndCast chain, KillSpell suppresses it
+        // (39491: chainFlag = `ability == 0x7a`).
+        for (ability, value) in &spell.abilities {
+            let honor_endcast = match ability {
+                Ability::RemovesSpell => true,
+                Ability::KillSpell => false,
+                _ => continue,
+            };
+            // First find wins: the DLL returns from inside the slot scan
+            // (39494) without visiting later ability slots.
+            if let Ok(id) = u16::try_from(*value)
+                && id != 0
+                && let Some(idx) = self.player(target_id).find_active(SpellId(id))
+            {
+                // Early return (decompile 39472-39494, match types
+                // 1/2/6): a FOUND dispel prints display_spell_success
+                // FIRST (39481-39483), then clears the slot and runs the
+                // termination path (wear-off line + chain), recomputes,
+                // and RETURNS — the cast ends. The return precedes the
+                // apply loop (39573), so the caster's spell is neither
+                // applied (instant effects included) nor entered into a
+                // slot; only the success lines print.
+                // ORACLE-VERIFY: blur-over-157 live probe (st should NOT
+                // show blurred).
+                // param_6 here is uVar1 — the RAW rolled magnitude, no
+                // slot-value override (39482-39484: the pre-pass sits
+                // before the apply loop's per-slot local_9c rewrite).
+                self.emit_cast_success_lines(session, target_id, spell, magnitude, false);
+                self.terminate_active_spell(target_id, idx, honor_endcast);
+                return;
+            }
+        }
+        // ImmuPoison (21) gates the ENTIRE Poison(19) case — counter
+        // write, success display AND slot entry (decompile 40522-40546:
+        // user_has_ability(0x15) wraps the whole case body, instant and
+        // duration arms alike). The wrap scope is one SLOT-LOOP ITERATION,
+        // not the whole spell: any other driving slot still displays and
+        // enters through the once-flag (local_49). Race/class/gear/
+        // active-slot sources all count (the same bag the recompute
+        // uses). DATA: all six shipped Poison-carrying match-1/2/6 spells
+        // (yellow potion 184, red fungus 250, mushroom poison 373,
+        // redberry poison trap 628, dart poison 694, poison 704) carry
+        // only Poison + no-op slots (DescMsg 115 / NonMagicalSpell 144),
+        // so an immune target gets nothing at all from them.
+        let immune_poison = spell.abilities.iter().any(|(a, _)| *a == Ability::Poison)
+            && self.ability_bag(self.player(target_id)).value(Ability::ImmuPoison) != 0;
+        // The driving slot: the first non-noop, non-gated ability. Its
+        // fixed-or-rolled value is display_spell_success's param_6 — the
+        // damage arg of the success lines (every case passes its own
+        // local_9c: 40529-40531 Poison, 40075-40077 Alterhunger, ...; the
+        // loop head 39575-39580 rewrites local_9c to the slot value when
+        // non-zero, else leaves the rolled magnitude).
+        let gated =
+            |a: Ability| ability_case_is_noop(a) || (immune_poison && a == Ability::Poison);
+        let driving = spell.abilities.iter().find(|(a, _)| !gated(*a));
+        let display_damage =
+            driving.map_or(magnitude, |(_, v)| if *v != 0 { i32::from(*v) } else { magnitude });
+        // Summon (12) drives its own display call (cast_no_target case
+        // 0xc, 40040-40042): the target string is the LITERAL "everyone"
+        // — the caster/room lines read "... on everyone" and the
+        // target-private line is skipped.
+        let everyone_target = driving.is_some_and(|(a, _)| *a == Ability::Summon);
+        if immune_poison
+            && !spell
+                .abilities
+                .iter()
+                .any(|(a, _)| *a != Ability::Poison && !ability_case_is_noop(*a))
+        {
+            // No driving slot survives the gate: the DLL's apply loop
+            // finishes without ever reaching a display_spell_success or
+            // add_cast_spell_to_user call — no lines, no slot entry, and
+            // the costs stay paid (the roll already succeeded).
+            return;
+        }
+        // Summon(12) rows collected in the instant loop; spawned after
+        // the session borrow drops.
+        let mut summons: Vec<i32> = Vec::new();
+        if spell.duration == 0 {
+            // Instant apply loop (spec §4 table, on the resolved target):
+            // iterate the ability slots; a non-zero slot value is a FIXED
+            // amount, 0 means the rolled V — pinned on BOTH paths
+            // (offensive decompile 43711-43717; benign loop ~39577).
+            let Some(Session::InGame { energy, player, .. }) =
+                self.sessions.get_mut(&target_id)
+            else {
+                return;
+            };
+            for (ability, value) in &spell.abilities {
+                let amount = match *value {
+                    0 => magnitude,
+                    v => i32::from(v),
+                };
+                match ability {
+                    // Heal (18): HP += V, capped at the derived max.
+                    Ability::Heal => {
+                        player.current_hp = (player.current_hp + amount).min(max_hp);
+                    }
+                    // EnergyLevel (11): round pool += V, capped at max.
+                    Ability::EnergyLevel => {
+                        // ORACLE-VERIFY: spec §4 caps at the pool max, but
+                        // the decompiled benign branch (case 0xb, ~39960)
+                        // is an uncapped add — the cap may belong only to
+                        // the §5 per-tick handler.
+                        *energy = (*energy + amount).min(PLAYER_ENERGY_MAX);
+                    }
+                    // Alterhunger (15) / AlterThirst (16): the +0xce/+0xd0
+                    // counters (u16 fields; clamp instead of wrapping).
+                    Ability::Alterhunger => {
+                        player.hunger = clamp_counter(i32::from(player.hunger) + amount);
+                    }
+                    Ability::AlterThirst => {
+                        player.thirst = clamp_counter(i32::from(player.thirst) + amount);
+                    }
+                    // Poison (19): the +0xbe counter is SET-IF-GREATER,
+                    // not added (decompile 40525-40527: `if (poison < v)
+                    // poison = v` — every apply site agrees, incl. the
+                    // monster-cast paths 22726/23390), ImmuPoison-gated.
+                    Ability::Poison => {
+                        if !immune_poison {
+                            let v = clamp_poison(amount);
+                            if player.poison < v {
+                                player.poison = v;
+                            }
+                        }
+                    }
+                    // Cure Poison (20): poison -= V, floored 0
+                    // (40669-40673) — no ImmuPoison gate on the cure side.
+                    Ability::CurePoison => {
+                        player.poison = clamp_poison(i32::from(player.poison) - amount);
+                    }
+                    // Summon (12): generate_monster into the caster's
+                    // room (cast_no_target case 0xc, 40035-40051) —
+                    // instant matches 1/2/6 only; every AREA match is
+                    // silly_spell. DATA (slice-5 Task 6 check): all 87
+                    // Summon carriers are monster-attack payloads, ZERO
+                    // learnable — fixture-reachable only. Spawned after
+                    // the loop (the borrow); the caster-name/pet tag is
+                    // M6 (see summon_spawn).
+                    Ability::Summon => summons.push(amount),
+                    // Remaining benign instants land with their systems.
+                    _ => {}
+                }
+            }
+        }
+        // Duration spells apply NOTHING directly: add_cast_spell_to_user
+        // enters them into the target's active-spell slots and the stat
+        // recompute reads the slots from there (spec §4; ability_bag
+        // folds the occupied slots on every recompute).
+        else {
+            // Poison (19) hard-writes at ENTRY too (decompile 40536-40538:
+            // the duration arm max-writes the counter BEFORE
+            // add_cast_spell_to_user — even a slot-overflow cast leaves
+            // the counter raised), same ImmuPoison gate and the same
+            // per-ability value override convention.
+            if !immune_poison {
+                for (ability, row) in &spell.abilities {
+                    if *ability != Ability::Poison {
+                        continue;
+                    }
+                    let v = clamp_poison(match *row {
+                        0 => magnitude,
+                        v => i32::from(v),
+                    });
+                    if let Some(Session::InGame { player, .. }) =
+                        self.sessions.get_mut(&target_id)
+                        && player.poison < v
+                    {
+                        player.poison = v;
+                    }
+                }
+            }
+            // Entry (spec §4 steps 2-3): already active → refresh value
+            // and duration in place; else the first free slot. The DLL
+            // stores the 16-bit rolled magnitude as the slot value
+            // (decompile 38180/38195: `(undefined2)param_4`).
+            let entered = {
+                let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&target_id)
+                else {
+                    return;
+                };
+                let slot = ActiveSpell {
+                    spell: Some(spell.id),
+                    value: magnitude as i16,
+                    remaining: duration,
+                };
+                if let Some(idx) = player.find_active(spell.id) {
+                    // VERIFIED (§8.11): a mid-buff recast is a SILENT
+                    // full refresh — byte-identical output to a first
+                    // cast (castmsgb + the DescMsg active line below, no
+                    // "already have" variant), full mana charged, and the
+                    // timer resets to a full duration from the recast.
+                    player.active_spells[idx] = slot;
+                    true
+                } else if let Some(idx) = player.first_free_slot() {
+                    player.active_spells[idx] = slot;
+                    true
+                } else {
+                    false
+                }
+            };
+            if entered {
+                let snapshot = Box::new(self.player(target_id).clone());
+                self.events.push(Event::Persist(snapshot));
+                // The slot now feeds the TARGET's ability bag: recompute
+                // their cached derived stats (MEASURED §8.13: Oracle's
+                // st/MA row moved while blurred).
+                self.refresh_derived(target_id);
+            } else {
+                // ORACLE-VERIFY slot overflow (unmeasured live;
+                // decompile-backed): both slot scans exhausted →
+                // add_cast_spell_to_user 38205-38217 prints the cast-fail
+                // line to the CASTER only and returns -1. The effect is
+                // lost, the full costs stay paid (the success roll
+                // passed), and display_spell_success is never reached —
+                // no castmsgb, no active line, no room broadcast.
+                let fail = text::cast_fail(&spell.name);
+                self.output_line(session, &fail);
+                return;
+            }
+        }
+        if !summons.is_empty() {
+            let room = self.player(session).location;
+            for value in summons {
+                self.summon_spawn(value, room);
+            }
+        }
+        self.emit_cast_success_lines(session, target_id, spell, display_damage, everyone_target);
+    }
+
+    /// `cast_item_target` (decompile 0x49232), scoped to the LEARNABLE
+    /// surface — DATA (slice-5 Task 6 check, re/mmud_wgnt.sqlite): of the
+    /// 53 shipped match-6/7 spells exactly two are named by a LearnSp(42)
+    /// item — detect magic (24, mage L5; scroll 121 sold at the Newhaven
+    /// Mage Spell Shop 9) and song of lore (41, bard) — and both carry
+    /// only DetectMagic(26). The skeleton mirrors the benign command path
+    /// (NOT_ENOUGH_MANA, one-cast-per-round set, roll, full/half costs) —
+    /// EXCEPT the energy gate: cast_item_target's own triple gate
+    /// (44397-44409) prints the already-cast line for a round-energy
+    /// shortage, unlike the benign self-cast path's measured silent
+    /// no-op. The fail lines are the same cast_no_target pair
+    /// (44694-44700).
+    fn fire_item_cast(
+        &mut self,
+        session: SessionId,
+        spell: &crate::content::Spell,
+        item_id: crate::content::ItemId,
+    ) {
+        let Some(Session::InGame { energy, player, derived, .. }) = self.sessions.get(&session)
+        else {
+            return;
+        };
+        let spellcasting = derived.spellcasting;
+        let level = player.level;
+        let caster_name = player.name.clone();
+        let room = player.location;
+        let round_cost = i32::from(spell.round_cost);
+        let mana_cost = i32::from(spell.mana_cost);
+        if *energy < round_cost {
+            // 44397-44409: the energy leg of the triple gate prints the
+            // already-cast line (kai wording keyed like every refusal;
+            // unreachable for mystics — no group-5 item-target spell)
+            // and charges nothing.
+            self.output_line(session, self.already_cast_line(session));
+            return;
+        }
+        if player.current_mana < mana_cost {
+            self.output_line(session, self.not_enough_mana_line(session));
+            return;
+        }
+        if let Some(Session::InGame { cast_this_round, .. }) = self.sessions.get_mut(&session) {
+            *cast_this_round = true;
+        }
+        // Roll, then magnitude (44450 genrdn(0,100); 44540 the min/max
+        // roll) — the same seeded order as every other cast path.
+        let rng = &mut self.rng;
+        let succeeded = cast_roll_succeeds(spellcasting, spell.base_chance, &mut |lo, hi| {
+            rng.roll(lo, hi)
+        });
+        let magnitude = if succeeded {
+            let rng = &mut self.rng;
+            spell_magnitude(spell, level, 0, &mut |lo, hi| rng.roll(lo, hi))
+        } else {
+            0
+        };
+        let Some(Session::InGame { energy, player, .. }) = self.sessions.get_mut(&session)
+        else {
+            return;
+        };
+        *energy -= round_cost;
+        if !succeeded {
+            // Half mana rounded toward zero, clamped non-negative
+            // (44676-44689), and the cast_no_target fail lines.
+            player.current_mana -= (mana_cost / 2).max(0);
+            self.output_line(session, &text::cast_fail(&spell.name));
+            self.broadcast_to_room(
+                room,
+                Some(session),
+                &text::cast_fail_room(&caster_name, &spell.name),
+            );
+            return;
+        }
+        // Success charges the FULL mana, clamped non-negative (44521-44526
+        // — unlike the benign self-cast path, the item path never grants
+        // mana on a pathological negative cost).
+        player.current_mana -= mana_cost.max(0);
+        let Some(item) = self.content.items.get(&item_id).cloned() else {
+            return;
+        };
+        for (ability, row) in &spell.abilities {
+            // The per-ability override convention holds here too (44553-
+            // 44556); DetectMagic ignores the amount (it reads the ITEM).
+            let _amount = match *row {
+                0 => magnitude,
+                v => i32::from(v),
+            };
+            // DetectMagic (26, case 0x1a 44620-44667): band on the item's
+            // Magical(28) value, then the room announce. The duration != 0
+            // arm is silly_spell — unreachable, no learnable match-6/7
+            // spell carries a duration. Every OTHER ability × match-6/7
+            // pairing in the DLL is either silly_spell (a joke refusal) or
+            // a deep item-mutation case (Lore 162, ...) — none is carried
+            // by a learnable spell (data check above); they land if a
+            // future data pass ever surfaces one.
+            if *ability != Ability::DetectMagic || spell.duration != 0 {
+                continue;
+            }
+            let magical = item
+                .abilities
+                .iter()
+                .find_map(|(a, v)| (*a == Ability::Magical).then_some(i32::from(*v)))
+                .unwrap_or(0);
+            let line = match magical {
+                1 => text::glows_faintly(&item.name),
+                2..=3 => text::glows_softly(&item.name),
+                4..=5 => text::glows_brightly(&item.name),
+                v if v >= 6 => text::blinding_aura(&item.name),
+                _ => text::NO_MAGIC_IN_ITEM.to_string(),
+            };
+            self.output_line(session, &line);
+            self.broadcast_to_room(
+                room,
+                Some(session),
+                &text::casts_spell_on(&caster_name, &spell.name, &item.name),
+            );
+        }
+    }
+
+    /// `display_spell_success` for a benign cast (decompile 38004-38011):
+    /// the castmsgb fan-out, then the DescMsg (115) line3 active line on
+    /// duration casts — both keyed on the resolved TARGET (`target_id ==
+    /// session` for a self-cast). `damage` is the function's param_6
+    /// — the caller's fixed-or-rolled magnitude, bound into any `%d` slot
+    /// of the message (even caster line 37988 `prf(local_60, spellName,
+    /// target, param_6)`; odd caster line 38068 `prf(local_60, target,
+    /// param_6)`) — annointed hands (744) and minor healing (13) both
+    /// carry a `%d` that binds the heal roll.
+    ///
+    /// `everyone_target`: the Summon (12) display call passes the literal
+    /// "everyone" as the target string (cast_no_target 40040-40042) and
+    /// sends no target-private line.
+    fn emit_cast_success_lines(
+        &mut self,
+        session: SessionId,
+        target_id: SessionId,
+        spell: &crate::content::Spell,
+        damage: i32,
+        everyone_target: bool,
+    ) {
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+            return;
+        };
+        let caster_name = player.name.clone();
+        let room = player.location;
+        let target_name = if everyone_target {
+            "everyone".to_string()
+        } else {
+            self.player(target_id).name.clone()
+        };
+        // Cast messages: castmsgb only (castmsga is the empty message on
+        // every sampled spell — the Task-10 renderer contract). Fan-out
+        // (MEASURED §8.6 self / §8.13 player-target): the caster line
+        // always prints; the TARGET line goes to the resolved target
+        // only when it is another player (a self-cast delivers it to no
+        // one — `c blur` printed the caster line only); the room line
+        // goes to everyone else.
+        if let Some(msg) = spell.cast_msg_b.and_then(|id| self.content.messages.get(&id)) {
+            let args = text::CastMsgArgs {
+                caster: &caster_name,
+                target: Some(&target_name),
+                spell: &spell.name,
+                damage: Some(damage),
+            };
+            // msgstyle-odd binds (target, damage) with no spell name —
+            // the renderer's second order table. DATA: the lowest
+            // learnable odd BENIGN spell is annointed hands (744, mage
+            // L10, odd instant heal via scroll 1179 at shop 111) — its
+            // caster line "%s is healed of %d damage!" binds the heal
+            // roll as the damage arg. ORACLE-VERIFY: unmeasured live.
+            let odd = spell.msg_style & 1 == 1;
+            let caster_line = text::render_cast_line(msg, text::CastAudience::Caster, &args, odd);
+            let target_line = text::render_cast_line(msg, text::CastAudience::Target, &args, odd);
+            let room_line = text::render_cast_line(msg, text::CastAudience::Room, &args, odd);
+            if let Some(line) = caster_line {
+                self.output_line(session, &line);
+            }
+            if !everyone_target
+                && target_id != session
+                && let Some(line) = target_line
+            {
+                self.output_line(target_id, &line);
+            }
+            if let Some(line) = room_line {
+                self.broadcast_to_room_except(room, &[session, target_id], &line);
+            }
+        }
+        // Cast-time active line: message line3 of the spell's DescMsg (115)
+        // record, to the caster on a duration cast (decompile
+        // display_spell_success 38010-38011 prints message line 3 to the
+        // target; oracle: `You are blurred!`). MEASURED (§8.11): the live
+        // async path prints castmsgb, prompt, then erases the pending
+        // prompt in place and prints line3 + a fresh prompt — the net
+        // visible order (castmsgb, line3, prompt) is exactly what our
+        // single end-of-command prompt produces.
+        // ... and it goes to the TARGET (MEASURED §8.13: "You are
+        // blurred!" arrived async on Oracle's terminal, never the
+        // caster's).
+        if spell.duration != 0
+            && let Some(msg_val) = spell
+                .abilities
+                .iter()
+                .find_map(|(a, v)| (*a == Ability::DescMsg).then_some(*v))
+            && let Ok(id) = u16::try_from(msg_val)
+            && let Some(msg) = self.content.messages.get(&crate::content::MessageId(id))
+            && let Some(line) = msg.lines.get(2).filter(|l| !l.is_empty())
+        {
+            let line = line.clone();
+            self.output_line(target_id, &line);
+        }
+    }
+
+    /// `perform_spell_termination_player_upkeep` (decompile 44814-44900;
+    /// spec §5) — runs once when a spell leaves a slot: upkeep expiry, a
+    /// targeted dispel (RemovesSpell honors the EndCast chain, KillSpell
+    /// suppresses it), or death (chain suppressed). Clears the slot FIRST
+    /// and terminates with the stored value — every DLL call site zeroes
+    /// `+0x40/+0x54/+0x68` before the call (13053-13060 death,
+    /// 19819-19823 expiry, 39487-39492 dispel; spec §5).
+    fn terminate_active_spell(&mut self, session: SessionId, idx: usize, honor_endcast: bool) {
+        let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+            return;
+        };
+        let slot = player.active_spells[idx];
+        let Some(spell_id) = slot.spell else {
+            return;
+        };
+        player.active_spells[idx] = ActiveSpell::default();
+        let stored = i32::from(slot.value);
+        let Some(spell) = self.content.spells.get(&spell_id).cloned() else {
+            // Unknown spell id (content changed under a save): the DLL
+            // clears the slot but skips termination when get_spell_data
+            // fails (13056-13060). Recompute + persist the bare clear.
+            self.refresh_derived(session);
+            let snapshot = Box::new(self.player(session).clone());
+            self.events.push(Event::Persist(snapshot));
+            return;
+        };
+        // 1. The wear-off line: DescMsg (115) message line1, to the OWNER
+        //    only (44824-44844: get_spell_ability_value(0x73) — the RAW
+        //    row value, no stored-value substitution — then prf(line1,
+        //    spellName) + prompt on the owner's terminal; %s binds the
+        //    spell name). MEASURED §8.11: `The effects of blur wear off.`
+        //    arrives via the async redraw path — our output_line is the
+        //    same net line. Room line2: the DLL emits NOTHING to the room
+        //    (44840 prints line1 only) — ORACLE-VERIFY, no room-side
+        //    wear-off was ever measured.
+        if let Some(msg_val) = spell
+            .abilities
+            .iter()
+            .find_map(|(a, v)| (*a == Ability::DescMsg).then_some(*v))
+            && let Ok(id) = u16::try_from(msg_val)
+            && let Some(msg) = self.content.messages.get(&crate::content::MessageId(id))
+            && let Some(line) = msg.lines.first().filter(|l| !l.is_empty())
+        {
+            let line = line.replacen("%s", &spell.name, 1);
+            self.output_line(session, &line);
+        }
+        // 2. Hard-write reversal + chain metadata (44846-44890). Value =
+        //    the stored slot value unless the ability row carries its own
+        //    nonzero value (44849-44852 — the same per-ability override
+        //    convention as the recurring upkeep handlers, spec §5).
+        let mut chain: i32 = 0;
+        // CastOnEnd% default 100 when the row is absent (44830).
+        let mut pct: i32 = 100;
+        for (ability, row) in &spell.abilities {
+            let v = if *row != 0 { i32::from(*row) } else { stored };
+            match ability {
+                // Poison (19): `+0xbe -= v`, floored 0 (44853-44857).
+                // With the set-if-greater apply, a doubly-poisoned
+                // player keeps the surplus and a partially-cured one
+                // floors at 0 — both faithful.
+                Ability::Poison => {
+                    if let Some(Session::InGame { player, .. }) =
+                        self.sessions.get_mut(&session)
+                    {
+                        player.poison = clamp_poison(i32::from(player.poison) - v);
+                    }
+                }
+                // Stat buffs 44-49 (44858-44875 subtract from the
+                // effective stats +0xa2..+0xac): NO explicit reversal
+                // here — our cast entry never direct-writes; the buff
+                // lives in the ability bag and effective_stats folds it
+                // on every recompute, so clearing the slot above already
+                // removed it (KNOWN-DIVERGENCE in mechanism, identical
+                // observable — see effective_stats).
+                Ability::Intel
+                | Ability::Wisdom
+                | Ability::Strength
+                | Ability::Health
+                | Ability::Agility
+                | Ability::Charm => {}
+                // AlterHP (88): the DLL subtracts BOTH max (+0xae) and
+                // current (+0xb0) HP (44876-44879). The max half is
+                // bag-fed here (derive adds AlterHP into max_hp) and
+                // vanishes with the recompute below. The CURRENT-HP half
+                // is a real hard write — but our cast entry never adds
+                // it, so there is nothing to subtract: exactly ONE
+                // shipped duration spell carries 88 (746 "increase HP",
+                // named by no LearnSp scroll AND by no kind-2 attack
+                // form — the DB census finds no caster), so the pair
+                // stays unreachable even with slice-6 monster casting
+                // live; wire add-at-entry and subtract-here together if
+                // content ever names it.
+                Ability::AlterHP => {}
+                // GiveTempSpell (160): purge_spell_from_spellbook
+                // (44883-44885) — only a `temporary` book entry (the
+                // slice-2 flag) is removed; a permanently learned copy
+                // of the same spell survives.
+                Ability::GiveTempSpell => {
+                    if let Ok(id) = u16::try_from(v)
+                        && let Some(Session::InGame { player, .. }) =
+                            self.sessions.get_mut(&session)
+                        && player.spellbook.get(&SpellId(id)) == Some(&true)
+                    {
+                        player.spellbook.remove(&SpellId(id));
+                    }
+                }
+                // EndCast (151) / CastOnEnd% (164) go through the SAME
+                // override convention (44880-44882, 44886-44888): a
+                // zero-value row substitutes the stored slot value as
+                // the chained spell id / percentage. One shipped
+                // duration spell rides that quirk (935 "sysop jail
+                // time", (EndCast, 0)).
+                Ability::EndCast => chain = v,
+                Ability::CastOnEnd => pct = v,
+                _ => {}
+            }
+        }
+        // 3. Recompute + persist the cleared slot / purged book. (The DLL
+        //    runs calculate_secondary_stats AFTER the chain, 44896 — but
+        //    the chained cast's own slot entry recomputes for itself, so
+        //    refreshing first is observably identical.)
+        self.refresh_derived(session);
+        let snapshot = Box::new(self.player(session).clone());
+        self.events.push(Event::Persist(snapshot));
+        // 4. EndCast chain (44891-44895): only when this termination
+        //    honors it, the id resolves, and genrdn(0,100) < pct.
+        if honor_endcast
+            && chain != 0
+            && self.rng.roll(0, 100) < pct
+            && let Ok(id) = u16::try_from(chain)
+        {
+            self.forced_cast(session, SpellId(id));
+        }
+    }
+
+    /// `cast_no_target(..., mode 2)` — the forced follow-up cast an
+    /// EndCast chain fires (spec §5 step 4). The decompile's mode-2
+    /// branches pin what a forced cast skips and what it still pays:
+    /// - confusion / downed / NoMagic / Kai-block gates are all
+    ///   `param_3 == '\0'`-gated (39118, 39125, 39133, 39147) — skipped;
+    /// - the class-school gate still applies, SILENTLY (39235-39239:
+    ///   wrong magery group or casting factor below the spell's class
+    ///   level → bare `return 0`);
+    /// - round-energy, mana and level gates still apply WITH their
+    ///   refusal lines (39253-39281: the triple check is unconditional;
+    ///   energy prints the already-cast line, then mana, then level).
+    ///   The refusal block sits under `DAT_004877f4 == 0` (39257) — the
+    ///   autocombat-driver flag, set nonzero only inside
+    ///   do_autocombat_for_user (46642) and cleared on every exit
+    ///   (46674/46689), so on the command and upkeep paths the gate is
+    ///   effectively constant-false and the refusal lines always print
+    ///   (the silent energy-drain else-branch at 39283-39297 belongs to
+    ///   autocombat, out of scope here);
+    /// - NO success roll and NO one-cast-per-round flag: modes 1/2 set
+    ///   the success local unconditionally (39240), and the `+0x700 & 4`
+    ///   round flag is only consulted in the mode-0 benign branch
+    ///   (39344-39355);
+    /// - the always-success path deducts the FULL round cost and mana
+    ///   (39400-39408; the COST is clamped non-negative — for a
+    ///   pathological negative mana_cost the DLL would grant mana, we
+    ///   refuse; unreachable with shipped data).
+    ///
+    /// Slice-4 scope: benign self-cast only — no shipped EndCast chain is
+    /// reachable by a player cast (48 duration spells carry EndCast 151;
+    /// none is named by any LearnSp scroll). Monster slots exist since
+    /// slice 6, but the offensive arm stays M6-pending for lack of any
+    /// reachable trigger (the gate below).
+    fn forced_cast(&mut self, session: SessionId, spell_id: SpellId) {
+        let Some(spell) = self.content.spells.get(&spell_id).cloned() else {
+            return;
+        };
+        if spell.target_mode.is_offensive() {
+            // M6 PENDING (retagged at the slice-6 close-out): the
+            // offensive forced-cast arm (an EndCast chain firing at a
+            // monster). Monster slots exist since slice 6, but no
+            // shipped trigger reaches this — all 48 EndCast carriers
+            // are unlearnable (see the doc above) — so the arm stays a
+            // silent refusal until a reachable trigger ships.
+            return;
+        }
+        let Some(Session::InGame { player, energy, .. }) = self.sessions.get(&session) else {
+            return;
+        };
+        // Class-school gate (39235-39239): silent refusal.
+        if self.spell_gate(player, &spell) == SpellGate::WrongClass {
+            return;
+        }
+        let round_cost = i32::from(spell.round_cost);
+        let mana_cost = i32::from(spell.mana_cost);
+        // The unconditional triple gate (39253), refusal lines in the
+        // decompile's order (39264-39281): round energy prints the
+        // already-cast line, then mana, then level-vs-required-power.
+        if *energy < round_cost {
+            self.output_line(session, self.already_cast_line(session));
+            return;
+        }
+        if player.current_mana < mana_cost {
+            self.output_line(session, self.not_enough_mana_line(session));
+            return;
+        }
+        if i32::from(player.level) < i32::from(spell.required_power) {
+            self.output_line(session, text::SPELL_TOO_POWERFUL);
+            return;
+        }
+        let level = player.level;
+        let alter_sp_length = if spell.duration == 0 {
+            0
+        } else {
+            self.ability_bag(player).value(Ability::AlterSpLength)
+        };
+        // No success roll (39247): magnitude and duration always land.
+        let rng = &mut self.rng;
+        let magnitude = spell_magnitude(&spell, level, 0, &mut |lo, hi| rng.roll(lo, hi));
+        let duration = if spell.duration != 0 {
+            let rng = &mut self.rng;
+            spell_duration(&spell, level, alter_sp_length, &mut |lo, hi| rng.roll(lo, hi))
+        } else {
+            0
+        };
+        // Full costs on the always-success path (39400-39408).
+        if let Some(Session::InGame { player, energy, .. }) = self.sessions.get_mut(&session) {
+            *energy -= round_cost;
+            player.current_mana -= mana_cost.max(0);
+        }
+        self.benign_success_effects(session, session, &spell, magnitude, duration);
+    }
+
+    /// One Summon(12) row: the fixed-or-rolled value IS the template id,
+    /// spawned into the given room (every apply loop passes it straight
+    /// to `generate_monster`: monster single 23259, player self 40044,
+    /// player-at-monster 43911). An unknown template spawns nothing, like
+    /// generate_monster's 0 return. The DLL then tags the spawn — victim
+    /// name into the target word (23263, monster casts), caster name/pet
+    /// links on the player paths (40048-40050, 43915-43925) — M6 PENDING
+    /// (LOUD): the tag only matters to monster aggression/AI, which does
+    /// not exist yet; until M6 the summon stands idle.
+    fn summon_spawn(&mut self, template: i32, room: RoomId) {
+        if let Ok(id) = u16::try_from(template) {
+            self.spawn_monster(crate::content::MonsterId(id), room);
+        }
+    }
+
+    /// `pick_valid_random_direction` (decompile 67383-67421): scan the
+    /// ten exit slots in storage order; an exit qualifies when its TYPE is
+    /// one of {0, 2, 5, 7, 11, 19, 24} (closed doors, action exits and
+    /// the rest never). The FIRST qualifying exit is held and every LATER
+    /// one replaces it on `genrdn(0,100) < 40` — a front-weighted
+    /// reservoir, not a uniform pick. `None` when no exit qualifies.
+    fn pick_valid_random_direction(&mut self, room: RoomId) -> Option<Direction> {
+        let r = self.content.rooms.get(&room)?;
+        let mut held = None;
+        for d in Direction::ALL {
+            let qualifies = r.exits[d as usize]
+                .as_ref()
+                .is_some_and(|e| matches!(e.exit_type, 0 | 2 | 5 | 7 | 11 | 19 | 24));
+            if qualifies && (held.is_none() || self.rng.roll(0, 100) < 40) {
+                held = Some(d);
+            }
+        }
+        held
+    }
+
+    /// A live monster's template name (empty if the instance is gone).
+    fn monster_name(&self, id: MonsterInstanceId) -> String {
+        self.monsters
+            .get(&id)
+            .and_then(|m| self.content.monsters.get(&m.template))
+            .map_or_else(String::new, |t| t.name.clone())
+    }
+
+    /// `get_monster_ability_value` (decompile 37150-37270): the template's
+    /// ability rows PLUS the 5 active-spell slots (value-0 rows substitute
+    /// the stored slot value — the cached [`MonsterInstance::slot_bag`]
+    /// fold). KNOWN-DIVERGENCES, both shared with the player bag: the DLL
+    /// max-not-sums a resist-ability id set (37173-37185) where we sum
+    /// (shipped templates carry at most one row per resist), and a
+    /// NegateAbility(124) row naming the queried id zeroes the DLL's whole
+    /// answer where we skip the row in the fold (37209-37212; zero shipped
+    /// monster payloads carry 124). Carried/wielded item terms join with
+    /// M6 monster inventories.
+    fn monster_ability_value(&self, id: MonsterInstanceId, ability: Ability) -> i32 {
+        let Some(m) = self.monsters.get(&id) else {
+            return 0;
+        };
+        let template: i32 = self
+            .content
+            .monsters
+            .get(&m.template)
+            .map_or(0, |t| {
+                t.abilities
+                    .iter()
+                    .filter(|(a, _)| *a == ability)
+                    .map(|(_, v)| i32::from(*v))
+                    .sum()
+            });
+        template + m.slot_bag.value(ability)
+    }
+
+    /// Rebuilds the cached slot fold when the dirty byte (`mon+0x140`) is
+    /// set — the monster ability-bag-lite. The DLL leaves the byte for the
+    /// next record touch; every write site here recomputes immediately, so
+    /// reads never see a stale fold. Skips NegateAbility rows like the
+    /// player fold (see [`Core::monster_ability_value`]).
+    fn recompute_monster_effects(&mut self, id: MonsterInstanceId) {
+        let Some(m) = self.monsters.get(&id) else {
+            return;
+        };
+        if !m.needs_recompute {
+            return;
+        }
+        let slots = m.active_spells;
+        let mut bag = AbilityBag::default();
+        let negate = Ability::from_id(124).expect("NegateAbility in the enum");
+        for slot in &slots {
+            let Some(spell) = slot.spell.and_then(|sid| self.content.spells.get(&sid)) else {
+                continue;
+            };
+            for (ability, value) in &spell.abilities {
+                if *ability == negate {
+                    continue;
+                }
+                let v = match *value {
+                    0 => i32::from(slot.value),
+                    v => i32::from(v),
+                };
+                bag.add(*ability, v);
+            }
+        }
+        if let Some(m) = self.monsters.get_mut(&id) {
+            m.slot_bag = bag;
+            m.needs_recompute = false;
+        }
+    }
+
+    /// `add_cast_spell_to_monster`'s slot write (decompile 38258-38285):
+    /// an active slot with the same id is overwritten UNCONDITIONALLY
+    /// (value and duration both — no exceed check, unlike the monster→
+    /// player entry); otherwise the first free of the 5; both set the
+    /// dirty byte. Returns `false` when the table is full (the caller owns
+    /// the fail line, 38277-38283). Value/duration scaling (38236-38256 —
+    /// the [`spell_duration`] twin, AlterSpLength included) happens at the
+    /// call sites, which own the caster context.
+    fn enter_monster_spell_slot(
+        &mut self,
+        id: MonsterInstanceId,
+        spell_id: SpellId,
+        value: i32,
+        duration: i32,
+    ) -> bool {
+        let entered = {
+            let Some(m) = self.monsters.get_mut(&id) else {
+                return false;
+            };
+            let idx = m
+                .active_spells
+                .iter()
+                .position(|s| s.spell == Some(spell_id))
+                .or_else(|| m.active_spells.iter().position(|s| s.spell.is_none()));
+            match idx {
+                Some(idx) => {
+                    m.active_spells[idx] = ActiveSpell {
+                        spell: Some(spell_id),
+                        value: value as i16,
+                        remaining: duration,
+                    };
+                    m.needs_recompute = true;
+                    true
+                }
+                None => false,
+            }
+        };
+        if entered {
+            self.recompute_monster_effects(id);
+        }
+        entered
+    }
+
+    /// The monster-side MR stat, `local_34` (decompile cast_monster_target
+    /// 43387-43392): M.R.(36) ability modifiers plus the template's `mr`
+    /// column, floored at 1. Read by BOTH the saving throw (43600-43614)
+    /// and the Damage(-MR) scale (43946-43982). ORACLE-VERIFY: the `mr`
+    /// column's identity as the template word the DLL reads rests on the
+    /// Nightmare field-map ordering; the starter spells are all
+    /// SaveClass::None, so no live save was measurable.
+    fn monster_save_stat(&self, id: MonsterInstanceId) -> i32 {
+        let mr = self
+            .monsters
+            .get(&id)
+            .and_then(|m| self.content.monsters.get(&m.template))
+            .map_or(0, |t| i32::from(t.magic_resist));
+        (self.monster_ability_value(id, Ability::MR) + mr).max(1)
+    }
+
+    /// One offensive-cast execution against the engaged monster, invoked by
+    /// the combat round driver every round — including the first fire (the
+    /// command only engages; MEASURED oracle_spell_cast.raw + §8.9's
+    /// unprompted re-fire, with a fresh success roll and a fresh mana
+    /// charge every round). Deliberately does NOT touch `cast_this_round`:
+    /// the DLL gates offensive casts on round energy alone, keeping the
+    /// benign one-cast flag independent.
+    fn offensive_cast_attempt(
+        &mut self,
+        session: SessionId,
+        spell_id: SpellId,
+        monster_id: MonsterInstanceId,
+    ) {
+        let Some(spell) = self.content.spells.get(&spell_id).cloned() else {
+            return;
+        };
+        let round_cost = i32::from(spell.round_cost);
+        let mana_cost = i32::from(spell.mana_cost);
+
+        {
+            let Some(Session::InGame { energy, player, .. }) = self.sessions.get_mut(&session)
+            else {
+                return;
+            };
+            if *energy < round_cost {
+                return; // wait for the pool, like a melee whiff round
+            }
+            if player.current_mana < mana_cost {
+                // Out of mana mid-combat: decompile cast_monster_target
+                // 43560-43575 (the autocombat-driver branch) — the round
+                // cost is still paid, nothing is cast, no message, and the
+                // engagement holds; casting resumes if mana regenerates.
+                // ORACLE-VERIFY: unmeasured live (§8.9 note).
+                *energy -= round_cost;
+                return;
+            }
+        }
+
+        let (caster_name, room, level) = {
+            let p = self.player(session);
+            (p.name.clone(), p.location, p.level)
+        };
+        let monster_name = self.monster_name(monster_id);
+        let (spellcasting, caster_max_hp) = match self.sessions.get(&session) {
+            Some(Session::InGame { derived, .. }) => (derived.spellcasting, derived.max_hp),
+            _ => return,
+        };
+
+        // Success roll (spec §3 step 5) — re-rolled on every re-fire
+        // (§8.9: a failed roll was followed by an unprompted success).
+        let rng = &mut self.rng;
+        let succeeded = cast_roll_succeeds(spellcasting, spell.base_chance, &mut |lo, hi| {
+            rng.roll(lo, hi)
+        });
+
+        // Saving throw (spec §3; decompile cast_monster_target 43594-43614):
+        // only on a successful roll, and only when the save class grants
+        // one — Always, or IfAntiMagic against a monster carrying
+        // AntiMagic (51).
+        let anti_magic = self
+            .monsters
+            .get(&monster_id)
+            .and_then(|m| self.content.monsters.get(&m.template))
+            .is_some_and(|t| t.abilities.iter().any(|(a, _)| *a == Ability::AntiMagic));
+        let save_allowed = match spell.save_class {
+            crate::content::SaveClass::None => false,
+            crate::content::SaveClass::Always => true,
+            crate::content::SaveClass::IfAntiMagic => anti_magic,
+        };
+        let resisted = succeeded && save_allowed && {
+            let stat = self.monster_save_stat(monster_id);
+            let rng = &mut self.rng;
+            monster_save_resists(stat, &mut |lo, hi| rng.roll(lo, hi))
+        };
+
+        if !succeeded || resisted {
+            // Fail and resist pay alike: full round cost, half mana
+            // rounded toward zero (decompile 43617-43629 / 44244-44265).
+            let Some(Session::InGame { energy, player, .. }) = self.sessions.get_mut(&session)
+            else {
+                return;
+            };
+            *energy -= round_cost;
+            player.current_mana -= (mana_cost / 2).max(0);
+            if resisted {
+                self.output_line(session, &text::cast_resisted(&spell.name, &monster_name));
+                self.broadcast_to_room(
+                    room,
+                    Some(session),
+                    &text::cast_resisted_room(&monster_name, &caster_name, &spell.name),
+                );
+            } else {
+                self.output_line(session, &text::cast_fail(&spell.name));
+                self.broadcast_to_room(
+                    room,
+                    Some(session),
+                    &text::cast_fail_room(&caster_name, &spell.name),
+                );
+            }
+            // The victim still locks on (the melee path re-marks after
+            // whiffed rounds too) — driver rounds only: the command-time
+            // duration path never engaged, and the DLL's fail branch sets
+            // no aggro there (44234-44265 prints and moves on).
+            if spell.duration == 0
+                && let Some(m) = self.monsters.get_mut(&monster_id)
+                && m.target.is_none()
+            {
+                m.target = Some(session);
+            }
+            return;
+        }
+
+        // Success: full costs (spec §3 step 7).
+        let Some(Session::InGame { energy, player, .. }) = self.sessions.get_mut(&session)
+        else {
+            return;
+        };
+        *energy -= round_cost;
+        player.current_mana -= mana_cost;
+
+        // Magnitude (spec §3; decompile 43668-43704), scaled by the
+        // monster's elemental resist — Element::Magic has no resist
+        // ability, so mmis lands at full value (spec §4; the modifier only
+        // applies to offensive target modes, which this path is by
+        // construction).
+        let resist = spell
+            .element
+            .resist_ability()
+            .map_or(0, |a| self.monster_ability_value(monster_id, a));
+        let rng = &mut self.rng;
+        let magnitude = spell_magnitude(&spell, level, resist, &mut |lo, hi| rng.roll(lo, hi));
+
+        // Offensive abilities (spec §4 table): Damage (1), Damage(-MR)
+        // (17), Drain (8) and Summon (12) instant; the duration table
+        // enters the monster's 5 slots below (the area twins live in
+        // `area_cast`). M6 PENDING (retagged at the slice-6 close-out):
+        // the instant Enslave (needs the M6 charm state) and the
+        // benign-at-monster instant arms (Heal/EnergyLevel/CurePoison,
+        // cast_monster_target 43824-43882/44131-44160) — the command
+        // path refuses benign-at-monster outright (§8.13
+        // MAY_NOT_CAST_ON_MONSTER), so only the M6-pending forced-cast
+        // route could ever reach them. A non-zero
+        // ability value is a FIXED amount that bypasses both the magnitude
+        // roll and the resist scaling (but NOT the 17 MR scale, which the
+        // DLL applies to the fixed-or-rolled amount alike); value 0 means
+        // "use the rolled magnitude" (decompile 43711-43717: slot value
+        // == 0 selects the rolled local_20). Combined totals assume at
+        // most one harm slot per spell — true for ALL shipped data (zero
+        // spells carry two of Damage/Drain/DamageMR). The DLL applies
+        // per-slot, a kill STOPS its loop (skipping later slots' caster
+        // heal), and the message prints the first slot's amount — the
+        // slice-5 area loop shares this combined model, and neither copy
+        // must survive if multi-slot content ever appears.
+        let mr = self.monster_save_stat(monster_id);
+        // AlterSpDmg(165), from the caster's bag (get_user_ability_value
+        // 0xa5): boosts Damage via FUN_0043fef4 (43740) and DamageMR
+        // inline BEFORE the MR scale (43940-43941). Never Drain.
+        let boost = self
+            .ability_bag(self.player(session))
+            .value(Ability::AlterSpDmg);
+        // Duration scaling for the slot entry (`add_cast_spell_to_monster`
+        // 38238-38256 — the spell_duration twin: level-cap clamp, divide-
+        // first increase, band roll, AlterSpLength from the caster's bag).
+        let duration = if spell.duration != 0 {
+            let alter = self
+                .ability_bag(self.player(session))
+                .value(Ability::AlterSpLength);
+            let rng = &mut self.rng;
+            spell_duration(&spell, level, alter, &mut |lo, hi| rng.roll(lo, hi))
+        } else {
+            0
+        };
+        let immune_poison = self.monster_ability_value(monster_id, Ability::ImmuPoison) != 0;
+        let mut damage_total = 0i32;
+        let mut drain_total = 0i32;
+        let mut harms = false;
+        // The slot-entry once-flag (the DLL's local_36): None = no slot
+        // candidacy seen, Some(ok) = the one entry attempt's outcome.
+        let mut entered: Option<bool> = None;
+        for (ability, value) in &spell.abilities {
+            let amount = match *value {
+                0 => magnitude,
+                v => i32::from(v),
+            };
+            match ability {
+                // Damage (1) has NO duration gate (43738-43776): a
+                // duration spell's damage row lands instantly at cast —
+                // the recurring copy comes from the slot at upkeep.
+                Ability::Damage => {
+                    damage_total += alter_sp_dmg(amount, boost);
+                    harms = true;
+                }
+                // Damage(-MR) (17): the dominant attack-spell damage
+                // (magic missile included) — the boosted amount scaled by
+                // the target's MR, the same stat the save reads
+                // (damage_mr; decompile 43937-43993). No duration gate
+                // either (44287).
+                Ability::DamageMR => {
+                    damage_total += damage_mr(alter_sp_dmg(amount, boost), mr, anti_magic);
+                    harms = true;
+                }
+                // Drain (8): instant when duration 0 (target loses it,
+                // the caster gains it capped); a duration cast slots it
+                // instead (43884-43898).
+                Ability::Drain if duration == 0 => {
+                    drain_total += amount;
+                    harms = true;
+                }
+                Ability::Drain => {
+                    if entered.is_none() {
+                        entered = Some(self.enter_monster_spell_slot(
+                            monster_id, spell.id, amount, duration,
+                        ));
+                    }
+                }
+                // Poison (19), case 0x13 (44066-44131): ImmuPoison(21) on
+                // the monster gates the whole case; the counter is
+                // SET-IF-GREATER on both arms, and the duration arm slots
+                // the spell too.
+                Ability::Poison => {
+                    if immune_poison {
+                        continue;
+                    }
+                    if duration != 0 && entered.is_none() {
+                        entered = Some(self.enter_monster_spell_slot(
+                            monster_id, spell.id, amount, duration,
+                        ));
+                    }
+                    if let Some(m) = self.monsters.get_mut(&monster_id) {
+                        let v = clamp_poison(amount);
+                        if m.poison < v {
+                            m.poison = v;
+                        }
+                        m.needs_recompute = true;
+                    }
+                    self.recompute_monster_effects(monster_id);
+                }
+                // Summon (12): the instant arm spawns the named monster
+                // into the caster's room (cast_monster_target 43903-
+                // 43926); the duration arm is silly_spell — a no-op here
+                // (43927-43929).
+                Ability::Summon if duration == 0 => {
+                    self.summon_spawn(amount, room);
+                }
+                Ability::Summon => {}
+                // Every other row in a DURATION cast drives the one slot
+                // entry (the cast_monster_target default arm, 43778-43799
+                // — Enslave's charm half is M6, marker below in the
+                // termination). Instant casts leave them to their systems.
+                _ => {
+                    if duration != 0 && entered.is_none() {
+                        entered = Some(self.enter_monster_spell_slot(
+                            monster_id, spell.id, amount, duration,
+                        ));
+                    }
+                }
+            }
+        }
+        if entered == Some(false) {
+            // Both slot scans exhausted: "You attempt to cast %s, but
+            // fail." to the caster only (38277-38283) — the effect is
+            // lost, the full costs stay paid, and display_spell_success
+            // is never reached (no castmsgb, no room line).
+            self.output_line(session, &text::cast_fail(&spell.name));
+            return;
+        }
+        let damage = harms.then_some(damage_total + drain_total);
+
+        // Cast messages: castmsgb only (castmsga is the empty message on
+        // every sampled spell — the Task-10 renderer contract). The target
+        // line is skipped: the target is a monster, not a session.
+        // msgstyle-odd (fireball 120, deathtouch 58, ...) binds (target,
+        // damage) with no spell-name slot — the renderer's second order
+        // table, keyed on msg_style & 1 (ORACLE-VERIFY: odd rendering is
+        // decompile-only; the lowest learnable odd spells are annointed
+        // hands L10 / dancing blades L11 / fireball L15, none measured
+        // live).
+        // Kai wording (§8.12, resolved): the refusal variants are keyed
+        // on caster_group 5 (already_cast_line/not_enough_mana_line), the
+        // success verb line lives in the MESSAGE DATA ("You invoke the
+        // %s." is castmsgb line1 for every group-5 spell), and the
+        // per-round invoke flag IS cast_this_round (the measured string
+        // differs only in wording). Melee + invoke same-round interplay
+        // stays ORACLE-VERIFY (the §8.14 expedition ran a mage, not a
+        // mystic — an M6+ expedition item).
+        if let Some(msg) = spell.cast_msg_b.and_then(|id| self.content.messages.get(&id)) {
+            let args = text::CastMsgArgs {
+                caster: &caster_name,
+                target: Some(&monster_name),
+                spell: &spell.name,
+                damage,
+            };
+            let odd = spell.msg_style & 1 == 1;
+            let caster_line = text::render_cast_line(msg, text::CastAudience::Caster, &args, odd);
+            let room_line = text::render_cast_line(msg, text::CastAudience::Room, &args, odd);
+            if let Some(line) = caster_line {
+                self.output_line(session, &line);
+            }
+            if let Some(line) = room_line {
+                self.broadcast_to_room(room, Some(session), &line);
+            }
+        }
+
+        // Damage + retaliation + the M3 kill path (death line, exp split,
+        // *Combat Off* — monster_killed is check_kill_monster +
+        // distribute_experience).
+        let Some(damage) = damage else {
+            // Slot-only payload: entered above, castmsgb printed, no HP
+            // touch and NO retaliation mark (the DLL's default duration
+            // arm sets no aggro — 43778-43799 writes the slot and breaks).
+            return;
+        };
+        let dead = {
+            let Some(m) = self.monsters.get_mut(&monster_id) else {
+                return;
+            };
+            m.current_hp -= damage;
+            m.target = Some(session);
+            m.current_hp <= 0
+        };
+        // Drain: the stolen HP heals the caster, capped at max (spec §4).
+        if drain_total != 0
+            && let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session)
+        {
+            player.current_hp = (player.current_hp + drain_total).min(caster_max_hp);
+        }
+        if dead {
+            self.monster_killed(monster_id, Some(session));
+        }
+    }
+
+    /// The eligibility annotation for one shop row (spellcasting.md §8.3):
+    /// a LearnSp(42) scroll gates by `spell_gate` on the spell it teaches
+    /// (WrongClass → "(You can't use)", TooPowerful → "(Too powerful)");
+    /// a scroll whose taught spell id resolves to nothing can never be
+    /// learned, so it annotates like WrongClass. Everything else keeps the
+    /// M4 `user_can_use` gate.
+    fn list_row_suffix(
+        &self,
+        session: SessionId,
+        item: &crate::content::Item,
+    ) -> Option<&'static str> {
+        let taught = item
+            .abilities
+            .iter()
+            .find_map(|(a, v)| (*a == Ability::LearnSp).then_some(*v));
+        let Some(taught) = taught else {
+            return (!self.user_can_use(self.player(session), item))
+                .then_some(text::CANT_USE_SUFFIX);
+        };
+        let spell = u16::try_from(taught)
+            .ok()
+            .map(SpellId)
+            .and_then(|id| self.content.spells.get(&id));
+        let Some(spell) = spell else {
+            return Some(text::CANT_USE_SUFFIX);
+        };
+        match self.spell_gate(self.player(session), spell) {
+            SpellGate::Ok => None,
+            SpellGate::WrongClass => Some(text::CANT_USE_SUFFIX),
+            SpellGate::TooPowerful => Some(text::TOO_POWERFUL_SUFFIX),
+        }
+    }
+
     /// `display_shop_items`: shelf price = cost x (markup+100)/100 — the
     /// Charm haggle applies only at purchase (economy.md §2.1).
     fn list_command(&mut self, session: SessionId) -> Resolution {
@@ -1661,9 +4809,8 @@ impl Core {
                 )
             };
             out.push_str(&row);
-            let usable = self.user_can_use(self.player(session), item);
-            if !usable {
-                out.push_str(text::CANT_USE_SUFFIX);
+            if let Some(suffix) = self.list_row_suffix(session, item) {
+                out.push_str(suffix);
             }
             out.push('\n');
         }
@@ -1761,9 +4908,15 @@ impl Core {
     }
 
     /// Healer services: `buy healing` = (max−cur)×2 copper, full heal;
-    /// `buy curing`/`buy cure poison` = 25 silver if poisoned (poison is
-    /// M5) or 15 SILVER when not — the constants ride in the silver arg
-    /// of check_currency (live: 150 copper, oracle_healer2.raw).
+    /// `buy curing`/`buy cure poison` = 25 SILVER if poisoned (cures +
+    /// terminates poison-carrying slots) or 15 SILVER when not — the
+    /// constants ride in the silver arg of check_currency (live: 150
+    /// copper, oracle_healer2.raw; the 25-silver poisoned price is
+    /// decompile-only — STILL ORACLE-VERIFY: §8.14's live poisoned cure
+    /// ran through the Silvermere TEMPLE healer, a textblock service
+    /// with its own menu and prices — Cure Poison 10 gold, "The healer
+    /// casts cure poison on you!" — not this healer-shop path; the cure
+    /// itself, counter to zero + zero further ticks, is measured).
     fn buy_healer_service(&mut self, session: SessionId, want: &str) -> Resolution {
         let ratios = self.config.coin_ratios;
         if word_prefix_match("healing", want) {
@@ -1798,8 +4951,15 @@ impl Core {
             return Resolution::Handled;
         }
         if word_prefix_match("curing", want) || word_prefix_match("cure poison", want) {
-            // Not-poisoned path only until M5 brings poison: 15 silver.
-            let cost = 15 * ratios[0];
+            // Poisoned = 25 silver, cures; not poisoned = 15 silver, the
+            // wasted-purchase line. Both constants ride the SILVER arg of
+            // check_currency (decompile buy_item 14297/14335; economy.md
+            // §2 + addendum — the addendum's live capture pinned the
+            // not-poisoned 15 at 150 copper, and 0x19=25 sits in the SAME
+            // argument slot, so the poisoned price is 25 SILVER — the
+            // plan's "25 gold" was a memory transcription error).
+            let poisoned = self.player(session).poison > 0;
+            let cost = if poisoned { 25 } else { 15 } * ratios[0];
             if self.player(session).coins.total_copper(ratios) < cost {
                 self.output_line(session, &text::cannot_afford("curing"));
                 return Resolution::Handled;
@@ -1816,7 +4976,32 @@ impl Core {
                 spent.runic,
             ])
             .unwrap_or_else(|| "nothing".into());
-            self.output_line(session, &text::not_poisoned(&coins));
+            if !poisoned {
+                self.output_line(session, &text::not_poisoned(&coins));
+                return Resolution::Handled;
+            }
+            player.poison = 0;
+            self.output_line(session, &text::poisoning_cured(&coins));
+            // Slot sweep (14306-14328): every active spell CARRYING
+            // Poison(19) is cleared and terminated with its stored value,
+            // chain HONORED ('\x01' at 14322); unknown-spell slots are
+            // bare-cleared (terminate_active_spell's unknown arm matches
+            // the DLL's inline zeroing); other slots survive. The
+            // terminations' own poison subtractions floor at the already
+            // cleared 0.
+            for idx in 0..10 {
+                let Some(spell_id) = self.player(session).active_spells[idx].spell else {
+                    continue;
+                };
+                let carries_poison = self
+                    .content
+                    .spells
+                    .get(&spell_id)
+                    .is_none_or(|sp| sp.abilities.iter().any(|(a, _)| *a == Ability::Poison));
+                if carries_poison {
+                    self.terminate_active_spell(session, idx, true);
+                }
+            }
             return Resolution::Handled;
         }
         self.output_line(session, &text::not_known_item(want));
@@ -2025,6 +5210,139 @@ impl Core {
         Resolution::Handled
     }
 
+    /// `use`/`read <item>` — the LearnSp(42) scroll path (spellcasting.md
+    /// §8.4). Both verbs share the learn handler; only the epilogue
+    /// differs (`use` prints a trailing blank line, `read` the
+    /// disintegrate line). Every refusal keeps the item.
+    fn use_command(&mut self, session: SessionId, target: &str, read_verb: bool) -> Resolution {
+        let want = target.trim().to_ascii_lowercase();
+        if want.is_empty() {
+            // ORACLE-VERIFY: bare use/read behavior unmeasured — falling
+            // to the say fallback is a guess.
+            return Resolution::FallThrough;
+        }
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+            return Resolution::FallThrough;
+        };
+        let pos = player.inventory.iter().position(|(id, _)| {
+            self.content
+                .items
+                .get(id)
+                .is_some_and(|i| word_prefix_match(&i.name, &want))
+        });
+        let Some(pos) = pos else {
+            return self.use_unowned(session, target.trim(), &want, read_verb);
+        };
+        let item_id = player.inventory[pos].0;
+        let item = &self.content.items[&item_id];
+        let item_name = item.name.clone();
+        // LearnSp's value is the taught spell id. Other usable item kinds
+        // (charged items, light sources — "You lit the torch.",
+        // oracle_use_verbs.raw) arrive with the item-charges slice and
+        // slot in ahead of the refusal below.
+        let taught = item
+            .abilities
+            .iter()
+            .find_map(|(a, v)| (*a == Ability::LearnSp).then_some(*v))
+            .and_then(|v| u16::try_from(v).ok())
+            .map(SpellId)
+            .and_then(|id| self.content.spells.get(&id));
+        let Some(spell) = taught else {
+            // VERIFIED (oracle_use_verbs2.raw): both verbs refuse an
+            // owned non-LearnSp item and keep it.
+            self.output_line(session, text::MAY_NOT_USE_ITEM);
+            return Resolution::Handled;
+        };
+        let (spell_id, spell_name) = (spell.id, spell.name.clone());
+        if self.spell_gate(self.player(session), spell) != SpellGate::Ok {
+            // VERIFIED (§8.4): too-high or wrong-class — not consumed, so
+            // the book can never hold an uncastable-yet spell.
+            self.output_line(session, text::MAY_NOT_USE_ITEM);
+            return Resolution::Handled;
+        }
+        if self.player(session).spellbook.contains_key(&spell_id) {
+            // VERIFIED (oracle_use_verbs.raw): identical for both verbs;
+            // not consumed, book unchanged.
+            self.output_line(session, text::ALREADY_KNOW_SCROLL);
+            return Resolution::Handled;
+        }
+        let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+            unreachable!("session verified in-game above");
+        };
+        player.inventory.remove(pos);
+        player.spellbook.insert(spell_id, false);
+        let snapshot: Box<Player> = player.clone();
+        let mut out = text::learned_spell(&item_name, &spell_name);
+        out.push('\n');
+        if read_verb {
+            out.push_str(text::SCROLL_DISINTEGRATES);
+        }
+        out.push('\n');
+        self.output(session, &out);
+        self.events.push(Event::Persist(snapshot));
+        Resolution::Handled
+    }
+
+    /// The unowned arm of `use`/`read`: `use` never reads the shelf
+    /// ("You don't have {arg}." — oracle_use_verbs.raw); `read` prints the
+    /// description paragraph of a visible shop-shelf or floor item, else
+    /// "You do not see {arg} here!".
+    fn use_unowned(
+        &mut self,
+        session: SessionId,
+        raw: &str,
+        want: &str,
+        read_verb: bool,
+    ) -> Resolution {
+        if !read_verb {
+            self.output_line(session, &text::dont_have(raw));
+            return Resolution::Handled;
+        }
+        match self.visible_item_description(session, want) {
+            Some(lines) => {
+                let paragraph = text::item_description(&lines);
+                // ORACLE-VERIFY: empty-description item output unmeasured
+                // (we print nothing at all).
+                if !paragraph.is_empty() {
+                    self.output_line(session, &paragraph);
+                }
+            }
+            None => self.output_line(session, &text::do_not_see_here(raw)),
+        }
+        Resolution::Handled
+    }
+
+    /// The description of an item visible to the player without owning
+    /// it: the shop shelf (stocked rows only, like LIST), then the floor.
+    /// Only the shelf case is oracle-measured; the relative priority never
+    /// co-occurred (ORACLE-VERIFY).
+    fn visible_item_description(&self, session: SessionId, want: &str) -> Option<Vec<String>> {
+        if let Some(shop_id) = self.shop_here(session) {
+            let shop = &self.content.shops[&shop_id];
+            let counts = self.shop_stock.get(&shop_id).copied().unwrap_or_default();
+            for (i, slot) in shop.stock.iter().enumerate() {
+                let Some(item_id) = slot.item else { continue };
+                if counts[i] == 0 {
+                    continue;
+                }
+                if let Some(item) = self.content.items.get(&item_id)
+                    && word_prefix_match(&item.name, want)
+                {
+                    return Some(item.description.clone());
+                }
+            }
+        }
+        let room = self.player(session).location;
+        for (id, _) in self.room_items.get(&room).into_iter().flatten() {
+            if let Some(item) = self.content.items.get(id)
+                && word_prefix_match(&item.name, want)
+            {
+                return Some(item.description.clone());
+            }
+        }
+        None
+    }
+
     /// The inventory display (oracle-exact four lines).
     fn show_inventory(&mut self, session: SessionId) {
         let Some(Session::InGame { player, derived, .. }) = self.sessions.get(&session) else {
@@ -2176,13 +5494,17 @@ impl Core {
     /// drivers in a coin-flipped order (anti first-strike bias).
     fn energy_round(&mut self) {
         // energy_update_character: cur += max; clamp unless in autocombat.
+        // The new round also re-arms the one-cast-per-round gate.
         let sessions: Vec<SessionId> = self.sessions.keys().copied().collect();
         for id in &sessions {
-            if let Some(Session::InGame { energy, target, .. }) = self.sessions.get_mut(id) {
+            if let Some(Session::InGame { energy, target, cast_this_round, .. }) =
+                self.sessions.get_mut(id)
+            {
                 *energy += PLAYER_ENERGY_MAX;
                 if target.is_none() && *energy > PLAYER_ENERGY_MAX {
                     *energy = PLAYER_ENERGY_MAX;
                 }
+                *cast_this_round = false;
             }
         }
         // energy_update_monster: always clamps.
@@ -2222,12 +5544,13 @@ impl Core {
     /// `validate_auto_combat` + `attack_user_monster`: up to 6 swings gated
     /// by the energy pool.
     fn player_attack_sequence(&mut self, session: SessionId) {
-        let Some(Session::InGame { player, target: Some(target), .. }) =
+        let Some(Session::InGame { player, target: Some(target), casting, .. }) =
             self.sessions.get(&session)
         else {
             return;
         };
         let target = *target;
+        let casting = *casting;
         // Helpless players don't swing.
         if player.current_hp < 1 {
             return;
@@ -2239,6 +5562,13 @@ impl Core {
             .is_some_and(|m| m.current_hp > 0 && m.location == player.location);
         if !valid {
             self.break_combat(session);
+            return;
+        }
+        // A cast engagement re-fires its spell instead of swinging
+        // (MEASURED §8.9: the unprompted mmis line the round after a
+        // failed roll, mana charged again).
+        if let Some(spell_id) = casting {
+            self.offensive_cast_attempt(session, spell_id, target);
             return;
         }
 
@@ -2283,6 +5613,11 @@ impl Core {
                 miss_verbs.get(pick as usize).cloned().unwrap_or_else(|| "swing at".into())
             };
             match result.outcome {
+                // combat_rounds.md §5: result 3 renders distinct
+                // dodge/parry flavor for the player view too — this
+                // conflation is a pre-existing M3 gap. ORACLE-VERIFY:
+                // needs a player-view capture of a monster
+                // dodging/parrying a swing.
                 Outcome::Dodged | Outcome::Parried => {
                     self.output_line(session, &text::player_miss(&miss_verb, &target_name));
                 }
@@ -2304,7 +5639,7 @@ impl Core {
                         m.current_hp <= 0
                     };
                     if dead {
-                        self.monster_killed(target, session);
+                        self.monster_killed(target, Some(session));
                         return;
                     }
                 }
@@ -2345,8 +5680,10 @@ impl Core {
         }
 
         let tpl = self.content.monsters.get(&template).expect("live instance");
-        let name = tpl.name.clone();
         let forms = tpl.attacks;
+        // Any incoming attack sequence cancels a pending exit (combat
+        // logout guard; DLL: stop_users_exit fires before the swing loop).
+        self.cancel_exit(victim);
 
         let mut swings = 0;
         while swings <= 5 {
@@ -2360,8 +5697,26 @@ impl Core {
             let Some(form) = form else {
                 continue; // action 0: no attack this swing
             };
+            if form.kind == 2 {
+                // The driver's cast arm (decompile 26796-26806):
+                // monster_cast return 2 = the victim died — the swing
+                // loop stops; 1 = on to the next swing. The return-0
+                // melee-form-0 fallback (26805-26813) is unreachable with
+                // shipped data (every kind-2 form names a live spell) and
+                // is not mirrored — a bad form skips to the next swing.
+                // M6 PENDING (§8.14 divergence note): the live cast form
+                // RETARGETS freely — the moaning spirit alternated casts
+                // between an unengaged bystander and a downed body, per
+                // round, independent of melee engagement — while we fire
+                // only at the engagement target. Faithful retargeting
+                // needs the M6 aggro/room-target model.
+                if self.monster_cast_at_player(id, template, location, &form, victim) {
+                    return;
+                }
+                continue;
+            }
             if form.kind != 1 {
-                continue; // cast/rob forms arrive in M5+
+                continue; // rob forms (kind 3) arrive with M6+ theft
             }
             let Some(mi) = self.monsters.get_mut(&id) else {
                 return;
@@ -2390,10 +5745,11 @@ impl Core {
                 &mut |lo, hi| rng.roll(lo, hi),
             );
             use crate::combat::Outcome;
+            let (victim_line, room_line) =
+                self.monster_swing_lines(template, &form, victim, result.outcome, result.damage);
+            self.output_line(victim, &victim_line);
+            self.broadcast_to_room(location, Some(victim), &room_line);
             if matches!(result.outcome, Outcome::Hit | Outcome::Critical) {
-                // Any incoming swing cancels a pending exit (combat logout guard).
-                self.cancel_exit(victim);
-                self.output_line(victim, &text::monster_hit(&name, "hits", result.damage));
                 let (was_up, now_hp, victim_name, room) = {
                     let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&victim)
                     else {
@@ -2415,8 +5771,1548 @@ impl Core {
         }
     }
 
+    /// The victim + room lines for one monster swing (`spellcasting.md`
+    /// §8.10; decompile `attack_monster_user` 0x2e34b). Templates come from
+    /// the form's three message records — hit: line 1 victim / line 2 room;
+    /// dodge record: line 1/2 the glance pair, line 3 the victim's parry
+    /// ("dodge") line; miss record: line 1 the room parry line, lines 2/3
+    /// the plain-miss pair. Outcome mapping per `calculate_attack` 0x2b800:
+    /// a failed to-hit roll is result 0 = PLAIN miss; a parry is result 3 =
+    /// the ", but you dodge" framing; damage < 1 is result 1 = glance.
+    /// The `%s` verb/weapon slots are filled from the wielded weapon's
+    /// records (`move_monster_to_fighter` 1040:1739): the HIT record's
+    /// lines 2/3 fill the hit-verb slots, the miss record's lines 2/3 the
+    /// swing-verb slots (line 2 victim-view, line 3 room-view, chosen from
+    /// the `|` pool like player weapon verbs), with the swing slots
+    /// falling back to the hit verbs when the weapon has no miss record.
+    /// All render empty for unarmed monsters — exactly the giant rat's
+    /// shape. Record-less forms (healer 47, zombie 492, ju-ju zombie
+    /// 493/772) compose whole lines from the generic seg-1140 templates
+    /// with those same buffers.
+    fn monster_swing_lines(
+        &mut self,
+        template: crate::content::MonsterId,
+        form: &crate::content::AttackForm,
+        victim: SessionId,
+        outcome: crate::combat::Outcome,
+        damage: i32,
+    ) -> (String, String) {
+        let tpl = &self.content.monsters[&template];
+        let name = tpl.name.clone();
+        let weapon = tpl.weapon.and_then(|id| self.content.items.get(&id));
+        let weapon_name = weapon.map(|i| i.name.clone()).unwrap_or_default();
+        let pools = |msg: Option<crate::content::MessageId>| -> Option<(Vec<String>, Vec<String>)> {
+            msg.and_then(|m| self.content.messages.get(&m)).map(|m| {
+                let split = |i: usize| -> Vec<String> {
+                    m.lines
+                        .get(i)
+                        .map(|l| l.split('|').map(str::to_owned).collect())
+                        .unwrap_or_default()
+                };
+                (split(1), split(2))
+            })
+        };
+        let (hit_pool2, hit_pool3) =
+            pools(weapon.and_then(|i| i.hit_msg)).unwrap_or_default();
+        // Swing verbs default to the hit verbs when the weapon carries no
+        // miss record (move_monster_to_fighter's buffer-copy fallback).
+        let (pool2, pool3) = pools(weapon.and_then(|i| i.miss_msg))
+            .unwrap_or_else(|| (hit_pool2.clone(), hit_pool3.clone()));
+        let pick = |pool: &[String], rng: &mut Rng| -> String {
+            match pool.len() {
+                0 => String::new(),
+                1 => pool[0].clone(),
+                n => pool[rng.roll(0, n as i32 - 1) as usize].clone(),
+            }
+        };
+        let verb2 = pick(&pool2, &mut self.rng);
+        let verb3 = pick(&pool3, &mut self.rng);
+        let hit_verb2 = pick(&hit_pool2, &mut self.rng);
+        let hit_verb3 = pick(&hit_pool3, &mut self.rng);
+        let (victim_name, gender) = match self.sessions.get(&victim) {
+            Some(Session::InGame { player, .. }) => (player.name.clone(), player.gender),
+            _ => (String::new(), Gender::Male),
+        };
+        // FUN_0041d89d / FUN_0041d91d: subject and possessive pronouns.
+        let (subj, poss) = match gender {
+            Gender::Male => ("he", "his"),
+            Gender::Female => ("she", "her"),
+        };
+        let line = |id: Option<crate::content::MessageId>, i: usize| -> Option<&str> {
+            id.and_then(|m| self.content.messages.get(&m))
+                .and_then(|m| m.lines.get(i))
+                .map(String::as_str)
+        };
+        use crate::combat::Outcome;
+        let (v, r) = match outcome {
+            Outcome::Hit | Outcome::Critical => {
+                let dmg = damage.to_string();
+                // Record-less: generic templates 1140:0x7b7 / 0x7d1 with
+                // the weapon's hit verbs; a crit wraps the verb in the
+                // "critically %s" template (1140:0xab2).
+                let crit_wrap = |verb: &str| -> String {
+                    if outcome == Outcome::Critical {
+                        format!("critically {verb}")
+                    } else {
+                        verb.to_string()
+                    }
+                };
+                let v = line(form.hit_msg, 0)
+                    .map(|t| text::fill_message(t, &[&name, &dmg]))
+                    .unwrap_or_else(|| {
+                        text::fill_message(
+                            text::MONSTER_HIT_TPL,
+                            &[&name, &crit_wrap(&hit_verb2), &dmg],
+                        )
+                    });
+                let r = line(form.hit_msg, 1)
+                    .map(|t| text::fill_message(t, &[&name, &victim_name, &dmg]))
+                    .unwrap_or_else(|| {
+                        text::fill_message(
+                            text::MONSTER_HIT_ROOM_TPL,
+                            &[&name, &crit_wrap(&hit_verb3), &victim_name, &dmg],
+                        )
+                    });
+                (v, r)
+            }
+            // DLL result 3: the parry branch needs BOTH records — the
+            // victim line is dodge record line 3, the room line miss
+            // record line 1 — else it composes 1140:0xfc5 / 0xfe8.
+            Outcome::Parried => match (line(form.dodge_msg, 2), line(form.miss_msg, 0)) {
+                (Some(tv), Some(tr)) => (
+                    text::fill_message(tv, &[&name, &verb2, &weapon_name]),
+                    text::fill_message(tr, &[&name, &verb3, &victim_name, &weapon_name, subj]),
+                ),
+                _ => (
+                    text::fill_message(
+                        text::MONSTER_DODGE_TPL,
+                        &[&name, &verb2, &weapon_name],
+                    ),
+                    text::fill_message(
+                        text::MONSTER_DODGE_ROOM_TPL,
+                        &[&name, &verb3, &victim_name, &weapon_name, subj],
+                    ),
+                ),
+            },
+            // DLL result 1 (never oracle-observed — decompile-only,
+            // ORACLE-VERIFY against an armoured victim). Record-less:
+            // 1140:0xf6b / 0xf98, both on the victim-view swing verb.
+            Outcome::NoDamage => {
+                let v = line(form.dodge_msg, 0)
+                    .map(|t| text::fill_message(t, &[&name, &verb2]))
+                    .unwrap_or_else(|| {
+                        text::fill_message(text::MONSTER_GLANCE_TPL, &[&name, &verb2])
+                    });
+                let r = line(form.dodge_msg, 1)
+                    .map(|t| text::fill_message(t, &[&name, &verb2, &victim_name, poss]))
+                    .unwrap_or_else(|| {
+                        text::fill_message(
+                            text::MONSTER_GLANCE_ROOM_TPL,
+                            &[&name, &verb2, &victim_name, poss],
+                        )
+                    });
+                (v, r)
+            }
+            // DLL result 0: the to-hit roll failed — the PLAIN miss pair;
+            // record-less composes 1140:0x100e / 0x1022.
+            Outcome::Dodged => {
+                let v = line(form.miss_msg, 1)
+                    .map(|t| text::fill_message(t, &[&name, &verb2, &weapon_name]))
+                    .unwrap_or_else(|| {
+                        text::fill_message(
+                            text::MONSTER_MISS_TPL,
+                            &[&name, &verb2, &weapon_name],
+                        )
+                    });
+                let r = line(form.miss_msg, 2)
+                    .map(|t| text::fill_message(t, &[&name, &verb3, &victim_name, &weapon_name]))
+                    .unwrap_or_else(|| {
+                        text::fill_message(
+                            text::MONSTER_MISS_ROOM_TPL,
+                            &[&name, &verb3, &victim_name, &weapon_name],
+                        )
+                    });
+                (v, r)
+            }
+        };
+        // The DLL touppers the first byte of every composed line.
+        (text::capitalize_first(v), text::capitalize_first(r))
+    }
+
+    /// `monster_cast` (decompile 0x27cc3, 22949-23785; spec §6) — one
+    /// kind-2 attack form fired at the engaged player. Returns `true` when
+    /// the victim died (the DLL's return 2). Shape:
+    ///
+    /// 1. Spell from the form's `accuracy` word (`template+0x12e`, 23000);
+    ///    an unresolvable id skips the swing.
+    /// 2. Whole-cast match-type gate {0,2,6,8} (23015-23016): matches
+    ///    OUTSIDE the set route to [`Self::monster_cast_area`]
+    ///    (23777-23779) — the room-wide sibling. Target MODE never
+    ///    routes: a mode-3 single like mummy's `breathes` (84, match 0)
+    ///    resolves right here; mode only gates the elemental-resist
+    ///    scale (23091).
+    /// 3. Energy: the form's cost word (`template+0x190`) gates against
+    ///    the monster pool (23041) — an unaffordable cast is SILENT and
+    ///    moves to the next swing (23773-23775 return 1), unlike the melee
+    ///    arm's loop break. Landing pays full (23123); a resist OR fizzle
+    ///    pays half, floored at 1 for a nonzero cost (23065, 23075-23087,
+    ///    23758-23770).
+    /// 4. Chance/save: [`monster_cast_chance_passes`] then the resist
+    ///    ladder — SpellImmu auto-resist (23026-23029: the ability read IS
+    ///    the confirmed `required_power < value` comparison, like the
+    ///    player command gate at 43630; the OR'd FUN_0043e3db call at
+    ///    23042-23061 is a separate predicate whose body scans the 20
+    ///    worn-item slots, decompiled 37879-37908 — possibly item-granted
+    ///    spell immunity, unmirrored here; ORACLE-VERIFY, spec §7 hedge).
+    ///    The resist is NOT gated on the chance roll (23066 tests bVar3
+    ///    first — an immune target sees the resist family even for a
+    ///    fizzled attempt); then [`player_save_resists`] only when the
+    ///    chance roll passed and the save class grants one.
+    /// 5. Magnitude (23124-23143): L = the form's cast level
+    ///    (`attackmaxhcastlvl`, `template+0x148`) — the DLL applies NO
+    ///    level_cap clamp here (no `+0xa2` read anywhere in monster_cast,
+    ///    unlike the player path's 43668-43704), so the raw cast level
+    ///    scales the bounds; the roll and elemental-resist scale otherwise
+    ///    match [`spell_magnitude`]. Duration (23144-23148) is the
+    ///    divide-first scaling with NO genrdn band and NO AlterSpLength
+    ///    (spec §6.5 — fixed duration).
+    /// 6. Instant slots apply per the §4 table at the PLAYER (23150-23740);
+    ///    duration spells enter the victim's 10-slot table through
+    ///    `monster_add_cast_spell_to_user` semantics (21777-21816):
+    ///    refresh only if the new value EXCEEDS the stored one, fixed
+    ///    duration, display only on a real write, FULL energy refund +
+    ///    silent abort on -1/-2 (23183-23188), poison hard-write AFTER a
+    ///    successful entry (23404-23407), victim recompute (23774) +
+    ///    persist once entered.
+    fn monster_cast_at_player(
+        &mut self,
+        id: MonsterInstanceId,
+        template: crate::content::MonsterId,
+        location: RoomId,
+        form: &crate::content::AttackForm,
+        victim: SessionId,
+    ) -> bool {
+        use crate::content::{MatchType, SaveClass};
+        let Ok(raw_id) = u16::try_from(form.accuracy) else {
+            return false;
+        };
+        let Some(spell) = self.content.spells.get(&SpellId(raw_id)).cloned() else {
+            return false; // unknown id: skip (the DLL would return 0)
+        };
+        if !matches!(
+            spell.match_type,
+            MatchType::Single0 | MatchType::Single2 | MatchType::Item6 | MatchType::Special8
+        ) {
+            // The match-gate ELSE (23777-23779): every match ∉ {0,2,6,8}
+            // routes to the area sibling — 101 shipped forms (match 1 x1
+            // hooded man `blacknight`, match 11 x1 wererat `plague`,
+            // match 12 x99: dragonfire, hellstorm, chaos storm, the
+            // dragonfish steam §8.14 measured, ...). The sweep ignores
+            // the engaged victim entirely — it re-collects the room.
+            return self.monster_cast_area(id, template, location, form, &spell);
+        }
+
+        let (victim_name, mr, max_hp) = match self.sessions.get(&victim) {
+            Some(Session::InGame { player, derived, .. }) => {
+                (player.name.clone(), derived.magic_resist, derived.max_hp)
+            }
+            _ => return false,
+        };
+        // One bag read covers every target-side term the DLL fetches
+        // piecemeal: SpellImmu 139 (23028), AntiMagic 51 (23045/23309),
+        // ImmuPoison 21 (23388), the elemental resist (23093-23117 — the
+        // case table maps +0xd0 exactly onto Element::resist_ability).
+        let bag = self.ability_bag(self.player(victim));
+        let immu = bag.value(Ability::SpellImmu);
+        let anti_magic = bag.value(Ability::AntiMagic) != 0;
+        let immune_poison = bag.value(Ability::ImmuPoison) != 0;
+        // The elemental-resist scale is OFFENSIVE-mode only (23091-23117:
+        // the case table sits under `puVar9[0x62] < 3`; a mode-3 single
+        // like mummy's `breathes` lands unscaled).
+        let resist_pct = if spell.target_mode.is_offensive() {
+            spell.element.resist_ability().map_or(0, |a| bag.value(a))
+        } else {
+            0
+        };
+        let monster_name = self.monster_name(id);
+
+        let cost = i32::from(form.energy);
+        {
+            let Some(mi) = self.monsters.get_mut(&id) else {
+                return false;
+            };
+            if mi.energy < cost {
+                return false; // silent, next swing (23041 / 23773-23775)
+            }
+        }
+
+        let rng = &mut self.rng;
+        let passed =
+            monster_cast_chance_passes(form.min_damage, &mut |lo, hi| rng.roll(lo, hi));
+
+        // SpellImmu (139) auto-resist — evaluated BEFORE and independent
+        // of the chance roll (23026-23029; bVar4 never gates it).
+        let mut resisted = immu > 0 && i32::from(spell.required_power) < immu;
+        if !resisted && passed {
+            let save_allowed = match spell.save_class {
+                SaveClass::None => false,
+                SaveClass::Always => true,
+                SaveClass::IfAntiMagic => anti_magic,
+            };
+            if save_allowed {
+                let rng = &mut self.rng;
+                resisted = player_save_resists(mr, &mut |lo, hi| rng.roll(lo, hi));
+            }
+        }
+
+        if resisted || !passed {
+            // Half the energy cost, floored at 1 when nonzero (23075-23087
+            // resist twin 23758-23770).
+            if cost != 0
+                && let Some(mi) = self.monsters.get_mut(&id)
+            {
+                mi.energy -= (cost / 2).max(1);
+            }
+            let (v, r) = if resisted {
+                (
+                    text::you_resisted_monster_cast(&monster_name, &spell.name),
+                    text::resisted_monster_cast_room(&victim_name, &monster_name, &spell.name),
+                )
+            } else {
+                (
+                    text::monster_cast_fizzle(&monster_name, &spell.name),
+                    text::monster_cast_fizzle_room(&monster_name, &spell.name, &victim_name),
+                )
+            };
+            self.output_line(victim, &v);
+            self.broadcast_to_room(location, Some(victim), &r);
+            return false;
+        }
+
+        // Landed: full energy cost (23123).
+        if let Some(mi) = self.monsters.get_mut(&id) {
+            mi.energy -= cost;
+        }
+
+        // Magnitude (23124-23143): raw cast level, no level_cap clamp.
+        let l = i32::from(form.max_damage);
+        let hi = i32::from(spell.max_base) + spell.max_increase.scaled(l);
+        let lo = (i32::from(spell.min_base) + spell.min_increase.scaled(l)).min(hi);
+        let rolled = self.rng.roll(0, hi - lo + 1) + lo;
+        let magnitude = (100 - resist_pct) * rolled / 100;
+        // Duration (23144-23148): divide-first scaling, fixed (no band).
+        let duration =
+            i32::from(spell.duration) + spell.duration_increase.scaled_duration(l);
+
+        // AlterSpDmg(165) from the monster fold — OUR wiring, not the
+        // DLL's: monster_cast reads no 0xa5 anywhere (the boost is a
+        // player-cast-path exclusive), but zero shipped monsters carry
+        // 165, so folding it here is observably identical and closes the
+        // slice-4 note symmetrically with the player sites.
+        let boost = self.monster_ability_value(id, Ability::AlterSpDmg);
+        let mut duration_entered = false;
+        for (ability, value) in &spell.abilities {
+            // Per-slot fixed value overrides the rolled-and-resisted
+            // magnitude (23153-23155).
+            let amount = if *value != 0 { i32::from(*value) } else { magnitude };
+            if duration != 0 {
+                // The duration-arm no-op set: the plain breaks {0,6,23,
+                // 26,52} (23158-23161, 23432-23435) PLUS the instant-only
+                // cases Drain(8) and Summon(12), whose arms are gated
+                // `local_28 == 0` with NO else (23207-23229, 23251-23267)
+                // — dead rows in a duration cast. Every OTHER slot tries
+                // the 10-slot entry through the once-flag (bVar5);
+                // Poison's case is ImmuPoison-gated wholesale
+                // (23387-23388).
+                if matches!(ability.id(), 6 | 23 | 26 | 52)
+                    || matches!(ability, Ability::Drain | Ability::Summon)
+                    || (*ability == Ability::Poison && immune_poison)
+                {
+                    continue;
+                }
+                // DamageMR (17) carries NO duration gate at all (23305-
+                // 23356): it deals its instant MR-scaled damage even
+                // mid-duration-cast and never drives the slot entry.
+                if *ability == Ability::DamageMR {
+                    let shown = alter_sp_dmg(amount, boost);
+                    let dealt = damage_mr(shown, mr, anti_magic);
+                    if self.monster_cast_damage(victim, dealt, shown, &spell, &monster_name, true) {
+                        return true;
+                    }
+                    continue;
+                }
+                if !duration_entered {
+                    // monster_add_cast_spell_to_user (21777-21816): an
+                    // active slot refreshes ONLY when the entering row's
+                    // flag allows it AND the new value EXCEEDS the stored
+                    // one (21795-21801: `param_7 != 0 && stored < new`,
+                    // strict); otherwise -2. No active slot → the first
+                    // free one; none → -1. Value AND duration write
+                    // together; the success display fires only on a real
+                    // write. The stat-write family Intel..Charm (44-49,
+                    // cases 0x2c-0x31) passes the '\0' NO-REFRESH flag
+                    // (23436-23477 and the 0x2e-0x31 twins): a same-id
+                    // recast ALWAYS aborts — live via spell 238 "spits"
+                    // (serpentkin), whose rows are Agility/Strength/
+                    // Intel. Every other row passes '\x01'. (The DLL also
+                    // hard-writes the stat words +0xa2.. immediately +
+                    // calculate_secondary_stats; our slot fold applies
+                    // the same rows at the refresh_derived below — the
+                    // documented mechanism divergence, same outcome.)
+                    let refresh = !matches!(ability.id(), 44..=49);
+                    let entered = {
+                        let Some(Session::InGame { player, .. }) =
+                            self.sessions.get_mut(&victim)
+                        else {
+                            return false;
+                        };
+                        let slot = ActiveSpell {
+                            spell: Some(spell.id),
+                            value: amount as i16,
+                            remaining: duration,
+                        };
+                        if let Some(idx) = player.find_active(spell.id) {
+                            if refresh && i32::from(player.active_spells[idx].value) < amount {
+                                player.active_spells[idx] = slot;
+                                true
+                            } else {
+                                false
+                            }
+                        } else if let Some(idx) = player.first_free_slot() {
+                            player.active_spells[idx] = slot;
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    if !entered {
+                        // Any failure (-1 full, -2 not-greater) refunds
+                        // the FULL energy cost and aborts the whole cast
+                        // silently (23183-23188: `+0x16 += local_24`,
+                        // return 0) — no lines, no poison write.
+                        if let Some(mi) = self.monsters.get_mut(&id) {
+                            mi.energy += cost;
+                        }
+                        return false;
+                    }
+                    duration_entered = true;
+                    self.monster_cast_display(&spell, &monster_name, victim, location, amount);
+                }
+                // Poison (19) hard-writes set-if-greater AFTER the entry
+                // attempt (23404-23407) — a rejected entry never reaches
+                // it, unlike the player-cast path's write-before-entry.
+                if *ability == Ability::Poison
+                    && let Some(Session::InGame { player, .. }) =
+                        self.sessions.get_mut(&victim)
+                {
+                    let v = clamp_poison(amount);
+                    if player.poison < v {
+                        player.poison = v;
+                    }
+                }
+                continue;
+            }
+            match ability {
+                // Damage (1): HP -= v (23164-23179), AlterSpDmg-boosted
+                // (our fold wiring — see `boost` above).
+                Ability::Damage => {
+                    let v = alter_sp_dmg(amount, boost);
+                    if self.monster_cast_damage(victim, v, v, &spell, &monster_name, true) {
+                        return true;
+                    }
+                }
+                // Drain (8): the victim loses v, the monster gains it
+                // capped at the template max (23207-23228) — heal first,
+                // then display, then the kill check.
+                Ability::Drain => {
+                    let cap = self
+                        .content
+                        .monsters
+                        .get(&template)
+                        .map_or(0, |t| t.hitpoints);
+                    if let Some(mi) = self.monsters.get_mut(&id) {
+                        mi.current_hp = (mi.current_hp + amount).min(cap);
+                    }
+                    if self.monster_cast_damage(victim, amount, amount, &spell, &monster_name, true)
+                    {
+                        return true;
+                    }
+                }
+                // EnergyLevel (11): round pool += v (23231-23238; the DLL
+                // add is uncapped like the benign instant's — we keep the
+                // same documented cap as that path).
+                Ability::EnergyLevel => {
+                    if let Some(Session::InGame { energy, .. }) =
+                        self.sessions.get_mut(&victim)
+                    {
+                        *energy = (*energy + amount).min(PLAYER_ENERGY_MAX);
+                    }
+                    self.monster_cast_display(&spell, &monster_name, victim, location, amount);
+                }
+                // Alterhunger (15) / AlterThirst (16): counter adds with
+                // NO success display (23269-23303 carry none).
+                Ability::Alterhunger => {
+                    if let Some(Session::InGame { player, .. }) =
+                        self.sessions.get_mut(&victim)
+                    {
+                        player.hunger = clamp_counter(i32::from(player.hunger) + amount);
+                    }
+                }
+                Ability::AlterThirst => {
+                    if let Some(Session::InGame { player, .. }) =
+                        self.sessions.get_mut(&victim)
+                    {
+                        player.thirst = clamp_counter(i32::from(player.thirst) + amount);
+                    }
+                }
+                // Damage(-MR) (17): the boosted amount scaled by the
+                // victim's MR — the same +0xc2 word the save halves
+                // (23305-23341 is byte-for-byte the damage_mr ladder);
+                // the display arg stays the PRE-scale amount (23343
+                // passes local_8, not local_5c).
+                Ability::DamageMR => {
+                    let shown = alter_sp_dmg(amount, boost);
+                    let dealt = damage_mr(shown, mr, anti_magic);
+                    if self.monster_cast_damage(victim, dealt, shown, &spell, &monster_name, true) {
+                        return true;
+                    }
+                }
+                // Heal (18): capped at max HP; the display shows the
+                // CAPPED amount (23358-23372).
+                Ability::Heal => {
+                    let healed = {
+                        let Some(Session::InGame { player, .. }) =
+                            self.sessions.get_mut(&victim)
+                        else {
+                            continue;
+                        };
+                        let healed = if max_hp < player.current_hp + amount {
+                            max_hp - player.current_hp
+                        } else {
+                            amount
+                        };
+                        player.current_hp += healed;
+                        healed
+                    };
+                    self.monster_cast_display(&spell, &monster_name, victim, location, healed);
+                }
+                // Poison (19): ImmuPoison gates the WHOLE case (23387-
+                // 23388); the counter is SET-IF-GREATER (23390-23392).
+                Ability::Poison => {
+                    if immune_poison {
+                        continue;
+                    }
+                    if let Some(Session::InGame { player, .. }) =
+                        self.sessions.get_mut(&victim)
+                    {
+                        let v = clamp_poison(amount);
+                        if player.poison < v {
+                            player.poison = v;
+                        }
+                    }
+                    self.monster_cast_display(&spell, &monster_name, victim, location, amount);
+                }
+                // Cure Poison (20): counter subtract (23411-23418; floored
+                // at 0 like every player-side write — the DLL's raw
+                // subtract here relies on FUN_0043fca7, unresolved).
+                Ability::CurePoison => {
+                    if let Some(Session::InGame { player, .. }) =
+                        self.sessions.get_mut(&victim)
+                    {
+                        player.poison = clamp_poison(i32::from(player.poison) - amount);
+                    }
+                    self.monster_cast_display(&spell, &monster_name, victim, location, amount);
+                }
+                // Summon (12), case 0xc (23251-23267): ONE room-wide
+                // line first — monster_display_spell_success(-1, ...,
+                // "everyone", v): usernum -1 skips the victim line and
+                // tell_room excludes nobody, so the whole room (victim
+                // included) sees the castmsgb room line with "everyone"
+                // in the target slot — then generate_monster with the
+                // row value as the template id. The victim-name tag on
+                // the spawn (23263) is M6 (see summon_spawn).
+                Ability::Summon => {
+                    self.monster_room_wide_cast_line(
+                        &spell,
+                        &monster_name,
+                        location,
+                        "everyone",
+                        amount,
+                    );
+                    self.summon_spawn(amount, location);
+                }
+                // Every remaining case is duration-armed only (the
+                // `local_28 != 0` guards) or a no-op break in the DLL.
+                _ => {}
+            }
+        }
+        if duration_entered {
+            // The occupied slot feeds the victim's ability bag: recompute
+            // the cached derived stats (the DLL's per-cast
+            // calculate_secondary_stats at 23774) and persist the slot.
+            self.refresh_derived(victim);
+            let snapshot = Box::new(self.player(victim).clone());
+            self.events.push(Event::Persist(snapshot));
+        }
+        false
+    }
+
+    /// One landed damage slot: HP subtract, success display, the kill
+    /// check and the crossing "drops to the ground" announce — in the
+    /// DLL's order (23164-23179: subtract, display, check_kill_user →
+    /// return 2, then FUN_0043c91d only when the victim survived and
+    /// crossed below 1). Returns `true` when the victim died. `dealt` is
+    /// what leaves the HP pool; `shown` what the success lines print
+    /// (they differ for DamageMR). `display` is the area path's once-latch
+    /// (local_25): a suppressed row still damages and kill-checks but
+    /// prints no success pair — the single path always passes `true`.
+    fn monster_cast_damage(
+        &mut self,
+        victim: SessionId,
+        dealt: i32,
+        shown: i32,
+        spell: &crate::content::Spell,
+        monster_name: &str,
+        display: bool,
+    ) -> bool {
+        let (was_up, now_hp, victim_name, room) = {
+            let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&victim) else {
+                return false;
+            };
+            let was_up = player.current_hp >= 1;
+            player.current_hp -= dealt;
+            (was_up, player.current_hp, player.name.clone(), player.location)
+        };
+        if display {
+            self.monster_cast_display(spell, monster_name, victim, room, shown);
+        }
+        if now_hp <= DEATH_FLOOR {
+            self.player_killed(victim);
+            return true;
+        }
+        if was_up && now_hp < 1 {
+            self.output_line(victim, &text::drops_to_ground(&victim_name));
+            self.broadcast_to_room(room, Some(victim), &text::drops_to_ground(&victim_name));
+        }
+        false
+    }
+
+    /// `monster_display_spell_success` (decompile 21663-21772; the hit
+    /// fan-out MEASURED §8.14): the victim gets castmsgb LINE 2 — the
+    /// target-audience line — rendered with the monster's name as the
+    /// caster arg, the room gets LINE 3; there is no caster line (the
+    /// caster has no terminal). §8.14 pinned the shape live on a
+    /// simultaneous victim/room pair (moaning spirit's `draws the
+    /// breath` 82): the victim line carries the damage number, the room
+    /// line does not — message data, the inverse of the melee pair
+    /// (§8.10 room melee lines DO print damage) — and the grammar varies
+    /// per record (bare `Moaning spirit draws ...` vs the dragonfish's
+    /// `The fat dragonfish breathes ...`). The odd `msg_style`
+    /// branch (21735-21769) binds the same reduced orders as the player
+    /// renderer. A spell without a castmsgb record falls back to the
+    /// default pair "%s cast %s on you." / "%s cast %s on %s." (21687-
+    /// 21689, strings 00481277/0048128a). Every rendered line is
+    /// first-letter capitalized (21710/21729). StartMsg(120) prelude and
+    /// DescMsg(115) active lines (21692-21716) join with the Task-3
+    /// duration entry — no shipped instant monster payload carries either.
+    fn monster_cast_display(
+        &mut self,
+        spell: &crate::content::Spell,
+        monster_name: &str,
+        victim: SessionId,
+        location: RoomId,
+        damage: i32,
+    ) {
+        let victim_name = self.player(victim).name.clone();
+        // StartMsg (120) prelude (21692-21700, 21721-21725): victim gets
+        // its line2 with the monster name; the room gets line3 with
+        // (monster, victim). Printed BEFORE the castmsgb pair, raw (no
+        // capitalization pass — the DLL's toupper touches only the
+        // sprintf'd castmsgb buffer).
+        if let Some(msg_val) = spell
+            .abilities
+            .iter()
+            .find_map(|(a, v)| (*a == Ability::StartMsg).then_some(*v))
+            && let Ok(msg_id) = u16::try_from(msg_val)
+            && let Some(msg) = self.content.messages.get(&crate::content::MessageId(msg_id))
+        {
+            let victim_start = msg
+                .lines
+                .get(1)
+                .filter(|l| !l.is_empty())
+                .map(|l| text::fill_message(l, &[monster_name]));
+            let room_start = msg
+                .lines
+                .get(2)
+                .filter(|l| !l.is_empty())
+                .map(|l| text::fill_message(l, &[monster_name, &victim_name]));
+            if let Some(line) = victim_start {
+                self.output_line(victim, &line);
+            }
+            if let Some(line) = room_start {
+                self.broadcast_to_room(location, Some(victim), &line);
+            }
+        }
+        let (victim_line, room_line) = if let Some(msg) =
+            spell.cast_msg_b.and_then(|id| self.content.messages.get(&id))
+        {
+            let args = text::CastMsgArgs {
+                caster: monster_name,
+                target: Some(&victim_name),
+                spell: &spell.name,
+                damage: Some(damage),
+            };
+            let odd = spell.msg_style & 1 == 1;
+            (
+                text::render_cast_line(msg, text::CastAudience::Target, &args, odd),
+                text::render_cast_line(msg, text::CastAudience::Room, &args, odd),
+            )
+        } else {
+            (
+                Some(text::monster_cast_default(monster_name, &spell.name)),
+                Some(text::monster_cast_default_room(
+                    monster_name,
+                    &spell.name,
+                    &victim_name,
+                )),
+            )
+        };
+        if let Some(line) = victim_line {
+            self.output_line(victim, &text::capitalize_first(line));
+        }
+        if let Some(line) = room_line {
+            self.broadcast_to_room(location, Some(victim), &text::capitalize_first(line));
+        }
+        // DescMsg (115) active line3 to the VICTIM only (21713-21715) —
+        // the "You feel ill." family, after the castmsgb pair, raw. Same
+        // line3 convention as the player-cast emit_cast_success_lines.
+        if let Some(msg_val) = spell
+            .abilities
+            .iter()
+            .find_map(|(a, v)| (*a == Ability::DescMsg).then_some(*v))
+            && let Ok(msg_id) = u16::try_from(msg_val)
+            && let Some(msg) = self.content.messages.get(&crate::content::MessageId(msg_id))
+            && let Some(line) = msg.lines.get(2).filter(|l| !l.is_empty())
+        {
+            let line = line.clone();
+            self.output_line(victim, &line);
+        }
+    }
+
+    /// The room-wide-only success line (`monster_display_spell_success`
+    /// with usernum -1, 21738-21745 skip the victim block and tell_room
+    /// excludes nobody): ONE castmsgb room line with `target` in the
+    /// target slot, seen by everyone present. The Summon arm passes the
+    /// literal "everyone" (23255-23258 / area 22511-22514); the area
+    /// self-Heal and self-CurePoison arms pass the monster's OWN name
+    /// (`param_1 + 0x8e`, 22659-22662 / 22770-22772).
+    fn monster_room_wide_cast_line(
+        &mut self,
+        spell: &crate::content::Spell,
+        monster_name: &str,
+        location: RoomId,
+        target: &str,
+        amount: i32,
+    ) {
+        let line = if let Some(msg) =
+            spell.cast_msg_b.and_then(|mid| self.content.messages.get(&mid))
+        {
+            let args = text::CastMsgArgs {
+                caster: monster_name,
+                target: Some(target),
+                spell: &spell.name,
+                damage: Some(amount),
+            };
+            text::render_cast_line(
+                msg,
+                text::CastAudience::Room,
+                &args,
+                spell.msg_style & 1 == 1,
+            )
+        } else {
+            Some(text::monster_cast_default_room(monster_name, &spell.name, target))
+        };
+        if let Some(line) = line {
+            self.broadcast_to_room(location, None, &text::capitalize_first(line));
+        }
+    }
+
+    /// `monster_cast_area` (decompile 22037-22943) — the room-wide
+    /// sibling every kind-2 form with match ∉ {0,2,6,8} routes into
+    /// (23777-23779). Returns `true` when any victim died (the DLL's
+    /// return 2). Shape, in DLL order:
+    ///
+    /// 1. **Entry roll** (22073): the fizzle roll is drawn before
+    ///    anything else. **Energy gate** (22100): an unaffordable form is
+    ///    a silent skip to the next swing, like the single path.
+    /// 2. **Target collection + per-target save**
+    ///    (`monster_count_valid_targets` 21827-21886, called 22102):
+    ///    PLAYERS ONLY — the sweep walks the terminal list for players in
+    ///    the monster's room (the count function's monster out-param is
+    ///    never incremented; monsters are NEVER area victims, so no
+    ///    monster-vs-monster arm exists to mirror). Each player rolls
+    ///    [`monster_area_target_saves`] THERE: a saver is silently
+    ///    dropped (no resist line exists in the area path), and ZERO
+    ///    survivors abort the whole cast unpaid (22103-22105).
+    /// 3. **Fizzle** (22106-22126): half the cost floored at 1, NO lines
+    ///    — the single path's "attempted to cast" pair (23749-23757) has
+    ///    no area counterpart. **Landing** charges the full cost ONCE per
+    ///    cast (22128-22131), never per victim.
+    /// 4. **Magnitude** (22133-22150): ONE roll for the whole cast —
+    ///    bounds scaled by the form's cast level through the AlterSpDmg-
+    ///    style min/max increase pairs, exactly the single path's
+    ///    formula. The divide switch (22152-22171) splits the roll by the
+    ///    survivor count for match 3/5/9/10 (+ the unreachable defaults)
+    ///    and leaves 11/12/13 UNDIVIDED. Duration (22172-22178) is base +
+    ///    divide-first scaling; the room entries below nonetheless store
+    ///    the RAW duration word.
+    /// 5. **Dispel pre-pass** (22180-22233): RemovesSpell(122) /
+    ///    KillSpell(153) rows run before the effect loop — every
+    ///    survivor's slots are scanned for the named spell; a removal
+    ///    displays the cast's success pair once per row (first removal
+    ///    only), terminates the slot, and clears the victim's 0x10 target
+    ///    flag (22225): a dispelled victim is OUT of the rest of the
+    ///    cast (solid fog 256/282 are the shipped carriers).
+    /// 6. **Effect loop** (22236-22906) with the once-display latch
+    ///    `local_25`: the first landing row displays per victim; later
+    ///    rows apply silently. Per-victim scale: offensive-mode casts
+    ///    reduce by THAT victim's elemental resist (the repeated local_24
+    ///    ladder); Heal/Poison/CurePoison/HealMana skip the scale
+    ///    (local_1c direct). Arms:
+    ///    - Damage(1): instant only for match 5/10/13 (22212-22218 —
+    ///      match 11/12 Damage rows are DEAD: flesh-eating gas 766, hail
+    ///      of stones 772, icy breath 895 et al deal nothing, and the
+    ///      latch still trips, 22268); duration rows room-enter; the
+    ///      {1,2,4,6} self group self-slots on duration.
+    ///    - Drain(8): instant only; victim loses, monster gains capped at
+    ///      the template max (22357-22434).
+    ///    - EnergyLevel(11) / Heal(18) / Poison(19) / CurePoison(20) /
+    ///      HealMana(150): per-victim adds with the same clamp semantics
+    ///      as the single path (Poison set-if-greater + ImmuPoison gate;
+    ///      the duration-armed Poison hard-writes BEFORE the room entry,
+    ///      22702-22748); Heal/CurePoison also carry {1,2,(4),6} SELF
+    ///      arms on the monster (22639-22711 / 22758-22806).
+    ///    - Summon(12): match {1,2,6} only — the "everyone" line + spawn,
+    ///      and it never trips the latch (22505-22525).
+    ///    - DamageMR(17): NO duration gate (22527-22637); the display
+    ///      shows the POST-MR dealt amount (uVar11 at 22624-22628) — the
+    ///      single path shows the PRE-scale amount (23343), a genuine
+    ///      asymmetry (§8.14 dragonfish lines are post-scale).
+    ///    - Everything else: duration-only via the default arm (22819-
+    ///      22843) or a no-op ([`area_ability_case_is_noop`]) — note the
+    ///      stat family 44-49 and Alterhunger/AlterThirst DO NOTHING
+    ///      here, unlike the single path.
+    /// 7. **Room duration entry** (`monster_add_duration_spell_to_room`
+    ///    21892-21965, guarded by the latch at every arm, e.g.
+    ///    22346-22352): fires at most once per cast — each survivor gets
+    ///    one slot holding the per-victim scaled ROLLED value (row
+    ///    overrides never apply) with refresh-only-if-greater; a failed
+    ///    entry BEFORE any success aborts the remaining cast with NO
+    ///    energy refund (the single path refunds, 23183-23188); failures
+    ///    after a success are tolerated.
+    /// 8. The {1,2,4,6} self group writes the MONSTER's own 5-slot table
+    ///    (FUN_004262d6 21970-22005) — blacknight 1220 (match 1) is the
+    ///    shipped carrier. The self-entry's value/duration arguments are
+    ///    Ghidra-invisible (stack artifact); we pass the row-or-rolled
+    ///    amount + the scaled duration — ORACLE-OPEN.
+    ///
+    /// §8.14 reconciliation: the dragonfish's `breathes burning steam`
+    /// (359, match 12, DamageMR 10-30) went through THIS path live and
+    /// produced a single-victim-looking line — that is the room sweep
+    /// with exactly one occupant, per-victim display, undivided match-12
+    /// magnitude, post-MR amount. AlterSpDmg folding at the damage arms
+    /// is our documented wiring, same as the single path (zero shipped
+    /// monsters carry 165). The end-of-cast monster_update_room_users_
+    /// stats (22934) is covered by the per-entry refresh_derived calls.
+    fn monster_cast_area(
+        &mut self,
+        id: MonsterInstanceId,
+        template: crate::content::MonsterId,
+        location: RoomId,
+        form: &crate::content::AttackForm,
+        spell: &crate::content::Spell,
+    ) -> bool {
+        use crate::content::MatchType;
+        // 1. Entry roll (22073) + energy gate (22100).
+        let chance_roll = self.rng.roll(0, 100);
+        let cost = i32::from(form.energy);
+        match self.monsters.get(&id) {
+            Some(mi) if mi.energy >= cost => {}
+            _ => return false, // silent skip, next swing
+        }
+        // 2. monster_count_valid_targets (22102): collect + save.
+        let sids: Vec<SessionId> = self.sessions.keys().copied().collect();
+        let mut victims: Vec<AreaTarget> = Vec::new();
+        for sid in sids {
+            let Some(Session::InGame { player, derived, .. }) = self.sessions.get(&sid)
+            else {
+                continue;
+            };
+            if player.location != location {
+                continue;
+            }
+            let bag = self.ability_bag(player);
+            let mr = derived.magic_resist;
+            let max_hp = derived.max_hp;
+            let max_mana = derived.max_mana;
+            let anti_magic = bag.value(Ability::AntiMagic) != 0;
+            let immune_poison = bag.value(Ability::ImmuPoison) != 0;
+            let resist_pct = if spell.target_mode.is_offensive() {
+                spell.element.resist_ability().map_or(0, |a| bag.value(a))
+            } else {
+                0
+            };
+            let rng = &mut self.rng;
+            if monster_area_target_saves(spell.save_class, anti_magic, mr, &mut |lo, hi| {
+                rng.roll(lo, hi)
+            }) {
+                continue; // silently excluded — no resist line
+            }
+            victims.push(AreaTarget {
+                session: sid,
+                mr,
+                anti_magic,
+                immune_poison,
+                resist_pct,
+                max_hp,
+                max_mana,
+            });
+        }
+        if victims.is_empty() {
+            return false; // 0 survivors: nothing charged (22103-22105)
+        }
+        // 3. Fizzle (strict roll < percent, like the single path).
+        if chance_roll >= i32::from(form.min_damage) {
+            if cost != 0
+                && let Some(mi) = self.monsters.get_mut(&id)
+            {
+                mi.energy -= (cost / 2).max(1);
+            }
+            return false; // SILENT (22106-22126)
+        }
+        if let Some(mi) = self.monsters.get_mut(&id) {
+            mi.energy -= cost; // full cost, once per cast (22128-22131)
+        }
+        let monster_name = self.monster_name(id);
+        // 4. One magnitude roll for the whole cast (22133-22150).
+        let l = i32::from(form.max_damage);
+        let hi = i32::from(spell.max_base) + spell.max_increase.scaled(l);
+        let lo = (i32::from(spell.min_base) + spell.min_increase.scaled(l)).min(hi);
+        let total = self.rng.roll(0, hi - lo + 1) + lo;
+        let per_base = if matches!(
+            spell.match_type,
+            MatchType::AreaB | MatchType::AreaC | MatchType::AreaD
+        ) {
+            total
+        } else {
+            total / victims.len() as i32 // the divide switch (22152-22171)
+        };
+        let dur_total = i32::from(spell.duration) + spell.duration_increase.scaled_duration(l);
+        let raw_dur = i32::from(spell.duration);
+        let boost = self.monster_ability_value(id, Ability::AlterSpDmg);
+        let offensive = spell.target_mode.is_offensive();
+        let area = spell.match_type.room_wide();
+        let self_group = matches!(
+            spell.match_type,
+            MatchType::Single1 | MatchType::Single2 | MatchType::Special4 | MatchType::Item6
+        );
+        let mut any_died = false;
+        // 5. Dispel pre-pass (22180-22233), area matches only.
+        if area {
+            for (ability, value) in &spell.abilities {
+                let honor = match ability {
+                    Ability::RemovesSpell => true,
+                    Ability::KillSpell => false,
+                    _ => continue,
+                };
+                let Ok(rid) = u16::try_from(*value) else {
+                    continue;
+                };
+                if rid == 0 {
+                    continue;
+                }
+                let mut row_displayed = false;
+                let mut kept = Vec::with_capacity(victims.len());
+                for t in std::mem::take(&mut victims) {
+                    if !self.area_victim_present(t.session, location) {
+                        kept.push(t);
+                        continue;
+                    }
+                    let mut dispelled = false;
+                    while let Some(idx) = self.player(t.session).find_active(SpellId(rid)) {
+                        // One display per ROW — the first removal across
+                        // all victims (the inner local_25, 22203-22212).
+                        if !row_displayed {
+                            self.monster_cast_display(
+                                spell,
+                                &monster_name,
+                                t.session,
+                                location,
+                                total,
+                            );
+                            row_displayed = true;
+                        }
+                        self.terminate_active_spell(t.session, idx, honor);
+                        dispelled = true;
+                    }
+                    if !dispelled {
+                        kept.push(t); // flag kept (22225 clears it on removal)
+                    }
+                }
+                victims = kept;
+            }
+        }
+        // 6. The effect loop with the once-display latch (local_25).
+        let mut displayed = false;
+        for (ability, value) in &spell.abilities {
+            // Row overrides feed only the SELF arms and Summon (local_18
+            // at 22239-22242); the per-victim arms use the divided roll.
+            let amount_self = if *value != 0 { i32::from(*value) } else { total };
+            match ability {
+                Ability::Damage => {
+                    if self_group {
+                        if dur_total != 0 {
+                            self.monster_self_slot_entry(id, spell.id, amount_self, dur_total);
+                        }
+                    } else if area {
+                        if raw_dur == 0 {
+                            // Match 5/10/13 only (22212-22218): 11/12
+                            // Damage rows iterate nobody — DEAD.
+                            if matches!(
+                                spell.match_type,
+                                MatchType::Area5 | MatchType::Area10 | MatchType::AreaD
+                            ) {
+                                for t in &victims {
+                                    if !self.area_victim_present(t.session, location) {
+                                        continue;
+                                    }
+                                    let v = alter_sp_dmg(
+                                        area_scaled(per_base, t.resist_pct, offensive),
+                                        boost,
+                                    );
+                                    any_died |= self.monster_cast_damage(
+                                        t.session,
+                                        v,
+                                        v,
+                                        spell,
+                                        &monster_name,
+                                        !displayed,
+                                    );
+                                }
+                            }
+                            displayed = true; // trips even when dead (22268)
+                        } else {
+                            if !displayed
+                                && !self.monster_area_room_entry(
+                                    &victims,
+                                    spell,
+                                    per_base,
+                                    &monster_name,
+                                    location,
+                                )
+                            {
+                                return any_died; // abort, energy kept (22347-22352)
+                            }
+                            displayed = true;
+                        }
+                    }
+                }
+                Ability::Drain => {
+                    // Instant-only (no duration else-arm, 22357-22434).
+                    if area && raw_dur == 0 {
+                        let cap = self
+                            .content
+                            .monsters
+                            .get(&template)
+                            .map_or(0, |t| t.hitpoints);
+                        for t in &victims {
+                            if !self.area_victim_present(t.session, location) {
+                                continue;
+                            }
+                            let v = area_scaled(per_base, t.resist_pct, offensive);
+                            if let Some(mi) = self.monsters.get_mut(&id) {
+                                mi.current_hp = (mi.current_hp + v).min(cap);
+                            }
+                            any_died |= self.monster_cast_damage(
+                                t.session,
+                                v,
+                                v,
+                                spell,
+                                &monster_name,
+                                !displayed,
+                            );
+                        }
+                        displayed = true;
+                    }
+                }
+                Ability::EnergyLevel => {
+                    if area {
+                        if raw_dur == 0 {
+                            for t in &victims {
+                                if !self.area_victim_present(t.session, location) {
+                                    continue;
+                                }
+                                let v = area_scaled(per_base, t.resist_pct, offensive);
+                                if let Some(Session::InGame { energy, .. }) =
+                                    self.sessions.get_mut(&t.session)
+                                {
+                                    *energy = (*energy + v).min(PLAYER_ENERGY_MAX);
+                                }
+                                if !displayed {
+                                    self.monster_cast_display(
+                                        spell,
+                                        &monster_name,
+                                        t.session,
+                                        location,
+                                        v,
+                                    );
+                                }
+                            }
+                            displayed = true;
+                        } else {
+                            if !displayed
+                                && !self.monster_area_room_entry(
+                                    &victims,
+                                    spell,
+                                    per_base,
+                                    &monster_name,
+                                    location,
+                                )
+                            {
+                                return any_died;
+                            }
+                            displayed = true;
+                        }
+                    }
+                }
+                Ability::Summon => {
+                    // Match {1,2,6} only; never trips the latch (22505-
+                    // 22525).
+                    if matches!(
+                        spell.match_type,
+                        MatchType::Single1 | MatchType::Single2 | MatchType::Item6
+                    ) && raw_dur == 0
+                    {
+                        if !displayed {
+                            self.monster_room_wide_cast_line(
+                                spell,
+                                &monster_name,
+                                location,
+                                "everyone",
+                                amount_self,
+                            );
+                        }
+                        self.summon_spawn(amount_self, location);
+                    }
+                }
+                Ability::DamageMR => {
+                    if self_group {
+                        if dur_total != 0 {
+                            self.monster_self_slot_entry(id, spell.id, amount_self, dur_total);
+                        }
+                    } else if area {
+                        // NO duration gate (22527-22637); display = the
+                        // POST-MR dealt amount (22624-22628).
+                        for t in &victims {
+                            if !self.area_victim_present(t.session, location) {
+                                continue;
+                            }
+                            let shown = alter_sp_dmg(
+                                area_scaled(per_base, t.resist_pct, offensive),
+                                boost,
+                            );
+                            let dealt = damage_mr(shown, t.mr, t.anti_magic);
+                            any_died |= self.monster_cast_damage(
+                                t.session,
+                                dealt,
+                                dealt,
+                                spell,
+                                &monster_name,
+                                !displayed,
+                            );
+                        }
+                        displayed = true;
+                    }
+                }
+                Ability::Heal => {
+                    if self_group {
+                        if dur_total == 0 {
+                            // Self-heal capped at the template max, ONE
+                            // room-wide line naming the monster
+                            // (22655-22668).
+                            let cap = self
+                                .content
+                                .monsters
+                                .get(&template)
+                                .map_or(0, |t| t.hitpoints);
+                            let healed = {
+                                let Some(mi) = self.monsters.get_mut(&id) else {
+                                    continue;
+                                };
+                                let healed = amount_self.min(cap - mi.current_hp);
+                                mi.current_hp += healed;
+                                healed
+                            };
+                            if !displayed {
+                                let name = monster_name.clone();
+                                self.monster_room_wide_cast_line(
+                                    spell,
+                                    &monster_name,
+                                    location,
+                                    &name,
+                                    healed,
+                                );
+                            }
+                            displayed = true;
+                        } else {
+                            self.monster_self_slot_entry(id, spell.id, amount_self, dur_total);
+                        }
+                    } else if area {
+                        if raw_dur == 0 {
+                            // Unscaled (local_1c direct — no elemental
+                            // reduction on heals, 22671-22694).
+                            for t in &victims {
+                                if !self.area_victim_present(t.session, location) {
+                                    continue;
+                                }
+                                let healed = {
+                                    let Some(Session::InGame { player, .. }) =
+                                        self.sessions.get_mut(&t.session)
+                                    else {
+                                        continue;
+                                    };
+                                    let healed = per_base.min(t.max_hp - player.current_hp);
+                                    player.current_hp += healed;
+                                    healed
+                                };
+                                if !displayed {
+                                    self.monster_cast_display(
+                                        spell,
+                                        &monster_name,
+                                        t.session,
+                                        location,
+                                        healed,
+                                    );
+                                }
+                            }
+                            displayed = true;
+                        } else {
+                            if !displayed
+                                && !self.monster_area_room_entry(
+                                    &victims,
+                                    spell,
+                                    per_base,
+                                    &monster_name,
+                                    location,
+                                )
+                            {
+                                return any_died;
+                            }
+                            displayed = true;
+                        }
+                    }
+                }
+                Ability::Poison => {
+                    if self_group {
+                        if dur_total != 0 {
+                            self.monster_self_slot_entry(id, spell.id, amount_self, dur_total);
+                        }
+                    } else if area {
+                        // ImmuPoison gates per victim; the counter is
+                        // set-if-greater on the UNSCALED roll, and the
+                        // duration arm hard-writes BEFORE the room entry
+                        // (22702-22757).
+                        for t in &victims {
+                            if !self.area_victim_present(t.session, location)
+                                || t.immune_poison
+                            {
+                                continue;
+                            }
+                            if let Some(Session::InGame { player, .. }) =
+                                self.sessions.get_mut(&t.session)
+                            {
+                                let v = clamp_poison(per_base);
+                                if player.poison < v {
+                                    player.poison = v;
+                                }
+                            }
+                            if raw_dur == 0 && !displayed {
+                                self.monster_cast_display(
+                                    spell,
+                                    &monster_name,
+                                    t.session,
+                                    location,
+                                    per_base,
+                                );
+                            }
+                        }
+                        if raw_dur != 0
+                            && !displayed
+                            && !self.monster_area_room_entry(
+                                &victims,
+                                spell,
+                                per_base,
+                                &monster_name,
+                                location,
+                            )
+                        {
+                            return any_died;
+                        }
+                        displayed = true;
+                    }
+                }
+                Ability::CurePoison => {
+                    if matches!(
+                        spell.match_type,
+                        MatchType::Single1 | MatchType::Single2 | MatchType::Item6
+                    ) {
+                        // Self-cure {1,2,6}, no duration gate; the room
+                        // line shows local_1c (22758-22775).
+                        if let Some(mi) = self.monsters.get_mut(&id) {
+                            mi.poison = (i32::from(mi.poison) - amount_self).max(0) as i16;
+                        }
+                        if !displayed {
+                            let name = monster_name.clone();
+                            self.monster_room_wide_cast_line(
+                                spell,
+                                &monster_name,
+                                location,
+                                &name,
+                                per_base,
+                            );
+                        }
+                        displayed = true;
+                    } else if area {
+                        if raw_dur == 0 {
+                            for t in &victims {
+                                if !self.area_victim_present(t.session, location)
+                                    || t.immune_poison
+                                {
+                                    continue;
+                                }
+                                if let Some(Session::InGame { player, .. }) =
+                                    self.sessions.get_mut(&t.session)
+                                {
+                                    player.poison =
+                                        clamp_poison(i32::from(player.poison) - per_base);
+                                }
+                                if !displayed {
+                                    self.monster_cast_display(
+                                        spell,
+                                        &monster_name,
+                                        t.session,
+                                        location,
+                                        per_base,
+                                    );
+                                }
+                            }
+                            displayed = true;
+                        } else {
+                            if !displayed
+                                && !self.monster_area_room_entry(
+                                    &victims,
+                                    spell,
+                                    per_base,
+                                    &monster_name,
+                                    location,
+                                )
+                            {
+                                return any_died;
+                            }
+                            displayed = true;
+                        }
+                    }
+                }
+                Ability::HealMana => {
+                    // Case 0x96 (22855-22906): area only, unscaled,
+                    // clamped into [0, max mana].
+                    if area {
+                        if raw_dur == 0 {
+                            for t in &victims {
+                                if !self.area_victim_present(t.session, location) {
+                                    continue;
+                                }
+                                let delta = {
+                                    let Some(Session::InGame { player, .. }) =
+                                        self.sessions.get_mut(&t.session)
+                                    else {
+                                        continue;
+                                    };
+                                    let cur = player.current_mana;
+                                    let delta = if per_base < 1 {
+                                        if cur + per_base < 0 { -cur } else { per_base }
+                                    } else if t.max_mana < cur + per_base {
+                                        t.max_mana - cur
+                                    } else {
+                                        per_base
+                                    };
+                                    player.current_mana += delta;
+                                    delta
+                                };
+                                if !displayed {
+                                    self.monster_cast_display(
+                                        spell,
+                                        &monster_name,
+                                        t.session,
+                                        location,
+                                        delta,
+                                    );
+                                }
+                            }
+                            displayed = true;
+                        } else {
+                            if !displayed
+                                && !self.monster_area_room_entry(
+                                    &victims,
+                                    spell,
+                                    per_base,
+                                    &monster_name,
+                                    location,
+                                )
+                            {
+                                return any_died;
+                            }
+                            displayed = true;
+                        }
+                    }
+                }
+                _ => {
+                    // The duration-only default arm (22819-22843) or a
+                    // plain no-op.
+                    if area_ability_case_is_noop(*ability) {
+                        continue;
+                    }
+                    if self_group {
+                        if dur_total != 0 {
+                            self.monster_self_slot_entry(id, spell.id, amount_self, dur_total);
+                        }
+                    } else if area && raw_dur != 0 {
+                        if !displayed
+                            && !self.monster_area_room_entry(
+                                &victims,
+                                spell,
+                                per_base,
+                                &monster_name,
+                                location,
+                            )
+                        {
+                            return any_died;
+                        }
+                        displayed = true;
+                    }
+                }
+            }
+        }
+        any_died
+    }
+
+    /// `monster_add_duration_spell_to_room` (decompile 21892-21965):
+    /// every surviving victim gets ONE slot entry — the per-victim
+    /// elemental-scaled ROLLED value (row overrides never reach here),
+    /// the RAW spell duration word as the remaining ticks, always with
+    /// the refresh-if-greater flag (no stat-family no-refresh here). A
+    /// real write displays through `monster_add_cast_spell_to_user`'s own
+    /// success call and recomputes; a failed entry before ANY success
+    /// returns `false` — the caller aborts the cast WITHOUT an energy
+    /// refund (21952-21956 → 22347-22352). Failures after a success are
+    /// tolerated. No poison hard-write lives here (the area Poison arm
+    /// does its own, before this).
+    fn monster_area_room_entry(
+        &mut self,
+        victims: &[AreaTarget],
+        spell: &crate::content::Spell,
+        base: i32,
+        monster_name: &str,
+        location: RoomId,
+    ) -> bool {
+        let offensive = spell.target_mode.is_offensive();
+        let raw_dur = i32::from(spell.duration);
+        let mut any = false;
+        for t in victims {
+            if !self.area_victim_present(t.session, location) {
+                continue;
+            }
+            let v = area_scaled(base, t.resist_pct, offensive);
+            let entered = {
+                let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&t.session)
+                else {
+                    continue;
+                };
+                let slot = ActiveSpell {
+                    spell: Some(spell.id),
+                    value: v as i16,
+                    remaining: raw_dur,
+                };
+                if let Some(idx) = player.find_active(spell.id) {
+                    if i32::from(player.active_spells[idx].value) < v {
+                        player.active_spells[idx] = slot;
+                        true
+                    } else {
+                        false
+                    }
+                } else if let Some(idx) = player.first_free_slot() {
+                    player.active_spells[idx] = slot;
+                    true
+                } else {
+                    false
+                }
+            };
+            if entered {
+                any = true;
+                self.monster_cast_display(spell, monster_name, t.session, location, v);
+                self.refresh_derived(t.session);
+                let snapshot = Box::new(self.player(t.session).clone());
+                self.events.push(Event::Persist(snapshot));
+            } else if !any {
+                return false;
+            }
+        }
+        any
+    }
+
+    /// `FUN_004262d6` (decompile 21970-22005) — the monster's OWN 5-slot
+    /// duration table (`+0x14a/+0x154/+0x15e`): a same-id slot is
+    /// overwritten unconditionally, else the first empty one; a full
+    /// table silently loses the entry. No display. The value/duration
+    /// arguments are stack artifacts in the decompile — we pass the
+    /// row-or-rolled amount and the scaled duration (ORACLE-OPEN;
+    /// blacknight 1220 is the only shipped carrier).
+    fn monster_self_slot_entry(
+        &mut self,
+        id: MonsterInstanceId,
+        spell: SpellId,
+        value: i32,
+        remaining: i32,
+    ) {
+        let Some(mi) = self.monsters.get_mut(&id) else {
+            return;
+        };
+        let slot = ActiveSpell { spell: Some(spell), value: value as i16, remaining };
+        if let Some(idx) = mi.active_spells.iter().position(|s| s.spell == Some(spell)) {
+            mi.active_spells[idx] = slot;
+        } else if let Some(idx) = mi.active_spells.iter().position(|s| s.spell.is_none()) {
+            mi.active_spells[idx] = slot;
+        }
+    }
+
+    /// The per-loop re-check every area arm carries (`get_player` + the
+    /// room compare + the 0x10 flag): a victim who died or left between
+    /// rows drops out of later applications.
+    fn area_victim_present(&self, session: SessionId, location: RoomId) -> bool {
+        matches!(
+            self.sessions.get(&session),
+            Some(Session::InGame { player, .. }) if player.location == location
+        )
+    }
+
     /// `check_kill_monster` + `distribute_experience` (`death.md` §4/§5).
-    fn monster_killed(&mut self, id: MonsterInstanceId, killer: SessionId) {
+    /// `killer: None` is the upkeep/DoT death (medium_update_monster
+    /// 19327-19339: check_kill_monster with terminal -1 +
+    /// distribute_experience(-1, ...)): the announce goes to the whole
+    /// room and the split covers only the engaged sessions — nobody
+    /// engaged means the experience evaporates (ORACLE-VERIFY: the -1
+    /// split's exact recipients are decompile-inferred).
+    fn monster_killed(&mut self, id: MonsterInstanceId, killer: Option<SessionId>) {
         let Some(instance) = self.monsters.remove(&id) else {
             return;
         };
@@ -2441,18 +7337,26 @@ impl Core {
             * u64::from(tpl.exp_multi.max(1) as u32);
         let room = instance.location;
 
-        self.output_line(killer, &text::monster_dead(&name));
-        self.broadcast_to_room(room, Some(killer), &text::monster_dead(&name));
+        match killer {
+            Some(killer) => {
+                self.output_line(killer, &text::monster_dead(&name));
+                self.broadcast_to_room(room, Some(killer), &text::monster_dead(&name));
+            }
+            None => self.broadcast_to_room(room, None, &text::monster_dead(&name)),
+        }
 
         // Equal split among the killer and everyone engaged on this target.
-        let mut recipients: Vec<SessionId> = vec![killer];
+        let mut recipients: Vec<SessionId> = killer.into_iter().collect();
         for (sid, session) in self.sessions.iter() {
             if let Session::InGame { target: Some(t), .. } = session
                 && *t == id
-                && *sid != killer
+                && Some(*sid) != killer
             {
                 recipients.push(*sid);
             }
+        }
+        if recipients.is_empty() {
+            return; // a killer-less death with nobody engaged: no split
         }
         let share = (exp / recipients.len() as u64).max(1);
         for sid in recipients {
@@ -2488,6 +7392,22 @@ impl Core {
         self.broadcast_to_room(died_in, Some(session), &format!("{name} is dead."));
         self.break_combat_silent(session);
         self.release_monster_targets(session);
+        // Death terminates every occupied slot, in slot order, with the
+        // EndCast chain SUPPRESSED (decompile check_kill_user's death
+        // branch 13053-13066 passes chainFlag '\0'; the stats-reset /
+        // reroll path 10404-10419 is the one that passes '\x01').
+        // Wear-off lines print to the dying player (44833-44844 prf to
+        // the owner's terminal), and the recompute leaves the respawn
+        // max HP buff-free.
+        for idx in 0..10 {
+            self.terminate_active_spell(session, idx, false);
+        }
+        // check_kill_user zeroes the poison counter AFTER the slot
+        // terminations (decompile 13066) — the poison-spell reversals
+        // subtract first, then the hard clear catches any remainder.
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+            player.poison = 0;
+        }
 
         let Some(Session::InGame { player, derived, aided, .. }) =
             self.sessions.get_mut(&session)
@@ -2524,8 +7444,11 @@ impl Core {
     /// Tear down combat without the *Combat Off* print (death has its own
     /// messaging).
     fn break_combat_silent(&mut self, session: SessionId) {
-        if let Some(Session::InGame { target, energy, .. }) = self.sessions.get_mut(&session) {
+        if let Some(Session::InGame { target, energy, casting, .. }) =
+            self.sessions.get_mut(&session)
+        {
             *target = None;
+            *casting = None;
             *energy = (*energy).min(PLAYER_ENERGY_MAX);
         }
     }
@@ -2541,18 +7464,20 @@ impl Core {
 
     /// `kill_autocombat` + `display_autocombat_broken`.
     fn break_combat(&mut self, session: SessionId) {
-        if let Some(Session::InGame { target, energy, .. }) = self.sessions.get_mut(&session)
+        if let Some(Session::InGame { target, energy, casting, .. }) =
+            self.sessions.get_mut(&session)
             && target.is_some()
         {
             *target = None;
+            *casting = None;
             *energy = (*energy).min(PLAYER_ENERGY_MAX);
             self.output_line(session, text::COMBAT_OFF);
         }
     }
 
     /// EXACT (decompile 0x2a19d `move_player_to_fighter`): the normal-attack
-    /// player fighter. Weapon skill/dyn accumulators are 0 until items and
-    /// spells land (M4/M5); encumbrance is 0 until weight exists (M4).
+    /// player fighter. Weapon skill (M4), dynamic accumulators (M5), and
+    /// encumbrance (M4) all feed in below.
     fn build_player_attacker(&self, session: SessionId) -> crate::combat::Fighter {
         let Some(Session::InGame { player, derived, .. }) = self.sessions.get(&session) else {
             unreachable!("caller holds an in-game session");
@@ -2585,7 +7510,7 @@ impl Core {
         }
         // accuracy = (Str-50)/3
         //          + 2*((combat-1)*isqrt(level) + 2*combat + level/2 + skill/2 - 2)
-        //          + (Agl-50)/6  (+ dynamic accuracy accumulators, M5)
+        //          + (Agl-50)/6  + the dynamic accuracy accumulators
         let bag = self.ability_bag(player);
         let dyn_accuracy = bag.value(accuracy_ability(0x16))
             + bag.value(accuracy_ability(0x69))
@@ -2626,9 +7551,12 @@ impl Core {
     }
 
     /// EXACT (decompile): defender view of a player. Naked: evasion 0
-    /// (item ratings/10 + dynamic AC join in M4/M5), armor 0; parry is the
-    /// word[10] formula plus the low-encumbrance bonus (10 - enc/10),
-    /// forced -1 when helpless.
+    /// (item ratings/10; the dynamic AC accumulator +0x70c joins when
+    /// content carries AC(2) buffs), armor 0; parry is the word[10]
+    /// formula — `dodgeAbil(0x22) + (Chm-50)/5 + level/5 + (Agl-50)/3`
+    /// (combat.md "Parry") — plus the low-encumbrance bonus
+    /// (10 - enc/10), forced -1 when helpless. The Dodge term reads the
+    /// accumulated bag, so items AND active spells (blur) feed it.
     fn build_player_defender(&self, session: SessionId) -> crate::combat::Fighter {
         let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
             unreachable!("caller checked the session");
@@ -2637,7 +7565,8 @@ impl Core {
             -1
         } else {
             let encumbrance = self.encumbrance_percent(session);
-            let mut p = (i32::from(player.stats.charm) - 50) / 5
+            let mut p = self.ability_bag(player).value(Ability::Dodge)
+                + (i32::from(player.stats.charm) - 50) / 5
                 + i32::from(player.level) / 5
                 + (i32::from(player.stats.agility) - 50) / 3;
             if encumbrance < 33 {
@@ -2677,6 +7606,10 @@ impl Core {
 
     /// EXACT (decompile 0x2b43e `move_monster_to_fighter`): defender view of
     /// a monster — evasion [1] = AC, armor [3] = DR*10, crit hard-zeroed.
+    /// The ability fold joins both words (25190-25200): evasion += AC(2)
+    /// through `get_monster_ability_value` — template rows AND active-slot
+    /// debuffs — and the soak += DR(7) RAW (the *10 scale applies only to
+    /// the template word).
     fn build_monster_defender(&self, id: MonsterInstanceId) -> crate::combat::Fighter {
         let tpl = self
             .monsters
@@ -2685,9 +7618,10 @@ impl Core {
             .expect("live instance has a template");
         crate::combat::Fighter {
             accuracy: 0,
-            evasion_a: i32::from(tpl.armour_class),
+            evasion_a: i32::from(tpl.armour_class) + self.monster_ability_value(id, Ability::AC),
             evasion_b: 0,
-            armor: i32::from(tpl.damage_resist) * 10,
+            armor: i32::from(tpl.damage_resist) * 10
+                + self.monster_ability_value(id, Ability::DR),
             min_damage: 0,
             max_damage: 0,
             parry: 0,
@@ -2834,7 +7768,7 @@ impl Core {
         self.broadcast_to_others(session, &text::entered_realm(&player.name));
         let derived = self.derive_for(&player);
         self.sessions
-            .insert(session, Session::InGame { player: Box::new(player), derived, exiting: None, target: None, aided: false, energy: PLAYER_ENERGY_MAX });
+            .insert(session, Session::InGame { player: Box::new(player), derived, exiting: None, target: None, aided: false, energy: PLAYER_ENERGY_MAX, cast_this_round: false, casting: None });
         // Oracle: first entry shows the stat sheet, not the room.
         self.show_sheet(session);
         self.show_prompt(session);
@@ -2880,6 +7814,9 @@ impl Core {
             lives: 9,
             experience: 0,
             location: self.config.start_location,
+            spellbook: BTreeMap::new(),
+            poison: 0,
+            active_spells: Default::default(),
         };
         let derived = self.derive_for(&player);
         player.current_hp = derived.max_hp;
@@ -2959,6 +7896,37 @@ impl Core {
         match &self.sessions[&session] {
             Session::InGame { player, .. } => player,
             _ => unreachable!("caller guarantees an in-game session"),
+        }
+    }
+
+    /// The player's class caster group (`class+0x40`; 5 = kai/mystic).
+    fn caster_group(&self, session: SessionId) -> i16 {
+        self.content
+            .classes
+            .get(&self.player(session).class)
+            .map_or(0, |c| c.caster_group)
+    }
+
+    /// caster_group == 5 — the kai wording/gating key (§8.12).
+    fn is_kai(&self, session: SessionId) -> bool {
+        self.caster_group(session) == 5
+    }
+
+    /// The one-cast-per-round refusal, kai wording for mystics (§8.12).
+    fn already_cast_line(&self, session: SessionId) -> &'static str {
+        if self.is_kai(session) {
+            text::ALREADY_INVOKED
+        } else {
+            text::ALREADY_CAST
+        }
+    }
+
+    /// The mana-gate refusal, kai wording for mystics (§8.12).
+    fn not_enough_mana_line(&self, session: SessionId) -> &'static str {
+        if self.is_kai(session) {
+            text::NOT_ENOUGH_KAI
+        } else {
+            text::NOT_ENOUGH_MANA
         }
     }
 
@@ -3130,9 +8098,19 @@ impl Core {
     }
 
     fn broadcast_to_room(&mut self, room: RoomId, exclude: Option<SessionId>, text: &str) {
+        match exclude {
+            Some(s) => self.broadcast_to_room_except(room, &[s], text),
+            None => self.broadcast_to_room_except(room, &[], text),
+        }
+    }
+
+    /// Room broadcast excluding a SET of sessions — the targeted-cast
+    /// fan-outs exclude both the caster and the target (§8.13: the
+    /// target's view is its own line or, on a fail, nothing).
+    fn broadcast_to_room_except(&mut self, room: RoomId, exclude: &[SessionId], text: &str) {
         let recipients: Vec<SessionId> = self
             .in_game_sessions()
-            .filter(|(id, p)| Some(*id) != exclude && p.location == room)
+            .filter(|(id, p)| !exclude.contains(id) && p.location == room)
             .map(|(id, _)| id)
             .collect();
         for session in recipients {

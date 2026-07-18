@@ -62,9 +62,11 @@ pub enum Outcome {
     NoDamage,
     /// Result 2 — a normal hit.
     Hit,
-    /// Result 3 — the to-hit roll missed.
+    /// Result 0 — the to-hit roll missed (the DLL leaves the zeroed result
+    /// word untouched; renders as the PLAIN miss lines).
     Dodged,
-    /// Result 3 — connected but was parried (same engine code as dodge).
+    /// Result 3 — connected but was parried; the DLL renders this with the
+    /// ", but you dodge out of the way!" framing (§8.10's "dodge" lines).
     Parried,
     /// Result 4 — critical hit.
     Critical,

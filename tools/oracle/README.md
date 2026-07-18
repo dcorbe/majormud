@@ -29,9 +29,90 @@ Character: Oracle Delver, Dwarf Warrior, not Lawful, default stats.
   semantics before comparing.
 - Output is CP437 with ANSI; the module is in demo mode (unregistered),
   which caps usage but not the M1-relevant behavior.
+- Combat expeditions (2026-07-17, monster-attack-lines runs) added more:
+  - Kill scripted sessions only as a last resort: SIGTERM used to lose the
+    whole raw capture to unflushed buffers (mudlib now flushes per recv),
+    and the game punishes mid-play disconnects (`The gods have punished
+    you appropriately` — can drop the character's whole inventory on the
+    spot).
+  - The prompt HP goes NEGATIVE while mortally wounded — parse
+    `\[HP=(-?\d+)`. A downed character can do nothing; monsters keep
+    swinging until death at roughly -7x maxhp, then a "miracle" revives
+    them at the Newhaven Healer at full HP, minus one **life** (chars
+    start with ~9; check before risking more).
+  - Monsters get a free attack on movement and it can BREAK the move, so
+    blind `u`/`w` walk sequences desync. Verify every step by room name
+    and retry (see `oracle_monster_cleanup.py::move`).
+  - Newhaven arena spawns include acid slimes (~10 dmg/round pairs) that
+    will burst a L2 mage between two guard polls. `buy healing` at the
+    Newhaven healer (west of Narrow Road) is a full heal for 2cp/HP.
+  - Floor items persist across an MBBSEmu restart; live monsters do not —
+    restarting is the clean way to defuse a monster-camped room.
+  - When driving two sessions, pump both sockets in strict interleave;
+    any blocking wait on one leaves the other's character unattended in
+    combat (this killed a character twice).
+
+- Duration expedition (2026-07-17, blur timing) added more:
+  - **The game clock's wall-time depends on the emulator's environment.**
+    MBBSEmu restarted with its console GUI writing to a non-tty ran the
+    whole game clock ~1.74x slow (blur 70-tick duration 212s → 369s, mana
+    regen 30s/point → ~52s). Run MBBSEmu inside a real pty (tmux pane) for
+    any wall-clock measurement, and cross-check with the mana-regen cadence.
+  - Name validation is not always ~10 min: Zinvar's validation completed in
+    ~30 s on the same DB where earlier characters took ~10 min.
+  - The FSD stat editor's Given Name field arrives prefilled with the BBS
+    account name and typing APPENDS — send backspaces first to replace it.
+
+- Monster-casting expedition (2026-07-18, slice 6) added more:
+  - **Flood control**: >~15 rapid commands trip `Why don't you slow down
+    for a few seconds?` and DROP input — blind move sequences desync.
+    Keep ≥1.5 s per command and verify by room name.
+  - **Death threshold is ~flat −200 HP** (kills at −200/−202/−209/−225
+    on a 56-maxhp char), not −7×maxhp; unattacked downed chars bleed
+    ~1 HP/slow-tick. Revive is at the AREA deathroom (Silvermere →
+    Temple Halls of the Dead 1/2189), not Newhaven.
+  - Silver River rooms pulse `The river bashes you up against some
+    rocks!` (10-18 dmg, ~10 s cycle, can fire ~1.5 s after entry) —
+    don't loiter, don't fight there.
+  - Spawn-in-room (`X appears right beside you!`) attacks within the
+    same second. Never leave a character unattended in a spawn room —
+    poll ≤5 s or use `oracle_mcast_babysit.py`.
+  - Restart-despawn + disk-patch recipe: logout (or accept the
+    disconnect), `kill -INT`, edit WCCUSERS.DB `data_t` (Zinvar id 3;
+    exp +0x3c AND +0x46f + key_2, gold dword +0x60b, **curHP word
+    +0xb0, maxHP +0xae, poison counter +0xbe, room +0xc8**), restart.
+    Floor coin piles persist across restarts; live monsters don't.
 
 ## Scripts
 
 - `mudlib.py` — session driver (login, expect, capture).
 - `oracle_m1_capture.py` — the M1 capture: creation, room display,
   movement, errors, quit. Produces `oracle_m1.raw` + sections JSON.
+- `oracle_blur_duration.py` — interactive FIFO-driven session with
+  millisecond-timestamped clean log (for wall-clock measurements); commands
+  `send`/`raw`/`quit` echoed into a FIFO, raw capture + timing log split.
+- `oracle_kai_mystic.py` — same FIFO driver parameterized by raw-file path
+  (mystic/kai expedition, spellcasting.md §8.12). Lessons: the FSD editor's
+  Enter is CR NUL (`\r\x00` — bare `\r` is swallowed); stop MBBSEmu with
+  `kill -INT` (the TUI eats `^C`; SIGTERM loses game-DB rows).
+- `oracle_mcast_survey.py` — sqlite survey: BFS reachable rooms from a
+  start (type-15 exits blocked), spawn regions, and casting monsters
+  spawnable in them (slice-6 monster-cast expedition, §8.14).
+- `oracle_mcast_drive.py` — batch command sender for the FIFO driver
+  (prints the clean-log delta).
+- `oracle_mcast_babysit.py` — camp watcher: auto-flees bad spawns,
+  auto-fights whitelisted casters, HP-floor flee (island cave camp).
+
+## Relocating the oracle (permanent installation)
+
+Connection info is environment-driven — no script edits needed:
+
+    export MBBS_HOST=<new host>   # default 127.0.0.1
+    export MBBS_PORT=<new port>   # default 2327
+
+`mudlib.Session()` and the standalone FIFO drivers all honor these.
+When the oracle moves to a fresh installation, all characters must be
+re-rolled (fresh WCCUSERS): the character roster documented across
+§8.x (Zinvar, Kaimon, Oracle) belongs to the OLD install and those
+sections' character-state notes become historical. The measured game
+BEHAVIOR is installation-independent and stays authoritative.

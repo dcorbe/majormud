@@ -10,6 +10,7 @@ fn world() -> Content {
         name: "Town Gates".into(),
         description: vec![],
         room_type: 0,
+        attributes: 0,
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
@@ -29,6 +30,7 @@ fn world() -> Content {
         name: "Town Square".into(),
         description: vec![],
         room_type: 0,
+        attributes: 0,
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
@@ -43,6 +45,7 @@ fn world() -> Content {
         name: "Guard Tower".into(),
         description: vec![],
         room_type: 0,
+        attributes: 0,
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
@@ -78,6 +81,9 @@ fn player_at(name: &str, room: u16) -> Player {
         lives: 9,
         experience: 0,
         location: RoomId { map: 1, room },
+        spellbook: std::collections::BTreeMap::new(),
+        poison: 0,
+        active_spells: Default::default(),
     }
 }
 
@@ -98,8 +104,8 @@ fn attach_shows_the_current_room() {
     let shown = text_to(&core.drain_events(), alice);
     assert!(shown.contains("Town Gates"), "room name shown: {shown:?}");
     assert!(
-        shown.contains("Obvious exits: north, above"),
-        "exits listed with above for up: {shown:?}"
+        shown.contains("Obvious exits: north, up"),
+        "exits listed with up (USER TESTIMONY, not above): {shown:?}"
     );
 }
 
@@ -114,7 +120,7 @@ fn look_renders_name_description_exits() {
     core.input(alice, "look");
     let shown = text_to(&core.drain_events(), alice);
     assert!(shown.contains("Town Gates"));
-    assert!(shown.contains("Obvious exits: north, above"));
+    assert!(shown.contains("Obvious exits: north, up"));
 }
 
 #[test]
@@ -170,6 +176,7 @@ fn vertical_movement_uses_upwards_phrasing() {
     let mut core = Core::new(world(), CoreConfig::default());
     let alice = core.attach_player(player_at("Alice", 1));
     let bob = core.attach_player(player_at("Bob", 1));
+    let carol = core.attach_player(player_at("Carol", 3));
     core.drain_events();
 
     core.input(bob, "u");
@@ -178,6 +185,11 @@ fn vertical_movement_uses_upwards_phrasing() {
     assert!(
         to_alice.contains("Bob just left upwards."),
         "got: {to_alice:?}"
+    );
+    let to_carol = text_to(&events, carol);
+    assert!(
+        to_carol.contains("Bob just arrived from below."),
+        "vertical arrival says from below, no article: {to_carol:?}"
     );
 }
 
@@ -228,7 +240,7 @@ fn blank_input_shows_brief_room_without_description() {
     let shown = text_to(&core.drain_events(), alice);
     assert!(shown.contains("Town Gates"), "brief shows name: {shown:?}");
     assert!(
-        shown.contains("Obvious exits: north, above"),
+        shown.contains("Obvious exits: north, up"),
         "brief shows exits: {shown:?}"
     );
     assert!(

@@ -9,6 +9,60 @@ fn db_path() -> std::path::PathBuf {
 }
 
 #[test]
+fn magic_missile_cast_fields_load_exactly() {
+    use mud_core::content::{Element, MatchType, SaveClass, ScalePair, SpellId, TargetMode};
+    let content = content_db::load(&db_path()).expect("load content db");
+    let mm = &content.spells[&SpellId(1)];
+    assert_eq!(mm.name, "magic missile");
+    assert_eq!(mm.mana_cost, 1);
+    assert_eq!(mm.required_power, 1);
+    assert_eq!((mm.min_base, mm.max_base), (4, 12));
+    assert_eq!(mm.round_cost, 1000);
+    assert_eq!(mm.base_chance, 15);
+    assert_eq!(mm.level_cap, 6);
+    assert_eq!(mm.class_gate_group, 1);
+    assert_eq!(mm.required_class_level, 1);
+    assert_eq!(mm.target_mode, TargetMode::Offensive0);
+    assert_eq!(mm.save_class, SaveClass::None);
+    assert_eq!(mm.match_type, MatchType::Special8);
+    assert_eq!(mm.element, Element::Magic);
+    assert_eq!(mm.duration, 0);
+    assert_eq!(mm.duration_per_level, 0);
+    assert_eq!(mm.max_increase, ScalePair { per: 1, levels: 0 });
+    assert_eq!(mm.min_increase, ScalePair::NONE);
+    assert_eq!(mm.duration_increase, ScalePair::NONE);
+    // msgstyle pins (sqlite: spell 1 = 32, spell 129 blur = 0): the tail
+    // column of the SELECT — a shifted column order lands some other
+    // field here, and 32-vs-0 disambiguates the pair.
+    assert_eq!(mm.msg_style, 32);
+    assert_eq!(content.spells[&SpellId(129)].msg_style, 0);
+}
+
+// Barkskin (spell 34) exists as a second pin because magic missile cannot
+// disambiguate the adjacent column clusters: on spell 1 the (magerya, mana,
+// mageryb) and (duration, undefined01) and scale-pair columns share values
+// (mostly 0/1), so a transposed SELECT column order would still pass the
+// magic-missile test. Barkskin has distinct values in every cluster:
+// level=7, magerya=3, mana=15, mageryb=0, duration=40, undefined01=0,
+// minincrease=(10,10), durincrease=(1,1).
+#[test]
+fn barkskin_disambiguates_adjacent_columns() {
+    use mud_core::content::{ScalePair, SpellId};
+    let content = content_db::load(&db_path()).expect("load content db");
+    let bark = &content.spells[&SpellId(34)];
+    assert_eq!(bark.name, "barkskin");
+    assert_eq!(bark.required_power, 7);
+    assert_eq!(bark.class_gate_group, 3);
+    assert_eq!(bark.mana_cost, 15);
+    assert_eq!(bark.required_class_level, 0);
+    assert_eq!(bark.duration, 40);
+    assert_eq!(bark.duration_per_level, 0);
+    assert_eq!(bark.min_increase, ScalePair { per: 10, levels: 10 });
+    assert_eq!(bark.duration_increase, ScalePair { per: 1, levels: 1 });
+    assert_eq!(bark.max_increase, ScalePair { per: 10, levels: 10 });
+}
+
+#[test]
 fn full_database_loads_and_validates() {
     let content = content_db::load(&db_path()).expect("load content db");
 
@@ -25,12 +79,58 @@ fn full_database_loads_and_validates() {
 }
 
 #[test]
+fn kind2_cast_forms_all_resolve_within_the_dispatch() {
+    // Pins the "no melee-slot-0 fallback needed" claim (spellcasting.md §6;
+    // decompile monster_cast 23015-23016 + 23777-23779, driver 26805-26813)
+    // against the shipped data: the driver's return-0 fallback fires only
+    // for an unresolvable spell id, and every kind-2 form resolves. The
+    // match-type census is exact — singles {0,2,6,8} take the
+    // single-target path (only 0 and 8 ship); everything else (1, 11, 12
+    // here) is the match-gate ELSE that routes to monster_cast_area —
+    // LIVE since the slice-6 close-out (game.rs Core::monster_cast_area;
+    // the 101 area forms are exercised by tests/monster_cast.rs' area
+    // suite). No shipped form falls outside the two buckets.
+    use mud_core::content::SpellId;
+    use std::collections::BTreeMap;
+    let content = content_db::load(&db_path()).expect("load content db");
+    let mut census: BTreeMap<i16, u32> = BTreeMap::new();
+    for monster in content.monsters.values() {
+        for form in &monster.attacks {
+            if form.kind != 2 {
+                continue;
+            }
+            let id = u16::try_from(form.accuracy)
+                .unwrap_or_else(|_| panic!("monster {:?}: negative spell id", monster.id));
+            let spell = content.spells.get(&SpellId(id)).unwrap_or_else(|| {
+                panic!("monster {:?}: kind-2 form names missing spell {id}", monster.id)
+            });
+            *census.entry(spell.match_type as i16).or_default() += 1;
+        }
+    }
+    assert_eq!(
+        census,
+        BTreeMap::from([(0, 13), (1, 1), (8, 393), (11, 1), (12, 99)]),
+        "kind-2 form match-type census drifted"
+    );
+    assert_eq!(census.values().sum::<u32>(), 507);
+}
+
+#[test]
 fn known_content_spot_checks() {
     let content = content_db::load(&db_path()).expect("load content db");
 
     let gates = &content.rooms[&RoomId { map: 1, room: 1 }];
     assert_eq!(gates.name, "Town Gates");
     assert!(gates.exits.iter().flatten().count() > 0);
+
+    // Room flags (attributes/room+0x564): the Newhaven Spell Shop is
+    // protected (bit 1 — the offensive-cast guilt line), the §8.9
+    // must-specify probe room is not.
+    let spell_shop = &content.rooms[&RoomId { map: 1, room: 2144 }];
+    assert_eq!(spell_shop.name, "Newhaven, Spell Shop");
+    assert!(spell_shop.protected());
+    let narrow_road = &content.rooms[&RoomId { map: 1, room: 2146 }];
+    assert!(!narrow_road.protected());
     assert!(
         gates.description[0].starts_with("You are before the massive town gates of Silvermere."),
         "got: {:?}",
@@ -81,6 +181,32 @@ fn known_content_spot_checks() {
     assert_eq!(rat.weapon, None);
     assert!(rat.loot.is_empty());
 
+    // Attack-line message pins (spellcasting.md §8.10): the rat's form
+    // carries hit 27 / dodge 8307 / miss 8294, and the records hold the
+    // oracle-measured templates verbatim.
+    use mud_core::content::MessageId;
+    assert_eq!(form.hit_msg, Some(MessageId(27)));
+    assert_eq!(form.dodge_msg, Some(MessageId(8307)));
+    assert_eq!(form.miss_msg, Some(MessageId(8294)));
+    let hit = &content.messages[&MessageId(27)];
+    assert_eq!(hit.lines[0], "The %s bites you for %d damage!");
+    assert_eq!(hit.lines[1], "The %s bites %s for %s damage!");
+    assert_eq!(
+        hit.lines[2],
+        "The giant rat falls to the ground with a tortured squeak."
+    );
+    let dodge = &content.messages[&MessageId(8307)];
+    assert_eq!(
+        dodge.lines[2],
+        "The %s %slunges at %syou, but you dodge out of the way!"
+    );
+    let miss = &content.messages[&MessageId(8294)];
+    assert_eq!(
+        miss.lines[0],
+        "The %s %slunges at %s, %sbut %s dodges out of the way!"
+    );
+    assert_eq!(miss.lines[1], "The %s %slunges at %syou!");
+
     // Loot slots: the thug (id 10) wields a spiked club (never dropped)
     // and carries a severed arm 1% of the time.
     let thug = &content.monsters[&mud_core::content::MonsterId(10)];
@@ -112,6 +238,18 @@ fn known_content_spot_checks() {
     assert_eq!(staff.cost, 0);
     assert_eq!(staff.weapon_type, 1, "1 or 3 = two-handed (oracle: '(Two handed)')");
     assert!(staff.hit_msg.is_some());
+
+    // Item descriptions: the magic-missile scroll (id 119) parchment —
+    // exactly the two stored lines (desc1/desc2; the empty desc3 dropped).
+    let scroll = &content.items[&mud_core::content::ItemId(119)];
+    assert_eq!(scroll.name, "scroll of magic missile");
+    assert_eq!(
+        scroll.description,
+        vec![
+            "This parchment is inscribed with runes of magic, but exactly".to_string(),
+            "what is written can only be learned by reading it.".to_string(),
+        ]
+    );
 
     // The newbie manual is placed at the Village Entrance but not gettable.
     let manual = &content.items[&mud_core::content::ItemId(1098)];

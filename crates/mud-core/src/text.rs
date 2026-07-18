@@ -36,8 +36,10 @@ pub const ALSO_HERE: &str = "Also here: ";
 
 use crate::content::Direction;
 
-/// Display name used in the exits list and arrival broadcasts. Up/down show
-/// as "above"/"below" (VERIFIED: DLL exit string table).
+/// Display name used in the exits list. Vertical exits show as "up"/"down"
+/// (USER TESTIMONY — the earlier "above"/"below" reading of the DLL string
+/// table was wrong; that pair belongs to the vertical arrival broadcasts,
+/// see [`arrived_from`]).
 pub fn direction_shown(direction: Direction) -> &'static str {
     match direction {
         Direction::North => "north",
@@ -48,8 +50,8 @@ pub fn direction_shown(direction: Direction) -> &'static str {
         Direction::NorthWest => "northwest",
         Direction::SouthEast => "southeast",
         Direction::SouthWest => "southwest",
-        Direction::Up => "above",
-        Direction::Down => "below",
+        Direction::Up => "up",
+        Direction::Down => "down",
     }
 }
 
@@ -63,10 +65,15 @@ pub fn left_via(name: &str, direction: Direction) -> String {
     }
 }
 
-/// VERIFIED (DLL) format string; ORACLE-VERIFY for vertical arrivals
-/// ("arrived from the above/below" is presumed).
+/// VERIFIED (DLL) format string for compass arrivals; vertical arrivals use
+/// "from above"/"from below" without the article (ORACLE-VERIFY the exact
+/// vertical wording).
 pub fn arrived_from(name: &str, direction: Direction) -> String {
-    format!("{name} just arrived from the {}.", direction_shown(direction))
+    match direction {
+        Direction::Up => format!("{name} just arrived from above."),
+        Direction::Down => format!("{name} just arrived from below."),
+        d => format!("{name} just arrived from the {}.", direction_shown(d)),
+    }
 }
 
 /// VERIFIED (DLL + oracle): character-creation prompts. Blank input gets the
@@ -93,10 +100,20 @@ pub fn exp_line(exp: u64, level: u16, needed: u64) -> String {
     format!("Exp: {exp} Level: {level} Exp needed for next level: {needed} ({remaining}) [{percent}%]")
 }
 
-/// VERIFIED (oracle): the health command line.
-pub fn health_line(current: i32, max: i32) -> String {
+/// VERIFIED (oracle): the health command line. The mana clause appears
+/// whenever the max pool is non-zero (show_health 0x34af7 gates on
+/// `+0x600 != 0`), captioned `Kai:` for caster group 5 and `Mana:`
+/// otherwise — MEASURED §8.2 (mage) / §8.12 (mystic, absent at L1 where
+/// max kai is 0).
+pub fn health_line(current: i32, max: i32, mana: i32, mana_max: i32, caster_group: i16) -> String {
     let percent = if max == 0 { 0 } else { current * 100 / max };
-    format!("Health:{current:>6}/{max:<6}[{percent}%]")
+    let mut line = format!("Health:{current:>6}/{max:<6}[{percent}%]");
+    if mana_max != 0 {
+        let caption = if caster_group == 5 { "Kai:" } else { "Mana:" };
+        let mana_percent = mana * 100 / mana_max;
+        line.push_str(&format!("  {caption}{mana:>4}/{mana_max:<4}[{mana_percent}%]"));
+    }
+    line
 }
 
 /// VERIFIED (oracle/DLL): training messages.
@@ -104,12 +121,21 @@ pub const TRAIN_WRONG_ROOM: &str = "You must be in an appropriate training room 
 pub const TRAIN_NO_EXP: &str = "You do not have the required experience to train yet!";
 pub const TRAIN_NO_MONEY: &str = "You do not have the money required for your training.";
 
-/// VERIFIED (DLL): " and you receive training to attain level %d." — the
-/// leading fragment follows the payment sentence; ORACLE-VERIFY the full
-/// combined line once a fund run is captured.
-pub fn train_success(level: u16) -> String {
-    format!("you receive training to attain level {level}.")
+/// VERIFIED (§8.7/§8.12 receipts): the payment sentence lists the coins
+/// actually handed over ("5 silver nobles" mage, "50 copper farthings"
+/// mystic — the deduct_currency change-making, same as buy).
+pub fn train_hand_over(coins: &str, level: u16) -> String {
+    format!("You hand over {coins} and you receive training to attain level {level}.")
 }
+/// VERIFIED (oracle_spell_train.raw / §8.12): the receipt header.
+pub const TRAIN_RECEIVE_HEADER: &str = "You receive the following:";
+/// VERIFIED (oracle_spell_train.raw / §8.12): the CP line.
+pub fn train_cp_line(cp: u16) -> String {
+    format!("{cp} additional character points")
+}
+/// VERIFIED (§8.12): the kai grant header, after the CP line; one power
+/// name per line follows.
+pub const KAI_LEARN_HEADER: &str = "You learn the following Kai abilities:";
 
 /// VERIFIED (oracle): the Lawful prompt (verbatim, including the double
 /// space before [Yes/No]).
@@ -139,6 +165,212 @@ pub const MEDITATION_BLOCKED: &str = "You may not perform any commands while wai
 /// VERIFIED (oracle): syntax lines for argument commands invoked bare.
 pub const SYNTAX_AID: &str = "Syntax: AID {user name}";
 pub const SYNTAX_GET: &str = "Syntax: GET {Item Name}";
+/// VERIFIED (spellcasting.md §8.9): bare `cast`/`c`.
+pub const SYNTAX_CAST: &str = "Syntax: CAST {spell} [{target}]";
+
+/// VERIFIED (spellcasting.md §8.6): the cast argument that resolved to no
+/// learned spell, echoed verbatim.
+pub fn dont_know_cast(arg: &str) -> String {
+    format!("You do not know how to cast {arg}.")
+}
+
+/// VERIFIED (spellcasting.md §8.6): one cast per combat round.
+pub const ALREADY_CAST: &str = "You have already cast a spell this round!";
+/// VERIFIED (spellcasting.md §8.6): the mana gate.
+pub const NOT_ENOUGH_MANA: &str = "You do not have enough mana to cast that spell.";
+
+// --- kai/mystic wording (VERIFIED oracle_kai_mystic*.raw; spellcasting.md
+// §8.12) — the caster_group-5 variants of the cast surfaces. ---
+
+/// VERIFIED (§8.12): the mystic `cast` hard refusal — before any argument
+/// parsing; note the double space after "KAI!".
+pub const KAI_NO_CAST: &str = "You may not cast... You are KAI!  You must invoke your powers.";
+/// VERIFIED (§8.12): the mystic `spells` redirect (single space there).
+pub const KAI_NO_SPELLS: &str =
+    "You may not list your spells. You are KAI! You must list your powers.";
+/// ORACLE-VERIFY: a non-kai `powers` is unmeasured — the parallel of the
+/// kai `spells` redirect, chosen by symmetry.
+pub const NON_KAI_NO_POWERS: &str =
+    "You may not list your powers. You are not KAI! You must list your spells.";
+/// ORACLE-VERIFY: a non-kai `invoke` is unmeasured — the parallel of the
+/// kai `cast` refusal, chosen by symmetry (double space kept).
+pub const NON_KAI_NO_INVOKE: &str =
+    "You may not invoke... You are not KAI!  You must cast your spells.";
+/// VERIFIED (§8.12): bare invoke.
+pub const SYNTAX_INVOKE: &str = "Syntax: INVOKE {power} [{target}]";
+/// VERIFIED (§8.12): the kai-specific mana gate wording.
+pub const NOT_ENOUGH_KAI: &str = "You do not have enough kai to invoke that power.";
+/// VERIFIED (§8.12): the one-per-round flag, invoke wording — checked
+/// with kai still in the pool, charges nothing.
+pub const ALREADY_INVOKED: &str = "You have already invoked a power this round!";
+/// VERIFIED (§8.12): the empty `powers` reply.
+pub const NO_POWERS: &str = "You have no powers.";
+/// VERIFIED (§8.12): the `powers` header pair — Mana becomes Kai, "Spell
+/// Name" stays.
+pub const POWERS_HEADER: &str = "You have the following powers:\nLevel Kai  Short Spell Name";
+
+/// VERIFIED (§8.12, byte-exact): one `powers` row. Unlike `spell_row`'s
+/// left-aligned 6-wide short column, the kai short is RIGHT-aligned width
+/// 4 with a two-space gutter (visible on `owl`; invisible in §8.5 where
+/// every mage shortname is exactly 4 chars).
+pub fn power_row(level: i16, kai: i16, short: &str, name: &str) -> String {
+    format!("{level:>3}{kai:>4}    {short:>4}  {name:<30}")
+}
+/// DLL string (spec §2 level gate). ORACLE-VERIFY: unreachable via
+/// scroll-learned books, so never observed live; reachable via slice-4
+/// temp spells.
+pub const SPELL_TOO_POWERFUL: &str = "This spell is too powerful for you.";
+
+/// VERIFIED (oracle §8.6/§8.9): the caster's failed success-roll line.
+pub fn cast_fail(spell: &str) -> String {
+    format!("You attempt to cast {spell}, but fail.")
+}
+
+/// DLL string 00485be0 ("%s attempted to cast %s, but failed."), emitted to
+/// the room beside the caster's fail line (decompiled 39015/39375/43647).
+/// ORACLE-VERIFY: the template is DLL-exact, but single-session captures
+/// cannot show the observer side live.
+pub fn cast_fail_room(caster: &str, spell: &str) -> String {
+    format!("{caster} attempted to cast {spell}, but failed.")
+}
+
+/// VERIFIED (spellcasting.md §8.9): bare offensive cast with no resolvable
+/// bare-cast form — empty room or monsters-only room alike.
+pub const MUST_SPECIFY_TARGET: &str = "You must specify a target for that spell!";
+
+/// VERIFIED (§8.13): a benign single-target cast at a monster (`c blur
+/// cat`) and an area cast with an explicit monster word (`c stnk cat`)
+/// both refuse with this, uncharged.
+pub const MAY_NOT_CAST_ON_MONSTER: &str = "You may not cast that spell on a monster!";
+
+/// VERIFIED (§8.13): an area cast with an explicit player word
+/// (`c flash oracle`), uncharged.
+pub const MAY_NOT_CAST_ON_USER: &str = "You may not cast that spell on a user!";
+
+/// VERIFIED (§8.13): an area cast with no valid target in the room —
+/// a real pre-charge gate (mana unchanged), fired alone AND with other
+/// players present (players never count as area targets).
+pub const SPELL_NO_EFFECT_IN_ROOM: &str = "Your spell has no effect in this room!";
+
+/// VERIFIED (§8.13): the caster's failed-roll line for a TARGETED cast
+/// ("at Oracle" — the target-less form is [`cast_fail`]).
+pub fn cast_fail_at(spell: &str, target: &str) -> String {
+    format!("You attempt to cast {spell} at {target}, but fail.")
+}
+
+/// VERIFIED (§8.13): the room line beside [`cast_fail_at`]. The TARGET
+/// sees neither — a failed attempt is invisible to its victim.
+pub fn cast_fail_at_room(caster: &str, spell: &str, target: &str) -> String {
+    format!("{caster} attempted to cast {spell} at {target}, but failed.")
+}
+
+/// The target's own line of the resist family (spec §3 "You resisted
+/// %s's %s"; caster/room siblings [`cast_resisted`]/[`cast_resisted_room`]).
+/// ORACLE-VERIFY: no learnable benign spell carries a save class, so the
+/// player-target form was never measurable live.
+pub fn you_resisted(caster: &str, spell: &str) -> String {
+    format!("You resisted {caster}'s {spell}.")
+}
+
+/// VERIFIED (spellcasting.md §8.6/§8.9): bare offensive cast in a
+/// protected room (room `attributes & 1` — the Newhaven shops).
+pub const CAST_GUILT: &str =
+    "You are overcome with a feeling of guilt and break off your attack.";
+
+// --- item-target casts (cast_item_target 0x49232, DetectMagic case 0x1a
+// --- 44620-44667). All decompile-only — ORACLE-VERIFY (detect magic IS
+// --- learnable live: scroll 121, Newhaven Mage Spell Shop). Banding is on
+// --- the ITEM's Magical(28) value: 1 / 2-3 / 4-5 / 6+ / absent.
+pub fn glows_faintly(item: &str) -> String {
+    format!("{item} glows faintly, indicating a small amount of magic within.")
+}
+pub fn glows_softly(item: &str) -> String {
+    format!("{item} glows softly, indicating a good amount of magic within.")
+}
+pub fn glows_brightly(item: &str) -> String {
+    format!("{item} glows brightly, indicating a large amount of magic within.")
+}
+pub fn blinding_aura(item: &str) -> String {
+    format!(
+        "You are almost blinded by the aura from {item}, indicating immense magical properties!"
+    )
+}
+pub const NO_MAGIC_IN_ITEM: &str = "You detect no magic in that item!";
+/// DLL 0x4864e4 ("%s casts %s on %s.") — the item-cast room line (note the
+/// PERIOD; the castmsgb room lines end in bangs).
+pub fn casts_spell_on(caster: &str, spell: &str, target: &str) -> String {
+    format!("{caster} casts {spell} on {target}.")
+}
+
+/// DLL string 00485de3 ("Your spell has no effect on %s.") — the SpellImmu
+/// (139) refusal on a monster target (decompile cast_monster_target
+/// 43630-43638). ORACLE-VERIFY: no starter spell/monster pair reaches it.
+pub fn spell_no_effect_on(target: &str) -> String {
+    format!("Your spell has no effect on {target}.")
+}
+
+/// DLL string 00485fe3 ("You attempt to cast %s at %s, but the spell is
+/// resisted.") — the caster line when the monster's saving throw succeeds
+/// (decompile cast_monster_target 44234-44236). ORACLE-VERIFY: the starter
+/// spells are all SaveClass::None, so this is unreachable live for now.
+pub fn cast_resisted(spell: &str, target: &str) -> String {
+    format!("You attempt to cast {spell} at {target}, but the spell is resisted.")
+}
+
+/// DLL string 00486034 ("%s resisted %s's %s.") — the room line beside
+/// [`cast_resisted`] (decompile 44240). ORACLE-VERIFY as above.
+pub fn cast_resisted_room(target: &str, caster: &str, spell: &str) -> String {
+    format!("{target} resisted {caster}'s {spell}.")
+}
+
+// --- monster casts (monster_cast 0x27cc3; spellcasting.md §6). The DLL
+// --- prefixes each with an ANSI prompt-redraw blob (DAT_004812d1), not
+// --- part of the message text. The HIT fan-out is MEASURED (§8.14:
+// --- castmsgb victim line WITH damage / room line per the record,
+// --- typically without — moaning spirit 82, dragonfish 359); the
+// --- resist/fizzle families and the record-less default pair below
+// --- remain decompile-extracted, read from the binary at their cited
+// --- addresses (every §8.14-reachable caster carried a 100% form and
+// --- never rolled a resist).
+
+/// DLL 004812fb ("You resisted %s's cast of %s.") — the victim's line of
+/// the monster-cast resist family (decompile monster_cast 23067-23068);
+/// %s slots are the monster's instance name (no article) and the spell.
+pub fn you_resisted_monster_cast(monster: &str, spell: &str) -> String {
+    format!("You resisted {monster}'s cast of {spell}.")
+}
+
+/// DLL 0048131a ("%s resisted %s's cast of %s.") — the room line beside
+/// [`you_resisted_monster_cast`] (23071-23074).
+pub fn resisted_monster_cast_room(victim: &str, monster: &str, spell: &str) -> String {
+    format!("{victim} resisted {monster}'s cast of {spell}.")
+}
+
+/// DLL 00481338 ("The %s attempted to cast %s at you, but failed.") — the
+/// victim's line when the monster's cast-chance roll fails (23749-23752):
+/// a monster fizzle is NOT silent, unlike a player's out-of-mana round.
+pub fn monster_cast_fizzle(monster: &str, spell: &str) -> String {
+    format!("The {monster} attempted to cast {spell} at you, but failed.")
+}
+
+/// DLL 00481369 ("The %s attempted to cast %s at %s, but failed.") — the
+/// room line beside [`monster_cast_fizzle`] (23753-23757).
+pub fn monster_cast_fizzle_room(monster: &str, spell: &str, victim: &str) -> String {
+    format!("The {monster} attempted to cast {spell} at {victim}, but failed.")
+}
+
+/// DLL 00481277 ("%s cast %s on you.") — monster_display_spell_success's
+/// victim-line fallback when the spell has no castmsgb record (21687-21689).
+/// Note the PERIOD: the player-side default twins (00485978) end likewise.
+pub fn monster_cast_default(monster: &str, spell: &str) -> String {
+    format!("{monster} cast {spell} on you.")
+}
+
+/// DLL 0048128a ("%s cast %s on %s.") — the room-line fallback beside
+/// [`monster_cast_default`].
+pub fn monster_cast_default_room(monster: &str, spell: &str, victim: &str) -> String {
+    format!("{monster} cast {spell} on {victim}.")
+}
 
 /// VERIFIED (oracle, first line; remainder ORACLE-VERIFY).
 pub const HELP_BANNER: &str = "Type HELP followed by a topic for help on that topic";
@@ -282,11 +514,85 @@ pub fn cannot_sell_here(name: &str) -> String {
     format!("You cannot sell {name} here.")
 }
 pub const NOT_IN_SHOP_LIST: &str = "You cannot LIST if you are not in a shop!";
-/// Appended to a list row when user_can_use fails (items; spells get
-/// " (Too powerful)" — M5).
+/// VERIFIED (spellcasting.md §8.3): list-row suffixes. Non-scroll items
+/// gate by user_can_use → CANT_USE_SUFFIX. LearnSp scrolls gate by
+/// spell_gate on the taught spell: WrongClass → CANT_USE_SUFFIX,
+/// TooPowerful (character level below the spell's required power) →
+/// TOO_POWERFUL_SUFFIX.
 pub const CANT_USE_SUFFIX: &str = " (You can't use)";
+pub const TOO_POWERFUL_SUFFIX: &str = " (Too powerful)";
 pub const MAY_NOT_WEAR: &str = "You may not wear that item!";
 pub const MAY_NOT_USE_WEAPON: &str = "You may not use that weapon.";
+
+// --- spellbook strings (VERIFIED oracle_spell_train.raw /
+// oracle_spell_learning.raw; spellcasting.md §8.5) ---
+
+/// VERIFIED (oracle): the `spells` listing header pair.
+pub const SPELLS_HEADER: &str = "You have the following spells:\nLevel Mana Short Spell Name";
+/// VERIFIED (oracle): the empty-book reply — a single line, no header,
+/// no trailing blank.
+pub const NO_SPELLS: &str = "You have no spells.";
+
+/// VERIFIED (oracle_spell_train.raw lines 74-75/190-192): one book row.
+/// Measured columns: level right-aligned width 3, mana right-aligned
+/// width 4, four spaces, short name left-aligned width 6, spell name
+/// left-aligned width 30 — trailing spaces are part of the line
+/// (`  1   4    blur  blur` + 26 spaces). Shipped short names run 0-5
+/// chars (`spray` = 5), so the short column's 6 could also be 5 + a gutter —
+/// indistinguishable in the data we have.
+pub fn spell_row(level: i16, mana: i16, short: &str, name: &str) -> String {
+    format!("{level:>3}{mana:>4}    {short:<6}{name:<30}")
+}
+
+// --- use/read strings (VERIFIED oracle_spell_learning.raw /
+// oracle_use_verbs.raw / oracle_use_verbs2.raw; spellcasting.md §8.4) ---
+
+/// VERIFIED (§8.4): the learn line shared by both verbs.
+pub fn learned_spell(item: &str, spell: &str) -> String {
+    format!("You read {item} and learn the spell {spell}.")
+}
+/// VERIFIED (§8.4): `read`'s epilogue line (`use` prints a blank line
+/// instead).
+pub const SCROLL_DISINTEGRATES: &str = "Its magic used, the scroll disintegrates.";
+/// VERIFIED (§8.4): refusal for a too-high or wrong-class scroll AND for
+/// an owned item with no use action — the item is kept in every case.
+pub const MAY_NOT_USE_ITEM: &str = "You may not use that item!";
+/// VERIFIED (§8.4): a scroll whose spell is already in the book — both
+/// verbs, not consumed.
+pub const ALREADY_KNOW_SCROLL: &str = "You realize that you already know this scroll!";
+/// VERIFIED (§8.4): `use {arg}` with no owned match; `use` never falls
+/// back to the shop shelf.
+pub fn dont_have(name: &str) -> String {
+    format!("You don't have {name}.")
+}
+/// VERIFIED (§8.4): `read {arg}` with nothing owned and nothing visible.
+pub fn do_not_see_here(name: &str) -> String {
+    format!("You do not see {name} here!")
+}
+
+/// The item description paragraph (VERIFIED oracle_spell_cast.raw `read
+/// scroll of smite`, raw bytes): the stored desc lines re-flow as one word
+/// stream, each word emitted with a trailing space; a line breaks before
+/// the word that would pass the wrap column, and the break swallows the
+/// pending space — so interior lines end flush and the final line keeps
+/// one trailing space. Wrap column 79: the measured break bounds it to
+/// 77..=79 (line ends at col 77, next word would end at 80). ORACLE-VERIFY
+/// with a description whose lines re-flow near the boundary.
+pub fn item_description(lines: &[String]) -> String {
+    let mut out = String::new();
+    let mut col = 0usize;
+    for word in lines.iter().flat_map(|l| l.split_whitespace()) {
+        if col > 0 && col + word.len() > 79 {
+            out.pop(); // the wrap swallows the pending space
+            out.push('\n');
+            col = 0;
+        }
+        out.push_str(word);
+        out.push(' ');
+        col += word.len() + 1;
+    }
+    out
+}
 
 // --- healer strings (VERIFIED oracle_healer2.raw) ---
 pub fn healed(coins: &str) -> String {
@@ -295,6 +601,22 @@ pub fn healed(coins: &str) -> String {
 pub fn not_poisoned(coins: &str) -> String {
     format!("You hand over {coins} and find that you were not poisoned!")
 }
+
+/// DLL string 0xbd28d (" and your poisoning is cured.") — the healer's
+/// poisoned curing purchase. Trailing PERIOD, unlike [`not_poisoned`]'s
+/// bang. ORACLE-VERIFY: still no capture of THIS string — §8.14's live
+/// poisoned cure went through the Silvermere Temple healer, a TEXTBLOCK
+/// service (10 gold, "The healer casts cure poison on you!"), not the
+/// healer-shop path this string belongs to.
+pub fn poisoning_cured(coins: &str) -> String {
+    format!("You hand over {coins} and your poisoning is cured.")
+}
+
+/// VERIFIED (§8.14, patched-counter lifecycle): the slow-tick poison line
+/// (`regeneration.md` §4, decompile 19518-19524; DLL string 0xc775d) —
+/// measured live at counter 5: the line + counter damage + regen in the
+/// SAME tick (net -4), zero ticks after the healer cure.
+pub const YOU_FEEL_ILL: &str = "You feel ill.";
 
 /// A copper amount as coin words.
 pub fn copper_amount(total: u64) -> String {
@@ -328,11 +650,79 @@ pub fn player_crit(verb: &str, target: &str, damage: i32) -> String {
     format!("You critically {verb} {target} for {damage} damage!")
 }
 
-/// "The kobold thief stabs you for 5 damage!" — the verb comes from the
-/// attack form's hit message; "hits" is the fallback until message-table
-/// rendering lands.
-pub fn monster_hit(name: &str, verb: &str, damage: i32) -> String {
-    format!("The {name} {verb} you for {damage} damage!")
+/// Fills a DB printf-style message template: each `%s`/`%d` consumes the
+/// next argument in order (damage arrives pre-formatted — the DLL renders
+/// the observer's damage through `get_damage_descriptor`, a `%d` sprintf,
+/// and passes the result as a string). Slots beyond the argument list
+/// render empty, exactly like the DLL's always-passed trailing `""`
+/// arguments (decompile `attack_monster_user` 0x2e34b).
+///
+/// Sibling: [`render_cast_line`] does %-substitution for spell messages —
+/// there overflow slots pass through UNCHANGED (its decompile path has no
+/// trailing `""` args), so the two policies intentionally differ.
+pub fn fill_message(template: &str, args: &[&str]) -> String {
+    let mut out = String::with_capacity(template.len() + 16);
+    let mut next = 0;
+    let mut chars = template.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '%' && matches!(chars.peek(), Some('s' | 'd')) {
+            chars.next();
+            out.push_str(args.get(next).copied().unwrap_or(""));
+            next += 1;
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+// Generic monster-swing templates, used when an attack form lacks its
+// message records. Four shipped 1.11p monsters have such record-less melee
+// forms: healer (47, wielding item 64), zombie (492), and ju-ju zombie
+// (493 and 772). Extracted verbatim from WCCMMUD.DLL seg 0x1140 (file base
+// 0xc9c00; identical strings in the WG3-NT build, `attack_monster_user`
+// 0x2e34b / 16-bit 1040:4f2a). The verb/weapon `%s` slots are filled from
+// the wielded weapon's records (`move_monster_to_fighter` 1040:1739);
+// unarmed monsters render them empty.
+
+/// 1140:0x7b7 — record-less hit, victim view: (name, hit verb, damage).
+pub const MONSTER_HIT_TPL: &str = "%s %s you for %d damage!";
+
+/// 1140:0x7d1 — record-less hit, room view: (name, hit verb, victim,
+/// damage descriptor — `get_damage_descriptor` renders the plain number).
+pub const MONSTER_HIT_ROOM_TPL: &str = "%s %s %s for %s damage!";
+
+/// 1140:0xf6b — record-less glance (result 1), victim view: (name, swing
+/// verb).
+pub const MONSTER_GLANCE_TPL: &str = "%s's %s hits you, but your armour deflects.";
+
+/// 1140:0xf98 — record-less glance, room view: (name, swing verb — the
+/// VICTIM-view slot, same as 0xf6b —, victim, possessive pronoun).
+pub const MONSTER_GLANCE_ROOM_TPL: &str = "%s's %s hits %s, but glances off %s armour.";
+
+/// 1140:0xfc5 — record-less parry (result 3), victim view: (name, swing
+/// verb, weapon name).
+pub const MONSTER_DODGE_TPL: &str = "%s %s you with %s, but you dodge!";
+
+/// 1140:0xfe8 — record-less parry, room view: (name, swing verb, victim,
+/// weapon name, subject pronoun).
+pub const MONSTER_DODGE_ROOM_TPL: &str = "%s %s %s with its %s, but %s dodges.";
+
+/// 1140:0x100e — record-less plain miss, victim view: (name, swing verb,
+/// weapon name).
+pub const MONSTER_MISS_TPL: &str = "%s %s you with %s.";
+
+/// 1140:0x1022 — record-less plain miss, room view: (name, swing verb,
+/// victim, weapon name).
+pub const MONSTER_MISS_ROOM_TPL: &str = "%s %s %s with its %s.";
+
+/// `attack_monster_user` runs `toupper` on the first byte of every
+/// composed swing line (a no-op for record templates starting "The ...").
+pub fn capitalize_first(mut line: String) -> String {
+    if let Some(first) = line.get_mut(0..1) {
+        first.make_ascii_uppercase();
+    }
+    line
 }
 
 /// "%s drops to the ground!" (DLL + oracle).
@@ -349,6 +739,104 @@ pub fn monster_dead(name: &str) -> String {
 /// VERIFIED (DLL): "You gain %s experience."
 pub fn gain_experience(amount: u64) -> String {
     format!("You gain {amount} experience.")
+}
+
+/// Which audience a `castmsgb` line addresses. The discriminant is the
+/// line index within the message record: line 1 → caster, line 2 → target,
+/// line 3 → everyone else in the room.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CastAudience {
+    Caster = 0,
+    Target = 1,
+    Room = 2,
+}
+
+/// Substitution arguments for a cast message. Absent arguments (no target,
+/// no damage roll) are skipped, so target-less templates consume a prefix
+/// of the per-audience order.
+pub struct CastMsgArgs<'a> {
+    pub caster: &'a str,
+    pub target: Option<&'a str>,
+    pub spell: &'a str,
+    pub damage: Option<i32>,
+}
+
+/// Renders one line of a spell's `castmsgb` record, substituting `%s`/`%d`
+/// left to right from the audience-appropriate argument order. Two order
+/// tables, keyed on `odd_style` (callers pass `spell.msg_style & 1 == 1` —
+/// the decompile branches display_spell_success on `spell+0xa4 & 1`):
+///
+/// EVEN (VERIFIED, oracle §8.6 + mmud_wgnt.sqlite messages 3242/2/7):
+/// - caster line: spell, target, damage (the caster never appears);
+/// - target line: caster, spell, damage;
+/// - room line: caster, spell, target, damage.
+///
+/// ODD (~441 shipped spells, incl. fireball 120 / deathtouch 58; decompile
+/// display_spell_success else-branch 38040-38124: caster prf(line, target,
+/// damage), target prf(line, damage), room prf(line, target, damage) — NO
+/// spell-name slot and NO caster name anywhere; shape: message 8524).
+/// ORACLE-VERIFY: odd rendering is decompile-only — the lowest learnable
+/// odd spells are annointed hands (744, L10 benign instant, scroll 1179 /
+/// shop 111), dancing blades L11 and fireball L15; none measured live.
+/// - caster line: target, damage;
+/// - target line: damage;
+/// - room line: target, damage.
+///
+/// Caller obligations: for self-casts pass `target = Some(caster_name)` and
+/// do NOT deliver the Target line to anyone (oracle: `c blur` prints the
+/// caster line only); damage spells must pass `damage: Some(_)` or `%d`
+/// leaks literally; `damage: Some` without a resolved target mis-binds
+/// targeted templates ("You cast blur on 13!").
+///
+/// `%d` and `%s` both accept the damage integer — message 3242's room line
+/// uses `%s` for the number. Returns `None` for a missing or empty line
+/// (message 1, the empty message, renders nothing). A `%` not followed by
+/// `s`/`d`, or a placeholder beyond the available arguments, passes through
+/// unchanged — unlike sibling [`fill_message`], which renders overflow
+/// slots EMPTY to mirror the combat path's always-passed trailing `""`
+/// args; each policy matches its own decompile evidence. `castmsga` is the empty message on every sampled spell, so
+/// callers render `castmsgb` only and flag any spell shipping a non-empty
+/// `castmsga`.
+pub fn render_cast_line(
+    msg: &crate::content::Message,
+    audience: CastAudience,
+    args: &CastMsgArgs<'_>,
+    odd_style: bool,
+) -> Option<String> {
+    let line = msg.lines.get(audience as usize)?;
+    if line.is_empty() {
+        return None;
+    }
+    let damage = args.damage.map(|d| d.to_string());
+    let damage = damage.as_deref();
+    let order: [Option<&str>; 4] = match (odd_style, audience) {
+        (false, CastAudience::Caster) => [Some(args.spell), args.target, damage, None],
+        (false, CastAudience::Target) => {
+            [Some(args.caster), Some(args.spell), damage, None]
+        }
+        (false, CastAudience::Room) => {
+            [Some(args.caster), Some(args.spell), args.target, damage]
+        }
+        (true, CastAudience::Caster) | (true, CastAudience::Room) => {
+            [args.target, damage, None, None]
+        }
+        (true, CastAudience::Target) => [damage, None, None, None],
+    };
+    let mut next_arg = order.into_iter().flatten();
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '%'
+            && matches!(chars.peek(), Some('s' | 'd'))
+            && let Some(arg) = next_arg.next()
+        {
+            chars.next();
+            out.push_str(arg);
+            continue;
+        }
+        out.push(c);
+    }
+    Some(out)
 }
 
 /// VERIFIED (DLL): coin denomination names, low to high.
@@ -379,12 +867,18 @@ pub fn coin_pile_names(piles: [u32; 5]) -> Option<String> {
     }
 }
 
-/// VERIFIED (oracle): the status prompt. Caster/Kai variants ORACLE-VERIFY.
-pub fn prompt(hp: i32, mana: i32, caster_group: i16) -> String {
-    match caster_group {
-        1..=4 => format!("[HP={hp}/MA={mana}]:"),
-        5 => format!("[HP={hp}/KAI={mana}]:"),
-        _ => format!("[HP={hp}]:"),
+/// VERIFIED (oracle): the status prompt. The mana segment appears only
+/// while the max pool is non-zero (MEASURED §8.12: the L1 mystic prompt
+/// is `[HP=28]:`, KAI from L2; §8.2 mage `[HP=26/MA=12]:`; warrior
+/// HP-only) — the same `+0x600 != 0` gate as show_health.
+pub fn prompt(hp: i32, mana: i32, max_mana: i32, caster_group: i16) -> String {
+    if max_mana == 0 {
+        return format!("[HP={hp}]:");
+    }
+    if caster_group == 5 {
+        format!("[HP={hp}/KAI={mana}]:")
+    } else {
+        format!("[HP={hp}/MA={mana}]:")
     }
 }
 
@@ -403,12 +897,19 @@ pub struct SheetData<'a> {
     pub armour_max: i32,
     pub stats: crate::content::StatBlock,
     pub derived: &'a crate::stats::Derived,
+    /// DescMsg line3 of each active duration spell, in slot order —
+    /// appended after the MagicRes row (MEASURED §8.11).
+    pub active_lines: &'a [String],
+    pub mana_current: i32,
+    pub mana_max: i32,
+    pub caster_group: i16,
 }
 
 /// VERIFIED (oracle): the nine-line status sheet, byte-exact to the
 /// transcript except the whitelisted Martial Arts WG3-NT/DOS divergence.
 /// Three columns at 0/18/39; right column label+value is 18 wide.
-/// Non-caster layout; the caster Mana/Spellcasting line is ORACLE-VERIFY.
+/// Non-caster layout + the measured kai row (§8.12); the groups 1-4
+/// Mana/Spellcasting line is still ORACLE-VERIFY.
 pub fn stat_sheet(d: &SheetData<'_>) -> String {
     let mut out = String::new();
     let mut row = |left: String, mid: String, right: String| {
@@ -440,8 +941,16 @@ pub fn stat_sheet(d: &SheetData<'_>) -> String {
         format!("Armour Class:{:>4}/{}", d.armour_class, d.armour_max),
         format!("Thievery:{:>9}", d.derived.thievery),
     );
+    // MEASURED (§8.12): the mystic mana row fills the Traps row's left
+    // column (`Kai:      0/1`; 0/0 at L1 — shown regardless of max).
+    // ORACLE-VERIFY: the groups 1-4 `Mana:` analog is unmeasured; the
+    // non-caster blank is oracle-verified, so only group 5 renders.
     row(
-        String::new(),
+        if d.caster_group == 5 {
+            format!("Kai:{:>7}/{}", d.mana_current, d.mana_max)
+        } else {
+            String::new()
+        },
         String::new(),
         format!("Traps:{:>12}", d.derived.find_traps),
     );
@@ -465,5 +974,12 @@ pub fn stat_sheet(d: &SheetData<'_>) -> String {
         format!("Charm:{:>5}", d.stats.charm),
         format!("MagicRes:{:>9}", d.derived.magic_resist),
     );
+    // MEASURED (§8.11): each active duration spell's DescMsg line3
+    // ("You are blurred!") appends directly after the MagicRes row and
+    // disappears with the slot.
+    for line in d.active_lines {
+        out.push_str(line);
+        out.push('\n');
+    }
     out
 }

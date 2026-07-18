@@ -24,6 +24,7 @@ fn world_with_slot(slot: ShopStock) -> Content {
         name: "Shop".into(),
         description: vec![],
         room_type: 1,
+        attributes: 0,
         shop: Some(ShopId(45)),
         placed_items: vec![],
         exits: Default::default(),

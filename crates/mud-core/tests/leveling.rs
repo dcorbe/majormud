@@ -5,7 +5,7 @@
 use mud_core::content::{
     Class, ClassId, Content, Race, RaceId, Room, RoomId, Shop, ShopId, StatBlock,
 };
-use mud_core::game::{AccountProfile, Core, CoreConfig, Event, Gender, SessionId};
+use mud_core::game::{AccountProfile, Coins, Core, CoreConfig, Event, Gender, SessionId};
 use mud_core::stats::exp_needed;
 
 #[test]
@@ -46,6 +46,7 @@ fn world() -> Content {
         name: "Village Entrance".into(),
         description: vec![],
         room_type: 0,
+        attributes: 0,
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
@@ -62,6 +63,7 @@ fn world() -> Content {
         name: "Adventurer's Guild".into(),
         description: vec![],
         room_type: 0,
+        attributes: 0,
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
@@ -210,7 +212,7 @@ fn successful_training_levels_up_with_all_effects() {
     let mut core = Core::new(world(), config());
     let s = create(&mut core);
     core.add_experience(s, 1300);
-    core.give_copper(s, 100); // cost at L1, markup 0: (0+100)*(1*5)/100 = 5
+    core.give_copper(s, 100); // cost at L1, markup 0: (0+100)*(1*5)/100 = 5 silver = 50 copper
     core.input(s, "n");
     core.drain_events();
 
@@ -229,8 +231,8 @@ fn successful_training_levels_up_with_all_effects() {
     assert_eq!(p.cp_lifetime, 110);
     // HP-base roll: += genrdn(0, hp_seed+1), so within [4, 8].
     assert!(p.hp_base >= 4 && p.hp_base <= 8, "hp_base {}", p.hp_base);
-    // Cost deducted.
-    assert_eq!(p.coins.copper, 95);
+    // Cost deducted: 5 silver = 50 copper from the 100-copper purse.
+    assert_eq!(p.coins.copper, 50);
     // Training does not heal: current HP untouched (still creation max 35).
     assert_eq!(p.current_hp, 35);
 }
@@ -241,7 +243,7 @@ fn training_needs_exp_for_the_current_level_only() {
     let mut core = Core::new(world(), config());
     let s = create(&mut core);
     core.add_experience(s, 1300);
-    core.give_copper(s, 100);
+    core.give_copper(s, 200); // L1->2 costs 50 copper, L2->3 costs 100
     core.input(s, "n");
     core.drain_events();
     core.input(s, "train");
@@ -261,6 +263,36 @@ fn training_needs_exp_for_the_current_level_only() {
         shown.contains("you receive training to attain level 3."),
         "got: {shown:?}"
     );
+}
+
+#[test]
+fn train_cost_is_silver_denominated() {
+    // MEASURED (§8.7): a mage at the markup-0 shop 38 paid "5 silver
+    // nobles" for L1->2 — the formula value (0+100)*1*5/100 = 5 is
+    // SILVER, not copper. A purse holding silver nobles hands them over
+    // whole; byte-exact receipt from the capture.
+    let mut core = Core::new(world(), config());
+    let s = create(&mut core);
+    core.add_experience(s, 1300);
+    core.set_coins(
+        s,
+        Coins {
+            silver: 5,
+            ..Default::default()
+        },
+    );
+    core.input(s, "n");
+    core.drain_events();
+    core.input(s, "train");
+    let shown = text_to(&core.drain_events(), s);
+    assert!(
+        shown.contains(
+            "You hand over 5 silver nobles and you receive training to attain level 2.\n"
+        ),
+        "got: {shown:?}"
+    );
+    let p = core.player_snapshot(s);
+    assert_eq!(p.coins.silver, 0, "the whole 5-noble purse was spent");
 }
 
 #[test]

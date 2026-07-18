@@ -24,6 +24,79 @@ Vertical slices in dependency order; each slice ends green, hand-testable,
 and committed. Engine-first was rejected: no playable feedback until late,
 big-bang integration risk.
 
+**Status (2026-07-17):** Slices 1-4 COMPLETE on branch m5-magic — content
+layer (all 1379 spells load/validate), spellbook (scroll-only learning,
+oracle-proven), cast skeleton (deferred-fire combat model, Damage(-MR),
+protected rooms, saves), duration engine (active slots, upkeep,
+termination + EndCast chaining) — live gates passed against the real DB.
+Slice 4's upkeep tick is oracle-measured at ~3 s (§8.11: blur's 70 ticks
+≈ 3.5 min) and player death terminates every slot with the EndCast chain
+SUPPRESSED (decompile 13053-13066 — unlike reroll's honored chain).
+Implementation-corrected details live in the slice plans and
+spellcasting.md §8; where this doc's slice 2/3 bullets disagree with those
+(auto-pick targeting, friendly-NPC guilt inference, magnitude swap), the
+measured/decompiled versions win.
+
+Slice 5 COMPLETE (2026-07-17): kai powers + invoke, player-target benign
+casts, area casts, poison + healer cure, msgstyle-odd, item-target
+skeleton — two oracle expeditions (§8.12/§8.13) plus goldens. Key
+discoveries: kai powers are TRAINER-GRANTED into the ordinary spellbook
+(one per level, announced in the train receipt — the class-keyed
+complement of §8.1's "a mage's train grants nothing"); players are NEVER
+area targets — measured alone, with players present, and with an explicit
+player word (the DLL's player sweep is flag-gated, so match-12 areas have
+no PvP path); and train's cost formula is SILVER-denominated — the value
+converts through `ratios[0]` like the healer services (§8.12's
+copper-only mystic paid 50/100 copper for the receipts' 5/10; we had been
+charging the raw value as copper). Next: slice 6 (monster casting).
+
+Slice 6 STATUS (2026-07-18) — landed, with ONE known open item. What
+landed: the kind-2 cast dispatch in the monster attack driver (flat
+success % as a strict `genrdn(0,100) <` compare, the whole cast inside
+the form's energy gate — full cost on a landed cast, half floored at 1
+on a resist/fizzle, silent skip when unaffordable); the player-side
+saving throw (SpellImmu auto-resist independent of the chance roll,
+`min(mr/2, 97)` — the 97 cap is one BELOW the player-cast path's 98);
+the instant-effect table at the player (Damage/DamageMR/Drain/Poison/
+Summon/EnergyLevel/hunger/thirst) and the duration entry via the
+`monster_add_cast_spell_to_user` semantics (refresh only if the new
+value EXCEEDS the stored one, fixed duration, display only on a real
+write, full refund + silent abort on a rejected entry, poison
+hard-write AFTER the entry — these §6 spec corrections are commit
+4952ce0); monster 5-slot arrays with reduced upkeep and a termination
+that reverses only Enslave + Poison, no EndCast chain; live poison
+delivery end to end; Summon spawns; player-side Fear-flee; AlterSpDmg
+folds. Oracle §8.14 measured the hit fan-out live (victim castmsgb line
+WITH the damage number, room line WITHOUT — a simultaneous pair; no
+cast-level scaling beyond the record band for spells 82/359), the full
+poison lifecycle (`st` "You are Poisoned!", "You feel ill." ticks net
+of regen, temple-healer cure), the flat -200 death floor, and free
+per-round cast retargeting (an M6-tagged divergence note sits in the
+driver); the resist and fizzle lines stay decompile-only — every
+reachable caster carried a 100% form. Goldens: tests/monster_cast.rs
+(30 tests) + the spell_scenario slice-6 companion (65% caster fight +
+venom lifecycle, seeded).
+
+RESOLVED (commit 71e2ae5): `monster_cast_area` is IMPLEMENTED — all 101
+area/match-1 cast forms live (dragonfire, hellstorm, chaos storm...).
+Decompile-faithful quirks: players-only iteration, silent per-target
+saves at count time (97 cap, SpellImmu never read), silent fizzle with
+half charge, no-refund room-entry abort, instant Damage(1) only for
+match 5/10/13 (the 12 shipped match-12 Damage carriers are dead rows),
+dispel-drops-victim, self-slot for match {1,2,4,6}. §8.14's dragonfish
+line reconciled: a single-occupant area cast is indistinguishable from
+a targeted one. The `st` "You are Poisoned!" sheet line is rendered
+(bare counter, appended after the active lines — ordering ORACLE-OPEN).
+
+**M5 COMPLETE (2026-07-18):** all six slices landed; 509 tests; final
+review passed. Live hand-verification along the way: slice-2 shop/learn
+byte-diff vs the oracle, slice-3 giant-rat kill, slice-4 blur wear-off
+at +213.4s (oracle band 211.97-214.36s), slice-5 two-session blur,
+slice-6 moaning-spirit drain line. Remaining ORACLE-VERIFY inventory
+(80 in src) is the M6 punch list — headliners: FUN_0043e3db worn-item
+immunity predicate, area fan-out with >1 player, monster resist/fizzle
+lines (no reachable <100% caster), healer 25-silver poisoned price.
+
 ## Slice 1 — Content layer: the full Spell record
 
 `Spell` in `content.rs` grows from 6 fields to the full cast-path record,
@@ -38,12 +111,14 @@ mapped 1:1 from spec §1's offset table:
   numerator/denominator byte pairs (+0xf2/f3, +0xf6/f7)
 - **Duration:** `duration` (+0xce; 0 = instant), per-level num/denom
   (+0xf8/f9), per-level multiplier (+0xca)
-- **Element:** `damage_element` (+0xd0) as an enum
+- **Element:** `element` (+0xd0) as an enum
   (Cold/Fire/Stone/Lightning/Water/Poison)
 
 `match_type` and `target_mode` are enums; unknown values fail boot
-validation. Additional validation: zero scaling denominators only legal with
-zero numerators; `EndCast` (151) ability values must reference existing spell
+validation. Additional validation: zero scaling denominators are LEGAL
+shipped data (magic missile ships one; the runtime guard yields 0 — corrected
+during slice 1, do not re-introduce a load error here); `EndCast` (151)
+ability values must reference existing spell
 ids (same dangling-reference treatment as messages). Deliverable: full-DB
 boot test proving every real spell validates (the M0 pattern). No behavior.
 
@@ -81,6 +156,13 @@ boot test proving every real spell validates (the M0 pattern). No behavior.
   effect. Success: full costs, then magnitude
   `L = min(power, level_cap)`, scaled bounds from the fraction pairs,
   `V = genrdn(0, hi-lo+1) + lo`.
+- **Target saving throw** (found during planning; spec §3 corrected): on a
+  successful targeted cast, the target saves per the spell's save class
+  (`typeofresists` +0xc6): 0 = never, 1 = only if target has AntiMagic,
+  2 = always — roll `genrdn(1,100) <= min(targetSC/2, 98)`; SpellImmu
+  auto-resists. Resist costs the caster like a failure (full round, half
+  mana) with the "You resisted %s's %s" message family. Applies to both
+  user- and monster-target player casts.
 - **Instant handlers (single-target):** Damage (element-resisted, routed
   through the M3 kill/exp-split path), Heal, Drain, EnergyLevel,
   hunger/thirst.
@@ -140,9 +222,10 @@ boot test proving every real spell validates (the M0 pattern). No behavior.
 - **Economics:** no mana, no round pool, no half-cost-on-fail. Flat
   per-attack success % vs `genrdn(0,100)`; forced casts (index −1) always
   fire.
-- **Saving throw** (targets of monster casts only): SpellImmu (139), spell
-  power vs the attack's save DC, AntiMagic (51), target SC halved as a roll.
-  Save prints "You resisted %s's cast of %s" and halves/negates.
+- **Saving throw**: like the player-cast save (slice 3) but extended with
+  the template's per-attack save DC vs spell power, and not gated on the
+  spell's save class (unverified — check during this slice). Save prints
+  "You resisted %s's cast of %s" and halves/negates.
 - **Effect entry:** same player 10-slot array, simpler policy — refresh only
   if the new value exceeds the current; fixed duration, no caster scaling,
   no AlterSpLength. Spells targeting monsters use the monster **5-slot**

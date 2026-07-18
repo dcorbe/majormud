@@ -11,6 +11,7 @@ fn two_room_content() -> Content {
         name: "Town Gates".into(),
         description: vec![],
         room_type: 0,
+        attributes: 0,
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
@@ -25,6 +26,7 @@ fn two_room_content() -> Content {
         name: "Town Square".into(),
         description: vec![],
         room_type: 0,
+        attributes: 0,
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
@@ -64,6 +66,9 @@ fn player(name: &str) -> Player {
         lives: 9,
         experience: 0,
         location: RoomId { map: 1, room: 1 },
+        spellbook: std::collections::BTreeMap::new(),
+        poison: 0,
+        active_spells: Default::default(),
     }
 }
 

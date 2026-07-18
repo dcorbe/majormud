@@ -16,6 +16,7 @@ fn base_content() -> Content {
         name: "Shop".into(),
         description: vec![],
         room_type: 1,
+        attributes: 0,
         shop: Some(ShopId(33)),
         placed_items: vec![],
         exits: Default::default(),

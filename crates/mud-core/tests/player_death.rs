@@ -33,6 +33,7 @@ fn executioner() -> Monster {
                 min_damage: 60,
                 max_damage: 60,
                 hit_msg: None,
+                dodge_msg: None,
                 miss_msg: None,
                 energy: 200, // five swings per round: 300 damage
             },
@@ -51,6 +52,7 @@ fn world() -> Content {
         name: "Arena".into(),
         description: vec![],
         room_type: 0,
+        attributes: 0,
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
@@ -60,6 +62,7 @@ fn world() -> Content {
         name: "Newhaven, Healer".into(),
         description: vec![],
         room_type: 0,
+        attributes: 0,
         shop: None,
         placed_items: vec![],
         exits: Default::default(),

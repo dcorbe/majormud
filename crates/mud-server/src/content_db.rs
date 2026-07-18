@@ -10,9 +10,9 @@ use std::path::Path;
 
 use mud_core::ability::Ability;
 use mud_core::content::{
-    AbilityValue, AttackForm, Class, ClassId, Content, Exit, Item, ItemId, LootSlot, Message,
-    MessageId, Monster, MonsterId, PlacedItem, Race, RaceId, Room, RoomId, Shop, ShopId,
-    ShopStock, Spell, SpellId, StatBlock,
+    AbilityValue, AttackForm, Class, ClassId, Content, Element, Exit, Item, ItemId, LootSlot,
+    MatchType, Message, MessageId, Monster, MonsterId, PlacedItem, Race, RaceId, Room, RoomId,
+    SaveClass, ScalePair, Shop, ShopId, ShopStock, Spell, SpellId, StatBlock, TargetMode,
 };
 use rusqlite::Connection;
 
@@ -74,6 +74,10 @@ fn to_i16(table: &'static str, field: &str, v: i64) -> Result<i16, LoadError> {
     i16::try_from(v).map_err(|_| invalid(table, format!("{field} = {v} does not fit i16")))
 }
 
+fn to_u8(table: &'static str, field: &str, v: i64) -> Result<u8, LoadError> {
+    u8::try_from(v).map_err(|_| invalid(table, format!("{field} = {v} does not fit u8")))
+}
+
 /// `0` (and negatives) mean "no message" in the data.
 fn opt_message(table: &'static str, field: &str, v: i64) -> Result<Option<MessageId>, LoadError> {
     if v <= 0 {
@@ -127,7 +131,7 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
         .collect::<Vec<_>>()
         .join(", ");
     let mut stmt = db.prepare(&format!(
-        "SELECT mapnumber, roomnumber, name, shopnum, {descs}, {exits}, {placed}, type FROM room"
+        "SELECT mapnumber, roomnumber, name, shopnum, {descs}, {exits}, {placed}, type, attributes FROM room"
     ))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
@@ -160,6 +164,7 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
             name: row.get(2)?,
             description,
             room_type: to_i16("room", "type", row.get(41 + 17 * 2)?)?,
+            attributes: to_i16("room", "attributes", row.get(41 + 17 * 2 + 1)?)?,
             shop: (shopnum > 0)
                 .then(|| to_u16("room", "shopnum", shopnum).map(ShopId))
                 .transpose()?,
@@ -204,7 +209,7 @@ fn load_monsters(db: &Connection, content: &mut Content) -> Result<(), LoadError
             format!(
                 "attacktype_{i}, attackaccuspell_{i}, attackper_{i}, \
                  attackminhcastper_{i}, attackmaxhcastlvl_{i}, attackhitmsg_{i}, \
-                 attackmissmsg_{i}, attackenergy_{i}"
+                 attackdodgemsg_{i}, attackmissmsg_{i}, attackenergy_{i}"
             )
         })
         .collect::<Vec<_>>()
@@ -225,7 +230,7 @@ fn load_monsters(db: &Connection, content: &mut Content) -> Result<(), LoadError
     while let Some(row) = rows.next()? {
         let mut attacks = [AttackForm::default(); 5];
         for (i, form) in attacks.iter_mut().enumerate() {
-            let base = 37 + i * 8;
+            let base = 37 + i * 9;
             *form = AttackForm {
                 kind: to_i16("monster", "attacktype", row.get(base)?)?,
                 accuracy: to_i16("monster", "attackaccuspell", row.get(base + 1)?)?,
@@ -233,11 +238,12 @@ fn load_monsters(db: &Connection, content: &mut Content) -> Result<(), LoadError
                 min_damage: to_i16("monster", "attackminhcastper", row.get(base + 3)?)?,
                 max_damage: to_i16("monster", "attackmaxhcastlvl", row.get(base + 4)?)?,
                 hit_msg: opt_message("monster", "attackhitmsg", row.get(base + 5)?)?,
-                miss_msg: opt_message("monster", "attackmissmsg", row.get(base + 6)?)?,
-                energy: to_i16("monster", "attackenergy", row.get(base + 7)?)?,
+                dodge_msg: opt_message("monster", "attackdodgemsg", row.get(base + 6)?)?,
+                miss_msg: opt_message("monster", "attackmissmsg", row.get(base + 7)?)?,
+                energy: to_i16("monster", "attackenergy", row.get(base + 8)?)?,
             };
         }
-        let weapon_col = 37 + 5 * 8;
+        let weapon_col = 37 + 5 * 9;
         let weapon = match to_u16("monster", "weaponnumber", row.get(weapon_col)?)? {
             0 => None,
             id => Some(ItemId(id)),
@@ -310,7 +316,9 @@ fn load_items(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
          missmsg, notdroppable, retainafteruses, destroyondeath, \
          class_1, class_2, class_3, class_4, class_5, class_6, class_7, \
          class_8, class_9, class_10, race_1, race_2, race_3, race_4, \
-         race_5, race_6, race_7, race_8, race_9, race_10 FROM item"
+         race_5, race_6, race_7, race_8, race_9, race_10, \
+         desc1, desc2, desc3, desc4, desc5, desc6, desc7, desc8, desc9 \
+         FROM item"
     ))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
@@ -339,9 +347,17 @@ fn load_items(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
                 races.push(RaceId(to_u16("item", "race", r)?));
             }
         }
+        // desc1..desc9 trail the query (indexes base+41..base+49).
+        let mut description: Vec<String> = (base + 41..base + 50)
+            .map(|i| row.get(i))
+            .collect::<Result<_, _>>()?;
+        while description.last().is_some_and(|l| l.is_empty()) {
+            description.pop();
+        }
         content.add_item(Item {
             id: ItemId(to_u16("item", "number", row.get(0)?)?),
             name: row.get(1)?,
+            description,
             abilities,
             classes,
             races,
@@ -374,19 +390,62 @@ fn load_items(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
 
 fn load_spells(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
     let mut stmt = db.prepare(&format!(
-        "SELECT number, name, shortname, castmsga, castmsgb, {}, {} FROM spell",
+        "SELECT number, name, shortname, castmsga, castmsgb, {}, {}, \
+         levelcap, energy, level, min, max, spelltype, typeofresists, \
+         difficulty, undefined01, target, duration, typeofattack, magerya, \
+         mana, maxincrease, lvlsmaxincr, mageryb, minincrease, lvlsminincr, \
+         durincrease, lvlsdurincr, msgstyle FROM spell",
         ability_cols("abilitya"),
         ability_cols("abilityb"),
     ))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
+        let field = |name: &str, idx: usize| -> Result<i16, LoadError> {
+            to_i16("spell", name, row.get(idx)?)
+        };
+        let pair = |na: &str, ia: usize, nb: &str, ib: usize| -> Result<ScalePair, LoadError> {
+            Ok(ScalePair {
+                per: to_u8("spell", na, row.get(ia)?)?,
+                levels: to_u8("spell", nb, row.get(ib)?)?,
+            })
+        };
+        let num = to_u16("spell", "number", row.get(0)?)?;
+        let target_mode = field("spelltype", 30)?;
+        let save_class = field("typeofresists", 31)?;
+        let match_type = field("target", 34)?;
+        let element = field("typeofattack", 36)?;
         content.add_spell(Spell {
-            id: SpellId(to_u16("spell", "number", row.get(0)?)?),
+            id: SpellId(num),
             name: row.get(1)?,
             short_name: row.get(2)?,
             cast_msg_a: opt_message("spell", "castmsga", row.get(3)?)?,
             cast_msg_b: opt_message("spell", "castmsgb", row.get(4)?)?,
             abilities: ability_pairs("spell", row, 5, 15)?,
+            level_cap: field("levelcap", 25)?,
+            round_cost: field("energy", 26)?,
+            required_power: field("level", 27)?,
+            min_base: field("min", 28)?,
+            max_base: field("max", 29)?,
+            target_mode: TargetMode::from_i16(target_mode).ok_or_else(|| {
+                invalid("spell", format!("spell {num}: spelltype = {target_mode}"))
+            })?,
+            save_class: SaveClass::from_i16(save_class).ok_or_else(|| {
+                invalid("spell", format!("spell {num}: typeofresists = {save_class}"))
+            })?,
+            base_chance: field("difficulty", 32)?,
+            duration_per_level: field("undefined01", 33)?,
+            match_type: MatchType::from_i16(match_type)
+                .ok_or_else(|| invalid("spell", format!("spell {num}: target = {match_type}")))?,
+            duration: field("duration", 35)?,
+            element: Element::from_i16(element)
+                .ok_or_else(|| invalid("spell", format!("spell {num}: typeofattack = {element}")))?,
+            class_gate_group: field("magerya", 37)?,
+            mana_cost: field("mana", 38)?,
+            max_increase: pair("maxincrease", 39, "lvlsmaxincr", 40)?,
+            required_class_level: field("mageryb", 41)?,
+            min_increase: pair("minincrease", 42, "lvlsminincr", 43)?,
+            duration_increase: pair("durincrease", 44, "lvlsdurincr", 45)?,
+            msg_style: field("msgstyle", 46)?,
         });
     }
     Ok(())
