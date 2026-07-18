@@ -1,11 +1,21 @@
-"""Shared driver for MBBSEmu MajorMUD oracle sessions."""
-import socket, time, re, sys
+"""Shared driver for MBBSEmu MajorMUD oracle sessions.
+
+Connection defaults come from the environment so a relocated oracle
+(permanent installation, different host/port) needs no script edits:
+set MBBS_HOST / MBBS_PORT, or rely on the localhost:2327 fallback.
+"""
+import os, socket, time, re, sys
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
+MBBS_HOST = os.environ.get("MBBS_HOST", "127.0.0.1")
+MBBS_PORT = int(os.environ.get("MBBS_PORT", "2327"))
+
 class Session:
-    def __init__(self, host="127.0.0.1", port=2327, rawfile=None):
-        self.s = socket.create_connection((host, port), timeout=10)
+    def __init__(self, host=None, port=None, rawfile=None):
+        self.s = socket.create_connection(
+            (host or MBBS_HOST, port or MBBS_PORT), timeout=10
+        )
         self.t = b""
         self.raw = open(rawfile, "wb") if rawfile else None
 

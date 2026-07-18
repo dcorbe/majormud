@@ -102,3 +102,17 @@ Character: Oracle Delver, Dwarf Warrior, not Lawful, default stats.
   (prints the clean-log delta).
 - `oracle_mcast_babysit.py` — camp watcher: auto-flees bad spawns,
   auto-fights whitelisted casters, HP-floor flee (island cave camp).
+
+## Relocating the oracle (permanent installation)
+
+Connection info is environment-driven — no script edits needed:
+
+    export MBBS_HOST=<new host>   # default 127.0.0.1
+    export MBBS_PORT=<new port>   # default 2327
+
+`mudlib.Session()` and the standalone FIFO drivers all honor these.
+When the oracle moves to a fresh installation, all characters must be
+re-rolled (fresh WCCUSERS): the character roster documented across
+§8.x (Zinvar, Kaimon, Oracle) belongs to the OLD install and those
+sections' character-state notes become historical. The measured game
+BEHAVIOR is installation-independent and stays authoritative.

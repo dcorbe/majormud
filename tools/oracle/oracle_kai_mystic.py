@@ -43,7 +43,7 @@ def main():
         os.remove(FIFO)
     os.mkfifo(FIFO)
     ffd = os.open(FIFO, os.O_RDWR | os.O_NONBLOCK)  # RDWR: no EOF spin
-    sock = socket.create_connection(("127.0.0.1", 2327), timeout=10)
+    sock = socket.create_connection((os.environ.get("MBBS_HOST", "127.0.0.1"), int(os.environ.get("MBBS_PORT", "2327"))), timeout=10)
     sock.setblocking(False)
     rawf = open(RAW, "ab")
     logf = open(LOG, "a", buffering=1)
