@@ -71,3 +71,7 @@ Character: Oracle Delver, Dwarf Warrior, not Lawful, default stats.
 - `oracle_blur_duration.py` — interactive FIFO-driven session with
   millisecond-timestamped clean log (for wall-clock measurements); commands
   `send`/`raw`/`quit` echoed into a FIFO, raw capture + timing log split.
+- `oracle_kai_mystic.py` — same FIFO driver parameterized by raw-file path
+  (mystic/kai expedition, spellcasting.md §8.12). Lessons: the FSD editor's
+  Enter is CR NUL (`\r\x00` — bare `\r` is swallowed); stop MBBSEmu with
+  `kill -INT` (the TUI eats `^C`; SIGTERM loses game-DB rows).

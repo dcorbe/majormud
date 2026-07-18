@@ -1,0 +1,972 @@
+1784331482.072 !! driver connected raw=/home/daniel/bbs/re/oracle/oracle_kai_mystic.raw
+1784331482.116 RX ╔══════════════════════════════════════════════════════════╗
+1784331482.116 RX ║█████████████████▄███████▄███████▄████████████████████████║
+1784331482.116 RX ║██████████████▀▀██████▀▀██████▀▀▀▀███▀▀▀▀█████████████████║
+1784331482.116 RX ║██████████████████▀███████▀███████████████████████████████║
+1784331482.116 RX ║███▀███▀██████▀▀██████▀▀███▀▀▀▀██████▀▀▀████▀███▀█████████║
+1784331482.116 RX ║████▀▀▀███████████▀███████▀██████████████████▀▀▀████▀████▀║
+1784331482.116 RX ║▀▀▀█████▀▀▀▀▀▀▀▀▀▀█▀▀▀▀▀▀▀█▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀█████▀▀▀█▀▀▀▀▀║
+1784331482.116 RX ║██████████████╘═╡ The MajorBBS Emulator ╞═╛███████████████║
+1784331482.116 RX ║████████████████│ By: MBBSEmu Community │█████████████████║
+1784331482.116 RX ║                │https://www.mbbsemu.com│                 ║
+1784331482.116 RX ╚══════════════════════════════════════════════════════════╝
+1784331482.116 RX  
+1784331482.116 RX Enter Username or enter "NEW" to create a new Account
+1784331483.088 PART Username:  ²
+1784331492.915 TX NEW
+1784331492.915 RX NEW
+1784331492.921 RX ╔═══════════════════════════════════════════╗
+1784331492.921 RX ║     Welcome to The MajorBBS Emulator      ║
+1784331492.921 RX ║                                           ║
+1784331492.921 RX ║    Bringing The MajorBBS & Worldgroup     ║
+1784331492.921 RX ║              BACK TO LIFE                 ║
+1784331492.921 RX ╠═══════════════════════════════════════════╣
+1784331492.921 RX ║  Creating an account in MBBSEmu is easy!  ║
+1784331492.921 RX ║  You will only need to provide a unique   ║
+1784331492.921 RX ║  Username, secure Password, Gender and    ║
+1784331492.921 RX ║  a valid e-Mail address.                  ║
+1784331492.921 RX ╚═══════════════════════════════════════════╝
+1784331492.922 RX 
+1784331492.922 RX Please enter a unique Username (Max. 29 Characters):
+1784331500.975 TX Kaimon
+1784331500.976 RX Kaimon
+1784331500.994 RX 
+1784331500.994 RX NOTE: Passwords are stored in a local database hashed with SHA-512+unique salt.
+1784331500.994 RX The MajorBBS and Worldgroup have a maximum password size of only 9 characters,
+1784331500.994 RX so please select a strong, unique password that you have never used before
+1784331500.994 RX and will only use on this system.
+1784331500.994 RX 
+1784331500.994 RX Please enter a strong Password:
+1784331506.890 TX test123
+1784331506.891 RX *******
+1784331506.891 RX 
+1784331506.891 RX Please re-enter your password to confirm:
+1784331512.457 TX test123
+1784331512.458 RX *******
+1784331512.458 RX 
+1784331512.458 RX Please enter a valid e-Mail Address:
+1784331517.606 TX kaimon@example.com
+1784331517.607 RX kaimon@example.com
+1784331517.613 RX 
+1784331517.613 RX Please enter your gender 'M' or 'F' (can be changed later):
+1784331522.589 TX M
+1784331522.591 RX M
+1784331522.640 RX 
+1784331522.640 RX Fantasy awaits you in MajorMUD v1.11p-WG!
+1784331522.640 RX 
+1784331522.640 RX 
+1784331522.640 RX Please select one of the following:
+1784331522.640 RX 
+1784331522.640 RX    A ... MajorMUD
+1784331522.640 RX 
+1784331522.640 RX Main Menu
+1784331522.640 PART Make your selection (X to exit): 
+1784331528.675 TX A
+1784331528.675 RX A
+1784331528.681 RX 
+1784331528.681 RX  M A J O R  M U D v1.11p-WG (Dec 30 2005 14:20:05)
+1784331528.681 RX {Realm Of Legends}
+1784331528.681 RX *ANSI RECOMMENDED*
+1784331528.681 RX 
+1784331528.681 RX [E] . Enter the Realm
+1784331528.681 RX [H] . Help
+1784331528.681 RX [A] . About the Game
+1784331528.681 RX [C] . Game Counts
+1784331528.681 RX [T] . Topten Adventurers
+1784331528.681 RX [G] . Topten Gangs
+1784331528.681 RX [W] . Who's in the Realm
+1784331528.681 RX [R] . Release Notes
+1784331528.681 RX [I] . Information
+1784331528.681 RX [X] . Exit Game
+1784331528.681 RX 
+1784331528.681 PART [MAJORMUD]: 
+1784331535.053 TX W
+1784331535.054 RX W
+1784331535.054 RX 
+1784331535.054 RX There are no users in the game at the moment.
+1784331535.054 RX 
+1784331535.054 PART [MAJORMUD]: 
+1784331541.164 TX E
+1784331541.165 RX E
+1784331541.170 RX Please choose a race from the following list:
+1784331541.171 RX [1]  Human
+1784331541.171 RX [2]  Dwarf
+1784331541.171 RX [3]  Gnome
+1784331541.171 RX [4]  Halfling
+1784331541.171 RX [5]  Elf
+1784331541.171 RX [6]  Half-Elf
+1784331541.171 RX [7]  Dark-Elf
+1784331541.171 RX [8]  Half-Orc
+1784331541.171 RX [9]  Goblin
+1784331541.172 RX [10] Half-Ogre
+1784331541.172 RX [11] Kang
+1784331541.172 RX [12] Nekojin
+1784331541.172 RX [13] Gaunt One
+1784331541.172 RX 
+1784331541.172 PART Please choose your race [ ? for help ] : 
+1784331548.976 TX 1
+1784331548.977 RX 1
+1784331548.981 RX Please choose a class from the following list:
+1784331548.981 RX [1]  Warrior
+1784331548.981 RX [2]  Witchunter
+1784331548.981 RX [3]  Paladin
+1784331548.981 RX [4]  Cleric
+1784331548.981 RX [5]  Priest
+1784331548.981 RX [6]  Missionary
+1784331548.981 RX [7]  Ninja
+1784331548.981 RX [8]  Thief
+1784331548.981 RX [9]  Bard
+1784331548.981 RX [10] Gypsy
+1784331548.981 RX [11] Warlock
+1784331548.981 RX [12] Mage
+1784331548.981 RX [13] Druid
+1784331548.981 RX [14] Ranger
+1784331548.982 RX [15] Mystic
+1784331548.982 RX 
+1784331548.982 PART Please choose your class [ ? for help ] : 
+1784331557.267 TX 15
+1784331557.268 RX 15
+1784331557.268 RX 
+1784331557.268 RX You must now choose if you want to be a truly 'lawful' citizen of the realm.
+1784331557.268 RX If you answer YES to this question then you will never be allowed to instigate
+1784331557.268 RX any action which would give you evil points, and any player that attacks or
+1784331557.268 RX robs from you will receive three times the regular evil points in return. You
+1784331557.268 RX can still attack those with a bad reputation. This option is designed
+1784331557.268 RX solely for those who want to stay away from the player combat aspects of the
+1784331557.268 RX game, and choosing it for any other reason (Item storage, etc...) is strictly
+1784331557.268 RX prohibited.
+1784331557.268 RX 
+1784331557.268 RX Remember, this is a very important choice. Once you have chosen Lawfulness,
+1784331557.268 RX you may not remove this title, unless you start a new character.
+1784331557.268 RX 
+1784331557.268 PART Do you want to be Lawful?  [Yes/No] 
+1784331563.726 TX No
+1784331563.727 RX No
+1784331563.734 RX     .─────────────────────────────────────.──.
+1784331563.734 RX    / M A J O R  M U D Character Creation /    \  ┌─    Point Cost Chart    ─┐
+1784331563.734 RX   │                                     ├──.   │ │                          │
+1784331563.734 RX   │ » Given Name   ?????????????????? « │___\_/  │ 1st 10 points: 1 CP each │
+1784331563.734 RX   │ » Family Name  ?????????????????? « │        │ 2nd 10 points: 2 CP each │
+1784331563.734 RX   │ » Race         ?????????????????? « │        │ 3rd 10 points: 3 CP each │
+1784331563.734 RX   │ » Class        ?????????????????? « │        │     ... and so on ...    │
+1784331563.734 RX   │                                     │        │                          │
+1784331563.734 RX   │ » Strength   ($$$$ to $$$$)  $$$$ « │        │ +10 to base stat:  10 CP │
+1784331563.734 RX   │ » Intellect  ($$$$ to $$$$)  $$$$ « │ ──────┤ +20 to base stat:  30 CP │
+1784331563.734 RX   │ » Willpower  ($$$$ to $$$$)  $$$$ « │        │ +30 to base stat:  60 CP │
+1784331563.734 RX   │ » Agility    ($$$$ to $$$$)  $$$$ « │        │ +40 to base stat: 100 CP │
+1784331563.734 RX   │ » Health     ($$$$ to $$$$)  $$$$ « │        │ +50 to base stat: 150 CP │
+1784331563.734 RX   │ » Charm      ($$$$ to $$$$)  $$$$ « │        └─    ... and so on ...   ─┘
+1784331563.734 RX   │                                     │
+1784331563.734 RX   │ »  Hair Length   ???????????????  « │        ┌ Use the Space Bar to
+1784331563.734 RX   │ »  Hair Colour   ???????????????  « │ ──────┤ toggle between choices for
+1784331563.734 RX   │ »  Eye Colour    ???????????????  « │        └ your physical description
+1784331563.734 RX   │                                     │
+1784331563.734 RX   │ »  Exit: ???? «  » CP Left:       « │ ─────── SAVE your character or EXIT
+1784331563.734 RX  ⌐┴───────────────────────────────.     │
+1784331563.734 RX  \_________________________________\___/
+1784331563.738 PART !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! 100                  Kaimon                                    Human                  Mystic(    40    100    40(    40    100    40(    40    100    40(    40    100    40(    40    100    40(    40    100    40               none               black               black    SAVE                                                                               Kaimon
+1784331575.113 TXRAW 
+1784331576.121 TXRAW Sable
+1784331577.122 TXRAW 
+1784331576.121 PART Sable
+1784331577.523 TXRAW 
+1784331577.924 TXRAW 
+1784331578.325 TXRAW 
+1784331578.726 TXRAW 
+1784331579.127 TXRAW 
+1784331579.528 TXRAW 
+1784331579.929 TXRAW 
+1784331580.331 TXRAW 
+1784331580.732 TXRAW 
+1784331581.133 TXRAW 
+1784331581.534 TXRAW 
+1784331581.935 TXRAW 
+1784331582.336 TXRAW 
+1784331622.085 TXRAW 
+1784331623.086 TXRAW Kaimon
+1784331623.087 PART Kaimon
+1784331655.259 TXRAW 
+1784331669.708 TXRAW \r\x00
+1784331669.714 PART                                                                                Kaimon                  
+1784331680.147 TXRAW Sable\r\x00
+1784331680.148 PART Sable 100                                                                               Sable    40
+1784331689.708 TXRAW \r\x00
+1784331690.210 TXRAW \r\x00
+1784331690.711 TXRAW \r\x00
+1784331691.212 TXRAW \r\x00
+1784331691.713 TXRAW \r\x00
+1784331692.214 TXRAW \r\x00
+1784331692.715 TXRAW \r\x00
+1784331693.217 TXRAW \r\x00
+1784331693.718 TXRAW \r\x00
+1784331694.219 TXRAW \r\x00
+1784331694.224 RX  100                                                                 40    40 100                                                                 40    40 100                                                                 40    40 100                                                                 40    40 100                                                                 40    40 100                                                                 40               none                                                                            none               black                                                                            black               black                                                                            black    SAVE                                                                 SAVEName: Kaimon Sable                     Lives/CP:      9/100  
+1784331694.224 RX Race: Human       Exp: 0               Perception:     40
+1784331694.224 RX Class: Mystic     Level: 1             Stealth:        43
+1784331694.224 RX Hits:    28/28    Armour Class:   0/0  Thievery:        0
+1784331694.224 RX Kai:      0/0                          Traps:           0
+1784331694.224 RX                                        Picklocks:       0
+1784331694.224 RX Strength:  40     Agility: 40          Tracking:        0
+1784331694.224 RX Intellect: 40     Health:  40          Martial Arts:   98
+1784331694.224 RX Willpower: 40     Charm:   40          MagicRes:       40
+1784331694.226 RX 
+1784331694.226 RX To prevent accidental suicide or reroll, these commands
+1784331694.226 RX have been password protected.  You have not yet entered
+1784331694.226 RX your suicide password, so please do so soon using the
+1784331694.226 RX SET SUICIDE command.
+1784331694.227 RX Please wait - Validating your name.
+1784331694.232 RX  Newhaven, Village Entrance
+1784331694.233 RX You notice large sign, newbie manual here.
+1784331694.234 RX Obvious exits: north, south, west, southeast
+1784331694.234 PART [HP=28]:
+1784331707.181 TX look
+1784331707.184 RX look
+1784331707.184 RX Newhaven, Village Entrance
+1784331707.184 RX     Welcome to Newhaven! You are standing at the crude wooden gates of the
+1784331707.184 RX village entrance, in the middle of a dusty path. A low wooden palisade
+1784331707.184 RX surrounds the village, to protect against creatures of the night and random
+1784331707.184 RX raiders. You can see small buildings to the north and south, and a dusty path
+1784331707.184 RX that leads to the west and southeast. 
+1784331707.184 RX You notice large sign, newbie manual here.
+1784331707.184 RX Obvious exits: north, south, west, southeast
+1784331707.184 PART [HP=28]:
+1784331708.682 TX st
+1784331708.684 RX st
+1784331708.684 RX Name: Kaimon Sable                     Lives/CP:      9/100  
+1784331708.684 RX Race: Human       Exp: 0               Perception:     40
+1784331708.684 RX Class: Mystic     Level: 1             Stealth:        43
+1784331708.684 RX Hits:    28/28    Armour Class:   0/0  Thievery:        0
+1784331708.684 RX Kai:      0/0                          Traps:           0
+1784331708.684 RX                                        Picklocks:       0
+1784331708.684 RX Strength:  40     Agility: 40          Tracking:        0
+1784331708.684 RX Intellect: 40     Health:  40          Martial Arts:   98
+1784331708.684 RX Willpower: 40     Charm:   40          MagicRes:       40
+1784331708.684 PART [HP=28]:
+1784331710.183 TX spells
+1784331710.185 RX spells
+1784331710.185 RX You may not list your spells. You are KAI! You must list your powers.
+1784331710.185 PART [HP=28]:
+1784331711.684 TX exp
+1784331711.685 RX exp
+1784331711.686 RX Exp: 0 Level: 1 Exp needed for next level: 2500 (2500) [0%]
+1784331711.686 PART [HP=28]:
+1784331713.185 TX health
+1784331713.187 RX health
+1784331713.187 RX Health:    28/28    [100%]
+1784331713.187 PART [HP=28]:
+1784331726.542 TX powers
+1784331726.544 RX powers
+1784331726.544 RX You have no powers.
+1784331726.544 PART [HP=28]:
+1784331728.043 TX cast
+1784331728.045 RX cast
+1784331728.045 RX You may not cast... You are KAI!  You must invoke your powers.
+1784331728.045 PART [HP=28]:
+1784331729.544 TX c zzz
+1784331729.546 RX c zzz
+1784331729.546 RX You may not cast... You are KAI!  You must invoke your powers.
+1784331729.546 PART [HP=28]:
+1784331731.046 TX c swan
+1784331731.059 RX c swan
+1784331731.059 RX You may not cast... You are KAI!  You must invoke your powers.
+1784331731.059 PART [HP=28]:
+1784331732.548 TX cast way of the swan
+1784331732.549 RX cast way of the swan
+1784331732.549 RX You may not cast... You are KAI!  You must invoke your powers.
+1784331732.549 PART [HP=28]:
+1784331734.049 TX invoke
+1784331734.072 RX invoke
+1784331734.072 RX Syntax: INVOKE {power} [{target}]
+1784331734.072 PART [HP=28]:
+1784331751.729 TX invoke zzz
+1784331751.733 RX invoke zzz
+1784331751.733 RX You do not know how to cast zzz.
+1784331751.733 PART [HP=28]:
+1784331753.232 TX invoke swan
+1784331753.235 RX invoke swan
+1784331753.235 RX You do not know how to cast swan.
+1784331753.235 PART [HP=28]:
+1784331754.734 TX invoke way of the swan
+1784331754.743 RX invoke way of the swan
+1784331754.743 RX You do not know how to cast way of the swan.
+1784331754.743 PART [HP=28]:
+1784331756.236 TX in
+1784331756.237 RX in
+1784331756.238 RX You say "in"
+1784331756.238 PART [HP=28]:
+1784331757.737 TX inv swan
+1784331757.739 RX inv swan
+1784331757.739 RX You say "inv swan"
+1784331757.739 PART [HP=28]:
+1784331770.470 TX x
+1784331770.470 RX x
+1784331770.471 RX You will exit after a period of silent meditation.
+1784331770.904 PART ....
+1784331771.931 PART ...
+1784331773.955 PART ......
+1784331774.980 PART ...
+1784331776.006 RX 
+1784331776.006 RX Your character has been saved. If you have any comments or suggestions, please
+1784331776.006 RX leave them in E-mail to Sysop. Thanks.
+1784331776.006 RX 
+1784331776.006 PART [MAJORMUD]: 
+1784331794.401 TX X
+1784331794.402 RX X
+1784331794.402 RX 
+1784331794.402 RX Please select one of the following:
+1784331794.402 RX 
+1784331794.403 RX    A ... MajorMUD
+1784331794.403 RX 
+1784331794.403 RX Main Menu
+1784331794.403 PART Make your selection (X to exit): 
+1784331796.402 TX X
+1784331796.403 RX X
+1784331796.403 RX You are about to terminate this connection!
+1784331796.403 RX 
+1784331796.403 PART Are you sure (Y/N, or R to re-logon)? 
+1784331803.633 TX Y
+1784331803.634 RX Y
+1784331803.634 RX 
+1784331803.634 RX 
+1784331803.634 RX Ok, thanks for calling!
+1784331803.634 RX 
+1784331803.634 RX Have a nice day...
+1784331803.634 RX 
+1784332323.230 !! driver connected raw=/home/daniel/bbs/re/oracle/oracle_kai_mystic.raw
+1784332323.271 RX ╔══════════════════════════════════════════════════════════╗
+1784332323.271 RX ║█████████████████▄███████▄███████▄████████████████████████║
+1784332323.271 RX ║██████████████▀▀██████▀▀██████▀▀▀▀███▀▀▀▀█████████████████║
+1784332323.271 RX ║██████████████████▀███████▀███████████████████████████████║
+1784332323.271 RX ║███▀███▀██████▀▀██████▀▀███▀▀▀▀██████▀▀▀████▀███▀█████████║
+1784332323.271 RX ║████▀▀▀███████████▀███████▀██████████████████▀▀▀████▀████▀║
+1784332323.271 RX ║▀▀▀█████▀▀▀▀▀▀▀▀▀▀█▀▀▀▀▀▀▀█▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀█████▀▀▀█▀▀▀▀▀║
+1784332323.271 RX ║██████████████╘═╡ The MajorBBS Emulator ╞═╛███████████████║
+1784332323.271 RX ║████████████████│ By: MBBSEmu Community │█████████████████║
+1784332323.271 RX ║                │https://www.mbbsemu.com│                 ║
+1784332323.271 RX ╚══════════════════════════════════════════════════════════╝
+1784332323.460 RX  
+1784332323.460 RX Enter Username or enter "NEW" to create a new Account
+1784332324.250 PART Username:  ²
+1784332332.717 TX Kaimon
+1784332332.721 RX Kaimon
+1784332332.723 PART Password: 
+1784332334.718 TX test123
+1784332334.720 RX *******
+1784332334.793 RX 
+1784332334.793 RX Fantasy awaits you in MajorMUD v1.11p-WG!
+1784332334.793 RX 
+1784332334.794 RX 
+1784332334.794 RX Please select one of the following:
+1784332334.794 RX 
+1784332334.795 RX    A ... MajorMUD
+1784332334.795 RX 
+1784332334.795 RX Main Menu
+1784332334.795 PART Make your selection (X to exit): 
+1784332343.980 TX A
+1784332343.981 RX A
+1784332343.987 RX 
+1784332343.987 RX  M A J O R  M U D v1.11p-WG (Dec 30 2005 14:20:05)
+1784332343.987 RX {Realm Of Legends}
+1784332343.987 RX *ANSI RECOMMENDED*
+1784332343.987 RX 
+1784332343.987 RX [E] . Enter the Realm
+1784332343.987 RX [H] . Help
+1784332343.987 RX [A] . About the Game
+1784332343.987 RX [C] . Game Counts
+1784332343.987 RX [T] . Topten Adventurers
+1784332343.987 RX [G] . Topten Gangs
+1784332343.987 RX [W] . Who's in the Realm
+1784332343.987 RX [R] . Release Notes
+1784332343.987 RX [I] . Information
+1784332343.987 RX [X] . Exit Game
+1784332343.987 RX 
+1784332343.987 PART [MAJORMUD]: 
+1784332346.981 TX E
+1784332346.982 RX E
+1784332346.984 RX Please choose a race from the following list:
+1784332346.985 RX [1]  Human
+1784332346.985 RX [2]  Dwarf
+1784332346.985 RX [3]  Gnome
+1784332346.985 RX [4]  Halfling
+1784332346.985 RX [5]  Elf
+1784332346.985 RX [6]  Half-Elf
+1784332346.985 RX [7]  Dark-Elf
+1784332346.985 RX [8]  Half-Orc
+1784332346.985 RX [9]  Goblin
+1784332346.985 RX [10] Half-Ogre
+1784332346.986 RX [11] Kang
+1784332346.986 RX [12] Nekojin
+1784332346.986 RX [13] Gaunt One
+1784332346.986 RX 
+1784332346.986 PART Please choose your race [ ? for help ] : 
+1784332357.815 TX 1
+1784332357.818 RX 1
+1784332357.818 RX Please choose a class from the following list:
+1784332357.818 RX [1]  Warrior
+1784332357.818 RX [2]  Witchunter
+1784332357.818 RX [3]  Paladin
+1784332357.818 RX [4]  Cleric
+1784332357.818 RX [5]  Priest
+1784332357.818 RX [6]  Missionary
+1784332357.818 RX [7]  Ninja
+1784332357.818 RX [8]  Thief
+1784332357.818 RX [9]  Bard
+1784332357.818 RX [10] Gypsy
+1784332357.818 RX [11] Warlock
+1784332357.818 RX [12] Mage
+1784332357.818 RX [13] Druid
+1784332357.818 RX [14] Ranger
+1784332357.818 RX [15] Mystic
+1784332357.818 RX 
+1784332357.818 PART Please choose your class [ ? for help ] : 
+1784332359.817 TX 15
+1784332359.817 RX 15
+1784332359.817 RX 
+1784332359.817 RX You must now choose if you want to be a truly 'lawful' citizen of the realm.
+1784332359.817 RX If you answer YES to this question then you will never be allowed to instigate
+1784332359.817 RX any action which would give you evil points, and any player that attacks or
+1784332359.817 RX robs from you will receive three times the regular evil points in return. You
+1784332359.817 RX can still attack those with a bad reputation. This option is designed
+1784332359.817 RX solely for those who want to stay away from the player combat aspects of the
+1784332359.817 RX game, and choosing it for any other reason (Item storage, etc...) is strictly
+1784332359.817 RX prohibited.
+1784332359.817 RX 
+1784332359.817 RX Remember, this is a very important choice. Once you have chosen Lawfulness,
+1784332359.817 RX you may not remove this title, unless you start a new character.
+1784332359.817 RX 
+1784332359.817 PART Do you want to be Lawful?  [Yes/No] 
+1784332361.818 TX No
+1784332361.851 RX No
+1784332361.858 RX     .─────────────────────────────────────.──.
+1784332361.858 RX    / M A J O R  M U D Character Creation /    \  ┌─    Point Cost Chart    ─┐
+1784332361.858 RX   │                                     ├──.   │ │                          │
+1784332361.858 RX   │ » Given Name   ?????????????????? « │___\_/  │ 1st 10 points: 1 CP each │
+1784332361.858 RX   │ » Family Name  ?????????????????? « │        │ 2nd 10 points: 2 CP each │
+1784332361.858 RX   │ » Race         ?????????????????? « │        │ 3rd 10 points: 3 CP each │
+1784332361.858 RX   │ » Class        ?????????????????? « │        │     ... and so on ...    │
+1784332361.858 RX   │                                     │        │                          │
+1784332361.858 RX   │ » Strength   ($$$$ to $$$$)  $$$$ « │        │ +10 to base stat:  10 CP │
+1784332361.858 RX   │ » Intellect  ($$$$ to $$$$)  $$$$ « │ ──────┤ +20 to base stat:  30 CP │
+1784332361.858 RX   │ » Willpower  ($$$$ to $$$$)  $$$$ « │        │ +30 to base stat:  60 CP │
+1784332361.858 RX   │ » Agility    ($$$$ to $$$$)  $$$$ « │        │ +40 to base stat: 100 CP │
+1784332361.858 RX   │ » Health     ($$$$ to $$$$)  $$$$ « │        │ +50 to base stat: 150 CP │
+1784332361.858 RX   │ » Charm      ($$$$ to $$$$)  $$$$ « │        └─    ... and so on ...   ─┘
+1784332361.858 RX   │                                     │
+1784332361.858 RX   │ »  Hair Length   ???????????????  « │        ┌ Use the Space Bar to
+1784332361.858 RX   │ »  Hair Colour   ???????????????  « │ ──────┤ toggle between choices for
+1784332361.858 RX   │ »  Eye Colour    ???????????????  « │        └ your physical description
+1784332361.858 RX   │                                     │
+1784332361.858 RX   │ »  Exit: ???? «  » CP Left:       « │ ─────── SAVE your character or EXIT
+1784332361.858 RX  ⌐┴───────────────────────────────.     │
+1784332361.858 RX  \_________________________________\___/
+1784332361.868 PART !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! 100                  Kaimon                                    Human                  Mystic(    40    100    40(    40    100    40(    40    100    40(    40    100    40(    40    100    40(    40    100    40               none               black               black    SAVE                                                                               Kaimon
+1784332373.169 TXRAW \r\x00
+1784332373.188 PART                                                                                Kaimon                  
+1784332374.668 TXRAW Sable\r\x00
+1784332374.668 PART Sable 100                                                                               Sable    40
+1784332376.170 TXRAW \r\x00
+1784332376.670 TXRAW \r\x00
+1784332377.171 TXRAW \r\x00
+1784332377.672 TXRAW \r\x00
+1784332378.174 TXRAW \r\x00
+1784332378.675 TXRAW \r\x00
+1784332379.176 TXRAW \r\x00
+1784332379.679 TXRAW \r\x00
+1784332380.180 TXRAW \r\x00
+1784332380.681 TXRAW \r\x00
+1784332380.686 RX  100                                                                 40    40 100                                                                 40    40 100                                                                 40    40 100                                                                 40    40 100                                                                 40    40 100                                                                 40               none                                                                            none               black                                                                            black               black                                                                            black    SAVE                                                                 SAVE
+1784332380.686 RX To prevent accidental suicide or reroll, these commands
+1784332380.686 RX have been password protected.  You have not yet entered
+1784332380.686 RX your suicide password, so please do so soon using the
+1784332380.686 RX SET SUICIDE command.
+1784332380.686 RX Please wait - Validating your name.
+1784332380.803 RX  Validating your name, please wait.
+1784332413.865 RX Name: Kaimon Sable                     Lives/CP:      9/100  
+1784332413.865 RX Race: Human       Exp: 0               Perception:     40
+1784332413.865 RX Class: Mystic     Level: 1             Stealth:        43
+1784332413.865 RX Hits:    28/28    Armour Class:   0/0  Thievery:        0
+1784332413.865 RX Kai:      0/0                          Traps:           0
+1784332413.865 RX                                        Picklocks:       0
+1784332413.865 RX Strength:  40     Agility: 40          Tracking:        0
+1784332413.865 RX Intellect: 40     Health:  40          Martial Arts:   98
+1784332413.865 RX Willpower: 40     Charm:   40          MagicRes:       40
+1784332413.866 PART [HP=28]:
+1784333018.781 TX st
+1784333018.796 RX st
+1784333018.799 RX Name: Kaimon Sable                     Lives/CP:      9/100  
+1784333018.799 RX Race: Human       Exp: 0               Perception:     40
+1784333018.799 RX Class: Mystic     Level: 1             Stealth:        43
+1784333018.799 RX Hits:    28/28    Armour Class:   0/0  Thievery:        0
+1784333018.799 RX Kai:      0/0                          Traps:           0
+1784333018.799 RX                                        Picklocks:       0
+1784333018.799 RX Strength:  40     Agility: 40          Tracking:        0
+1784333018.799 RX Intellect: 40     Health:  40          Martial Arts:   98
+1784333018.799 RX Willpower: 40     Charm:   40          MagicRes:       40
+1784333018.800 PART [HP=28]:
+1784333019.982 TX powers
+1784333020.001 RX powers
+1784333020.001 RX You have no powers.
+1784333020.001 PART [HP=28]:
+1784333021.183 TX spells
+1784333021.194 RX spells
+1784333021.195 RX You may not list your spells. You are KAI! You must list your powers.
+1784333021.195 PART [HP=28]:
+1784333022.384 TX exp
+1784333022.387 RX exp
+1784333022.391 RX Exp: 0 Level: 1 Exp needed for next level: 2500 (2500) [0%]
+1784333022.391 PART [HP=28]:
+1784333023.585 TX health
+1784333023.615 RX health
+1784333023.616 RX Health:    28/28    [100%]
+1784333023.616 PART [HP=28]:
+1784333024.786 TX cast
+1784333024.807 RX cast
+1784333024.807 RX You may not cast... You are KAI!  You must invoke your powers.
+1784333024.807 PART [HP=28]:
+1784333025.987 TX invoke swan
+1784333026.044 RX invoke swan
+1784333026.046 RX You do not know how to cast swan.
+1784333026.046 PART [HP=28]:
+1784333035.775 TX x
+1784333035.776 RX x
+1784333035.778 RX You will exit after a period of silent meditation.
+1784333036.274 PART ....
+1784333037.320 PART ...
+1784333038.327 PART ...
+1784333039.390 PART ...
+1784333040.432 PART ...
+1784333041.496 RX 
+1784333041.496 RX Your character has been saved. If you have any comments or suggestions, please
+1784333041.496 RX leave them in E-mail to Sysop. Thanks.
+1784333041.496 RX 
+1784333041.496 PART [MAJORMUD]: 
+1784333044.795 TX X
+1784333044.801 RX X
+1784333044.805 RX 
+1784333044.805 RX Please select one of the following:
+1784333044.805 RX 
+1784333044.819 RX    A ... MajorMUD
+1784333044.819 RX 
+1784333044.819 RX Main Menu
+1784333044.819 PART Make your selection (X to exit): 
+1784333046.794 TX X
+1784333046.800 RX X
+1784333046.800 RX You are about to terminate this connection!
+1784333046.800 RX 
+1784333046.800 PART Are you sure (Y/N, or R to re-logon)? 
+1784333048.800 TX Y
+1784333048.803 RX Y
+1784333048.808 RX 
+1784333048.808 RX 
+1784333048.808 RX Ok, thanks for calling!
+1784333048.808 RX 
+1784333048.808 RX Have a nice day...
+1784333048.808 RX 
+1784333171.878 !! driver connected raw=/home/daniel/bbs/re/oracle/oracle_kai_mystic2.raw
+1784333172.908 RX ╔══════════════════════════════════════════════════════════╗
+1784333172.908 RX ║█████████████████▄███████▄███████▄████████████████████████║
+1784333172.908 RX ║██████████████▀▀██████▀▀██████▀▀▀▀███▀▀▀▀█████████████████║
+1784333172.908 RX ║██████████████████▀███████▀███████████████████████████████║
+1784333172.908 RX ║███▀███▀██████▀▀██████▀▀███▀▀▀▀██████▀▀▀████▀███▀█████████║
+1784333172.908 RX ║████▀▀▀███████████▀███████▀██████████████████▀▀▀████▀████▀║
+1784333172.908 RX ║▀▀▀█████▀▀▀▀▀▀▀▀▀▀█▀▀▀▀▀▀▀█▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀█████▀▀▀█▀▀▀▀▀║
+1784333172.908 RX ║██████████████╘═╡ The MajorBBS Emulator ╞═╛███████████████║
+1784333172.908 RX ║████████████████│ By: MBBSEmu Community │█████████████████║
+1784333172.908 RX ║                │https://www.mbbsemu.com│                 ║
+1784333172.908 RX ╚══════════════════════════════════════════════════════════╝
+1784333172.910 RX  
+1784333172.910 RX Enter Username or enter "NEW" to create a new Account
+1784333173.896 PART Username:  ²
+1784333180.736 TX Kaimon
+1784333180.739 RX Kaimon
+1784333180.741 PART Password: 
+1784333182.736 TX test123
+1784333183.008 RX *******
+1784333183.071 RX 
+1784333183.071 RX Fantasy awaits you in MajorMUD v1.11p-WG!
+1784333183.071 RX 
+1784333183.072 RX 
+1784333183.072 RX Please select one of the following:
+1784333183.072 RX 
+1784333183.073 RX    A ... MajorMUD
+1784333183.073 RX 
+1784333183.073 RX Main Menu
+1784333183.073 PART Make your selection (X to exit): 
+1784333185.737 TX A
+1784333185.742 RX A
+1784333185.745 RX 
+1784333185.745 RX  M A J O R  M U D v1.11p-WG (Dec 30 2005 14:20:05)
+1784333185.745 RX {Realm Of Legends}
+1784333185.745 RX *ANSI RECOMMENDED*
+1784333185.745 RX 
+1784333185.745 RX [E] . Enter the Realm
+1784333185.745 RX [H] . Help
+1784333185.745 RX [A] . About the Game
+1784333185.745 RX [C] . Game Counts
+1784333185.745 RX [T] . Topten Adventurers
+1784333185.745 RX [G] . Topten Gangs
+1784333185.745 RX [W] . Who's in the Realm
+1784333185.745 RX [R] . Release Notes
+1784333185.745 RX [I] . Information
+1784333185.745 RX [X] . Exit Game
+1784333185.745 RX 
+1784333185.745 PART [MAJORMUD]: 
+1784333188.739 TX E
+1784333188.742 RX E
+1784333188.748 RX 
+1784333188.748 RX MajorMUD - ROL
+1784333188.748 RX 
+1784333188.748 RX =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+1784333188.748 RX 
+1784333188.750 RX Newhaven, Village Entrance
+1784333188.751 RX     Welcome to Newhaven! You are standing at the crude wooden gates of the
+1784333188.751 RX village entrance, in the middle of a dusty path. A low wooden palisade
+1784333188.751 RX surrounds the village, to protect against creatures of the night and random
+1784333188.751 RX raiders. You can see small buildings to the north and south, and a dusty path
+1784333188.751 RX that leads to the west and southeast. 
+1784333188.771 RX You notice large sign, newbie manual here.
+1784333188.771 RX Obvious exits: north, south, west, southeast
+1784333188.771 PART [HP=28]:
+1784333199.974 TX exp
+1784333199.975 RX exp
+1784333199.976 RX Exp: 6000 Level: 1 Exp needed for next level: 0 (2500) [240%]
+1784333199.976 PART [HP=28]:
+1784333201.275 TX wealth
+1784333201.294 RX wealth
+1784333201.294 RX You have 1000 copper farthings.
+1784333201.294 RX Wealth: 1000 copper farthings
+1784333201.294 PART [HP=28]:
+1784333220.081 TX w
+1784333220.083 RX w
+1784333220.199 RX Newhaven, Narrow Path
+1784333220.199 RX     This narrow path is fairly plain, save for the small lanterns hanging from
+1784333220.199 RX the trees around. North of you lies a strangely decorated shop, and a beat-up
+1784333220.199 RX shack labeled "General Store" lies to your south. The path leads east and west
+1784333220.199 RX from here. 
+1784333220.200 RX Obvious exits: north, south, east, west
+1784333220.200 PART [HP=28]:
+1784333222.087 TX w
+1784333222.089 RX w
+1784333222.926 RX Newhaven, Narrow Road
+1784333222.926 RX     This narrow road is quite plain save for the various lanterns hanging from
+1784333222.926 RX the trees around, and a large stone stairwell leading downwards. You hear the
+1784333222.926 RX clash of steel below you, and cries of pain and triumph accompanying it. Stone
+1784333222.926 RX buildings lie to your north and west. 
+1784333222.926 RX Obvious exits: north, east, west, down
+1784333222.926 PART [HP=28]:
+1784333224.087 TX n
+1784333224.675 RX n
+1784333225.715 RX You hear movement to the north.
+1784333225.715 RX [HP=28]:Newhaven, Adventurer's Guild
+1784333225.716 RX     This nicely crafted room is well furnished and decorated with things that
+1784333225.716 RX you have never seen before, from strange exotic weapons, to swirling vials of
+1784333225.716 RX liquid. A well toned man, stands in front of a practice mat with his arms
+1784333225.716 RX crossed. He stands up lightly at your approach, looks you up and down, and
+1784333225.716 RX breaks into a lopsided grin. 
+1784333225.716 RX Also here: Corwyn.
+1784333225.716 RX Obvious exits: south
+1784333225.716 PART [HP=28]:
+1784333236.458 TX powers
+1784333236.460 RX powers
+1784333236.461 RX You have no powers.
+1784333236.461 PART [HP=28]:
+1784333237.959 TX train
+1784333238.744 RX train
+1784333238.756 RX You hand over 50 copper farthings and you receive training to attain level 2.
+1784333238.756 RX You receive the following:
+1784333238.756 RX 10 additional character points
+1784333238.756 RX You learn the following Kai abilities:
+1784333238.756 RX way of the swan
+1784333239.461 TX powers
+1784333239.464 RX [HP=28/KAI=0]:powers
+1784333239.464 RX You have the following powers:
+1784333239.464 RX Level Kai  Short Spell Name
+1784333239.464 RX   2   1    swan  way of the swan               
+1784333239.464 RX 
+1784333239.465 PART [HP=28/KAI=0]:
+1784333240.962 TX st
+1784333241.177 RX st
+1784333241.178 RX Name: Kaimon Sable                     Lives/CP:      9/110  
+1784333241.178 RX Race: Human       Exp: 6000            Perception:     40
+1784333241.178 RX Class: Mystic     Level: 2             Stealth:        45
+1784333241.178 RX Hits:    28/31    Armour Class:   0/0  Thievery:        0
+1784333241.178 RX Kai:      0/1                          Traps:           0
+1784333241.178 RX                                        Picklocks:       0
+1784333241.178 RX Strength:  40     Agility: 40          Tracking:        0
+1784333241.178 RX Intellect: 40     Health:  40          Martial Arts:  100
+1784333241.178 RX Willpower: 40     Charm:   40          MagicRes:       40
+1784333241.178 PART [HP=28/KAI=0]:
+1784333242.464 TX health
+1784333242.467 RX health
+1784333242.467 RX Health:    28/31    [90%]  Kai:   0/1   [0%]
+1784333242.467 PART [HP=28/KAI=0]:
+1784333243.966 TX exp
+1784333243.968 RX exp
+1784333243.968 RX Exp: 6000 Level: 2 Exp needed for next level: 0 (5000) [120%]
+1784333243.968 PART [HP=28/KAI=0]:
+1784333261.544 TX invoke swan
+1784333261.983 RX invoke swan
+1784333261.985 RX You do not have enough kai to invoke that power.
+1784333262.745 TX invoke way of the swan
+1784333262.751 RX [HP=28/KAI=0]:invoke way of the swan
+1784333262.752 RX You do not have enough kai to invoke that power.
+1784333262.752 PART [HP=28/KAI=0]:
+1784333263.946 TX invoke owl
+1784333263.951 RX invoke owl
+1784333263.951 RX You do not know how to cast owl.
+1784333263.951 PART [HP=28/KAI=0]:
+1784333276.708 PART [HP=29/KAI=1]:
+1784333314.445 PART [HP=30/KAI=1]:
+1784333316.925 TX 
+1784333316.927 RX 
+1784333316.927 RX Newhaven, Adventurer's Guild
+1784333316.927 RX Also here: Corwyn.
+1784333316.927 RX Obvious exits: south
+1784333316.927 PART [HP=30/KAI=1]:
+1784333326.070 TX c swan
+1784333326.072 RX c swan
+1784333326.072 RX You may not cast... You are KAI!  You must invoke your powers.
+1784333326.072 PART [HP=30/KAI=1]:
+1784333327.271 TX invoke swan
+1784333327.274 RX invoke swan
+1784333327.276 RX You invoke the way of the swan.
+1784333327.873 TX invoke swan
+1784333327.878 RX [HP=31/KAI=0]:[HP=31/KAI=0]:invoke swan
+1784333327.878 RX You do not have enough kai to invoke that power.
+1784333327.878 PART [HP=31/KAI=0]:
+1784333343.587 TX train
+1784333343.592 RX train
+1784333343.600 RX You hand over 100 copper farthings and you receive training to attain level 3.
+1784333343.600 RX You receive the following:
+1784333343.600 RX 10 additional character points
+1784333343.600 RX You learn the following Kai abilities:
+1784333343.600 RX way of the owl
+1784333343.607 PART [HP=31/KAI=0]:
+1784333345.088 TX powers
+1784333345.089 RX powers
+1784333345.090 RX You have the following powers:
+1784333345.090 RX Level Kai  Short Spell Name
+1784333345.090 RX   2   1    swan  way of the swan               
+1784333345.090 RX   3   2     owl  way of the owl                
+1784333345.090 RX 
+1784333345.090 PART [HP=31/KAI=0]:
+1784333346.589 TX st
+1784333346.732 RX st
+1784333346.733 RX Name: Kaimon Sable                     Lives/CP:      9/120  
+1784333346.733 RX Race: Human       Exp: 6000            Perception:     40
+1784333346.733 RX Class: Mystic     Level: 3             Stealth:        47
+1784333346.733 RX Hits:    31/35    Armour Class:   0/0  Thievery:        0
+1784333346.733 RX Kai:      0/2                          Traps:           0
+1784333346.733 RX                                        Picklocks:       0
+1784333346.733 RX Strength:  40     Agility: 40          Tracking:        0
+1784333346.733 RX Intellect: 40     Health:  40          Martial Arts:  102
+1784333346.733 RX Willpower: 40     Charm:   40          MagicRes:       40
+1784333346.734 PART [HP=31/KAI=0]:
+1784333348.090 TX health
+1784333348.092 RX health
+1784333348.092 RX Health:    31/35    [88%]  Kai:   0/2   [0%]
+1784333348.092 PART [HP=31/KAI=0]:
+1784333349.593 TX exp
+1784333349.596 RX exp
+1784333349.596 RX Exp: 6000 Level: 3 Exp needed for next level: 3166 (9166) [65%]
+1784333349.596 PART [HP=31/KAI=0]:
+1784333351.092 TX train
+1784333351.098 RX train
+1784333351.101 RX You do not have the required experience to train yet!
+1784333351.102 PART [HP=31/KAI=0]:
+1784333352.126 PART [HP=32/KAI=1]:
+1784333391.804 PART [HP=33/KAI=2]:
+1784333425.956 TX 
+1784333425.956 RX 
+1784333425.957 RX Newhaven, Adventurer's Guild
+1784333425.957 RX Also here: Corwyn.
+1784333425.957 RX Obvious exits: south
+1784333425.957 PART [HP=33/KAI=2]:
+1784333430.708 PART [HP=34/KAI=2]:
+1784333434.157 TX health
+1784333434.185 RX health
+1784333434.185 RX Health:    34/35    [97%]  Kai:   2/2   [100%]
+1784333434.185 PART [HP=34/KAI=2]:
+1784333442.185 TX invoke swan
+1784333442.193 RX invoke swan
+1784333442.195 RX You invoke the way of the swan.
+1784333442.586 TX invoke swan
+1784333442.592 RX [HP=35/KAI=1]:[HP=35/KAI=1]:invoke swan
+1784333442.594 RX You have already invoked a power this round!
+1784333442.594 PART [HP=35/KAI=1]:
+1784333458.968 TX invoke swan zzz
+1784333459.000 RX invoke swan zzz
+1784333459.002 RX You do not see zzz here!
+1784333459.002 PART [HP=35/KAI=1]:
+1784333460.469 TX invoke way of the owl zzz
+1784333460.476 RX invoke way of the owl zzz
+1784333460.477 RX You do not see zzz here!
+1784333460.477 PART [HP=35/KAI=1]:
+1784333469.957 PART [HP=35/KAI=2]:
+1784333502.569 TX invoke owl
+1784333502.573 RX invoke owl
+1784333502.576 RX You invoke the way of the owl.
+1784333502.576 RX [HP=35/KAI=0]:You feel strong-willed!
+1784333502.579 PART [HP=35/KAI=0]:
+1784333504.070 TX st
+1784333504.072 RX st
+1784333504.073 RX Name: Kaimon Sable                     Lives/CP:      9/120  
+1784333504.073 RX Race: Human       Exp: 6000            Perception:     40
+1784333504.073 RX Class: Mystic     Level: 3             Stealth:        47
+1784333504.073 RX Hits:    35/35    Armour Class:   0/0  Thievery:        0
+1784333504.073 RX Kai:      0/2                          Traps:           0
+1784333504.073 RX                                        Picklocks:       0
+1784333504.073 RX Strength:  40     Agility: 40          Tracking:        0
+1784333504.073 RX Intellect: 40     Health:  40          Martial Arts:  102
+1784333504.073 RX Willpower: 40     Charm:   40          MagicRes:       50
+1784333504.073 RX You feel strong-willed!
+1784333504.073 PART [HP=35/KAI=0]:
+1784333507.264 PART [HP=35/KAI=1]:
+1784333544.644 PART [HP=35/KAI=2]:
+1784333729.309 TX st
+1784333729.370 RX st
+1784333729.371 RX Name: Kaimon Sable                     Lives/CP:      9/120  
+1784333729.371 RX Race: Human       Exp: 6000            Perception:     40
+1784333729.371 RX Class: Mystic     Level: 3             Stealth:        47
+1784333729.371 RX Hits:    35/35    Armour Class:   0/0  Thievery:        0
+1784333729.371 RX Kai:      2/2                          Traps:           0
+1784333729.371 RX                                        Picklocks:       0
+1784333729.371 RX Strength:  40     Agility: 40          Tracking:        0
+1784333729.371 RX Intellect: 40     Health:  40          Martial Arts:  102
+1784333729.371 RX Willpower: 40     Charm:   40          MagicRes:       50
+1784333729.371 RX You feel strong-willed!
+1784333729.372 PART [HP=35/KAI=2]:
+1784333741.120 RX The effects of way of the owl wear off!
+1784333741.120 PART [HP=35/KAI=2]:
+1784333841.902 TX list
+1784333841.906 RX list
+1784333841.906 PART [HP=35/KAI=2]:
+1784333843.903 TX st
+1784333843.905 RX st
+1784333843.906 RX Name: Kaimon Sable                     Lives/CP:      9/120  
+1784333843.906 RX Race: Human       Exp: 6000            Perception:     40
+1784333843.906 RX Class: Mystic     Level: 3             Stealth:        47
+1784333843.906 RX Hits:    35/35    Armour Class:   0/0  Thievery:        0
+1784333843.906 RX Kai:      2/2                          Traps:           0
+1784333843.906 RX                                        Picklocks:       0
+1784333843.906 RX Strength:  40     Agility: 40          Tracking:        0
+1784333843.906 RX Intellect: 40     Health:  40          Martial Arts:  102
+1784333843.906 RX Willpower: 40     Charm:   40          MagicRes:       40
+1784333843.907 PART [HP=35/KAI=2]:
+1784333853.971 TX s
+1784333853.972 RX s
+1784333855.972 TX e
+1784333856.310 RX Newhaven, Narrow Road
+1784333856.310 RX     This narrow road is quite plain save for the various lanterns hanging from
+1784333856.310 RX the trees around, and a large stone stairwell leading downwards. You hear the
+1784333856.310 RX clash of steel below you, and cries of pain and triumph accompanying it. Stone
+1784333856.310 RX buildings lie to your north and west. 
+1784333856.310 RX Obvious exits: north, east, west, down
+1784333856.329 RX [HP=35/KAI=2]:e
+1784333857.364 RX Newhaven, Narrow Path
+1784333857.364 RX     This narrow path is fairly plain, save for the small lanterns hanging from
+1784333857.364 RX the trees around. North of you lies a strangely decorated shop, and a beat-up
+1784333857.364 RX shack labeled "General Store" lies to your south. The path leads east and west
+1784333857.364 RX from here. 
+1784333857.364 RX Obvious exits: north, south, east, west
+1784333857.973 TX n
+1784333857.974 RX [HP=35/KAI=2]:n
+1784333859.441 RX Newhaven, Spell Shop
+1784333859.442 RX     This dimly lit room is one of the strangest that you have seen. The walls
+1784333859.442 RX are decorated with bizarre ornaments ranging from elaborate tapestries to
+1784333859.442 RX stuffed orc heads. A wizened old man cloaked in strange garb sits behind a
+1784333859.442 RX small counter, apparently murmuring to himself. You can exit through the
+1784333859.442 RX curtained doorway to the south. 
+1784333859.466 RX Also here: Rayth.
+1784333859.467 RX Obvious exits: south
+1784333859.974 TX list
+1784333859.977 RX [HP=35/KAI=2]:list
+1784333859.977 RX The following items are for sale here:
+1784333859.977 RX 
+1784333859.977 RX Item                          Quantity    Price
+1784333859.977 RX ------------------------------------------------------
+1784333859.977 RX scroll of magic missile       120          Free (You can't use)
+1784333859.997 RX scroll of illuminate          100          4 gold crowns (You can't use)
+1784333860.018 RX scroll of blur                105          Free (You can't use)
+1784333860.019 RX scroll of smite               60           8 gold crowns (You can't use)
+1784333860.038 RX scroll of cause harm          125          Free (You can't use)
+1784333860.058 RX scroll of minor healing       140          Free (You can't use)
+1784333860.058 RX scroll of bless               110          4 gold crowns (You can't use)
+1784333860.059 RX scroll of vine strike         118          Free (You can't use)
+1784333860.059 RX scroll of starlight           95           Free (You can't use)
+1784333860.060 RX scroll of mend                80           8 gold crowns (You can't use)
+1784333860.060 RX songsheet of valour           100          4 gold crowns (You can't use)
+1784333860.061 RX songsheet of misfortune       82           8 gold crowns (You can't use)
+1784333860.062 RX songsheet of discord          65           8 gold crowns (You can't use)
+1784333860.062 PART [HP=35/KAI=2]:
+1784333874.153 TX s
+1784333874.155 RX s
+1784333874.597 RX Newhaven, Narrow Path
+1784333874.598 RX     This narrow path is fairly plain, save for the small lanterns hanging from
+1784333874.598 RX the trees around. North of you lies a strangely decorated shop, and a beat-up
+1784333874.598 RX shack labeled "General Store" lies to your south. The path leads east and west
+1784333874.598 RX from here. 
+1784333874.598 RX Obvious exits: north, south, east, west
+1784333874.598 PART [HP=35/KAI=2]:
+1784333875.654 TX w
+1784333877.155 TX n
+1784333878.503 RX w
+1784333879.156 TX x
+1784333879.502 RX Newhaven, Narrow Road
+1784333879.502 RX     This narrow road is quite plain save for the various lanterns hanging from
+1784333879.502 RX the trees around, and a large stone stairwell leading downwards. You hear the
+1784333879.502 RX clash of steel below you, and cries of pain and triumph accompanying it. Stone
+1784333879.502 RX buildings lie to your north and west. 
+1784333879.502 RX Obvious exits: north, east, west, down
+1784333879.502 RX [HP=35/KAI=2]:n
+1784333882.873 RX Newhaven, Adventurer's Guild
+1784333882.873 RX     This nicely crafted room is well furnished and decorated with things that
+1784333882.873 RX you have never seen before, from strange exotic weapons, to swirling vials of
+1784333882.873 RX liquid. A well toned man, stands in front of a practice mat with his arms
+1784333882.873 RX crossed. He stands up lightly at your approach, looks you up and down, and
+1784333882.873 RX breaks into a lopsided grin. 
+1784333882.900 RX Also here: Corwyn.
+1784333882.901 RX Obvious exits: south
+1784333882.901 RX [HP=35/KAI=2]:x
+1784333882.902 RX You will exit after a period of silent meditation.
+1784333882.902 PART .
+1784333883.920 PART ...
+1784333886.652 PART ...
+1784333888.157 TX X
+1784333888.158 RX ...X
+1784333888.158 RX You may not perform any commands while waiting to exit!
+1784333890.158 TX X
+1784333890.175 RX ...X
+1784333890.176 RX You may not perform any commands while waiting to exit!
+1784333890.985 PART ...
+1784333892.159 TX Y
+1784333892.703 RX 
+1784333892.703 RX Your character has been saved. If you have any comments or suggestions, please
+1784333892.703 RX leave them in E-mail to Sysop. Thanks.
+1784333892.703 RX 
+1784333892.703 RX [MAJORMUD]: Y
+1784333892.703 RX 
+1784333892.703 RX Invalid Option.
+1784333892.703 PART [MAJORMUD]: 
+1784333911.240 TX X
+1784333911.242 RX X
+1784333911.242 RX 
+1784333911.242 RX Please select one of the following:
+1784333911.242 RX 
+1784333911.242 RX    A ... MajorMUD
+1784333911.242 RX 
+1784333911.242 RX Main Menu
+1784333911.242 PART Make your selection (X to exit): 
+1784333913.241 TX X
+1784333913.242 RX X
+1784333913.242 RX You are about to terminate this connection!
+1784333913.242 RX 
+1784333913.242 PART Are you sure (Y/N, or R to re-logon)? 
+1784333915.242 TX Y
+1784333915.357 RX Y
+1784333915.358 RX 
+1784333915.358 RX 
+1784333915.358 RX Ok, thanks for calling!
+1784333915.358 RX 
+1784333915.358 RX Have a nice day...
+1784333915.358 RX 

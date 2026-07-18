@@ -1092,3 +1092,169 @@ Also observed: name validation on character save took ~30 s this time
 (previous characters took ~10 min on the same DB — the polling walk is
 evidently not a fixed cost), and `Poop just left the Realm.` is the
 clean-logout counterpart to §8.10's `Poop just disconnected!!!`.
+
+### 8.12 Kai powers (oracle-measured)
+
+Expedition 2026-07-17 (M5 slice-5 Task 1). Character: **Kaimon Sable,
+Human Mystic** (new BBS account `Kaimon`/test123), rolled with default
+40s. Transcripts: `oracle_kai_mystic.raw` (creation + L1 probes),
+`oracle_kai_mystic2.raw` (exp-patched training run),
+`oracle_kai_mystic_timing.log` (ms-timestamped clean lines for both).
+Driver: `tools/oracle/oracle_kai_mystic.py` (FIFO session, parameterized
+clone of the blur driver). Exp patch per §8.8: 6000 exp at BOTH +0x3c
+and +0x46f plus 1000 copper at +0x613 (lowest drawer), emulator stopped;
+`WCCUSERS.DB.bak-kaimon-preL2` kept.
+
+**THE VERDICT: kai powers are TRAINER-GRANTED — training inserts them
+into the ordinary spellbook.** This is the class-keyed complement to
+§8.1 (a MAGE's train grants nothing; no LearnSp item teaches any magery
+group 5 spell). The train receipt itself announces the grant, one power
+per level, at the generic Newhaven Training Room (room 1/2147, shop 38,
+class-limit 0 — NOT a mystic-specific trainer):
+
+```
+train
+You hand over 50 copper farthings and you receive training to attain level 2.
+You receive the following:
+10 additional character points
+You learn the following Kai abilities:
+way of the swan
+```
+
+L2→3 reads `100 copper farthings ... level 3` and grants
+`way of the owl`. After each train the on-disk spellbook word array at
++0x474 gained the spell id (`[36]`, then `[36, 37]` — same array, same
+insertion the scroll path uses). `powers` before the first train:
+`You have no powers.` — after: listed immediately. Exp thresholds
+measured en route (Human Mystic base 150): L2 = 2500, L3 = 5000,
+L4 = 9166 — matching `_CALC_EXP_NEEDED` seed `10*(150+100)` exactly.
+Third `train` without exp: `You do not have the required experience to
+train yet!` (same string as the mage, §8.7).
+
+**The `cast` verb is hard-refused for mystics, before any argument
+parsing.** Bare `cast`, `c zzz`, `c swan` (known power!), and
+`cast way of the swan` all print the same line:
+
+```
+You may not cast... You are KAI!  You must invoke your powers.
+```
+
+(Note the double space after `KAI!`.) `spells` gets the matching
+redirect: `You may not list your spells. You are KAI! You must list
+your powers.` (single space there).
+
+**`invoke` is the cast verb; there is no abbreviation.** `in` and `inv`
+fall through to say (`You say "inv swan"`). Bare invoke:
+
+```
+invoke
+Syntax: INVOKE {power} [{target}]
+```
+
+Resolution and refusal strings are shared with the cast pipeline —
+argument echoed verbatim, and the *unknown* line still says "cast":
+
+- Unknown/not-yet-granted power (L1 `invoke swan`, L2 `invoke owl`,
+  garbage `invoke zzz` — all identical form, bright red 1;31):
+  `You do not know how to cast zzz.`
+- Unmatched trailing target (kai unchanged, nothing charged):
+  `invoke swan zzz` → `You do not see zzz here!` (full-name form
+  `invoke way of the owl zzz` resolves the name words then fails the
+  target the same way — same resolver as §8.9).
+- **Insufficient kai** (bright red 1;31) — kai-specific wording, unlike
+  the shared lines above:
+
+  ```
+  invoke swan
+  You do not have enough kai to invoke that power.
+  ```
+
+- **One-per-round** (invoke wording; fired with kai still in the pool
+  and charged NOTHING — the round flag is checked before the kai
+  deduction):
+
+  ```
+  invoke swan
+  You have already invoked a power this round!
+  ```
+
+**Success lines.** Same three-part structure as a mage cast (§8.11 line
+order): castmsgb analog in bright blue 1;34, prompt with kai already
+deducted, then DescMsg line3 via the async path. The verb line is
+`You invoke the <full spell name>.` — period, no target name, no
+exclamation:
+
+```
+invoke swan
+You invoke the way of the swan.
+[HP=31/KAI=0]:
+```
+
+(way of the swan, target-type 1, duration 0, Heal 3+scaling: the heal
+lands silently — prompt HP rose by the healed amount, no heal line.)
+
+```
+invoke owl
+You invoke the way of the owl.
+[HP=35/KAI=0]:You feel strong-willed!
+```
+
+way of the owl (duration 60, MR +10, DescMsg 8546): `st` appends
+`You feel strong-willed!` after the MagicRes row while active (MagicRes
+read 40→50 and reverted), exactly like blur's sheet behavior. Expiry
+line (yellow 0;33, async):
+
+```
+The effects of way of the owl wear off!
+```
+
+— note the **exclamation mark** where blur's wear-off ends in a period
+(§8.9/§8.11): the punctuation is per-spell message text, not a fixed
+frame. Wall-clock: 238.5 s from invoke to wear-off for the 60-tick
+record in a freshly restarted emulator process (~3.98 s/tick — matching
+§8.11 run 6's restarted-process rate, 4.03; no new duration semantics
+claimed).
+
+**Kai pool = the mana fields, relabeled everywhere.** Max kai is
+level−1 (leveling.md `Kai(5)=L-1` confirmed live: 0/0 at L1, 1 at L2, 2
+at L3). The L1 prompt is `[HP=28]:` with NO kai segment; from L2 the
+prompt is `[HP=n/KAI=n]:`. `health` reads
+`Health:    28/31    [90%]  Kai:   0/1   [0%]` (the L1 form omits the
+Kai clause entirely), and the `st` sheet's mana row is
+`Kai:      0/1`. Training does NOT refill the pool (0/1 right after
+training). Regen: flat +1 per slow tick (~31-37 s observed), per
+regeneration.md's mystic branch.
+
+**`powers` listing** — header and columns swap Mana→Kai but keep
+"Spell Name"; the 4-char short column is right-aligned (visible on
+`owl`, invisible in §8.5 where every mage shortname is 4 chars):
+
+```
+powers
+You have the following powers:
+Level Kai  Short Spell Name
+  2   1    swan  way of the swan               
+  3   2     owl  way of the owl                
+```
+
+**Not measured:** melee + invoke same-round interplay (the `+0x700 & 4`
+per-round flag vs the swing loop) — unobservable without entering
+combat, which this expedition was barred from; remains decompile-only
+(ORACLE-VERIFY, slice 6 monster work can piggyback). Guild/shop side:
+the Newhaven Spell Shop lists every scroll as `(You can't use)` to a
+mystic (whole §8.3 inventory re-listed with that suffix), and the
+Training Room's `list` prints nothing — no item path into the kai book
+exists, consistent with the data sweep (zero LearnSp items for group
+5).
+
+**Ops lesson (staging, extends §8.8):** MBBSEmu's fancy console TUI
+eats `^C` bytes typed into its pty, and a SIGTERM kill LOSES committed
+game-DB rows that only exist in the process (first Kaimon roll was
+wiped this way — the WCCUSERS.DB file mtime never moved during the
+session). `kill -INT <pid>` delivers the real CancelKeyPress path: the
+services stop and every row survived (verified externally before AND
+after the stop; the process exits via an unhandled SocketException
+abort — cosmetic). Note the row DID appear on disk mid-session on the
+second roll, so the first-session loss may have been a
+write-buffering anomaly of that long-lived process; treat graceful
+SIGINT as mandatory either way.
