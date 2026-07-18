@@ -90,6 +90,7 @@ fn player_at(name: &str, room: u16) -> Player {
         spellbook: std::collections::BTreeMap::new(),
         poison: 0,
         active_spells: Default::default(),
+        ..Default::default()
     }
 }
 

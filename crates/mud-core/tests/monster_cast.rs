@@ -403,6 +403,7 @@ fn player(name: &str, race: RaceId) -> Player {
         spellbook: Default::default(),
         poison: 0,
         active_spells: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -1235,6 +1236,14 @@ fn summon_spawns_the_named_monster_with_the_everyone_line() {
     let events = core.drain_events();
     let look = text_to(&events, s);
     assert!(look.contains("raptor"), "the raptor stands in the room: {look:?}");
+    // The monster-cast summon pre-locks the VICTIM (23263: mon+0x1a =
+    // victim name, +0x116 = 0) — M6 slice 3.
+    let raptor = core
+        .monster_ids()
+        .into_iter()
+        .find(|id| core.monster_template(*id) == Some(RAPTOR))
+        .expect("raptor instance");
+    assert_eq!(core.monster_target(raptor), Some(s), "summon spawns locked on the victim");
 }
 
 #[test]

@@ -279,6 +279,7 @@ fn caster(spells: &[SpellId]) -> Player {
         spellbook: spells.iter().map(|s| (*s, false)).collect::<BTreeMap<_, _>>(),
         poison: 0,
         active_spells: Default::default(),
+        ..Default::default()
     }
 }
 

@@ -123,6 +123,23 @@ message stream); property test (zone-leashed wanderer never exits its zone
 in 10k ticks over real content). Deliverable: `--spawn` a rat, watch it
 drift around Newhaven and stop at zone borders and closed doors.
 
+**Slice 3 COMPLETE (2026-07-18):** acquisition (FUN_00423863 port in the 5 s
+round), the 1 s Job::Fast pursuit tier (breadcrumb chase, give-up > 15, 0x25
+silent despawn), the flee free-attack, gated retaliation locks, the post-swing
+lock re-roll, and the monster-cast summon victim pre-lock. 9 aggression + 7
+pursuit tests; the two M5 seeded goldens re-pinned for the new draw order.
+MAJOR SPEC CORRECTIONS (monsters.md §4 rewritten): an eligible monster ALWAYS
+attacks someone (the anti-pile-on roll only picks who — fallback 20401); the
+lock is written by the POST-SWING re-roll vs the follow word, aggressive modes
+drop it on failure (this IS §8.14's "free retargeting", divergence resolved);
+mode 6 SPARES fame ≥ 0x28 (was documented inverted); the criminal-hunter is
+ROAM class 5 (base 100, only fame ≥ 0x28); +0x6f0 anti-pile-on taper resets
+per MEDIUM tick and hard-gates the free attack; the free attack aborts the
+move only on a LOST LIFE; no death/logout lock sweep — stale locks age out
+through give-up. Player gains fame (+0x542, fed by M7 crime), the movement
+breadcrumb trail, the moved-this-round flag (+0x6f4 bit 0x40). Charm-family
+branches (pet assist, ward defence, charm-break) remain M7.
+
 ## Slice 3 — Aggression, pursuit, flee free-attack (new 1 s fast tick)
 
 - **Acquisition** in the existing 5 s `Job::Energy` round (§4,

@@ -307,61 +307,95 @@ the room from the …*" to both rooms.
 *initiate* against. Reading every branch of the aggression driver `FUN_00423863`
 (`0x423863`) and `give_monsters_a_free_attack` (`0x29692`):
 
+*(Slice M6-3 line-level re-read, 2026-07-18 — two rows CORRECTED: mode 6 SPARES
+high-fame players, and the criminal-hunter behaviour lives in ROAM class 5, not
+mode 6.)*
+
 | `mon+0x106` | class | initiation behaviour |
 |-------------|-------|----------------------|
 | **0** | passive | Never initiates. Only fights back once attacked (already has `mon+0x1a` set). |
 | **3** | passive / sentinel | Never initiates (identical treatment to 0 in every gate). |
 | **4** | passive | Never initiates. On a player's flee it swings only if it was *already* fighting that player. |
-| **6** | guardian / conditional | Initiates **only against high-threat players**: aggro driver requires `player+0x542 ≥ 0x28` (fame/notoriety ≥ 40) or the player is already fighting it; a low-fame player is ignored. (The flee free-attack uses the mirror bound `player+0x542 < 0x50`.) This is the "attacks only criminals / notorious characters" guard type. |
-| **1, 2, 5, …** (any other) | aggressive | Initiates against **any** valid player present. Class `5` in `mon+0x12c` (roam) is treated as *extra* aggressive (rolls against a base of 100 rather than 50). |
+| **6** | aggressive, fame-sparing | Initiates like any aggressive mode EXCEPT against `player+0x542 ≥ 0x28` (fame ≥ 40) — the famous are skipped unless already fighting it (20386-20390). The flee free-attack uses the looser bound 0x50 (23882). |
+| **1, 2, 5, …** (any other) | aggressive | Initiates against **any** valid player present. |
 
-The `≥40` fame threshold for mode 6 is the same alignment/fame line the death code uses for
-temple recall (`death.md` §3).
+**ROAM class 5** (`mon+0x12c`, not the behaviour mode) is the criminal-hunter
+branch (20408-20448): it initiates ONLY against `fame ≥ 0x28` players, at base
+100 (`genrdn(0,100) < 100 - 5·attackers`) — and a mode-6 class-5 inverts to
+"only fame < 0x28". A player already fighting the monster is attacked
+unconditionally. Class-5 acquisitions have NO fallback victim.
 
 ### Acquiring a target — `FUN_00423863` (runs inside the 5 s combat round)
 
 For each player (walked through the shuffled terminal map `DAT_004913fc` for fairness), the
-driver scans the up-to-15 monsters in that player's room. A monster is a candidate to
-*acquire* when it has **no current target** (`mon+0x1a` empty) and **no travel order**
-(`mon+0x22 == 0`). It then, subject to its `mon+0x106` mode above, tests each nearby player
-with **`FUN_004237de`** — the target-validity predicate: player is in the monster's exact
-room, is attackable, and is **not hidden** unless the monster has see-hidden ability `0x39`
-(`player+0x5f6` hidden flag; `player+0x6f4` bits 4/0x40 gate safe/no-aggro states). On a
-valid target it rolls the anti-pile-on chance from `combat_rounds.md` §3:
+driver scans the up-to-15 monsters in that player's room (a monster co-located with N
+players is visited N times — the full-energy entry gate of `attack_monster_user`, 26706,
+makes repeat visits no-ops). **Locked monsters** (`mon+0x1a` set) take the A2 path
+(20465-20519): the named target is attacked EVERY round it passes `FUN_004237de` — no
+roll. **Unlocked** monsters with no travel order (`mon+0x88 == 0`) acquire, subject to
+the mode table, testing each nearby player with `FUN_004237de` — same exact room, not
+hidden unless see-hidden `0x39`, and NOT flagged moved-this-round (`player+0x6f4` bit
+0x40, set on every move 12501, cleared at the top of the energy round 18619 and the
+medium tick 19755). On a valid target the anti-pile-on roll:
 
 ```
-genrdn(0,100) < 50 - 5 * player[+0x6f0]     // +0x6f0 = times already jumped this round
+genrdn(0,100) < 50 - 5 * player[+0x6f0]     // +0x6f0 resets each MEDIUM tick (19748)
 ```
 
-Success bumps `player+0x6f0` and calls `attack_monster_user` (the actual swing, in
-`combat_rounds.md`), which also **sets the monster's target** `mon+0x1a` to that player's
-name — the monster is now "locked on."
+**The roll only picks WHO — an eligible monster always attacks** (20401-20404: the
+last-rolled candidate is the fallback). Success bumps `player+0x6f0` and calls
+`attack_monster_user` (the swing sequence). **The lock is NOT written by acquisition**:
+it is (re)decided by the post-swing re-roll at the END of `attack_monster_user`
+(26867-26885) — `genrdn(1,100) < knmsr+0x6e` (the `follow` word) lands the lock;
+aggressive modes DROP an unlanded lock, passive modes keep whatever they hold, class
+0x25 never rolls and class 5 keeps an existing lock unrolled. This per-sequence
+re-roll is the mechanism behind the observed per-round free retargeting (§8.14). The
+retaliation lock on a PLAYER-initiated attack (`attack_user_monster` 26230-26236) uses
+the same shape: `genrdn(1,100) < mon+0x108` OR a passive mode (3/0/4) — so passive
+monsters always lock their attacker, aggressive ones probabilistically.
 
 ### Pursuit of a locked target — `fast_update_monster` (1 s)
 
-Once `mon+0x1a` is set the fast tier drives the chase every second:
+The fast tier is drained one table slot per user-poll (`ljngame_user_polling_routine`
+line 814-816 calls `*_update_next_monster` on alternate polls; each tier tick banks one
+full-table pass in its budget global) — amortized, every locked monster is processed
+about once per second. Only monsters with `mon+0x1a` set enter (caller gate 19245-19247).
+Per processed tick:
 
-* Resolve the target user. If they have **left the monster's room**, compute the direction
-  toward them (`dir_player_travelling_coord`) and `move_monster` that way — i.e. monsters
-  **follow fleeing players room-to-room**, subject to all the door/zone gates of §3.
-* Pursuit is refused when the target recalled/left the map, went hidden (and the monster
-  lacks ability `0x39`), or a per-monster follow roll fails (`genrdn(0,100) < mon+0x108`
-  aggression — a low-aggression monster may lose the trail).
-* Every failed follow bumps the **give-up counter `mon+0x124`** (byte). When it exceeds
-  `0xf` (15): a free-roam class-`0x25` monster **despawns** (`FUN_004298ec` — removes it
-  from the room, decrements the spawn count, frees the instance); any other monster simply
-  **drops the target** (`mon+0x1a = 0`, counter reset) and reverts to wandering.
-* The fast tier also runs **prone recovery**: `mon+0x128` bit 8 with countdown `mon+0x168`;
-  on expiry it prints "*…rises from the ground*" and clears the prone bit.
+* Resolve the target by name (`get_user_number`). Logged off → give-up bump. In the
+  monster's room → nothing (acquisition owns the same-room case; NO bump).
+* Refusals, each bumping `mon+0x124` by 1: different MAP; target hidden/sneaking without
+  see-hidden `0x39`; target's moved-this-round flag set; the follow roll failed
+  (`genrdn(0,100) < mon+0x108` aggression — charmed monsters, status bit 0, skip the
+  roll and always pursue); no trail direction; `move_monster` refused the step.
+* The direction comes from `dir_player_travelling_coord` (15657-15686): pure
+  breadcrumb-walk of the player's 0x14-deep movement trail (map `+0x550+i*4`, room
+  `+0x5a0+i*4`, index 0 = current) — find the monster's own room in the trail, step
+  toward the room the player entered NEXT. No coordinates involved.
+* When the counter exceeds `0xf` (15): a free-roam class-`0x25` monster **despawns
+  silently** (`FUN_004298ec` — restores the origin room's spawn accounting, removes it
+  from the room table, decrements the template's live count `+0xa8`, frees the
+  instance; no message); any other monster **drops the target** (`mon+0x1a = 0`,
+  counter reset) and reverts to wandering. The counter zeroes on every attack engage
+  (26775).
+* The fast tier also runs **prone recovery** (19404-19410, targeted monsters only —
+  the caller gate): `mon+0x128` bit 8 with countdown `mon+0x168`; on expiry prints
+  "*Slightly dazed the %s rises from the floor.*" to the room.
 
 ### Flee handling — `give_monsters_a_free_attack` (`0x29692`)
 
-Called from `move_user` whenever a player walks or flees (`combat_rounds.md` §3). One
-`genrdn(0,100)` roll for the whole room; the first monster whose **aggression `mon+0x108`
-≥ that roll** and whose `mon+0x106` mode permits gets a single parting swing. Passive modes
-(0/3/4, or roam-class `0x25`) only swing if already targeting the fleer; aggressive modes
-swing regardless. Gated to once per round via `player+0x6f0`. A nonzero return (the player
-lost a life / died) aborts the move — the monster's blow can stop the escape.
+Called from `move_user` at exactly one site (12489), BEFORE the move commits and the
+moved-flag is set; sneaking departures skip it. One `genrdn(0,100)` roll per departure —
+drawn even when the room holds nothing. The scan aborts if `player+0x6f0 > 0` (already
+attacked this MEDIUM tick — at most one free attack per window). The first monster whose
+**aggression `mon+0x108` ≥ the roll** (note `>=`, vs the strict `<` in acquisition) and
+whose mode permits swings: passive modes (0/3/4) and roam-class `0x25` only when already
+locked on the fleer (and not suppressed); mode 6 skips `fame ≥ 0x50`; other aggressive
+modes swing at strangers freely and at their own locked target only when unsuppressed.
+The swing is a full `attack_monster_user` sequence (so the full-energy gate applies —
+a monster that spent its round's energy cannot clip). The move is aborted **only when
+the player LOST A LIFE** (the return value keys on `player+0x6a6`, 23863/23900-23902);
+merely being hit never stops the escape.
 
 ### Peripheral: `monster_update_room_users_stats` (`0x2635d`)
 

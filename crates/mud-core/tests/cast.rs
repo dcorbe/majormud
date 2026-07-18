@@ -713,6 +713,7 @@ fn player(name: &str, class: ClassId, spellbook: BTreeMap<SpellId, bool>) -> Pla
         spellbook,
         poison: 0,
         active_spells: Default::default(),
+        ..Default::default()
     }
 }
 

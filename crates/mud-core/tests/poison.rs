@@ -201,6 +201,7 @@ fn player(name: &str, race: RaceId, class: ClassId) -> Player {
         spellbook: book(),
         poison: 0,
         active_spells: Default::default(),
+        ..Default::default()
     }
 }
 

@@ -8,8 +8,8 @@
 //!
 //! Determinism: `CoreConfig::rng_seed` drives every genrdn stream (success
 //! rolls + magnitude). Under SEED both 70%-chance rolls succeed and the
-//! kill lands on combat round 2 (raw magnitudes 10 then 12, Damage(-MR)
-//! amplified by +20% against the filthbug's mr 30 into fires of 12 then 14
+//! kill lands on combat round 2 (raw magnitudes 12 then 10, Damage(-MR)
+//! amplified by +20% against the filthbug's mr 30 into fires of 14 then 12
 //! against 20 HP); the round bound exists so a broken driver fails with a
 //! message instead of spinning. The failed-roll path is covered in
 //! tests/cast.rs.
@@ -641,6 +641,7 @@ fn mage() -> Player {
         spellbook: BTreeMap::new(),
         poison: 0,
         active_spells: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -771,9 +772,11 @@ fn mage_learns_scroll_casts_and_kills() {
         ("engaged", "*Combat Engaged*"),
         // Round 1 under SEED: raw magnitude 10 (of 4..=13), Damage(-MR)
         // amplified against mr 30: 10 + 10*20/100 = 12.
-        ("first fire", "You fire a magic missile at nasty filthbug for 12 damage!\n"),
+        // Slice-3 stream re-pin: the free-attack roll on each walk and
+        // the retaliation-gate draws shifted the magnitudes (14 then 12).
+        ("first fire", "You fire a magic missile at nasty filthbug for 14 damage!\n"),
         // Round 2 under SEED: raw 12 -> 12 + 12*20/100 = 14, the kill.
-        ("killing fire", "You fire a magic missile at nasty filthbug for 14 damage!\n"),
+        ("killing fire", "You fire a magic missile at nasty filthbug for 12 damage!\n"),
         // M3 death path: death line, exp split, disengage — in order.
         ("death", "The nasty filthbug is dead.\n"),
         ("exp", "You gain 12 experience.\n"),
@@ -1130,11 +1133,13 @@ fn caster_monster_fight_and_the_live_poison_lifecycle() {
     let fizzled = vex_p1
         .matches("The moaning spirit attempted to cast draws the breath at you, but failed.")
         .count();
-    assert_eq!(landed, 4, "SEED landed casts: {vex_p1:?}");
-    assert_eq!(fizzled, 5, "SEED fizzles: {vex_p1:?}");
+    assert_eq!(landed, 5, "SEED landed casts: {vex_p1:?}");
+    assert_eq!(fizzled, 3, "SEED fizzles: {vex_p1:?}");
     // HP accounting: every landed drain shows the exact amount it dealt
-    // (SEED rolls 12, 12, 4, 5 — all inside the record band 4..12).
-    assert_eq!(core.current_hp(vex), 200 - 33, "SEED drain total: {vex_p1:?}");
+    // (SEED rolls 12, 13, 11, 9, 11 — all inside the record band 4..13;
+    // stream re-pinned for the slice-3 draws: retaliation-gate and
+    // post-swing lock rolls now sit in every monster attack sequence).
+    assert_eq!(core.current_hp(vex), 200 - 56, "SEED drain total: {vex_p1:?}");
     // Victim view, in order: the engagement, a landed line (WITH the
     // damage number), and a fizzle line.
     assert_in_order(

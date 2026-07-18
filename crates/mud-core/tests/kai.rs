@@ -248,6 +248,7 @@ fn player(name: &str, class: ClassId, level: u16, book: &[SpellId]) -> Player {
         spellbook,
         poison: 0,
         active_spells: Default::default(),
+        ..Default::default()
     }
 }
 

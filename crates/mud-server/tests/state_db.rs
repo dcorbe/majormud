@@ -51,6 +51,7 @@ fn player(name: &str) -> Player {
         // Nonzero so the full-struct roundtrip assertion covers the column.
         poison: 7,
         active_spells: Default::default(),
+        ..Default::default()
     }
 }
 

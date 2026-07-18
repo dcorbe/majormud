@@ -146,15 +146,16 @@ fn mana_regen_ability() -> Ability {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SessionId(pub u64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Gender {
+    #[default]
     Male,
     Female,
 }
 
 /// The persisted subset of the 0x7ec-byte player record
 /// (`re/docs/character_creation.md` §6). Grows with each milestone.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Player {
     pub name: String,
     pub gender: Gender,
@@ -207,6 +208,12 @@ pub struct Player {
     /// An array, not a Vec: slot exhaustion is observable (an 11th buff
     /// finds no free slot).
     pub active_spells: [ActiveSpell; 10],
+    /// `+0x542` — fame/notoriety word. Gates monster targeting: behaviour
+    /// mode 6 spares players at >= 0x28 (unless already fighting); roam
+    /// class 5 "guardians" initiate ONLY at >= 0x28; the flee free-attack
+    /// mode-6 bound is 0x50 (decompile 20386/20420/23882). Fed by the M7
+    /// crime system — creation seeds 0.
+    pub fame: i16,
 }
 
 /// One player active-spell slot (`spellcasting.md` §1). `spell` is `None`
@@ -676,6 +683,18 @@ enum Session {
         /// re-fire is MEASURED §8.9). `Some` only while `target` is
         /// `Some`; cleared with it, and replaced by a melee `attack`.
         casting: Option<SpellId>,
+        /// `+0x6f4` bit 6 — set on a successful move, cleared at the top
+        /// of the energy round and in the medium tick (decompile 12501/
+        /// 18619/19755). While set: acquisition skips the player and
+        /// pursuit's follow gate fails.
+        moved_this_round: bool,
+        /// `+0x6f0` — monsters that attacked this player this MEDIUM tick
+        /// (reset 19748). Tapers the anti-pile-on roll (50 - 5n) and hard
+        /// gates the flee free-attack (> 0 = already attacked, no swing).
+        attackers_this_tick: i32,
+        /// `+0x550/+0x5a0` — the 20-deep movement breadcrumb (index 0 =
+        /// current room); `dir_player_travelling_coord` walks it to chase.
+        trail: Vec<RoomId>,
     },
 }
 
@@ -692,6 +711,9 @@ enum Job {
     Upkeep,
     /// One meditation dot for a pending exit.
     ExitStep(SessionId),
+    /// `background_fast`, every 1 s: the pursuit tier (prone recovery +
+    /// chase; idle monsters cost nothing — the has-target gate).
+    Fast,
     /// The nightly-cleanup stand-in: Worldgroup restarted the module every
     /// night, re-running check_initiate_restocking (its run-once flag
     /// DAT_00482138 is never reset within a process). A standalone server
@@ -700,6 +722,8 @@ enum Job {
 }
 
 const SLOW_INTERVAL: u64 = 30;
+/// The pursuit tier (`background_fast`).
+const FAST_INTERVAL: u64 = 1;
 /// One emulated board day (the nightly cleanup cadence).
 const CLEANUP_INTERVAL: u64 = 86_400;
 /// The combat-round cadence (`background_energy`).
@@ -769,6 +793,15 @@ pub(crate) struct MonsterInstance {
     /// `mon+0x132`: last wander direction — the anti-backtrack memory,
     /// cleared by the 30 s slow tick (decompile 19274).
     pub last_move_dir: Option<crate::content::Direction>,
+    /// `mon+0x124` — pursuit give-up counter: bumped once per fast tick
+    /// the lock can't be prosecuted (target gone/hidden/other map/roll or
+    /// move failed); > 15 drops the lock (class 0x25 despawns instead).
+    /// Zeroed on every attack engage (decompile 26775).
+    pub give_up: u8,
+    /// `mon+0x116` — attack-suppress byte: a suppressed lock (guardian
+    /// summons) never swings at its named target. Cleared whenever a lock
+    /// is (re)written by combat.
+    pub suppress: bool,
 }
 
 /// A scheduled shop-slot restock, due at an absolute tick. Events live
@@ -817,6 +850,7 @@ impl Core {
         scheduler.schedule_in(SLOW_INTERVAL, Job::Slow);
         scheduler.schedule_in(ENERGY_INTERVAL, Job::Energy);
         scheduler.schedule_in(UPKEEP_INTERVAL, Job::Upkeep);
+        scheduler.schedule_in(FAST_INTERVAL, Job::Fast);
         scheduler.schedule_in(CLEANUP_INTERVAL, Job::Cleanup);
         let rng = Rng(config.rng_seed | 1);
         let mut core = Core {
@@ -923,6 +957,8 @@ impl Core {
                 herd_mode,
                 herd_rank,
                 last_move_dir: None,
+                give_up: 0,
+                suppress: false,
             },
         );
         Some(id)
@@ -931,6 +967,30 @@ impl Core {
     /// Test/inspection: a live monster's current room.
     pub fn monster_location(&self, id: MonsterInstanceId) -> Option<RoomId> {
         self.monsters.get(&id).map(|m| m.location)
+    }
+
+    /// Test/inspection: a live monster's target lock (`mon+0x1a`).
+    pub fn monster_target(&self, id: MonsterInstanceId) -> Option<SessionId> {
+        self.monsters.get(&id).and_then(|m| m.target)
+    }
+
+    /// Test/inspection: every live monster instance id.
+    pub fn monster_ids(&self) -> Vec<MonsterInstanceId> {
+        self.monsters.keys().copied().collect()
+    }
+
+    /// Test/inspection: an instance's template id.
+    pub fn monster_template(&self, id: MonsterInstanceId) -> Option<crate::content::MonsterId> {
+        self.monsters.get(&id).map(|m| m.template)
+    }
+
+    /// Test hook: write a target lock directly — the summon pre-lock shape
+    /// (generate_monster param_7; combat can never lock a class 0x25).
+    pub fn debug_lock_monster(&mut self, id: MonsterInstanceId, session: SessionId) {
+        if let Some(m) = self.monsters.get_mut(&id) {
+            m.target = Some(session);
+            m.suppress = false;
+        }
     }
 
     /// Test hook: drive one `move_monster` step directly (the wander and
@@ -1058,6 +1118,10 @@ impl Core {
                     self.scheduler.schedule_in(UPKEEP_INTERVAL, Job::Upkeep);
                 }
                 Job::ExitStep(session) => self.exit_step(session),
+                Job::Fast => {
+                    self.fast_update();
+                    self.scheduler.schedule_in(FAST_INTERVAL, Job::Fast);
+                }
                 Job::Cleanup => {
                     self.reconcile_shelves();
                     self.scheduler.schedule_in(CLEANUP_INTERVAL, Job::Cleanup);
@@ -1319,6 +1383,16 @@ impl Core {
     /// (`medium_update_monster`, spec §6.6).
     fn upkeep_update(&mut self) {
         let sessions: Vec<SessionId> = self.sessions.keys().copied().collect();
+        for id in &sessions {
+            // medium_update_character resets the anti-pile-on counter
+            // (19748) and the moved-flag (19755).
+            if let Some(Session::InGame { attackers_this_tick, moved_this_round, .. }) =
+                self.sessions.get_mut(id)
+            {
+                *attackers_this_tick = 0;
+                *moved_this_round = false;
+            }
+        }
         for id in sessions {
             self.upkeep_player(id);
         }
@@ -1503,6 +1577,96 @@ impl Core {
             return; // anti-backtrack (mon+0x132), budget already spent
         }
         self.move_monster(id, dir, false);
+    }
+
+    /// The 1 s pursuit tier (`fast_update_monster` 19393-19489). The DLL
+    /// drains one table slot per user-poll and completes the pass within
+    /// the tick interval; we run the whole sweep each second (documented
+    /// idealization). Only monsters holding a lock do any work.
+    fn fast_update(&mut self) {
+        let ids: Vec<MonsterInstanceId> = self.monsters.keys().copied().collect();
+        for id in ids {
+            self.pursue_monster(id);
+        }
+    }
+
+    fn pursue_monster(&mut self, id: MonsterInstanceId) {
+        let Some(m) = self.monsters.get(&id) else {
+            return;
+        };
+        // (Prone recovery, 19404-19410, joins with the mechanic that can
+        // knock monsters prone.)
+        let Some(victim) = m.target else {
+            return;
+        };
+        let (mon_room, aggression, roam) = (m.location, m.aggression, m.roam_class);
+        // One give-up bump per unprosecutable tick (19414/19426/19433/
+        // 19440); same-room ticks never bump.
+        let mut bump = false;
+        match self.sessions.get(&victim) {
+            Some(Session::InGame { player, moved_this_round, .. }) => {
+                let (loc, moved) = (player.location, *moved_this_round);
+                if loc == mon_room {
+                    // nothing to do — acquisition owns the same-room case
+                } else if loc.map != mon_room.map || moved {
+                    bump = true; // can't chase across maps / a mid-flight runner
+                } else if self.rng.roll(0, 100) >= i32::from(aggression) {
+                    bump = true; // the follow roll failed
+                } else {
+                    match self.dir_toward_player(victim, mon_room) {
+                        None => bump = true,
+                        Some(dir) => {
+                            if !self.monster_confusion_fumble(id)
+                                && !self.move_monster(id, dir, false)
+                            {
+                                bump = true;
+                            }
+                        }
+                    }
+                }
+            }
+            _ => bump = true, // logged off — the stale name ages out
+        }
+        let Some(m) = self.monsters.get_mut(&id) else {
+            return;
+        };
+        if bump {
+            m.give_up = m.give_up.saturating_add(1);
+        }
+        // Give-up past 15 (19446): class 0x25 silently despawns
+        // (FUN_004298ec — the spawn-accounting half joins with slice 4);
+        // everyone else drops the lock and goes back to wandering.
+        if m.give_up > 15 {
+            if roam == 0x25 {
+                self.monsters.remove(&id);
+            } else {
+                m.give_up = 0;
+                m.target = None;
+            }
+        }
+    }
+
+    /// `dir_player_travelling_coord` (15657-15686): find the monster's
+    /// room in the target's breadcrumb trail, then the exit of that room
+    /// whose destination is the room the player entered NEXT.
+    fn dir_toward_player(
+        &self,
+        victim: SessionId,
+        mon_room: RoomId,
+    ) -> Option<crate::content::Direction> {
+        let Some(Session::InGame { trail, .. }) = self.sessions.get(&victim) else {
+            return None;
+        };
+        let i = (1..trail.len()).find(|i| trail[*i] == mon_room)?;
+        let next_room = trail[i - 1];
+        let room = self.content.rooms.get(&mon_room)?;
+        crate::content::Direction::ALL
+            .into_iter()
+            .find(|d| {
+                room.exits[*d as usize]
+                    .as_ref()
+                    .is_some_and(|e| e.dest == next_room)
+            })
     }
 
     /// `check_monster_confusion` (0x29812): Confusion (0x47) value beats
@@ -1892,8 +2056,21 @@ impl Core {
         let id = self.next_session_id();
         self.broadcast_to_others(id, &text::entered_realm(&player.name));
         let derived = self.derive_for(&player);
+        let trail_seed = player.location;
         self.sessions
-            .insert(id, Session::InGame { player: Box::new(player), derived, exiting: None, target: None, aided: false, energy: PLAYER_ENERGY_MAX, cast_this_round: false, casting: None });
+            .insert(id, Session::InGame {
+                player: Box::new(player),
+                derived,
+                exiting: None,
+                target: None,
+                aided: false,
+                energy: PLAYER_ENERGY_MAX,
+                cast_this_round: false,
+                casting: None,
+                moved_this_round: false,
+                attackers_this_tick: 0,
+                trail: vec![trail_seed],
+            });
         self.show_room(id);
         self.show_prompt(id);
         id
@@ -3336,10 +3513,9 @@ impl Core {
             }
             self.output_line(session, text::COMBAT_ENGAGED);
             // Retaliation lock (transcript: the filthbug swiped back after
-            // the bare engagement, before any damage landed).
-            if let Some(m) = self.monsters.get_mut(&monster_id) {
-                m.target = Some(session);
-            }
+            // the bare engagement, before any damage landed) — gated like
+            // every damaging path since slice 3.
+            self.retaliation_lock(monster_id, session);
             return;
         }
         // Benign spells: roll + costs at the command, unlike offensive
@@ -3804,14 +3980,14 @@ impl Core {
                     continue;
                 };
                 m.current_hp -= damage_total + drain_total;
-                // Retaliation lock like every damaging path — but NO
-                // caster-side engagement (no *Combat Engaged* MEASURED
-                // §8.13 on debuff-only payloads; ORACLE-VERIFY for
-                // damaging sweeps — fixture-only today; evil warnings/
-                // crime = SLICE 7).
-                m.target = Some(session);
                 m.current_hp <= 0
             };
+            // Retaliation lock like every damaging path (gated, slice 3)
+            // — but NO caster-side engagement (no *Combat Engaged*
+            // MEASURED §8.13 on debuff-only payloads; ORACLE-VERIFY for
+            // damaging sweeps — fixture-only today; evil warnings/crime
+            // = M7).
+            self.retaliation_lock(monster_id, session);
             if drain_total != 0
                 && let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session)
             {
@@ -4074,7 +4250,7 @@ impl Core {
         if !summons.is_empty() {
             let room = self.player(session).location;
             for value in summons {
-                self.summon_spawn(value, room);
+                self.summon_spawn(value, room, None); // pet links M7
             }
         }
         self.emit_cast_success_lines(session, target_id, spell, display_damage, everyone_target);
@@ -4522,14 +4698,19 @@ impl Core {
     /// spawned into the given room (every apply loop passes it straight
     /// to `generate_monster`: monster single 23259, player self 40044,
     /// player-at-monster 43911). An unknown template spawns nothing, like
-    /// generate_monster's 0 return. The DLL then tags the spawn — victim
-    /// name into the target word (23263, monster casts), caster name/pet
-    /// links on the player paths (40048-40050, 43915-43925) — M6 PENDING
-    /// (LOUD): the tag only matters to monster aggression/AI, which does
-    /// not exist yet; until M6 the summon stands idle.
-    fn summon_spawn(&mut self, template: i32, room: RoomId) {
-        if let Ok(id) = u16::try_from(template) {
-            self.spawn_monster(crate::content::MonsterId(id), room);
+    /// generate_monster's 0 return. The MONSTER-cast path tags the spawn
+    /// with the victim's name (23263 -> mon+0x1a, +0x116 = 0) — it wakes
+    /// up already hunting. The player-path caster/pet links (40048-40050,
+    /// 43915-43925: +0x116 = 1 guardian suppression, charm ownership) are
+    /// M7 PENDING with the charm system — those summons stand idle.
+    fn summon_spawn(&mut self, template: i32, room: RoomId, lock: Option<SessionId>) {
+        if let Ok(id) = u16::try_from(template)
+            && let Some(spawned) = self.spawn_monster(crate::content::MonsterId(id), room)
+            && let Some(victim) = lock
+            && let Some(m) = self.monsters.get_mut(&spawned)
+        {
+            m.target = Some(victim);
+            m.suppress = false;
         }
     }
 
@@ -4786,12 +4967,12 @@ impl Core {
             // The victim still locks on (the melee path re-marks after
             // whiffed rounds too) — driver rounds only: the command-time
             // duration path never engaged, and the DLL's fail branch sets
-            // no aggro there (44234-44265 prints and moves on).
+            // no aggro there (44234-44265 prints and moves on). Gated
+            // like every lock since slice 3.
             if spell.duration == 0
-                && let Some(m) = self.monsters.get_mut(&monster_id)
-                && m.target.is_none()
+                && self.monsters.get(&monster_id).is_some_and(|m| m.target.is_none())
             {
-                m.target = Some(session);
+                self.retaliation_lock(monster_id, session);
             }
             return;
         }
@@ -4926,7 +5107,7 @@ impl Core {
                 // 43926); the duration arm is silly_spell — a no-op here
                 // (43927-43929).
                 Ability::Summon if duration == 0 => {
-                    self.summon_spawn(amount, room);
+                    self.summon_spawn(amount, room, None); // hunt links M7
                 }
                 Ability::Summon => {}
                 // Every other row in a DURATION cast drives the one slot
@@ -5001,9 +5182,9 @@ impl Core {
                 return;
             };
             m.current_hp -= damage;
-            m.target = Some(session);
             m.current_hp <= 0
         };
+        self.retaliation_lock(monster_id, session);
         // Drain: the stolen HP heals the caster, capped at max (spec §4).
         if drain_total != 0
             && let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session)
@@ -5800,11 +5981,19 @@ impl Core {
             }
         }
 
+        // The round clears every player's moved-flag before the drivers
+        // (energy_update_character, decompile 18619).
+        for id in &sessions {
+            if let Some(Session::InGame { moved_this_round, .. }) = self.sessions.get_mut(id) {
+                *moved_this_round = false;
+            }
+        }
+
         if self.rng.roll(0, 100) < 60 {
             self.player_combat_driver(&sessions);
-            self.monster_combat_driver(&monster_ids);
+            self.monster_combat_driver();
         } else {
-            self.monster_combat_driver(&monster_ids);
+            self.monster_combat_driver();
             self.player_combat_driver(&sessions);
         }
     }
@@ -5815,9 +6004,181 @@ impl Core {
         }
     }
 
-    fn monster_combat_driver(&mut self, monsters: &[MonsterInstanceId]) {
-        for id in monsters {
-            self.monster_attack_sequence(*id);
+    /// `FUN_00423863` (decompile 20335-20525): the per-round monster AI —
+    /// iterate players (session order; the DLL walks a per-slow-tick
+    /// shuffled map, a documented divergence), then the monsters in each
+    /// player's room. A monster co-located with N players is visited N
+    /// times; the full-energy entry gate makes the extra visits no-ops.
+    fn monster_combat_driver(&mut self) {
+        let sessions: Vec<SessionId> = self.sessions.keys().copied().collect();
+        for s in sessions {
+            let Some(Session::InGame { player, .. }) = self.sessions.get(&s) else {
+                continue;
+            };
+            let room = player.location;
+            let here: Vec<MonsterInstanceId> = self
+                .monsters
+                .iter()
+                .filter(|(_, m)| m.location == room)
+                .map(|(id, _)| *id)
+                .take(15)
+                .collect();
+            for mid in here {
+                self.monster_consider(mid);
+            }
+        }
+    }
+
+    /// One monster's acquisition/locked-attack decision (the per-monster
+    /// body of `FUN_00423863`).
+    fn monster_consider(&mut self, id: MonsterInstanceId) {
+        let Some(m) = self.monsters.get(&id) else {
+            return;
+        };
+        if m.current_hp <= 0 {
+            return;
+        }
+        let (room, behaviour, roam, suppress) =
+            (m.location, m.behaviour, m.roam_class, m.suppress);
+        if let Some(victim) = m.target {
+            // A2 — locked (20465-20519): no roll, attacked every round the
+            // lock is valid. (The suppressed class-5 ward-defence branch
+            // needs PvP and the charmed pet-assist branch is M7 charm.)
+            if !suppress {
+                if self.acquisition_valid(victim, room) {
+                    self.bump_attackers(victim);
+                    self.monster_attack(id, victim);
+                }
+            } else if !matches!(behaviour, 4 | 0 | 3) {
+                // Suppressed aggressive (20492-20509): attacks the first
+                // OTHER valid player — never its named target.
+                let other = self.sessions_in_room(room).into_iter().find(|s| {
+                    *s != victim && self.acquisition_valid(*s, room)
+                });
+                if let Some(other) = other {
+                    self.bump_attackers(other);
+                    self.monster_attack(id, other);
+                }
+            }
+            return;
+        }
+        // A1 — no target. (The directed-travel monster-hunt branch, +0x88,
+        // is monster-vs-monster combat — M7.)
+        if roam == 5 {
+            // Class-5 guardians (20408-20448): base 100, fame-keyed.
+            let candidates = self.sessions_in_room(room);
+            for s in candidates {
+                if !self.acquisition_valid(s, room) {
+                    continue;
+                }
+                let fighting_me = matches!(
+                    self.sessions.get(&s),
+                    Some(Session::InGame { target: Some(t), .. }) if *t == id
+                );
+                let fame = self.player(s).fame;
+                let attack = if fighting_me {
+                    true
+                } else {
+                    let fame_ok = if behaviour == 6 { fame < 0x28 } else { fame >= 0x28 };
+                    fame_ok && {
+                        let taper = self.attackers_of(s) * 5;
+                        self.rng.roll(0, 100) < 100 - taper
+                    }
+                };
+                if attack {
+                    self.bump_attackers(s);
+                    self.monster_attack(id, s);
+                    return;
+                }
+            }
+            return;
+        }
+        // Default classes (20372-20406): passive modes never initiate.
+        if matches!(behaviour, 4 | 0 | 3) {
+            return;
+        }
+        let mut fallback = None;
+        for s in self.sessions_in_room(room) {
+            if !self.acquisition_valid(s, room) {
+                continue;
+            }
+            let fighting_me = matches!(
+                self.sessions.get(&s),
+                Some(Session::InGame { target: Some(t), .. }) if *t == id
+            );
+            if behaviour == 6 && self.player(s).fame >= 0x28 && !fighting_me {
+                continue; // mode 6 spares the famous (20386-20390)
+            }
+            let taper = self.attackers_of(s) * 5;
+            let roll = self.rng.roll(0, 100);
+            fallback = Some(s); // last ROLLED candidate (20392)
+            if roll < 50 - taper {
+                self.bump_attackers(s);
+                self.monster_attack(id, s);
+                return;
+            }
+        }
+        // Fallback (20401-20404): an eligible monster always attacks.
+        if let Some(s) = fallback {
+            self.bump_attackers(s);
+            self.monster_attack(id, s);
+        }
+    }
+
+    /// `FUN_004237de` (20296-20330): same room + the sneak/moved gates.
+    /// Hidden/sneak state is unmodeled; the moved-this-round flag is live.
+    fn acquisition_valid(&self, session: SessionId, room: RoomId) -> bool {
+        matches!(
+            self.sessions.get(&session),
+            Some(Session::InGame { player, moved_this_round: false, .. })
+                if player.location == room
+        )
+    }
+
+    fn sessions_in_room(&self, room: RoomId) -> Vec<SessionId> {
+        self.sessions
+            .iter()
+            .filter(|(_, s)| {
+                matches!(s, Session::InGame { player, .. } if player.location == room)
+            })
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    fn attackers_of(&self, session: SessionId) -> i32 {
+        match self.sessions.get(&session) {
+            Some(Session::InGame { attackers_this_tick, .. }) => *attackers_this_tick,
+            _ => 0,
+        }
+    }
+
+    /// `player+0x6f0 += 1` — done at every attack launch site.
+    fn bump_attackers(&mut self, session: SessionId) {
+        if let Some(Session::InGame { attackers_this_tick, .. }) =
+            self.sessions.get_mut(&session)
+        {
+            *attackers_this_tick += 1;
+        }
+    }
+
+    /// The retaliation lock (`attack_user_monster` 26230-26236/26514-26525,
+    /// and the cast-path twins): a hit monster locks its attacker iff
+    /// `genrdn(1,100) < aggression` OR it is a passive mode (3/0/4); the
+    /// roll draws either way. Class 0x25 never locks; class 5 keeps an
+    /// existing lock. (The charmed bit-0 exemption is M7.)
+    fn retaliation_lock(&mut self, id: MonsterInstanceId, attacker: SessionId) {
+        let Some(m) = self.monsters.get(&id) else {
+            return;
+        };
+        if m.roam_class == 0x25 || (m.roam_class == 5 && m.target.is_some()) {
+            return;
+        }
+        let (aggression, behaviour) = (m.aggression, m.behaviour);
+        let roll = self.rng.roll(1, 100);
+        if roll < i32::from(aggression) || matches!(behaviour, 3 | 0 | 4) {
+            let m = self.monsters.get_mut(&id).expect("checked above");
+            m.target = Some(attacker);
+            m.suppress = false;
         }
     }
 
@@ -5914,56 +6275,80 @@ impl Core {
                     let dead = {
                         let m = self.monsters.get_mut(&target).expect("validated");
                         m.current_hp -= result.damage;
-                        // Retaliation: the victim locks onto its attacker.
-                        m.target = Some(session);
                         m.current_hp <= 0
                     };
                     if dead {
                         self.monster_killed(target, Some(session));
                         return;
                     }
+                    // Retaliation: gated lock per hit (26514-26525).
+                    self.retaliation_lock(target, session);
                 }
             }
         }
-        // Re-mark retaliation even on whiffed rounds.
-        if let Some(m) = self.monsters.get_mut(&target)
-            && m.target.is_none()
-        {
-            m.target = Some(session);
+        // The engage-time lock re-mark (26230-26236) — same gates.
+        if self.monsters.get(&target).is_some_and(|m| m.target.is_none()) {
+            self.retaliation_lock(target, session);
         }
     }
 
-    /// `attack_monster_user`: form selection by cumulative weight, then the
-    /// same 6-swing energy loop.
-    fn monster_attack_sequence(&mut self, id: MonsterInstanceId) {
+    /// `attack_monster_user` (decompile 26667-27208): entry gates, the
+    /// engage effects, form selection by cumulative weight, the 6-swing
+    /// energy loop, then the post-swing target-lock re-roll. Both the
+    /// acquisition paths and the flee free-attack funnel here with an
+    /// explicit victim; the lock (`mon+0x1a`) is an OUTPUT of the attack,
+    /// not its driver.
+    fn monster_attack(&mut self, id: MonsterInstanceId, victim: SessionId) {
         let Some(m) = self.monsters.get(&id) else {
             return;
         };
         if m.current_hp <= 0 {
             return;
         }
-        let Some(victim) = m.target else {
-            return;
-        };
         let template = m.template;
         let location = m.location;
-        // Victim gone (moved/quit/died-and-respawned elsewhere): drop target.
+        let behaviour = m.behaviour;
+        let roam = m.roam_class;
         let victim_here = matches!(
             self.sessions.get(&victim),
             Some(Session::InGame { player, .. }) if player.location == location
         );
         if !victim_here {
-            if let Some(m) = self.monsters.get_mut(&id) {
-                m.target = None;
-            }
+            return; // no drop — the fast tier's give-up owns stale locks
+        }
+        // Full-energy entry gate (26706): also what makes the driver's
+        // repeat visits in multi-player rooms no-ops.
+        let (max_energy, forms) = {
+            let tpl = self.content.monsters.get(&template).expect("live instance");
+            (tpl.energy, tpl.attacks)
+        };
+        if m.energy < max_energy {
             return;
         }
-
-        let tpl = self.content.monsters.get(&template).expect("live instance");
-        let forms = tpl.attacks;
-        // Any incoming attack sequence cancels a pending exit (combat
-        // logout guard; DLL: stop_users_exit fires before the swing loop).
+        // Safe room (26707): no combat where room+0x564 bit 1 is set.
+        if self.content.rooms[&location].protected() {
+            return;
+        }
+        // Downed victims (26751-26755): only modes {1,2,4,5,6} finish the
+        // helpless, and roam-5 guardians only the notorious (fame >= 0x50).
+        let (victim_hp, victim_fame) = {
+            let p = self.player(victim);
+            (p.current_hp, p.fame)
+        };
+        if victim_hp < 1
+            && (!matches!(behaviour, 1 | 2 | 4 | 5 | 6) || (roam == 5 && victim_fame < 0x50))
+        {
+            return;
+        }
+        // Confusion fumbles the whole sequence (26765-26767).
+        if self.monster_confusion_fumble(id) {
+            return;
+        }
+        // Engage effects (26768-26777): exit guard, give-up reset.
         self.cancel_exit(victim);
+        if let Some(m) = self.monsters.get_mut(&id) {
+            m.give_up = 0;
+        }
 
         let mut swings = 0;
         while swings <= 5 {
@@ -5984,12 +6369,12 @@ impl Core {
                 // melee-form-0 fallback (26805-26813) is unreachable with
                 // shipped data (every kind-2 form names a live spell) and
                 // is not mirrored — a bad form skips to the next swing.
-                // M6 PENDING (§8.14 divergence note): the live cast form
-                // RETARGETS freely — the moaning spirit alternated casts
-                // between an unengaged bystander and a downed body, per
-                // round, independent of melee engagement — while we fire
-                // only at the engagement target. Faithful retargeting
-                // needs the M6 aggro/room-target model.
+                // RESOLVED (M6 slice 3): the §8.14 "free retargeting" IS
+                // the acquisition model — the post-swing lock re-roll
+                // drops aggressive locks most rounds, and FUN_00423863
+                // re-picks the victim (fallback = last rolled candidate)
+                // each round; casts fire at whatever victim the driver
+                // handed us, exactly like the moaning spirit's alternation.
                 if self.monster_cast_at_player(id, template, location, &form, victim) {
                     return;
                 }
@@ -6044,10 +6429,35 @@ impl Core {
                     self.broadcast_to_room(room, Some(victim), &text::drops_to_ground(&victim_name));
                 }
                 if now_hp <= DEATH_FLOOR {
+                    // check_kill_user clears the killer's lock (27194).
+                    if let Some(m) = self.monsters.get_mut(&id) {
+                        m.target = None;
+                    }
                     self.player_killed(victim);
                     return;
                 }
             }
+        }
+        // Post-swing target-lock re-roll (26867-26885): genrdn(1,100) vs
+        // the template's follow word decides whether the lock (re)lands;
+        // aggressive modes DROP an unlanded lock — the §8.14 free
+        // retargeting. Classes 0x25 never lock; class 5 keeps an existing
+        // lock unrolled.
+        let keep_rolling = {
+            let m = &self.monsters[&id];
+            m.roam_class != 0x25 && (m.roam_class != 5 || m.target.is_none())
+        };
+        if keep_rolling {
+            let aggression = self.monsters[&id].aggression;
+            let roll = self.rng.roll(1, 100);
+            let m = self.monsters.get_mut(&id).expect("checked above");
+            if roll < i32::from(aggression) {
+                m.target = Some(victim);
+                m.suppress = false;
+            } else if !matches!(m.behaviour, 4 | 0 | 3) {
+                m.target = None;
+            }
+            // Passive modes keep whatever lock they already hold.
         }
     }
 
@@ -6619,7 +7029,7 @@ impl Core {
                         "everyone",
                         amount,
                     );
-                    self.summon_spawn(amount, location);
+                    self.summon_spawn(amount, location, Some(victim));
                 }
                 // Every remaining case is duration-armed only (the
                 // `local_28 != 0` guards) or a no-op break in the DLL.
@@ -7182,7 +7592,9 @@ impl Core {
                                 amount_self,
                             );
                         }
-                        self.summon_spawn(amount_self, location);
+                        // PLAUSIBLE: the area self-slot summon's lock was
+                        // not extracted; spawn idle.
+                        self.summon_spawn(amount_self, location, None);
                     }
                 }
                 Ability::DamageMR => {
@@ -7671,7 +8083,10 @@ impl Core {
         self.output_line(session, "You have been killed!");
         self.broadcast_to_room(died_in, Some(session), &format!("{name} is dead."));
         self.break_combat_silent(session);
-        self.release_monster_targets(session);
+        // Only the KILLER's lock clears (check_kill_user 27194, done at
+        // the kill site). Other monsters keep their name-locks and chase
+        // or age them out through the fast tier — the DLL has no
+        // death-of-player lock sweep (slice-3 extraction §5).
         // Death terminates every occupied slot, in slot order, with the
         // EndCast chain SUPPRESSED (decompile check_kill_user's death
         // branch 13053-13066 passes chainFlag '\0'; the stats-reset /
@@ -7730,15 +8145,6 @@ impl Core {
             *target = None;
             *casting = None;
             *energy = (*energy).min(PLAYER_ENERGY_MAX);
-        }
-    }
-
-    /// Monsters lose their lock on a dead/removed player.
-    fn release_monster_targets(&mut self, session: SessionId) {
-        for m in self.monsters.values_mut() {
-            if m.target == Some(session) {
-                m.target = None;
-            }
         }
     }
 
@@ -8047,8 +8453,21 @@ impl Core {
         self.events.push(Event::Persist(Box::new(player.clone())));
         self.broadcast_to_others(session, &text::entered_realm(&player.name));
         let derived = self.derive_for(&player);
+        let trail_seed = player.location;
         self.sessions
-            .insert(session, Session::InGame { player: Box::new(player), derived, exiting: None, target: None, aided: false, energy: PLAYER_ENERGY_MAX, cast_this_round: false, casting: None });
+            .insert(session, Session::InGame {
+                player: Box::new(player),
+                derived,
+                exiting: None,
+                target: None,
+                aided: false,
+                energy: PLAYER_ENERGY_MAX,
+                cast_this_round: false,
+                casting: None,
+                moved_this_round: false,
+                attackers_this_tick: 0,
+                trail: vec![trail_seed],
+            });
         // Oracle: first entry shows the stat sheet, not the room.
         self.show_sheet(session);
         self.show_prompt(session);
@@ -8097,6 +8516,7 @@ impl Core {
             spellbook: BTreeMap::new(),
             poison: 0,
             active_spells: Default::default(),
+            fame: 0,
         };
         let derived = self.derive_for(&player);
         player.current_hp = derived.max_hp;
@@ -8257,10 +8677,61 @@ impl Core {
             self.output_line(session, text::NO_EXIT);
             return;
         }
+        // give_monsters_a_free_attack (23846-23905), before the move
+        // commits: one room roll per departure — drawn even with nothing
+        // to hit — then the first eligible monster (roll <= aggression;
+        // passive modes and class 0x25 only at their locked runner; mode
+        // 6 spares fame >= 0x50) takes a full swing sequence. Only a
+        // DEATH aborts the move; the +0x6f0 gate caps it at one free
+        // attack per medium tick.
+        let roll = self.rng.roll(0, 100);
+        if self.attackers_of(session) <= 0 {
+            let here: Vec<MonsterInstanceId> = self
+                .monsters
+                .iter()
+                .filter(|(_, m)| m.location == from && m.current_hp > 0)
+                .map(|(id, _)| *id)
+                .take(15)
+                .collect();
+            let fame = self.player(session).fame;
+            for mid in here {
+                let m = &self.monsters[&mid];
+                if roll > i32::from(m.aggression) {
+                    continue;
+                }
+                let locked_on_me = m.target == Some(session);
+                let swing = if matches!(m.behaviour, 4 | 0 | 3) || m.roam_class == 0x25 {
+                    locked_on_me && !m.suppress
+                } else if m.behaviour == 6 && fame >= 0x50 {
+                    false
+                } else {
+                    !locked_on_me || !m.suppress
+                };
+                if swing {
+                    let lives_before = self.player(session).lives;
+                    self.bump_attackers(session);
+                    self.monster_attack(mid, session);
+                    let died = !matches!(
+                        self.sessions.get(&session),
+                        Some(Session::InGame { player, .. }) if player.lives == lives_before
+                    );
+                    if died {
+                        return; // the kill aborts the move (23900-23902)
+                    }
+                    break; // max one free attack per departure
+                }
+            }
+        }
         let name = self.player(session).name.clone();
         self.broadcast_to_room(from, Some(session), &text::left_via(&name, direction));
         match self.sessions.get_mut(&session) {
-            Some(Session::InGame { player, .. }) => player.location = exit.dest,
+            Some(Session::InGame { player, moved_this_round, trail, .. }) => {
+                player.location = exit.dest;
+                // +0x6f4 bit 6 (12501) + the pursuit breadcrumb push.
+                *moved_this_round = true;
+                trail.insert(0, exit.dest);
+                trail.truncate(20);
+            }
             _ => unreachable!("mover is in game"),
         }
         self.broadcast_to_room(

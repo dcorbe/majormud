@@ -661,6 +661,9 @@ impl StateDb {
                         spellbook: BTreeMap::new(),
                         poison: r.get(34)?,
                         active_spells: Default::default(),
+                        // Fame persists with the M7 crime system; until a
+                        // fame source exists every save-load sees 0.
+                        fame: 0,
                     })
                 },
             )

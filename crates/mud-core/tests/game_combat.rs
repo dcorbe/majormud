@@ -942,6 +942,7 @@ fn dwarf(name: &str) -> Player {
         spellbook: std::collections::BTreeMap::new(),
         poison: 0,
         active_spells: Default::default(),
+        ..Default::default()
     }
 }
 
