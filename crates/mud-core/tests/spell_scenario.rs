@@ -19,6 +19,15 @@
 //! cast it (slot entry, the `st` active line, Dodge into the defender),
 //! idle through the 70 upkeep ticks, and outlive it (wear-off line, st
 //! line gone, Dodge gone, slot empty).
+//!
+//! The slice-5 companions: `mage_blurs_a_second_player_who_outlives_it`
+//! drives the §8.13 player-target lifecycle across sessions (caster/
+//! target/room three-view lines, slot on the TARGET, the target's `st`
+//! line, target-only wear-off), and
+//! `area_cast_sweeps_monsters_and_spares_the_bystander` drives the area
+//! surface (pre-charge no-effect refusal with a player present, the
+//! caster + single room fan-out lines, per-monster damage with a kill,
+//! the bystander untouched).
 
 use std::collections::BTreeMap;
 
@@ -37,6 +46,13 @@ const MMIS_SCROLL: ItemId = ItemId(200);
 const BLUR: SpellId = SpellId(129);
 const BLUR_SCROLL: ItemId = ItemId(210);
 const FILTHBUG: MonsterId = MonsterId(7);
+/// Fixture offensive instant match-12 area — no damaging area spell is
+/// learnable in shipped data (§8.13 measured only benign debuff areas),
+/// so the damage sweep is fixture-shaped: Damage(0) 12..12, Magic
+/// (unresistable), generic "on the room!" castmsgb frame.
+const SHOCKWAVE: SpellId = SpellId(140);
+/// The 5 HP area-kill probe (dies to any 12..=13 sweep roll).
+const WISP: MonsterId = MonsterId(8);
 
 /// Newhaven-shaped shop room (protected, shop-active) with the lair north.
 const SHOP_ROOM: RoomId = RoomId { map: 1, room: 1 };
@@ -108,6 +124,26 @@ fn world() -> Content {
         loot: vec![],
         attacks: Default::default(),
     });
+    // The area-kill probe: dies to any 12..=13 shockwave roll.
+    content.add_monster(Monster {
+        id: WISP,
+        name: "sickly wisp".into(),
+        move_msg: None,
+        death_msg: None,
+        abilities: vec![],
+        hitpoints: 5,
+        experience: 9,
+        exp_multi: 1,
+        armour_class: 0,
+        damage_resist: 0,
+        magic_resist: 0,
+        bs_defence: 0,
+        energy: 0,
+        coins: [0; 5],
+        weapon: None,
+        loot: vec![],
+        attacks: Default::default(),
+    });
     // The mmis castmsgb shape (message 3242; line 3's damage is %s).
     content.add_message(Message {
         id: MessageId(900),
@@ -136,6 +172,17 @@ fn world() -> Content {
             "The effects of blur wear off.".into(),
             String::new(),
             "You are blurred!".into(),
+        ],
+    });
+    // The generic area castmsgb frame (the message-89/75 room shape,
+    // §8.13: stinking cloud's room view was "Zinvar casts stinking cloud
+    // on the room!"). The target line never fires on the area path.
+    content.add_message(Message {
+        id: MessageId(905),
+        lines: vec![
+            "You cast %s on the room!".into(),
+            "%s casts %s on you!".into(),
+            "%s casts %s on the room!".into(),
         ],
     });
     content.add_item(Item {
@@ -264,7 +311,9 @@ fn world() -> Content {
         save_class: SaveClass::None,
         base_chance: 200,
         duration_per_level: 0,
-        match_type: MatchType::Single0,
+        // The real blur is match 2: explicit-target benign — a bare
+        // `c blur` self-casts, `c blur <player>` slots on the target.
+        match_type: MatchType::Single2,
         duration: 70,
         element: Element::Magic,
         class_gate_group: 1,
@@ -276,6 +325,39 @@ fn world() -> Content {
         msg_style: 0,
     };
     content.add_spell(blur);
+    // The area-sweep fixture (no learnable damaging area ships): match 12
+    // iterates the room's live monsters only, one magnitude roll shared
+    // by every target (12 does not split), Magic = unresistable so both
+    // hits land the raw roll. base_chance 200 keeps the cast
+    // deterministic, mirroring the blur record above.
+    let shockwave = Spell {
+        id: SHOCKWAVE,
+        name: "shockwave".into(),
+        short_name: "shoc".into(),
+        cast_msg_a: None,
+        cast_msg_b: Some(MessageId(905)),
+        abilities: vec![(Ability::Damage, 0)],
+        level_cap: 0,
+        round_cost: 100,
+        required_power: 1,
+        min_base: 12,
+        max_base: 12,
+        target_mode: TargetMode::Offensive0,
+        save_class: SaveClass::None,
+        base_chance: 200,
+        duration_per_level: 0,
+        match_type: MatchType::AreaC,
+        duration: 0,
+        element: Element::Magic,
+        class_gate_group: 1,
+        mana_cost: 6,
+        max_increase: ScalePair::NONE,
+        required_class_level: 1,
+        min_increase: ScalePair::NONE,
+        duration_increase: ScalePair::NONE,
+        msg_style: 0,
+    };
+    content.add_spell(shockwave);
     content
 }
 
@@ -321,6 +403,16 @@ fn mage() -> Player {
     }
 }
 
+/// A second body for the multi-session scenarios — the mage frame with a
+/// different name and an empty book (the class never matters: the body
+/// only receives casts and reads its own sheet).
+fn body(name: &str) -> Player {
+    Player {
+        name: name.into(),
+        ..mage()
+    }
+}
+
 fn text_to(events: &[Event], session: SessionId) -> String {
     events
         .iter()
@@ -343,6 +435,28 @@ fn combat_round(core: &mut Core, s: SessionId) -> String {
         core.tick();
     }
     text_to(&core.drain_events(), s)
+}
+
+/// Sends one line as `s` and fans the drained output into EVERY view's
+/// transcript — the multi-session drive.
+fn drive_all(core: &mut Core, s: SessionId, views: &mut [(SessionId, String)], line: &str) {
+    core.input(s, line);
+    let events = core.drain_events();
+    for (sid, transcript) in views.iter_mut() {
+        transcript.push_str(&text_to(&events, *sid));
+    }
+}
+
+/// Asserts every `(what, line)` pair appears in `transcript`, verbatim
+/// and in order.
+fn assert_in_order(transcript: &str, pairs: &[(&str, &str)]) {
+    let mut last = 0;
+    for (what, line) in pairs {
+        let at = transcript[last..]
+            .find(line)
+            .unwrap_or_else(|| panic!("{what} missing/out of order: {transcript:?}"));
+        last += at + line.len();
+    }
 }
 
 #[test]
@@ -378,8 +492,7 @@ fn mage_learns_scroll_casts_and_kills() {
     assert_eq!(rounds, 2, "the SEED transcript kills on round 2: {transcript:?}");
 
     // Key lines, verbatim (oracle-pinned) and in order.
-    let mut last = 0;
-    for (what, line) in [
+    assert_in_order(&transcript, &[
         // §8.5 empty book: single line, no header.
         ("empty book", "You have no spells.\n"),
         // Shop purchase (economy.md oracle string, free item).
@@ -413,12 +526,7 @@ fn mage_learns_scroll_casts_and_kills() {
         ("death", "The nasty filthbug is dead.\n"),
         ("exp", "You gain 12 experience.\n"),
         ("combat off", "*Combat Off*"),
-    ] {
-        let at = transcript[last..]
-            .find(line)
-            .unwrap_or_else(|| panic!("{what} missing/out of order: {transcript:?}"));
-        last += at + line.len();
-    }
+    ]);
 
     // Session end state: book learned, scroll consumed, exp banked, mana
     // charged only for the two successful fires (10 - 2).
@@ -499,26 +607,231 @@ fn mage_learns_blur_and_outlives_it() {
     transcript.push_str(&after_sheet);
 
     // Key lines, verbatim (oracle-pinned) and in order.
-    let mut last = 0;
-    for (what, line) in [
-        // Shop purchase (economy.md oracle string, free item).
-        ("bought", "You just bought scroll of blur for nothing.\n"),
-        // §8.4 `use` learn line (a trailing blank line follows).
-        (
-            "learn",
-            "You read scroll of blur and learn the spell blur.\n\n",
-        ),
-        // §8.6/§8.11 cast order: castmsgb caster line, then DescMsg line3.
-        ("cast line", "You cast blur on Vexil!\n"),
-        ("active line", "You are blurred!\n"),
-        // §8.11: the sheet repeats the active line while the buff lives.
-        ("st line", "You are blurred!\n"),
-        // §8.9/§8.11: expiry after the 70 measured ticks.
-        ("wear-off", "The effects of blur wear off.\n"),
-    ] {
-        let at = transcript[last..]
-            .find(line)
-            .unwrap_or_else(|| panic!("{what} missing/out of order: {transcript:?}"));
-        last += at + line.len();
+    assert_in_order(
+        &transcript,
+        &[
+            // Shop purchase (economy.md oracle string, free item).
+            ("bought", "You just bought scroll of blur for nothing.\n"),
+            // §8.4 `use` learn line (a trailing blank line follows).
+            (
+                "learn",
+                "You read scroll of blur and learn the spell blur.\n\n",
+            ),
+            // §8.6/§8.11 cast order: castmsgb caster line, then DescMsg
+            // line3.
+            ("cast line", "You cast blur on Vexil!\n"),
+            ("active line", "You are blurred!\n"),
+            // §8.11: the sheet repeats the active line while the buff
+            // lives.
+            ("st line", "You are blurred!\n"),
+            // §8.9/§8.11: expiry after the 70 measured ticks.
+            ("wear-off", "The effects of blur wear off.\n"),
+        ],
+    );
+}
+
+/// Slice-5 golden scenario (MEASURED §8.13): the mage blurs a SECOND
+/// player. Three sessions capture the three-view string table — caster
+/// `You cast blur on Oracle!`, target `Vexil casts blur upon you!` + the
+/// async DescMsg line, room `Vexil casts blur on Oracle!` — the slot
+/// enters on the TARGET (value into Oracle's defender, the `st` active
+/// line on Oracle's sheet), and after the 70 upkeep ticks the wear-off
+/// line reaches the TARGET ONLY (§8.13: Kaimon, in-room, saw nothing at
+/// expiry).
+#[test]
+fn mage_blurs_a_second_player_who_outlives_it() {
+    let config = CoreConfig {
+        rng_seed: SEED,
+        ..CoreConfig::default()
+    };
+    let mut core = Core::new(world(), config);
+    let vex = core.attach_player(mage());
+    let ora = core.attach_player(body("Oracle"));
+    let kai = core.attach_player(body("Kaimon"));
+    core.drain_events();
+    let caster_parry = core.defender_debug(vex).parry;
+    let target_parry = core.defender_debug(ora).parry;
+
+    let mut views = vec![
+        (vex, String::new()),
+        (ora, String::new()),
+        (kai, String::new()),
+    ];
+    drive_all(&mut core, vex, &mut views, "buy scroll of blur");
+    drive_all(&mut core, vex, &mut views, "use scroll of blur");
+    drive_all(&mut core, vex, &mut views, "c blur oracle");
+
+    // The slot enters on the TARGET: the rolled magnitude (bounds 5..5 ->
+    // genrdn 5..=6; 6 under SEED) lands in Oracle's slot and Oracle's
+    // defender; the caster keeps neither.
+    let target = core.player_snapshot(ora);
+    let idx = target.find_active(BLUR).expect("blur entered the TARGET's slot");
+    let v = i32::from(target.active_spells[idx].value);
+    assert_eq!(v, 6, "the SEED magnitude roll");
+    assert_eq!(target.active_spells[idx].remaining, 70, "flat duration");
+    assert!(
+        core.player_snapshot(vex).active_spells.iter().all(|slot| slot.spell.is_none()),
+        "no slot on the caster"
+    );
+    assert_eq!(
+        core.defender_debug(ora).parry,
+        target_parry + v,
+        "dodge feeds the TARGET's defender"
+    );
+    assert_eq!(core.defender_debug(vex).parry, caster_parry, "caster untouched");
+    assert_eq!(core.current_mana(vex), 6, "full mana 4 paid by the caster");
+
+    // The TARGET's sheet appends the active line while the buff lives.
+    drive_all(&mut core, ora, &mut views, "st");
+
+    // 70 upkeep firings (game ticks 3, 6, .., 210): expiry on the target.
+    for _ in 0..210 {
+        core.tick();
     }
+    let events = core.drain_events();
+    for (sid, transcript) in views.iter_mut() {
+        transcript.push_str(&text_to(&events, *sid));
+    }
+    let target = core.player_snapshot(ora);
+    assert!(
+        target.active_spells.iter().all(|slot| slot.spell.is_none()),
+        "target slot empty after expiry"
+    );
+    assert_eq!(core.defender_debug(ora).parry, target_parry, "dodge contribution gone");
+
+    // The post-expiry sheet: the active line is gone from Oracle's st.
+    core.input(ora, "st");
+    let after_sheet = text_to(&core.drain_events(), ora);
+    assert!(after_sheet.contains("Oracle"), "sheet rendered: {after_sheet:?}");
+    assert!(
+        !after_sheet.contains("You are blurred!"),
+        "st line gone after expiry: {after_sheet:?}"
+    );
+
+    let [(_, caster_view), (_, target_view), (_, room_view)] = &views[..] else {
+        unreachable!()
+    };
+    // Caster view (§8.13 table row 1): the success line; the DescMsg and
+    // the wear-off belong to the target alone.
+    assert_in_order(
+        caster_view,
+        &[
+            ("bought", "You just bought scroll of blur for nothing.\n"),
+            (
+                "learn",
+                "You read scroll of blur and learn the spell blur.\n\n",
+            ),
+            ("caster line", "You cast blur on Oracle!\n"),
+        ],
+    );
+    assert!(!caster_view.contains("You are blurred!"), "caster: {caster_view:?}");
+    assert!(!caster_view.contains("wear off"), "caster: {caster_view:?}");
+    // Target view (row 2): success line, async active line, the st
+    // repeat, then — 70 ticks later — the wear-off, all in order.
+    assert_in_order(
+        target_view,
+        &[
+            ("target line", "Vexil casts blur upon you!\n"),
+            ("active line", "You are blurred!\n"),
+            ("st line", "You are blurred!\n"),
+            ("wear-off", "The effects of blur wear off.\n"),
+        ],
+    );
+    // Room view (row 3): the third-person line only — no target-line
+    // leak, no expiry line (§8.13: in-room Kaimon saw nothing).
+    assert_in_order(room_view, &[("room line", "Vexil casts blur on Oracle!\n")]);
+    assert!(!room_view.contains("upon you"), "room: {room_view:?}");
+    assert!(!room_view.contains("You are blurred!"), "room: {room_view:?}");
+    assert!(!room_view.contains("wear off"), "room: {room_view:?}");
+}
+
+/// Slice-5 golden scenario (MEASURED §8.13 for the refusal and fan-out;
+/// fixture-shaped damage — no damaging area is learnable): the area
+/// sweep. Empty room refuses pre-charge even with a player standing
+/// there (players are NEVER area targets); with two monsters the cast
+/// prints the caster line and ONE room line (no per-target lines, no
+/// damage numbers, no engagement), damages each monster with the shared
+/// roll, kills the frail one through the M3 death route, and leaves the
+/// bystander untouched.
+#[test]
+fn area_cast_sweeps_monsters_and_spares_the_bystander() {
+    let config = CoreConfig {
+        rng_seed: SEED,
+        ..CoreConfig::default()
+    };
+    let mut core = Core::new(world(), config);
+    let mut caster = mage();
+    caster.location = LAIR; // unprotected: no guilt gate
+    caster.spellbook.insert(SHOCKWAVE, false);
+    let vex = core.attach_player(caster);
+    let mut bystander = body("Oracle");
+    bystander.location = LAIR;
+    let ora = core.attach_player(bystander);
+    core.drain_events();
+
+    // No monsters (bystander present): the pre-charge no-effect refusal —
+    // players never count as area targets, and nobody else hears it.
+    core.input(vex, "c shoc");
+    let events = core.drain_events();
+    let refusal = text_to(&events, vex);
+    assert!(
+        refusal.contains("Your spell has no effect in this room!\n"),
+        "got: {refusal:?}"
+    );
+    assert_eq!(core.current_mana(vex), 10, "pre-charge refusal");
+    assert_eq!(text_to(&events, ora), "", "refusal is caster-only");
+
+    // Two monsters: the 20 HP filthbug survives the sweep, the 5 HP wisp
+    // dies through the M3 kill route.
+    let bug = core.spawn_monster(FILTHBUG, LAIR).expect("fixture template");
+    let wisp = core.spawn_monster(WISP, LAIR).expect("fixture template");
+    core.drain_events();
+    core.input(vex, "c shoc");
+    let events = core.drain_events();
+    let caster_view = text_to(&events, vex);
+    let room_view = text_to(&events, ora);
+
+    // Caster fan-out: the caster line, then the kill route — death line
+    // and the full experience (the bystander is not engaged, no split).
+    assert_in_order(
+        &caster_view,
+        &[
+            ("caster line", "You cast shockwave on the room!\n"),
+            ("death", "The sickly wisp is dead.\n"),
+            ("exp", "You gain 9 experience.\n"),
+        ],
+    );
+    assert!(!caster_view.contains("damage"), "no damage numbers: {caster_view:?}");
+    assert!(!caster_view.contains("Combat"), "no engagement: {caster_view:?}");
+    // Room fan-out: ONE generic frame line + the broadcast death line —
+    // no per-target lines, no numbers, no experience.
+    assert_in_order(
+        &room_view,
+        &[
+            ("room line", "Vexil casts shockwave on the room!\n"),
+            ("death", "The sickly wisp is dead.\n"),
+        ],
+    );
+    assert!(!room_view.contains("on you"), "no target line: {room_view:?}");
+    assert!(!room_view.contains("damage"), "no damage numbers: {room_view:?}");
+    assert!(!room_view.contains("experience"), "no exp for the bystander: {room_view:?}");
+
+    // Per-monster damage: one shared roll (12..12 -> genrdn 12..=13; 13
+    // under SEED — match 12 does not split), Magic unresistable, so the
+    // filthbug's mr 30 does not shield plain Damage.
+    assert_eq!(core.monster_hp(bug), Some(7), "20 - the SEED roll 13");
+    assert_eq!(core.monster_hp(wisp), None, "instance gone through the kill route");
+    assert_eq!(core.current_mana(vex), 4, "full mana 6 charged");
+    assert_eq!(core.player_snapshot(vex).experience, 9, "kill exp banked");
+
+    // The bystander is untouched: HP, poison, slots, mana all pristine.
+    let untouched = core.player_snapshot(ora);
+    assert_eq!(untouched.current_hp, 10, "bystander HP untouched");
+    assert_eq!(untouched.poison, 0, "bystander not poisoned");
+    assert_eq!(untouched.experience, 0, "no exp share");
+    assert!(
+        untouched.active_spells.iter().all(|slot| slot.spell.is_none()),
+        "no slot on the bystander"
+    );
+    assert_eq!(core.current_mana(ora), 10, "bystander mana untouched");
 }

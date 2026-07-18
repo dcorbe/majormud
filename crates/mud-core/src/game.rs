@@ -491,10 +491,12 @@ pub fn monster_save_resists(save_stat: i32, roll: &mut impl FnMut(i32, i32) -> i
 /// - with AntiMagic: `reduction% = clamp(mr/2, 0, 75)`, no amplification.
 ///
 /// Divisions truncate toward zero (the DLL's signed idiv; Rust `/`
-/// matches). DIVERGENCE (slice 5): the DLL first boosts the amount by the
-/// caster's AlterSpDmg(165) percent (43940-43941; plain Damage gets the
-/// same boost via FUN_0043fef4 39025) — no user-ability aggregation feeds
-/// spells yet, so both paths skip it alike.
+/// matches). DIVERGENCE (SLICE 6+): the DLL first boosts the amount by
+/// the caster's AlterSpDmg(165) percent (43940-43941; plain Damage gets
+/// the same boost via FUN_0043fef4 39025) — no user-ability aggregation
+/// feeds spells yet, so both paths skip it alike; revisit when caster
+/// ability aggregation lands (monster casters in slice 6 already
+/// aggregate via monster_ability_value).
 pub fn damage_mr(amount: i32, mr: i32, anti_magic: bool) -> i32 {
     let reduction = if anti_magic {
         (mr / 2).clamp(0, 75)
@@ -1187,8 +1189,9 @@ impl Core {
                             }
                         }
                         // Fear (60): genrdn(0,100) < v => flee a random
-                        // exit (44788-44793) — SLICE 5 with the fear
-                        // flag; move_user needs the flee plumbing.
+                        // exit (44788-44793) — SLICE 6 (every Fear
+                        // carrier is a monster-attack payload) with the
+                        // fear flag; move_user needs the flee plumbing.
                         Ability::Fear => {}
                         // HealMana (150): mana += v, floored at 0 then
                         // capped at max — the DLL's sequential pair
@@ -4003,8 +4006,9 @@ impl Core {
         let magnitude = spell_magnitude(&spell, level, resist, &mut |lo, hi| rng.roll(lo, hi));
 
         // Offensive instant abilities (spec §4 table): Damage (1),
-        // Damage(-MR) (17) and Drain (8) — the area match types and the
-        // remaining offensive abilities land in slice 5. A non-zero
+        // Damage(-MR) (17) and Drain (8) — the area match types landed in
+        // slice 5 (`area_cast`); the remaining offensive abilities (the
+        // monster-side debuff/payload table) are SLICE 6. A non-zero
         // ability value is a FIXED amount that bypasses both the magnitude
         // roll and the resist scaling (but NOT the 17 MR scale, which the
         // DLL applies to the fixed-or-rolled amount alike); value 0 means
@@ -4013,9 +4017,9 @@ impl Core {
         // most one harm slot per spell — true for ALL shipped data (zero
         // spells carry two of Damage/Drain/DamageMR). The DLL applies
         // per-slot, a kill STOPS its loop (skipping later slots' caster
-        // heal), and the message prints the first slot's amount — slice 5
-        // must not inherit this combined model if multi-slot content ever
-        // appears.
+        // heal), and the message prints the first slot's amount — the
+        // slice-5 area loop shares this combined model, and neither copy
+        // must survive if multi-slot content ever appears.
         let mr = self.monster_save_stat(monster_id);
         let mut damage_total = 0i32;
         let mut drain_total = 0i32;
@@ -4045,7 +4049,7 @@ impl Core {
                     drain_total += amount;
                     harms = true;
                 }
-                _ => {} // slice 5: other offensive abilities
+                _ => {} // SLICE 6: the monster-side debuff/payload table
             }
         }
         let damage = harms.then_some(damage_total + drain_total);
@@ -4088,7 +4092,7 @@ impl Core {
         // *Combat Off* — monster_killed is check_kill_monster +
         // distribute_experience).
         let Some(damage) = damage else {
-            return; // other offensive abilities: slice 5
+            return; // debuff-only offensive payloads: SLICE 6
         };
         let dead = {
             let Some(m) = self.monsters.get_mut(&monster_id) else {

@@ -35,8 +35,20 @@ SUPPRESSED (decompile 13053-13066 — unlike reroll's honored chain).
 Implementation-corrected details live in the slice plans and
 spellcasting.md §8; where this doc's slice 2/3 bullets disagree with those
 (auto-pick targeting, friendly-NPC guilt inference, magnitude swap), the
-measured/decompiled versions win. Kai/mystic message variants deferred to
-slice 5 (marker in cast_command). Next: slice 5 (breadth).
+measured/decompiled versions win.
+
+Slice 5 COMPLETE (2026-07-17): kai powers + invoke, player-target benign
+casts, area casts, poison + healer cure, msgstyle-odd, item-target
+skeleton — two oracle expeditions (§8.12/§8.13) plus goldens. Key
+discoveries: kai powers are TRAINER-GRANTED into the ordinary spellbook
+(one per level, announced in the train receipt — the class-keyed
+complement of §8.1's "a mage's train grants nothing"); players are NEVER
+area targets — measured alone, with players present, and with an explicit
+player word (the DLL's player sweep is flag-gated, so match-12 areas have
+no PvP path); and train's cost formula is SILVER-denominated — the value
+converts through `ratios[0]` like the healer services (§8.12's
+copper-only mystic paid 50/100 copper for the receipts' 5/10; we had been
+charging the raw value as copper). Next: slice 6 (monster casting).
 
 ## Slice 1 — Content layer: the full Spell record
 
