@@ -36,8 +36,16 @@ const VENOM: SpellId = SpellId(903);
 const SAVEBOLT: SpellId = SpellId(904);
 /// Instant fixed (Drain, 50).
 const LEECH: SpellId = SpellId(905);
-/// Duration 100 fixed (Poison, 6) — the Task-3 marker state probe.
+/// Duration 100 fixed (Poison, 6) + DescMsg — the slot-entry probe.
 const LINGERING: SpellId = SpellId(906);
+/// Duration 2 fixed (Poison, 6) + DescMsg — the expiry/wear-off probe.
+const FLEETING: SpellId = SpellId(907);
+/// Benign-MODE (spelltype 3) match-0 duration debuff — the mummy
+/// `breathes` (84) shape: routing keys on MATCH, not mode (23015-23016).
+const BREATH: SpellId = SpellId(908);
+/// Match-12 (AreaC) offensive — routes to monster_cast_area in the DLL
+/// (23777-23779), pending here: the corrected-marker state probe.
+const GUST: SpellId = SpellId(909);
 
 fn spell(id: SpellId, name: &str) -> Spell {
     Spell {
@@ -175,10 +183,44 @@ fn world(monster: Monster) -> Content {
     savebolt.save_class = SaveClass::Always;
     let mut leech = spell(LEECH, "leech");
     leech.abilities = vec![(Ability::Drain, 50)];
+    // The venom-family DescMsg record (the shipped 8575 model): line1 the
+    // wear-off, line3 the active line the victim sees at entry.
+    content.add_message(Message {
+        id: MessageId(961),
+        lines: vec![
+            "The effects of the poison wear off!".into(),
+            String::new(),
+            "You feel ill.".into(),
+        ],
+    });
+    // A StartMsg record: victim line2 binds the caster name, room line3
+    // binds (caster, victim) — monster_display_spell_success 21692-21700.
+    content.add_message(Message {
+        id: MessageId(962),
+        lines: vec![
+            String::new(),
+            "The %s exhales a rotting wind!".into(),
+            "The %s exhales a rotting wind at %s!".into(),
+        ],
+    });
     let mut lingering = spell(LINGERING, "lingering venom");
-    lingering.abilities = vec![(Ability::Poison, 6)];
+    lingering.abilities = vec![(Ability::Poison, 6), (Ability::DescMsg, 961)];
     lingering.duration = 100;
-    for s in [hammer, sledge, mrbolt, venom, savebolt, leech, lingering] {
+    let mut fleeting = spell(FLEETING, "fleeting venom");
+    fleeting.abilities = vec![(Ability::Poison, 6), (Ability::DescMsg, 961)];
+    fleeting.duration = 2;
+    let mut breath = spell(BREATH, "decay breath");
+    // Mummy `breathes` (84) shape: MODE 3 (benign) but MATCH 0 — the DLL
+    // single-target gate reads only the match type, and mode >= 3 merely
+    // skips the elemental-resist scale (23091-23117).
+    breath.target_mode = TargetMode::Benign;
+    breath.abilities = vec![(Ability::AC, -5), (Ability::StartMsg, 962)];
+    breath.duration = 20;
+    let mut gust = spell(GUST, "choking gust");
+    gust.abilities = vec![(Ability::Damage, 5)];
+    gust.match_type = MatchType::AreaC;
+    for s in [hammer, sledge, mrbolt, venom, savebolt, leech, lingering, fleeting, breath, gust]
+    {
         content.add_spell(s);
     }
     content
@@ -465,25 +507,168 @@ fn a_big_hit_routes_through_the_death_path() {
     assert!(shown.contains("You have been killed!"), "got: {shown:?}");
 }
 
-// --- duration payloads (Task-3 marker state) ---
+// --- duration payloads: the 10-slot entry (Task 3) ---
+// monster_add_cast_spell_to_user (decompile 21777-21816): refresh only if
+// the new value EXCEEDS the stored one, fixed duration, display only on a
+// real write; the caller refunds the FULL energy cost and aborts the cast
+// when the entry returns a failure (monster_cast 23183-23188).
 
 #[test]
-fn duration_casts_print_but_enter_no_slot_yet() {
-    // Task 3 lands monster_add_cast_spell_to_user (exceed-only refresh,
-    // fixed duration, poison hard-write at entry). Until then the fan-out
-    // prints and the slots/counter stay untouched — this test pins the
-    // marker state and FLIPS when Task 3 lands.
+fn duration_casts_enter_the_slot_and_hard_write_poison() {
     let mut core = Core::new(world(shaman(LINGERING, 101, 400)), config());
     let (s, _m) = engage(&mut core, HUMAN);
-    let events = run_rounds(&mut core, 5);
+    let events = run_rounds(&mut core, 1);
     let shown = text_to(&events, s);
+    // Display fires from inside the successful entry: castmsgb fallback
+    // pair + the DescMsg active line3 to the victim (21692-21716).
     assert!(
         shown.contains("Kobold shaman cast lingering venom on you."),
         "got: {shown:?}"
     );
+    assert!(shown.contains("You feel ill."), "got: {shown:?}");
+    // Poison hard-writes at entry (23404-23407, set-if-greater).
+    assert_eq!(core.poison(s), 6);
+    let snapshot = core.player_snapshot(s);
+    let slot = snapshot
+        .active_spells
+        .iter()
+        .find(|slot| slot.spell == Some(LINGERING))
+        .expect("lingering venom occupies a slot");
+    assert_eq!(slot.value, 6);
+    assert!(slot.remaining > 90, "fixed duration 100, got {}", slot.remaining);
+}
+
+#[test]
+fn expiry_terminates_and_reverses_the_poison() {
+    // FLEETING (duration 2): t5 energy round casts (slot enters, poison
+    // 6), upkeep t6/t9 decrement to 0 → the player termination path
+    // reverses the hard write and prints the DescMsg wear-off line1.
+    let mut core = Core::new(world(shaman(FLEETING, 101, 1000)), config());
+    let (s, _m) = engage(&mut core, HUMAN);
+    let mut events = Vec::new();
+    for _ in 0..9 {
+        core.tick();
+        events.extend(core.drain_events());
+    }
+    let shown = text_to(&events, s);
+    assert!(shown.contains("You feel ill."), "entry line: {shown:?}");
+    assert!(
+        shown.contains("The effects of the poison wear off!"),
+        "wear-off line: {shown:?}"
+    );
+    assert_eq!(core.poison(s), 0, "termination subtracts the stored value");
+    let snapshot = core.player_snapshot(s);
+    assert!(snapshot.active_spells.iter().all(|slot| slot.spell != Some(FLEETING)));
+}
+
+#[test]
+fn refresh_is_rejected_when_the_stored_value_is_not_exceeded() {
+    // Stored 9 >= new 6: monster_add_cast_spell_to_user returns -2
+    // (21796-21802) — no write, no display, and the monster gets the FULL
+    // energy cost back (23186-23188), aborting before the poison write.
+    let mut core = Core::new(world(shaman(LINGERING, 101, 400)), config());
+    let (s, m) = engage(&mut core, HUMAN);
+    core.set_active_spell(
+        s,
+        0,
+        mud_core::game::ActiveSpell { spell: Some(LINGERING), value: 9, remaining: 50 },
+    );
+    let events = run_rounds(&mut core, 1);
+    let shown = text_to(&events, s);
+    assert!(!shown.contains("cast lingering venom on you."), "got: {shown:?}");
+    assert!(!shown.contains("You feel ill."), "got: {shown:?}");
+    assert_eq!(core.poison(s), 0, "the abort precedes the poison hard-write");
+    let slot = core.player_snapshot(s).active_spells[0];
+    assert_eq!(slot.value, 9, "stored value survives");
+    assert_eq!(core.monster_energy(m), Some(1000), "full refund nets zero");
+}
+
+#[test]
+fn refresh_overwrites_when_the_new_value_is_greater() {
+    // Stored 3 < new 6: value AND duration refresh in place (21795-21800)
+    // and the success display fires like a first entry.
+    let mut core = Core::new(world(shaman(LINGERING, 101, 400)), config());
+    let (s, _m) = engage(&mut core, HUMAN);
+    core.set_active_spell(
+        s,
+        0,
+        mud_core::game::ActiveSpell { spell: Some(LINGERING), value: 3, remaining: 5 },
+    );
+    let events = run_rounds(&mut core, 1);
+    let shown = text_to(&events, s);
+    assert!(shown.contains("cast lingering venom on you."), "got: {shown:?}");
+    let slot = core.player_snapshot(s).active_spells[0];
+    assert_eq!(slot.spell, Some(LINGERING));
+    assert_eq!(slot.value, 6);
+    assert!(slot.remaining > 50, "duration reset to the fixed 100, got {}", slot.remaining);
+    assert_eq!(core.poison(s), 6, "the hard write follows the successful entry");
+}
+
+#[test]
+fn a_full_slot_table_loses_the_cast_and_refunds_the_energy() {
+    // Both scans exhausted → -1 (21813-21816): effect lost, nothing
+    // prints anywhere, full refund (23183-23188). The ten fillers use
+    // unknown spell ids: upkeep idles them (get_spell_data gate), so the
+    // table stays saturated across the run.
+    let mut core = Core::new(world(shaman(LINGERING, 101, 400)), config());
+    let (s, m) = engage(&mut core, HUMAN);
+    for idx in 0..10 {
+        core.set_active_spell(
+            s,
+            idx,
+            mud_core::game::ActiveSpell {
+                spell: Some(SpellId(800 + idx as u16)),
+                value: 1,
+                remaining: 1000,
+            },
+        );
+    }
+    let events = run_rounds(&mut core, 1);
+    let shown = text_to(&events, s);
+    assert!(!shown.contains("lingering"), "got: {shown:?}");
     assert_eq!(core.poison(s), 0);
     let snapshot = core.player_snapshot(s);
-    assert!(snapshot.active_spells.iter().all(|slot| slot.spell.is_none()));
+    assert!(snapshot.active_spells.iter().all(|slot| slot.spell != Some(LINGERING)));
+    assert_eq!(core.monster_energy(m), Some(1000), "full refund nets zero");
+}
+
+#[test]
+fn benign_mode_single_match_forms_take_the_single_target_path() {
+    // Routing keys on MATCH {0,2,6,8} alone (23015-23016) — the mummy's
+    // `breathes` (84) is match 0 with MODE 3, and still slots its debuff
+    // at the victim. The StartMsg prelude prints around the castmsgb pair.
+    let mut core = Core::new(world(shaman(BREATH, 101, 400)), config());
+    let (s, _m) = engage(&mut core, HUMAN);
+    let events = run_rounds(&mut core, 1);
+    let shown = text_to(&events, s);
+    assert!(
+        shown.contains("The kobold shaman exhales a rotting wind!"),
+        "StartMsg victim line: {shown:?}"
+    );
+    assert!(shown.contains("cast decay breath on you."), "got: {shown:?}");
+    let snapshot = core.player_snapshot(s);
+    let slot = snapshot
+        .active_spells
+        .iter()
+        .find(|slot| slot.spell == Some(BREATH))
+        .expect("decay breath occupies a slot");
+    assert_eq!(slot.value, -5, "the fixed row value is stored");
+}
+
+#[test]
+fn area_match_forms_skip_silently_pending_monster_cast_area() {
+    // Corrected routing marker: match ∉ {0,2,6,8} routes to
+    // monster_cast_area in the DLL (23777-23779). Census
+    // (load_real_db.rs): match 1 x1, 11 x1, 12 x99 — 101 shipped forms
+    // wait there; until it lands they skip before the energy gate.
+    let mut core = Core::new(world(shaman(GUST, 101, 400)), config());
+    let (s, m) = engage(&mut core, HUMAN);
+    let before = core.current_hp(s);
+    let events = run_rounds(&mut core, 2);
+    let shown = text_to(&events, s);
+    assert!(!shown.contains("gust"), "got: {shown:?}");
+    assert_eq!(core.current_hp(s), before);
+    assert_eq!(core.monster_energy(m), Some(1000), "skip precedes the energy gate");
 }
 
 // --- energy accounting (the 23041 gate; 23123 full; 23758-23770 half) ---

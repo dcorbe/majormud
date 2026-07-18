@@ -5346,11 +5346,11 @@ impl Core {
     ///
     /// 1. Spell from the form's `accuracy` word (`template+0x12e`, 23000);
     ///    an unresolvable id skips the swing.
-    /// 2. Whole-cast match-type gate {0,2,6,8} (23015-23016), then the
-    ///    target-mode split (23033/23777-23779): mode >= 3 routes to
-    ///    `monster_cast_area` — SLICE 6 PENDING (area/breath casts, e.g.
-    ///    mummy's `breathes` 84; the single-target path covers every
-    ///    mode-<3 form, hellhound's breath 78 included).
+    /// 2. Whole-cast match-type gate {0,2,6,8} (23015-23016): matches
+    ///    OUTSIDE the set route to `monster_cast_area` (23777-23779) —
+    ///    SLICE 6 PENDING, marker at the gate. Target MODE never routes:
+    ///    a mode-3 single like mummy's `breathes` (84, match 0) resolves
+    ///    right here; mode only gates the elemental-resist scale (23091).
     /// 3. Energy: the form's cost word (`template+0x190`) gates against
     ///    the monster pool (23041) — an unaffordable cast is SILENT and
     ///    moves to the next swing (23773-23775 return 1), unlike the melee
@@ -5377,12 +5377,13 @@ impl Core {
     ///    divide-first scaling with NO genrdn band and NO AlterSpLength
     ///    (spec §6.5 — fixed duration).
     /// 6. Instant slots apply per the §4 table at the PLAYER (23150-23740);
-    ///    duration slots print the fan-out only — the 10-slot entry
-    ///    (`monster_add_cast_spell_to_user`) is Task 3.
-    ///
-    /// The DLL recomputes the victim's secondary stats after every cast
-    /// (23774); nothing bag-fed changes before the Task-3 slot entry, so
-    /// the recompute joins that task.
+    ///    duration spells enter the victim's 10-slot table through
+    ///    `monster_add_cast_spell_to_user` semantics (21777-21816):
+    ///    refresh only if the new value EXCEEDS the stored one, fixed
+    ///    duration, display only on a real write, FULL energy refund +
+    ///    silent abort on -1/-2 (23183-23188), poison hard-write AFTER a
+    ///    successful entry (23404-23407), victim recompute (23774) +
+    ///    persist once entered.
     fn monster_cast_at_player(
         &mut self,
         id: MonsterInstanceId,
@@ -5391,7 +5392,7 @@ impl Core {
         form: &crate::content::AttackForm,
         victim: SessionId,
     ) -> bool {
-        use crate::content::{MatchType, SaveClass, TargetMode};
+        use crate::content::{MatchType, SaveClass};
         let Ok(raw_id) = u16::try_from(form.accuracy) else {
             return false;
         };
@@ -5402,11 +5403,13 @@ impl Core {
             spell.match_type,
             MatchType::Single0 | MatchType::Single2 | MatchType::Item6 | MatchType::Special8
         ) {
-            return false;
-        }
-        if spell.target_mode == TargetMode::Benign {
-            // SLICE 6 PENDING: monster_cast_area (23778-23779) — the
-            // mode-3 area/breath sibling, cast level passed through.
+            // SLICE 6 PENDING: monster_cast_area (23777-23779). The DLL
+            // routes on MATCH TYPE alone — this else covers every form
+            // outside {0,2,6,8}, NOT target mode (a mode-3 single like the
+            // mummy's `breathes` 84 stays on the single path above).
+            // Census (load_real_db.rs kind-2 sweep): match 1 x1, 11 x1,
+            // 12 x99 — 101 shipped forms (the breath weapons) skip
+            // silently here until the area sibling lands.
             return false;
         }
 
@@ -5424,10 +5427,14 @@ impl Core {
         let immu = bag.value(Ability::SpellImmu);
         let anti_magic = bag.value(Ability::AntiMagic) != 0;
         let immune_poison = bag.value(Ability::ImmuPoison) != 0;
-        let resist_pct = spell
-            .element
-            .resist_ability()
-            .map_or(0, |a| bag.value(a));
+        // The elemental-resist scale is OFFENSIVE-mode only (23091-23117:
+        // the case table sits under `puVar9[0x62] < 3`; a mode-3 single
+        // like mummy's `breathes` lands unscaled).
+        let resist_pct = if spell.target_mode.is_offensive() {
+            spell.element.resist_ability().map_or(0, |a| bag.value(a))
+        } else {
+            0
+        };
         let monster_name = self.monster_name(id);
 
         let cost = i32::from(form.energy);
@@ -5514,13 +5521,62 @@ impl Core {
                     continue;
                 }
                 if !duration_entered {
+                    // monster_add_cast_spell_to_user (21777-21816): an
+                    // active slot refreshes ONLY when the new value
+                    // EXCEEDS the stored one (21795: `stored < new`,
+                    // strict); otherwise -2. No active slot → the first
+                    // free one; none → -1. Value AND duration write
+                    // together; the success display fires only on a real
+                    // write.
+                    let entered = {
+                        let Some(Session::InGame { player, .. }) =
+                            self.sessions.get_mut(&victim)
+                        else {
+                            return false;
+                        };
+                        let slot = ActiveSpell {
+                            spell: Some(spell.id),
+                            value: amount as i16,
+                            remaining: duration,
+                        };
+                        if let Some(idx) = player.find_active(spell.id) {
+                            if i32::from(player.active_spells[idx].value) < amount {
+                                player.active_spells[idx] = slot;
+                                true
+                            } else {
+                                false
+                            }
+                        } else if let Some(idx) = player.first_free_slot() {
+                            player.active_spells[idx] = slot;
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    if !entered {
+                        // Any failure (-1 full, -2 not-greater) refunds
+                        // the FULL energy cost and aborts the whole cast
+                        // silently (23183-23188: `+0x16 += local_24`,
+                        // return 0) — no lines, no poison write.
+                        if let Some(mi) = self.monsters.get_mut(&id) {
+                            mi.energy += cost;
+                        }
+                        return false;
+                    }
                     duration_entered = true;
-                    // Task 3: player-slot entry — monster_add_cast_spell_
-                    // to_user (21777-21802): refresh only if the new value
-                    // EXCEEDS the current, fixed duration, poison hard-
-                    // write at entry, victim recompute. Until then only
-                    // the fan-out prints.
                     self.monster_cast_display(&spell, &monster_name, victim, location, amount);
+                }
+                // Poison (19) hard-writes set-if-greater AFTER the entry
+                // attempt (23404-23407) — a rejected entry never reaches
+                // it, unlike the player-cast path's write-before-entry.
+                if *ability == Ability::Poison
+                    && let Some(Session::InGame { player, .. }) =
+                        self.sessions.get_mut(&victim)
+                {
+                    let v = clamp_poison(amount);
+                    if player.poison < v {
+                        player.poison = v;
+                    }
                 }
                 continue;
             }
@@ -5640,6 +5696,14 @@ impl Core {
                 _ => {}
             }
         }
+        if duration_entered {
+            // The occupied slot feeds the victim's ability bag: recompute
+            // the cached derived stats (the DLL's per-cast
+            // calculate_secondary_stats at 23774) and persist the slot.
+            self.refresh_derived(victim);
+            let snapshot = Box::new(self.player(victim).clone());
+            self.events.push(Event::Persist(snapshot));
+        }
         false
     }
 
@@ -5698,6 +5762,35 @@ impl Core {
         damage: i32,
     ) {
         let victim_name = self.player(victim).name.clone();
+        // StartMsg (120) prelude (21692-21700, 21721-21725): victim gets
+        // its line2 with the monster name; the room gets line3 with
+        // (monster, victim). Printed BEFORE the castmsgb pair, raw (no
+        // capitalization pass — the DLL's toupper touches only the
+        // sprintf'd castmsgb buffer).
+        if let Some(msg_val) = spell
+            .abilities
+            .iter()
+            .find_map(|(a, v)| (*a == Ability::StartMsg).then_some(*v))
+            && let Ok(msg_id) = u16::try_from(msg_val)
+            && let Some(msg) = self.content.messages.get(&crate::content::MessageId(msg_id))
+        {
+            let victim_start = msg
+                .lines
+                .get(1)
+                .filter(|l| !l.is_empty())
+                .map(|l| text::fill_message(l, &[monster_name]));
+            let room_start = msg
+                .lines
+                .get(2)
+                .filter(|l| !l.is_empty())
+                .map(|l| text::fill_message(l, &[monster_name, &victim_name]));
+            if let Some(line) = victim_start {
+                self.output_line(victim, &line);
+            }
+            if let Some(line) = room_start {
+                self.broadcast_to_room(location, Some(victim), &line);
+            }
+        }
         let (victim_line, room_line) = if let Some(msg) =
             spell.cast_msg_b.and_then(|id| self.content.messages.get(&id))
         {
@@ -5727,6 +5820,20 @@ impl Core {
         }
         if let Some(line) = room_line {
             self.broadcast_to_room(location, Some(victim), &text::capitalize_first(line));
+        }
+        // DescMsg (115) active line3 to the VICTIM only (21713-21715) —
+        // the "You feel ill." family, after the castmsgb pair, raw. Same
+        // line3 convention as the player-cast emit_cast_success_lines.
+        if let Some(msg_val) = spell
+            .abilities
+            .iter()
+            .find_map(|(a, v)| (*a == Ability::DescMsg).then_some(*v))
+            && let Ok(msg_id) = u16::try_from(msg_val)
+            && let Some(msg) = self.content.messages.get(&crate::content::MessageId(msg_id))
+            && let Some(line) = msg.lines.get(2).filter(|l| !l.is_empty())
+        {
+            let line = line.clone();
+            self.output_line(victim, &line);
         }
     }
 
