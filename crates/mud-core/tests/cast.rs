@@ -71,6 +71,14 @@ const LEECH: SpellId = SpellId(180);
 const MRBOLT: SpellId = SpellId(190);
 /// Fixed Damage(100) twin of mrbolt: the "1 ignores MR entirely" contrast.
 const RAWBOLT: SpellId = SpellId(200);
+/// The annointed hands (744, mage L10, scroll 1179 / shop 111) model:
+/// msgstyle-ODD benign INSTANT, Heal(0) with bounds 10..10 — the odd
+/// caster line binds (target, damage) and the damage arg is the heal roll
+/// (display_spell_success param_6; message 127 shape).
+const BALM: SpellId = SpellId(400);
+/// The minor healing (13, mage L1) model: EVEN benign instant whose
+/// caster line carries a %d — real message 15.
+const MERCY: SpellId = SpellId(410);
 // --- slice-4 Task 3 duration fixtures (base_chance 200 = deterministic) ---
 /// The blur (129) model: duration 70 flat, magnitude bounds 5..5, abilities
 /// [(Dodge, 0), (DescMsg, 903), (RemovesSpell, WARD)] — slot entry, the
@@ -324,6 +332,26 @@ fn world() -> Content {
             "An echo follows you!".into(),
         ],
     });
+    // The annointed-hands castmsgb (real message 127): the ODD caster
+    // line binds (target, damage) — the damage slot is the heal roll.
+    content.add_message(Message {
+        id: MessageId(910),
+        lines: vec![
+            "%s is healed of %d damage!".into(),
+            "You are healed of %d damage!".into(),
+            "%s is healed of %s damage!".into(),
+        ],
+    });
+    // The minor-healing castmsgb (real message 15): the EVEN caster line
+    // carries a %d too — (spell, target, damage).
+    content.add_message(Message {
+        id: MessageId(911),
+        lines: vec![
+            "You cast %s on %s, healing %d damage!".into(),
+            "%s casts %s on you!".into(),
+            "%s casts %s on %s!".into(),
+        ],
+    });
     // The msg-8524 shape (fireball family): msgstyle-odd binding —
     // caster (target, damage), target (damage), room (target, damage),
     // no spell-name slot.
@@ -451,6 +479,9 @@ fn world() -> Content {
     // Task 12 benign instant fixtures (spec §4 table, single-target).
     let mut mend = spell(MEND, "mend", "mend");
     mend.abilities = vec![(Ability::Heal, 25)]; // fixed value bypasses the roll
+    // The %d message: a FIXED heal displays the slot value, not the roll
+    // (display_spell_success param_6 = the case's local_9c).
+    mend.cast_msg_b = Some(MessageId(911));
     let mut cure = spell(CURE, "cure", "cure");
     cure.abilities = vec![(Ability::Heal, 0)]; // 0 = the rolled magnitude
     cure.min_base = 10;
@@ -486,6 +517,19 @@ fn world() -> Content {
     rawbolt.name = "rawbolt".into();
     rawbolt.short_name = "rawb".into();
     rawbolt.abilities = vec![(Ability::Damage, 100)];
+    // The annointed-hands model (odd benign instant, rolled heal).
+    let mut balm = spell(BALM, "balm", "balm");
+    balm.msg_style = 1;
+    balm.abilities = vec![(Ability::Heal, 0)];
+    balm.min_base = 10;
+    balm.max_base = 10;
+    balm.cast_msg_b = Some(MessageId(910));
+    // The minor-healing model (even benign instant, rolled heal, %d).
+    let mut mercy = spell(MERCY, "mercy", "merc");
+    mercy.abilities = vec![(Ability::Heal, 0)];
+    mercy.min_base = 10;
+    mercy.max_base = 10;
+    mercy.cast_msg_b = Some(MessageId(911));
     // Slice-4 duration fixtures. veil mirrors real blur (mana 4, round
     // cost 100, duration 70 flat, magnitude 5..5, Dodge value 0 = "store
     // the rolled V", RemovesSpell -> the pendant effect).
@@ -604,6 +648,8 @@ fn world() -> Content {
     content.add_spell(leech);
     content.add_spell(mrbolt);
     content.add_spell(rawbolt);
+    content.add_spell(balm);
+    content.add_spell(mercy);
     content
 }
 
@@ -663,6 +709,8 @@ fn full_book() -> BTreeMap<SpellId, bool> {
         LEECH,
         MRBOLT,
         RAWBOLT,
+        BALM,
+        MERCY,
         VEIL,
         WARD,
         REAP,
@@ -1173,8 +1221,11 @@ fn msgstyle_odd_spell_casts_with_the_odd_arg_order() {
     // The slice-5 odd arg table (decompile display_spell_success odd
     // branch): caster line binds (target, damage), the room line
     // (target, damage) — no spell name, no caster name. The slice-4
-    // CANNOT_CAST_YET refusal is gone. ORACLE-VERIFY: the lowest
-    // learnable odd spell is L19 — unmeasured live.
+    // CANNOT_CAST_YET refusal is gone. ORACLE-VERIFY: odd rendering is
+    // decompile-only — the lowest learnable odd spells are annointed
+    // hands L10, dancing blades L11, fireball/frenzy/righteousness/
+    // blood ritual/chaos storm L15 (re/mmud_wgnt.sqlite), none measured
+    // live.
     let (mut core, s, m) = arena(RAT);
     let watcher = core.attach_player(player("Grunt", WARRIOR, BTreeMap::new()));
     core.drain_events();
@@ -1625,6 +1676,71 @@ fn heal_value_zero_uses_the_rolled_magnitude() {
     cast(&mut core, s, "c cure");
     let hp = core.current_hp(s);
     assert!((15..=16).contains(&hp), "5 + rolled 10..=11: {hp}");
+}
+
+#[test]
+fn odd_benign_success_lines_carry_the_magnitude() {
+    // The annointed hands (744) reachable-NOW case: an ODD benign instant
+    // whose caster line binds (target, damage) — the damage arg is the
+    // rolled heal (display_spell_success param_6; the DLL's benign apply
+    // loop passes the case's fixed-or-rolled local_9c at every call
+    // site, e.g. 40529-40531). A dropped damage arg would leak "%d".
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(hardy("Vexil", MAGE));
+    let watcher = core.attach_player(player("Grunt", WARRIOR, BTreeMap::new()));
+    core.set_current_hp(s, 5);
+    core.drain_events();
+    core.input(s, "c balm");
+    let events = core.drain_events();
+    let healed = core.current_hp(s) - 5;
+    assert!((10..=11).contains(&healed), "rolled 10..=11: {healed}");
+    let own = text_to(&events, s);
+    assert!(
+        own.contains(&format!("Vexil is healed of {healed} damage!\n")),
+        "caster line binds (target, damage): {own:?}"
+    );
+    assert!(!own.contains("%d"), "no literal placeholder: {own:?}");
+    let seen = text_to(&events, watcher);
+    assert!(
+        seen.contains(&format!("Vexil is healed of {healed} damage!\n")),
+        "room line binds (target, damage): {seen:?}"
+    );
+}
+
+#[test]
+fn even_benign_heal_message_binds_the_magnitude() {
+    // The minor healing (13) shape — message 15's caster line "You cast
+    // %s on %s, healing %d damage!" binds (spell, target, damage) on the
+    // EVEN order table; the damage arg is the rolled heal.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(hardy("Vexil", MAGE));
+    core.set_current_hp(s, 5);
+    core.drain_events();
+    core.input(s, "c mercy");
+    let events = core.drain_events();
+    let healed = core.current_hp(s) - 5;
+    assert!((10..=11).contains(&healed), "rolled 10..=11: {healed}");
+    let own = text_to(&events, s);
+    assert!(
+        own.contains(&format!("You cast mercy on Vexil, healing {healed} damage!\n")),
+        "caster line binds (spell, target, damage): {own:?}"
+    );
+}
+
+#[test]
+fn fixed_heal_displays_the_slot_value_not_the_roll() {
+    // A non-zero ability value is the display amount too (the DLL's
+    // per-case local_9c override, loop head 39577-39580): mend's fixed
+    // Heal(25) prints 25.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(hardy("Vexil", MAGE));
+    core.set_current_hp(s, 1);
+    core.drain_events();
+    let shown = cast(&mut core, s, "c mend");
+    assert!(
+        shown.contains("You cast mend on Vexil, healing 25 damage!\n"),
+        "got: {shown:?}"
+    );
 }
 
 #[test]

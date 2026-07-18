@@ -110,6 +110,14 @@ per-target resistance + save; duration areas enter each target's slots
 individually; offensive areas engage combat (evil warnings = crime system,
 SLICE 7 marker); line fan-out per expedition B.
 
+NOTE (from Task 6 review): poison cloud (142, benign match-12, learnable)
+currently routes through the benign SELF-cast path — the caster
+self-poisons instead of poisoning the room. Task 5's per-target iteration
+must take match-12 over from that path (the poison hard-write + ImmuPoison
+gate per target already exist in `benign_success_effects`; the DLL's area
+loop applies the same case per player at 40556-40575 and per monster at
+40580-40599).
+
 ## Task 6: Poison + healer cure + leftovers
 
 - `Player.poison: u16` counter (+0xbe analog), Poison(19) hard-write at

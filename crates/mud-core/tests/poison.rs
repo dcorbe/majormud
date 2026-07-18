@@ -30,6 +30,10 @@ const PRICK: SpellId = SpellId(510);
 const VENOMOUS: SpellId = SpellId(520);
 /// Benign instant [(CurePoison, 3)].
 const ANTIDOTE: SpellId = SpellId(530);
+/// Benign instant [(Poison, 6), (Heal, 5)] — the gate-scope probe: the
+/// ImmuPoison wrap covers only the Poison SLOT's iteration, so the Heal
+/// slot still applies, displays, and supplies the damage arg.
+const TAINT: SpellId = SpellId(550);
 /// Benign duration 5 flat, recurring [(CurePoison, 2)] — the upkeep
 /// subtract; CurePoison has NO termination arm (spec §5).
 const SALVE: SpellId = SpellId(540);
@@ -126,19 +130,35 @@ fn world() -> Content {
         armour_code: 9,
     });
 
+    // A castmsgb with a %d in the caster line: both the ImmuPoison
+    // display suppression and the damage-arg binding are observable.
+    content.add_message(mud_core::content::Message {
+        id: mud_core::content::MessageId(950),
+        lines: vec![
+            "You cast %s on %s, for %d!".into(),
+            String::new(),
+            "%s casts %s on %s!".into(),
+        ],
+    });
+
     let mut sting = spell(STING, "sting", "stin");
     sting.abilities = vec![(Ability::Poison, 6)];
+    sting.cast_msg_b = Some(mud_core::content::MessageId(950));
     let mut prick = spell(PRICK, "prick", "pric");
     prick.abilities = vec![(Ability::Poison, 4)];
     let mut venomous = spell(VENOMOUS, "venomous grip", "veno");
     venomous.duration = 5; // flat: no per-level roll
     venomous.abilities = vec![(Ability::Poison, 5)];
+    venomous.cast_msg_b = Some(mud_core::content::MessageId(950));
     let mut antidote = spell(ANTIDOTE, "antidote", "anti");
     antidote.abilities = vec![(Ability::CurePoison, 3)];
+    let mut taint = spell(TAINT, "taint", "tain");
+    taint.abilities = vec![(Ability::Poison, 6), (Ability::Heal, 5)];
+    taint.cast_msg_b = Some(mud_core::content::MessageId(950));
     let mut salve = spell(SALVE, "soothing salve", "salv");
     salve.duration = 5;
     salve.abilities = vec![(Ability::CurePoison, 2)];
-    for s in [sting, prick, venomous, antidote, salve] {
+    for s in [sting, prick, venomous, antidote, taint, salve] {
         content.add_spell(s);
     }
     content
@@ -146,7 +166,7 @@ fn world() -> Content {
 
 fn book() -> BTreeMap<SpellId, bool> {
     let mut book = BTreeMap::new();
-    for id in [STING, PRICK, VENOMOUS, ANTIDOTE, SALVE] {
+    for id in [STING, PRICK, VENOMOUS, ANTIDOTE, TAINT, SALVE] {
         book.insert(id, false);
     }
     book
@@ -301,6 +321,69 @@ fn immu_poison_blocks_the_apply() {
     core.drain_events();
     cast(&mut core, s, "c sting");
     assert_eq!(core.poison(s), 0, "ImmuPoison (21) gates the whole case");
+}
+
+#[test]
+fn immu_poison_suppresses_display_and_slot_entry() {
+    // Decompile 40522-40546: user_has_ability(0x15) wraps the ENTIRE
+    // Poison case body — counter write, display_spell_success AND the
+    // add_cast_spell_to_user slot entry. sting/venomous carry Poison
+    // only, so an immune target gets NO success line and NO slot (the
+    // costs stay paid — the gates and the roll already passed).
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(player("Gutsy", IRONGUT, MAGE));
+    core.drain_events();
+    let shown = cast(&mut core, s, "c sting");
+    assert!(!shown.contains("You cast"), "no success display: {shown:?}");
+    energy_round(&mut core);
+    let shown = cast(&mut core, s, "c veno");
+    assert!(!shown.contains("You cast"), "no success display: {shown:?}");
+    let p = core.player_snapshot(s);
+    assert!(
+        p.active_spells.iter().all(|a| a.spell.is_none()),
+        "no slot entry for an immune target"
+    );
+    assert_eq!(core.poison(s), 0);
+    // Contrast: a non-immune caster gets the line and the slot.
+    let h = core.attach_player(player("Vexil", HUMAN, MAGE));
+    core.drain_events();
+    let shown = cast(&mut core, h, "c veno");
+    assert!(shown.contains("You cast venomous grip on Vexil"), "got: {shown:?}");
+    let p = core.player_snapshot(h);
+    assert!(p.find_active(VENOMOUS).is_some(), "slot entered");
+}
+
+#[test]
+fn immu_poison_gate_is_per_slot_not_per_spell() {
+    // The wrap covers only the Poison SLOT's loop iteration, not the
+    // whole spell (the case sits inside the per-ability switch; every
+    // other non-noop slot still displays and applies through the
+    // local_49 once-flag). taint = [(Poison, 6), (Heal, 5)]: an immune
+    // target still heals, still sees the line — and the damage arg is
+    // the HEAL slot's 5, the first driving slot left.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(player("Gutsy", IRONGUT, MAGE));
+    core.set_current_hp(s, 10);
+    core.drain_events();
+    let shown = cast(&mut core, s, "c tain");
+    assert_eq!(core.poison(s), 0, "poison slot gated");
+    assert_eq!(core.current_hp(s), 15, "heal slot still applies");
+    assert!(
+        shown.contains("You cast taint on Gutsy, for 5!\n"),
+        "heal slot drives the display: {shown:?}"
+    );
+    // A non-immune caster: the Poison slot is the first driver — its
+    // fixed 6 is the damage arg.
+    let h = core.attach_player(player("Vexil", HUMAN, MAGE));
+    core.set_current_hp(h, 10);
+    core.drain_events();
+    let shown = cast(&mut core, h, "c tain");
+    assert_eq!(core.poison(h), 6);
+    assert_eq!(core.current_hp(h), 15);
+    assert!(
+        shown.contains("You cast taint on Vexil, for 6!\n"),
+        "poison slot drives the display: {shown:?}"
+    );
 }
 
 #[test]

@@ -305,6 +305,58 @@ fn item_cast_failed_roll_charges_half_mana() {
 }
 
 #[test]
+fn item_cast_energy_shortage_prints_the_already_cast_line() {
+    // cast_item_target's own triple gate (44397-44409): round pool <
+    // round cost prints "You have already cast a spell this round!" —
+    // UNLIKE the benign self-cast path's measured silent no-op. No costs
+    // move.
+    let mut world = world();
+    let mut bulky = world.spells[&DETECT].clone();
+    bulky.id = SpellId(620);
+    bulky.name = "bulky lore".into();
+    bulky.short_name = "bulk".into();
+    bulky.round_cost = 2000; // above the full 1000 pool
+    world.add_spell(bulky);
+    let mut core = Core::new(world, CoreConfig::default());
+    let mut vexil = player("Vexil", MAGE);
+    vexil.spellbook.insert(SpellId(620), false);
+    let s = core.attach_player(vexil);
+    core.give_item(s, AMULET);
+    core.drain_events();
+    let shown = cast(&mut core, s, "c bulk amulet");
+    assert!(
+        shown.contains("You have already cast a spell this round!\n"),
+        "got: {shown:?}"
+    );
+    assert_eq!(core.current_mana(s), 20, "no mana charged");
+    assert!(!shown.contains("glows"), "no banding: {shown:?}");
+}
+
+#[test]
+fn bare_item_cast_with_empty_target_takes_the_benign_self_path() {
+    // ORACLE-VERIFY (pinning CURRENT behavior, not a measured line):
+    // `c dete` with no target never reaches the item arm (it matches on
+    // a non-empty remainder only) and falls through to the benign
+    // self-cast path — costs are paid, the round is consumed, and
+    // nothing prints (detect magic has no castmsgb and DetectMagic(26)
+    // has no self-target handler). The DLL dispatcher's kind-8
+    // find_action_target arm with an empty name is unmeasured — it may
+    // refuse instead.
+    let (mut core, s) = mage_with_items();
+    let energy = core.round_energy(s);
+    let shown = cast(&mut core, s, "c dete");
+    assert!(!shown.contains("You do not see"), "no refusal: {shown:?}");
+    assert!(!shown.contains("glows"), "no banding: {shown:?}");
+    assert_eq!(core.current_mana(s), 12, "full mana charged");
+    assert_eq!(core.round_energy(s), energy - 100, "round cost charged");
+    let second = cast(&mut core, s, "c dete amulet");
+    assert!(
+        second.contains("You have already cast a spell this round!"),
+        "round consumed: {second:?}"
+    );
+}
+
+#[test]
 fn item_cast_needs_the_item_in_inventory() {
     // Unmatched item: the same do-not-see refusal as any benign targeted
     // lookup, before any cost (ORACLE-VERIFY: the DLL's find_action_target

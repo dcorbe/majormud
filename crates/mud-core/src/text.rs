@@ -631,7 +631,9 @@ pub struct CastMsgArgs<'a> {
 /// display_spell_success else-branch 38040-38124: caster prf(line, target,
 /// damage), target prf(line, damage), room prf(line, target, damage) — NO
 /// spell-name slot and NO caster name anywhere; shape: message 8524).
-/// ORACLE-VERIFY: the lowest learnable odd spell is L19 — unmeasured live.
+/// ORACLE-VERIFY: odd rendering is decompile-only — the lowest learnable
+/// odd spells are annointed hands (744, L10 benign instant, scroll 1179 /
+/// shop 111), dancing blades L11 and fireball L15; none measured live.
 /// - caster line: target, damage;
 /// - target line: damage;
 /// - room line: target, damage.

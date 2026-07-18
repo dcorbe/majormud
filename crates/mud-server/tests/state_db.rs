@@ -283,6 +283,7 @@ fn old_database_is_migrated_on_open() {
     assert_eq!(old.experience, 500);
     assert!(!old.lawful);
     assert_eq!(old.coins, Default::default());
+    assert_eq!(old.poison, 0, "migrated row backfills poison to 0");
     assert_eq!(old.active_spells, [ActiveSpell::default(); 10]);
     drop(db);
 

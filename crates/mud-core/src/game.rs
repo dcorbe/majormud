@@ -75,6 +75,23 @@ fn clamp_poison(v: i32) -> i16 {
     i16::try_from(v.clamp(0, i32::from(i16::MAX))).expect("clamped into range")
 }
 
+/// Ability slots whose `cast_no_target` apply-loop case is an empty
+/// `break` (the shared case list right after the loop head, decompile
+/// 39590-39611: 0x17/0x1a/0x34/0x50/0x56/0x61/0x62/0x65/0x6c-0x73/0x78/
+/// 0x7a/0x90/0x99), plus EndCast (0x97) / CastOnEnd% (0xa4) whose cases
+/// only stash the chain locals (41197-41216). None of these slots ever
+/// reaches a `display_spell_success` or `add_cast_spell_to_user` call —
+/// they are metadata for other phases (the dispel pre-pass, DescMsg,
+/// targeting predicates, the chain). Every OTHER slot is a "driver": the
+/// first one to run prints the success display with ITS fixed-or-rolled
+/// value as the damage arg and flips the once-flag (`local_49`).
+fn ability_case_is_noop(ability: Ability) -> bool {
+    matches!(
+        ability.id(),
+        23 | 26 | 52 | 80 | 86 | 97 | 98 | 101 | 108..=115 | 120 | 122 | 144 | 151 | 153 | 164
+    )
+}
+
 /// HPRegen (123): percent modifier to slow-tick HP regen.
 fn hp_regen_ability() -> Ability {
     Ability::from_id(123).expect("HPRegen is in the enum")
@@ -2620,17 +2637,53 @@ impl Core {
                 // slot; only the success lines print.
                 // ORACLE-VERIFY: blur-over-157 live probe (st should NOT
                 // show blurred).
-                self.emit_cast_success_lines(session, spell);
+                // param_6 here is uVar1 — the RAW rolled magnitude, no
+                // slot-value override (39482-39484: the pre-pass sits
+                // before the apply loop's per-slot local_9c rewrite).
+                self.emit_cast_success_lines(session, spell, magnitude);
                 self.terminate_active_spell(session, idx, honor_endcast);
                 return;
             }
         }
         // ImmuPoison (21) gates the ENTIRE Poison(19) case — counter
-        // write and success display alike (decompile 40520-40523:
-        // user_has_ability(0x15) wraps the case body). Race/class/gear/
-        // active-slot sources all count (the same bag the recompute uses).
+        // write, success display AND slot entry (decompile 40522-40546:
+        // user_has_ability(0x15) wraps the whole case body, instant and
+        // duration arms alike). The wrap scope is one SLOT-LOOP ITERATION,
+        // not the whole spell: any other driving slot still displays and
+        // enters through the once-flag (local_49). Race/class/gear/
+        // active-slot sources all count (the same bag the recompute
+        // uses). DATA: all six shipped Poison-carrying match-1/2/6 spells
+        // (yellow potion 184, red fungus 250, mushroom poison 373,
+        // redberry poison trap 628, dart poison 694, poison 704) carry
+        // only Poison + no-op slots (DescMsg 115 / NonMagicalSpell 144),
+        // so an immune target gets nothing at all from them.
         let immune_poison = spell.abilities.iter().any(|(a, _)| *a == Ability::Poison)
             && self.ability_bag(self.player(session)).value(Ability::ImmuPoison) != 0;
+        // The driving slot: the first non-noop, non-gated ability. Its
+        // fixed-or-rolled value is display_spell_success's param_6 — the
+        // damage arg of the success lines (every case passes its own
+        // local_9c: 40529-40531 Poison, 40075-40077 Alterhunger, ...; the
+        // loop head 39575-39580 rewrites local_9c to the slot value when
+        // non-zero, else leaves the rolled magnitude).
+        let gated =
+            |a: Ability| ability_case_is_noop(a) || (immune_poison && a == Ability::Poison);
+        let display_damage = spell
+            .abilities
+            .iter()
+            .find(|(a, _)| !gated(*a))
+            .map_or(magnitude, |(_, v)| if *v != 0 { i32::from(*v) } else { magnitude });
+        if immune_poison
+            && !spell
+                .abilities
+                .iter()
+                .any(|(a, _)| *a != Ability::Poison && !ability_case_is_noop(*a))
+        {
+            // No driving slot survives the gate: the DLL's apply loop
+            // finishes without ever reaching a display_spell_success or
+            // add_cast_spell_to_user call — no lines, no slot entry, and
+            // the costs stay paid (the roll already succeeded).
+            return;
+        }
         if spell.duration == 0 {
             // Instant apply loop (spec §4 table, self-target): iterate the
             // ability slots; a non-zero slot value is a FIXED amount, 0
@@ -2771,7 +2824,7 @@ impl Core {
                 return;
             }
         }
-        self.emit_cast_success_lines(session, spell);
+        self.emit_cast_success_lines(session, spell, display_damage);
     }
 
     /// `cast_item_target` (decompile 0x49232), scoped to the LEARNABLE
@@ -2780,10 +2833,12 @@ impl Core {
     /// item — detect magic (24, mage L5; scroll 121 sold at the Newhaven
     /// Mage Spell Shop 9) and song of lore (41, bard) — and both carry
     /// only DetectMagic(26). The skeleton mirrors the benign command path
-    /// (silent energy refusal, NOT_ENOUGH_MANA, one-cast-per-round set,
-    /// roll, full/half costs — ORACLE-VERIFY: the DLL's own triple gate
-    /// prints the already-cast line for an energy shortage instead); the
-    /// fail lines are the same cast_no_target pair (44694-44700).
+    /// (NOT_ENOUGH_MANA, one-cast-per-round set, roll, full/half costs) —
+    /// EXCEPT the energy gate: cast_item_target's own triple gate
+    /// (44397-44409) prints the already-cast line for a round-energy
+    /// shortage, unlike the benign self-cast path's measured silent
+    /// no-op. The fail lines are the same cast_no_target pair
+    /// (44694-44700).
     fn fire_item_cast(
         &mut self,
         session: SessionId,
@@ -2801,6 +2856,10 @@ impl Core {
         let round_cost = i32::from(spell.round_cost);
         let mana_cost = i32::from(spell.mana_cost);
         if *energy < round_cost {
+            // 44397-44409: the energy leg of the triple gate prints the
+            // already-cast line ("cast a spell" wording for non-mystics)
+            // and charges nothing.
+            self.output_line(session, text::ALREADY_CAST);
             return;
         }
         if player.current_mana < mana_cost {
@@ -2887,8 +2946,18 @@ impl Core {
 
     /// `display_spell_success` for a benign self-cast (decompile
     /// 38004-38011): the castmsgb fan-out, then the DescMsg (115) line3
-    /// active line on duration casts.
-    fn emit_cast_success_lines(&mut self, session: SessionId, spell: &crate::content::Spell) {
+    /// active line on duration casts. `damage` is the function's param_6
+    /// — the caller's fixed-or-rolled magnitude, bound into any `%d` slot
+    /// of the message (even caster line 37988 `prf(local_60, spellName,
+    /// target, param_6)`; odd caster line 38068 `prf(local_60, target,
+    /// param_6)`) — annointed hands (744) and minor healing (13) both
+    /// carry a `%d` that binds the heal roll.
+    fn emit_cast_success_lines(
+        &mut self,
+        session: SessionId,
+        spell: &crate::content::Spell,
+        damage: i32,
+    ) {
         let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
             return;
         };
@@ -2905,11 +2974,14 @@ impl Core {
                 caster: &caster_name,
                 target: Some(&caster_name),
                 spell: &spell.name,
-                damage: None,
+                damage: Some(damage),
             };
             // msgstyle-odd binds (target, damage) with no spell name —
-            // the renderer's second order table (ORACLE-VERIFY: no
-            // learnable odd BENIGN spell exists below L19).
+            // the renderer's second order table. DATA: the lowest
+            // learnable odd BENIGN spell is annointed hands (744, mage
+            // L10, odd instant heal via scroll 1179 at shop 111) — its
+            // caster line "%s is healed of %d damage!" binds the heal
+            // roll as the damage arg. ORACLE-VERIFY: unmeasured live.
             let odd = spell.msg_style & 1 == 1;
             let caster_line = text::render_cast_line(msg, text::CastAudience::Caster, &args, odd);
             let room_line = text::render_cast_line(msg, text::CastAudience::Room, &args, odd);
@@ -3384,8 +3456,10 @@ impl Core {
         // line is skipped: the target is a monster, not a session.
         // msgstyle-odd (fireball 120, deathtouch 58, ...) binds (target,
         // damage) with no spell-name slot — the renderer's second order
-        // table, keyed on msg_style & 1 (ORACLE-VERIFY: the lowest
-        // learnable odd spell is L19, unmeasured live).
+        // table, keyed on msg_style & 1 (ORACLE-VERIFY: odd rendering is
+        // decompile-only; the lowest learnable odd spells are annointed
+        // hands L10 / dancing blades L11 / fireball L15, none measured
+        // live).
         // slice-5: kai/mystic message variants ("invoke a power"/"kai"
         // instead of "cast a spell"/"mana", spec §2) + the per-round
         // invoke flag — a mystic casting today gets mage wording.

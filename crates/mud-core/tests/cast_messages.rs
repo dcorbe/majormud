@@ -132,8 +132,10 @@ fn odd_style_binds_target_and_damage_with_no_spell_name() {
     // Decompile display_spell_success odd branch (38063-38068 caster prf
     // (local_60, target, damage); 38086-38087 target prf(local_60,
     // damage); 38116-38121 room prf(local_60, target, damage)).
-    // ORACLE-VERIFY: the lowest learnable odd spell is L19 — unmeasured
-    // live.
+    // ORACLE-VERIFY: odd rendering is decompile-only — the lowest
+    // learnable odd spells are annointed hands L10 (benign instant,
+    // scroll 1179 / shop 111), dancing blades L11 and fireball L15
+    // (re/mmud_wgnt.sqlite), none measured live.
     let msg = odd_damage_msg();
     let args = CastMsgArgs {
         caster: "Vexil",
