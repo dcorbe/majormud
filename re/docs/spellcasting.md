@@ -1408,3 +1408,200 @@ never in any blast), back at Newhaven Healer (1/2190), 1 life;
 Kaimon — untouched, back at Newhaven Adventurer's Guild (1/2147).
 All three exited via `x` (meditation logout, `Your character has been
 saved.`; observers see `<Name> just left the Realm.`).
+
+### 8.14 Monster casting (oracle-measured)
+
+Expedition 2026-07-17/18 (M5 slice-6 Task 1). Victim **Zinvar
+Duskmere** (acct Vexil, Human Mage, trained L8→L10 at the Silvermere
+Mage Training Room — Magic Shoppe Back Room 1/399, shop 28; receipts
+`16 gold crowns ... level 9` / `18 gold crowns ... level 10`, each
+`10 additional character points` only; L10 = HP 56, Mana 66, SC 61);
+observer **Kaimon Sable** (Mystic L3, ferried Newhaven→Silvermere and
+back). Transcripts `oracle_mcast_zinvar.raw` / `oracle_mcast_kaimon.raw`
++ `*_timing.log` (ms-stamped clean lines); drivers
+`oracle_kai_mystic.py` (FIFO session) + `oracle_mcast_drive.py`
+(command batcher) + `oracle_mcast_babysit.py` (camp auto-react);
+`oracle_mcast_survey.py` = the DB survey of spawnable casters
+reachable from Silvermere.
+
+**Staging (extends §8.8; all patches with the emulator stopped via
+`kill -INT`, `.bak`s kept: `WCCUSERS.DB.bak-slice6-zinvar-preL10`,
+`.bak-slice6-hp-restore`).** Patched exp 115000 (= L10 threshold
+113588 per the §records curve, seed 1400) at +0x3c AND +0x46f and
+key_2; purse gold dword at +0x60b several times (2000/3000/500 —
+Zinvar's coins dropped on each death). New disk-record offsets pinned
+while patching (mirror the in-memory struct): **+0xae maxHP, +0xb0
+curHP, +0xbe poison counter, +0xc8 current room** (stats array 40s at
++0xa0..+0xac; a 66/66 word pair — the mana cur/max — sits at
++0x5f5/+0x5f7, orientation unverified). Cur-HP restores (56) and one poison-counter write (5) were
+patched during restart windows — state restoration only; class, spells
+and stats untouched. Spell kit was bought LIVE at the Magic Shoppe
+(shop 9): free `scroll of magic missile`* / `blur` / `ethereal shield`,
+`smite` 16g, `frost jet` 40g, `magic armour` 71g, `shockshield` 122g,
+`lightning bolt` 153g, `mageshield` 326g (Charm-40 premia; list prices
+16/40/70/120/150/320). *Zinvar's book had already LOST magic missile
+by the §8.13 end state (book read blur/illu/flash/stnk) — relearned
+from the free scroll; loss cause unknown, predates this expedition.
+
+**Survey verdict (DB, `oracle_mcast_survey.py`).** BFS from Silvermere
+Docks (1,33) excluding type-15 exits: the pinned dark cleric 33/dark
+priest 34 spawn ONLY in region-8 rooms at the Dark Cavern (1,1462+,
+dist 57 behind the Slum/Black House); tentacled abomination 37 (venom
+79) at Pool's Edge (1,1531, dist 71); mummy rooms (1,1309/2253)
+unreachable. Reachable-and-spawnable casters: **moaning spirit 66**
+(`draws the breath` 82, Drain, 100% form, cast lvl 8) and **death dog
+64** (`high-pitched scream` 83, Confusion dur 20, 100%, lvl 12) in the
+island Limestone Tunnel (region 11 lvl 1-5, dist 13); **dragonfish
+267** (`breathes burning steam` 359, Damage(-MR) 10-30, 100%, lvl 15)
+and **water elemental 268** (`freezes` 360, 100%, lvl 16) in the
+Silver River rooms (region 21 lvl 4-7, dist 4); guardsman 14 (`calls
+for aid` 888 = Summon 12 → monster 13) town-wide (crime — not
+engaged); Aiken (Magic Shoppe NPC, lightning bolt/frost jet at L20).
+
+**Monster cast hit — victim + room views (moaning spirit, drain).**
+The spirit spawned IN-room (`A moaning spirit appears right beside
+you!`) and opened with melee + cast in the same round pair. Victim
+view carries the damage; the room view does NOT:
+
+```
+Moaning spirit draws the breath from your body for 11 damage!   (victim)
+Moaning spirit draws the breath from Zinvar's body!             (room)
+```
+
+Simultaneous pair captured at t=1784347947.09 (Zinvar victim line,
+Kaimon room line, same ms). Contrast the same monster's MELEE lines,
+where the room view DOES print damage (`The moaning spirit touches
+Zinvar with a ghostly hand for 15 damage!` — §8.10 format). Grammar
+differs per spell: the drain lines use the bare capitalized name
+(`Moaning spirit draws ...`), while the dragonfish cast uses the
+article+adjective form:
+
+```
+The fat dragonfish breathes burning steam on you for 27 damage!  (victim)
+```
+
+(26 and 27 observed; drain rolled 4,5,8,11,12,12 — both spells landed
+inside their record min..max (82: 4-12, 359: 10-30), i.e. **no visible
+cast-level scaling beyond the record range** for these two spells.)
+
+**Cast targeting.** The spirit's cast form RETARGETS freely: after
+Zinvar dropped (`Zinvar drops to the ground!`), the same spirit
+alternated `draws the breath` at Kaimon (living, unengaged) with melee
+on the downed Zinvar, and also drained the downed body — the cast
+form picks a room target each round independent of the melee
+engagement. The dragonfish cast fired <0.5 s after its arrival line —
+no engagement or warm-up round required.
+
+**Resist / cast-fail: NOT captured live.** 8 drain casts (save DC 8)
+and 2 steam casts (DC 15) against L10/MR40 all landed — zero resist
+lines observed; every reachable caster carries a 100% cast form, so
+the sub-100 fail path (dark cleric/priest 65/70%) was also
+unobservable. §6's `You resisted %s's cast of %s` remains
+decompile-sourced. ORACLE-OPEN (both would need the Dark Cavern
+clerics — see the casualty note below).
+
+**Live poison lifecycle (counter, ticks, cure) — measured via a
+patched counter.** No venom CASTER is survivably reachable (the
+abomination sits 71 rooms deep behind the same packs that killed
+Zinvar twice) and the melee poison carriers (silverfish 266, grey
+spider 30 — hitspells 80 `bites`, dur 100, magnitude = spell min/max
+8-12/6-10) out-trade a 56-HP mage, so the poison counter (+0xbe) was
+set to **5** directly during a restart window and the lifecycle
+measured clean-room at the temple:
+
+- `st` appends **`You are Poisoned!`** (bare counter alone — no
+  active-spell slot present).
+- Each slow tick prints **`You feel ill.`** and HP drops **net −4** =
+  −5 (counter) **+1 regen in the same tick** — live confirmation of
+  regeneration.md §4 (poison does not suppress regen). Tick spacing
+  measured 42 s wall-clock (nominal 30 s slow tick; the emulator's
+  clock skew caveat from §8.11 applies).
+- Cure: the Silvermere Temple Healer NPC (1,527 — textblock services,
+  NOT a shop; sign: Minor/Major/Greater Healing 5/12/20 silver, Cure
+  Poison 10 gold, Cure Disease 25 gold, Remove Curse 50 gold): saying
+  `buy cure poison` → **`The healer casts cure poison on you!`**, 10
+  gold deducted, `st` poison line gone, zero further ticks (4+ tick
+  windows silent), regen visibly resumed. `buy greater healing` →
+  `The healer casts greater healing on you!` (+15/+17/+28 observed —
+  variable roll, caps at maxHP).
+
+**Duration debuff from a monster cast: NOT captured live** (death dog
+never rolled in ~8 island spawn-roulette cycles; scream's string set
+is DB-pinned: DescMsg 8560 `The effects of the death dog's shriek wear
+off!` / stat line `You feel confused!`, ConfuseMsg 8489 `You fumble in
+confusion!` / room `%s fumbles about dazedly!`; mummy breath DescMsg
+8521 `The effects of the mummy's breath wears off!` / `You are
+blind!`). ORACLE-OPEN for the live st/slot/wear-off sequence.
+
+**Environment + death-frame incidentals (new since §8.10-8.13):**
+
+- **Silver River room hazard** (rooms 2342.., room `spell` 753
+  `silver river`, delay 20): `The river bashes you up against some
+  rocks!` every ~10-11 s in-room, 10-18 damage, unavoidable — fires
+  ~1.5 s after entry if the cycle lands there. This is what makes the
+  river casters effectively unmeasurable beyond drive-by captures.
+- **Death threshold is ≈ flat −200 HP, not −7×maxhp**: four kills
+  observed at −200/−202/−209/−225 on a 56-maxhp character; §8.10's
+  29-maxhp kills at ~−203 fit the same flat bound (29×7≈203 was a
+  coincidence). Bleed-out while downed and UNattacked is ~1 HP per
+  slow tick (would be ~90 min to die from −104); monsters DO keep
+  attacking a downed body when present, and a downed player gets
+  `You may not do that while you are mortally wounded!` for any
+  command. Death prints `You have been killed!`, strips buffs with
+  their normal wear-off lines (`The effects of blur wear off.` /
+  `The effects of shockshield wear off!`), then `But, due to a
+  miracle, you have been saved.` / `You have N lives left.` — revive
+  at the AREA deathroom (Silvermere rooms → Temple, Halls of the Dead
+  1,2189; NOT Newhaven), full HP+mana. Zinvar 9→4 lives across the
+  expedition (minotaur; spirit; cultist pack ×2; dragonfish+river) —
+  one further down (orc rogues) was recovered by disconnect +
+  cur-HP patch without a life loss. Coins drop at the death spot;
+  floor piles persisted across every emulator restart (litter left:
+  ~7,250g at Slum 1,1224, 473g at cave mouth 1,1828, ~500g in river
+  2342).
+- **Spawn-in-room is instant-aggro**: `A moaning spirit appears right
+  beside you!` (in-room spawn line), first hit within the same second;
+  arrival wander lines use per-monster verbs (`A minotaur stomps in
+  from the north.` / `A gelatinous cube oozes in from the south!` /
+  `A nasty silverfish swims in from the west.`).
+- New melee verb rows for §8.10's table: minotaur `cleaves you` /
+  `guts you with his horns`, stone golem `smashes you with its fist`,
+  gelatinous cube `oozes over you`, moaning spirit `touches you with a
+  ghostly hand` (hit) / `claws at you, but you dodge out of the way!`
+  (dodge), orc rogue `slashes` / `impales` / miss `lunges at you with
+  their shortsword, but you dodge!`, dark cultist `slashes you` and
+  the all-out variant **`The angry dark cultist all-out slashes you
+  for 6 damage!`**.
+- Flood control: bursts of >~15 commands trip `Why don't you slow
+  down for a few seconds?` and the excess input is DROPPED (move
+  sequences desync — verify by room name).
+- One player cast per combat round: `You have already cast a spell
+  this round!` (buff stacking takes one round each).
+- L10 with banked exp (157%) still gets `You have progressed too far
+  without training to acquire anymore experience!` on kills (§8.13's
+  ORACLE-OPEN gate reproduced at a second level).
+
+**Slice-6 implementation notes.** (1) Monster cast HIT fan-out =
+victim line with damage + room line without damage, text from the
+spell's cast message (grammar varies per spell — do not synthesize a
+generic frame). (2) The cast form retargets per round and works on
+downed players; it does not require or create melee engagement
+state. (3) Observed damage stayed in the spell record's min..max for
+cast levels 8 and 15 — scaling pairs for these spells are zero, so
+cast level only feeds the save DC there. (4) Poison: bare counter
+drives `st` line, tick line, tick damage (net of regen), and the
+healer cure; the slot is only the delivery/duration vehicle. (5) The
+resist and fail lines remain decompile-only (§6) — flag them
+ORACLE-OPEN in goldens.
+
+**Character end states:** Zinvar Duskmere — **L10** Mage, HP 56/56,
+Mana 66/66, 4 lives, ~488 gold, poison 0, book = blur / magic missile
+/ illuminate / smite / frost jet / ethereal shield / magic armour /
+flash / lightning bolt / stinking cloud / mageshield / shockshield,
+parked at the Silvermere **Temple Healer (1,527)** (still locked out
+of Newhaven); Kaimon Sable — L3 Mystic, HP 30/35, KAI 2, back at the
+Newhaven Adventurer's Guild (1,2147); Oracle — untouched (never
+logged in). Both exited via `x` meditation logout. MBBSEmu left
+running in the `mbbsemu` tmux pane (several `kill -INT` restart
+cycles during the expedition; each SIGINT shutdown core-dumps after
+closing its DBs — the sqlite stores survive it, same as §8.12).

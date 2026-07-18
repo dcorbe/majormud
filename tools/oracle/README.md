@@ -63,6 +63,26 @@ Character: Oracle Delver, Dwarf Warrior, not Lawful, default stats.
   - The FSD stat editor's Given Name field arrives prefilled with the BBS
     account name and typing APPENDS — send backspaces first to replace it.
 
+- Monster-casting expedition (2026-07-18, slice 6) added more:
+  - **Flood control**: >~15 rapid commands trip `Why don't you slow down
+    for a few seconds?` and DROP input — blind move sequences desync.
+    Keep ≥1.5 s per command and verify by room name.
+  - **Death threshold is ~flat −200 HP** (kills at −200/−202/−209/−225
+    on a 56-maxhp char), not −7×maxhp; unattacked downed chars bleed
+    ~1 HP/slow-tick. Revive is at the AREA deathroom (Silvermere →
+    Temple Halls of the Dead 1/2189), not Newhaven.
+  - Silver River rooms pulse `The river bashes you up against some
+    rocks!` (10-18 dmg, ~10 s cycle, can fire ~1.5 s after entry) —
+    don't loiter, don't fight there.
+  - Spawn-in-room (`X appears right beside you!`) attacks within the
+    same second. Never leave a character unattended in a spawn room —
+    poll ≤5 s or use `oracle_mcast_babysit.py`.
+  - Restart-despawn + disk-patch recipe: logout (or accept the
+    disconnect), `kill -INT`, edit WCCUSERS.DB `data_t` (Zinvar id 3;
+    exp +0x3c AND +0x46f + key_2, gold dword +0x60b, **curHP word
+    +0xb0, maxHP +0xae, poison counter +0xbe, room +0xc8**), restart.
+    Floor coin piles persist across restarts; live monsters don't.
+
 ## Scripts
 
 - `mudlib.py` — session driver (login, expect, capture).
@@ -75,3 +95,10 @@ Character: Oracle Delver, Dwarf Warrior, not Lawful, default stats.
   (mystic/kai expedition, spellcasting.md §8.12). Lessons: the FSD editor's
   Enter is CR NUL (`\r\x00` — bare `\r` is swallowed); stop MBBSEmu with
   `kill -INT` (the TUI eats `^C`; SIGTERM loses game-DB rows).
+- `oracle_mcast_survey.py` — sqlite survey: BFS reachable rooms from a
+  start (type-15 exits blocked), spawn regions, and casting monsters
+  spawnable in them (slice-6 monster-cast expedition, §8.14).
+- `oracle_mcast_drive.py` — batch command sender for the FIFO driver
+  (prints the clean-log delta).
+- `oracle_mcast_babysit.py` — camp watcher: auto-flees bad spawns,
+  auto-fights whitelisted casters, HP-floor flee (island cave camp).
