@@ -7986,7 +7986,7 @@ impl Core {
         self.broadcast_to_room(
             exit.dest,
             Some(session),
-            &text::arrived_from(&name, direction.opposite()),
+            &text::walks_in_from(&name, direction.opposite()),
         );
         self.show_room(session);
     }

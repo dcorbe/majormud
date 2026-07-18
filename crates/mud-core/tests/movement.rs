@@ -169,8 +169,11 @@ fn moving_shows_new_room_and_broadcasts_both_sides() {
     );
     let to_carol = text_to(&events, carol);
     assert!(
-        to_carol.contains("Bob just arrived from the south."),
-        "new room sees arrival from opposite side: {to_carol:?}"
+        to_carol.contains("Bob walks into the room from the south."),
+        "new room sees arrival from opposite side (oracle 2026-07-18: \
+         'Kaimon walks into the room from the east.'; 'just arrived from' \
+         never appears in any capture — it is the spawn-arrival string): \
+         {to_carol:?}"
     );
 }
 
@@ -191,8 +194,9 @@ fn vertical_movement_uses_upwards_phrasing() {
     );
     let to_carol = text_to(&events, carol);
     assert!(
-        to_carol.contains("Bob just arrived from below."),
-        "vertical arrival says from below, no article: {to_carol:?}"
+        to_carol.contains("Bob walks into the room from below."),
+        "vertical arrival says from below, no article (oracle: 'Oracle \
+         walks into the room from above.'): {to_carol:?}"
     );
 }
 

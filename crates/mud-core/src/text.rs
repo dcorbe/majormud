@@ -39,7 +39,7 @@ use crate::content::Direction;
 /// Display name used in the exits list. Vertical exits show as "up"/"down"
 /// (USER TESTIMONY — the earlier "above"/"below" reading of the DLL string
 /// table was wrong; that pair belongs to the vertical arrival broadcasts,
-/// see [`arrived_from`]).
+/// see [`walks_in_from`]).
 pub fn direction_shown(direction: Direction) -> &'static str {
     match direction {
         Direction::North => "north",
@@ -65,14 +65,17 @@ pub fn left_via(name: &str, direction: Direction) -> String {
     }
 }
 
-/// VERIFIED (DLL) format string for compass arrivals; vertical arrivals use
-/// "from above"/"from below" without the article (ORACLE-VERIFY the exact
-/// vertical wording).
-pub fn arrived_from(name: &str, direction: Direction) -> String {
+/// VERIFIED (oracle 2026-07-18): walk-arrival broadcast, players and
+/// monsters alike — "Kaimon walks into the room from the east." /
+/// "Oracle walks into the room from above." The DLL's "just arrived from"
+/// string never appears for walks in any capture; it is the
+/// generate_monster spawn-arrival flavour line (monsters.md §2 step 7,
+/// lands with the M6 spawner).
+pub fn walks_in_from(name: &str, direction: Direction) -> String {
     match direction {
-        Direction::Up => format!("{name} just arrived from above."),
-        Direction::Down => format!("{name} just arrived from below."),
-        d => format!("{name} just arrived from the {}.", direction_shown(d)),
+        Direction::Up => format!("{name} walks into the room from above."),
+        Direction::Down => format!("{name} walks into the room from below."),
+        d => format!("{name} walks into the room from the {}.", direction_shown(d)),
     }
 }
 
