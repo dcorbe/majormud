@@ -1807,11 +1807,16 @@ impl Core {
             self.output_line(session, text::TRAIN_NO_EXP);
             return;
         }
+        // The formula value is SILVER-denominated (MEASURED §8.7: markup-0
+        // shop 38 charged "5 silver nobles" for L1->2, formula = 5; §8.12:
+        // a copper-only purse paid 50/100 copper for the same 5/10) — the
+        // same `* ratios[0]` conversion the healer services apply.
+        let ratios = self.config.coin_ratios;
         let cost = ((i64::from(shop.markup) + 100).max(0) as u64)
             * u64::from(player.level)
             * 5
-            / 100;
-        let ratios = self.config.coin_ratios;
+            / 100
+            * ratios[0];
         if self.player(session).coins.total_copper(ratios) < cost {
             self.output_line(session, text::TRAIN_NO_MONEY);
             return;

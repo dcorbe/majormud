@@ -53,15 +53,17 @@ fn world() -> Content {
     };
     guild.shop = Some(ShopId(38));
     content.add_room(guild);
-    // markup 900 reproduces the measured Newhaven Training Room costs:
-    // (900+100)*level*5/100 = 50 at L1->2, 100 at L2->3 (§8.12 receipt).
+    // markup 0 reproduces the measured Newhaven Training Room costs:
+    // (0+100)*level*5/100 = 5 SILVER at L1->2, 10 at L2->3, i.e. 50 and
+    // 100 copper — paid from this fixture's copper-only purse as
+    // "50 copper farthings" / "100 copper farthings" (§8.12 receipt).
     content.add_shop(Shop {
         id: ShopId(38),
         name: "Training Room".into(),
         shop_type: 8,
         min_level: 1,
         max_level: 10,
-        markup: 900,
+        markup: 0,
         class_limit: 0,
         stock: Default::default(),
     });
