@@ -536,7 +536,9 @@ fn world() -> Content {
     balm.max_base = 10;
     balm.cast_msg_b = Some(MessageId(910));
     // The minor-healing model (even benign instant, rolled heal, %d).
-    // Match 2 like the real record (13, mage L1) — the instant-at-target
+    // Match 2 shaped after minor healing (13) — note the real record ships
+    // typeofresists 1 (IfAntiMagic); this fixture keeps SaveClass::None,
+    // behaviorally identical vs AntiMagic-less targets — the instant-at-target
     // probe.
     let mut mercy = spell(MERCY, "mercy", "merc");
     mercy.match_type = MatchType::Single2;

@@ -2932,7 +2932,11 @@ impl Core {
     ///
     /// Target law (the §8.13 correction to spec §4's grouping): players
     /// are NEVER area targets — measured alone, with players present, and
-    /// with an explicit player word. The sweep covers the decompile's
+    /// with an explicit player word. NOTE the decompile's player loop is
+    /// gated on flag `+0x7c8 & 0x10` (in-room live-target sweep bit), so
+    /// "never" is flag-driven, not categorical — §8.13 measured unpartied,
+    /// out-of-combat players; ORACLE-OPEN whether the bit ever admits
+    /// players (combat sweeps, parties). The sweep covers the decompile's
     /// monster set (3/5/9/11/12); 10/13 iterate players ONLY in the
     /// decompile, and with players excluded they collect nothing, so the
     /// no-effect refusal fires unconditionally. ORACLE-VERIFY: whether 13
@@ -3093,7 +3097,11 @@ impl Core {
         // element — the same final scale spell_magnitude applies on the
         // single-target path; fixed non-zero rows bypass roll and resist
         // alike). No saving throw here: the §3 save gate lives in the
-        // targeted entry points, not cast_no_target's area loop.
+        // targeted entry points, not cast_no_target's area loop — whose
+        // own resist branch is DEAD CODE (decompiled ~39726-39748:
+        // genrdn(1,100) < 1000 always passes; "The %s resists your
+        // spell!" is unreachable), even though flash/stinking cloud/
+        // poison cloud all ship typeofresists 2.
         let mut kills: Vec<MonsterInstanceId> = Vec::new();
         for monster_id in targets {
             let resist = spell
@@ -3142,8 +3150,10 @@ impl Core {
                 };
                 m.current_hp -= damage_total + drain_total;
                 // Retaliation lock like every damaging path — but NO
-                // caster-side engagement (MEASURED §8.13: no *Combat
-                // Engaged*; evil warnings/crime = SLICE 7).
+                // caster-side engagement (no *Combat Engaged* MEASURED
+                // §8.13 on debuff-only payloads; ORACLE-VERIFY for
+                // damaging sweeps — fixture-only today; evil warnings/
+                // crime = SLICE 7).
                 m.target = Some(session);
                 m.current_hp <= 0
             };

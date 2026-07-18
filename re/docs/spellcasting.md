@@ -1313,7 +1313,7 @@ Newhaven.** Exit type 15 = level gate; the room-17 manhole confirmed
 type 10 = text-trigger with phrases in the para1 message
 (`go manhole|go man|enter manhole`).
 
-**Player-target benign cast (blur, match 2, save 0) — the string
+**Player-target benign cast (blur, match 2, typeofresists 1) — the string
 table.** All casts at Silvermere Docks (1/33), all three sessions
 capturing:
 
@@ -1331,7 +1331,9 @@ capturing:
   came ~217 s after the LAST refresh (70 ticks) — refresh resets the
   duration on a player target. `The effects of blur wear off.` is seen
   by the TARGET only (Kaimon, in-room, saw nothing at expiry).
-- Blur landed on a MagicRes-55 dwarf every time — save-class 0 does no
+- Blur landed on a MagicRes-55 dwarf every time — CORRECTION: blur ships
+  `typeofresists = 1` (IfAntiMagic), not 0 as first written; the dwarf has
+  no AntiMagic, so the IfAntiMagic class does no
   player-MR roll (three successes, one ordinary skill-roll fail).
 - **Name resolution on players** is the §8.9 word-prefix rule:
   `c blur ora` resolved to Oracle. `cast blur zzz` with three players
