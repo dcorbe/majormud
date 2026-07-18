@@ -77,18 +77,25 @@ reachable caster carried a 100% form. Goldens: tests/monster_cast.rs
 (30 tests) + the spell_scenario slice-6 companion (65% caster fight +
 venom lifecycle, seeded).
 
-KNOWN OPEN ITEM (decision pending — implement now vs defer to M6):
-`monster_cast_area`, the DLL sibling that every kind-2 form with match
-∉ {0,2,6,8} routes into (monster_cast 23777-23779), is NOT implemented.
-Census (pinned by load_real_db.rs): match 1 x1, 11 x1, 12 x99 — 101
-shipped forms are inert (dragonfire, hellstorm, chaos storm, the gorgon
-breath...; the mummy's `breathes` 84 and death dog's scream 83 are
-match 0 and LIVE on the single path). Until it lands those casters deal
-no cast damage at all; the skip is silent before the energy gate. Loud
-marker at the gate in `monster_cast_at_player`; the census test and the
-skip test flip when it lands. Also on the close-out punch list: the
-`st` "You are Poisoned!" bare-counter sheet line (MEASURED §8.14, not
-rendered yet — ordering vs the DescMsg active lines is unmeasured).
+RESOLVED (commit 71e2ae5): `monster_cast_area` is IMPLEMENTED — all 101
+area/match-1 cast forms live (dragonfire, hellstorm, chaos storm...).
+Decompile-faithful quirks: players-only iteration, silent per-target
+saves at count time (97 cap, SpellImmu never read), silent fizzle with
+half charge, no-refund room-entry abort, instant Damage(1) only for
+match 5/10/13 (the 12 shipped match-12 Damage carriers are dead rows),
+dispel-drops-victim, self-slot for match {1,2,4,6}. §8.14's dragonfish
+line reconciled: a single-occupant area cast is indistinguishable from
+a targeted one. The `st` "You are Poisoned!" sheet line is rendered
+(bare counter, appended after the active lines — ordering ORACLE-OPEN).
+
+**M5 COMPLETE (2026-07-18):** all six slices landed; 509 tests; final
+review passed. Live hand-verification along the way: slice-2 shop/learn
+byte-diff vs the oracle, slice-3 giant-rat kill, slice-4 blur wear-off
+at +213.4s (oracle band 211.97-214.36s), slice-5 two-session blur,
+slice-6 moaning-spirit drain line. Remaining ORACLE-VERIFY inventory
+(80 in src) is the M6 punch list — headliners: FUN_0043e3db worn-item
+immunity predicate, area fan-out with >1 player, monster resist/fizzle
+lines (no reachable <100% caster), healer 25-silver poisoned price.
 
 ## Slice 1 — Content layer: the full Spell record
 

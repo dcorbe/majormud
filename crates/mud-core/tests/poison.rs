@@ -472,3 +472,19 @@ fn poison_survives_a_persist_snapshot() {
         .expect("quit persists");
     assert_eq!(persisted.poison, 7);
 }
+
+#[test]
+fn poisoned_sheet_shows_the_bare_counter_line() {
+    // MEASURED (§8.14): st appends "You are Poisoned!" from the bare
+    // counter, no slot needed; gone once cured.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(player("Vex", RaceId(1), ClassId(1)));
+    core.drain_events();
+    core.input(s, "st");
+    let clean = text_to(&core.drain_events(), s);
+    assert!(!clean.contains("You are Poisoned!"), "got: {clean:?}");
+    core.set_poison(s, 4);
+    core.input(s, "st");
+    let shown = text_to(&core.drain_events(), s);
+    assert!(shown.contains("You are Poisoned!\n"), "got: {shown:?}");
+}

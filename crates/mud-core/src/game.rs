@@ -1780,12 +1780,7 @@ impl Core {
         // active, gone after expiry). DescMsg-less spells add no line.
         // ORACLE-VERIFY: multi-buff ordering unmeasured live; slot order
         // chosen (the DLL iterates the slot array).
-        // MISSING (MEASURED §8.14): a bare positive poison counter — no
-        // slot needed — appends "You are Poisoned!" to the sheet (seen
-        // live at a patched counter with zero active spells; gone after
-        // the cure). Not rendered yet: the poison sheet line joins the
-        // M5 close-out punch list.
-        let active_lines: Vec<String> = player
+        let mut active_lines: Vec<String> = player
             .active_spells
             .iter()
             .filter_map(|s| s.spell)
@@ -1802,6 +1797,14 @@ impl Core {
             // inferred, not measured (spell 776 ships a (DescMsg, 0) row).
             .filter_map(|m| m.lines.get(2).filter(|l| !l.is_empty()).cloned())
             .collect();
+        // MEASURED (§8.14): a bare positive poison counter — no slot
+        // needed — appends "You are Poisoned!" to the sheet (seen live at
+        // a patched counter with zero active spells; gone after the cure).
+        // ORACLE-OPEN: ordering vs the DescMsg active lines is unmeasured
+        // (the live capture had no simultaneous buff); appended last.
+        if player.poison > 0 {
+            active_lines.push("You are Poisoned!".into());
+        }
         // The sheet's six stat rows show the EFFECTIVE stats (+0xa2..;
         // buffs included — the DLL direct-writes them, we fold from the
         // bag, see effective_stats).
@@ -7473,8 +7476,8 @@ impl Core {
     }
 
     /// EXACT (decompile 0x2a19d `move_player_to_fighter`): the normal-attack
-    /// player fighter. Weapon skill/dyn accumulators are 0 until items and
-    /// spells land (M4/M5); encumbrance is 0 until weight exists (M4).
+    /// player fighter. Weapon skill (M4), dynamic accumulators (M5), and
+    /// encumbrance (M4) all feed in below.
     fn build_player_attacker(&self, session: SessionId) -> crate::combat::Fighter {
         let Some(Session::InGame { player, derived, .. }) = self.sessions.get(&session) else {
             unreachable!("caller holds an in-game session");
@@ -7507,7 +7510,7 @@ impl Core {
         }
         // accuracy = (Str-50)/3
         //          + 2*((combat-1)*isqrt(level) + 2*combat + level/2 + skill/2 - 2)
-        //          + (Agl-50)/6  (+ dynamic accuracy accumulators, M5)
+        //          + (Agl-50)/6  + the dynamic accuracy accumulators
         let bag = self.ability_bag(player);
         let dyn_accuracy = bag.value(accuracy_ability(0x16))
             + bag.value(accuracy_ability(0x69))
