@@ -125,6 +125,43 @@ the shared ability system) occupy other offsets — full map TBD.
 > @0xb4/0xb6, `movemsg`@0xb8 arrival message, `deathmsg`@0xbc. Template **name is
 > @0x36** (not 0x34); name-generator id dword @0x124. `expmulti`@0x58 doubles as the
 > pack herd rank.
+>
+> **Name-generator column pinned (M7 slice 1, 2026-07-19): sqlite `desctxt` =
+> knmsr+0x124**, the `get_random_name` text-block id — NOT a description field
+> (Nightmare label misleads). Verified: kobold thief → block 2000
+> (`B:nasty/B:angry/...`), giant rat → 2001; matches the spellcasting.md §8
+> adjective captures. 565 monsters carry one; `greettxt` (898) / `talktxt` (21)
+> are the ask/greet dialogue blocks. All three column families resolve against
+> the imported `textblock` table with zero dangling refs.
+
+### WCCTEXT2 — text-block store — SOLVED (M7 slice 1, 2026-07-19)
+
+The quest/dialogue/name-generator store, engine accessor `get_text_block`
+(0x3379c: fetch into a 2024-byte buffer keyed seq@0 + block id@16,
+null-terminate at 0x7e7). **The only VARIABLE-length Btrieve file in the
+set** — `vir_wg.py`'s fixed-stride reader cannot parse it; the importer has a
+bespoke path (`import_mmud.py import_textblocks`, format documented in its
+docstring). Essentials:
+
+- Page header: type char at +1 (`'V'` 0x56 text page, `'D'` 0x44 record-head
+  page), **logical page number** at +2 (≠ physical position), generation at
+  +4. Shadow paging: live copy of a logical `D` page = highest generation
+  (two shadowed pairs in the shipped file); `V` logicals are unique.
+- `D` records (30 B): `[usage u16 =1][logical 24 B][VRP 4 B]`; logical =
+  seq s16@0, block id i32@16, next-link i32@20 (seq-0 records only); VRP =
+  logical `V` page, u16 at physical bytes 27-28.
+- `V` page: `[16 B hdr][2016 B fragment][16 B tail]`, one fragment per page,
+  1:1 with live `D` records (3467 each).
+- Text encoding: plain = (stored − 0x20) & 0xff (newline ↔ `*` 0x2a); first
+  0x00 terminates a fragment. Block body = seq 0..n fragments concatenated.
+
+Shipped census: **3267 blocks** (ids 0..10003), 79 multi-fragment, 645
+seq-0 next-links of which **4 dangle** (blocks 133, 440, 2962, 9637 —
+allowlist engine-side like the three dangling message refs). Content:
+quest scripts (`wildcard:action` lines, quests.md §2), ask-conversation
+keyword tables (`keyword:blocknum` lines + linked spoken text via `next`),
+name-generator adjective lists (`A:`/`B:`/`F:`/`N:` lines, blocks
+2000-2006), and ANSI art/long descriptions.
 
 ### WCCMP001 (1528 B) — world map / rooms — largely mapped
 Record = raw Btrieve record. Layout:
