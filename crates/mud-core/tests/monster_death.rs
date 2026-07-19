@@ -218,3 +218,51 @@ fn exp_splits_equally_among_engaged_players() {
     assert_eq!(ea, 4);
     assert_eq!(eb, 4);
 }
+
+#[test]
+fn custom_death_message_line3_replaces_the_generic_announcement() {
+    // ORACLE (oracle_m6_arena_fight.raw): "The giant rat falls to the
+    // ground with a tortured squeak." — check_kill_monster prints the
+    // deathmsg record's LINE 3 verbatim (21361-21390; the record doubles
+    // as the attack hit-message record, whose line 3 is the death line).
+    // The generic "%s is dead." is the no-record fallback.
+    use mud_core::content::{Message, MessageId};
+    let mut content = world();
+    let mut squeaker = content.monsters[&MonsterId(1)].clone();
+    squeaker.id = MonsterId(2);
+    squeaker.name = "squeaky rat".into();
+    squeaker.death_msg = Some(MessageId(600));
+    content.add_monster(squeaker);
+    content.add_message(Message {
+        id: MessageId(600),
+        lines: vec![
+            "The %s bites you for %d damage!".into(),
+            "The %s bites %s for %s damage!".into(),
+            "The squeaky rat falls to the ground with a tortured squeak.".into(),
+        ],
+    });
+    let mut core = Core::new(content, config());
+    let s = create(&mut core, "Dain");
+    core.spawn_monster(MonsterId(2), RoomId { map: 1, room: 1 });
+    core.input(s, "attack squeaky");
+    let mut all = Vec::new();
+    all.extend(core.drain_events());
+    for _ in 0..100 {
+        if all.iter().any(
+            |e| matches!(e, Event::Output { text, .. } if text.contains("falls to the ground")),
+        ) {
+            break;
+        }
+        core.tick();
+        all.extend(core.drain_events());
+    }
+    let shown = text_to(&all, s);
+    assert!(
+        shown.contains("The squeaky rat falls to the ground with a tortured squeak."),
+        "custom death line: {shown:?}"
+    );
+    assert!(
+        !shown.contains("is dead."),
+        "the generic line is the no-record fallback only: {shown:?}"
+    );
+}

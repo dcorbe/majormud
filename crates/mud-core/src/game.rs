@@ -8689,12 +8689,26 @@ impl Core {
             * u64::from(tpl_exp_multi.max(1) as u32);
         let room = instance.location;
 
+        // ORACLE (oracle_m6_arena_fight.raw) + check_kill_monster
+        // 21361-21390: the deathmsg record's LINE 3 prints verbatim ("The
+        // giant rat falls to the ground with a tortured squeak."); the
+        // generic "%s is dead." is the no-record fallback.
+        let announcement = self
+            .content
+            .monsters
+            .get(&template)
+            .and_then(|t| t.death_msg)
+            .and_then(|id| self.content.messages.get(&id))
+            .and_then(|m| m.lines.get(2))
+            .filter(|l| !l.is_empty())
+            .cloned()
+            .unwrap_or_else(|| text::monster_dead(&name));
         match killer {
             Some(killer) => {
-                self.output_line(killer, &text::monster_dead(&name));
-                self.broadcast_to_room(room, Some(killer), &text::monster_dead(&name));
+                self.output_line(killer, &announcement);
+                self.broadcast_to_room(room, Some(killer), &announcement);
             }
-            None => self.broadcast_to_room(room, None, &text::monster_dead(&name)),
+            None => self.broadcast_to_room(room, None, &announcement),
         }
 
         // Equal split among the killer and everyone engaged on this target.
@@ -9406,18 +9420,32 @@ impl Core {
         self.render_room(session, true);
     }
 
+    /// One exit's obvious-exits entry, or `None` when hidden. ORACLE
+    /// (oracle_m6_arena_fight.raw): closed type-2 doors render as
+    /// "closed door <dir>"; action exits (10) and unfound secrets
+    /// (7/0xb — found-state is unmodeled runtime, unfound is the shipped
+    /// default) stay hidden. Other typed variants ORACLE-VERIFY.
+    fn exit_entry(d: Direction, exit: &crate::content::Exit) -> Option<String> {
+        match exit.exit_type {
+            10 | 7 | 0xb => None,
+            2 if exit.door_closed => {
+                Some(format!("closed door {}", text::direction_shown(d)))
+            }
+            _ => Some(text::direction_shown(d).to_string()),
+        }
+    }
+
     /// The `exits` command: just the obvious-exits line (oracle).
     fn show_exits_line(&mut self, session: SessionId) {
         let player = self.player(session);
         let room = &self.content.rooms[&player.location];
-        let exits: Vec<&str> = Direction::ALL
+        let exits: Vec<String> = Direction::ALL
             .into_iter()
-            .filter(|d| {
-                room.exits[*d as usize]
+            .filter_map(|d| {
+                room.exits[d as usize]
                     .as_ref()
-                    .is_some_and(|e| e.exit_type != 10)
+                    .and_then(|e| Self::exit_entry(d, e))
             })
-            .map(|d| text::direction_shown(d))
             .collect();
         let line = if exits.is_empty() {
             format!("{}{}", text::OBVIOUS_EXITS, text::NO_EXITS)
@@ -9488,14 +9516,13 @@ impl Core {
             out.push_str(".\n");
         }
 
-        let exits: Vec<&str> = Direction::ALL
+        let exits: Vec<String> = Direction::ALL
             .into_iter()
-            .filter(|d| {
-                room.exits[*d as usize]
+            .filter_map(|d| {
+                room.exits[d as usize]
                     .as_ref()
-                    .is_some_and(|e| e.exit_type != 10)
+                    .and_then(|e| Self::exit_entry(d, e))
             })
-            .map(|d| text::direction_shown(d))
             .collect();
         out.push_str(text::OBVIOUS_EXITS);
         if exits.is_empty() {

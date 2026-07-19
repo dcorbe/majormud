@@ -274,3 +274,36 @@ fn movement_only_broadcasts_to_the_two_rooms_involved() {
         "unrelated room hears nothing: {to_carol:?}"
     );
 }
+
+#[test]
+fn exits_line_shows_closed_doors_and_hides_secrets() {
+    // ORACLE (oracle_m6_arena_fight.raw): "Obvious exits: closed door
+    // north, up" — type-2 exits with the door closed render with the
+    // "closed door" prefix; secret types 7/0xb stay hidden until found
+    // (found-state is runtime the engine does not model yet — unfound is
+    // the shipped default).
+    use mud_core::content::Exit;
+    let mut content = world();
+    {
+        let gates = content.rooms.get_mut(&RoomId { map: 1, room: 1 }).unwrap();
+        gates.exits[Direction::North as usize] = Some(Exit {
+            dest: RoomId { map: 1, room: 2 },
+            exit_type: 2,
+            door_closed: true,
+            ..Default::default()
+        });
+        gates.exits[Direction::East as usize] = Some(Exit {
+            dest: RoomId { map: 1, room: 2 },
+            exit_type: 7,
+            param: 3,
+            ..Default::default()
+        });
+    }
+    let mut core = Core::new(content, CoreConfig::default());
+    let alice = core.attach_player(player_at("Alice", 1));
+    let shown = text_to(&core.drain_events(), alice);
+    assert!(
+        shown.contains("Obvious exits: closed door north, up"),
+        "door prefix + hidden secret: {shown:?}"
+    );
+}
