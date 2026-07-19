@@ -8875,16 +8875,42 @@ impl Core {
         let dyn_accuracy = bag.value(accuracy_ability(0x16))
             + bag.value(accuracy_ability(0x69))
             + bag.value(accuracy_ability(0x6a));
+        // Unarmed with the Punch ability (0x1d) = mode-1 "fists of fury"
+        // (cmd_attack 49712-49720 auto-selects it for a bare attack;
+        // move_player_to_fighter 24539-24571): min = L*V/8 + 2,
+        // max = (L+3)*V/4 + 6 with L = level capped at 20 and V = the
+        // folded Punch value, plus PunchACY (89) on accuracy and
+        // PunchDmg (92) on both damage bounds. ORACLE pin: Nekojin
+        // Mystic L1 V1 Str40 punched raw 2..6 (shown 1..5 through the
+        // rat's DR 1). Kick/jumpkick (modes 2/3, their own verbs) are a
+        // parser addition still pending; plain classes keep 1-4 fists.
+        let punch = if weapon.is_none() {
+            bag.value(Ability::from_id(0x1d).expect("Punch in the enum"))
+        } else {
+            0
+        };
+        let punch_acy = if punch > 0 {
+            bag.value(Ability::from_id(0x59).expect("PunchACY in the enum"))
+        } else {
+            0
+        };
         let accuracy = (str_ - 50) / 3
             + 2 * ((combat - 1) * isqrt(level) + 2 * combat + level / 2 + skill / 2 - 2)
             + (agl - 50) / 6
-            + dyn_accuracy;
+            + dyn_accuracy
+            + punch_acy;
 
-        // Weapon damage (or the unarmed 1-4 defaults), plus the Strength
+        // Weapon damage (or the unarmed defaults), plus the Strength
         // bonuses: max += (Str-50)/10; min += 2*(Str-100)/10 when positive.
-        let (base_min, base_max) = weapon.map_or((1, 4), |w| {
-            (i32::from(w.min_damage), i32::from(w.max_damage))
-        });
+        let (base_min, base_max) = match weapon {
+            Some(w) => (i32::from(w.min_damage), i32::from(w.max_damage)),
+            None if punch > 0 => {
+                let l = level.min(20);
+                let dmg = bag.value(Ability::from_id(0x5c).expect("PunchDmg in the enum"));
+                (l * punch / 8 + 2 + dmg, (l + 3) * punch / 4 + 6 + dmg)
+            }
+            None => (1, 4),
+        };
         let mut min_damage = base_min;
         let mut max_damage = base_max + (str_ - 50) / 10;
         let min_bonus = (str_ - 100) / 10 * 2;
@@ -9008,7 +9034,15 @@ impl Core {
         if i == 0 || den == 0 {
             return 50;
         }
-        1200 * 1000 / den
+        // Fists speed 1200 (0x4b0); the mode-1 punch swings at 1150
+        // (0x47e, move_player_to_fighter 24532-24534).
+        let unarmed_punch = player.weapon.is_none()
+            && self
+                .ability_bag(player)
+                .value(Ability::from_id(0x1d).expect("Punch in the enum"))
+                > 0;
+        let speed = if unarmed_punch { 1150 } else { 1200 };
+        speed * 1000 / den
     }
 
     fn say(&mut self, session: SessionId, what: &str) {
