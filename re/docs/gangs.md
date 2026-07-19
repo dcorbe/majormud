@@ -33,6 +33,15 @@ Opened as `DAT_00479144 = dfaOpen("WCCGANG2.DAT", 0x100, 0)`. Layout confirmed f
 `cmd_create` (which builds a fresh record byte-by-byte) and the display/membership
 functions:
 
+> **Disk-file check (2026-07-19):** the shipped template
+> `wg_nt_ref/WCCNT8PJ/out/WCCGANG2.VIR` (28,672 B = 7 × 4096-B pages) parses
+> with `vir_wg.py` as **logical record length `0x100` (256), physical `0x10a`
+> (266, 10-B usage prefix)** — matching the `dfaOpen` size exactly. It contains
+> 2 FCR + 2 PAT pages, 2 index pages, and **one data page with zero used
+> slots**: it is an all-empty pre-created template, so the field offsets below
+> could not be cross-checked against sample records (no gang data ships with
+> the game; records are only created at runtime by `cmd_create`).
+
 | off | width | field |
 |-----|-------|-------|
 | `+0x00` | 20 B | **uppercase name KEY** — Btrieve key 0; `get_gang_data` uppercases input and matches here |
@@ -207,7 +216,8 @@ members "fund" the gang by adventuring.
 **bankbook** via `get_bankbook_data(shop+0x128, 8)` — i.e. **bank id 8** (the gang
 bank), keyed by a **name string stored in the shop record at `shop+0x128`** (for a
 GHouse shop this slot is repurposed from the normal max-stock array to hold the
-account-holder name). It adds `amount` copper to `bankbook+0x24` (with a
+account-holder name — written by `cmd_stock` with the stocker's BBS account
+user-id; see §7). It adds `amount` copper to `bankbook+0x24` (with a
 `balance+amount > balance` overflow guard), marks the bankbook dirty, prints
 `GANGSHOP DEPOSIT: <name> -> <n> copper`, and flushes all bankbooks. So the **gold
 price** a member pays for a gang-house item is deposited into the gang's bank-8
@@ -235,7 +245,8 @@ record (restocking disabled, pricing fields overloaded):
 - **GHouse (`shop+0xcc == 0xb`)** — deed/furnishing shop. To buy, the player must be
   a **gang leader** (`gang+0x2c == player+0x1e`), the **gang experience pool**
   `gang+0x28` (or the saturated path via `+0x50 & 8`) must reach
-  `DAT_00482d10 * 10000`, and the buyer must not already own a gang item (no carried
+  `DAT_00482d10 * 10000` (= the **GANGEXP** MSG option × 10000, default
+  1000 → **10,000,000 exp**; see §7), and the buyer must not already own a gang item (no carried
   item with ability `BadAttk` 0xb5). Price = `shop+0x178[i]` in denomination
   `shop+0x1a0[i]`, then run through the standard Charm/markup buy formula. On success
   the stock slot is retired and the paid gold is routed to the gang's bank-8 account
@@ -374,7 +385,8 @@ separate system from gangs.)
   to online targets, else via deferred `+0x7d5` bits at login.
 - **Two funds:** a shared **experience pool** (`gang+0x28`, overflow → `+0x58`/`+0x5c`)
   fed by every member's kills and spent on **guild-house deeds**; and a **gold
-  account** in **bank 8** keyed by a name in the GHouse shop record, credited by
+  account** in **bank 8** keyed by the BBS user-id stored at `shop+0x128`
+  (written by `cmd_stock`; see §7), credited by
   `deposit_gangleaders_account` from gang-house purchases.
 - **Guild house** = a room with `room+0x564 & 0x40`; its deed/furnishing vendor is a
   type-`0xb` shop gated to gang leaders with a sufficient exp pool. `GHouseDeed`
@@ -400,14 +412,31 @@ separate system from gangs.)
   `Desc[1]` filename or authors the external file was located; descriptions appear to
   be placed as external text files out-of-band. The `CREATE <direction>` house-build
   path is present but stubbed.
-- **Deed exp-price constant** `DAT_00482d10` (× 10000) and the GHouse per-item tax
-  arithmetic were read structurally from `buy_item`; exact numeric values are config
-  globals not resolved here.
+- ~~**Deed exp-price constant** `DAT_00482d10`~~ **CLOSED (2026-07-19).**
+  `DAT_00482d10` is not a compiled constant: `reload__wccmmud` (0x11ff) sets
+  `DAT_00482d10 = numopt(0x42, 0, 0x7fff)` — MSG option #66 of WCCMMUD.MSG,
+  which is **`GANGEXP {Experience (x10000) required? 1000} N 0 32767`**
+  (`wg_nt_ref/WCCNT8PJ/out/WCCMMUD.MSG`; the surrounding option indices
+  0x41=GENDERGO/-1..32000, 0x44=MAXEPDAY/4..100, 0x45=EPCYCLE/15..360 all match
+  their `numopt` ranges, confirming the numbering). So the deed gate is
+  **sysop-configurable**, default `1000 × 10000 = 10,000,000` gang-pool exp
+  (`buy_item` debug: "GANG EXP REQ BASE * 10000"). The GHouse per-item tax
+  arithmetic remains only structurally read.
 - **Top-gang key-1** is taken to be experience-descending from the "Top Gangs" +
   Exp-column context; the Btrieve index definition itself was not read from the file
   header. The `+0x50 & 0x4` skip bit's meaning (beyond "not shown") is unconfirmed.
-- **`deposit_gangleaders_account` account name** at `shop+0x128` — confirmed to be a
-  bank-8 bankbook key, but whether it is set to the gang name or the leader name at
-  house-setup time was not traced to its writer.
+- ~~**`deposit_gangleaders_account` account name** at `shop+0x128`~~ **CLOSED
+  (2026-07-19).** The writer is **`cmd_stock`** (0x52b1e): on every successful
+  `STOCK` into a GShop-controlled gang shop it does
+  `strcpy(shop+0x128, player)` — copying the string at the **player record
+  base**, i.e. the stocker's **BBS account user-id** (offset `+0x00`, 30 bytes;
+  the in-game character name is the separate `+0x1e` field). It is **neither
+  the gang name nor the leader's character name**: bank-8 bankbooks are keyed
+  by BBS user-id, and `deposit_gangleaders_account` then resolves
+  `get_bankbook_data(shop+0x128, 8)`. Stocking rights (and thus who the
+  deposits accrue to) go to whoever is in the shop room carrying the item with
+  ability `GShopItem` (0xb8/184) whose value matches `room+0x46e` — in practice
+  the gang leader who bought the shop controller, but mechanically it is the
+  **last player to stock an item**, since each stock overwrites `+0x128`.
 </content>
 </invoke>

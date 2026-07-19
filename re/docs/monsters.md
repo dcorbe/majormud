@@ -194,7 +194,10 @@ instance. Sequence:
    `add_logical_to_monster` (this is the same loot the monster later drops on death).
 6. **Name.** Copy `knmsr+0x36` (template name — one word past the earlier `+0x34`
    guess; lines 21104-21107), or if the dword at `knmsr+0x124` (name-generator id,
-   `piVar5[0x49]`) is set, roll a random name via `get_random_name`.
+   `piVar5[0x49]`) is set, roll a random name via `get_random_name`. The
+   generator's `A:`/`B:` affix modes join affix and base name with the separator
+   string `DAT_00480efa` = **a single space** (`" "`, bytes `20 00` in the DLL's
+   `.data`).
 7. **Insert & place.** Store the record (`dfaInsertDup`, retrying up to 4 fresh ids on
    collision) and `add_monster_to_room` (§5). Bump `room+0x606` (or set the boss flag if
    this is the room's unique). Pick a **random valid entry direction** (loop over 8 exits,
