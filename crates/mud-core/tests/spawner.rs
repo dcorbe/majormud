@@ -337,7 +337,10 @@ fn custom_movemsg_replaces_the_arrival_line() {
     content.add_monster(m);
     content.add_message(Message {
         id: MessageId(700),
-        lines: vec!["A critter 1 appears right beside you!".into()],
+        // The shipped shape (orc rogue msg 38): %s slots bind (NAME,
+        // dirspec) — "An nasty orc rogue walks into the room from the
+        // west." in the oracle capture.
+        lines: vec!["An %s walks into the room from %s.".into()],
     });
     let mut core = Core::new(content, config());
     let s = core.attach_player(player_at("Bait", HUB));
@@ -351,8 +354,8 @@ fn custom_movemsg_replaces_the_arrival_line() {
         }
     }
     assert!(
-        seen.contains("A critter 1 appears right beside you!"),
-        "custom movemsg text: {seen:?}"
+        seen.contains("An critter 1 walks into the room from nowhere."),
+        "custom movemsg binds (name, dirspec): {seen:?}"
     );
     assert!(!seen.contains("just arrived"), "default suppressed: {seen:?}");
 }

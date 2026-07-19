@@ -774,7 +774,8 @@ pub(crate) struct MonsterInstance {
     pub current_hp: i32,
     /// Current energy pool (`mon+0x16`); regen/max = the template's `energy`.
     pub energy: i32,
-    /// The player this monster is fighting (retaliation; aggression is M6).
+    /// The target lock (`mon+0x1a`): retaliation, acquisition re-rolls,
+    /// summon pre-locks — monsters.md §4.
     pub target: Option<SessionId>,
     /// Carried loot, rolled once at spawn (`generate_monster` step 5:
     /// carry iff genrdn(1,100) <= dropper). All of it drops at death.
@@ -1288,14 +1289,13 @@ impl Core {
                         None => "nowhere".to_string(),
                         Some(d) => format!("the {}", text::direction_shown(d)),
                     };
-                    let line = template_line.replacen("%s", &dirspec, 1);
-                    let line = line.replacen("%s", &name, 1);
-                    // A custom text with no %s prints verbatim.
-                    let line = if template_line.contains("%s") {
-                        line
-                    } else {
-                        template_line
-                    };
+                    // %s binding is (NAME, dirspec) — CONTENT-VERIFIED
+                    // against the shipped texts ("An %s walks into the
+                    // room from %s." + the oracle's "An nasty orc rogue
+                    // walks into the room from the west."). Texts with no
+                    // %s ("appears right beside you!") print verbatim.
+                    let line = template_line.replacen("%s", &name, 1);
+                    let line = line.replacen("%s", &dirspec, 1);
                     self.broadcast_to_room(room, None, &line);
                 }
             }
@@ -1470,8 +1470,8 @@ impl Core {
         self.spawn_cache_cursor = 0;
     }
 
-    /// Places a live monster from its template (fixture placement — the
-    /// density-driven spawner arrives in M6). `None` for unknown templates
+    /// Places a live monster from its template (the dev/test fixture path;
+    /// the density spawner uses `generate_monster`). `None` for unknown templates
     /// or rooms.
     pub fn spawn_monster(
         &mut self,
@@ -2081,12 +2081,10 @@ impl Core {
                     let v = if *row != 0 { i32::from(*row) } else { stored };
                     match ability {
                         // Enslave (6): release the charm — owner name,
-                        // follow flags (44991-44995). M6 PENDING
-                        // (retagged at the slice-6 close-out): monster
-                        // charm/ownership state ships with M6 pets/
-                        // aggro (the Summon owner tag lands there too);
-                        // until an Enslave cast can CREATE a charm
-                        // there is nothing to release here.
+                        // follow flags (44991-44995). M7 PENDING (charm
+                        // family, re-deferred by the M6 design doc):
+                        // until an Enslave cast can CREATE a charm there
+                        // is nothing to release here.
                         Ability::Enslave => {}
                         // Poison (19): counter -= v, floored 0
                         // (45003-45008).
@@ -4549,16 +4547,21 @@ impl Core {
                     // Summon (12) is silly_spell on every AREA match
                     // (cast_no_target 40058-40064: the 3/5/9/10-0xd arm)
                     // — a deliberate no-op, not a pending gap.
-                    // M6 PENDING (retagged at the slice-6 close-out):
-                    // the instant-area arms for the remaining
-                    // monster-side abilities (Poison set-if-greater
-                    // included — the counter and slots exist; the
-                    // single-target twin already writes it). No shipped
-                    // LEARNABLE area carries any of them — §8.13
-                    // measured zero observable effect and every harm
-                    // row is covered above — so the gap is fixture-only
-                    // today; wire the arms with M6's monster content
-                    // pass.
+                    // Poison (19): set-if-greater, like the single-target
+                    // twin (wired at the M6 slice-6 close-out; no shipped
+                    // LEARNABLE area carries it — fixture-reachable only).
+                    Ability::Poison => {
+                        if let Some(m) = self.monsters.get_mut(&monster_id) {
+                            m.poison = clamp_poison(i32::from(m.poison).max(amount));
+                            m.needs_recompute = true;
+                            harms = true;
+                        }
+                    }
+                    // The remaining monster-side arms (Heal/EnergyLevel/
+                    // CurePoison at a monster) have NO reachable trigger:
+                    // benign-at-monster is refused at the command
+                    // (MAY_NOT_CAST_ON_MONSTER) and the forced-cast route
+                    // is data-gated dead — documented, not pending.
                     _ => {}
                 }
             }
@@ -5229,12 +5232,11 @@ impl Core {
             return;
         };
         if spell.target_mode.is_offensive() {
-            // M6 PENDING (retagged at the slice-6 close-out): the
-            // offensive forced-cast arm (an EndCast chain firing at a
-            // monster). Monster slots exist since slice 6, but no
-            // shipped trigger reaches this — all 48 EndCast carriers
-            // are unlearnable (see the doc above) — so the arm stays a
-            // silent refusal until a reachable trigger ships.
+            // DATA-GATED DEAD ARM (M6 close-out verdict): the offensive
+            // forced-cast (an EndCast chain firing at a monster) has no
+            // shipped trigger — all 48 EndCast carriers are unlearnable
+            // (see the doc above) — so the arm stays a silent refusal
+            // until content that can reach it exists.
             return;
         }
         let Some(Session::InGame { player, energy, .. }) = self.sessions.get(&session) else {
@@ -5340,24 +5342,40 @@ impl Core {
     /// (shipped templates carry at most one row per resist), and a
     /// NegateAbility(124) row naming the queried id zeroes the DLL's whole
     /// answer where we skip the row in the fold (37209-37212; zero shipped
-    /// monster payloads carry 124). Carried/wielded item terms join with
-    /// M6 monster inventories.
+    /// monster payloads carry 124). Item terms (carried slots, the wielded
+    /// weapon, the worn `something2` item) fold below per the 0x3d71f tail
+    /// — wired at the M6 close-out.
     fn monster_ability_value(&self, id: MonsterInstanceId, ability: Ability) -> i32 {
         let Some(m) = self.monsters.get(&id) else {
             return 0;
         };
-        let template: i32 = self
-            .content
-            .monsters
-            .get(&m.template)
-            .map_or(0, |t| {
-                t.abilities
+        let tpl = self.content.monsters.get(&m.template);
+        let template: i32 = tpl.map_or(0, |t| {
+            t.abilities
+                .iter()
+                .filter(|(a, _)| *a == ability)
+                .map(|(_, v)| i32::from(*v))
+                .sum()
+        });
+        // Item terms (0x3d71f tail): the 10 carried slots, the wielded
+        // weapon (mon+0xb0) and the worn item (mon+0xac <- `something2`),
+        // each through get_item_ability_value. Same sum-vs-max resist
+        // divergence note as the rows above.
+        let item_rows = |item: crate::content::ItemId| -> i32 {
+            self.content.items.get(&item).map_or(0, |i| {
+                i.abilities
                     .iter()
                     .filter(|(a, _)| *a == ability)
                     .map(|(_, v)| i32::from(*v))
                     .sum()
+            })
+        };
+        let carried: i32 = m.items.iter().map(|(item, _)| item_rows(*item)).sum();
+        let equipped: i32 = tpl
+            .map_or(0, |t| {
+                t.weapon.map_or(0, &item_rows) + t.worn_item.map_or(0, &item_rows)
             });
-        template + m.slot_bag.value(ability)
+        template + carried + equipped + m.slot_bag.value(ability)
     }
 
     /// Rebuilds the cached slot fold when the dirty byte (`mon+0x140`) is
@@ -5590,13 +5608,13 @@ impl Core {
         // Offensive abilities (spec §4 table): Damage (1), Damage(-MR)
         // (17), Drain (8) and Summon (12) instant; the duration table
         // enters the monster's 5 slots below (the area twins live in
-        // `area_cast`). M6 PENDING (retagged at the slice-6 close-out):
-        // the instant Enslave (needs the M6 charm state) and the
-        // benign-at-monster instant arms (Heal/EnergyLevel/CurePoison,
-        // cast_monster_target 43824-43882/44131-44160) — the command
-        // path refuses benign-at-monster outright (§8.13
-        // MAY_NOT_CAST_ON_MONSTER), so only the M6-pending forced-cast
-        // route could ever reach them. A non-zero
+        // `area_cast`). M7 PENDING: the instant Enslave (charm family,
+        // re-deferred by the M6 design doc). The benign-at-monster
+        // instant arms (Heal/EnergyLevel/CurePoison, cast_monster_target
+        // 43824-43882/44131-44160) are DATA-GATED DEAD: the command path
+        // refuses benign-at-monster outright (§8.13
+        // MAY_NOT_CAST_ON_MONSTER) and the forced-cast route has no
+        // shipped trigger. A non-zero
         // ability value is a FIXED amount that bypasses both the magnitude
         // roll and the resist scaling (but NOT the 17 MR scale, which the
         // DLL applies to the fixed-or-rolled amount alike); value 0 means
@@ -5739,7 +5757,7 @@ impl Core {
         // per-round invoke flag IS cast_this_round (the measured string
         // differs only in wording). Melee + invoke same-round interplay
         // stays ORACLE-VERIFY (the §8.14 expedition ran a mage, not a
-        // mystic — an M6+ expedition item).
+        // mystic — oracle-backlog, not milestone-gated).
         if let Some(msg) = spell.cast_msg_b.and_then(|id| self.content.messages.get(&id)) {
             let args = text::CastMsgArgs {
                 caster: &caster_name,
@@ -6971,7 +6989,7 @@ impl Core {
                 continue;
             }
             if form.kind != 1 {
-                continue; // rob forms (kind 3) arrive with M6+ theft
+                continue; // rob forms (kind 3): M7 PENDING with theft
             }
             let Some(mi) = self.monsters.get_mut(&id) else {
                 return;

@@ -263,7 +263,7 @@ fn load_monsters(db: &Connection, content: &mut Content) -> Result<(), LoadError
          hitpoints, experience, expmulti, ac, dr, mr, bsdefence, energy, \
          runic, platinum, gold, silver, copper, {attack_cols}, \
          weaponnumber, {loot_cols}, \"index\", \"group\", follow, alignment, \
-         type, something3, nothing2, gamelimit, hpregen, regentime FROM monster",
+         type, something3, nothing2, gamelimit, hpregen, regentime, something2 FROM monster",
         ability_cols("abilitya"),
         ability_cols("abilityb"),
     ))?;
@@ -341,6 +341,10 @@ fn load_monsters(db: &Connection, content: &mut Content) -> Result<(), LoadError
             game_limit: to_i16("monster", "gamelimit", row.get(loot_end + 7)?)?,
             hp_regen: to_i16("monster", "hpregen", row.get(loot_end + 8)?)?,
             unique_cooldown: to_i16("monster", "regentime", row.get(loot_end + 9)?)?,
+            worn_item: match to_u16("monster", "something2", row.get(loot_end + 10)?)? {
+                0 => None,
+                id => Some(ItemId(id)),
+            },
         });
     }
     Ok(())

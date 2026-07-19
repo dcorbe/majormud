@@ -251,6 +251,20 @@ rolled); mud-server round-trip (kill rare → restart → cooldown holds).
 Deliverable: a rare monster is actually rare, survives restarts, and pays
 out its signature loot on first blood.
 
+**Slice 6 COMPLETE (2026-07-18) — M6 COMPLETE.** Custom movemsg binding
+CORRECTED to (name, dirspec) — content-verified against msg 38 + the orc-rogue
+capture (the extraction's PLAUSIBLE guess was inverted); shipped census: 14
+default-line templates / 366 silent / 721 custom, so the "just arrived" pair
+is nearly dead in practice (retained, DLL-byte-exact). Item terms wired into
+get_monster_ability_value (carried slots + weapon + the worn `something2`
+item — grey robes on 59 NPCs — per the 0x3d71f tail), the instant-area
+Poison arm wired (set-if-greater, fixture-reachable), and the tree swept to
+ZERO M6 markers (Enslave release/instant, rob forms → M7 PENDING with the
+charm/theft systems; the offensive forced-cast arm and benign-at-monster
+arms documented DATA-GATED DEAD). Hand session on the real DB: unprovoked
+giant-rat jump at the gate, kill, room stamp persisted to state.sqlite, and
+a clean restart loading it back. Final: 572 tests, clippy clean.
+
 ## Slice 6 — Close-out
 
 Consolidated oracle expedition re-verifying M6 strings (spawn arrival

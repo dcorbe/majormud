@@ -61,7 +61,8 @@ impl Server {
         Self::start_with_spawns(content, config, state, addr, Vec::new()).await
     }
 
-    /// `start` plus dev fixture monster spawns (until the M6 spawner).
+    /// `start` plus dev fixture monster spawns (kept alongside the M6
+    /// spawner as the test/staging placement path).
     pub async fn start_with_spawns(
         content: Content,
         config: CoreConfig,
@@ -115,7 +116,6 @@ impl Server {
     }
 }
 
-/// The single-threaded game loop: applies messages, routes events.
 /// Wall-clock seconds since the Unix epoch, for the spawn persistence
 /// stamps (the core deals only in elapsed seconds).
 fn wall_now() -> i64 {
@@ -125,6 +125,7 @@ fn wall_now() -> i64 {
         .unwrap_or(0)
 }
 
+/// The single-threaded game loop: applies messages, routes events.
 fn core_thread(
     content: Content,
     config: CoreConfig,

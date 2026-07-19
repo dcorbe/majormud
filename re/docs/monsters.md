@@ -237,6 +237,12 @@ Returns the new instance id, or 0 on any gate failure.
   walk of every room — every `permnpc` room spawns its boss (forced, band 0-0x7fff),
   and spawn-type **3 and 1** rooms swarm-fill until their gates refuse; type-1 is
   boot-fill-only. The room cache is NOT seeded at boot.
+- **Custom-arrival binding + census (close-out)**: the movemsg %s slots bind
+  **(instance name, direction-spec)** — CONTENT-VERIFIED: msg 38 reads "An %s walks
+  into the room from %s." and the oracle captured "An nasty orc rogue walks into the
+  room from the west." Shipped census: 14 templates use the default "just arrived"
+  pair, 366 arrive silently (empty text), 721 carry custom texts — the default line
+  is nearly dead in practice, which is why it appears in no capture.
 
 ### Template → instance copy map (disk-verified 2026-07-18, slice M6-1)
 

@@ -534,3 +534,67 @@ fn secret_passage_needs_class_5_or_0x26() {
     assert!(!core.debug_move_monster(plain, Direction::North));
     assert!(core.debug_move_monster(roamer, Direction::North));
 }
+
+#[test]
+fn item_carried_abilities_fold_into_the_monster_value() {
+    // get_monster_ability_value (0x3d71f, tail): after slots + template
+    // rows the DLL folds the 10 carried items, the wielded weapon
+    // (mon+0xb0) and the worn item (mon+0xac <- knmsr+0x60 `something2`,
+    // grey robes on the shipped NPCs). A Confusion(101) carrier makes the
+    // wander fumble — observable through the stock fumble line.
+    use mud_core::ability::Ability;
+    use mud_core::content::{Item, ItemId, LootSlot};
+    let mut content = world();
+    let mut m = monster(1, 9, 0);
+    m.loot = vec![LootSlot { item: ItemId(50), uses: -1, dropper: 100 }];
+    content.add_monster(m);
+    content.add_item(Item {
+        id: ItemId(50),
+        name: "cursed bauble".into(),
+        uses: -1,
+        abilities: vec![(Ability::from_id(0x47).unwrap(), 101)],
+        ..Default::default()
+    });
+    let mut core = Core::new(content, config());
+    let watcher = create(&mut core, "Alice");
+    let id = core.spawn_monster(MonsterId(1), A).unwrap();
+    let mut heard = String::new();
+    for _ in 0..60 {
+        core.tick();
+        heard.push_str(&text_to(&core.drain_events(), watcher));
+        assert_eq!(core.monster_location(id), Some(A), "carried confusion pins it");
+    }
+    assert!(
+        heard.contains("beast 1 looks around stupidly and foams at the mouth!"),
+        "item-borne confusion folds in: {heard:?}"
+    );
+}
+
+#[test]
+fn worn_item_abilities_fold_into_the_monster_value() {
+    use mud_core::ability::Ability;
+    use mud_core::content::{Item, ItemId};
+    let mut content = world();
+    let mut m = monster(1, 9, 0);
+    m.worn_item = Some(ItemId(51));
+    content.add_monster(m);
+    content.add_item(Item {
+        id: ItemId(51),
+        name: "dizzy helm".into(),
+        uses: -1,
+        abilities: vec![(Ability::from_id(0x47).unwrap(), 101)],
+        ..Default::default()
+    });
+    let mut core = Core::new(content, config());
+    let watcher = create(&mut core, "Alice");
+    let _id = core.spawn_monster(MonsterId(1), A).unwrap();
+    let mut heard = String::new();
+    for _ in 0..30 {
+        core.tick();
+        heard.push_str(&text_to(&core.drain_events(), watcher));
+    }
+    assert!(
+        heard.contains("looks around stupidly"),
+        "worn-item confusion folds in: {heard:?}"
+    );
+}

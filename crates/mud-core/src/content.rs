@@ -283,6 +283,10 @@ pub struct Monster {
     /// `knmsr+0xb2` (`regentime`) — "1 remaining" respawn-cooldown factor,
     /// x60 minutes (generate_monster 20995).
     pub unique_cooldown: i16,
+    /// `knmsr+0x60` (`something2`) — the WORN item (grey robes on the
+    /// shipped NPCs), folded into get_monster_ability_value alongside the
+    /// weapon and carried slots (0x3d71f tail). Never dropped at death.
+    pub worn_item: Option<ItemId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

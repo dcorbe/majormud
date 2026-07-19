@@ -291,7 +291,7 @@ fn no_swings_without_engagement() {
     let shown = text_to(&events, s);
     assert!(
         !shown.contains("punch") && !shown.contains("hits you"),
-        "aggression is M6; passive monsters stay passive: {shown:?}"
+        "behaviour-0 monsters never initiate (M6 acquisition): {shown:?}"
     );
 }
 

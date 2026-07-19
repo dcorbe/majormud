@@ -70,7 +70,7 @@ pub fn left_via(name: &str, direction: Direction) -> String {
 /// "Oracle walks into the room from above." The DLL's "just arrived from"
 /// string never appears for walks in any capture; it is the
 /// generate_monster spawn-arrival flavour line (monsters.md §2 step 7,
-/// lands with the M6 spawner).
+/// landed with the M6 spawner).
 pub fn walks_in_from(name: &str, direction: Direction) -> String {
     match direction {
         Direction::Up => format!("{name} walks into the room from above."),
