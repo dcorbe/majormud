@@ -873,7 +873,8 @@ fn area_cast_single_occupant_reproduces_the_dragonfish_shape() {
     let hits: Vec<i32> = shown
         .lines()
         .filter_map(|l| {
-            l.strip_prefix("Kobold shaman's choking gust hits you for ")
+            l.trim_start_matches("\r\x1b[K") // the async prompt-erase prefix
+                .strip_prefix("Kobold shaman's choking gust hits you for ")
                 .and_then(|rest| rest.strip_suffix(" damage!"))
                 .and_then(|n| n.parse().ok())
         })

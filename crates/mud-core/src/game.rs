@@ -709,6 +709,11 @@ enum Session {
         /// `+0x550/+0x5a0` — the 20-deep movement breadcrumb (index 0 =
         /// current room); `dir_player_travelling_coord` walks it to chase.
         trail: Vec<RoomId>,
+        /// A prompt is dangling on the player's current line. Async
+        /// output erases it (`\r ESC[K` — the DLL's ESC[79D ESC[K
+        /// discipline) and the end-of-entry sweep redraws it; input
+        /// consumes it silently (the echoed Enter broke the line).
+        at_prompt: bool,
     },
 }
 
@@ -1718,6 +1723,27 @@ impl Core {
                 }
             }
         }
+        self.reprompt_disturbed();
+    }
+
+    /// Redraw the prompt for every in-game session whose dangling prompt
+    /// was erased by async output this entry (the DLL re-prompts after
+    /// every prf burst). Meditating sessions keep accumulating dots.
+    fn reprompt_disturbed(&mut self) {
+        let disturbed: Vec<SessionId> = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| {
+                matches!(
+                    s,
+                    Session::InGame { at_prompt: false, exiting: None, .. }
+                )
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in disturbed {
+            self.show_prompt(id);
+        }
     }
 
     /// Applies shelf counts saved in state.sqlite (call once, right after
@@ -2658,9 +2684,11 @@ impl Core {
                 moved_this_round: false,
                 attackers_this_tick: 0,
                 trail: vec![trail_seed],
+                at_prompt: false,
             });
         self.show_room(id);
         self.show_prompt(id);
+        self.reprompt_disturbed();
         id
     }
 
@@ -2804,6 +2832,9 @@ impl Core {
             caster_group,
         );
         self.output(session, &prompt);
+        if let Some(Session::InGame { at_prompt, .. }) = self.sessions.get_mut(&session) {
+            *at_prompt = true;
+        }
     }
 
     fn show_sheet(&mut self, session: SessionId) {
@@ -2894,6 +2925,11 @@ impl Core {
     /// Feeds one line of player input. Input from unknown (never attached or
     /// already disconnected) sessions is dropped.
     pub fn input(&mut self, session: SessionId, line: &str) {
+        // The player's echoed Enter already broke the prompt line — no
+        // erase codes for their own command's responses.
+        if let Some(Session::InGame { at_prompt, .. }) = self.sessions.get_mut(&session) {
+            *at_prompt = false;
+        }
         match self.sessions.get(&session) {
             None => {}
             Some(Session::ChoosingRace { .. }) => self.choose_race(session, line),
@@ -2905,6 +2941,7 @@ impl Core {
             }
             Some(Session::InGame { .. }) => self.game_command(session, line),
         }
+        self.reprompt_disturbed();
     }
 
     fn game_command(&mut self, session: SessionId, line: &str) {
@@ -9055,10 +9092,7 @@ impl Core {
     /// Emits a single message line (most outputs; the prompt is the
     /// exception — it stays on its own unterminated line).
     fn output_line(&mut self, session: SessionId, text: &str) {
-        self.events.push(Event::Output {
-            session,
-            text: format!("{text}\n"),
-        });
+        self.output(session, &format!("{text}\n"));
     }
 
     fn next_session_id(&mut self) -> SessionId {
@@ -9175,6 +9209,7 @@ impl Core {
                 moved_this_round: false,
                 attackers_this_tick: 0,
                 trail: vec![trail_seed],
+                at_prompt: false,
             });
         // Oracle: first entry shows the stat sheet, not the room.
         self.show_sheet(session);
@@ -9248,6 +9283,7 @@ impl Core {
             }
             None => {}
         }
+        self.reprompt_disturbed();
     }
 
     /// Starts the delayed exit (oracle: message, then one dot per second;
@@ -9598,10 +9634,21 @@ impl Core {
     }
 
     fn output(&mut self, session: SessionId, text: &str) {
-        self.events.push(Event::Output {
-            session,
-            text: text.to_string(),
-        });
+        // Erase a dangling prompt before async output lands on it
+        // (the DLL prefixes every burst with ESC[79D ESC[K).
+        let erase = match self.sessions.get_mut(&session) {
+            Some(Session::InGame { at_prompt, .. }) if *at_prompt => {
+                *at_prompt = false;
+                true
+            }
+            _ => false,
+        };
+        let text = if erase {
+            format!("\r\x1b[K{text}")
+        } else {
+            text.to_string()
+        };
+        self.events.push(Event::Output { session, text });
     }
 
     /// Realm-wide broadcast — only players in the game hear it, not sessions
