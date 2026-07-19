@@ -4,6 +4,7 @@
 
 use std::io;
 use std::net::SocketAddr;
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -115,6 +116,15 @@ impl Server {
 }
 
 /// The single-threaded game loop: applies messages, routes events.
+/// Wall-clock seconds since the Unix epoch, for the spawn persistence
+/// stamps (the core deals only in elapsed seconds).
+fn wall_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 fn core_thread(
     content: Content,
     config: CoreConfig,
@@ -122,6 +132,33 @@ fn core_thread(
     rx: std_mpsc::Receiver<CoreMsg>,
     spawns: Vec<(u16, u16, u16)>,
 ) {
+    let mut config = config;
+    {
+        // Restored spawn persistence must land in the config BEFORE
+        // Core::new — the boot population walk consults it.
+        let db = state.lock().expect("state db lock");
+        let now = wall_now();
+        match db.load_monster_kills() {
+            Ok(rows) => {
+                config.restored_population = rows
+                    .into_iter()
+                    .map(|(t, at)| (mud_core::content::MonsterId(t), (now - at).max(0)))
+                    .collect();
+            }
+            Err(e) => eprintln!("failed to load monster kills: {e}"),
+        }
+        match db.load_room_stamps() {
+            Ok(rows) => {
+                config.restored_room_stamps = rows
+                    .into_iter()
+                    .map(|(map, room, at)| {
+                        (mud_core::content::RoomId { map, room }, (now - at).max(0))
+                    })
+                    .collect();
+            }
+            Err(e) => eprintln!("failed to load room stamps: {e}"),
+        }
+    }
     let mut core = Core::new(content, config);
     {
         let db = state.lock().expect("state db lock");
@@ -181,6 +218,18 @@ fn core_thread(
                     let db = state.lock().expect("state db lock");
                     if let Err(e) = db.save_shop_stock(shop.0, &counts) {
                         eprintln!("failed to persist shop {} stock: {e}", shop.0);
+                    }
+                }
+                Event::PersistMonsterKill { template } => {
+                    let db = state.lock().expect("state db lock");
+                    if let Err(e) = db.save_monster_kill(template.0, wall_now()) {
+                        eprintln!("failed to persist kill of {}: {e}", template.0);
+                    }
+                }
+                Event::PersistRoomStamp { room } => {
+                    let db = state.lock().expect("state db lock");
+                    if let Err(e) = db.save_room_stamp(room.map, room.room, wall_now()) {
+                        eprintln!("failed to persist stamp {}/{}: {e}", room.map, room.room);
                     }
                 }
                 Event::DeleteCharacter(name) => {

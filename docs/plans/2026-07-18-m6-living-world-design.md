@@ -216,6 +216,19 @@ fragility lesson; draws strictly in decompile order); statistical rate tests
 Deliverable: start with no `--spawn`, walk out the Town Gates, the world
 fills in at the original's cadence.
 
+**Slice 5 COMPLETE (2026-07-18):** the world-population throttle (refuse at
+active >= gamelimit; active charged at generate, released + stamped at the
+kill), the single-limit cooldown (base = regentime x 60 minutes, jitter
+lngrnd(0, base/4) - base/8 drawn per attempt — refusal floor 52.5 min,
+ceiling 67.5 min at regentime 1), the first-kill loot guarantee (a limited
+template never killed carries every slot with NO draws — closes the
+tests/loot.rs deferral), and persistence: monster_population + room_stamp
+tables in state.sqlite (wall-clock stamps, upserted on kill events), restored
+through CoreConfig as elapsed-seconds BEFORE the boot population walk — a
+restart holds both the rare-monster cooldown and every room's refill window
+(the restart-to-respawn exploit is dead). Fixture spawns stay exempt from the
+throttle (dev tool). Full server-restart hand check rides the slice-6 close.
+
 ## Slice 5 — Unique-spawn timers, first-kill loot, persistence
 
 - **Population throttle (§2 step 3):** template state on `Core` (active,

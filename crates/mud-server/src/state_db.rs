@@ -171,6 +171,28 @@ const TABLES: &[TableDef] = &[
         ],
         constraint: "PRIMARY KEY (name, slot)",
     },
+    // M6 slice 5: limited-population kill stamps (knmsr+0xb4/+0xb6).
+    // `killed_at` is wall-clock seconds since the Unix epoch; the boot
+    // path hands the CORE the elapsed seconds.
+    TableDef {
+        name: "monster_population",
+        columns: &[
+            ("template", "INTEGER NOT NULL"),
+            ("killed_at", "INTEGER NOT NULL"),
+        ],
+        constraint: "PRIMARY KEY (template)",
+    },
+    // M6 slice 5: room respawn stamps (room+0x562, the dirty-flag save) —
+    // a restart no longer resets the refill window.
+    TableDef {
+        name: "room_stamp",
+        columns: &[
+            ("map", "INTEGER NOT NULL"),
+            ("room", "INTEGER NOT NULL"),
+            ("stamped_at", "INTEGER NOT NULL"),
+        ],
+        constraint: "PRIMARY KEY (map, room)",
+    },
 ];
 
 fn create_table_sql(table: &TableDef) -> String {
@@ -490,6 +512,44 @@ impl StateDb {
             stmt.execute((shop, slot as i64, i64::from(*now)))?;
         }
         Ok(())
+    }
+
+    /// Upserts a limited template's kill stamp (wall-clock seconds).
+    pub fn save_monster_kill(&self, template: u16, killed_at: i64) -> Result<(), StateError> {
+        self.conn.prepare_cached(
+            "INSERT INTO monster_population (template, killed_at) VALUES (?1, ?2)
+             ON CONFLICT (template) DO UPDATE SET killed_at = excluded.killed_at",
+        )?.execute((template, killed_at))?;
+        Ok(())
+    }
+
+    /// Every persisted kill stamp as (template, killed_at wall-seconds).
+    pub fn load_monster_kills(&self) -> Result<Vec<(u16, i64)>, StateError> {
+        let mut stmt = self.conn.prepare("SELECT template, killed_at FROM monster_population")?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get::<_, u16>(0)?, row.get::<_, i64>(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Upserts a room's respawn stamp (wall-clock seconds).
+    pub fn save_room_stamp(&self, map: u16, room: u16, stamped_at: i64) -> Result<(), StateError> {
+        self.conn.prepare_cached(
+            "INSERT INTO room_stamp (map, room, stamped_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT (map, room) DO UPDATE SET stamped_at = excluded.stamped_at",
+        )?.execute((map, room, stamped_at))?;
+        Ok(())
+    }
+
+    /// Every persisted room stamp as (map, room, stamped_at wall-seconds).
+    pub fn load_room_stamps(&self) -> Result<Vec<(u16, u16, i64)>, StateError> {
+        let mut stmt = self.conn.prepare("SELECT map, room, stamped_at FROM room_stamp")?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, u16>(0)?, row.get::<_, u16>(1)?, row.get::<_, i64>(2)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     /// All persisted shelf counts, for `Core::restore_shop_stock` at boot.

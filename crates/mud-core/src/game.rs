@@ -386,6 +386,13 @@ pub struct CoreConfig {
     /// per-room DeathRoom overrides arrive with alignment/zones). ORACLE:
     /// Newhaven deaths recall to Newhaven, Healer.
     pub recall_location: RoomId,
+    /// Restored population cooldowns: (template, seconds since its last
+    /// kill at boot). Applied before the boot population walk.
+    pub restored_population: Vec<(crate::content::MonsterId, i64)>,
+    /// Restored room respawn stamps: (room, seconds since the kill at
+    /// boot). Kills the restart-to-respawn exploit — the original
+    /// persists both through the record dirty flags.
+    pub restored_room_stamps: Vec<(RoomId, i64)>,
 }
 
 impl Default for CoreConfig {
@@ -400,6 +407,8 @@ impl Default for CoreConfig {
             rng_seed: 0x4d4d55445f574721, // "MMUD_WG!"
             exit_meditation_seconds: 10,
             recall_location: RoomId { map: 1, room: 2190 },
+            restored_population: Vec::new(),
+            restored_room_stamps: Vec::new(),
         }
     }
 }
@@ -643,6 +652,11 @@ pub enum Event {
     },
     /// Permadeath: remove the character record entirely.
     DeleteCharacter(String),
+    /// A limited-population template was killed — persist the wall-clock
+    /// stamp (check_kill_monster's tmpl+0xb4/+0xb6 write).
+    PersistMonsterKill { template: crate::content::MonsterId },
+    /// A room's respawn stamp changed — persist it (the room dirty flag).
+    PersistRoomStamp { room: RoomId },
     Disconnect(SessionId),
 }
 
@@ -869,10 +883,23 @@ pub struct Core {
     /// order as (id, region, level). The DLL reloads it every 60 s from
     /// the DB; our content is immutable, so it is built once.
     mongen: Vec<(crate::content::MonsterId, i16, i16)>,
+    /// Per-template population state (`knmsr+0xa8` active count,
+    /// `+0xb4/+0xb6` kill stamps). Only gamelimit templates get entries.
+    population: BTreeMap<crate::content::MonsterId, PopulationState>,
     /// Spawner phase-B user cursor (`DAT_0047fba4`).
     spawn_user_cursor: usize,
     /// Spawner phase-A cache cursor (`DAT_0047fba8`).
     spawn_cache_cursor: usize,
+}
+
+/// Per-template population state (monsters.md §2 step 3).
+#[derive(Debug, Clone, Copy, Default)]
+struct PopulationState {
+    /// `knmsr+0xa8` — live spawns charged against the gamelimit.
+    active: u16,
+    /// The tick of the last kill (negative = before boot). `Some` also
+    /// drives the first-kill loot guarantee: `None` = never killed.
+    last_kill: Option<i64>,
 }
 
 /// Runtime spawn bookkeeping for one room (monsters.md §1/§2).
@@ -883,7 +910,9 @@ struct RoomSpawnState {
     /// `room+0x562` — the kill stamp, stored as the absolute tick of the
     /// kill (the DLL stores minutes-since-midnight with a +1440 wrap; the
     /// refusal window `stamp <= now <= stamp + delay` is identical).
-    stamp: Option<u64>,
+    /// Negative = restored from a previous run (that many seconds before
+    /// boot).
+    stamp: Option<i64>,
     /// `room+0x5c0` — live count charged against this room's linked cap.
     linked_live: i16,
     /// `room+0x564` bit 8 — the boss/permnpc is present.
@@ -920,6 +949,7 @@ impl Core {
             wander_budget: 0,
             spawn_rng,
             room_spawn: BTreeMap::new(),
+            population: BTreeMap::new(),
             mongen: Vec::new(),
             spawn_user_cursor: 0,
             spawn_cache_cursor: 0,
@@ -972,6 +1002,19 @@ impl Core {
             .values()
             .map(|m| (m.id, m.roam_class, m.level))
             .collect();
+        // Restored persistence: population cooldowns and room stamps land
+        // BEFORE the boot walk so a pre-restart kill still gates it.
+        let restored_pop = core.config.restored_population.clone();
+        for (template, elapsed) in restored_pop {
+            core.population.insert(
+                template,
+                PopulationState { active: 0, last_kill: Some(-elapsed) },
+            );
+        }
+        let restored_stamps = core.config.restored_room_stamps.clone();
+        for (room, elapsed) in restored_stamps {
+            core.spawn_state(room).stamp = Some(-elapsed);
+        }
         // Boot population (preload_and_generate_buffers 27594-27767):
         // every boss/permnpc room spawns its boss (forced, levels
         // 0..0x7fff), and spawn-type 3 and 1 rooms swarm-fill until
@@ -1055,8 +1098,8 @@ impl Core {
             } else {
                 RESPAWN_DEFAULT_MINUTES
             };
-            let now = self.scheduler.now();
-            if now >= stamp && now as i64 <= stamp as i64 + delay_min * 60 {
+            let now = self.scheduler.now() as i64;
+            if now >= stamp && now <= stamp + delay_min * 60 {
                 return None;
             }
         }
@@ -1113,8 +1156,34 @@ impl Core {
                 cur?
             }
         };
-        // (The gamelimit/active throttle and cooldown jitter, L20981-21008,
-        // land in M6 slice 5 with the population state.)
+        // World-population throttle (L20981-21008): a gamelimit template
+        // refuses at active >= limit; a gamelimit-1 template with a kill
+        // stamp and nonzero regentime waits base + lngrnd(0, base/4) -
+        // base/8 minutes (base = regentime*60), jitter drawn per attempt.
+        let (game_limit, cooldown_factor) = {
+            let t = &self.content.monsters[&template];
+            (t.game_limit, t.unique_cooldown)
+        };
+        if game_limit != 0 {
+            let pop = self.population.get(&template).copied().unwrap_or_default();
+            if i32::from(pop.active) >= i32::from(game_limit) {
+                return None;
+            }
+            if game_limit == 1
+                && cooldown_factor != 0
+                && let Some(last_kill) = pop.last_kill
+            {
+                let elapsed_min = (self.scheduler.now() as i64 - last_kill) / 60;
+                let base = i64::from(cooldown_factor) * 60; // minutes
+                // lngrnd(0, base/4): 0..=base/4-1 (upper-exclusive —
+                // PLAUSIBLE, monsters.md §2).
+                let jitter = i64::from(self.spawn_rng.roll(0, ((base / 4) as i32 - 1).max(0)));
+                if elapsed_min < base + jitter - base / 8 {
+                    return None;
+                }
+            }
+            self.population.entry(template).or_default().active += 1;
+        }
         let _ = boot_boss;
         let tpl = &self.content.monsters[&template];
         let (hitpoints, energy) = (tpl.hitpoints, tpl.energy);
@@ -1131,14 +1200,20 @@ impl Core {
                 coins[i] = self.spawn_rng.roll(0, *max as i32) as u32;
             }
         }
-        // Item draws (L21072-21097). (The never-killed-limited full-carry
-        // guarantee joins the slice-5 population state.)
+        // Item draws (L21072-21097): a limited template that has NEVER
+        // been killed carries every slot with NO draws — the first-kill
+        // loot guarantee.
+        let ever_killed = self
+            .population
+            .get(&template)
+            .is_some_and(|p| p.last_kill.is_some());
+        let guaranteed = game_limit != 0 && !ever_killed;
         let mut items = Vec::new();
         for slot in loot {
             if !self.content.items.contains_key(&slot.item) {
                 continue; // shipped dangling ref
             }
-            if self.spawn_rng.roll(1, 100) <= i32::from(slot.dropper) {
+            if guaranteed || self.spawn_rng.roll(1, 100) <= i32::from(slot.dropper) {
                 items.push((slot.item, slot.uses));
             }
         }
@@ -1468,6 +1543,14 @@ impl Core {
     /// Test/inspection: an instance's template id.
     pub fn monster_template(&self, id: MonsterInstanceId) -> Option<crate::content::MonsterId> {
         self.monsters.get(&id).map(|m| m.template)
+    }
+
+    /// Test/inspection: the floor items of a room.
+    pub fn debug_room_items(&self, room: RoomId) -> Vec<crate::content::ItemId> {
+        self.room_items
+            .get(&room)
+            .map(|v| v.iter().map(|(id, _)| *id).collect())
+            .unwrap_or_default()
     }
 
     /// Test hook: route a monster through the kill path (no killer).
@@ -8527,7 +8610,7 @@ impl Core {
         // clears its present-flag ONLY; anyone else decrements the live
         // count, stamps the respawn timer, and pays back the linked cap.
         let home = instance.home;
-        let now = self.scheduler.now();
+        let now = self.scheduler.now() as i64;
         let is_boss = self
             .content
             .rooms
@@ -8547,6 +8630,20 @@ impl Core {
         }
         // The CURRENT room is stamped too (21300-21313).
         self.spawn_state(instance.location).stamp = Some(now);
+        self.events.push(Event::PersistRoomStamp { room: home });
+        if instance.location != home {
+            self.events.push(Event::PersistRoomStamp { room: instance.location });
+        }
+        // Template population (check_kill_monster L21361-21390): only
+        // templates with a charged active count (= gamelimit spawns) get
+        // the decrement and the kill stamp.
+        if let Some(pop) = self.population.get_mut(&template)
+            && pop.active != 0
+        {
+            pop.active -= 1;
+            pop.last_kill = Some(now);
+            self.events.push(Event::PersistMonsterKill { template });
+        }
         // Coins drop into the room piles — the INSTANCE piles rolled at
         // generate time (fixture spawns carry the template maxes;
         // template order is high->low, the room piles low->high). The
