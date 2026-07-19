@@ -98,6 +98,34 @@ pub fn monster_confused_fumble(name: &str) -> String {
     format!("{name} looks around stupidly and foams at the mouth!")
 }
 
+/// VERIFIED (DLL 0x481081/0x4810a2): the default spawn-arrival line
+/// (generate_monster, template `movemsg` 0) — bare instance name; `None`
+/// direction = no qualifying plain exit.
+pub fn spawn_arrived(name: &str, from: Option<Direction>) -> String {
+    match from {
+        None => format!("{name} just arrived from nowhere."),
+        Some(d) => format!("{name} just arrived from the {}.", direction_shown(d)),
+    }
+}
+
+/// VERIFIED (DLL 0x483e02/20/3e): the adjacent-room spawn rumble
+/// (display_entry_movement) — `direction` is as seen FROM the adjacent
+/// room (the reverse-direction table).
+pub fn hear_movement(direction: Direction) -> String {
+    match direction {
+        Direction::Up => "You hear movement above you!".into(),
+        Direction::Down => "You hear movement below you!".into(),
+        d => format!("You hear movement to the {}.", direction_shown(d)),
+    }
+}
+
+/// VERIFIED (DLL 0x4810d8 family): the killer-visible coin drops in
+/// check_kill_monster — "%s platinum drop to the ground." etc.; runic
+/// uses the configured currency name. Amount slot is the plain number.
+pub fn coins_drop(amount: u32, denom: &str) -> String {
+    format!("{amount} {denom} drop to the ground.")
+}
+
 /// VERIFIED (DLL + oracle): character-creation prompts. Blank input gets the
 /// "choose a race/class" wording; a wrong entry gets the "valid" wording.
 pub const CHOOSE_RACE: &str = "Please choose a race from the following list:";

@@ -168,6 +168,27 @@ entry; flee → pursued → caught; 16 failed follows → dropped/despawned; fre
 attack aborts the move). Deliverable: monsters jump you, chase you, and clip
 you as you run.
 
+**Slice 4 COMPLETE (2026-07-18):** the 5 s Job::Spawn (FUN_004232d3 port:
+phase B per-user rooms building the player/monster cache, phase A ~5%-per-exit
+neighbor pass, soft 9-cap with resumable cursors), generate_monster proper
+(never-spawns band-0 gate, caps, respawn window, linked rooms, mongen
+candidate walk with the 29/99 replace/stop draws, boss flag, entry-direction
+pick, arrival + custom-movemsg lines, adjacent-room "You hear movement"
+rumble, rolled coin piles with killer-visible drop lines), both-room respawn
+stamping in monster_killed, and the BOOT POPULATION walk (bosses + type-3/
+type-1 swarm fills — 7,854 monsters stand up on the real DB; Nathaniel is in
+the Newhaven Weapons Shop with zero fixture flags, verified live). MAJOR SPEC
+CORRECTIONS (monsters.md §1 rewritten): the threshold direction was INVERTED
+(type-2 = 89%/kick, type-0 = 4%); the cache bytes are players/monsters per
+room and the brake is monsters < players (density follows players, no quota);
+a 1% natural-100 overshoots to <2x players; type-2 bypasses the respawn
+timer; type-1 is boot-fill-only. The spawner runs its own RNG stream
+(documented divergence — a background job on the main stream would reshuffle
+every seeded golden per kick). Real-content smokes rewritten for a living
+world (global wander cap shared by thousands). Deferred to slice 5 as
+planned: the gamelimit/active throttle, cooldown jitter, first-kill loot
+guarantee, persistence.
+
 ## Slice 4 — The density spawner + respawn timers
 
 - **`Job::Spawn`** at the slice-1 cadence, porting `FUN_004232d3` (§1):

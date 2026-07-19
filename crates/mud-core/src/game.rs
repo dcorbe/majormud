@@ -714,6 +714,9 @@ enum Job {
     /// `background_fast`, every 1 s: the pursuit tier (prone recovery +
     /// chase; idle monsters cost nothing — the has-target gate).
     Fast,
+    /// `background_monster_create`, every 5 s (`DAT_00482ca8`): the
+    /// density spawner FUN_004232d3.
+    Spawn,
     /// The nightly-cleanup stand-in: Worldgroup restarted the module every
     /// night, re-running check_initiate_restocking (its run-once flag
     /// DAT_00482138 is never reset within a process). A standalone server
@@ -724,6 +727,11 @@ enum Job {
 const SLOW_INTERVAL: u64 = 30;
 /// The pursuit tier (`background_fast`).
 const FAST_INTERVAL: u64 = 1;
+/// The spawner kick (`DAT_00482ca8` = 5, dumped).
+const SPAWN_INTERVAL: u64 = 5;
+/// Default respawn delay in minutes (`DAT_00482d0c` = 5, dumped) when the
+/// room's `delay` word is zero.
+const RESPAWN_DEFAULT_MINUTES: i64 = 5;
 /// One emulated board day (the nightly cleanup cadence).
 const CLEANUP_INTERVAL: u64 = 86_400;
 /// The combat-round cadence (`background_energy`).
@@ -802,6 +810,13 @@ pub(crate) struct MonsterInstance {
     /// summons) never swings at its named target. Cleared whenever a lock
     /// is (re)written by combat.
     pub suppress: bool,
+    /// `mon+0x120` — the spawn/home room: check_kill_monster stamps ITS
+    /// respawn timer and spawn accounting, wherever the monster died.
+    pub home: RoomId,
+    /// `mon+0xf0..+0x100` — the five coin piles (low->high denominations),
+    /// rolled `lngrnd(0, max+1)` at generate time (fixture spawns copy the
+    /// template maxes verbatim to keep M3-era goldens byte-stable).
+    pub coins: [u32; 5],
 }
 
 /// A scheduled shop-slot restock, due at an absolute tick. Events live
@@ -842,6 +857,37 @@ pub struct Core {
     /// `DAT_0047fb90`: wander attempts this medium tick (cap 3), reset
     /// once per pass in `upkeep_update` (monsters.md §3).
     wander_budget: u8,
+    /// The spawner/generate RNG stream. The DLL shares one genrdn stream;
+    /// a background job drawing from the main stream would reshuffle every
+    /// seeded golden each 5 s kick, so the spawner runs its own
+    /// deterministic stream (documented representation divergence).
+    spawn_rng: Rng,
+    /// Per-room runtime spawn state (`+0x606` live count, `+0x562` stamp,
+    /// `+0x5c0` linked live, `+0x564` bit 8) — ephemeral, like room_coins.
+    room_spawn: BTreeMap<RoomId, RoomSpawnState>,
+    /// The mongen candidate table (`DAT_004790f0`): every template in id
+    /// order as (id, region, level). The DLL reloads it every 60 s from
+    /// the DB; our content is immutable, so it is built once.
+    mongen: Vec<(crate::content::MonsterId, i16, i16)>,
+    /// Spawner phase-B user cursor (`DAT_0047fba4`).
+    spawn_user_cursor: usize,
+    /// Spawner phase-A cache cursor (`DAT_0047fba8`).
+    spawn_cache_cursor: usize,
+}
+
+/// Runtime spawn bookkeeping for one room (monsters.md §1/§2).
+#[derive(Debug, Clone, Copy, Default)]
+struct RoomSpawnState {
+    /// `room+0x606` — current spawn count (bosses excluded).
+    live: u8,
+    /// `room+0x562` — the kill stamp, stored as the absolute tick of the
+    /// kill (the DLL stores minutes-since-midnight with a +1440 wrap; the
+    /// refusal window `stamp <= now <= stamp + delay` is identical).
+    stamp: Option<u64>,
+    /// `room+0x5c0` — live count charged against this room's linked cap.
+    linked_live: i16,
+    /// `room+0x564` bit 8 — the boss/permnpc is present.
+    boss_present: bool,
 }
 
 impl Core {
@@ -851,8 +897,10 @@ impl Core {
         scheduler.schedule_in(ENERGY_INTERVAL, Job::Energy);
         scheduler.schedule_in(UPKEEP_INTERVAL, Job::Upkeep);
         scheduler.schedule_in(FAST_INTERVAL, Job::Fast);
+        scheduler.schedule_in(SPAWN_INTERVAL, Job::Spawn);
         scheduler.schedule_in(CLEANUP_INTERVAL, Job::Cleanup);
         let rng = Rng(config.rng_seed | 1);
+        let spawn_rng = Rng((config.rng_seed ^ 0x5350_4157_4e21_0000) | 1); // "SPAWN!"-ish
         let mut core = Core {
             content,
             config,
@@ -870,6 +918,11 @@ impl Core {
             restock_counter: 0,
             action_exit_pass: false,
             wander_budget: 0,
+            spawn_rng,
+            room_spawn: BTreeMap::new(),
+            mongen: Vec::new(),
+            spawn_user_cursor: 0,
+            spawn_cache_cursor: 0,
         };
         // First run of the world: every shelf full, and each timed slot's
         // first event lands at genrdn(1, max(2, interval)) minutes so the
@@ -909,7 +962,437 @@ impl Core {
             }
         }
         core.room_items = seeded;
+        // The mongen candidate table (load_monster_quickreferences
+        // 58555-58585): every template in record order, (id, region,
+        // level), no filtering. The DLL reloads it every 60 s; our
+        // content is immutable.
+        core.mongen = core
+            .content
+            .monsters
+            .values()
+            .map(|m| (m.id, m.roam_class, m.level))
+            .collect();
+        // Boot population (preload_and_generate_buffers 27594-27767):
+        // every boss/permnpc room spawns its boss (forced, levels
+        // 0..0x7fff), and spawn-type 3 and 1 rooms swarm-fill until
+        // their own gates refuse (type 1 is boot-fill-only — the 5 s
+        // spawner never touches it).
+        core.populate_world();
         core
+    }
+
+    /// The boot room walk's spawning half. Runs inside `Core::new`; the
+    /// arrival broadcasts reach nobody (no sessions yet), as at module
+    /// boot.
+    fn populate_world(&mut self) {
+        let rooms: Vec<RoomId> = self.content.rooms.keys().copied().collect();
+        for id in rooms {
+            let (boss, spawn_type, zone, forced, min_l, max_l) = {
+                let r = &self.content.rooms[&id];
+                (r.boss_monster, r.room_type, r.spawn_zone, r.forced_monster, r.min_level, r.max_level)
+            };
+            if let Some(boss) = boss
+                && !self.spawn_state(id).boss_present
+            {
+                self.generate_monster(id, 0, Some(boss), 0, 0x7fff, true);
+            }
+            if spawn_type == 3 || spawn_type == 1 {
+                for _ in 0..16 {
+                    if self.generate_monster(id, zone, forced, min_l, max_l, false).is_none() {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    fn spawn_state(&mut self, room: RoomId) -> &mut RoomSpawnState {
+        self.room_spawn.entry(room).or_default()
+    }
+
+    /// `generate_monster` (0x24361, monsters.md §2): template -> live
+    /// instance with every pre-flight gate. `bypass` mirrors the boot
+    /// path's disable-flag dance (boot bosses ignore nothing else — the
+    /// DLL passes param_9 '\0' everywhere but sysop tools; our `bypass`
+    /// is ONLY the boss-forced boot call, which needs no gate skipped in
+    /// practice since fresh state has no caps/timers pending). Returns
+    /// the new instance id, `None` on any refusal.
+    fn generate_monster(
+        &mut self,
+        room: RoomId,
+        zone: i16,
+        forced: Option<crate::content::MonsterId>,
+        min_level: i16,
+        max_level: i16,
+        boot_boss: bool,
+    ) -> Option<MonsterInstanceId> {
+        // L20886: max level 0 with no forced monster never spawns — the
+        // shipped zoned-band-0 rooms are spawnless by design.
+        if max_level == 0 && forced.is_none() {
+            return None;
+        }
+        let room_data = self.content.rooms.get(&room)?.clone();
+        let is_boss = forced.is_some() && forced == room_data.boss_monster;
+        let state = *self.spawn_state(room);
+        // L20890-20895: the +0x55c cap (bosses bypass it).
+        if !is_boss && i32::from(state.live) >= i32::from(room_data.spawn_cap) {
+            return None;
+        }
+        // L20897-20906: the 15-slot room list.
+        let occupants = self.monsters.values().filter(|m| m.location == room).count();
+        if occupants >= 15 {
+            return None;
+        }
+        // L20909-20925: the respawn window `stamp <= now <= stamp+delay`
+        // (absolute ticks stand in for minutes-since-midnight + wrap).
+        // Type-2 rooms and the room's boss skip the timer.
+        if room_data.room_type != 2
+            && !is_boss
+            && let Some(stamp) = state.stamp
+        {
+            let delay_min = if room_data.respawn_delay != 0 {
+                i64::from(room_data.respawn_delay)
+            } else {
+                RESPAWN_DEFAULT_MINUTES
+            };
+            let now = self.scheduler.now();
+            if now >= stamp && now as i64 <= stamp as i64 + delay_min * 60 {
+                return None;
+            }
+        }
+        // L20927-20940: the linked-room cap (room+0x5c4 -> +0x5be/+0x5c0).
+        if !is_boss
+            && let Some(linked) = room_data.linked_room
+        {
+            let linked_cap = self
+                .content
+                .rooms
+                .get(&linked)
+                .map(|r| r.linked_cap)
+                .unwrap_or(0);
+            let linked_live = self.spawn_state(linked).linked_live;
+            if linked_cap <= linked_live {
+                return None;
+            }
+        }
+        // Template selection (L20943-20972).
+        let template = match forced {
+            Some(f) => {
+                // Forced boss already present (room+0x564 bit 8) refuses.
+                if Some(f) == room_data.boss_monster && state.boss_present {
+                    return None;
+                }
+                if !self.content.monsters.contains_key(&f) {
+                    return None;
+                }
+                f
+            }
+            None => {
+                // The mongen walk: adopt the first match; each later match
+                // draws genrdn(1,100) — <= 29 replaces, >= 99 stops the
+                // scan keeping the incumbent.
+                let mut cur: Option<crate::content::MonsterId> = None;
+                for (id, region, level) in self.mongen.clone() {
+                    let matches = region == zone
+                        && (min_level == 0 || min_level <= level)
+                        && (max_level == 0 || level <= max_level);
+                    if !matches {
+                        continue;
+                    }
+                    if cur.is_none() {
+                        cur = Some(id);
+                        continue;
+                    }
+                    let r = self.spawn_rng.roll(1, 100);
+                    if r <= 29 {
+                        cur = Some(id);
+                    } else if r >= 99 {
+                        break;
+                    }
+                }
+                cur?
+            }
+        };
+        // (The gamelimit/active throttle and cooldown jitter, L20981-21008,
+        // land in M6 slice 5 with the population state.)
+        let _ = boot_boss;
+        let tpl = &self.content.monsters[&template];
+        let (hitpoints, energy) = (tpl.hitpoints, tpl.energy);
+        let (aggression, behaviour) = (tpl.aggression, tpl.behaviour);
+        let (roam_class, herd_mode, herd_rank) = (tpl.roam_class, tpl.herd_mode, tpl.exp_multi);
+        let coin_maxes = tpl.coins;
+        let loot = tpl.loot.clone();
+        let move_msg = tpl.move_msg;
+        let name = tpl.name.clone();
+        // Cash draws (L21042-21056): lngrnd(0, max+1) per NONZERO max.
+        let mut coins = [0u32; 5];
+        for (i, max) in coin_maxes.iter().enumerate() {
+            if *max != 0 {
+                coins[i] = self.spawn_rng.roll(0, *max as i32) as u32;
+            }
+        }
+        // Item draws (L21072-21097). (The never-killed-limited full-carry
+        // guarantee joins the slice-5 population state.)
+        let mut items = Vec::new();
+        for slot in loot {
+            if !self.content.items.contains_key(&slot.item) {
+                continue; // shipped dangling ref
+            }
+            if self.spawn_rng.roll(1, 100) <= i32::from(slot.dropper) {
+                items.push((slot.item, slot.uses));
+            }
+        }
+        let id = MonsterInstanceId(self.next_monster);
+        self.next_monster += 1;
+        self.monsters.insert(
+            id,
+            MonsterInstance {
+                template,
+                location: room,
+                current_hp: hitpoints,
+                energy,
+                target: None,
+                items,
+                active_spells: Default::default(),
+                poison: 0,
+                needs_recompute: false,
+                slot_bag: AbilityBag::default(),
+                aggression,
+                behaviour,
+                roam_class,
+                herd_mode,
+                herd_rank,
+                last_move_dir: None,
+                give_up: 0,
+                suppress: false,
+                home: room,
+                coins,
+            },
+        );
+        // Boss flag vs spawn count + linked bump (L21149-21162).
+        if Some(template) == room_data.boss_monster {
+            self.spawn_state(room).boss_present = true;
+        } else {
+            let st = self.spawn_state(room);
+            st.live = st.live.saturating_add(1);
+            if let Some(linked) = room_data.linked_room {
+                self.spawn_state(linked).linked_live += 1;
+            }
+        }
+        // Entry direction (L21164-21176): compass exits 0..7, TYPE 0 only;
+        // first qualifier held, later ones replace on genrdn(1,10) >= 6.
+        let mut dir: Option<crate::content::Direction> = None;
+        for d in &crate::content::Direction::ALL[..8] {
+            let plain = room_data.exits[*d as usize]
+                .as_ref()
+                .is_some_and(|e| e.dest.room != 0 && e.exit_type == 0);
+            if !plain {
+                continue;
+            }
+            if dir.is_none() {
+                dir = Some(*d);
+                continue;
+            }
+            if self.spawn_rng.roll(1, 10) >= 6 {
+                dir = Some(*d);
+            }
+        }
+        // Arrival line (L21177-21221): movemsg 0 = the default "just
+        // arrived" pair; a resolvable custom message prints its first
+        // line (empty = silent), %s slots bound (dir-spec, name) —
+        // ORACLE-VERIFY the surplus-arg binding.
+        match move_msg.and_then(|m| self.content.messages.get(&m)) {
+            None => {
+                let line = text::spawn_arrived(&name, dir);
+                self.broadcast_to_room(room, None, &line);
+            }
+            Some(msg) => {
+                let template_line = msg.lines.first().cloned().unwrap_or_default();
+                if !template_line.is_empty() {
+                    let dirspec = match dir {
+                        None => "nowhere".to_string(),
+                        Some(d) => format!("the {}", text::direction_shown(d)),
+                    };
+                    let line = template_line.replacen("%s", &dirspec, 1);
+                    let line = line.replacen("%s", &name, 1);
+                    // A custom text with no %s prints verbatim.
+                    let line = if template_line.contains("%s") {
+                        line
+                    } else {
+                        template_line
+                    };
+                    self.broadcast_to_room(room, None, &line);
+                }
+            }
+        }
+        // display_entry_movement(0xb, ...) — the adjacent-room rumble:
+        // every exit of type {0,3,4,7,9,0xb} tells the far room "You hear
+        // movement ..." with the reverse direction.
+        for d in crate::content::Direction::ALL {
+            let Some(exit) = room_data.exits[d as usize].as_ref() else {
+                continue;
+            };
+            if !matches!(exit.exit_type, 0 | 3 | 4 | 7 | 9 | 0xb) {
+                continue;
+            }
+            let line = text::hear_movement(d.opposite());
+            self.broadcast_to_room(exit.dest, None, &line);
+        }
+        Some(id)
+    }
+
+    /// `FUN_004232d3` (0x4232d3, monsters.md §1): the 5 s density pass —
+    /// phase B (per-user own rooms, building the room cache) then phase A
+    /// (the ~5%-per-exit neighbor pass consuming it). Soft cap ~9 spawns
+    /// per pass with resumable cursors. Not reproduced: the stale-map
+    /// neighbor lookup (Q1 — our exits carry true destinations), the
+    /// stale-cache-bytes multi-hop quirk (Q3), and the stale room pointer
+    /// (Q2) — all documented original bugs.
+    fn spawn_pass(&mut self) {
+        #[derive(Clone, Copy)]
+        struct CacheEntry {
+            room: RoomId,
+            players: u8,
+            monsters: u8,
+        }
+        let mut cache: Vec<CacheEntry> = Vec::new();
+        let mut budget = 0u32;
+        let sessions: Vec<SessionId> = self.sessions.keys().copied().collect();
+        let start = self.spawn_user_cursor.min(sessions.len());
+        // --- Phase B: per logged-in user, own room ---
+        for (idx, sid) in sessions.iter().enumerate().skip(start) {
+            let Some(Session::InGame { player, .. }) = self.sessions.get(sid) else {
+                continue;
+            };
+            let room = player.location;
+            let entry = match cache.iter().find(|e| e.room == room) {
+                Some(e) => *e,
+                None => {
+                    let monsters =
+                        self.monsters.values().filter(|m| m.location == room).count() as u8;
+                    let players = self
+                        .sessions
+                        .values()
+                        .filter(|s| {
+                            matches!(s, Session::InGame { player, .. } if player.location == room)
+                        })
+                        .count() as u8;
+                    let e = CacheEntry { room, players, monsters };
+                    cache.push(e);
+                    e
+                }
+            };
+            let Some(r) = self.content.rooms.get(&room) else {
+                continue; // a session parked in a nonexistent room
+            };
+            let (spawn_type, zone, forced, min_l, max_l) =
+                (r.room_type, r.spawn_zone, r.forced_monster, r.min_level, r.max_level);
+            match spawn_type {
+                3 => {
+                    // Swarm: no gates, no roll; stops at the budget.
+                    while budget < 9
+                        && self
+                            .generate_monster(room, zone, forced, min_l, max_l, false)
+                            .is_some()
+                    {
+                        budget += 1;
+                    }
+                }
+                0 | 2 => {
+                    // The roll draws even when every gate below fails.
+                    let roll = self.spawn_rng.roll(1, 100);
+                    let spawn = if entry.monsters >= 15 {
+                        false
+                    } else if entry.monsters < entry.players {
+                        let thresh = if spawn_type == 2 { 0x5a } else { 5 };
+                        roll < thresh
+                            || (roll >= 100 && i32::from(entry.players) * 2 > i32::from(entry.monsters))
+                    } else {
+                        // Natural-100 fallback while monsters < 2x players.
+                        roll >= 100 && i32::from(entry.players) * 2 > i32::from(entry.monsters)
+                    };
+                    if spawn
+                        && self
+                            .generate_monster(room, zone, forced, min_l, max_l, false)
+                            .is_some()
+                    {
+                        budget += 1;
+                        if budget > 8 {
+                            self.spawn_user_cursor = idx;
+                            return;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.spawn_user_cursor = 0;
+        // --- Phase A: the neighbor pass over the cache ---
+        let start = self.spawn_cache_cursor;
+        let mut i = start;
+        while i < cache.len() {
+            let entry = cache[i];
+            let Some(src) = self.content.rooms.get(&entry.room) else {
+                i += 1;
+                continue;
+            };
+            let exits = src.exits.clone();
+            for exit in exits.iter().flatten() {
+                if exit.dest.room == 0 {
+                    continue;
+                }
+                // ~5% per nonzero exit, rolled before anything else.
+                if self.spawn_rng.roll(1, 100) >= 6 {
+                    continue;
+                }
+                if cache.iter().any(|e| e.room == exit.dest) {
+                    continue; // already cached this pass
+                }
+                let (nb_type, zone, forced, min_l, max_l) = {
+                    let Some(r) = self.content.rooms.get(&exit.dest) else {
+                        continue;
+                    };
+                    (r.room_type, r.spawn_zone, r.forced_monster, r.min_level, r.max_level)
+                };
+                let dest = exit.dest;
+                match nb_type {
+                    3 => {
+                        while budget < 9
+                            && self
+                                .generate_monster(dest, zone, forced, min_l, max_l, false)
+                                .is_some()
+                        {
+                            budget += 1;
+                        }
+                    }
+                    0 | 2 => {
+                        // One type-0/2 neighbor attempt per source room:
+                        // spawn iff the neighbor's live monsters < the
+                        // SOURCE room's players. No further roll.
+                        let nb_monsters =
+                            self.monsters.values().filter(|m| m.location == dest).count();
+                        if nb_monsters < usize::from(entry.players)
+                            && self
+                                .generate_monster(dest, zone, forced, min_l, max_l, false)
+                                .is_some()
+                        {
+                            budget += 1;
+                            if budget > 8 {
+                                self.spawn_cache_cursor = i;
+                                return;
+                            }
+                        }
+                        cache.push(CacheEntry { room: dest, players: 0, monsters: 0 });
+                        break; // local_c = 10 — done with this source room
+                    }
+                    _ => {
+                        cache.push(CacheEntry { room: dest, players: 0, monsters: 0 });
+                    }
+                }
+            }
+            i += 1;
+        }
+        self.spawn_cache_cursor = 0;
     }
 
     /// Places a live monster from its template (fixture placement — the
@@ -938,6 +1421,7 @@ impl Core {
         let tpl = &self.content.monsters[&template];
         let (aggression, behaviour) = (tpl.aggression, tpl.behaviour);
         let (roam_class, herd_mode, herd_rank) = (tpl.roam_class, tpl.herd_mode, tpl.exp_multi);
+        let coins = tpl.coins;
         self.monsters.insert(
             id,
             MonsterInstance {
@@ -959,6 +1443,8 @@ impl Core {
                 last_move_dir: None,
                 give_up: 0,
                 suppress: false,
+                home: room,
+                coins,
             },
         );
         Some(id)
@@ -982,6 +1468,23 @@ impl Core {
     /// Test/inspection: an instance's template id.
     pub fn monster_template(&self, id: MonsterInstanceId) -> Option<crate::content::MonsterId> {
         self.monsters.get(&id).map(|m| m.template)
+    }
+
+    /// Test hook: route a monster through the kill path (no killer).
+    pub fn debug_kill_monster(&mut self, id: MonsterInstanceId) {
+        self.monster_killed(id, None);
+    }
+
+    /// Test hook: one generate_monster attempt with the room's own spawn
+    /// parameters — true if something spawned.
+    pub fn debug_generate(&mut self, room: RoomId) -> bool {
+        let Some(r) = self.content.rooms.get(&room) else {
+            return false;
+        };
+        let (zone, forced, min_l, max_l) =
+            (r.spawn_zone, r.forced_monster, r.min_level, r.max_level);
+        self.generate_monster(room, zone, forced, min_l, max_l, false)
+            .is_some()
     }
 
     /// Test hook: write a target lock directly — the summon pre-lock shape
@@ -1121,6 +1624,10 @@ impl Core {
                 Job::Fast => {
                     self.fast_update();
                     self.scheduler.schedule_in(FAST_INTERVAL, Job::Fast);
+                }
+                Job::Spawn => {
+                    self.spawn_pass();
+                    self.scheduler.schedule_in(SPAWN_INTERVAL, Job::Spawn);
                 }
                 Job::Cleanup => {
                     self.reconcile_shelves();
@@ -8014,10 +8521,48 @@ impl Core {
             .get(&instance.template)
             .expect("live instance has a template");
         let name = tpl.name.clone();
-        // Coins drop into the room piles (template order is high->low).
+        let (tpl_experience, tpl_exp_multi) = (tpl.experience, tpl.exp_multi);
+        let template = instance.template;
+        // check_kill_monster's spawn-room block (21266-21297): the boss
+        // clears its present-flag ONLY; anyone else decrements the live
+        // count, stamps the respawn timer, and pays back the linked cap.
+        let home = instance.home;
+        let now = self.scheduler.now();
+        let is_boss = self
+            .content
+            .rooms
+            .get(&home)
+            .is_some_and(|r| r.boss_monster == Some(template));
+        if is_boss {
+            self.spawn_state(home).boss_present = false;
+        } else {
+            let st = self.spawn_state(home);
+            st.live = st.live.saturating_sub(1);
+            st.stamp = Some(now);
+            let linked = self.content.rooms.get(&home).and_then(|r| r.linked_room);
+            if let Some(linked) = linked {
+                let st = self.spawn_state(linked);
+                st.linked_live = (st.linked_live - 1).max(0);
+            }
+        }
+        // The CURRENT room is stamped too (21300-21313).
+        self.spawn_state(instance.location).stamp = Some(now);
+        // Coins drop into the room piles — the INSTANCE piles rolled at
+        // generate time (fixture spawns carry the template maxes;
+        // template order is high->low, the room piles low->high). The
+        // killer sees the "drop to the ground." lines (21322-21358) in
+        // runic-first order.
         let piles = self.room_coins.entry(instance.location).or_insert([0; 5]);
-        for (i, amount) in tpl.coins.iter().enumerate() {
+        for (i, amount) in instance.coins.iter().enumerate() {
             piles[4 - i] += amount;
+        }
+        if let Some(killer) = killer {
+            const DENOMS: [&str; 5] = ["runic", "platinum", "gold", "silver", "copper"];
+            for (i, amount) in instance.coins.iter().enumerate() {
+                if *amount > 0 {
+                    self.output_line(killer, &text::coins_drop(*amount, DENOMS[i]));
+                }
+            }
         }
         // Carried loot drops silently (check_kill_monster: no message; the
         // wielded weapon is not in the drop loop and stays gone).
@@ -8025,8 +8570,8 @@ impl Core {
             .entry(instance.location)
             .or_default()
             .extend(instance.items.iter().copied());
-        let exp = u64::from(tpl.experience.max(0) as u32)
-            * u64::from(tpl.exp_multi.max(1) as u32);
+        let exp = u64::from(tpl_experience.max(0) as u32)
+            * u64::from(tpl_exp_multi.max(1) as u32);
         let room = instance.location;
 
         match killer {

@@ -162,6 +162,12 @@ pub struct Room {
     /// `room+0x5c8` (`permnpc`) — the room's unique/boss template
     /// (monsters.md §1/§2 boss slot).
     pub boss_monster: Option<MonsterId>,
+    /// `room+0x5c4` (`controlroom`) — spawns here charge against THAT
+    /// room's linked cap (same map; monsters.md §2 gate 6).
+    pub linked_room: Option<RoomId>,
+    /// `room+0x5be` (`maxarea`) — the linked-spawn cap other rooms charge
+    /// against this room's `+0x5c0` live count.
+    pub linked_cap: i16,
 }
 
 impl Room {

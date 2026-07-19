@@ -132,7 +132,7 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
         .join(", ");
     let mut stmt = db.prepare(&format!(
         "SELECT mapnumber, roomnumber, name, shopnum, {descs}, {exits}, {placed}, type, attributes, \
-         monstertype, maxregen, minindex, maxindex, delay, permnpc, bynumber FROM room"
+         monstertype, maxregen, minindex, maxindex, delay, permnpc, bynumber, controlroom, maxarea FROM room"
     ))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
@@ -192,6 +192,17 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
                     .then(|| to_u16("room", "permnpc", permnpc).map(MonsterId))
                     .transpose()?
             },
+            // controlroom names a room on the SAME map (monsters.md §2).
+            linked_room: {
+                let control: i64 = row.get(94)?;
+                (control > 0)
+                    .then(|| {
+                        to_u16("room", "controlroom", control)
+                            .map(|r| RoomId { map, room: r })
+                    })
+                    .transpose()?
+            },
+            linked_cap: to_i16("room", "maxarea", row.get(95)?)?,
         };
         for d in 0..10 {
             let dest: i64 = row.get(11 + d * 4)?;

@@ -44,37 +44,59 @@ reschedules itself with `my_rtkick(DAT_00482ca8, …)`. All spawn logic is in
 
 ### Spawning is player-driven — the world does not populate empty regions
 
-`FUN_004232d3` never sweeps the whole map. It builds and consumes a small room cache
-(`DAT_004942d0`, 512 entries × 12 B: `[+0]` room#, `[+4]` map, `[+8]` byte max-count /
-`[+9]` byte live-count) keyed off **where players currently are**:
+*(Slice M6-4 line-level re-read, 2026-07-18 — the threshold DIRECTION and the cache-byte
+meanings below CORRECT the earlier reading, which had both inverted.)*
 
-* **Phase B** (per logged-in user): look at the user's *own* room and decide whether to
-  spawn there.
-* **Phase A** (the neighbour pass): for each room in the cache, walk its 10 exits and, with
-  a **~5 % chance per exit** (`genrdn(1,100) < 6`), spawn into the *adjacent* room.
+`FUN_004232d3` (20100-20291) never sweeps the whole map. It builds and consumes a small
+room cache (`DAT_004942d0`, 512 entries × 12 B: `[+0]` room#, `[+4]` map, `[+8]` byte
+**players in the room**, `[+9]` byte **live monsters in the room**), zeroed on every
+invocation and keyed off **where players currently are**:
 
-So monsters appear in occupied rooms and in the ring of rooms one step out from players.
-Regions with nobody in them stay empty until a player arrives. A single spawner pass is
-globally capped at ~9 new monsters (`local_20 < 9`; it returns early once `8 < local_20`,
-saving its cursor in `DAT_0047fba4`/`DAT_0047fba8` to resume next pass).
+* **Phase B runs first** (per logged-in user, 20207-20287): count the user's own room
+  once per pass (cache hit reuses the counts), then decide whether to spawn there.
+* **Phase A** (the neighbour pass, 20131-20205) consumes the cache: for each cached
+  room, walk its 10 exits (NO exit-type filter — spawns propagate through doors and
+  secrets) and, with a **~5 % roll per nonzero exit** (`genrdn(1,100) < 6`), consider
+  the *adjacent* room. A type-0/2 neighbour spawns **iff its live monsters < the
+  SOURCE room's player count** — no further roll — and at most ONE such neighbour
+  attempt per source room per pass; a type-3 neighbour swarm-fills. Fresh neighbours
+  are appended to the cache (dedup by room#).
 
-### Per-room spawn gate
+So monsters appear in occupied rooms and the ring one step out. A single pass is
+globally soft-capped at ~9 spawns (`local_20`; early return past `8 < local_20`, cursors
+`DAT_0047fba4`/`DAT_0047fba8` resume next pass — a phase-A cap-out makes the NEXT tick a
+no-op since the cache rebuilds empty). Known original bugs, not reproduced in the
+reimplementation: the phase-A neighbour lookup uses the stale map of the last phase-B
+user (Q1); cache bytes `[+8]/[+9]` are never cleared, enabling bounded multi-hop
+propagation from stale counts (Q3).
 
-The room's spawn behaviour is selected by **`room+0x43c`** (spawn-type, read as
-`room[0x10f]` int-index in phase A):
+### Per-room spawn gate (phase B, exact — 20260-20277)
+
+The room's behaviour is selected by **`room+0x43c`**:
 
 | `room+0x43c` | behaviour |
 |--------------|-----------|
-| `0` / `2` | **normal timed spawn** — roll against a per-type threshold and the live/max cap |
-| `3` | **swarm** — loop `generate_monster` until it fails or 9 spawned this pass |
-| other (incl. absent) | no spawn |
+| `0` / `2` | timed spawn (below) |
+| `3` | **swarm** — loop `generate_monster` until refusal (or the 9-cap) |
+| `1` | boot-fill only (see the boot section) — the 5 s spawner ignores it |
+| other | no spawn |
 
-For the normal case the spawner counts live monsters in `room+0x400` (the 15-slot live
-list, §5) and compares to the room's **max-monster cap** (byte cached from the room
-record). Only if `live < max` does it roll `genrdn(1,100)` against a type threshold
-(`room+0x43c==2 → 0x5a`, `==0 → 5`, else `0x19`) plus a secondary `live*2 ≤ max` brake,
-then calls `generate_monster`. Net effect: room type 0 spawns aggressively (low
-threshold), type 2 rarely (high threshold), and the room never exceeds its cap.
+For type 0/2 the roll `genrdn(1,100)` is drawn **unconditionally** (RNG-stream
+relevant), then:
+
+```
+if (monsters >= 15) skip;                                  // room list full
+if (monsters < players) {                                  // the density brake
+    thresh = (type==2) ? 0x5a : 5;                         // spawn iff roll < thresh
+    if (roll < thresh) spawn;
+}
+else if (roll >= 100 && players*2 > monsters) spawn;       // natural-100 overshoot
+```
+
+Net effect — the OPPOSITE of the earlier reading: **type-2 rooms spawn at 89 % per 5 s
+kick, type-0 at 4 %**, both only while the room holds fewer monsters than players; a 1 %
+natural-100 lets the count overshoot to just under 2× the players. Density follows the
+players, not a room quota (`room+0x55c` still caps inside generate_monster).
 
 ### The `generate_monster` call — room fields that drive it
 
@@ -180,6 +202,41 @@ instance. Sequence:
    south.*"), then `tell_room` + `display_entry_movement`.
 
 Returns the new instance id, or 0 on any gate failure.
+
+### Slice M6-4 refinements (line-level, 2026-07-18)
+
+- **Never-spawns gate first**: `max_level == 0 && forced == 0` refuses before anything
+  (20886) — the shipped zoned rooms with a 0-0 band are spawnless by design.
+- **Candidate walk** (20943-20965): adopt the FIRST zone/band match without a draw; each
+  later match draws `genrdn(1,100)` — `<= 29` replaces the incumbent, `>= 99` stops the
+  scan KEEPING the incumbent, 30..98 keeps scanning. The mongen table is every template
+  in record order (no filtering), reloaded every 60 s.
+- **Respawn refusal window** (20909-20925): refuse while `stamp <= now <= stamp+delay`
+  (delay = `room+0x5bc` minutes, else 5). **Type-2 rooms and the room's own boss skip
+  the timer entirely.**
+- **Boss**: bypasses the `+0x55c` cap and the timer; sets `room+0x564` bit 8 instead of
+  bumping `+0x606`; a forced spawn equal to `room+0x5c8` refuses while bit 8 holds.
+- **Entry direction** (21164-21176): compass exits 0-7 of TYPE 0 only; first qualifier
+  held, each later one replaces on `genrdn(1,10) >= 6`. No qualifying exit ⇒ "from
+  nowhere".
+- **Arrival line** (21177-21221): template `movemsg` 0 ⇒ `"%s just arrived from the
+  %s."` / `"... from nowhere."`; a resolvable message prints ITS first line (empty ⇒
+  silent) — this is where "appears right beside you!" style lines live; there is no
+  hardcoded "appears" variant and NO A/An article logic (articles are baked into
+  content strings).
+- **Adjacent-room rumble**: `display_entry_movement(0xb, ...)` tells every neighbour
+  through exits of type {0,3,4,7,9,0xb}: `"You hear movement to the %s."` (reverse
+  direction; above/below variants for vertical exits).
+- **Coin piles** are rolled `lngrnd(0, max+1)` per NONZERO template max, at generate
+  time; check_kill_monster drops the INSTANCE piles with killer-visible `"%s <denom>
+  drop to the ground."` lines, runic first.
+- **check_kill_monster stamps BOTH rooms**: the spawn room (`mon+0x120` — with the
+  `+0x606` decrement and linked `+0x5c0` payback; a boss only clears bit 8) and the
+  current room where it died.
+- **Boot population** (preload_and_generate_buffers 27594-27767): a resumable brute
+  walk of every room — every `permnpc` room spawns its boss (forced, band 0-0x7fff),
+  and spawn-type **3 and 1** rooms swarm-fill until their gates refuse; type-1 is
+  boot-fill-only. The room cache is NOT seeded at boot.
 
 ### Template → instance copy map (disk-verified 2026-07-18, slice M6-1)
 
