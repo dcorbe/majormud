@@ -101,6 +101,36 @@ and monster-vs-monster resolution in place). Gangs go last of the big
 slices: they touch nothing the other systems need, need two-character
 oracle staging, and carry the milestone's largest persistence surface.
 
+**Slice 1 COMPLETE (2026-07-19, 591 tests, commits e517353..01cc7f0):**
+WCCTEXT2 solved — the set's only VARIABLE-length Btrieve file (shadow 'D'
+head pages with generation liveness, logically-numbered 'V' text pages,
+VRP page pointer, +0x20 byte-shift obfuscation; format in the importer
+docstring + vir_schemas.md). 3267 blocks imported; 4 dangling next-links
+allowlisted; TextBlock model + loader + boot validation landed.
+**Column correction: monster `desctxt` = the name-generator block id
+(knmsr+0x124), not a description.** New specs born: `crime.md` (all fame
+via add_evil_points; 8 named tiers @0x4881a4; forgive/retaliation pair
+timers; fame banks to the BBS account; NO kill-path fame, NO decay;
+evil_for_robbing = dead code) and `theft.md` (711 lines). THEFT
+SURPRISES: **`rob <monster>` is dead code in WG3-NT** — cmd_rob always
+passes a NULL item arg so rob_monster never acts (slice 4 reproduces the
+no-op; player theft = rob_user only); random item robs require LoyalItem
+(ability 100) so keys are the practical loot; attempt_to_forgive has a
+use-after-free bug (predecessor node freed — DO NOT clone, divergence
+note); picklock gates on exit types 2/7/0xb (not the 9/0xc/0x10 disk
+codes), lock-traps cast room+0x5fa, 300s/unit re-lock timers.
+`charm.md` born: charmres@0x1a0 save + charmlvl<=level silent gate;
+mon+0x1a shared name-link (grudge/owner by +0x116); pet assist =
+owner's autocombat target each 5s pass; attack_monster_monster = full
+calculate_attack forced mode 5; release on expiry/give-up(>15, incl.
+owner logout)/owner-attacks-pet; owner death does NOT release. Quest
+completion rewards recovered from disasm — PERMANENT STAT GRANTS with
+clear-then-regrant idempotence (old skill-grant inference retracted).
+GANGEXP deed price = MSG option 66 (default 1000 ×10000 exp);
+DAT_00480efa separator = " "; gang bank-8 key = last STOCKER's BBS
+account id; WCCGANG2.VIR ships empty (schema confirmed for state.sqlite);
+cmd_set has no ANSI subcommand (our toggle = clean divergence).
+
 ## Slice 1 — Extraction, import, decompile passes (zero behavior change)
 
 - **WCCTEXT2 importer:** extend `re/import_mmud.py` with a bespoke
