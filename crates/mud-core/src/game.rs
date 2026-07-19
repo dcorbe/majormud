@@ -393,6 +393,11 @@ pub struct CoreConfig {
     /// boot). Kills the restart-to-respawn exploit — the original
     /// persists both through the record dirty flags.
     pub restored_room_stamps: Vec<(RoomId, i64)>,
+    /// ANSI graphics (the MBBS per-user setting; the stock palette is
+    /// hardcoded in the DLL strings — there is no palette config). The
+    /// core always BUILDS colored text; false strips every escape at the
+    /// output funnel. Tests default plain; the server enables it.
+    pub ansi: bool,
 }
 
 impl Default for CoreConfig {
@@ -409,6 +414,7 @@ impl Default for CoreConfig {
             recall_location: RoomId { map: 1, room: 2190 },
             restored_population: Vec::new(),
             restored_room_stamps: Vec::new(),
+            ansi: false,
         }
     }
 }
@@ -2827,6 +2833,7 @@ impl Core {
             .map_or(0, |c| c.caster_group);
         let prompt = text::prompt(
             player.current_hp,
+            derived.max_hp,
             player.current_mana,
             derived.max_mana,
             caster_group,
@@ -7057,6 +7064,14 @@ impl Core {
             use crate::combat::Outcome;
             let (victim_line, room_line) =
                 self.monster_swing_lines(template, &form, victim, result.outcome, result.damage);
+            // Oracle palette: incoming hits 1;31 ("The kobold thief stabs
+            // you for 4 damage!"), incoming miss/glance/dodge 0;36.
+            let paint = if matches!(result.outcome, Outcome::Hit | Outcome::Critical) {
+                text::color::DAMAGE
+            } else {
+                text::color::INCOMING
+            };
+            let victim_line = format!("{paint}{victim_line}{}", text::color::RESET);
             self.output_line(victim, &victim_line);
             self.broadcast_to_room(location, Some(victim), &room_line);
             if matches!(result.outcome, Outcome::Hit | Outcome::Critical) {
@@ -9537,14 +9552,18 @@ impl Core {
         let room = &self.content.rooms[&player.location];
 
         let mut out = String::new();
+        out.push_str(text::color::ROOM_NAME);
         out.push_str(&room.name);
+        out.push_str(text::color::RESET);
         out.push('\n');
         if full {
             for (i, line) in room.description.iter().enumerate() {
+                out.push_str(text::color::PLAIN);
                 if i == 0 {
                     out.push_str("    ");
                 }
                 out.push_str(line);
+                out.push_str(text::color::RESET);
                 out.push('\n');
             }
         }
@@ -9564,7 +9583,12 @@ impl Core {
             notices.push(names);
         }
         if !notices.is_empty() {
-            out.push_str(&format!("You notice {} here.\n", notices.join(", ")));
+            out.push_str(&format!(
+                "{}You notice {} here.{}\n",
+                text::color::NOTICE,
+                notices.join(", "),
+                text::color::RESET
+            ));
         }
 
         // Players first, then live monsters (oracle: NPCs share the line).
@@ -9581,9 +9605,25 @@ impl Core {
                 .map(|t| t.name.as_str()),
         );
         if !others.is_empty() {
+            // Oracle palette: "0;35 Also here: 1;35 <name> 0m 0;35 ." —
+            // each name bright magenta inside the magenta line.
+            out.push_str(text::color::ALSO);
             out.push_str(text::ALSO_HERE);
-            out.push_str(&others.join(", "));
-            out.push_str(".\n");
+            let painted: Vec<String> = others
+                .iter()
+                .map(|n| {
+                    format!(
+                        "{}{n}{}{}",
+                        text::color::ALSO_NAME,
+                        text::color::RESET,
+                        text::color::ALSO
+                    )
+                })
+                .collect();
+            out.push_str(&painted.join(", "));
+            out.push('.');
+            out.push_str(text::color::RESET);
+            out.push('\n');
         }
 
         let exits: Vec<String> = Direction::ALL
@@ -9594,12 +9634,14 @@ impl Core {
                     .and_then(|e| Self::exit_entry(d, e))
             })
             .collect();
+        out.push_str(text::color::GREEN);
         out.push_str(text::OBVIOUS_EXITS);
         if exits.is_empty() {
             out.push_str(text::NO_EXITS);
         } else {
             out.push_str(&exits.join(", "));
         }
+        out.push_str(text::color::RESET);
         out.push('\n');
 
         self.output(session, &out);
@@ -9643,11 +9685,20 @@ impl Core {
             }
             _ => false,
         };
-        let text = if erase {
-            format!("\r\x1b[K{text}")
-        } else {
+        let mut text = if self.config.ansi {
             text.to_string()
+        } else {
+            text::strip_ansi(text)
         };
+        if erase {
+            // ANSI: erase the dangling prompt in place (ESC[79D ESC[K);
+            // plain terminals get a newline away from it instead.
+            text = if self.config.ansi {
+                format!("\r\x1b[K{text}")
+            } else {
+                format!("\r\n{text}")
+            };
+        }
         self.events.push(Event::Output { session, text });
     }
 

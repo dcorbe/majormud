@@ -16,12 +16,12 @@ pub fn left_realm(name: &str) -> String {
 
 /// VERIFIED (oracle): input matching no command is spoken aloud.
 pub fn you_say(what: &str) -> String {
-    format!("You say \"{what}\"")
+    format!("{}You say \"{what}\"{}", color::GREEN, color::RESET)
 }
 
 /// VERIFIED (DLL): what the rest of the room hears.
 pub fn says(name: &str, what: &str) -> String {
-    format!("{name} says \"{what}\"")
+    format!("{}{name} says \"{what}\"{}", color::GREEN, color::RESET)
 }
 
 /// VERIFIED (DLL): moving where no exit exists.
@@ -35,6 +35,60 @@ pub const NO_EXITS: &str = "NONE!!!";
 pub const ALSO_HERE: &str = "Also here: ";
 
 use crate::content::Direction;
+
+/// The stock palette (single scheme, hardcoded in the DLL's strings —
+/// dumped from the oracle raws 2026-07-19; the only user knob is the
+/// MBBS ANSI on/off setting, `CoreConfig::ansi`).
+pub mod color {
+    /// Room name (`1;36` bright cyan).
+    pub const ROOM_NAME: &str = "\x1b[1;36m";
+    /// Body text / the prompt frame (`0;37` white).
+    pub const PLAIN: &str = "\x1b[0;37m";
+    /// Obvious exits + says (`0;32` green).
+    pub const GREEN: &str = "\x1b[0;32m";
+    /// The Also-here line (`0;35` magenta) ...
+    pub const ALSO: &str = "\x1b[0;35m";
+    /// ... with names in `1;35` bright magenta.
+    pub const ALSO_NAME: &str = "\x1b[1;35m";
+    /// "You notice" floor line (`0;36` cyan).
+    pub const NOTICE: &str = "\x1b[0;36m";
+    /// Incoming monster attack/miss lines (`0;36` cyan).
+    pub const INCOMING: &str = "\x1b[0;36m";
+    /// Damage lines, both directions, and the low-HP prompt number
+    /// (`1;31` bright red).
+    pub const DAMAGE: &str = "\x1b[1;31m";
+    /// Your miss/glance family (`0;31` red).
+    pub const YOUR_MISS: &str = "\x1b[0;31m";
+    /// *Combat Engaged*/*Combat Off* (`0;33` yellow).
+    pub const COMBAT_MARK: &str = "\x1b[0;33m";
+    /// A mover's name in movement/arrival lines (`1;33` bright yellow).
+    pub const MOVE_NAME: &str = "\x1b[1;33m";
+    /// The adjacent-room rumble (`0;35` magenta).
+    pub const RUMBLE: &str = "\x1b[0;35m";
+    pub const RESET: &str = "\x1b[0m";
+}
+
+/// Removes every ANSI escape sequence (the MBBS non-graphics path).
+pub fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        // ESC [ params final-byte
+        if chars.peek() == Some(&'[') {
+            chars.next();
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
 
 /// Display name used in the exits list. Vertical exits show as "up"/"down"
 /// (USER TESTIMONY — the earlier "above"/"below" reading of the DLL string
@@ -58,11 +112,12 @@ pub fn direction_shown(direction: Direction) -> &'static str {
 /// VERIFIED (DLL): departure broadcast. Compass exits use
 /// "just left to the <dir>."; vertical exits have dedicated phrasings.
 pub fn left_via(name: &str, direction: Direction) -> String {
-    match direction {
-        Direction::Up => format!("{name} just left upwards."),
-        Direction::Down => format!("{name} just left downwards."),
-        d => format!("{name} just left to the {}.", direction_shown(d)),
-    }
+    let tail = match direction {
+        Direction::Up => "just left upwards.".to_string(),
+        Direction::Down => "just left downwards.".to_string(),
+        d => format!("just left to the {}.", direction_shown(d)),
+    };
+    format!("{}{name}{} {tail}{}", color::MOVE_NAME, color::GREEN, color::RESET)
 }
 
 /// VERIFIED (oracle 2026-07-18): walk-arrival broadcast, players and
@@ -72,11 +127,12 @@ pub fn left_via(name: &str, direction: Direction) -> String {
 /// generate_monster spawn-arrival flavour line (monsters.md §2 step 7,
 /// landed with the M6 spawner).
 pub fn walks_in_from(name: &str, direction: Direction) -> String {
-    match direction {
-        Direction::Up => format!("{name} walks into the room from above."),
-        Direction::Down => format!("{name} walks into the room from below."),
-        d => format!("{name} walks into the room from the {}.", direction_shown(d)),
-    }
+    let tail = match direction {
+        Direction::Up => "walks into the room from above.".to_string(),
+        Direction::Down => "walks into the room from below.".to_string(),
+        d => format!("walks into the room from the {}.", direction_shown(d)),
+    };
+    format!("{}{name}{} {tail}{}", color::MOVE_NAME, color::GREEN, color::RESET)
 }
 
 /// VERIFIED (oracle + DLL 0x48105a "%s%s moves into the room from the %s."):
@@ -85,11 +141,12 @@ pub fn walks_in_from(name: &str, direction: Direction) -> String {
 /// invisible ANSI junk sequence). Distinct from the spawn/player arrival
 /// "walks into the room from" line.
 pub fn monster_moves_in_from(name: &str, direction: Direction) -> String {
-    match direction {
-        Direction::Up => format!("{name} moves into the room from above."),
-        Direction::Down => format!("{name} moves into the room from below."),
-        d => format!("{name} moves into the room from the {}.", direction_shown(d)),
-    }
+    let tail = match direction {
+        Direction::Up => "moves into the room from above.".to_string(),
+        Direction::Down => "moves into the room from below.".to_string(),
+        d => format!("moves into the room from the {}.", direction_shown(d)),
+    };
+    format!("{}{name}{} {tail}{}", color::MOVE_NAME, color::GREEN, color::RESET)
 }
 
 /// VERIFIED (DLL 0x481399): the confusion fumble line,
@@ -102,21 +159,23 @@ pub fn monster_confused_fumble(name: &str) -> String {
 /// (generate_monster, template `movemsg` 0) — bare instance name; `None`
 /// direction = no qualifying plain exit.
 pub fn spawn_arrived(name: &str, from: Option<Direction>) -> String {
-    match from {
-        None => format!("{name} just arrived from nowhere."),
-        Some(d) => format!("{name} just arrived from the {}.", direction_shown(d)),
-    }
+    let tail = match from {
+        None => "just arrived from nowhere.".to_string(),
+        Some(d) => format!("just arrived from the {}.", direction_shown(d)),
+    };
+    format!("{}{name}{} {tail}{}", color::MOVE_NAME, color::GREEN, color::RESET)
 }
 
 /// VERIFIED (DLL 0x483e02/20/3e): the adjacent-room spawn rumble
 /// (display_entry_movement) — `direction` is as seen FROM the adjacent
 /// room (the reverse-direction table).
 pub fn hear_movement(direction: Direction) -> String {
-    match direction {
-        Direction::Up => "You hear movement above you!".into(),
-        Direction::Down => "You hear movement below you!".into(),
+    let tail = match direction {
+        Direction::Up => "You hear movement above you!".to_string(),
+        Direction::Down => "You hear movement below you!".to_string(),
         d => format!("You hear movement to the {}.", direction_shown(d)),
-    }
+    };
+    format!("{}{tail}{}", color::RUMBLE, color::RESET)
 }
 
 /// VERIFIED (DLL 0x4810d8 family): the killer-visible coin drops in
@@ -675,29 +734,37 @@ pub fn copper_amount(total: u64) -> String {
 }
 
 // --- combat strings (VERIFIED oracle_attack3.raw / oracle_downed.raw / DLL) ---
-pub const COMBAT_ENGAGED: &str = "*Combat Engaged*";
-pub const COMBAT_OFF: &str = "*Combat Off*";
+pub const COMBAT_ENGAGED: &str = "\x1b[0;33m*Combat Engaged*\x1b[0m";
+pub const COMBAT_OFF: &str = "\x1b[0;33m*Combat Off*\x1b[0m";
 pub const NO_TARGET: &str = "You don't see your target here.";
 pub const MORTALLY_WOUNDED: &str = "You may not do that while you are mortally wounded!";
 
 /// "You punch kobold thief for 1 damage!" — monster name without article.
 pub fn player_hit(verb: &str, target: &str, damage: i32) -> String {
-    format!("You {verb} {target} for {damage} damage!")
+    format!("{}You {verb} {target} for {damage} damage!{}", color::DAMAGE, color::RESET)
 }
 
 /// "You swing at kobold thief!" — the verb is the weapon's miss verb.
 pub fn player_miss(verb: &str, target: &str) -> String {
-    format!("You {verb} {target}!")
+    format!("{}You {verb} {target}!{}", color::YOUR_MISS, color::RESET)
 }
 
 /// "Your swing at kobold thief hits, but glances off its armour."
 pub fn player_glance(verb: &str, target: &str) -> String {
-    format!("Your {verb} {target} hits, but glances off its armour.")
+    format!(
+        "{}Your {verb} {target} hits, but glances off its armour.{}",
+        color::YOUR_MISS,
+        color::RESET
+    )
 }
 
 /// ORACLE-VERIFY: the critical variant was not captured.
 pub fn player_crit(verb: &str, target: &str, damage: i32) -> String {
-    format!("You critically {verb} {target} for {damage} damage!")
+    format!(
+        "{}You critically {verb} {target} for {damage} damage!{}",
+        color::DAMAGE,
+        color::RESET
+    )
 }
 
 /// Fills a DB printf-style message template: each `%s`/`%d` consumes the
@@ -921,15 +988,22 @@ pub fn coin_pile_names(piles: [u32; 5]) -> Option<String> {
 /// while the max pool is non-zero (MEASURED §8.12: the L1 mystic prompt
 /// is `[HP=28]:`, KAI from L2; §8.2 mage `[HP=26/MA=12]:`; warrior
 /// HP-only) — the same `+0x600 != 0` gate as show_health.
-pub fn prompt(hp: i32, mana: i32, max_mana: i32, caster_group: i16) -> String {
-    if max_mana == 0 {
-        return format!("[HP={hp}]:");
-    }
-    if caster_group == 5 {
-        format!("[HP={hp}/KAI={mana}]:")
+pub fn prompt(hp: i32, max_hp: i32, mana: i32, max_mana: i32, caster_group: i16) -> String {
+    // Low HP paints the number bright red (oracle: 3 of ~35 red, full
+    // plain; the exact threshold is ORACLE-VERIFY — a quarter is used).
+    // The frame paints 0;37 before every "]"/"/" itself (capture shape:
+    // "[HP=" + 1;31 number + 0;37 "]:").
+    let hp_str = if max_hp > 0 && hp * 4 < max_hp {
+        format!("{}{hp}", color::DAMAGE)
     } else {
-        format!("[HP={hp}/MA={mana}]:")
+        hp.to_string()
+    };
+    let p = color::PLAIN;
+    if max_mana == 0 {
+        return format!("{p}[HP={hp_str}{p}]:{}", color::RESET);
     }
+    let caption = if caster_group == 5 { "KAI" } else { "MA" };
+    format!("{p}[HP={hp_str}{p}/{caption}={mana}{p}]:{}", color::RESET)
 }
 
 /// Inputs for the status sheet (`show_status`, decompile 0x34448).

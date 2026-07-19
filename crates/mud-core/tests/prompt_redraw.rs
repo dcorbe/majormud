@@ -70,7 +70,12 @@ fn text_to(events: &[Event], session: SessionId) -> String {
 
 #[test]
 fn async_broadcast_erases_the_prompt_and_redraws_it() {
-    let mut core = Core::new(world(), CoreConfig::default());
+    // ANSI sessions get the DLL's in-place erase; plain terminals get a
+    // newline away from the dangling prompt. Both re-prompt after.
+    let mut core = Core::new(
+        world(),
+        CoreConfig { ansi: true, ..CoreConfig::default() },
+    );
     let alice = core.attach_player(player("Alice"));
     let bob = core.attach_player(player("Bob"));
     core.drain_events(); // Alice sits at a dangling prompt
@@ -82,8 +87,26 @@ fn async_broadcast_erases_the_prompt_and_redraws_it() {
     );
     assert!(to_alice.contains("Bob says \"hi\""), "{to_alice:?}");
     assert!(
-        to_alice.trim_end_matches(' ').ends_with("[HP=10]:"),
+        to_alice.trim_end_matches(' ').ends_with("]:\x1b[0m"),
         "a fresh prompt follows the burst: {to_alice:?}"
+    );
+}
+
+#[test]
+fn plain_mode_steps_off_the_prompt_with_a_newline() {
+    let mut core = Core::new(world(), CoreConfig::default());
+    let alice = core.attach_player(player("Alice"));
+    let bob = core.attach_player(player("Bob"));
+    core.drain_events();
+    core.input(bob, "hi");
+    let to_alice = text_to(&core.drain_events(), alice);
+    assert!(
+        to_alice.starts_with("\r\n"),
+        "plain terminals get a newline instead of the erase: {to_alice:?}"
+    );
+    assert!(
+        to_alice.trim_end_matches(' ').ends_with("[HP=10]:"),
+        "fresh prompt after: {to_alice:?}"
     );
 }
 

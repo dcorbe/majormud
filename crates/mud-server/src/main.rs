@@ -98,7 +98,12 @@ fn main() -> ExitCode {
     runtime.block_on(async {
         let server = match Server::start_with_spawns(
             content,
-            CoreConfig::default(),
+            CoreConfig {
+                // The live server speaks ANSI (the MBBS graphics
+                // setting); a per-user toggle can arrive later.
+                ansi: true,
+                ..CoreConfig::default()
+            },
             state,
             &args.listen,
             args.spawns.clone(),
