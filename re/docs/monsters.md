@@ -540,7 +540,7 @@ Consolidated from the functions above (offsets are byte offsets into the instanc
 | `+0x140` | dirty flag (int-idx 0x50) |
 | `+0x144` | last slow-tick stamp |
 | `+0x148` | **herd / leash mode** (int-idx 0x52): 3 stationary/lair, 1/2 pack |
-| `+0x14a/+0x154/+0x15e` | 5 spell-effect slots (id / caster / duration) |
+| `+0x14a/+0x154/+0x15e` | 5 spell-effect slots (id / **value** / remaining ticks — middle field corrected from "caster", `add_cast_spell_to_monster` 38258-38279; see `charm.md` §1.4) |
 | `+0x168` | prone / daze timer (int-idx 0x5a) |
 
 ---
@@ -579,6 +579,10 @@ decompile pass over `generate_monster`.)*
   fully chased. (Byte offset is `+0x88` — the doc's `+0x22` is the decompile's int-index.)
 * **`DAT_004906c9 == 2`** blocks spawning of roam classes 5/0x25 (line 20976) — some
   config/holiday mode, not identified.
+* **Charm/pet system — CLOSED**, see `charm.md`: `mon+0x1a` name link (grudge when
+  `+0x116==0`, owner/friend when suppressed), Enslave gate/save from template
+  `charmlvl`@0x120 / `charmres`@0x1a0, pet assist via `FUN_0044cc65`, release paths
+  (expiry, leash give-up 19446-19489, owner-attack 26513-26563).
 * **`mon+0x116` and `mon+0x128` bit 1** ("suppress attack" / "charmed") are named from
   usage, not symbols.
 * **Class-5 vs the tautological gate** in `FUN_00423863` line ~20371

@@ -207,7 +207,7 @@ Selected instant handlers (ability id → field), player target:
 |---------|----|----------------|
 | Damage | 1 | HP `+0xb0 -= V`; routes through the combat kill path — `check_kill_user` / `distribute_experience` (matches `combat.md`). Resisted by element (see below). MR is ignored. |
 | Damage(-MR) | 17/0x11 | Like Damage, but `V` is scaled by the target's **MR** first — the SAME stat the saving throw reads (monster: M.R.(36) modifiers + template `mr` word, floored at 1, `cast_monster_target` 43387-43392; player: `user+0xc2`). Both paths first boost `V` by the caster's **AlterSpDmg** (165/0xa5) percent (43940-43941; plain Damage gets the identical boost via the 39025-39030 helper). Without **AntiMagic** (51) on the target: `red = clamp((MR-50)/2, 0, 50)` (43946-43954); if `red == 0` the damage is instead **amplified**: `V' = V + V*(50-MR)/100` (43974-43975) — a floor-MR target takes +49%, MR 50 is the unchanged pivot; else `V' = V - V*red/100` (43982). With AntiMagic: `red = clamp(MR/2, 0, 75)` (43957-43968), no amplification (`red == 0` ⇒ `V' = V`, 43978). All divisions truncate toward zero. Monster-target body 43937-43993; player-target twin `cast_no_target` 40137-40198. **This is the damage path the shipped attack spells predominantly use**: of the 336 instant (`duration=0`) offensive (`spelltype<3`) spells, 171 carry 17 (magic missile — spell 1 — included, value 0 = rolled magnitude; no shipped 17 slot carries a fixed value) vs 98 carrying plain Damage(1). |
-| Enslave | 6 | `silly_spell` placeholder in WG3-NT (charm on players not implemented here) |
+| Enslave | 6 | `silly_spell` placeholder in WG3-NT (charm on players not implemented here). The **monster-target** path is fully implemented — gate `knmsr+0x120 charmlvl <= caster level`, save vs `knmsr+0x1a0 charmres/2` — see `charm.md` §1 |
 | Drain | 8 | target HP `-= V`, caster HP `+= V` (capped at caster max `+0xae`); kill-checked |
 | EnergyLevel | 11/0xb | round pool `+0xba += V` (capped at max `+0xb8`) |
 | Summon | 12/0xc | `generate_monster` into the room, tagged owned by caster |
@@ -424,7 +424,8 @@ casting:
    `+0x18 -= v`, EnergyLevel (11) `+0x16 += v` (cap `+0x114`), Heal (18) `+0x18
    += v`, Cure Poison (20) `+0x14 -= v`, Fear (60) random flee (`move_monster`).
    `perform_spell_termination_monster_upkeep` reverses only Enslave (6, releases
-   charm: reset name/owner bit `+0x128 & ~1`, flags `+0x140`/`+0x116`) and Poison
+   charm, 44988-44995: empty owner name `+0x1a`, `+0x116 = 0`, `+0x128 & ~1`,
+   dirty `+0x140 = 1` — full charm/pet system in `charm.md` §4) and Poison
    (19/0x13, `+0x14 -= v`). Monsters have **no** stat-buff reversal, mana, or
    EndCast chaining.
    Addition (corrected during slice 6): the monster poison counter `+0x14`
