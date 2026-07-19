@@ -397,3 +397,29 @@ fn known_content_spot_checks() {
         .sum();
     assert_eq!(exits, 62352);
 }
+
+// --- M7 slice 1: text blocks (WCCTEXT2, importer 12c6690) ---
+
+#[test]
+fn text_blocks_load_and_pin() {
+    use mud_core::content::TextBlockId;
+    let content = content_db::load(&db_path()).expect("load content db");
+    // Census: 3267 shipped blocks, ids 0..=10003.
+    assert_eq!(content.textblocks.len(), 3267);
+    // Block 2000 = the kobold-thief adjective list (get_random_name source);
+    // first line is the M6-captured "nasty".
+    let adj = &content.textblocks[&TextBlockId(2000)];
+    assert!(adj.body.starts_with("B:nasty\nB:angry\n"), "{:?}", adj.body);
+    // Block 1 = an ask-conversation keyword table linking its spoken text
+    // via the next field (1 -> 2).
+    let ask = &content.textblocks[&TextBlockId(1)];
+    assert_eq!(ask.next, Some(TextBlockId(2)));
+    assert!(ask.body.starts_with("adventurer:3\nnasty:4\n"), "{:?}", ask.body);
+    // Monster text-block columns: kobold thief (7) name/greet pins.
+    let kobold = &content.monsters[&mud_core::content::MonsterId(7)];
+    assert_eq!(kobold.name_block, Some(TextBlockId(2000)));
+    assert_eq!(kobold.greet_block, Some(TextBlockId(31)));
+    // The full DB still validates clean (the four dangling next-links are
+    // allowlisted).
+    assert_eq!(content.validate(), vec![]);
+}

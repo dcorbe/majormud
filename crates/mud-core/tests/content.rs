@@ -3,7 +3,7 @@
 use mud_core::ability::Ability;
 use mud_core::content::{
     Content, ContentError, Direction, Exit, Message, MessageId, Monster, MonsterId, Room, RoomId,
-    Spell, SpellId,
+    Spell, SpellId, TextBlock, TextBlockId,
 };
 
 fn room(map: u16, num: u16) -> Room {
@@ -394,5 +394,72 @@ fn resolving_spell_references_pass() {
     ];
     content.add_spell(s);
     content.add_spell(spell(2));
+    assert_eq!(content.validate(), vec![]);
+}
+
+// --- M7 slice 1: text blocks (WCCTEXT2) ---
+
+fn text_block(n: u16) -> TextBlock {
+    TextBlock {
+        id: TextBlockId(n),
+        next: None,
+        body: format!("block {n}\n"),
+    }
+}
+
+#[test]
+fn dangling_monster_text_block_is_reported() {
+    let mut m = monster(5);
+    m.name_block = Some(TextBlockId(2000));
+    let mut content = Content::default();
+    content.add_monster(m);
+    assert_eq!(
+        content.validate(),
+        vec![ContentError::DanglingMonsterTextBlock {
+            monster: MonsterId(5),
+            block: TextBlockId(2000),
+        }]
+    );
+}
+
+#[test]
+fn resolved_monster_text_blocks_pass() {
+    let mut m = monster(5);
+    m.name_block = Some(TextBlockId(2000));
+    m.greet_block = Some(TextBlockId(31));
+    m.talk_block = Some(TextBlockId(32));
+    let mut content = Content::default();
+    content.add_monster(m);
+    content.add_text_block(text_block(2000));
+    content.add_text_block(text_block(31));
+    content.add_text_block(text_block(32));
+    assert_eq!(content.validate(), vec![]);
+}
+
+#[test]
+fn dangling_text_block_next_is_reported() {
+    let mut b = text_block(10);
+    b.next = Some(TextBlockId(11));
+    let mut content = Content::default();
+    content.add_text_block(b);
+    assert_eq!(
+        content.validate(),
+        vec![ContentError::DanglingTextBlockNext {
+            block: TextBlockId(10),
+            next: TextBlockId(11),
+        }]
+    );
+}
+
+#[test]
+fn known_dangling_text_block_next_links_are_allowlisted() {
+    // The shipped data has exactly four dangling seq-0 next-links
+    // (133->134, 440->441, 2962->2963, 9637->9638).
+    let mut content = Content::default();
+    for (id, next) in [(133, 134), (440, 441), (2962, 2963), (9637, 9638)] {
+        let mut b = text_block(id);
+        b.next = Some(TextBlockId(next));
+        content.add_text_block(b);
+    }
     assert_eq!(content.validate(), vec![]);
 }

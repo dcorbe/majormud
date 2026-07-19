@@ -37,6 +37,11 @@ pub struct RaceId(pub u16);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct ClassId(pub u16);
 
+/// WCCTEXT2 block number (`get_text_block` 0x3379c key; vir_schemas.md
+/// "WCCTEXT2"). Shipped ids run 0..=10003.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct TextBlockId(pub u16);
+
 /// The ten exit directions, in the game's storage order
 /// (`roomexit_1` = North … `roomexit_10` = Down).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -287,6 +292,26 @@ pub struct Monster {
     /// shipped NPCs), folded into get_monster_ability_value alongside the
     /// weapon and carried slots (0x3d71f tail). Never dropped at death.
     pub worn_item: Option<ItemId>,
+    /// `knmsr+0x124` (sqlite `desctxt` — Nightmare's label misleads) — the
+    /// get_random_name adjective block (`A:`/`B:`/`F:`/`N:` lines).
+    pub name_block: Option<TextBlockId>,
+    /// `greettxt` — the ask-conversation keyword block (quests.md §3).
+    pub greet_block: Option<TextBlockId>,
+    /// `talktxt` — dialogue block (21 shipped users).
+    pub talk_block: Option<TextBlockId>,
+}
+
+/// One WCCTEXT2 text block: quest scripts, ask-conversation keyword tables,
+/// name-generator adjective lists, ANSI art (vir_schemas.md "WCCTEXT2").
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TextBlock {
+    pub id: TextBlockId,
+    /// Word 10 of the engine record — a link to a companion block (e.g. an
+    /// ask keyword table's spoken text). Exact consumer semantics land with
+    /// the M7 quest VM.
+    pub next: Option<TextBlockId>,
+    /// Decoded body; lines separated by `\n`, embedded ANSI preserved.
+    pub body: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -718,6 +743,15 @@ pub const KNOWN_DANGLING_SPELL_MESSAGES: [(SpellId, MessageId); 1] =
 pub const KNOWN_DANGLING_MONSTER_ITEMS: [(MonsterId, ItemId); 1] =
     [(MonsterId(602), ItemId(2078))]; // saracen commander
 
+/// See [`KNOWN_DANGLING_MONSTER_MESSAGES`]. Four shipped seq-0 next-links
+/// name blocks that don't exist (the engine's get_text_block simply fails).
+pub const KNOWN_DANGLING_TEXTBLOCK_NEXT: [(TextBlockId, TextBlockId); 4] = [
+    (TextBlockId(133), TextBlockId(134)),
+    (TextBlockId(440), TextBlockId(441)),
+    (TextBlockId(2962), TextBlockId(2963)),
+    (TextBlockId(9637), TextBlockId(9638)),
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContentError {
     UnresolvedExit {
@@ -752,6 +786,17 @@ pub enum ContentError {
         field: &'static str,
         monster: MonsterId,
     },
+    /// A monster's name/greet/talk column names a text block that does not
+    /// exist.
+    DanglingMonsterTextBlock {
+        monster: MonsterId,
+        block: TextBlockId,
+    },
+    /// A text block's next-link names a missing block.
+    DanglingTextBlockNext {
+        block: TextBlockId,
+        next: TextBlockId,
+    },
 }
 
 /// All static content, keyed for deterministic iteration.
@@ -765,6 +810,7 @@ pub struct Content {
     pub shops: BTreeMap<ShopId, Shop>,
     pub races: BTreeMap<RaceId, Race>,
     pub classes: BTreeMap<ClassId, Class>,
+    pub textblocks: BTreeMap<TextBlockId, TextBlock>,
 }
 
 impl Content {
@@ -786,6 +832,10 @@ impl Content {
 
     pub fn add_message(&mut self, message: Message) {
         self.messages.insert(message.id, message);
+    }
+
+    pub fn add_text_block(&mut self, block: TextBlock) {
+        self.textblocks.insert(block.id, block);
     }
 
     pub fn add_shop(&mut self, shop: Shop) {
@@ -856,6 +906,27 @@ impl Content {
                     errors.push(ContentError::DanglingMonsterItem {
                         monster: monster.id,
                         item,
+                    });
+                }
+            }
+            let blocks = [monster.name_block, monster.greet_block, monster.talk_block];
+            for block in blocks.into_iter().flatten() {
+                if !self.textblocks.contains_key(&block) {
+                    errors.push(ContentError::DanglingMonsterTextBlock {
+                        monster: monster.id,
+                        block,
+                    });
+                }
+            }
+        }
+
+        for block in self.textblocks.values() {
+            if let Some(next) = block.next {
+                let known = KNOWN_DANGLING_TEXTBLOCK_NEXT.contains(&(block.id, next));
+                if !known && !self.textblocks.contains_key(&next) {
+                    errors.push(ContentError::DanglingTextBlockNext {
+                        block: block.id,
+                        next,
                     });
                 }
             }

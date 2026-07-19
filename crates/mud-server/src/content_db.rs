@@ -13,6 +13,7 @@ use mud_core::content::{
     AbilityValue, AttackForm, Class, ClassId, Content, Element, Exit, Item, ItemId, LootSlot,
     MatchType, Message, MessageId, Monster, MonsterId, PlacedItem, Race, RaceId, Room, RoomId,
     SaveClass, ScalePair, Shop, ShopId, ShopStock, Spell, SpellId, StatBlock, TargetMode,
+    TextBlock, TextBlockId,
 };
 use rusqlite::Connection;
 
@@ -56,6 +57,7 @@ pub fn load(path: &Path) -> Result<Content, LoadError> {
     load_shops(&db, &mut content)?;
     load_races(&db, &mut content)?;
     load_classes(&db, &mut content)?;
+    load_textblocks(&db, &mut content)?;
     Ok(content)
 }
 
@@ -263,7 +265,8 @@ fn load_monsters(db: &Connection, content: &mut Content) -> Result<(), LoadError
          hitpoints, experience, expmulti, ac, dr, mr, bsdefence, energy, \
          runic, platinum, gold, silver, copper, {attack_cols}, \
          weaponnumber, {loot_cols}, \"index\", \"group\", follow, alignment, \
-         type, something3, nothing2, gamelimit, hpregen, regentime, something2 FROM monster",
+         type, something3, nothing2, gamelimit, hpregen, regentime, something2, \
+         desctxt, greettxt, talktxt FROM monster",
         ability_cols("abilitya"),
         ability_cols("abilityb"),
     ))?;
@@ -345,6 +348,33 @@ fn load_monsters(db: &Connection, content: &mut Content) -> Result<(), LoadError
                 0 => None,
                 id => Some(ItemId(id)),
             },
+            name_block: opt_text_block("monster", "desctxt", row.get(loot_end + 11)?)?,
+            greet_block: opt_text_block("monster", "greettxt", row.get(loot_end + 12)?)?,
+            talk_block: opt_text_block("monster", "talktxt", row.get(loot_end + 13)?)?,
+        });
+    }
+    Ok(())
+}
+
+fn opt_text_block(
+    table: &'static str,
+    col: &'static str,
+    v: i64,
+) -> Result<Option<TextBlockId>, LoadError> {
+    match to_u16(table, col, v)? {
+        0 => Ok(None),
+        id => Ok(Some(TextBlockId(id))),
+    }
+}
+
+fn load_textblocks(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
+    let mut stmt = db.prepare("SELECT number, next, body FROM textblock")?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        content.add_text_block(TextBlock {
+            id: TextBlockId(to_u16("textblock", "number", row.get(0)?)?),
+            next: opt_text_block("textblock", "next", row.get(1)?)?,
+            body: row.get(2)?,
         });
     }
     Ok(())
