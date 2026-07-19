@@ -51,6 +51,7 @@ fn player(name: &str) -> Player {
         // Nonzero so the full-struct roundtrip assertion covers the column.
         poison: 7,
         active_spells: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -314,4 +315,20 @@ fn shop_stock_save_and_load_roundtrip() {
     assert!(rows.contains(&(45, 3, 31)), "got: {rows:?}");
     assert!(rows.contains(&(8, 19, 1)), "got: {rows:?}");
     assert_eq!(rows.len(), 40, "20 slots per saved shop");
+}
+
+#[test]
+fn monster_kill_and_room_stamp_roundtrip() {
+    // M6 slice 5: kill stamps and room respawn stamps survive a "restart"
+    // (a fresh open sees the upserted wall-clock values).
+    let db = db();
+    db.save_monster_kill(9, 1_000_000).expect("save kill");
+    db.save_monster_kill(9, 1_000_500).expect("upsert kill");
+    db.save_room_stamp(1, 42, 1_000_100).expect("save stamp");
+    db.save_room_stamp(1, 42, 1_000_600).expect("upsert stamp");
+    db.save_room_stamp(9, 7, 1_000_200).expect("second room");
+    assert_eq!(db.load_monster_kills().expect("load"), vec![(9, 1_000_500)]);
+    let mut stamps = db.load_room_stamps().expect("load");
+    stamps.sort();
+    assert_eq!(stamps, vec![(1, 42, 1_000_600), (9, 7, 1_000_200)]);
 }

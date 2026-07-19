@@ -94,6 +94,7 @@ fn world() -> Content {
         // A club on the floor: the read-unowned floor path.
         placed_items: vec![PlacedItem { item: CLUB, quantity: 1 }],
         exits: Default::default(),
+        ..Default::default()
     });
     content.add_room(Room {
         id: SHOP_ROOM,
@@ -104,6 +105,7 @@ fn world() -> Content {
         shop: Some(ShopId(48)),
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     content.add_item(scroll(MMIS_SCROLL, "scroll of magic missile", MAGIC_MISSILE));
     content.add_item(scroll(ILLU_SCROLL, "scroll of illuminate", ILLUMINATE));
@@ -228,6 +230,7 @@ fn player(name: &str, class: ClassId, spellbook: BTreeMap<SpellId, bool>) -> Pla
         spellbook,
         poison: 0,
         active_spells: Default::default(),
+        ..Default::default()
     }
 }
 

@@ -16,25 +16,25 @@ pub struct RoomId {
     pub room: u16,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct MonsterId(pub u16);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct ItemId(pub u16);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct SpellId(pub u16);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct MessageId(pub u16);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct ShopId(pub u16);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct RaceId(pub u16);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct ClassId(pub u16);
 
 /// The ten exit directions, in the game's storage order
@@ -101,7 +101,7 @@ pub struct StatBlock {
     pub charm: u16,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Exit {
     pub dest: RoomId,
     /// Raw `roomtype_N` value; semantics per type are handled by later
@@ -111,6 +111,14 @@ pub struct Exit {
     /// Type 10: the pipe-separated trigger phrases live in this message
     /// ("borrow skiff|go skiff|row skiff" — oracle).
     pub trigger_msg: Option<MessageId>,
+    /// Raw `para1_N` (`room+0x374+d*4`): damage for types 9/0x18, the
+    /// secret gate for 7/0xb (monsters.md §3 move_monster switch). Types
+    /// 8/10 fold theirs into `dest`/`trigger_msg` at load.
+    pub param: i32,
+    /// `para2_N` (`room+0x39c+d*2`) nonzero = door closed (type 2/9;
+    /// shipped doors all start closed). Runtime open/close arrives with
+    /// the player door commands.
+    pub door_closed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -134,6 +142,32 @@ pub struct Room {
     pub placed_items: Vec<PlacedItem>,
     /// Indexed by `Direction as usize`.
     pub exits: [Option<Exit>; 10],
+    /// `room+0x560` (`monstertype`) — spawn region/zone id: selects which
+    /// templates spawn here AND is the wander leash key (monsters.md §1/§3).
+    /// 0 = unzoned (no region spawns).
+    pub spawn_zone: i16,
+    /// `room+0x55c` (`maxregen`) — the room's spawn-count cap, 1–15
+    /// (monsters.md §1; further bounded by the 15-slot room array).
+    pub spawn_cap: i16,
+    /// `room+0x462` (`minindex`) — minimum template level for region spawns.
+    pub min_level: i16,
+    /// `room+0x464` (`maxindex`) — maximum template level for region spawns.
+    pub max_level: i16,
+    /// `room+0x5bc` (`delay`) — per-room respawn delay; 0 = use the global
+    /// default (monsters.md §1 respawn timing).
+    pub respawn_delay: i16,
+    /// `room+0x466` (`bynumber`) — forced spawn template; `None` = pick from
+    /// the region (monsters.md §1).
+    pub forced_monster: Option<MonsterId>,
+    /// `room+0x5c8` (`permnpc`) — the room's unique/boss template
+    /// (monsters.md §1/§2 boss slot).
+    pub boss_monster: Option<MonsterId>,
+    /// `room+0x5c4` (`controlroom`) — spawns here charge against THAT
+    /// room's linked cap (same map; monsters.md §2 gate 6).
+    pub linked_room: Option<RoomId>,
+    /// `room+0x5be` (`maxarea`) — the linked-spawn cap other rooms charge
+    /// against this room's `+0x5c0` live count.
+    pub linked_cap: i16,
 }
 
 impl Room {
@@ -191,7 +225,7 @@ pub struct LootSlot {
     pub dropper: i16,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Monster {
     pub id: MonsterId,
     pub name: String,
@@ -217,6 +251,42 @@ pub struct Monster {
     pub loot: Vec<LootSlot>,
     /// The five attack-form slots (kind 0 = unused).
     pub attacks: [AttackForm; 5],
+    /// `knmsr+0x5c` (`index`) — template level, matched against the room's
+    /// spawn band (monsters.md §1 mongen table).
+    pub level: i16,
+    /// `knmsr+0x54` (`group`) — roam/zone class → `mon+0x12c`: the mongen
+    /// region matched against `room+0x560` AND the wander leash key. Special
+    /// classes: 0/2 stationary, 5 water, 0x25 free roamer, 0x26 door-opening
+    /// roamer (monsters.md §3).
+    pub roam_class: i16,
+    /// `knmsr+0x6e` (`follow`) — aggression 0-100 → `mon+0x108`: pursuit
+    /// follow-roll chance; wander chance is `(100 - aggression)/2`.
+    pub aggression: i16,
+    /// `knmsr+0xae` (`alignment`) — behaviour mode → `mon+0x106`:
+    /// 0/3/4 passive, 6 guardian (initiates only vs fame >= 0x28),
+    /// 1/2/5 aggressive (monsters.md §4 taxonomy).
+    pub behaviour: i16,
+    /// `knmsr+0xaa` (`type`) — herd/leash mode → `mon+0x148`: 3 = lair
+    /// (fully stationary), 1/2 = pack member (drags/holds packmates),
+    /// 0 = none (monsters.md §3).
+    pub herd_mode: i16,
+    /// `knmsr+0x6c` (`something3`) — herd/pack id; packmates match on it.
+    pub herd_id: i16,
+    /// `knmsr+0xac` (`nothing2`, byte) — max followers dragged per move.
+    pub follower_cap: i16,
+    /// `knmsr+0xa6` (`gamelimit`) — world population cap; 0 = unlimited.
+    /// Nonzero marks limited/unique templates (monsters.md §2 throttle,
+    /// first-kill loot guarantee).
+    pub game_limit: i16,
+    /// `knmsr+0x7c` (`hpregen`) — HP regained per 30 s slow tick.
+    pub hp_regen: i16,
+    /// `knmsr+0xb2` (`regentime`) — "1 remaining" respawn-cooldown factor,
+    /// x60 minutes (generate_monster 20995).
+    pub unique_cooldown: i16,
+    /// `knmsr+0x60` (`something2`) — the WORN item (grey robes on the
+    /// shipped NPCs), folded into get_monster_ability_value alongside the
+    /// weapon and carried slots (0x3d71f tail). Never dropped at death.
+    pub worn_item: Option<ItemId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -674,6 +744,14 @@ pub enum ContentError {
         /// values are reported honestly instead of wrapped through `as u16`.
         referenced: i16,
     },
+    /// A room's spawn-control field names a monster template that does not
+    /// exist (`permnpc` boss slot or `bynumber` forced spawn — monsters.md §1).
+    DanglingRoomMonster {
+        room: RoomId,
+        /// The source column, for the boot error report.
+        field: &'static str,
+        monster: MonsterId,
+    },
 }
 
 /// All static content, keyed for deterministic iteration.
@@ -737,6 +815,21 @@ impl Content {
                         room: room.id,
                         direction,
                         dest: exit.dest,
+                    });
+                }
+            }
+            let spawn_refs = [
+                ("permnpc", room.boss_monster),
+                ("bynumber", room.forced_monster),
+            ];
+            for (field, monster) in spawn_refs {
+                if let Some(monster) = monster
+                    && !self.monsters.contains_key(&monster)
+                {
+                    errors.push(ContentError::DanglingRoomMonster {
+                        room: room.id,
+                        field,
+                        monster,
                     });
                 }
             }

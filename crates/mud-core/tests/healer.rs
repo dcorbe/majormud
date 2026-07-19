@@ -23,6 +23,7 @@ fn world() -> Content {
         shop: Some(ShopId(4)),
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     content.add_room(Room {
         id: RoomId { map: 1, room: 527 },
@@ -33,6 +34,7 @@ fn world() -> Content {
         shop: Some(ShopId(4)),
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     content.add_shop(Shop {
         id: ShopId(4),

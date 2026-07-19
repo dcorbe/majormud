@@ -107,12 +107,24 @@ are parallel arrays indexed by attack number `p` (word stride 2):
 Monster stats/hp/exp/level and ability entries (via `_GET_MONSTER_ABILITY_VALUE`,
 the shared ability system) occupy other offsets — full map TBD.
 
-> ⚠ **Needs re-verification at the page+6 frame.** The accuracy/damage offsets above were
-> "disk-verified" using the wrong page+8 frame, and WCCKNMSR is **24 B smaller** than
-> Nightmare's monster map (the biggest version drift of any file), so Nightmare's stock
-> offsets (Exp@0x74, HP@0x78, attack block @0x128+) decode to garbage for 1.11p
-> (giant rat HP 5376). The monster combat offsets came from the DLL in-memory struct and
-> gave sensible values, but their disk mapping must be re-derived at page+6 before trusting.
+> **Disk == memory CONFIRMED (slice M6-1, 2026-07-18).**
+> `load_known_monster_into_buffer` (WG3-NT decompile 29915) `dfaAcqLock`s the raw
+> Btrieve record straight into the template cache slot and
+> `save_known_monster_from_buffer` writes the same buffer back — no repacking. So
+> every knmsr offset in `monsters.md` is a disk offset, and the Nightmare
+> `MonsterRecType` column layout maps the **WG3-NT** logical record 1:1 (the sqlite
+> import already used it; M5's combat-field pins validated the prefix). The old
+> "24 B smaller" warning applies to the **DOS 1.11p** file only — the oracle's data,
+> not the engine's. Spawn/behaviour columns (disk-verified via the `generate_monster`
+> copy map, monsters.md §2): `group`@0x54 roam/zone class + mongen region,
+> `index`@0x5c level, `something3`@0x6c herd id, `follow`@0x6e aggression 0-100,
+> `hitpoints`@0x78 (word — current AND max HP at spawn), `hpregen`@0x7c,
+> `gamelimit`@0xa6 / `active`@0xa8 population pair, `type`@0xaa herd/leash mode,
+> `nothing2`@0xac follower cap (byte), `alignment`@0xae behaviour mode,
+> `regentime`@0xb2 unique-respawn cooldown (×60 min), `datekilled`/`timekilled`
+> @0xb4/0xb6, `movemsg`@0xb8 arrival message, `deathmsg`@0xbc. Template **name is
+> @0x36** (not 0x34); name-generator id dword @0x124. `expmulti`@0x58 doubles as the
+> pack herd rank.
 
 ### WCCMP001 (1528 B) — world map / rooms — largely mapped
 Record = raw Btrieve record. Layout:
@@ -172,7 +184,20 @@ Opposite pairs: N↔S (0,1), E↔W (2,3), NE↔SW (4,7), NW↔SE (5,6), U↔D (8
 - `+0x3d8 + d*4` = secret-passage **message** id (per direction).
 - `+0x4ae..` / `+0x50c..` = `0xFFFF`/`0xFFFE` sentinel runs (empty list slots).
 
-Monster spawns and item drops for the room occupy other offsets — TBD.
+**Room spawn-control block — disk-verified (slice M6-1, 2026-07-18).**
+`load_room_into_buffer`/`save_room_from_buffer` (decompile 29372/29326) move the raw
+record with no repacking, so the in-memory offsets `monsters.md` §1 documents are disk
+offsets, and they line up with the Nightmare `RoomRecType` columns exactly:
+`currentroommon[15]`@0x400 live-monster list, `type`@0x43c spawn type (dual-use: 1 =
+shop-active), `minindex`/`maxindex`@0x462/0x464 spawn level band, **forced monster =
+the u4 @0x468** (Nightmare's `bynumber` Long@0x466 straddles it by two bytes — the id
+is that column's high word), `maxregen`@0x55c spawn cap (1-15), `monstertype`@0x560
+spawn zone / wander leash key, `unknown69`@0x562 respawn timer (runtime, 0 on disk),
+`attributes`@0x564 flags (bit 8 boss-present, bit 2 water, bit 1 safe), `delay`@0x5bc
+respawn-delay minutes, `maxarea`@0x5be linked-room cap, u2@0x5c0 linked live count
+(runtime), `controlroom`@0x5c4 linked spawn room, `permnpc`@0x5c8 boss/unique id,
+`nummons`@0x606 current spawn count (runtime, 0 on disk). Item drops: `roomitems`/
+`roomitemqty`/`placeditems` columns (already loaded since M4).
 
 ## Next
 - Disk-verify KNMSR and MP001 field maps by reading `_GET_KNOWN_MONSTER_DATA`,

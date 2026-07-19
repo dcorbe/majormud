@@ -40,6 +40,7 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     let mut guild = Room {
         id: GUILD,
@@ -50,6 +51,7 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     };
     guild.shop = Some(ShopId(38));
     content.add_room(guild);
@@ -246,6 +248,7 @@ fn player(name: &str, class: ClassId, level: u16, book: &[SpellId]) -> Player {
         spellbook,
         poison: 0,
         active_spells: Default::default(),
+        ..Default::default()
     }
 }
 

@@ -12,7 +12,8 @@ struct Args {
     content: PathBuf,
     state: PathBuf,
     listen: String,
-    /// Dev fixture spawns until the M6 spawner: "id@map,room", repeatable.
+    /// Dev fixture spawns: "id@map,room", repeatable (the M6 spawner runs
+    /// regardless; fixtures are the test/staging placement path).
     spawns: Vec<(u16, u16, u16)>,
 }
 
@@ -97,7 +98,12 @@ fn main() -> ExitCode {
     runtime.block_on(async {
         let server = match Server::start_with_spawns(
             content,
-            CoreConfig::default(),
+            CoreConfig {
+                // The live server speaks ANSI (the MBBS graphics
+                // setting); a per-user toggle can arrive later.
+                ansi: true,
+                ..CoreConfig::default()
+            },
             state,
             &args.listen,
             args.spawns.clone(),

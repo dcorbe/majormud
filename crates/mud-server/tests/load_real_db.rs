@@ -1,7 +1,7 @@
 //! Integration test: load and validate the full shipped 1.11p content database.
 
 use mud_core::ability::Ability;
-use mud_core::content::{RaceId, RoomId};
+use mud_core::content::{MonsterId, RaceId, RoomId};
 use mud_server::content_db;
 
 fn db_path() -> std::path::PathBuf {
@@ -113,6 +113,125 @@ fn kind2_cast_forms_all_resolve_within_the_dispatch() {
         "kind-2 form match-type census drifted"
     );
     assert_eq!(census.values().sum::<u32>(), 507);
+}
+
+#[test]
+fn room_spawn_fields_load_exactly() {
+    // Slice-1 pins (monsters.md §1 room spawn block; offsets = Nightmare
+    // RoomRecType, disk==memory frame confirmed by the exact match of
+    // type@0x43c/attributes@0x564 with the decompile's accessors).
+    let content = content_db::load(&db_path()).expect("load content db");
+
+    // Slimy Sewer Tunnel (9/42): zoned spawner room — zone 30, cap 15,
+    // level band 1-4, 5-minute respawn delay, no boss.
+    let sewer = &content.rooms[&RoomId { map: 9, room: 42 }];
+    assert_eq!(sewer.name, "Slimy Sewer Tunnel");
+    assert_eq!(sewer.spawn_zone, 30);
+    assert_eq!(sewer.spawn_cap, 15);
+    assert_eq!((sewer.min_level, sewer.max_level), (1, 4));
+    assert_eq!(sewer.respawn_delay, 5);
+    assert_eq!(sewer.boss_monster, None);
+
+    // Skali's Fine Armour (1/305): permanent shopkeeper NPC — boss slot 27,
+    // cap 1, band 6-6, zone 2. Disambiguates adjacent columns from the
+    // sewer pin (distinct values in every field).
+    let skali = &content.rooms[&RoomId { map: 1, room: 305 }];
+    assert_eq!(skali.boss_monster, Some(MonsterId(27)));
+    // Forced spawn is the u4 at room+0x468 — Nightmare's `bynumber`
+    // Long@0x466 straddles it by two bytes, so the id is its high word
+    // (decompile generate_monster 20168/20233; 0x1B0000 >> 16 = 27).
+    assert_eq!(skali.forced_monster, Some(MonsterId(27)));
+    assert_eq!(skali.spawn_cap, 1);
+    assert_eq!((skali.min_level, skali.max_level), (6, 6));
+    assert_eq!(skali.spawn_zone, 2);
+    assert_eq!(skali.respawn_delay, 0);
+
+    // Distribution tripwires over all 26,720 rooms (schema-drift guards).
+    for room in content.rooms.values() {
+        assert!(
+            (0..=15).contains(&room.spawn_cap),
+            "{:?}: spawn_cap {} outside the 15-slot room array",
+            room.id,
+            room.spawn_cap
+        );
+        assert!(
+            room.min_level <= room.max_level,
+            "{:?}: inverted level band {}..{}",
+            room.id,
+            room.min_level,
+            room.max_level
+        );
+    }
+}
+
+#[test]
+fn monster_spawn_fields_load_exactly() {
+    // Slice-1 pins (monsters.md §2/§6; template offsets from the
+    // generate_monster copy table — behaviour←+0xae `alignment`,
+    // aggression←+0x6e `follow`, roam/zone←+0x54 `group`, herd
+    // mode←+0xaa `type`, herd id←+0x6c `something3`, follower
+    // cap←+0xac `nothing2`, level←+0x5c `index`, population←+0xa6
+    // `gamelimit`, regen←+0x7c `hpregen`, cooldown←+0xb2 `regentime`).
+    use mud_core::content::MonsterId;
+    let content = content_db::load(&db_path()).expect("load content db");
+
+    // Giant rat (1): aggressive pack wanderer, zone 6, level 1.
+    let rat = &content.monsters[&MonsterId(1)];
+    assert_eq!(rat.name, "giant rat");
+    assert_eq!(rat.level, 1);
+    assert_eq!(rat.roam_class, 6);
+    assert_eq!(rat.aggression, 20);
+    assert_eq!(rat.behaviour, 2);
+    assert_eq!(rat.herd_mode, 2);
+    assert_eq!(rat.herd_id, 1);
+    assert_eq!(rat.follower_cap, 0);
+    assert_eq!(rat.game_limit, 0);
+    assert_eq!(rat.hp_regen, 1);
+    assert_eq!(rat.unique_cooldown, 0);
+
+    // Gurbultis (27): Skali's permanent shopkeeper — passive (4), lair (3),
+    // zone 2 / level 6 matching his room's band, unique (game_limit 1),
+    // hp_regen 50. Distinct from the rat in every column.
+    let gurbultis = &content.monsters[&MonsterId(27)];
+    assert_eq!(gurbultis.name, "Gurbultis");
+    assert_eq!(gurbultis.level, 6);
+    assert_eq!(gurbultis.roam_class, 2);
+    assert_eq!(gurbultis.aggression, 0);
+    assert_eq!(gurbultis.behaviour, 4);
+    assert_eq!(gurbultis.herd_mode, 3);
+    assert_eq!(gurbultis.game_limit, 1);
+    assert_eq!(gurbultis.hp_regen, 50);
+
+    // Distribution tripwires over all 1101 templates (schema-drift guards;
+    // ranges verified against the shipped data during slice 1).
+    let mut roam_specials = (0u32, 0u32, 0u32); // water 5, roamer 0x25, door-roamer 0x26
+    for m in content.monsters.values() {
+        assert!(
+            (0..=100).contains(&m.aggression),
+            "{:?}: aggression {} out of 0-100",
+            m.id,
+            m.aggression
+        );
+        assert!(
+            (0..=3).contains(&m.herd_mode),
+            "{:?}: herd mode {} out of 0-3",
+            m.id,
+            m.herd_mode
+        );
+        assert!(
+            (0..=6).contains(&m.behaviour),
+            "{:?}: behaviour {} out of the §4 taxonomy",
+            m.id,
+            m.behaviour
+        );
+        match m.roam_class {
+            5 => roam_specials.0 += 1,
+            0x25 => roam_specials.1 += 1,
+            0x26 => roam_specials.2 += 1,
+            _ => {}
+        }
+    }
+    assert_eq!(roam_specials, (22, 32, 87), "free-roam class census drifted");
 }
 
 #[test]

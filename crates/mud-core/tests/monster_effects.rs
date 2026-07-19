@@ -48,6 +48,10 @@ const SUMCALL: SpellId = SpellId(935);
 const SUMSELF: SpellId = SpellId(936);
 /// AreaC instant (Damage, 10) — the area boost probe.
 const SQUALL: SpellId = SpellId(937);
+/// (Fear, 101) duration 10 — the monster flee probe (M6 slice 2).
+const PANIC: SpellId = SpellId(938);
+/// Where the fear'd rat flees to (north of TOWER, same zone 0).
+const DEN: RoomId = RoomId { map: 1, room: 2 };
 /// Worn AlterSpDmg(165) carrier — the shipped model is item 504
 /// "multicoloured sash" (+10), the ONLY 165 carrier in the DB.
 const SASH: ItemId = ItemId(700);
@@ -84,7 +88,7 @@ fn spell(id: SpellId, name: &str, short: &str) -> Spell {
 
 fn world() -> Content {
     let mut content = Content::default();
-    content.add_room(Room {
+    let mut tower = Room {
         id: TOWER,
         name: "Tower".into(),
         description: vec![],
@@ -93,7 +97,28 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
-    });
+        ..Default::default()
+    };
+    // North exit to DEN so the Fear handler has somewhere to flee.
+    tower.exits[mud_core::content::Direction::North as usize] =
+        Some(mud_core::content::Exit {
+            dest: DEN,
+            exit_type: 0,
+            ..Default::default()
+        });
+    content.add_room(tower);
+    let mut den = Room {
+        id: DEN,
+        name: "Den".into(),
+        ..Default::default()
+    };
+    den.exits[mud_core::content::Direction::South as usize] =
+        Some(mud_core::content::Exit {
+            dest: TOWER,
+            exit_type: 0,
+            ..Default::default()
+        });
+    content.add_room(den);
     let mut rat = Monster {
         id: RAT,
         name: "giant rat".into(),
@@ -112,6 +137,7 @@ fn world() -> Content {
         weapon: None,
         loot: vec![],
         attacks: [AttackForm::default(); 5],
+        ..Default::default()
     };
     rat.abilities = vec![];
     content.add_monster(rat);
@@ -199,9 +225,12 @@ fn world() -> Content {
     squall.abilities = vec![(Ability::Damage, 10)];
     squall.match_type = MatchType::AreaC;
     squall.duration = 0;
+    let mut panic = spell(PANIC, "panic", "pani");
+    panic.abilities = vec![(Ability::Fear, 101)]; // beats genrdn(0,100) always
+    panic.duration = 10;
     for s in [
         hex, hexshort, hexchain, blight, rehex, venomous, areahex, gravity, bolt, sting,
-        sumcall, sumself, squall,
+        sumcall, sumself, squall, panic,
     ] {
         content.add_spell(s);
     }
@@ -250,6 +279,7 @@ fn caster(spells: &[SpellId]) -> Player {
         spellbook: spells.iter().map(|s| (*s, false)).collect::<BTreeMap<_, _>>(),
         poison: 0,
         active_spells: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -395,6 +425,27 @@ fn area_duration_casts_enter_every_monster_slot_table() {
 }
 
 // --- upkeep ---
+
+#[test]
+fn fear_upkeep_flees_the_monster() {
+    // Reduced-handler Fear (60), 44957-44960: genrdn(0,100) < v => flee a
+    // random valid exit via move_monster — live now that M6 slice 2 gives
+    // monsters movement. Value 101 always beats the roll; the flee runs
+    // move_monster's full gate ladder (zone 0 == roam 0 here).
+    let (mut core, s, m) = setup(&[PANIC]);
+    core.input(s, "cast pani rat");
+    core.drain_events();
+    for _ in 0..3 {
+        core.tick(); // one medium tick
+    }
+    let events = core.drain_events();
+    assert_eq!(core.monster_location(m), Some(DEN), "the rat fled north");
+    let shown = text_to(&events, s);
+    assert!(
+        shown.contains("giant rat just left to the north."),
+        "flee departure line: {shown:?}"
+    );
+}
 
 #[test]
 fn upkeep_dot_kills_through_the_death_path() {

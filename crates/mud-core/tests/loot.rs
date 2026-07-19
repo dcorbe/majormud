@@ -5,7 +5,7 @@
 //! (genrdn(1,100) <= dropper); death then drops everything actually
 //! carried, with no message — the items just join the room's notice line.
 //! The first-kill-guaranteed rule for limited-population monsters arrives
-//! with M6's respawn stamps.
+//! with M6's respawn stamps (landed — tests/population.rs owns it).
 
 use mud_core::content::{
     AttackForm, Class, ClassId, Content, Item, ItemId, LootSlot, Monster, MonsterId, Race, RaceId,
@@ -33,6 +33,7 @@ fn thug(loot: Vec<LootSlot>) -> Monster {
         weapon: Some(ItemId(92)),
         loot,
         attacks: [AttackForm::default(); 5],
+        ..Default::default()
     }
 }
 
@@ -47,6 +48,7 @@ fn world(loot: Vec<LootSlot>) -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     content.add_item(Item {
         id: ItemId(1356),

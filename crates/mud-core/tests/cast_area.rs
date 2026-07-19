@@ -38,6 +38,10 @@ const QUAKE: SpellId = SpellId(530);
 /// Offensive instant match-5 magic damage 12..12 — the magnitude-SPLIT
 /// probe (V / target count; fixture-only, no learnable 3/5/9/10 exists).
 const CLEAVE: SpellId = SpellId(540);
+/// Offensive INSTANT match-12 (Poison, 6) — the slice-6 area poison arm
+/// (set-if-greater at each room monster; fixture-only, no learnable
+/// instant-poison area ships).
+const VENOMGAS: SpellId = SpellId(570);
 /// Benign match-13 duration area: 13 iterates PLAYERS in the decompile,
 /// and players are never valid area targets (§8.13) — targetless for
 /// now, ORACLE-VERIFY.
@@ -74,6 +78,7 @@ fn monster(id: MonsterId, name: &str, hitpoints: i32) -> Monster {
         weapon: None,
         loot: vec![],
         attacks: [AttackForm::default(); 5],
+        ..Default::default()
     }
 }
 
@@ -118,6 +123,7 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     content.add_room(Room {
         id: SHOP,
@@ -128,6 +134,7 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     content.add_monster(monster(RAT, "giant rat", 1000));
     let mut ember = monster(EMBER, "ember beast", 1000);
@@ -243,6 +250,12 @@ fn world() -> Content {
     cleave.name = "cleave".into();
     cleave.short_name = "clea".into();
     cleave.match_type = MatchType::Area5;
+    let mut venomgas = spell(VENOMGAS, "venomgas", "veno");
+    venomgas.mana_cost = 10;
+    venomgas.cast_msg_b = Some(MessageId(950));
+    venomgas.abilities = vec![(Ability::Poison, 6)];
+    venomgas.match_type = MatchType::AreaC;
+    venomgas.duration = 0;
     cleave.element = Element::Magic;
     let mut hymn = spell(HYMN, "hymn", "hymn");
     hymn.match_type = MatchType::AreaD;
@@ -261,6 +274,7 @@ fn world() -> Content {
     content.add_spell(miasma);
     content.add_spell(quake);
     content.add_spell(cleave);
+    content.add_spell(venomgas);
     content.add_spell(hymn);
     content.add_spell(smog);
     content
@@ -268,7 +282,7 @@ fn world() -> Content {
 
 fn book() -> BTreeMap<SpellId, bool> {
     let mut book = BTreeMap::new();
-    for id in [GLARE, REEK, MIASMA, QUAKE, CLEAVE, HYMN, SMOG] {
+    for id in [GLARE, REEK, MIASMA, QUAKE, CLEAVE, HYMN, SMOG, VENOMGAS] {
         book.insert(id, false);
     }
     book
@@ -302,6 +316,7 @@ fn player(name: &str, class: ClassId, location: RoomId) -> Player {
         spellbook: book(),
         poison: 0,
         active_spells: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -627,4 +642,20 @@ fn match_thirteen_is_targetless_until_measured() {
         "got: {shown:?}"
     );
     assert_eq!(core.current_mana(zin), 30, "uncharged");
+}
+
+#[test]
+fn instant_area_poison_sets_if_greater_on_room_monsters() {
+    // The slice-6 close-out arm: an instant area Poison(6) hard-writes
+    // each room monster's counter set-if-greater, like the single-target
+    // twin. Fixture-only (no learnable instant-poison area ships).
+    let (mut core, zin, _, _) = stage();
+    let rat = core.spawn_monster(RAT, TOWER).expect("fixture template");
+    core.drain_events();
+    let shown = cast(&mut core, zin, "c veno");
+    assert!(shown.contains("You cast venomgas"), "got: {shown:?}");
+    assert_eq!(core.monster_poison(rat), Some(6), "counter hard-written");
+    // A second cast cannot LOWER it (6 never exceeds 6) and never stacks.
+    cast(&mut core, zin, "c veno");
+    assert_eq!(core.monster_poison(rat), Some(6));
 }

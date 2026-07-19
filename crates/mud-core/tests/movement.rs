@@ -14,16 +14,19 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     };
     gates.exits[Direction::North as usize] = Some(Exit {
         dest: RoomId { map: 1, room: 2 },
         exit_type: 0,
         trigger_msg: None,
+        ..Default::default()
     });
     gates.exits[Direction::Up as usize] = Some(Exit {
         dest: RoomId { map: 1, room: 3 },
         exit_type: 0,
         trigger_msg: None,
+        ..Default::default()
     });
     let mut square = Room {
         id: RoomId { map: 1, room: 2 },
@@ -34,11 +37,13 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     };
     square.exits[Direction::South as usize] = Some(Exit {
         dest: RoomId { map: 1, room: 1 },
         exit_type: 0,
         trigger_msg: None,
+        ..Default::default()
     });
     let tower = Room {
         id: RoomId { map: 1, room: 3 },
@@ -49,6 +54,7 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     };
     content.add_room(gates);
     content.add_room(square);
@@ -84,6 +90,7 @@ fn player_at(name: &str, room: u16) -> Player {
         spellbook: std::collections::BTreeMap::new(),
         poison: 0,
         active_spells: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -166,8 +173,11 @@ fn moving_shows_new_room_and_broadcasts_both_sides() {
     );
     let to_carol = text_to(&events, carol);
     assert!(
-        to_carol.contains("Bob just arrived from the south."),
-        "new room sees arrival from opposite side: {to_carol:?}"
+        to_carol.contains("Bob walks into the room from the south."),
+        "new room sees arrival from opposite side (oracle 2026-07-18: \
+         'Kaimon walks into the room from the east.'; 'just arrived from' \
+         never appears in any capture — it is the spawn-arrival string): \
+         {to_carol:?}"
     );
 }
 
@@ -188,8 +198,9 @@ fn vertical_movement_uses_upwards_phrasing() {
     );
     let to_carol = text_to(&events, carol);
     assert!(
-        to_carol.contains("Bob just arrived from below."),
-        "vertical arrival says from below, no article: {to_carol:?}"
+        to_carol.contains("Bob walks into the room from below."),
+        "vertical arrival says from below, no article (oracle: 'Oracle \
+         walks into the room from above.'): {to_carol:?}"
     );
 }
 
@@ -261,5 +272,38 @@ fn movement_only_broadcasts_to_the_two_rooms_involved() {
     assert!(
         to_carol.is_empty(),
         "unrelated room hears nothing: {to_carol:?}"
+    );
+}
+
+#[test]
+fn exits_line_shows_closed_doors_and_hides_secrets() {
+    // ORACLE (oracle_m6_arena_fight.raw): "Obvious exits: closed door
+    // north, up" — type-2 exits with the door closed render with the
+    // "closed door" prefix; secret types 7/0xb stay hidden until found
+    // (found-state is runtime the engine does not model yet — unfound is
+    // the shipped default).
+    use mud_core::content::Exit;
+    let mut content = world();
+    {
+        let gates = content.rooms.get_mut(&RoomId { map: 1, room: 1 }).unwrap();
+        gates.exits[Direction::North as usize] = Some(Exit {
+            dest: RoomId { map: 1, room: 2 },
+            exit_type: 2,
+            door_closed: true,
+            ..Default::default()
+        });
+        gates.exits[Direction::East as usize] = Some(Exit {
+            dest: RoomId { map: 1, room: 2 },
+            exit_type: 7,
+            param: 3,
+            ..Default::default()
+        });
+    }
+    let mut core = Core::new(content, CoreConfig::default());
+    let alice = core.attach_player(player_at("Alice", 1));
+    let shown = text_to(&core.drain_events(), alice);
+    assert!(
+        shown.contains("Obvious exits: closed door north, up"),
+        "door prefix + hidden secret: {shown:?}"
     );
 }

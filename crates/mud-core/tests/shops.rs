@@ -18,12 +18,14 @@ fn world() -> Content {
         shop: Some(ShopId(45)),
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     };
     shop_room.exits[mud_core::content::Direction::South as usize] =
         Some(mud_core::content::Exit {
             dest: RoomId { map: 1, room: 2 },
             exit_type: 0,
             trigger_msg: None,
+            ..Default::default()
         });
     content.add_room(shop_room);
     content.add_room(Room {
@@ -35,6 +37,7 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     content.add_item(Item {
         id: ItemId(100),

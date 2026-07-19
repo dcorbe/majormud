@@ -100,7 +100,8 @@ Tiers 1–2 run per commit; the oracle runs on demand per system.
 - **M4 Stuff** — inventory, equip/worn slots, item charges, shops, banking.
 - **M5 Magic** — casting, effect application, duration/upkeep, monster casting.
 - **M6 Living world** — density-driven spawning, wander/leash, aggression,
-  unique-spawn timers.
+  unique-spawn timers. **COMPLETE 2026-07-18** (design + six slices:
+  `2026-07-18-m6-living-world-design.md`; charm/pets re-deferred to M7).
 - **M7 Content systems** — quest text-block VM, gangs + `.HSE` houses.
 - **M8 Plus (optional)** — WCCMMPLS add-on.
 

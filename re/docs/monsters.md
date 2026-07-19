@@ -44,37 +44,59 @@ reschedules itself with `my_rtkick(DAT_00482ca8, …)`. All spawn logic is in
 
 ### Spawning is player-driven — the world does not populate empty regions
 
-`FUN_004232d3` never sweeps the whole map. It builds and consumes a small room cache
-(`DAT_004942d0`, 512 entries × 12 B: `[+0]` room#, `[+4]` map, `[+8]` byte max-count /
-`[+9]` byte live-count) keyed off **where players currently are**:
+*(Slice M6-4 line-level re-read, 2026-07-18 — the threshold DIRECTION and the cache-byte
+meanings below CORRECT the earlier reading, which had both inverted.)*
 
-* **Phase B** (per logged-in user): look at the user's *own* room and decide whether to
-  spawn there.
-* **Phase A** (the neighbour pass): for each room in the cache, walk its 10 exits and, with
-  a **~5 % chance per exit** (`genrdn(1,100) < 6`), spawn into the *adjacent* room.
+`FUN_004232d3` (20100-20291) never sweeps the whole map. It builds and consumes a small
+room cache (`DAT_004942d0`, 512 entries × 12 B: `[+0]` room#, `[+4]` map, `[+8]` byte
+**players in the room**, `[+9]` byte **live monsters in the room**), zeroed on every
+invocation and keyed off **where players currently are**:
 
-So monsters appear in occupied rooms and in the ring of rooms one step out from players.
-Regions with nobody in them stay empty until a player arrives. A single spawner pass is
-globally capped at ~9 new monsters (`local_20 < 9`; it returns early once `8 < local_20`,
-saving its cursor in `DAT_0047fba4`/`DAT_0047fba8` to resume next pass).
+* **Phase B runs first** (per logged-in user, 20207-20287): count the user's own room
+  once per pass (cache hit reuses the counts), then decide whether to spawn there.
+* **Phase A** (the neighbour pass, 20131-20205) consumes the cache: for each cached
+  room, walk its 10 exits (NO exit-type filter — spawns propagate through doors and
+  secrets) and, with a **~5 % roll per nonzero exit** (`genrdn(1,100) < 6`), consider
+  the *adjacent* room. A type-0/2 neighbour spawns **iff its live monsters < the
+  SOURCE room's player count** — no further roll — and at most ONE such neighbour
+  attempt per source room per pass; a type-3 neighbour swarm-fills. Fresh neighbours
+  are appended to the cache (dedup by room#).
 
-### Per-room spawn gate
+So monsters appear in occupied rooms and the ring one step out. A single pass is
+globally soft-capped at ~9 spawns (`local_20`; early return past `8 < local_20`, cursors
+`DAT_0047fba4`/`DAT_0047fba8` resume next pass — a phase-A cap-out makes the NEXT tick a
+no-op since the cache rebuilds empty). Known original bugs, not reproduced in the
+reimplementation: the phase-A neighbour lookup uses the stale map of the last phase-B
+user (Q1); cache bytes `[+8]/[+9]` are never cleared, enabling bounded multi-hop
+propagation from stale counts (Q3).
 
-The room's spawn behaviour is selected by **`room+0x43c`** (spawn-type, read as
-`room[0x10f]` int-index in phase A):
+### Per-room spawn gate (phase B, exact — 20260-20277)
+
+The room's behaviour is selected by **`room+0x43c`**:
 
 | `room+0x43c` | behaviour |
 |--------------|-----------|
-| `0` / `2` | **normal timed spawn** — roll against a per-type threshold and the live/max cap |
-| `3` | **swarm** — loop `generate_monster` until it fails or 9 spawned this pass |
-| other (incl. absent) | no spawn |
+| `0` / `2` | timed spawn (below) |
+| `3` | **swarm** — loop `generate_monster` until refusal (or the 9-cap) |
+| `1` | boot-fill only (see the boot section) — the 5 s spawner ignores it |
+| other | no spawn |
 
-For the normal case the spawner counts live monsters in `room+0x400` (the 15-slot live
-list, §5) and compares to the room's **max-monster cap** (byte cached from the room
-record). Only if `live < max` does it roll `genrdn(1,100)` against a type threshold
-(`room+0x43c==2 → 0x5a`, `==0 → 5`, else `0x19`) plus a secondary `live*2 ≤ max` brake,
-then calls `generate_monster`. Net effect: room type 0 spawns aggressively (low
-threshold), type 2 rarely (high threshold), and the room never exceeds its cap.
+For type 0/2 the roll `genrdn(1,100)` is drawn **unconditionally** (RNG-stream
+relevant), then:
+
+```
+if (monsters >= 15) skip;                                  // room list full
+if (monsters < players) {                                  // the density brake
+    thresh = (type==2) ? 0x5a : 5;                         // spawn iff roll < thresh
+    if (roll < thresh) spawn;
+}
+else if (roll >= 100 && players*2 > monsters) spawn;       // natural-100 overshoot
+```
+
+Net effect — the OPPOSITE of the earlier reading: **type-2 rooms spawn at 89 % per 5 s
+kick, type-0 at 4 %**, both only while the room holds fewer monsters than players; a 1 %
+natural-100 lets the count overshoot to just under 2× the players. Density follows the
+players, not a room quota (`room+0x55c` still caps inside generate_monster).
 
 ### The `generate_monster` call — room fields that drive it
 
@@ -110,12 +132,17 @@ generate_monster(room#, map,
 ### Respawn timing after a kill
 
 On a monster's death `check_kill_monster` (`0x24eb7`, see `death.md` §4) decrements
-`room+0x606` and stamps **`room+0x562 = FUN_0046c3b8()`** (a future time), nudged up by
-`0x5a0` if below `DAT_0047963a`. `generate_monster` refuses to spawn while that timer has
-not elapsed (`0x24361` lines checking `room+0x562` against `now()+FUN_0046c3b8()` minus the
-`room+0x5bc`/`DAT_00482d0c` interval). So a slain monster's slot only refills after its
-room-level cooldown — this is the classic MajorMUD "respawn timer," per-room, not
-per-monster.
+`room+0x606` and stamps `room+0x562` with the kill time in **minutes-since-midnight**:
+`FUN_0046c3b8(now())` = `(t>>11)*60 + ((t&0x7FF)>>5)` from the DOS-packed time (the
+2-second field is discarded). The `+0x5a0` nudge is **1440 = minutes per day**: applied
+when the stamp falls numerically before the module boot minute `DAT_0047963a` (set once
+in `init__wccmmud` — it is the boot time, not a threshold), keeping the minute clock
+monotonic across midnight. `generate_monster` normalizes "now" the same way
+(lines 20912-20916) and refuses to spawn until more than `room+0x5bc` minutes — or
+**`DAT_00482d0c` = 5 minutes** when zero — have elapsed past the stamp
+(lines 20918-20922). Spawn-type-2 rooms (`room+0x43c == 2`) bypass the timer entirely
+(line 20909). So a slain monster's slot refills after a per-room cooldown — the classic
+MajorMUD "respawn timer," per-room, not per-monster.
 
 **Caps, summarised:** at most **15 live monsters per room** (the `room+0x400` array size,
 enforced by `add_monster_to_room`), further limited by the room's own spawn-count cap
@@ -143,22 +170,31 @@ instance. Sequence:
    (`genrdn(1,100)` with 0x1d/0x62 thresholds — later matches can displace earlier ones).
    With `param_4` set, that exact monster number is used.
 3. **World-population throttle.** If the template carries a spawn counter
-   (`knmsr+0xa6 != 0`): refuse if the counter is exhausted (`knmsr+0xa6 ≤ knmsr+0x54`), and
-   for "1 remaining" apply a real-time cooldown computed from the last-kill stamp
-   (`knmsr+0xb4/+0xb6`, minutes via `calc_minutes_difference`). On success bump
-   `knmsr+0x54` and mark the template dirty. This is the mechanism behind limited-population
-   / rare monsters.
+   (`knmsr+0xa6 != 0`, the `gamelimit` column): refuse if the counter is exhausted
+   (`knmsr+0xa6 ≤ knmsr+0xa8`, `active`), and for "1 remaining" apply a real-time
+   cooldown of `knmsr+0xb2 × 60` minutes (`regentime`, line 20995) computed from the
+   last-kill stamp (`knmsr+0xb4/+0xb6` = `datekilled`/`timekilled`, minutes via
+   `calc_minutes_difference`). On success bump `knmsr+0xa8` and mark the template
+   dirty. This is the mechanism behind limited-population / rare monsters.
+   *(Corrects the earlier `+0x54`-as-active-count reading — `+0x54` is the roam/zone
+   class, §3, and doubles as the mongen region.)*
 4. **Allocate** an instance id (`get_unique_active_monster_number`), zero a 400-byte
    instance struct, then copy template fields into it (name, level, stats, attack table,
-   energy, the behaviour fields of §3/§4). **HP is copied straight from the template
-   (`knmsr[0x18]/[0x19]` → instance current/max HP); it is _not_ rolled.** The only
-   randomised values at birth are the **five coin piles** (`mon+0x3c..0x40` =
-   runic/plat/gold/silver/copper), each `lngrnd(0, knmsr_maxCoin+1)`.
+   energy, the behaviour fields of §3/§4 — full copy map below). **HP is copied
+   straight from the template (the word at `knmsr+0x78`, `hitpoints`, → both instance
+   current HP `+0x18` and max HP `+0x104`, lines 21019/21028); it is _not_ rolled.**
+   The only randomised values at birth are the **five coin piles**
+   (`mon+0xf0/f4/f8/fc/100` = runic/plat/gold/silver/copper), each
+   `lngrnd(0, knmsr_maxCoin+1)` from the maxes at `knmsr+0x108..0x118`
+   (lines 21042-21056). *(Corrects the earlier `knmsr[0x18]/[0x19]`-as-HP and
+   `mon+0x3c` coin claims — the `+0x60`/`+0x64` dwords are the `something2`/
+   `weaponnumber` pair copied to `mon+0xac/+0xb0`.)*
 5. **Carried inventory.** For each of 10 template item slots (`knmsr+0x30·i`): unless a
    per-slot drop-chance roll (`genrdn(1,100)` vs `knmsr+0xfc+i`) fails, attach the item via
    `add_logical_to_monster` (this is the same loot the monster later drops on death).
-6. **Name.** Copy `knmsr+0x34` (template name), or if `knmsr+0x49` (name-generator id) is
-   set, roll a random name via `get_random_name`.
+6. **Name.** Copy `knmsr+0x36` (template name — one word past the earlier `+0x34`
+   guess; lines 21104-21107), or if the dword at `knmsr+0x124` (name-generator id,
+   `piVar5[0x49]`) is set, roll a random name via `get_random_name`.
 7. **Insert & place.** Store the record (`dfaInsertDup`, retrying up to 4 fresh ids on
    collision) and `add_monster_to_room` (§5). Bump `room+0x606` (or set the boss flag if
    this is the room's unique). Pick a **random valid entry direction** (loop over 8 exits,
@@ -166,6 +202,80 @@ instance. Sequence:
    south.*"), then `tell_room` + `display_entry_movement`.
 
 Returns the new instance id, or 0 on any gate failure.
+
+### Slice M6-4 refinements (line-level, 2026-07-18)
+
+- **Never-spawns gate first**: `max_level == 0 && forced == 0` refuses before anything
+  (20886) — the shipped zoned rooms with a 0-0 band are spawnless by design.
+- **Candidate walk** (20943-20965): adopt the FIRST zone/band match without a draw; each
+  later match draws `genrdn(1,100)` — `<= 29` replaces the incumbent, `>= 99` stops the
+  scan KEEPING the incumbent, 30..98 keeps scanning. The mongen table is every template
+  in record order (no filtering), reloaded every 60 s.
+- **Respawn refusal window** (20909-20925): refuse while `stamp <= now <= stamp+delay`
+  (delay = `room+0x5bc` minutes, else 5). **Type-2 rooms and the room's own boss skip
+  the timer entirely.**
+- **Boss**: bypasses the `+0x55c` cap and the timer; sets `room+0x564` bit 8 instead of
+  bumping `+0x606`; a forced spawn equal to `room+0x5c8` refuses while bit 8 holds.
+- **Entry direction** (21164-21176): compass exits 0-7 of TYPE 0 only; first qualifier
+  held, each later one replaces on `genrdn(1,10) >= 6`. No qualifying exit ⇒ "from
+  nowhere".
+- **Arrival line** (21177-21221): template `movemsg` 0 ⇒ `"%s just arrived from the
+  %s."` / `"... from nowhere."`; a resolvable message prints ITS first line (empty ⇒
+  silent) — this is where "appears right beside you!" style lines live; there is no
+  hardcoded "appears" variant and NO A/An article logic (articles are baked into
+  content strings).
+- **Adjacent-room rumble**: `display_entry_movement(0xb, ...)` tells every neighbour
+  through exits of type {0,3,4,7,9,0xb}: `"You hear movement to the %s."` (reverse
+  direction; above/below variants for vertical exits).
+- **Coin piles** are rolled `lngrnd(0, max+1)` per NONZERO template max, at generate
+  time; check_kill_monster drops the INSTANCE piles with killer-visible `"%s <denom>
+  drop to the ground."` lines, runic first.
+- **check_kill_monster stamps BOTH rooms**: the spawn room (`mon+0x120` — with the
+  `+0x606` decrement and linked `+0x5c0` payback; a boss only clears bit 8) and the
+  current room where it died.
+- **Boot population** (preload_and_generate_buffers 27594-27767): a resumable brute
+  walk of every room — every `permnpc` room spawns its boss (forced, band 0-0x7fff),
+  and spawn-type **3 and 1** rooms swarm-fill until their gates refuse; type-1 is
+  boot-fill-only. The room cache is NOT seeded at boot.
+- **Custom-arrival binding + census (close-out)**: the movemsg %s slots bind
+  **(instance name, direction-spec)** — CONTENT-VERIFIED: msg 38 reads "An %s walks
+  into the room from %s." and the oracle captured "An nasty orc rogue walks into the
+  room from the west." Shipped census: 14 templates use the default "just arrived"
+  pair, 366 arrive silently (empty text), 721 carry custom texts — the default line
+  is nearly dead in practice, which is why it appears in no capture.
+
+### Template → instance copy map (disk-verified 2026-07-18, slice M6-1)
+
+Pinned from `generate_monster`'s copy block (decompile lines 21012-21111) and
+cross-checked against the consumers (§3/§4) and the sqlite column layout
+(Nightmare `MonsterRecType` — its offsets match the WG3-NT logical record;
+`load_known_monster_into_buffer`/`save_known_monster_from_buffer` read/write the
+raw Btrieve record with no repacking, so **disk offsets == in-memory offsets**;
+independently proven by `load_monster_quickreferences` stepping raw records with
+the same +0x54/+0x5c reads):
+
+| mon | ← knmsr | column | meaning | line |
+|-----|---------|--------|---------|------|
+| `+0x08` | `+0x58` (u4) | `expmulti` | herd rank (dual-use with the exp multiplier) | 21013 |
+| `+0x16`/`+0x114` | `+0x7a` | `energy` | current / max energy | 21018/21031 |
+| `+0x18`/`+0x104` | `+0x78` | `hitpoints` | current / max HP | 21019/21028 |
+| `+0x106` | `+0xae` | `alignment` | **behaviour mode** (§4 taxonomy) | 21029 |
+| `+0x108` | `+0x6e` | `follow` | **aggression** 0-100 | 21030 |
+| `+0x10a`/`+0x10c` | `+0x68`/`+0x6a` | `dr`/`ac` | damage resist / armour class | 21026/21025 |
+| `+0x110` | `+0x74` | `experience` | exp worth (fed to `distribute_experience`) | 21024 |
+| `+0x12c` | `+0x54` | `group` | **roam/zone class** = mongen region | 21032 |
+| `+0x130` | `+0x7c` | `hpregen` | HP regen per slow tick | 21020 |
+| `+0x148` | `+0xaa` | `type` | **herd/leash mode** (0 none, 1/2 pack, 3 lair) | 21033 |
+| `+0xac`/`+0xb0` | `+0x60`/`+0x64` | `something2`/`weaponnumber` | combat pair | 21070/21071 |
+| `+0xb4+4i` | `+0xc0+4i` | `itemnumber_i` | carried item (roll vs `+0xfc+i` `itemdropper_i`) | 21074-21093 |
+
+Template fields read in place (not copied): `+0x6c` `something3` herd id and
+`+0xac` `nothing2` follower cap (move_monster pack logic), `+0xa6`/`+0xa8`
+`gamelimit`/`active` population pair, `+0xb2` `regentime` cooldown factor,
+`+0xb4/+0xb6` kill stamps, `+0xb8` `movemsg` arrival-message id, `+0xbc`
+`deathmsg`, `+0x5c` `index` level (mongen candidate table). PLAUSIBLE only:
+`+0x1be`/`+0x1ae` spawn-/death-time triggers for `FUN_00429bca`; the
+`mon+0x134/+0x136/+0x138/+0x13c ← knmsr+0x1b0..+0x1b8` copies (meaning unchased).
 
 ---
 
@@ -191,7 +301,14 @@ aggressive monster mostly sits and ambushes; a placid one drifts. Global fairnes
 `check_monster_confusion` (`0x29812`; monster ability `0x47`) — a confused monster fumbles
 ("*looks around stupidly*") and does not move. The chosen direction comes from
 `pick_valid_random_direction`, and is rejected if it equals `mon+0x132` (the
-**last-move direction**, i.e. monsters avoid immediately doubling back).
+**last-move direction** — the SAME direction as the previous step, i.e. no two
+consecutive steps in a straight line until the 30 s slow tick clears the memory;
+ping-ponging straight back IS allowed. Corrects the earlier "avoids doubling
+back" gloss — slice M6-2, verified in the corridor test). Order in the default
+path (19346-19360): fairness cap → wander roll → confusion → cap increment →
+pick → same-direction reject; the water path (19364-19371) consumes the cap
+slot *before* its confusion check and skips the cap entirely while the
+monster's `mon+0x140` byte is set.
 
 If a monster instead has a **directed-travel order** (`mon+0x22 != 0`, a target
 coordinate — used by patrols / summoned / monster-vs-monster) it steps toward that coord
@@ -208,11 +325,15 @@ any failure returns 0 (stayed put):
    cannot move; instead its prone timer (`mon+0x168`) ticks down.
 3. **Herd / leash by pack** (`mon+0x148`, the herd-mode field, values 1/2/3):
    * `3` = **fully stationary** — bound to its lair, never takes an exit.
-   * `1`/`2` = **pack members** — a monster will refuse to leave if a same-herd packmate
-     (matched on `knmsr+0x6c` herd id, with a `knmsr+0x58` rank test) is present and holds
-     the room; conversely, when a leader *does* move it **drags followers** the same
-     direction (recursive `move_monster(..., herdFlag=1)`, up to `knmsr+0xac` of them). Packs
-     move as a unit.
+   * `1`/`2` = **pack members**, precise semantics (21445-21462, 21611-21631;
+     herd id matched on `knmsr+0x6c`, rank = `mon+0x08` ← `knmsr+0x58`):
+     a **mode-2** monster refuses to leave while ANY same-herd mode-1 packmate
+     is in the room (it moves only when dragged); a **mode-1** monster refuses
+     only while a HIGHER-RANKED same-herd mode-1 is present. When a mode-1
+     monster does move it **drags** same-herd packmates — every mode-2 plus
+     lower-ranked mode-1s — the same direction (recursive
+     `move_monster(..., herdFlag=1)`, up to `knmsr+0xac` of them). Packs move
+     as a unit behind the highest-ranked mode-1.
 4. **Leash by zone** — the core wander bound. The destination room is
    `room+0x338+dir*4` (the exit's dest room, per `vir_schemas.md`). The step is allowed
    only if the destination's **`room+0x560` zone id equals the monster's `mon+0x12c`**, or
@@ -249,61 +370,95 @@ the room from the …*" to both rooms.
 *initiate* against. Reading every branch of the aggression driver `FUN_00423863`
 (`0x423863`) and `give_monsters_a_free_attack` (`0x29692`):
 
+*(Slice M6-3 line-level re-read, 2026-07-18 — two rows CORRECTED: mode 6 SPARES
+high-fame players, and the criminal-hunter behaviour lives in ROAM class 5, not
+mode 6.)*
+
 | `mon+0x106` | class | initiation behaviour |
 |-------------|-------|----------------------|
 | **0** | passive | Never initiates. Only fights back once attacked (already has `mon+0x1a` set). |
 | **3** | passive / sentinel | Never initiates (identical treatment to 0 in every gate). |
 | **4** | passive | Never initiates. On a player's flee it swings only if it was *already* fighting that player. |
-| **6** | guardian / conditional | Initiates **only against high-threat players**: aggro driver requires `player+0x542 ≥ 0x28` (fame/notoriety ≥ 40) or the player is already fighting it; a low-fame player is ignored. (The flee free-attack uses the mirror bound `player+0x542 < 0x50`.) This is the "attacks only criminals / notorious characters" guard type. |
-| **1, 2, 5, …** (any other) | aggressive | Initiates against **any** valid player present. Class `5` in `mon+0x12c` (roam) is treated as *extra* aggressive (rolls against a base of 100 rather than 50). |
+| **6** | aggressive, fame-sparing | Initiates like any aggressive mode EXCEPT against `player+0x542 ≥ 0x28` (fame ≥ 40) — the famous are skipped unless already fighting it (20386-20390). The flee free-attack uses the looser bound 0x50 (23882). |
+| **1, 2, 5, …** (any other) | aggressive | Initiates against **any** valid player present. |
 
-The `≥40` fame threshold for mode 6 is the same alignment/fame line the death code uses for
-temple recall (`death.md` §3).
+**ROAM class 5** (`mon+0x12c`, not the behaviour mode) is the criminal-hunter
+branch (20408-20448): it initiates ONLY against `fame ≥ 0x28` players, at base
+100 (`genrdn(0,100) < 100 - 5·attackers`) — and a mode-6 class-5 inverts to
+"only fame < 0x28". A player already fighting the monster is attacked
+unconditionally. Class-5 acquisitions have NO fallback victim.
 
 ### Acquiring a target — `FUN_00423863` (runs inside the 5 s combat round)
 
 For each player (walked through the shuffled terminal map `DAT_004913fc` for fairness), the
-driver scans the up-to-15 monsters in that player's room. A monster is a candidate to
-*acquire* when it has **no current target** (`mon+0x1a` empty) and **no travel order**
-(`mon+0x22 == 0`). It then, subject to its `mon+0x106` mode above, tests each nearby player
-with **`FUN_004237de`** — the target-validity predicate: player is in the monster's exact
-room, is attackable, and is **not hidden** unless the monster has see-hidden ability `0x39`
-(`player+0x5f6` hidden flag; `player+0x6f4` bits 4/0x40 gate safe/no-aggro states). On a
-valid target it rolls the anti-pile-on chance from `combat_rounds.md` §3:
+driver scans the up-to-15 monsters in that player's room (a monster co-located with N
+players is visited N times — the full-energy entry gate of `attack_monster_user`, 26706,
+makes repeat visits no-ops). **Locked monsters** (`mon+0x1a` set) take the A2 path
+(20465-20519): the named target is attacked EVERY round it passes `FUN_004237de` — no
+roll. **Unlocked** monsters with no travel order (`mon+0x88 == 0`) acquire, subject to
+the mode table, testing each nearby player with `FUN_004237de` — same exact room, not
+hidden unless see-hidden `0x39`, and NOT flagged moved-this-round (`player+0x6f4` bit
+0x40, set on every move 12501, cleared at the top of the energy round 18619 and the
+medium tick 19755). On a valid target the anti-pile-on roll:
 
 ```
-genrdn(0,100) < 50 - 5 * player[+0x6f0]     // +0x6f0 = times already jumped this round
+genrdn(0,100) < 50 - 5 * player[+0x6f0]     // +0x6f0 resets each MEDIUM tick (19748)
 ```
 
-Success bumps `player+0x6f0` and calls `attack_monster_user` (the actual swing, in
-`combat_rounds.md`), which also **sets the monster's target** `mon+0x1a` to that player's
-name — the monster is now "locked on."
+**The roll only picks WHO — an eligible monster always attacks** (20401-20404: the
+last-rolled candidate is the fallback). Success bumps `player+0x6f0` and calls
+`attack_monster_user` (the swing sequence). **The lock is NOT written by acquisition**:
+it is (re)decided by the post-swing re-roll at the END of `attack_monster_user`
+(26867-26885) — `genrdn(1,100) < knmsr+0x6e` (the `follow` word) lands the lock;
+aggressive modes DROP an unlanded lock, passive modes keep whatever they hold, class
+0x25 never rolls and class 5 keeps an existing lock unrolled. This per-sequence
+re-roll is the mechanism behind the observed per-round free retargeting (§8.14). The
+retaliation lock on a PLAYER-initiated attack (`attack_user_monster` 26230-26236) uses
+the same shape: `genrdn(1,100) < mon+0x108` OR a passive mode (3/0/4) — so passive
+monsters always lock their attacker, aggressive ones probabilistically.
 
 ### Pursuit of a locked target — `fast_update_monster` (1 s)
 
-Once `mon+0x1a` is set the fast tier drives the chase every second:
+The fast tier is drained one table slot per user-poll (`ljngame_user_polling_routine`
+line 814-816 calls `*_update_next_monster` on alternate polls; each tier tick banks one
+full-table pass in its budget global) — amortized, every locked monster is processed
+about once per second. Only monsters with `mon+0x1a` set enter (caller gate 19245-19247).
+Per processed tick:
 
-* Resolve the target user. If they have **left the monster's room**, compute the direction
-  toward them (`dir_player_travelling_coord`) and `move_monster` that way — i.e. monsters
-  **follow fleeing players room-to-room**, subject to all the door/zone gates of §3.
-* Pursuit is refused when the target recalled/left the map, went hidden (and the monster
-  lacks ability `0x39`), or a per-monster follow roll fails (`genrdn(0,100) < mon+0x108`
-  aggression — a low-aggression monster may lose the trail).
-* Every failed follow bumps the **give-up counter `mon+0x124`** (byte). When it exceeds
-  `0xf` (15): a free-roam class-`0x25` monster **despawns** (`FUN_004298ec` — removes it
-  from the room, decrements the spawn count, frees the instance); any other monster simply
-  **drops the target** (`mon+0x1a = 0`, counter reset) and reverts to wandering.
-* The fast tier also runs **prone recovery**: `mon+0x128` bit 8 with countdown `mon+0x168`;
-  on expiry it prints "*…rises from the ground*" and clears the prone bit.
+* Resolve the target by name (`get_user_number`). Logged off → give-up bump. In the
+  monster's room → nothing (acquisition owns the same-room case; NO bump).
+* Refusals, each bumping `mon+0x124` by 1: different MAP; target hidden/sneaking without
+  see-hidden `0x39`; target's moved-this-round flag set; the follow roll failed
+  (`genrdn(0,100) < mon+0x108` aggression — charmed monsters, status bit 0, skip the
+  roll and always pursue); no trail direction; `move_monster` refused the step.
+* The direction comes from `dir_player_travelling_coord` (15657-15686): pure
+  breadcrumb-walk of the player's 0x14-deep movement trail (map `+0x550+i*4`, room
+  `+0x5a0+i*4`, index 0 = current) — find the monster's own room in the trail, step
+  toward the room the player entered NEXT. No coordinates involved.
+* When the counter exceeds `0xf` (15): a free-roam class-`0x25` monster **despawns
+  silently** (`FUN_004298ec` — restores the origin room's spawn accounting, removes it
+  from the room table, decrements the template's live count `+0xa8`, frees the
+  instance; no message); any other monster **drops the target** (`mon+0x1a = 0`,
+  counter reset) and reverts to wandering. The counter zeroes on every attack engage
+  (26775).
+* The fast tier also runs **prone recovery** (19404-19410, targeted monsters only —
+  the caller gate): `mon+0x128` bit 8 with countdown `mon+0x168`; on expiry prints
+  "*Slightly dazed the %s rises from the floor.*" to the room.
 
 ### Flee handling — `give_monsters_a_free_attack` (`0x29692`)
 
-Called from `move_user` whenever a player walks or flees (`combat_rounds.md` §3). One
-`genrdn(0,100)` roll for the whole room; the first monster whose **aggression `mon+0x108`
-≥ that roll** and whose `mon+0x106` mode permits gets a single parting swing. Passive modes
-(0/3/4, or roam-class `0x25`) only swing if already targeting the fleer; aggressive modes
-swing regardless. Gated to once per round via `player+0x6f0`. A nonzero return (the player
-lost a life / died) aborts the move — the monster's blow can stop the escape.
+Called from `move_user` at exactly one site (12489), BEFORE the move commits and the
+moved-flag is set; sneaking departures skip it. One `genrdn(0,100)` roll per departure —
+drawn even when the room holds nothing. The scan aborts if `player+0x6f0 > 0` (already
+attacked this MEDIUM tick — at most one free attack per window). The first monster whose
+**aggression `mon+0x108` ≥ the roll** (note `>=`, vs the strict `<` in acquisition) and
+whose mode permits swings: passive modes (0/3/4) and roam-class `0x25` only when already
+locked on the fleer (and not suppressed); mode 6 skips `fame ≥ 0x50`; other aggressive
+modes swing at strangers freely and at their own locked target only when unsuppressed.
+The swing is a full `attack_monster_user` sequence (so the full-energy gate applies —
+a monster that spent its round's energy cannot clip). The move is aborted **only when
+the player LOST A LIFE** (the return value keys on `player+0x6a6`, 23863/23900-23902);
+merely being hit never stops the escape.
 
 ### Peripheral: `monster_update_room_users_stats` (`0x2635d`)
 
@@ -362,13 +517,16 @@ Consolidated from the functions above (offsets are byte offsets into the instanc
 | `+0x16` | current energy (attack budget) — `combat_rounds.md` |
 | `+0x18` | **current HP** (short) |
 | `+0x1a` | **aggro target name** (string; empty = no target) |
-| `+0x22` | directed-travel / paralysis word (patrol coord; 0 = free) |
+| `+0x88` | directed-travel / paralysis word (int-idx 0x22; patrol coord; 0 = free) |
 | `+0x38…` | room **location trail** (9-deep history) |
-| `+0x3c…+0x40` | coin piles (runic/plat/gold/silver/copper) |
-| `+0x8e` | monster **name** (display) |
+| `+0x8e` | monster **name** (display; terminator at `+0xab`) |
+| `+0xf0…+0x100` | coin piles (runic/plat/gold/silver/copper; rolled at spawn) |
 | `+0x104` | **max HP** (short) |
 | `+0x106` | **behaviour mode** (§4 taxonomy) |
 | `+0x108` | **aggression** rating 0–100 (int-idx 0x42) |
+| `+0x110` | **experience worth** (← `knmsr+0x74`; fed to `distribute_experience`) |
+| `+0x120` | home/spawn room (read by `check_kill_monster`) |
+| `+0x12e` | engaged-user number (0xffff = none; set on attack, cleared per energy tick) |
 | `+0x114` | max/regen **energy** — `combat_rounds.md` |
 | `+0x116` | attack-suppression flag (byte) |
 | `+0x124` | **pursuit give-up counter** (byte; >15 ⇒ drop target/despawn) |
@@ -386,23 +544,38 @@ Consolidated from the functions above (offsets are byte offsets into the instanc
 
 ## 7. Open / uncertain items
 
-* **Interval literals.** The spawn cadence `DAT_00482ca8`, the respawn-timer constants
-  `FUN_0046c3b8`/`DAT_0047963a`/`0x5a0`/`DAT_00482d0c`, and the wander fairness cap are all
-  `.data`/helper values not extracted here — mechanism certain, numbers not.
+*(Slice M6-1, 2026-07-18: the interval literals and the template→instance offset map are
+CLOSED — values below and the §2 copy-map table; extraction method: static `.data` reads
+from `wccmmud.dll` validated against the four known metronome globals, plus a full
+decompile pass over `generate_monster`.)*
+
+* **Interval literals — CLOSED.** Spawn cadence `DAT_00482ca8` = **5 s** (static `.data`;
+  a sysop `configure genrate` override exists but is gated to BTURNO `07356801`, the
+  Metropolis dev system). Default respawn `DAT_00482d0c` = **5 minutes** (`configure
+  minwait`, same gate). `DAT_0047963a` = the module **boot minute** (not a constant);
+  `0x5a0` = 1440 minutes/day midnight wrap; `FUN_0046c3b8` = DOS-packed-time →
+  minutes-since-midnight (§1). Wander fairness cap: compare is `DAT_0047fb90 < 3`,
+  reset to 0 in `medium_update_monsters` (0x21b31) once per 3 s tick; the case-5
+  water/roamer path additionally bypasses the cap when `(char)mon[0x50] != 0`.
+  `DAT_00482134` (global spawn disable) is the **crash-recovery flag**: set during the
+  recovery rebuild in `preload_and_generate_buffers`, cleared when recovery completes —
+  and temporarily zeroed around the **boot-time lair/permanent `generate_monster`
+  calls** (lines 27702-27717), i.e. lair/permanent monsters are populated at module
+  boot, not on player approach.
 * **HP is not rolled.** `generate_monster` copies template HP directly; only coins (and
   which carried items attach) are randomised at birth. If a per-monster HP range exists it
   would have to live in the template as pre-rolled min/max the engine picks elsewhere — not
   seen in this function. Flagged for template-schema follow-up.
-* **Template → instance offset map** for the behaviour fields (which WCCKNMSR offset feeds
-  `mon+0x106`/`+0x108`/`+0x12c`/`+0x148`) is partly obscured by stack aliasing in the
-  decompiled `generate_monster`. `mon+0x12c` (roam class) clearly derives from `knmsr[0x15]`
-  (template `+0x54`, whose special values 5/0x25 are tested in the spawn gate); the others
-  are copied but their exact template offsets were not all pinned. Cross-check against
-  `vir_schemas.md` WCCKNMSR when that map is re-derived at the page+6 frame.
+* **Template → instance offset map — CLOSED.** See the §2 copy-map table:
+  `mon+0x106` ← `knmsr+0xae` (`alignment`), `+0x108` ← `+0x6e` (`follow`),
+  `+0x12c` ← `+0x54` (`group` — dual-use as the mongen region matched against
+  `room+0x560`), `+0x148` ← `+0xaa` (`type`), `+0x130` ← `+0x7c` (`hpregen`).
 * **`mon+0x22` dual use.** It reads as both a paralysis gate (medium-tick wander skips when
   nonzero) and a directed-travel coordinate (moves toward it, or `attack_monster_monster`
   for monster-vs-monster). The two uses share the field; the disambiguating flag was not
-  fully chased.
+  fully chased. (Byte offset is `+0x88` — the doc's `+0x22` is the decompile's int-index.)
+* **`DAT_004906c9 == 2`** blocks spawning of roam classes 5/0x25 (line 20976) — some
+  config/holiday mode, not identified.
 * **`mon+0x116` and `mon+0x128` bit 1** ("suppress attack" / "charmed") are named from
   usage, not symbols.
 * **Class-5 vs the tautological gate** in `FUN_00423863` line ~20371

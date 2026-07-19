@@ -165,6 +165,7 @@ fn shaman(spell_id: SpellId, cast_pct: i16, cost: i16) -> Monster {
             AttackForm::default(),
             AttackForm::default(),
         ],
+        ..Default::default()
     }
 }
 
@@ -179,9 +180,10 @@ fn world(monster: Monster) -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     };
     arena.exits[Direction::North as usize] =
-        Some(Exit { dest: LAIR, exit_type: 0, trigger_msg: None });
+        Some(Exit { dest: LAIR, exit_type: 0, trigger_msg: None, ..Default::default() });
     content.add_room(arena);
     content.add_room(Room {
         id: LAIR,
@@ -192,6 +194,7 @@ fn world(monster: Monster) -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     content.add_monster(monster);
     // The Summon(12) payload: an inert template (no attack forms).
@@ -213,6 +216,7 @@ fn world(monster: Monster) -> Content {
         weapon: None,
         loot: vec![],
         attacks: [AttackForm::default(); 5],
+        ..Default::default()
     });
     for (id, name, abilities) in [
         (HUMAN, "Human", vec![]),
@@ -399,6 +403,7 @@ fn player(name: &str, race: RaceId) -> Player {
         spellbook: Default::default(),
         poison: 0,
         active_spells: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -868,7 +873,8 @@ fn area_cast_single_occupant_reproduces_the_dragonfish_shape() {
     let hits: Vec<i32> = shown
         .lines()
         .filter_map(|l| {
-            l.strip_prefix("Kobold shaman's choking gust hits you for ")
+            l.trim_start_matches("\r\x1b[K") // the async prompt-erase prefix
+                .strip_prefix("Kobold shaman's choking gust hits you for ")
                 .and_then(|rest| rest.strip_suffix(" damage!"))
                 .and_then(|n| n.parse().ok())
         })
@@ -1231,6 +1237,14 @@ fn summon_spawns_the_named_monster_with_the_everyone_line() {
     let events = core.drain_events();
     let look = text_to(&events, s);
     assert!(look.contains("raptor"), "the raptor stands in the room: {look:?}");
+    // The monster-cast summon pre-locks the VICTIM (23263: mon+0x1a =
+    // victim name, +0x116 = 0) — M6 slice 3.
+    let raptor = core
+        .monster_ids()
+        .into_iter()
+        .find(|id| core.monster_template(*id) == Some(RAPTOR))
+        .expect("raptor instance");
+    assert_eq!(core.monster_target(raptor), Some(s), "summon spawns locked on the victim");
 }
 
 #[test]

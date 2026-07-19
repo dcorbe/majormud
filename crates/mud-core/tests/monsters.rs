@@ -22,6 +22,7 @@ fn rat_template() -> Monster {
         weapon: None,
         loot: vec![],
         attacks: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -36,6 +37,7 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     content.add_monster(rat_template());
     content.add_race(Race {

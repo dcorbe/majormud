@@ -47,6 +47,7 @@ fn kobold() -> Monster {
             AttackForm::default(),
             AttackForm::default(),
         ],
+        ..Default::default()
     }
 }
 
@@ -61,6 +62,7 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     content.add_monster(kobold());
     content.add_race(Race {
@@ -289,7 +291,7 @@ fn no_swings_without_engagement() {
     let shown = text_to(&events, s);
     assert!(
         !shown.contains("punch") && !shown.contains("hits you"),
-        "aggression is M6; passive monsters stay passive: {shown:?}"
+        "behaviour-0 monsters never initiate (M6 acquisition): {shown:?}"
     );
 }
 
@@ -305,6 +307,7 @@ fn moving_away_breaks_combat() {
             dest: RoomId { map: 1, room: 2 },
             exit_type: 0,
             trigger_msg: None,
+            ..Default::default()
         });
     content.add_room(Room {
         id: RoomId { map: 1, room: 2 },
@@ -315,6 +318,7 @@ fn moving_away_breaks_combat() {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     let mut core = Core::new(content, config());
     let s = create(&mut core, "Dain");
@@ -494,6 +498,7 @@ fn rat(accuracy: i16, min: i16, max: i16) -> Monster {
             AttackForm::default(),
             AttackForm::default(),
         ],
+        ..Default::default()
     }
 }
 
@@ -937,6 +942,7 @@ fn dwarf(name: &str) -> Player {
         spellbook: std::collections::BTreeMap::new(),
         poison: 0,
         active_spells: Default::default(),
+        ..Default::default()
     }
 }
 

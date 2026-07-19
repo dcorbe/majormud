@@ -28,6 +28,7 @@ fn world_with_slot(slot: ShopStock) -> Content {
         shop: Some(ShopId(45)),
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     content.add_item(Item {
         id: ItemId(100),

@@ -22,11 +22,13 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     };
     gates.exits[Direction::North as usize] = Some(Exit {
         dest: RoomId { map: 1, room: 2 },
         exit_type: 0,
         trigger_msg: None,
+        ..Default::default()
     });
     let mut square = Room {
         id: RoomId { map: 1, room: 2 },
@@ -37,11 +39,13 @@ fn world() -> Content {
         shop: Some(ShopId(45)),
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     };
     square.exits[Direction::South as usize] = Some(Exit {
         dest: RoomId { map: 1, room: 1 },
         exit_type: 0,
         trigger_msg: None,
+        ..Default::default()
     });
     content.add_room(gates);
     content.add_room(square);

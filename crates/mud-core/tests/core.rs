@@ -15,11 +15,13 @@ fn two_room_content() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     };
     gates.exits[Direction::North as usize] = Some(Exit {
         dest: RoomId { map: 1, room: 2 },
         exit_type: 0,
         trigger_msg: None,
+        ..Default::default()
     });
     let mut square = Room {
         id: RoomId { map: 1, room: 2 },
@@ -30,11 +32,13 @@ fn two_room_content() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     };
     square.exits[Direction::South as usize] = Some(Exit {
         dest: RoomId { map: 1, room: 1 },
         exit_type: 0,
         trigger_msg: None,
+        ..Default::default()
     });
     content.add_room(gates);
     content.add_room(square);
@@ -69,6 +73,7 @@ fn player(name: &str) -> Player {
         spellbook: std::collections::BTreeMap::new(),
         poison: 0,
         active_spells: Default::default(),
+        ..Default::default()
     }
 }
 

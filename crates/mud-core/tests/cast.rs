@@ -172,6 +172,7 @@ fn monster(id: MonsterId, name: &str, hitpoints: i32) -> Monster {
         weapon: None,
         loot: vec![],
         attacks: [AttackForm::default(); 5],
+        ..Default::default()
     }
 }
 
@@ -216,6 +217,7 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     content.add_room(Room {
         id: SHOP,
@@ -228,6 +230,7 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     content.add_monster(monster(RAT, "giant rat", 1000));
     let mut ember = monster(EMBER, "ember beast", 1000);
@@ -710,6 +713,7 @@ fn player(name: &str, class: ClassId, spellbook: BTreeMap<SpellId, bool>) -> Pla
         spellbook,
         poison: 0,
         active_spells: Default::default(),
+        ..Default::default()
     }
 }
 

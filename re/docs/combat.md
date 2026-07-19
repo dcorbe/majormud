@@ -205,3 +205,28 @@ type 7 = **−75**, all others = **0** (special attacks are harder to land).
   **DR(+0x10a) × 10** + DR ability; `[4]` kill exp = worth × multiplier;
   `[5]`/`[6]`/`[7]` per-form EU/min/max; `[8]` = Dodge ability;
   crit `[0x91]` = 0 (players-only crits confirmed again).
+
+## Unarmed attack modes (slice M6+ arena expedition, 2026-07-19)
+
+`move_player_to_fighter` (24520-24660) initializes damage `[6]=1, [7]=4`
+(plain fists) and then reshapes per the global attack mode `DAT_004877e4`
+(set by the attack-command family, stored per-fighter in the autocombat
+table `+8`, restored each round by `restart_autocombat` 46442):
+
+| mode | verb / selection | ability (V) | min `[6]` | max `[7]` | EU speed |
+|------|------------------|-------------|-----------|-----------|----------|
+| 1 "fists of fury" | `punch`, or **bare `attack` unarmed when the user has Punch** (cmd_attack 49712-49720; hidden/sneak diverts to mode 4) | Punch 0x1d | `L*V/8 + 2` | `(L+3)*V/4 + 6` | 0x47e = 1150 (0x6d6 when +0x7c8 bit 2) |
+| 2 "lightning feet" | `kick` (needs Kick) | Kick 0x1e | `L*V/8 + 2` | `L*V/6 + 7` | 0x578 (2000 flagged) |
+| 3 "flying feet" | `jumpkick` (needs JumpKick) | JumpKick 0x23 | `L*V/8 + 2` | `L*V/6 + 8` | 0x76c (0xa5a flagged) |
+| else, unarmed | plain fists | — | 1 | 4 | 0x4b0 = 1200 |
+
+`L` = level capped at 20 (the >=0x14 branch substitutes 20, and mode 1's
+max uses 0x17 = 20+3). Post-block add-ons (24890-24916): mode 1 adds
+PunchACY (0x59) to accuracy and PunchDmg (0x5c) to both damage bounds;
+modes 2/3 use the Kick/JumpK pairs (0x5a/0x5d, 0x5b/0x5e). The usual
+Strength adjustments then apply. The Mystic class record carries
+Punch/Kick/JumpKick at value 1 (items/spells raise V through the
+ability fold). ORACLE pin (oracle_m6_arena_fight.raw): Nekojin Mystic
+L1 V1 Str40 — raw 2..6, observed 1..5 through the giant rat's DR 1,
+exactly {1,1,1,4,5}. Mode 4 = backstab (its own block); modes 6/7 =
+surprise/ranged variants, unextracted.

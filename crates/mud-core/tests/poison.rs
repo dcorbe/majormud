@@ -82,6 +82,7 @@ fn world() -> Content {
         shop: None,
         placed_items: vec![],
         exits: Default::default(),
+        ..Default::default()
     });
     content.add_race(Race {
         id: HUMAN,
@@ -200,6 +201,7 @@ fn player(name: &str, race: RaceId, class: ClassId) -> Player {
         spellbook: book(),
         poison: 0,
         active_spells: Default::default(),
+        ..Default::default()
     }
 }
 
