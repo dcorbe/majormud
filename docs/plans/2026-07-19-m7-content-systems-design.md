@@ -274,7 +274,22 @@ Tests: threshold table unit (all eight boundaries, both signs); gate
 units per unlocked check; persistence round-trip. Oracle: SYSOP-staged
 fame values → status display + guardian/hunter reaction flip.
 
-**Slice 4 IN PROGRESS (2026-07-20, 648 tests):** ALSO LANDED since the
+**Slice 4 COMPLETE (2026-07-20, 656 tests) — full thief kit.** Final
+additions past the 648 mark: DISARM (trap-state in the exit overlay,
+DisarmTraps roll bands, trigger message records user-line-1/room-line-2,
+damage genrdn(r/2,r+1) + drops/death, trapdoor forced relocation,
+silent 300s re-arm); hidden type-6 exits (concealed from exits line +
+movement until SEARCH's Perception-15 reveal, ~5 min re-hide to disk
+state; 1470 shipped exits went dark with zero churn); the add_delay
+command-delay (session units aged per fast tick; SNEAK/HIDE gate,
+sneak/hide/search 1, picklock 2+2, rob 1 charges); the HIDE stash
+(room hidden items/coins, bare-SEARCH reveal, get-by-name retrieval,
+NotDroppable refusal). PENDING (tagged, slice 5/8): 0x18 spell traps +
+the picklock lock-trap spell (room-cast plumbing + the room+0x5fa
+column pin), mode-7 trapdoor spell arm, oracle passes on every VERIFY
+string (delay unit length, closed-door wording, stash presentation).
+
+**(Progress marker at 648 tests):** ALSO LANDED since the
 633 mark — ROB <player> (thievery-roll outcomes bump/marginal/success,
 quiet coin+item transfer with the LoyalItem/Robable gates, room never
 told; the player-victim evil charge with victim-quality multipliers +
