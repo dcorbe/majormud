@@ -230,6 +230,26 @@ seeded name-gen golden (fixture block, exact 10%-walk draws); ANSI
 on/off funnel byte-diff. Oracle: MA hit/miss strings + speeds (Mystic),
 adjective spawn lines (passive capture), backstab strings.
 
+**Slice 3 NEARLY COMPLETE (2026-07-19, 620 tests):** crime.rs module
+(get_legal_level exact chain, tier names/colors from 0x4881a4/0x488184,
+charge_npc_evil with the §2.1 gate order/dark cloud/minimum-10 bump —
+the §2.4 30000 add-guard is unreachable through this path since the 300
+action ceiling refuses first); fame + warn_on_evil persisted (backfills
+0/ON); passive-monster (mode 0/4, not-fighting-you) attack/targeted-
+cast/area-cast writers with refusal-aborts; SET EVIL toggle (warn-ON
+confirm = DLL string, OFF wording ORACLE-VERIFY); alignment lattice in
+user_can_use AND spell gate 3 (Good/Evil/NotGood/NotEvil/Neutral;
+NotNeutral dead as shipped); update_allowed_worn_items force-removal on
+tier crossing (wording ORACLE-VERIFY); type-0x14 alignment exits (para1
+= too-good bound, para2 = too-evil); creation Lawful = fame −51.
+Fixture correction: attackable test monsters moved to behaviour 3
+(lair) — created characters ship Warn on Evil ON and mode-0 punching
+bags refuse every swing. LEFTOVERS (finish before slice 4): criminal
+respawn split (fame >= 0x28 → the outlaw start, room defaults
+ORACLE-VERIFY) and account-level evil banking/restore (GENBB analog:
+bank on permadeath ×retention pct once/day, restore at creation —
+server login plumbing). Pair timers/forgive/rob = slice 4 by design.
+
 ## Slice 3 — Crime, fame, legal levels
 
 - **Fame persistence:** `player.fame` column (closes the state_db
