@@ -3164,6 +3164,7 @@ impl Core {
             }
             Command::Ansi => self.ansi_command(session),
             Command::Picklock(args) => self.picklock_command(session, &args),
+            Command::Search(args) => self.search_command(session, &args),
             Command::Rob(target) => self.rob_command(session, &target),
             Command::Forgive(target) => self.forgive_command(session, &target),
             Command::Sneak => self.sneak_command(session),
@@ -5834,6 +5835,67 @@ impl Core {
     }
 
 
+
+
+    /// `cmd_search` / `search_for_hidden_exits` (theft.md §9). Bare form
+    /// re-lists the room and broadcasts "searching the area"; a
+    /// directional search broadcasts "searching for exits" then reveals
+    /// a trap (type 9, FindTraps roll — no state change) or reports
+    /// nothing. Hidden type-6 exit reveal rides the DISARM/trap-state
+    /// pass. Non-directions are refused.
+    fn search_command(&mut self, session: SessionId, args: &str) {
+        let word = args.trim().to_ascii_lowercase();
+        if word.is_empty() {
+            let name = self.player(session).name.clone();
+            self.broadcast_to_room(
+                self.player(session).location,
+                Some(session),
+                &format!("{name} is searching the area."),
+            );
+            self.show_room_brief(session);
+            return;
+        }
+        let Some(dir) = direction_from_word(&word) else {
+            self.output_line(session, text::SEARCH_WHY);
+            return;
+        };
+        let room = self.player(session).location;
+        let name = self.player(session).name.clone();
+        self.broadcast_to_room(
+            room,
+            Some(session),
+            &format!("{name} is searching for exits."),
+        );
+        let nothing = match dir {
+            Direction::Up => "You notice nothing different above you.".to_string(),
+            Direction::Down => "You notice nothing different below you.".to_string(),
+            d => format!("You notice nothing different to the {}.", text::direction_shown(d)),
+        };
+        let exit = self
+            .content
+            .rooms
+            .get(&room)
+            .and_then(|r| r.exits[dir as usize].clone());
+        let Some(exit) = exit.filter(|e| e.exit_type == 9) else {
+            self.output_line(session, &nothing);
+            return;
+        };
+        let find_traps = match self.sessions.get(&session) {
+            Some(Session::InGame { derived, .. }) => derived.find_traps,
+            _ => 0,
+        };
+        if self.rng.roll(0, 100) < find_traps {
+            let line = match dir {
+                Direction::Up => "You found a trap above you!".to_string(),
+                Direction::Down => "You found a trap below you!".to_string(),
+                d => format!("You found a trap to the {}!", text::direction_shown(d)),
+            };
+            let _ = exit; // finding changes no state (§9)
+            self.output_line(session, &line);
+        } else {
+            self.output_line(session, &nothing);
+        }
+    }
 
     /// The effective lock state for a pickable exit (theft.md §8.1): the
     /// runtime overlay, else the shipped disk word — type 2 keeps it in

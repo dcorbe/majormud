@@ -75,6 +75,9 @@ pub fn item_force_removed(name: &str) -> String {
     format!("Your {name} has been removed.")
 }
 
+/// SEARCH refusal for a non-direction argument (theft.md §9).
+pub const SEARCH_WHY: &str = "Why would you want to search that?";
+
 /// PICKLOCK strings (theft.md §8, verbatim).
 pub const SYNTAX_PICKLOCK: &str = "Syntax: PICKLOCK {direction}";
 pub const PICK_FAILS: &str = "Your skill fails you this time.";
