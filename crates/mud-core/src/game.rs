@@ -3107,8 +3107,20 @@ impl Core {
                 }
             }
             Command::Punch(target) => {
-                let mode = crate::combat::AttackType::MartialArts1;
+                // cmd_punch: hidden/sneaking AND unarmed diverts to the
+                // backstab mode; armed (or visible) punches stay mode 1.
+                let p = self.player(session);
+                let mode = if (p.hidden || p.sneak_armed) && p.weapon.is_none() {
+                    crate::combat::AttackType::Backstab
+                } else {
+                    crate::combat::AttackType::MartialArts1
+                };
                 if self.ma_command(session, &target, 0x1d, mode) == Resolution::FallThrough {
+                    self.say(session, line.trim());
+                }
+            }
+            Command::Backstab(target) => {
+                if self.backstab_command(session, &target) == Resolution::FallThrough {
                     self.say(session, line.trim());
                 }
             }
@@ -3432,9 +3444,50 @@ impl Core {
                 .value(Ability::from_id(0x1d).expect("Punch in the enum"))
                 > 0
         {
-            crate::combat::AttackType::MartialArts1
+            // 49716-49724: hidden/sneak-armed diverts the unarmed
+            // auto-pick to the backstab mode.
+            if player.hidden || player.sneak_armed {
+                crate::combat::AttackType::Backstab
+            } else {
+                crate::combat::AttackType::MartialArts1
+            }
         } else {
             crate::combat::AttackType::Normal
+        };
+        self.attack_with_mode(session, target_words, mode)
+    }
+
+    /// `cmd_backstab` (0x51573): visible = a silent plain attack;
+    /// hidden/sneaking = mode 4 when unarmed or the weapon carries
+    /// BSAccu (0x74) — a non-backstab weapon prints the refusal and
+    /// attacks normally (the DLL leaves its two mode globals
+    /// DISAGREEING there; the effective fighter mode is normal).
+    fn backstab_command(&mut self, session: SessionId, target_words: &str) -> Resolution {
+        let player = self.player(session);
+        let stealthy = player.hidden || player.sneak_armed;
+        let mode = if !stealthy {
+            crate::combat::AttackType::Normal
+        } else {
+            match player.weapon {
+                None => crate::combat::AttackType::Backstab,
+                Some((id, _)) => {
+                    let bs_capable = self
+                        .content
+                        .items
+                        .get(&id)
+                        .is_some_and(|i| {
+                            i.abilities.iter().any(|(a, _)| {
+                                Ability::from_id(0x74).is_some_and(|b| *a == b)
+                            })
+                        });
+                    if bs_capable {
+                        crate::combat::AttackType::Backstab
+                    } else {
+                        self.output_line(session, text::CANNOT_BACKSTAB_WEAPON);
+                        crate::combat::AttackType::Normal
+                    }
+                }
+            }
         };
         self.attack_with_mode(session, target_words, mode)
     }
@@ -7318,7 +7371,20 @@ impl Core {
         }
 
         let attacker = self.build_player_attacker(session);
-        let eu = self.player_energy_used(session);
+        let mode_now = match self.sessions.get(&session) {
+            Some(Session::InGame { attack_mode, .. }) => *attack_mode,
+            _ => crate::combat::AttackType::Normal,
+        };
+        // Special attacks cost the FULL pool = one swing
+        // (combat_rounds.md: backstab/bash/smash).
+        let eu = if mode_now == crate::combat::AttackType::Backstab {
+            match self.sessions.get(&session) {
+                Some(Session::InGame { energy, .. }) => (*energy).max(1),
+                _ => PLAYER_ENERGY_MAX,
+            }
+        } else {
+            self.player_energy_used(session)
+        };
         let target_name = self
             .monsters
             .get(&target)
@@ -7350,16 +7416,34 @@ impl Core {
                 &mut |lo, hi| rng.roll(lo, hi),
             );
             use crate::combat::Outcome;
-            let hit_verb = {
+            let mut hit_verb = {
                 let n = hit_verbs.len().max(1) as i32;
                 let pick = if hit_verbs.len() > 1 { self.rng.roll(0, n - 1) } else { 0 };
                 hit_verbs.get(pick as usize).cloned().unwrap_or_else(|| "punch".into())
             };
-            let miss_verb = {
+            let mut miss_verb = {
                 let n = miss_verbs.len().max(1) as i32;
                 let pick = if miss_verbs.len() > 1 { self.rng.roll(0, n - 1) } else { 0 };
                 miss_verbs.get(pick as usize).cloned().unwrap_or_else(|| "swing at".into())
             };
+            if mode == crate::combat::AttackType::Backstab {
+                // Mode 4 wraps the verb slots in "surprise %s"
+                // (move_player_to_fighter 24751-24758); wording of the
+                // rendered line ORACLE-VERIFY.
+                hit_verb = format!("surprise {hit_verb}");
+                miss_verb = format!("surprise {miss_verb}");
+            }
+            if mode == crate::combat::AttackType::Backstab
+                && matches!(result.outcome, Outcome::Hit | Outcome::NoDamage | Outcome::Critical)
+            {
+                // The autocombat +8 revert: backstab drops to a normal
+                // attack after the first landed hit (M3 extraction).
+                if let Some(Session::InGame { attack_mode, .. }) =
+                    self.sessions.get_mut(&session)
+                {
+                    *attack_mode = crate::combat::AttackType::Normal;
+                }
+            }
             match result.outcome {
                 // combat_rounds.md §5: result 3 renders distinct
                 // dodge/parry flavor for the player view too — this
@@ -9432,11 +9516,26 @@ impl Core {
             }
             _ => (0, 0, 0),
         };
-        let accuracy = (str_ - 50) / 3
-            + 2 * ((combat - 1) * isqrt(level) + 2 * combat + level / 2 + skill / 2 - 2)
-            + (agl - 50) / 6
-            + dyn_accuracy
-            + style_acy;
+        let accuracy = if mode == AttackType::Backstab {
+            // Mode-4 accuracy (move_player_to_fighter 24817-24841):
+            // (Agl + Stealth)/2 + Agl/2 + BSAccu (0x74). The +0x7d4
+            // flag mods (+5/-15) and the +0x6f5&0x80 -10 are untraced
+            // runtime bits — omitted, ORACLE-VERIFY.
+            let stealth = match self.sessions.get(&session) {
+                Some(Session::InGame { derived, .. }) => derived.stealth,
+                _ => 0,
+            };
+            (agl + stealth) / 2
+                + agl / 2
+                + bag.value(Ability::from_id(0x74).expect("BSAccu in the enum"))
+                + dyn_accuracy
+        } else {
+            (str_ - 50) / 3
+                + 2 * ((combat - 1) * isqrt(level) + 2 * combat + level / 2 + skill / 2 - 2)
+                + (agl - 50) / 6
+                + dyn_accuracy
+                + style_acy
+        };
 
         // Weapon damage (or the unarmed defaults), plus the Strength
         // bonuses: max += (Str-50)/10; min += 2*(Str-100)/10 when positive.

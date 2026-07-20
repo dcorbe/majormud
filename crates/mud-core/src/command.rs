@@ -50,6 +50,10 @@ pub enum Command {
     Set(String),
     /// `sneak` — arm stealth for the next move (cmd_sneak 0x454641).
     Sneak,
+    /// `backstab [target]` — cmd_backstab 0x51573: mode 4 when
+    /// hidden/sneaking (weapon must carry BSAccu 0x74), else a plain
+    /// attack.
+    Backstab(String),
     /// `hide` — hide self; item/coin stash forms arrive with the room
     /// hidden-storage work (cmd_hide 0x466b1f).
     Hide(String),
@@ -125,7 +129,7 @@ enum Verb {
 /// All direction minimums are ORACLE-verified (oracle_directions.raw):
 /// north/south/west = full word, east = 3 (eat blocks 2), down = 3,
 /// up = 2, diagonals = 6. Hand-authored asymmetry is the original's.
-const VERBS: [(&str, usize, Verb); 48] = [
+const VERBS: [(&str, usize, Verb); 49] = [
     ("north", 5, Verb::Plain(|| Command::Move(Direction::North))),
     ("south", 5, Verb::Plain(|| Command::Move(Direction::South))),
     ("east", 3, Verb::Plain(|| Command::Move(Direction::East))),
@@ -141,6 +145,9 @@ const VERBS: [(&str, usize, Verb); 48] = [
     // `j` are unambiguous today; `p` is reserved against a future `put`
     // (the quest-VM wildcard family), so punch takes 2.
     ("punch", 2, Verb::WithArgs(Command::Punch)),
+    // ORACLE-VERIFY min abbrev: unmeasured; `b` is free (`bu` still
+    // reaches buy — not a prefix of backstab).
+    ("backstab", 1, Verb::WithArgs(Command::Backstab)),
     ("kick", 1, Verb::WithArgs(Command::Kick)),
     ("jumpkick", 1, Verb::WithArgs(Command::JumpKick)),
     // Min 1 like attack, so `c` and `c args` both cast (MEASURED §8.9).

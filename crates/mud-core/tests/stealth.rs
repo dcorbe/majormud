@@ -225,3 +225,77 @@ fn moving_normally_clears_hidden() {
         "non-sneak movement clears the hidden byte"
     );
 }
+
+// --- backstab (cmd_backstab 0x51573, move_player_to_fighter mode 4) ---
+
+use mud_core::content::{AttackForm, Monster, MonsterId};
+
+fn world_with_dummy() -> Content {
+    let mut content = world();
+    content.add_monster(Monster {
+        id: MonsterId(1),
+        name: "practice dummy".into(),
+        hitpoints: 100_000,
+        energy: 0,
+        behaviour: 3,
+        attacks: [AttackForm::default(); 5],
+        ..Default::default()
+    });
+    content
+}
+
+fn hide_until_hidden(core: &mut Core, s: SessionId) {
+    for _ in 0..30 {
+        core.input(s, "hide");
+        core.drain_events();
+        if core.player_hidden(s) {
+            return;
+        }
+    }
+    panic!("never managed to hide");
+}
+
+#[test]
+fn backstab_while_visible_is_a_plain_attack() {
+    // cmd_backstab: not hidden and not sneak-armed -> mode 5 silently.
+    let mut core = Core::new(world_with_dummy(), CoreConfig::default());
+    let s = core.attach_player(person("Knife", 1, false));
+    core.spawn_monster(MonsterId(1), HERE).unwrap();
+    core.drain_events();
+    core.input(s, "backstab dummy");
+    let own = texts(&core.drain_events(), s);
+    assert!(own.contains("*Combat Engaged*"), "{own:?}");
+    assert!(!own.contains("surprise"), "no surprise verb visible: {own:?}");
+}
+
+#[test]
+fn hidden_backstab_surprises_then_reverts() {
+    // High Agl/Int: mode-4 accuracy (Agl+Stealth)/2 + Agl/2 clears 100
+    // — the surprise swing cannot miss, so the revert must fire.
+    let mut core = Core::new(world_with_dummy(), CoreConfig::default());
+    let s = core.attach_player(person("Knife", 1, true));
+    core.spawn_monster(MonsterId(1), HERE).unwrap();
+    core.drain_events();
+    hide_until_hidden(&mut core, s);
+    core.input(s, "backstab dummy");
+    let mut shown = texts(&core.drain_events(), s);
+    for _ in 0..10 {
+        core.tick();
+        shown.push_str(&texts(&core.drain_events(), s));
+    }
+    assert!(
+        shown.contains("surprise"),
+        "the mode-4 swing wraps its verb in surprise: {shown:?}"
+    );
+    // After the first landed hit the mode reverts to normal (M3: the
+    // autocombat +8 revert) — later rounds stop surprising.
+    let mut later = String::new();
+    for _ in 0..15 {
+        core.tick();
+        later.push_str(&texts(&core.drain_events(), s));
+    }
+    assert!(
+        !later.contains("surprise"),
+        "post-hit rounds swing normally: {later:?}"
+    );
+}

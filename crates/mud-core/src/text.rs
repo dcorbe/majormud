@@ -75,6 +75,9 @@ pub fn item_force_removed(name: &str) -> String {
     format!("Your {name} has been removed.")
 }
 
+/// cmd_backstab (0x4889da): a wielded weapon without BSAccu.
+pub const CANNOT_BACKSTAB_WEAPON: &str = "You cannot backstab with this weapon!";
+
 /// SNEAK refusal while being fought (theft.md §11.1).
 pub const MAY_NOT_SNEAK: &str = "You may not sneak right now!";
 
