@@ -756,6 +756,11 @@ enum Session {
         /// auto-picks MartialArts1 unarmed with Punch; punch/kick/
         /// jumpkick set modes 1/2/3 (combat.md "Unarmed attack modes").
         attack_mode: crate::combat::AttackType,
+        /// `add_delay` units remaining (the thief-family command delay;
+        /// aged one per fast tick — unit length ORACLE-VERIFY). Only
+        /// SNEAK and HIDE gate on it per theft.md; every charging
+        /// command extends it.
+        delay: u8,
     },
 }
 
@@ -1834,6 +1839,13 @@ impl Core {
                 }
                 Job::ExitStep(session) => self.exit_step(session),
                 Job::Fast => {
+                    // Age the thief-family command delays.
+                    let ids: Vec<SessionId> = self.sessions.keys().copied().collect();
+                    for id in ids {
+                        if let Some(Session::InGame { delay, .. }) = self.sessions.get_mut(&id) {
+                            *delay = delay.saturating_sub(1);
+                        }
+                    }
                     self.fast_update();
                     self.scheduler.schedule_in(FAST_INTERVAL, Job::Fast);
                 }
@@ -2823,6 +2835,7 @@ impl Core {
                 trail: vec![trail_seed],
                 at_prompt: false,
                 attack_mode: crate::combat::AttackType::Normal,
+                delay: 0,
             });
         self.show_room(id);
         self.show_prompt(id);
@@ -5778,8 +5791,13 @@ impl Core {
         let engaged = self.attackers_of(session) >= 1;
         if being_fought || engaged {
             self.output_line(session, text::MAY_NOT_SNEAK);
+            self.add_delay(session, 1);
             return;
         }
+        if self.delay_blocked(session) {
+            return;
+        }
+        self.add_delay(session, 1);
         self.output_line(session, "Attempting to sneak...");
         let auto = self
             .ability_bag(self.player(session))
@@ -5813,12 +5831,18 @@ impl Core {
             .any(|m| m.target == Some(session) && m.current_hp > 0
                 && m.location == self.player(session).location);
         let engaged = self.attackers_of(session) >= 1;
-        self.output_line(session, "Attempting to hide...");
         if being_fought || engaged {
             // Unconditional fake failure while being fought (§11.2).
+            self.output_line(session, "Attempting to hide...");
             self.output_line(session, " You don't think you are hidden.");
+            self.add_delay(session, 1);
             return;
         }
+        if self.delay_blocked(session) {
+            return;
+        }
+        self.add_delay(session, 1);
+        self.output_line(session, "Attempting to hide...");
         let chance = self.stealth_chance_for(session);
         if self.rng.roll(0, 100) < chance {
             if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
@@ -5949,6 +5973,7 @@ impl Core {
     /// nothing. Hidden type-6 exit reveal rides the DISARM/trap-state
     /// pass. Non-directions are refused.
     fn search_command(&mut self, session: SessionId, args: &str) {
+        self.add_delay(session, 1);
         let word = args.trim().to_ascii_lowercase();
         if word.is_empty() {
             let name = self.player(session).name.clone();
@@ -6027,6 +6052,24 @@ impl Core {
         }
     }
 
+    /// `add_delay`: extend the session's command delay.
+    fn add_delay(&mut self, session: SessionId, units: u8) {
+        if let Some(Session::InGame { delay, .. }) = self.sessions.get_mut(&session) {
+            *delay = delay.saturating_add(units);
+        }
+    }
+
+    /// The SNEAK/HIDE delay gate (theft.md §11): refuse while units
+    /// remain. Returns true when blocked.
+    fn delay_blocked(&mut self, session: SessionId) -> bool {
+        let waiting = matches!(self.sessions.get(&session),
+            Some(Session::InGame { delay, .. }) if *delay > 0);
+        if waiting {
+            self.output_line(session, text::MUST_WAIT);
+        }
+        waiting
+    }
+
     /// Hidden type-6 exit check (theft.md §9/§8.6): found state 4 in
     /// the overlay (else the disk para1) reveals it; everything else —
     /// state 2 and the re-hidden ticker codes — stays concealed. Ticker
@@ -6077,6 +6120,7 @@ impl Core {
             self.output_line(session, fail);
             return;
         };
+        self.add_delay(session, 2);
         let pickable = matches!(exit.exit_type, 2 | 7 | 0xb);
         if !pickable || self.exit_lock_state(room, d, &exit) != 2 {
             self.output_line(session, fail);
@@ -6091,6 +6135,7 @@ impl Core {
         let modifier = if exit.exit_type == 2 { exit.param3 } else { exit.param2 };
         let success = skill >= 1 && self.rng.roll(0, 100) < modifier + skill;
         if !success {
+            self.add_delay(session, 2); // the second charge (§8.2)
             // §8.4: a failed 7/0xb pick fires the room lock-trap spell
             // (room+0x5fa) — no sqlite column is pinned for it yet
             // (PENDING with the trap pass), so the fail line prints.
@@ -6212,6 +6257,7 @@ impl Core {
                 self.output_line(session, text::DONT_SEE_ANYWHERE);
                 return;
             }
+            self.add_delay(session, 1);
             self.rob_user(session, victim);
             return;
         }
@@ -10645,6 +10691,7 @@ impl Core {
                 trail: vec![trail_seed],
                 at_prompt: false,
                 attack_mode: crate::combat::AttackType::Normal,
+                delay: 0,
             });
         // Oracle: first entry shows the stat sheet, not the room.
         self.show_sheet(session);

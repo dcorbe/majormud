@@ -299,3 +299,30 @@ fn hidden_backstab_surprises_then_reverts() {
         "post-hit rounds swing normally: {later:?}"
     );
 }
+
+// --- the add_delay command delay (theft.md §8/§9/§11) ---
+
+#[test]
+fn thief_actions_charge_a_delay_that_gates_sneak_and_hide() {
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(person("Shade", 1, false));
+    core.drain_events();
+
+    // sneak charges 1 unit; an immediate hide is refused.
+    core.input(s, "sneak");
+    core.drain_events();
+    core.input(s, "hide");
+    let own = texts(&core.drain_events(), s);
+    assert!(
+        own.contains("You must wait before you may do that!"),
+        "{own:?}"
+    );
+    // After the delay ages out (1 unit ~ 1s tick), hide proceeds.
+    for _ in 0..3 {
+        core.tick();
+    }
+    core.drain_events();
+    core.input(s, "hide");
+    let own = texts(&core.drain_events(), s);
+    assert!(own.contains("Attempting to hide..."), "{own:?}");
+}

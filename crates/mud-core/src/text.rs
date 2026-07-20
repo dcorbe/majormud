@@ -128,6 +128,9 @@ pub fn currency_name(idx: usize) -> &'static str {
 /// cmd_backstab (0x4889da): a wielded weapon without BSAccu.
 pub const CANNOT_BACKSTAB_WEAPON: &str = "You cannot backstab with this weapon!";
 
+/// The command-delay gate (theft.md §11, [plain]).
+pub const MUST_WAIT: &str = "You must wait before you may do that!";
+
 /// SNEAK refusal while being fought (theft.md §11.1).
 pub const MAY_NOT_SNEAK: &str = "You may not sneak right now!";
 
