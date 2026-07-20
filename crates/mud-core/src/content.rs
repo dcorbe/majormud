@@ -117,9 +117,13 @@ pub struct Exit {
     /// ("borrow skiff|go skiff|row skiff" — oracle).
     pub trigger_msg: Option<MessageId>,
     /// Raw `para1_N` (`room+0x374+d*4`): damage for types 9/0x18, the
-    /// secret gate for 7/0xb (monsters.md §3 move_monster switch). Types
-    /// 8/10 fold theirs into `dest`/`trigger_msg` at load.
+    /// secret gate for 7/0xb (monsters.md §3 move_monster switch), the
+    /// TOO-GOOD fame bound for type 0x14 (crime.md §6.3). Types 8/10
+    /// fold theirs into `dest`/`trigger_msg` at load.
     pub param: i32,
+    /// Raw `para2_N` (`room+0x39c+d*2`): door state for type 2, the
+    /// TOO-EVIL fame bound for type 0x14.
+    pub param2: i32,
     /// `para2_N` (`room+0x39c+d*2`) nonzero = door closed (type 2/9;
     /// shipped doors all start closed). Runtime open/close arrives with
     /// the player door commands.

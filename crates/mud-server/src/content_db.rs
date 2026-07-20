@@ -236,6 +236,7 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
                 // Raw para1: damage for types 9/0x18, the secret gate for
                 // 7/0xb (monsters.md §3); clamped, ids never exceed i32.
                 param: i32::try_from(para1).unwrap_or(0),
+                param2: i32::try_from(para2).unwrap_or(0),
                 // para2 != 0 = door closed (all shipped doors).
                 door_closed: para2 != 0,
             });

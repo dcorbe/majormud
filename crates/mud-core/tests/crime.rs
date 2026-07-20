@@ -289,3 +289,102 @@ fn set_evil_toggles_the_warning() {
         "{out:?}"
     );
 }
+
+// --- alignment gates (crime.md §6.1 lattice, §6.3 exits, §2.6 creation) ---
+
+use mud_core::ability::Ability;
+use mud_core::content::{Exit, Item, ItemId};
+
+fn aligned_world() -> Content {
+    let mut content = world();
+    // A type-0x14 alignment exit east: too-good bound 0, too-evil 29.
+    let room = content.rooms.get_mut(&SQUARE).unwrap();
+    room.exits[2] = Some(Exit {
+        dest: SQUARE,
+        exit_type: 0x14,
+        param: 0,
+        param2: 29,
+        ..Default::default()
+    });
+    // A holy circlet: wearable head gear carrying Good (97).
+    content.add_item(Item {
+        id: ItemId(50),
+        name: "holy circlet".into(),
+        abilities: vec![(Ability::from_id(97).unwrap(), 1)],
+        item_type: 0,
+        worn_on: 2,
+        uses: -1,
+        ..Default::default()
+    });
+    content
+}
+
+#[test]
+fn alignment_lattice_refuses_by_legal_level() {
+    // Neutral (fame 0) may not wear Good gear; a Good character (fame
+    // -100) may. (crime.md §6.1 row 1 vs row 3.)
+    let mut core = Core::new(aligned_world(), CoreConfig::default());
+    let mut p = citizen("Pilgrim", false);
+    p.inventory.push((ItemId(50), -1));
+    let s = core.attach_player(p);
+    core.drain_events();
+    core.input(s, "wear circlet");
+    let out = texts(&core.drain_events(), s);
+    assert!(out.contains("You may not wear that item!"), "{out:?}");
+
+    let mut core = Core::new(aligned_world(), CoreConfig::default());
+    let mut p = citizen("Cleric", false);
+    p.fame = -100;
+    p.inventory.push((ItemId(50), -1));
+    let s = core.attach_player(p);
+    core.drain_events();
+    core.input(s, "wear circlet");
+    let out = texts(&core.drain_events(), s);
+    assert!(!out.contains("You may not wear"), "good character wears it: {out:?}");
+}
+
+#[test]
+fn crossing_a_tier_force_removes_illegal_gear() {
+    // A Good character wearing Good gear commits evil: the minimum-10
+    // bump lands them at fame 10 (Neutral) and the circlet is forced
+    // off (update_allowed_worn_items, crime.md §2.4).
+    let mut core = Core::new(aligned_world(), CoreConfig::default());
+    let mut p = citizen("Fallen", false);
+    p.fame = -60; // Good tier
+    p.worn.push((ItemId(50), -1));
+    let s = core.attach_player(p);
+    core.spawn_monster(MonsterId(1), SQUARE).unwrap();
+    core.drain_events();
+    core.input(s, "attack crier");
+    let out = texts(&core.drain_events(), s);
+    assert_eq!(core.player_fame(s), 10, "minimum-10 bump");
+    assert!(
+        out.contains("Your holy circlet has been removed."),
+        "force-removal fires: {out:?}"
+    );
+}
+
+#[test]
+fn alignment_exits_gate_both_directions() {
+    // Bounds (0, 29): fame -60 is too good, fame 30 too evil, 0 passes.
+    for (fame, expect) in [
+        (-60i16, Some("You are too good to go through this exit!")),
+        (30, Some("You are too evil to go through this exit!")),
+        (0, None),
+    ] {
+        let mut core = Core::new(aligned_world(), CoreConfig::default());
+        let mut p = citizen("Walker", false);
+        p.fame = fame;
+        let s = core.attach_player(p);
+        core.drain_events();
+        core.input(s, "e");
+        let out = texts(&core.drain_events(), s);
+        match expect {
+            Some(msg) => assert!(out.contains(msg), "fame {fame}: {out:?}"),
+            None => assert!(
+                !out.contains("too good") && !out.contains("too evil"),
+                "fame {fame} passes: {out:?}"
+            ),
+        }
+    }
+}

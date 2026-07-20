@@ -68,6 +68,17 @@ pub mod color {
     pub const RESET: &str = "\x1b[0m";
 }
 
+/// ORACLE-VERIFY: forced removal when gear becomes alignment-illegal
+/// (update_allowed_worn_items, crime.md §2.4 — wording from the M4
+/// deferral note, unmeasured).
+pub fn item_force_removed(name: &str) -> String {
+    format!("Your {name} has been removed.")
+}
+
+/// Alignment-restricted exits (crime.md §3, 0x47e31e/0x47e349).
+pub const EXIT_TOO_GOOD: &str = "You are too good to go through this exit!";
+pub const EXIT_TOO_EVIL: &str = "You are too evil to go through this exit!";
+
 /// SET EVIL (cmd_set 54203-54212): the warn-ON confirm is the DLL's
 /// string; the warn-OFF wording is ORACLE-VERIFY (unread).
 pub const SET_EVIL_WARN_ON: &str =

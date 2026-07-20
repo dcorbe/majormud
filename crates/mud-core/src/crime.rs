@@ -118,3 +118,19 @@ pub fn charge_npc_evil(
     }
     Ok(DARK_CLOUD)
 }
+
+/// The alignment-ability lattice (crime.md §6.1 — user_can_use 17515-17539
+/// and user_can_use_spell 17811-17846 apply the identical table before any
+/// class/race checks). `has(id)` reports whether the object carries the
+/// alignment ability: Good 97, Evil 98, NotGood 110, NotEvil 111, Neutral
+/// 112. NotNeutral (113) is never enforced in the DLL. Returns true when
+/// the object is REFUSED at this legal level.
+pub fn alignment_refuses(level: LegalLevel, has: impl Fn(u16) -> bool) -> bool {
+    match level {
+        LegalLevel::Neutral | LegalLevel::Seedy => has(97) || has(98),
+        LegalLevel::Outlaw | LegalLevel::Criminal | LegalLevel::Villain | LegalLevel::Fiend => {
+            has(97) || has(111) || has(112)
+        }
+        LegalLevel::Good | LegalLevel::Saint => has(98) || has(110) || has(112),
+    }
+}

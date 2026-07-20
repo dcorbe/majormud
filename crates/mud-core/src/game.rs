@@ -254,9 +254,8 @@ impl Player {
 }
 
 /// Why a spell can('t) be learned/used by this character.
-/// [`Core::spell_gate`] covers gates 1-2 (spellcasting.md §2); the
-/// alignment lattice (gate 3) is deferred with M4's other alignment
-/// gates — no starter scroll carries one.
+/// [`Core::spell_gate`] covers gates 1-3 (spellcasting.md §2 + the
+/// crime.md §6.1 alignment lattice).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpellGate {
     Ok,
@@ -265,6 +264,8 @@ pub enum SpellGate {
     /// Right class, character level below spell.required_power (+0xbe).
     /// Oracle-proven level gate (spellcasting.md §8.3).
     TooPowerful,
+    /// Refused by the alignment lattice at the caster's legal level.
+    Alignment,
 }
 
 /// The five coin denominations, high to low (`+0x610..+0x620`). All prices
@@ -3810,12 +3811,19 @@ impl Core {
         room.shop
     }
 
-    /// `user_can_use` (0x1fced): class/race allowlists (a match bypasses
+    /// `user_can_use` (0x1fced): the alignment lattice FIRST (crime.md
+    /// §6.1 — ahead of every class/race check, and the allowlist bypass
+    /// does not reach it), then class/race allowlists (a match bypasses
     /// the permission matrix), AntiMagic vs Magical, MinLevel/MaxLevel
-    /// abilities, then the class weapon/armour matrix. The alignment
-    /// ability gates (Good/Evil/Neutral vs legal level) await the crime
-    /// system — no legal points exist yet.
+    /// abilities, then the class weapon/armour matrix.
     fn user_can_use(&self, player: &Player, item: &crate::content::Item) -> bool {
+        let level = crate::crime::legal_level(player.fame);
+        let has = |id: u16| {
+            Ability::from_id(id).is_some_and(|a| item.abilities.iter().any(|(ab, _)| *ab == a))
+        };
+        if crate::crime::alignment_refuses(level, has) {
+            return false;
+        }
         // Item type 0xb requires a class from a config list; no type-11
         // items ship in the 1.11p data.
         if item.item_type == 11 {
@@ -3908,6 +3916,16 @@ impl Core {
         }
         if i32::from(player.level) < i32::from(spell.required_power) {
             return SpellGate::TooPowerful;
+        }
+        // Gate 3 — the crime.md §6.1 lattice (user_can_use_spell
+        // 17811-17846, identical table to items).
+        let level = crate::crime::legal_level(player.fame);
+        let has = |id: u16| {
+            Ability::from_id(id)
+                .is_some_and(|a| spell.abilities.iter().any(|(ab, _)| *ab == a))
+        };
+        if crate::crime::alignment_refuses(level, has) {
+            return SpellGate::Alignment;
         }
         SpellGate::Ok
     }
@@ -5596,11 +5614,58 @@ impl Core {
         }
     }
 
-    /// `update_allowed_worn_items` (crime.md §2.4/§6.1): re-validate worn
-    /// alignment-restricted gear when a fame writer crosses a tier
-    /// boundary. Fleshed out with the alignment lattice (slice-3 gate
-    /// task); until then a placeholder so every writer calls it.
-    fn update_allowed_worn_items(&mut self, _session: SessionId) {}
+    /// `update_allowed_worn_items` (crime.md §2.4/§6.1): when a fame
+    /// writer crosses a tier boundary, every worn piece and the wielded
+    /// weapon re-run `user_can_use`; anything now refused is forced back
+    /// to the pack. Removal wording ORACLE-VERIFY (M4 deferral note).
+    fn update_allowed_worn_items(&mut self, session: SessionId) {
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+            return;
+        };
+        let mut evict: Vec<(bool, usize)> = Vec::new(); // (is_weapon, worn index)
+        for (i, (id, _)) in player.worn.iter().enumerate() {
+            if let Some(item) = self.content.items.get(id)
+                && !self.user_can_use(player, item)
+            {
+                evict.push((false, i));
+            }
+        }
+        if let Some((id, _)) = player.weapon
+            && let Some(item) = self.content.items.get(&id)
+            && !self.user_can_use(player, item)
+        {
+            evict.push((true, 0));
+        }
+        if evict.is_empty() {
+            return;
+        }
+        let mut lines = Vec::new();
+        {
+            let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+                return;
+            };
+            for (is_weapon, idx) in evict.into_iter().rev() {
+                let entry = if is_weapon {
+                    player.weapon.take()
+                } else {
+                    Some(player.worn.remove(idx))
+                };
+                if let Some(entry) = entry {
+                    player.inventory.push(entry);
+                    lines.push(entry.0);
+                }
+            }
+        }
+        for id in lines {
+            let name = self
+                .content
+                .items
+                .get(&id)
+                .map_or_else(String::new, |i| i.name.clone());
+            self.output_line(session, &text::item_force_removed(&name));
+        }
+        self.refresh_derived(session);
+    }
 
     /// The spawn name roll (`get_random_name`, text::generate_name):
     /// walks the template's name block when it has one. The density
@@ -6127,6 +6192,9 @@ impl Core {
             SpellGate::Ok => None,
             SpellGate::WrongClass => Some(text::CANT_USE_SUFFIX),
             SpellGate::TooPowerful => Some(text::TOO_POWERFUL_SUFFIX),
+            // ORACLE-VERIFY: no alignment-gated scroll was measured on a
+            // shop shelf; the can't-use suffix is the least-wrong frame.
+            SpellGate::Alignment => Some(text::CANT_USE_SUFFIX),
         }
     }
 
@@ -9553,7 +9621,11 @@ impl Core {
             spellbook: BTreeMap::new(),
             poison: 0,
             active_spells: Default::default(),
-            fame: 0,
+            // Committed Lawful starts at -51 (crime.md §2.6: the
+            // creation good-path prompt writes 0x544=0xF6 AND fame -51;
+            // N clamps negatives to 0 — moot until account-banked evil
+            // restores land).
+            fame: if lawful { -51 } else { 0 },
             ansi: self.config.ansi,
             warn_on_evil: true,
         };
@@ -9716,6 +9788,20 @@ impl Core {
         if exit.exit_type == 10 && !self.action_exit_pass {
             self.output_line(session, text::NO_EXIT);
             return;
+        }
+        // Alignment-restricted exits (type 0x14, crime.md §6.3
+        // move_user 12433-12448): fame below paramA = too good, above
+        // paramB = too evil.
+        if exit.exit_type == 0x14 {
+            let fame = i32::from(self.player(session).fame);
+            if fame < exit.param {
+                self.output_line(session, text::EXIT_TOO_GOOD);
+                return;
+            }
+            if fame > exit.param2 {
+                self.output_line(session, text::EXIT_TOO_EVIL);
+                return;
+            }
         }
         // give_monsters_a_free_attack (23846-23905), before the move
         // commits: one room roll per departure — drawn even with nothing
