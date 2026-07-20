@@ -54,6 +54,8 @@ pub enum Command {
     Picklock(String),
     /// `search [direction]` — cmd_search 0x454fc9.
     Search(String),
+    /// `disarm trap <direction>` — cmd_disarm 0x468bed.
+    Disarm(String),
     /// `forgive <player>` — refund a live pair timer (cmd_forgive).
     Forgive(String),
     /// `sneak` — arm stealth for the next move (cmd_sneak 0x454641).
@@ -137,7 +139,7 @@ enum Verb {
 /// All direction minimums are ORACLE-verified (oracle_directions.raw):
 /// north/south/west = full word, east = 3 (eat blocks 2), down = 3,
 /// up = 2, diagonals = 6. Hand-authored asymmetry is the original's.
-const VERBS: [(&str, usize, Verb); 53] = [
+const VERBS: [(&str, usize, Verb); 54] = [
     ("north", 5, Verb::Plain(|| Command::Move(Direction::North))),
     ("south", 5, Verb::Plain(|| Command::Move(Direction::South))),
     ("east", 3, Verb::Plain(|| Command::Move(Direction::East))),
@@ -217,6 +219,9 @@ const VERBS: [(&str, usize, Verb); 53] = [
     // ORACLE-VERIFY min abbrev: unmeasured; "se" cannot shadow sell(3)
     // or set(3) — both need 3 chars and neither is a prefix of search.
     ("search", 2, Verb::WithArgs(Command::Search)),
+    // ORACLE-VERIFY min abbrev: unmeasured; "di" cannot shadow drop's 2
+    // ("dr") and "d" stays the down alias.
+    ("disarm", 3, Verb::WithArgs(Command::Disarm)),
     ("forgive", 4, Verb::WithArgs(Command::Forgive)),
 ];
 

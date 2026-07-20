@@ -3165,6 +3165,7 @@ impl Core {
             Command::Ansi => self.ansi_command(session),
             Command::Picklock(args) => self.picklock_command(session, &args),
             Command::Search(args) => self.search_command(session, &args),
+            Command::Disarm(args) => self.disarm_command(session, &args),
             Command::Rob(target) => self.rob_command(session, &target),
             Command::Forgive(target) => self.forgive_command(session, &target),
             Command::Sneak => self.sneak_command(session),
@@ -5837,6 +5838,110 @@ impl Core {
 
 
 
+
+    /// `cmd_disarm` (theft.md §10): DISARM TRAP <direction>. A missing
+    /// or bad direction is a SILENT return (the DLL's `return 1`).
+    /// Mechanical (type 9) traps only; 0x18 spell traps await the
+    /// room-cast plumbing (PENDING).
+    fn disarm_command(&mut self, session: SessionId, args: &str) {
+        let words: Vec<&str> = args.split_whitespace().collect();
+        let Some(dir) = words.get(1).and_then(|w| direction_from_word(&w.to_ascii_lowercase()))
+        else {
+            return; // silent, per the DLL
+        };
+        let room = self.player(session).location;
+        let d = dir as usize as u8;
+        let fail = format!(
+            "You failed to disarm any trap to the {}.",
+            text::direction_shown(dir)
+        );
+        let exit = self
+            .content
+            .rooms
+            .get(&room)
+            .and_then(|r| r.exits[dir as usize].clone());
+        let Some(exit) = exit.filter(|e| e.exit_type == 9) else {
+            self.output_line(session, &fail);
+            return;
+        };
+        // Trap state shares the 0x39c word (the lock overlay): 0/3
+        // armed, 1/4 disarmed.
+        let state = *self.exit_locks.get(&(room, d)).unwrap_or(&exit.param2);
+        if !matches!(state, 0 | 3) {
+            self.output_line(session, &fail);
+            return;
+        }
+        let skill = match self.sessions.get(&session) {
+            Some(Session::InGame { derived, .. }) => derived.disarm_traps,
+            _ => 0,
+        };
+        let roll = self.rng.roll(0, 100);
+        if roll < skill {
+            self.output_line(
+                session,
+                &format!(
+                    "You successfully disarmed the trap to the {}.",
+                    text::direction_shown(dir)
+                ),
+            );
+            self.exit_locks.insert((room, d), if state == 3 { 4 } else { 1 });
+            self.scheduler.schedule_in(300, Job::ExitRelock(room, d));
+            return;
+        }
+        if roll < skill + 10 {
+            self.output_line(session, &fail); // near miss — safe
+            return;
+        }
+        // Triggered: the message record (user line 1, room line 2 with
+        // the name bound), then the consequence.
+        let name = self.player(session).name.clone();
+        if exit.param4 > 0
+            && let Ok(id) = u16::try_from(exit.param4)
+            && let Some(msg) = self.content.messages.get(&crate::content::MessageId(id))
+        {
+            let user_line = msg.lines.first().cloned().unwrap_or_default();
+            let room_line = msg
+                .lines
+                .get(1)
+                .map(|l| l.replacen("%s", &name, 1))
+                .unwrap_or_default();
+            if !user_line.is_empty() {
+                self.output_line(session, &user_line);
+            }
+            if !room_line.is_empty() {
+                self.broadcast_to_room(room, Some(session), &room_line);
+            }
+        }
+        if state == 3 {
+            // Trapdoor: you fall through (move_user mode 7 — modeled as
+            // a forced relocation; the mode-7 spell arm is PENDING).
+            if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+                player.location = exit.dest;
+            }
+            self.show_room(session);
+            return;
+        }
+        let rating = exit.param.max(1);
+        let dmg = self.rng.roll(rating / 2, rating + 1).max(0);
+        let dropped;
+        {
+            let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+                return;
+            };
+            let was_up = player.current_hp > 0;
+            player.current_hp -= dmg;
+            dropped = was_up && player.current_hp < 0;
+        }
+        if dropped {
+            let line = text::drops_to_ground(&name);
+            self.output_line(session, &line);
+            self.broadcast_to_room(room, Some(session), &line);
+        }
+        if self.player(session).current_hp <= DEATH_FLOOR {
+            self.player_killed(session);
+        }
+    }
+
     /// `cmd_search` / `search_for_hidden_exits` (theft.md §9). Bare form
     /// re-lists the room and broadcasts "searching the area"; a
     /// directional search broadcasts "searching for exits" then reveals
@@ -6014,6 +6119,17 @@ impl Core {
         else {
             return;
         };
+        // Traps re-arm silently (§8.6: 0x39c 1->0, 4->3).
+        if matches!(exit.exit_type, 9 | 0x18) {
+            let state = *self.exit_locks.get(&(room, d)).unwrap_or(&exit.param2);
+            let rearmed = match state {
+                1 => 0,
+                4 => 3,
+                other => other,
+            };
+            self.exit_locks.insert((room, d), rearmed);
+            return;
+        }
         if self.exit_lock_state(room, d, &exit) == 2 {
             return; // already locked again
         }
