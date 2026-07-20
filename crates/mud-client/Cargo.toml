@@ -7,6 +7,8 @@ publish.workspace = true
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+mud-core = { path = "../mud-core" }
+regex = "1"
 
 [[bin]]
 name = "mmc"
