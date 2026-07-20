@@ -5981,6 +5981,31 @@ impl Core {
             .rooms
             .get(&room)
             .and_then(|r| r.exits[dir as usize].clone());
+        let d = dir as usize as u8;
+        // Hidden type-6 exits (state & 2): roll < max(Perception-15, 3)
+        // reveals — state 4, plus the ~5 min re-hide kick.
+        if let Some(hexit) = exit.clone().filter(|e| e.exit_type == 6) {
+            let state = *self.exit_locks.get(&(room, d)).unwrap_or(&hexit.param);
+            if state & 2 != 0 {
+                let perception = match self.sessions.get(&session) {
+                    Some(Session::InGame { derived, .. }) => derived.perception,
+                    _ => 0,
+                };
+                if self.rng.roll(0, 100) < (perception - 15).max(3) {
+                    self.exit_locks.insert((room, d), 4);
+                    self.scheduler.schedule_in(300, Job::ExitRelock(room, d));
+                    let line = match dir {
+                        Direction::Up => "You found an exit upwards!".to_string(),
+                        Direction::Down => "You found an exit downwards!".to_string(),
+                        d => format!("You found an exit to the {}!", text::direction_shown(d)),
+                    };
+                    self.output_line(session, &line);
+                    return;
+                }
+            }
+            self.output_line(session, &nothing);
+            return;
+        }
         let Some(exit) = exit.filter(|e| e.exit_type == 9) else {
             self.output_line(session, &nothing);
             return;
@@ -6000,6 +6025,15 @@ impl Core {
         } else {
             self.output_line(session, &nothing);
         }
+    }
+
+    /// Hidden type-6 exit check (theft.md §9/§8.6): found state 4 in
+    /// the overlay (else the disk para1) reveals it; everything else —
+    /// state 2 and the re-hidden ticker codes — stays concealed. Ticker
+    /// semantics UNDETERMINED beyond concealment.
+    fn exit_hidden6(&self, room: RoomId, d: u8, exit: &crate::content::Exit) -> bool {
+        exit.exit_type == 6
+            && *self.exit_locks.get(&(room, d)).unwrap_or(&exit.param) != 4
     }
 
     /// The effective lock state for a pickable exit (theft.md §8.1): the
@@ -6119,6 +6153,11 @@ impl Core {
         else {
             return;
         };
+        // Hidden exits re-hide to their shipped state (§8.6 type 6).
+        if exit.exit_type == 6 {
+            self.exit_locks.insert((room, d), exit.param);
+            return;
+        }
         // Traps re-arm silently (§8.6: 0x39c 1->0, 4->3).
         if matches!(exit.exit_type, 9 | 0x18) {
             let state = *self.exit_locks.get(&(room, d)).unwrap_or(&exit.param2);
@@ -10825,6 +10864,11 @@ impl Core {
             self.output_line(session, text::NO_EXIT);
             return;
         }
+        // Hidden type-6 exits are no-exits until found (theft.md §9).
+        if self.exit_hidden6(from, direction as usize as u8, &exit) {
+            self.output_line(session, text::NO_EXIT);
+            return;
+        }
         // Locked pickable exits block until picked (theft.md §8; the
         // door-open command family is still unmodeled — a locked type-2
         // door refuses with the closed-door line, secret types stay
@@ -10981,9 +11025,15 @@ impl Core {
     /// "closed door <dir>"; action exits (10) and unfound secrets
     /// (7/0xb — found-state is unmodeled runtime, unfound is the shipped
     /// default) stay hidden. Other typed variants ORACLE-VERIFY.
-    fn exit_entry(d: Direction, exit: &crate::content::Exit) -> Option<String> {
+    fn exit_entry(
+        &self,
+        room: RoomId,
+        d: Direction,
+        exit: &crate::content::Exit,
+    ) -> Option<String> {
         match exit.exit_type {
             10 | 7 | 0xb => None,
+            6 if self.exit_hidden6(room, d as usize as u8, exit) => None,
             2 if exit.door_closed => {
                 Some(format!("closed door {}", text::direction_shown(d)))
             }
@@ -10994,13 +11044,14 @@ impl Core {
     /// The `exits` command: just the obvious-exits line (oracle).
     fn show_exits_line(&mut self, session: SessionId) {
         let player = self.player(session);
-        let room = &self.content.rooms[&player.location];
+        let room_id = player.location;
+        let room = &self.content.rooms[&room_id];
         let exits: Vec<String> = Direction::ALL
             .into_iter()
             .filter_map(|d| {
                 room.exits[d as usize]
                     .as_ref()
-                    .and_then(|e| Self::exit_entry(d, e))
+                    .and_then(|e| self.exit_entry(room_id, d, e))
             })
             .collect();
         let line = if exits.is_empty() {
@@ -11101,7 +11152,7 @@ impl Core {
             .filter_map(|d| {
                 room.exits[d as usize]
                     .as_ref()
-                    .and_then(|e| Self::exit_entry(d, e))
+                    .and_then(|e| self.exit_entry(room.id, d, e))
             })
             .collect();
         out.push_str(text::color::GREEN);

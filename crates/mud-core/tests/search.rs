@@ -35,11 +35,17 @@ fn world() -> Content {
         ..Default::default()
     });
     content.add_room(hall);
-    content.add_room(Room {
+    let mut next = Room {
         id: NEXT,
         name: "Next".into(),
         ..Default::default()
+    };
+    next.exits[Direction::North as usize] = Some(Exit {
+        dest: HALL,
+        exit_type: 0,
+        ..Default::default()
     });
+    content.add_room(next);
     content.add_race(Race {
         id: RaceId(1),
         name: "Human".into(),
@@ -175,4 +181,64 @@ fn searching_a_non_direction_is_refused() {
     core.input(s, "search fountain");
     let own = texts(&core.drain_events(), s);
     assert!(own.contains("Why would you want to search that?"), "{own:?}");
+}
+
+// --- hidden type-6 exits: reveal, passage, re-hide (theft.md §9/§8.6) ---
+
+#[test]
+fn hidden_exits_reveal_on_search_and_rehide() {
+    let mut content = world();
+    // South: a hidden exit (type 6, state 2 = hidden/searchable).
+    if let Some(room) = content.rooms.get_mut(&HALL) {
+        room.exits[Direction::South as usize] = Some(Exit {
+            dest: NEXT,
+            exit_type: 6,
+            param: 2,
+            ..Default::default()
+        });
+    }
+    let mut core = Core::new(content, CoreConfig::default());
+    let s = core.attach_player(person("Seeker", 1)); // sharp stats
+    core.drain_events();
+
+    // Hidden: not in the exits line, not walkable.
+    core.input(s, "exits");
+    let out = texts(&core.drain_events(), s);
+    assert!(!out.contains("south"), "hidden exits stay unlisted: {out:?}");
+    core.input(s, "s");
+    core.drain_events();
+    assert_eq!(core.player_snapshot(s).location, HALL, "hidden = no exit");
+
+    // Search finds it: roll < max(Perception - 15, 3).
+    let mut found = false;
+    for _ in 0..40 {
+        core.input(s, "search s");
+        let own = texts(&core.drain_events(), s);
+        if own.contains("You found an exit to the south!") {
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "a sharp searcher finds the exit");
+    core.input(s, "exits");
+    let out = texts(&core.drain_events(), s);
+    assert!(out.contains("south"), "found exits list: {out:?}");
+    core.input(s, "s");
+    core.drain_events();
+    assert_eq!(core.player_snapshot(s).location, NEXT, "found = walkable");
+    core.input(s, "n");
+    core.drain_events();
+
+    // One re-hide unit (~300 s) conceals it again.
+    for _ in 0..305 {
+        core.tick();
+        core.drain_events();
+    }
+    core.input(s, "s");
+    core.drain_events();
+    assert_eq!(
+        core.player_snapshot(s).location,
+        HALL,
+        "the exit re-hid after the kick"
+    );
 }
