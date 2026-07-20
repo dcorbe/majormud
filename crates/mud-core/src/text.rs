@@ -68,6 +68,67 @@ pub mod color {
     pub const RESET: &str = "\x1b[0m";
 }
 
+/// `get_random_name` (0x424172): the spawn-adjective walk over a name
+/// block. Per line a candidate composes — `A:` base sep suffix, `B:`
+/// prefix sep base, `F:` full replace, `N:` base, anything else the line
+/// verbatim — then `genrdn(0,100)` accepts on <= 9; running off the block
+/// (or the 1000-line ceiling) keeps the LAST candidate. Separator " "
+/// (`DAT_00480efa`), strncpy/strncat caps 28/29 bytes, empty final
+/// candidate falls back to the base name. A trailing newline's empty tail
+/// is the buffer terminator, not a line; interior empty lines compose an
+/// empty candidate (the DLL's verbatim branch).
+pub fn generate_name(base: &str, block: &str, roll: &mut dyn FnMut(i32, i32) -> i32) -> String {
+    fn take(s: &str, n: usize) -> &str {
+        if s.len() <= n {
+            return s;
+        }
+        let mut end = n;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        &s[..end]
+    }
+    let mut pieces: Vec<&str> = block.split('\n').collect();
+    if pieces.last() == Some(&"") {
+        pieces.pop();
+    }
+    let mut candidate = String::new();
+    for (i, line) in pieces.iter().enumerate() {
+        if i >= 1000 {
+            break;
+        }
+        let bytes = line.as_bytes();
+        if bytes.len() >= 2 && bytes[1] == b':' {
+            let tail = &line[2..];
+            match bytes[0] {
+                b'A' => {
+                    candidate = format!("{base} ");
+                    let room = 0x1dusize.saturating_sub(candidate.len());
+                    candidate.push_str(take(tail, room));
+                }
+                b'B' => {
+                    candidate = format!("{} ", take(tail, 0x1c));
+                    let room = 0x1dusize.saturating_sub(candidate.len());
+                    candidate.push_str(take(base, room));
+                }
+                b'F' => candidate = take(tail, 0x1d).to_string(),
+                b'N' => candidate = take(base, 0x1d).to_string(),
+                _ => candidate = take(line, 0x1d).to_string(),
+            }
+        } else {
+            candidate = take(line, 0x1d).to_string();
+        }
+        if roll(0, 100) <= 9 {
+            break;
+        }
+    }
+    if candidate.is_empty() {
+        base.to_string()
+    } else {
+        candidate
+    }
+}
+
 /// Removes every ANSI escape sequence (the MBBS non-graphics path).
 pub fn strip_ansi(text: &str) -> String {
     let mut out = String::with_capacity(text.len());

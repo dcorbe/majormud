@@ -786,6 +786,11 @@ pub struct MonsterInstanceId(pub u64);
 #[derive(Debug, Clone)]
 pub(crate) struct MonsterInstance {
     pub template: crate::content::MonsterId,
+    /// The spawn-composed display name (`get_random_name` over the
+    /// template's name block; the base template name when there is
+    /// none). Death announcements re-read the TEMPLATE name instead
+    /// (check_kill_monster; spellcasting.md §8.10).
+    pub name: String,
     pub location: RoomId,
     pub current_hp: i32,
     /// Current energy pool (`mon+0x16`); regen/max = the template's `energy`.
@@ -1234,12 +1239,16 @@ impl Core {
                 items.push((slot.item, slot.uses));
             }
         }
+        // Name roll (L21102 get_random_name, AFTER the item draws and
+        // BEFORE the entry-direction pick — the decompile draw order).
+        let name = self.roll_spawn_name(template, &name, true);
         let id = MonsterInstanceId(self.next_monster);
         self.next_monster += 1;
         self.monsters.insert(
             id,
             MonsterInstance {
                 template,
+                name: name.clone(),
                 location: room,
                 current_hp: hitpoints,
                 energy,
@@ -1513,10 +1522,13 @@ impl Core {
         let (aggression, behaviour) = (tpl.aggression, tpl.behaviour);
         let (roam_class, herd_mode, herd_rank) = (tpl.roam_class, tpl.herd_mode, tpl.exp_multi);
         let coins = tpl.coins;
+        let base = tpl.name.clone();
+        let name = self.roll_spawn_name(template, &base, false);
         self.monsters.insert(
             id,
             MonsterInstance {
                 template,
+                name,
                 location: room,
                 current_hp: hitpoints,
                 energy,
@@ -5441,12 +5453,37 @@ impl Core {
         held
     }
 
-    /// A live monster's template name (empty if the instance is gone).
+    /// A live monster's display name (empty if the instance is gone) —
+    /// the spawn-composed adjective name, not the template's.
     fn monster_name(&self, id: MonsterInstanceId) -> String {
         self.monsters
             .get(&id)
-            .and_then(|m| self.content.monsters.get(&m.template))
-            .map_or_else(String::new, |t| t.name.clone())
+            .map_or_else(String::new, |m| m.name.clone())
+    }
+
+    /// The spawn name roll (`get_random_name`, text::generate_name):
+    /// walks the template's name block when it has one. The density
+    /// spawner draws from its own stream (`spawn_rng`, the M6 seeded-
+    /// golden divergence); the `--spawn` fixture path draws from the
+    /// main stream like its other rolls.
+    fn roll_spawn_name(
+        &mut self,
+        template: crate::content::MonsterId,
+        base: &str,
+        spawner_stream: bool,
+    ) -> String {
+        let Some(body) = self
+            .content
+            .monsters
+            .get(&template)
+            .and_then(|t| t.name_block)
+            .and_then(|b| self.content.textblocks.get(&b))
+            .map(|b| b.body.clone())
+        else {
+            return base.to_string();
+        };
+        let rng = if spawner_stream { &mut self.spawn_rng } else { &mut self.rng };
+        text::generate_name(base, &body, &mut |lo, hi| rng.roll(lo, hi))
     }
 
     /// `get_monster_ability_value` (decompile 37150-37270): the template's
@@ -6661,14 +6698,14 @@ impl Core {
             .iter()
             .filter(|(_, m)| m.location == room && m.current_hp > 0)
             .find(|(_, m)| {
-                self.content.monsters.get(&m.template).is_some_and(|t| {
-                    let name: Vec<&str> = t.name.split_whitespace().collect();
-                    (0..name.len()).any(|start| {
-                        want.len() <= name.len() - start
-                            && want.iter().enumerate().all(|(i, w)| {
-                                name[start + i].to_ascii_lowercase().starts_with(w)
-                            })
-                    })
+                // Word-prefix match against the DISPLAY name — the
+                // spawn adjective is targetable ("attack nasty").
+                let name: Vec<&str> = m.name.split_whitespace().collect();
+                (0..name.len()).any(|start| {
+                    want.len() <= name.len() - start
+                        && want.iter().enumerate().all(|(i, w)| {
+                            name[start + i].to_ascii_lowercase().starts_with(w)
+                        })
                 })
             })
             .map(|(id, _)| *id)
@@ -6941,8 +6978,7 @@ impl Core {
         let target_name = self
             .monsters
             .get(&target)
-            .and_then(|m| self.content.monsters.get(&m.template))
-            .map(|t| t.name.clone())
+            .map(|m| m.name.clone())
             .expect("validated above");
         let (hit_verbs, miss_verbs) = self.weapon_verbs(session);
 
@@ -9703,8 +9739,7 @@ impl Core {
             self.monsters
                 .values()
                 .filter(|m| m.location == room.id)
-                .filter_map(|m| self.content.monsters.get(&m.template))
-                .map(|t| t.name.as_str()),
+                .map(|m| m.name.as_str()),
         );
         if !others.is_empty() {
             // Oracle palette: "0;35 Also here: 1;35 <name> 0m 0;35 ." —
