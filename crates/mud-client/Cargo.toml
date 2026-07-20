@@ -9,6 +9,12 @@ publish.workspace = true
 clap = { version = "4", features = ["derive"] }
 mud-core = { path = "../mud-core" }
 regex = "1"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time"] }
+toml = "0.8"
+
+[dev-dependencies]
+mud-server = { path = "../mud-server" }
 
 [[bin]]
 name = "mmc"

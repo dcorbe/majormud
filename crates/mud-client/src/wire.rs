@@ -144,6 +144,66 @@ pub fn resolve_backspaces(text: &str) -> String {
     out
 }
 
+/// Streaming variant of [`strip_ansi`]: escape sequences may split at
+/// read boundaries; incomplete candidates are held until decidable.
+pub struct AnsiStripper {
+    /// Undecided prefix: "", "\x1b", or "\x1b[" + params so far.
+    held: String,
+}
+
+impl AnsiStripper {
+    pub fn new() -> Self {
+        AnsiStripper { held: String::new() }
+    }
+
+    /// Feed a chunk, get the stripped text it completes.
+    pub fn push(&mut self, chunk: &str) -> String {
+        let mut out = String::with_capacity(chunk.len());
+        for c in chunk.chars() {
+            loop {
+                if self.held.is_empty() {
+                    if c == '\x1b' {
+                        self.held.push(c);
+                    } else {
+                        out.push(c);
+                    }
+                    break;
+                }
+                if self.held == "\x1b" {
+                    if c == '[' {
+                        self.held.push(c);
+                        break;
+                    }
+                    // Bare ESC is not a CSI candidate: flush and retry c.
+                    out.push_str(&self.held);
+                    self.held.clear();
+                    continue;
+                }
+                // held is "\x1b[" + params
+                if c.is_ascii_digit() || c == ';' || c == '?' {
+                    self.held.push(c);
+                    break;
+                }
+                if c.is_ascii_alphabetic() {
+                    self.held.clear(); // complete match: strip it
+                    break;
+                }
+                // Non-matching final byte: keep the sequence verbatim.
+                out.push_str(&self.held);
+                self.held.clear();
+                continue;
+            }
+        }
+        out
+    }
+}
+
+impl Default for AnsiStripper {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Remove ANSI CSI sequences, byte-for-byte equivalent to the Python
 /// driver's `re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", s)`. A sequence
 /// lacking an alphabetic final byte is not a match and is kept verbatim.

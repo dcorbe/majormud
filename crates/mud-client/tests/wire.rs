@@ -5,7 +5,7 @@
 //! whose behavior this layer replaces) and the captured live-board
 //! transcript `re/oracle/oracle_m1.raw`.
 
-use mud_client::wire::{TelnetFilter, cp437_to_string, resolve_backspaces, strip_ansi};
+use mud_client::wire::{AnsiStripper, TelnetFilter, cp437_to_string, resolve_backspaces, strip_ansi};
 
 const IAC: u8 = 255;
 const DONT: u8 = 254;
@@ -118,6 +118,36 @@ fn strip_ansi_matches_python_regex() {
     assert_eq!(strip_ansi("a\x1b[12"), "a\x1b[12");
     // Bare ESC (no bracket) stays.
     assert_eq!(strip_ansi("a\x1bb"), "a\x1bb");
+}
+
+#[test]
+fn ansi_stripper_streams_across_chunk_boundaries() {
+    // The session transcript is built incrementally; escape sequences
+    // split at read boundaries must not leak into it.
+    let mut s = AnsiStripper::new();
+    let mut out = String::new();
+    out.push_str(&s.push("a\x1b["));
+    out.push_str(&s.push("1;3"));
+    out.push_str(&s.push("6mb"));
+    assert_eq!(out, "ab");
+}
+
+#[test]
+fn ansi_stripper_matches_batch_strip_on_whole_input() {
+    let input = "\x1b[2J\x1b[Hplain \x1b[1;36mtitle\x1b[0m rest\x1b[?25l tail";
+    let mut s = AnsiStripper::new();
+    let streamed: String = input.chars().map(|c| s.push(&c.to_string())).collect();
+    assert_eq!(streamed, strip_ansi(input));
+}
+
+#[test]
+fn ansi_stripper_keeps_non_matching_escapes() {
+    // Bare ESC without '[' passes through, like the Python regex.
+    let mut s = AnsiStripper::new();
+    let mut out = String::new();
+    out.push_str(&s.push("a\x1b"));
+    out.push_str(&s.push("zb"));
+    assert_eq!(out, "a\x1bzb");
 }
 
 #[test]

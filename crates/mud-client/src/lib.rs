@@ -6,6 +6,9 @@
 //! backspace obfuscation) and the in-repo `mud-server` reimplementation.
 
 pub mod cli;
+pub mod dialect;
 pub mod events;
 pub mod parse;
+pub mod profile;
+pub mod session;
 pub mod wire;
