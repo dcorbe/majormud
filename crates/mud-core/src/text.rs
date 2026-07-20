@@ -75,6 +75,13 @@ pub fn item_force_removed(name: &str) -> String {
     format!("Your {name} has been removed.")
 }
 
+/// PICKLOCK strings (theft.md §8, verbatim).
+pub const SYNTAX_PICKLOCK: &str = "Syntax: PICKLOCK {direction}";
+pub const PICK_FAILS: &str = "Your skill fails you this time.";
+/// ORACLE-VERIFY: walking into a locked type-2 door (the open-door
+/// command family is unmodeled; wording guessed).
+pub const DOOR_CLOSED: &str = "The door is closed!";
+
 /// ROB / FORGIVE strings (theft.md §3-5, verbatim).
 pub const SYNTAX_ROB: &str = "Syntax: ROB {user/monster}";
 pub const DONT_SEE_ANYWHERE: &str = "You don't see that anywhere!";

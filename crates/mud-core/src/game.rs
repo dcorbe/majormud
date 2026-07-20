@@ -759,6 +759,47 @@ enum Session {
     },
 }
 
+/// Direction-word resolution for argument-taking commands (PICKLOCK
+/// etc.): the two-letter aliases and full-name prefixes.
+fn direction_from_word(word: &str) -> Option<crate::content::Direction> {
+    use crate::content::Direction as D;
+    match word {
+        "n" => return Some(D::North),
+        "s" => return Some(D::South),
+        "e" => return Some(D::East),
+        "w" => return Some(D::West),
+        "ne" => return Some(D::NorthEast),
+        "nw" => return Some(D::NorthWest),
+        "se" => return Some(D::SouthEast),
+        "sw" => return Some(D::SouthWest),
+        "u" => return Some(D::Up),
+        "d" => return Some(D::Down),
+        _ => {}
+    }
+    if word.is_empty() {
+        return None;
+    }
+    // Diagonals first so "north" cannot shadow "northeast" prefixes.
+    for d in [
+        D::NorthEast,
+        D::NorthWest,
+        D::SouthEast,
+        D::SouthWest,
+        D::North,
+        D::South,
+        D::East,
+        D::West,
+        D::Up,
+        D::Down,
+    ] {
+        let name = crate::text::direction_shown(d);
+        if name.starts_with(word) {
+            return Some(d);
+        }
+    }
+    None
+}
+
 /// Self-rescheduling background jobs (`combat_rounds.md` §1). Medium (3 s)
 /// and energy (5 s) tiers join with their systems in later milestones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -783,6 +824,10 @@ enum Job {
     /// DAT_00482138 is never reset within a process). A standalone server
     /// re-runs the shelf reconciliation every 24 h instead.
     Cleanup,
+    /// A picked lock's re-lock kick (theft.md §8.6; 300 s per delay
+    /// unit, scheduled whole rather than the DLL's head-decrement walk —
+    /// documented simplification).
+    ExitRelock(RoomId, u8),
 }
 
 const SLOW_INTERVAL: u64 = 30;
@@ -909,6 +954,10 @@ pub struct Core {
     /// on the ATTACKER's slow tick and power retaliation-free responses,
     /// FORGIVE refunds, and the room-list star.
     evil_timers: Vec<crate::crime::EvilNode>,
+    /// Runtime exit lock-state overlay (theft.md §8.1 unions): keyed
+    /// (room, direction), value = the state word (2 locked, 1 picked).
+    /// Absent = the shipped disk state.
+    exit_locks: BTreeMap<(RoomId, u8), i32>,
     /// Ephemeral floor coin piles per room (low->high denominations).
     room_coins: BTreeMap<RoomId, [u32; 5]>,
     /// Ephemeral floor items per room (item, remaining uses), seeded from
@@ -998,6 +1047,7 @@ impl Core {
             monsters: BTreeMap::new(),
             next_monster: 1,
             evil_timers: Vec::new(),
+            exit_locks: BTreeMap::new(),
             room_coins: BTreeMap::new(),
             room_items: BTreeMap::new(),
             shop_stock: BTreeMap::new(),
@@ -1791,6 +1841,7 @@ impl Core {
                     self.spawn_pass();
                     self.scheduler.schedule_in(SPAWN_INTERVAL, Job::Spawn);
                 }
+                Job::ExitRelock(room, dir) => self.relock_exit(room, dir),
                 Job::Cleanup => {
                     self.reconcile_shelves();
                     self.scheduler.schedule_in(CLEANUP_INTERVAL, Job::Cleanup);
@@ -3112,6 +3163,7 @@ impl Core {
                 }
             }
             Command::Ansi => self.ansi_command(session),
+            Command::Picklock(args) => self.picklock_command(session, &args),
             Command::Rob(target) => self.rob_command(session, &target),
             Command::Forgive(target) => self.forgive_command(session, &target),
             Command::Sneak => self.sneak_command(session),
@@ -5781,6 +5833,137 @@ impl Core {
         }
     }
 
+
+
+    /// The effective lock state for a pickable exit (theft.md §8.1): the
+    /// runtime overlay, else the shipped disk word — type 2 keeps it in
+    /// para2 (0x39c), types 7/0xb in para1 (0x374). 2 = locked.
+    fn exit_lock_state(&self, room: RoomId, d: u8, exit: &crate::content::Exit) -> i32 {
+        if let Some(state) = self.exit_locks.get(&(room, d)) {
+            return *state;
+        }
+        match exit.exit_type {
+            2 => exit.param2,
+            7 | 0xb => exit.param,
+            _ => 0,
+        }
+    }
+
+    /// `cmd_picklock` (theft.md §8). One shared fail string masks every
+    /// refusal ("no such exit", wrong type, already open, skill-less,
+    /// and the failed roll alike).
+    fn picklock_command(&mut self, session: SessionId, args: &str) {
+        let word = args.trim().to_ascii_lowercase();
+        let dir = direction_from_word(&word);
+        let Some(dir) = dir else {
+            self.output_line(session, text::SYNTAX_PICKLOCK);
+            return;
+        };
+        self.break_combat(session);
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+            player.sneak_armed = false;
+            player.hidden = false;
+        }
+        let room = self.player(session).location;
+        let d = dir as usize as u8;
+        let exit = self
+            .content
+            .rooms
+            .get(&room)
+            .and_then(|r| r.exits[dir as usize].clone());
+        let fail = text::PICK_FAILS;
+        let Some(exit) = exit else {
+            self.output_line(session, fail);
+            return;
+        };
+        let pickable = matches!(exit.exit_type, 2 | 7 | 0xb);
+        if !pickable || self.exit_lock_state(room, d, &exit) != 2 {
+            self.output_line(session, fail);
+            return;
+        }
+        let skill = match self.sessions.get(&session) {
+            Some(Session::InGame { derived, .. }) => derived.picklocks,
+            _ => 0,
+        };
+        // Modifier + roll (§8.2/8.3): type 2 keeps its modifier in
+        // para3; 7/0xb in para2 (typically negative — hard locks).
+        let modifier = if exit.exit_type == 2 { exit.param3 } else { exit.param2 };
+        let success = skill >= 1 && self.rng.roll(0, 100) < modifier + skill;
+        if !success {
+            // §8.4: a failed 7/0xb pick fires the room lock-trap spell
+            // (room+0x5fa) — no sqlite column is pinned for it yet
+            // (PENDING with the trap pass), so the fail line prints.
+            self.output_line(session, fail);
+            return;
+        }
+        self.exit_locks.insert((room, d), 1);
+        // Re-lock (§8.6): 300 s per unit; type 7/0xb locks with a
+        // POSITIVE pick modifier never re-lock.
+        let delay_units = if exit.exit_type == 2 { exit.param4 } else { exit.param3 };
+        let relocks = exit.exit_type == 2 || modifier < 1;
+        if relocks {
+            let secs = 300 * i64::from(delay_units.max(1));
+            self.scheduler
+                .schedule_in(secs as u64, Job::ExitRelock(room, d));
+        }
+        // Reciprocal exit (§8.2): the destination's opposite unlocks on
+        // its own timer.
+        let opposite = dir.opposite();
+        if let Some(back) = self
+            .content
+            .rooms
+            .get(&exit.dest)
+            .and_then(|r| r.exits[opposite as usize].clone())
+            .filter(|b| b.dest == room && matches!(b.exit_type, 2 | 7 | 0xb))
+        {
+            let bd = opposite as usize as u8;
+            self.exit_locks.insert((exit.dest, bd), 1);
+            let bmod = if back.exit_type == 2 { back.param3 } else { back.param2 };
+            let bdelay = if back.exit_type == 2 { back.param4 } else { back.param3 };
+            if back.exit_type == 2 || bmod < 1 {
+                let secs = 300 * i64::from(bdelay.max(1));
+                self.scheduler
+                    .schedule_in(secs as u64, Job::ExitRelock(exit.dest, bd));
+            }
+        }
+        // §8.5: room first, then the picker.
+        let name = self.player(session).name.clone();
+        let leaf = if exit.exit_type == 0xb { "gate" } else { "door" };
+        let line = match dir {
+            Direction::Up => format!("You see {name} pick the lock on the {leaf} above you."),
+            Direction::Down => format!("You see {name} pick the lock on the {leaf} below you."),
+            d => format!(
+                "You see {name} pick the lock on the {leaf} to the {}.",
+                text::direction_shown(d)
+            ),
+        };
+        self.broadcast_to_room(room, Some(session), &line);
+        self.output_line(session, &format!("You successfully unlocked the {leaf}."));
+    }
+
+    /// One re-lock kick (theft.md §8.6): back to locked with the room
+    /// broadcast, unless someone already re-locked it.
+    fn relock_exit(&mut self, room: RoomId, d: u8) {
+        let Some(exit) = self
+            .content
+            .rooms
+            .get(&room)
+            .and_then(|r| r.exits[d as usize].clone())
+        else {
+            return;
+        };
+        if self.exit_lock_state(room, d, &exit) == 2 {
+            return; // already locked again
+        }
+        self.exit_locks.insert((room, d), 2);
+        let leaf = if exit.exit_type == 0xb { "gate" } else { "door" };
+        let dir = crate::content::Direction::ALL[d as usize];
+        let line = format!(
+            "The {leaf} to the {} just locked!",
+            text::direction_shown(dir)
+        );
+        self.broadcast_to_room(room, None, &line);
+    }
 
     /// `cmd_rob` (theft.md §3): parse, resolve player-or-monster, then
     /// `rob_user`/`rob_monster`. Bare form prints the syntax; unmatched
@@ -10462,6 +10645,20 @@ impl Core {
         // sees "no exit" (oracle: 's' at the docks).
         if exit.exit_type == 10 && !self.action_exit_pass {
             self.output_line(session, text::NO_EXIT);
+            return;
+        }
+        // Locked pickable exits block until picked (theft.md §8; the
+        // door-open command family is still unmodeled — a locked type-2
+        // door refuses with the closed-door line, secret types stay
+        // masked as no-exit. Wordings ORACLE-VERIFY).
+        if matches!(exit.exit_type, 2 | 7 | 0xb)
+            && self.exit_lock_state(from, direction as usize as u8, &exit) == 2
+        {
+            if exit.exit_type == 2 {
+                self.output_line(session, text::DOOR_CLOSED);
+            } else {
+                self.output_line(session, text::NO_EXIT);
+            }
             return;
         }
         // Alignment-restricted exits (type 0x14, crime.md §6.3

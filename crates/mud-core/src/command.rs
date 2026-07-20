@@ -50,6 +50,8 @@ pub enum Command {
     Set(String),
     /// `rob [target]` — cmd_rob 0x4528fb; bare form prints the syntax.
     Rob(String),
+    /// `picklock <direction>` — cmd_picklock 0x454856.
+    Picklock(String),
     /// `forgive <player>` — refund a live pair timer (cmd_forgive).
     Forgive(String),
     /// `sneak` — arm stealth for the next move (cmd_sneak 0x454641).
@@ -133,7 +135,7 @@ enum Verb {
 /// All direction minimums are ORACLE-verified (oracle_directions.raw):
 /// north/south/west = full word, east = 3 (eat blocks 2), down = 3,
 /// up = 2, diagonals = 6. Hand-authored asymmetry is the original's.
-const VERBS: [(&str, usize, Verb); 51] = [
+const VERBS: [(&str, usize, Verb); 52] = [
     ("north", 5, Verb::Plain(|| Command::Move(Direction::North))),
     ("south", 5, Verb::Plain(|| Command::Move(Direction::South))),
     ("east", 3, Verb::Plain(|| Command::Move(Direction::East))),
@@ -207,6 +209,9 @@ const VERBS: [(&str, usize, Verb); 51] = [
     // ORACLE-VERIFY min abbrevs: unmeasured ("ro" cannot shadow
     // remove's 3 — "rem" is not a prefix of "rob").
     ("rob", 2, Verb::WithArgs(Command::Rob)),
+    // ORACLE-VERIFY min abbrev: unmeasured; "pi" is free (punch is 2 at
+    // "pu").
+    ("picklock", 2, Verb::WithArgs(Command::Picklock)),
     ("forgive", 4, Verb::WithArgs(Command::Forgive)),
 ];
 

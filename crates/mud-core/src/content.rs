@@ -121,9 +121,15 @@ pub struct Exit {
     /// TOO-GOOD fame bound for type 0x14 (crime.md §6.3). Types 8/10
     /// fold theirs into `dest`/`trigger_msg` at load.
     pub param: i32,
-    /// Raw `para2_N` (`room+0x39c+d*2`): door state for type 2, the
-    /// TOO-EVIL fame bound for type 0x14.
+    /// Raw `para2_N` (`room+0x39c+d*2`): type-2 lock state (2 locked /
+    /// 1 picked), the 7/0xb pick modifier, the TOO-EVIL fame bound for
+    /// type 0x14 (theft.md §8.1 union).
     pub param2: i32,
+    /// Raw `para3_N` (`room+0x3b0+d*4`): type-2 pick modifier; 7/0xb
+    /// re-lock delay units.
+    pub param3: i32,
+    /// Raw `para4_N` (`room+0x3d8+d*4`): type-2 re-lock delay units.
+    pub param4: i32,
     /// `para2_N` (`room+0x39c+d*2`) nonzero = door closed (type 2/9;
     /// shipped doors all start closed). Runtime open/close arrives with
     /// the player door commands.

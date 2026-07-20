@@ -31,6 +31,8 @@ fn exit(dest: RoomId, exit_type: u16) -> Option<Exit> {
         trigger_msg: None,
         param: 0,
         param2: 0,
+        param3: 0,
+        param4: 0,
         door_closed: exit_type == 2, // shipped doors are closed (para2=2)
     })
 }
@@ -496,6 +498,8 @@ fn damage_exit_wounds_the_crossing_monster() {
         trigger_msg: None,
         param: 10,
         param2: 0,
+        param3: 0,
+        param4: 0,
         door_closed: false,
     });
     let mut b = room(B, 9);
@@ -526,6 +530,8 @@ fn secret_passage_needs_class_5_or_0x26() {
         trigger_msg: None,
         param: 3,
         param2: 0,
+        param3: 0,
+        param4: 0,
         door_closed: false,
     });
     let mut b = room(B, 9);
