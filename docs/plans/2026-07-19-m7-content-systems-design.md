@@ -230,7 +230,14 @@ seeded name-gen golden (fixture block, exact 10%-walk draws); ANSI
 on/off funnel byte-diff. Oracle: MA hit/miss strings + speeds (Mystic),
 adjective spawn lines (passive capture), backstab strings.
 
-**Slice 3 NEARLY COMPLETE (2026-07-19, 620 tests):** crime.rs module
+**Slice 3 COMPLETE (2026-07-20, 625 tests; leftovers landed: criminal
+respawn split fame >= 0x28 → criminal_recall_location default room 142
+ORACLE-VERIFY; permadeath banks fame×90% retention (option-0x32 default
+unread, VERIFY) once per calendar day to the account, restore at
+creation SKIPS the Lawful question when banked evil >= 1 and seeds fame
+— negatives clamp 0, good standing never survives the account).**
+
+Original progress banner (2026-07-19, 620 tests): crime.rs module
 (get_legal_level exact chain, tier names/colors from 0x4881a4/0x488184,
 charge_npc_evil with the §2.1 gate order/dark cloud/minimum-10 bump —
 the §2.4 30000 add-guard is unreachable through this path since the 300
