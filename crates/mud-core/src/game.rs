@@ -720,6 +720,11 @@ enum Session {
         /// discipline) and the end-of-entry sweep redraws it; input
         /// consumes it silently (the echoed Enter broke the line).
         at_prompt: bool,
+        /// The attack mode (`DAT_004877e4`, kept per-fighter in the
+        /// autocombat record +8 and restored each round): cmd_attack
+        /// auto-picks MartialArts1 unarmed with Punch; punch/kick/
+        /// jumpkick set modes 1/2/3 (combat.md "Unarmed attack modes").
+        attack_mode: crate::combat::AttackType,
     },
 }
 
@@ -2691,6 +2696,7 @@ impl Core {
                 attackers_this_tick: 0,
                 trail: vec![trail_seed],
                 at_prompt: false,
+                attack_mode: crate::combat::AttackType::Normal,
             });
         self.show_room(id);
         self.show_prompt(id);
@@ -3030,6 +3036,24 @@ impl Core {
                     self.say(session, line.trim());
                 }
             }
+            Command::Punch(target) => {
+                let mode = crate::combat::AttackType::MartialArts1;
+                if self.ma_command(session, &target, 0x1d, mode) == Resolution::FallThrough {
+                    self.say(session, line.trim());
+                }
+            }
+            Command::Kick(target) => {
+                let mode = crate::combat::AttackType::MartialArts2;
+                if self.ma_command(session, &target, 0x1e, mode) == Resolution::FallThrough {
+                    self.say(session, line.trim());
+                }
+            }
+            Command::JumpKick(target) => {
+                let mode = crate::combat::AttackType::MartialArts3;
+                if self.ma_command(session, &target, 0x23, mode) == Resolution::FallThrough {
+                    self.say(session, line.trim());
+                }
+            }
             // Cast never falls through to say: an unresolvable spell prints
             // the do-not-know line (MEASURED §8.6/§8.9). Invoke is its kai
             // twin (§8.12).
@@ -3328,6 +3352,51 @@ impl Core {
     /// testimony): no argument auto-picks; an unresolvable target falls
     /// through to SAY (oracle-observed).
     fn attack_command(&mut self, session: SessionId, target_words: &str) -> Resolution {
+        // cmd_attack 49712-49720: a bare attack auto-selects mode-1
+        // fists of fury when unarmed with the Punch ability. (The
+        // hidden/sneak divert to mode 4 joins with the M7 theft slice.)
+        let player = self.player(session);
+        let mode = if player.weapon.is_none()
+            && self
+                .ability_bag(player)
+                .value(Ability::from_id(0x1d).expect("Punch in the enum"))
+                > 0
+        {
+            crate::combat::AttackType::MartialArts1
+        } else {
+            crate::combat::AttackType::Normal
+        };
+        self.attack_with_mode(session, target_words, mode)
+    }
+
+    /// The MA verb family (cmd_punch 0x51e37 / cmd_kick 0x51df2 /
+    /// cmd_jumpkick 0x51dad): gate on the granting ability — without it
+    /// the handler returns 0 and the input falls through to SAY — then
+    /// set the attack mode and run the shared attack path.
+    fn ma_command(
+        &mut self,
+        session: SessionId,
+        target_words: &str,
+        ability_id: u16,
+        mode: crate::combat::AttackType,
+    ) -> Resolution {
+        let player = self.player(session);
+        let granted = self
+            .ability_bag(player)
+            .value(Ability::from_id(ability_id).expect("MA ability in the enum"))
+            > 0;
+        if !granted {
+            return Resolution::FallThrough;
+        }
+        self.attack_with_mode(session, target_words, mode)
+    }
+
+    fn attack_with_mode(
+        &mut self,
+        session: SessionId,
+        target_words: &str,
+        mode: crate::combat::AttackType,
+    ) -> Resolution {
         if self.player(session).current_hp < 1 {
             self.output_line(session, text::MORTALLY_WOUNDED);
             return Resolution::Handled;
@@ -3350,8 +3419,10 @@ impl Core {
                 self.output_line(session, text::COMBAT_OFF);
             }
         }
-        if let Some(Session::InGame { target, .. }) = self.sessions.get_mut(&session) {
+        if let Some(Session::InGame { target, attack_mode, .. }) = self.sessions.get_mut(&session)
+        {
             *target = Some(monster);
+            *attack_mode = mode;
         }
         self.output_line(session, text::COMBAT_ENGAGED);
         self.player_attack_sequence(session);
@@ -6887,11 +6958,15 @@ impl Core {
             *energy -= eu;
 
             let defender = self.build_monster_defender(target);
+            let mode = match self.sessions.get(&session) {
+                Some(Session::InGame { attack_mode, .. }) => *attack_mode,
+                _ => crate::combat::AttackType::Normal,
+            };
             let rng = &mut self.rng;
             let result = crate::combat::calculate_attack(
                 &attacker,
                 &defender,
-                crate::combat::AttackType::Normal,
+                mode,
                 &mut |lo, hi| rng.roll(lo, hi),
             );
             use crate::combat::Outcome;
@@ -8927,39 +9002,57 @@ impl Core {
         let dyn_accuracy = bag.value(accuracy_ability(0x16))
             + bag.value(accuracy_ability(0x69))
             + bag.value(accuracy_ability(0x6a));
-        // Unarmed with the Punch ability (0x1d) = mode-1 "fists of fury"
-        // (cmd_attack 49712-49720 auto-selects it for a bare attack;
-        // move_player_to_fighter 24539-24571): min = L*V/8 + 2,
-        // max = (L+3)*V/4 + 6 with L = level capped at 20 and V = the
-        // folded Punch value, plus PunchACY (89) on accuracy and
-        // PunchDmg (92) on both damage bounds. ORACLE pin: Nekojin
-        // Mystic L1 V1 Str40 punched raw 2..6 (shown 1..5 through the
-        // rat's DR 1). Kick/jumpkick (modes 2/3, their own verbs) are a
-        // parser addition still pending; plain classes keep 1-4 fists.
-        let punch = if weapon.is_none() {
-            bag.value(Ability::from_id(0x1d).expect("Punch in the enum"))
-        } else {
-            0
+        // Unarmed MA modes (combat.md "Unarmed attack modes",
+        // move_player_to_fighter 24520-24660 + add-ons 24890-24916):
+        // the stored attack mode (autocombat +8) picks the style —
+        // 1 fists of fury (Punch 0x1d): min L*V/8+2, max (L+3)*V/4+6;
+        // 2 lightning feet (Kick 0x1e): max L*V/6+7;
+        // 3 flying feet (JumpKick 0x23): max L*V/6+8 — L = level capped
+        // at 20, V = the folded style ability, plus the per-style
+        // ACY/Dmg add-on pair. ORACLE pin: Nekojin Mystic L1 V1 Str40
+        // punched raw 2..6 (shown 1..5 through the rat's DR 1).
+        use crate::combat::AttackType;
+        let mode = match self.sessions.get(&session) {
+            Some(Session::InGame { attack_mode, .. }) => *attack_mode,
+            _ => AttackType::Normal,
         };
-        let punch_acy = if punch > 0 {
-            bag.value(Ability::from_id(0x59).expect("PunchACY in the enum"))
-        } else {
-            0
+        // (style V ability, ACY add-on, Dmg add-on) per unarmed mode.
+        let style = match mode {
+            AttackType::MartialArts1 => Some((0x1d, 0x59, 0x5c)),
+            AttackType::MartialArts2 => Some((0x1e, 0x5a, 0x5d)),
+            AttackType::MartialArts3 => Some((0x23, 0x5b, 0x5e)),
+            _ => None,
+        };
+        let fold = |id: u16| bag.value(Ability::from_id(id).expect("MA ability in the enum"));
+        let (v, style_acy, style_dmg) = match style {
+            Some((v_id, acy_id, dmg_id)) if weapon.is_none() => {
+                let v = fold(v_id);
+                if v > 0 {
+                    (v, fold(acy_id), fold(dmg_id))
+                } else {
+                    (0, 0, 0)
+                }
+            }
+            _ => (0, 0, 0),
         };
         let accuracy = (str_ - 50) / 3
             + 2 * ((combat - 1) * isqrt(level) + 2 * combat + level / 2 + skill / 2 - 2)
             + (agl - 50) / 6
             + dyn_accuracy
-            + punch_acy;
+            + style_acy;
 
         // Weapon damage (or the unarmed defaults), plus the Strength
         // bonuses: max += (Str-50)/10; min += 2*(Str-100)/10 when positive.
         let (base_min, base_max) = match weapon {
             Some(w) => (i32::from(w.min_damage), i32::from(w.max_damage)),
-            None if punch > 0 => {
+            None if v > 0 => {
                 let l = level.min(20);
-                let dmg = bag.value(Ability::from_id(0x5c).expect("PunchDmg in the enum"));
-                (l * punch / 8 + 2 + dmg, (l + 3) * punch / 4 + 6 + dmg)
+                let max = match mode {
+                    AttackType::MartialArts2 => l * v / 6 + 7,
+                    AttackType::MartialArts3 => l * v / 6 + 8,
+                    _ => (l + 3) * v / 4 + 6,
+                };
+                (l * v / 8 + 2 + style_dmg, max + style_dmg)
             }
             None => (1, 4),
         };
@@ -9069,11 +9162,14 @@ impl Core {
 
     /// EXACT (decompile 0x2a0c8 `compute_energy_used`):
     /// EU = speed*1000 / ((combat*level + 45) * (Agl+150) * 1500/9000) + bonus,
-    /// divide-by-zero guard = 50. Unarmed fists speed = 1200 (0x4b0; the
-    /// 1800 variant fires when player flag +0x7c8 & 2 is set — semantics
-    /// not yet traced). Weapon speeds join in M4.
+    /// divide-by-zero guard = 50. Speeds (combat.md mode table): armed =
+    /// the weapon's `+0x3de` speed (0-speed weapons like "flurry of
+    /// blades" hit the 6-swing round cap — intentional data); unarmed by
+    /// attack mode — 1150 fists of fury / 1400 kicks / 1900 jumpkick /
+    /// 1200 plain fists. (The flagged +0x7c8&2 variants are untraced.)
     fn player_energy_used(&self, session: SessionId) -> i32 {
-        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+        let Some(Session::InGame { player, attack_mode, .. }) = self.sessions.get(&session)
+        else {
             return PLAYER_ENERGY_MAX;
         };
         let combat = self
@@ -9086,14 +9182,19 @@ impl Core {
         if i == 0 || den == 0 {
             return 50;
         }
-        // Fists speed 1200 (0x4b0); the mode-1 punch swings at 1150
-        // (0x47e, move_player_to_fighter 24532-24534).
-        let unarmed_punch = player.weapon.is_none()
-            && self
-                .ability_bag(player)
-                .value(Ability::from_id(0x1d).expect("Punch in the enum"))
-                > 0;
-        let speed = if unarmed_punch { 1150 } else { 1200 };
+        use crate::combat::AttackType;
+        let speed = match player
+            .weapon
+            .and_then(|(id, _)| self.content.items.get(&id))
+        {
+            Some(w) => i32::from(w.speed),
+            None => match attack_mode {
+                AttackType::MartialArts1 => 1150,
+                AttackType::MartialArts2 => 1400,
+                AttackType::MartialArts3 => 1900,
+                _ => 1200,
+            },
+        };
         speed * 1000 / den
     }
 
@@ -9225,6 +9326,7 @@ impl Core {
                 attackers_this_tick: 0,
                 trail: vec![trail_seed],
                 at_prompt: false,
+                attack_mode: crate::combat::AttackType::Normal,
             });
         // Oracle: first entry shows the stat sheet, not the room.
         self.show_sheet(session);

@@ -36,6 +36,13 @@ pub enum Command {
     Train,
     /// `attack [target]` — empty target means auto-pick.
     Attack(String),
+    /// `punch [target]` — mode-1 fists of fury (cmd_punch 0x51e37);
+    /// without the Punch ability the input is unconsumed (say).
+    Punch(String),
+    /// `kick [target]` — mode-2 lightning feet (cmd_kick 0x51df2).
+    Kick(String),
+    /// `jumpkick [target]` — mode-3 flying feet (cmd_jumpkick 0x51dad).
+    JumpKick(String),
     /// `cast [spell [target]]` — bare form prints the syntax line; a cast
     /// NEVER auto-picks a target (spellcasting.md §8.9).
     Cast(String),
@@ -108,7 +115,7 @@ enum Verb {
 /// All direction minimums are ORACLE-verified (oracle_directions.raw):
 /// north/south/west = full word, east = 3 (eat blocks 2), down = 3,
 /// up = 2, diagonals = 6. Hand-authored asymmetry is the original's.
-const VERBS: [(&str, usize, Verb); 41] = [
+const VERBS: [(&str, usize, Verb); 44] = [
     ("north", 5, Verb::Plain(|| Command::Move(Direction::North))),
     ("south", 5, Verb::Plain(|| Command::Move(Direction::South))),
     ("east", 3, Verb::Plain(|| Command::Move(Direction::East))),
@@ -120,6 +127,12 @@ const VERBS: [(&str, usize, Verb); 41] = [
     ("up", 2, Verb::Plain(|| Command::Move(Direction::Up))),
     ("down", 3, Verb::Plain(|| Command::Move(Direction::Down))),
     ("attack", 1, Verb::WithArgs(Command::Attack)), // ORACLE: a/at/att
+    // ORACLE-VERIFY min abbrevs for the MA verbs: unmeasured. `k` and
+    // `j` are unambiguous today; `p` is reserved against a future `put`
+    // (the quest-VM wildcard family), so punch takes 2.
+    ("punch", 2, Verb::WithArgs(Command::Punch)),
+    ("kick", 1, Verb::WithArgs(Command::Kick)),
+    ("jumpkick", 1, Verb::WithArgs(Command::JumpKick)),
     // Min 1 like attack, so `c` and `c args` both cast (MEASURED §8.9).
     // ORACLE-VERIFY: only c/cast measured; ca/cas assumed by prefix model.
     ("cast", 1, Verb::WithArgs(Command::Cast)),
