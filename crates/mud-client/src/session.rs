@@ -162,6 +162,7 @@ pub struct Session {
     events_tx: broadcast::Sender<Event>,
     raw_tx: broadcast::Sender<Vec<u8>>,
     state_rx: watch::Receiver<GameState>,
+    profile: Profile,
 }
 
 impl Session {
@@ -293,7 +294,13 @@ impl Session {
             events_tx,
             raw_tx,
             state_rx,
+            profile: profile.clone(),
         })
+    }
+
+    /// The profile this session was opened with.
+    pub fn profile(&self) -> &Profile {
+        &self.profile
     }
 
     /// Queue a line for sending (CRLF appended); pacing applies.

@@ -1,12 +1,107 @@
+use std::process::ExitCode;
+use std::sync::Arc;
+
 use clap::Parser;
 use mud_client::cli::{Cli, Command};
+use mud_client::profile::Profile;
+use mud_client::script::run_script;
+use mud_client::session::{Capture, Session};
 
-fn main() {
+fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        Command::Play => eprintln!("mmc play: not implemented yet (C5)"),
-        Command::Run => eprintln!("mmc run: not implemented yet (C4)"),
-        Command::Path => eprintln!("mmc path: not implemented yet (C6)"),
-        Command::Farm => eprintln!("mmc farm: not implemented yet (C8)"),
+        Command::Play => {
+            eprintln!("mmc play: not implemented yet (C5)");
+            ExitCode::FAILURE
+        }
+        Command::Run {
+            script,
+            profile,
+            capture,
+        } => run_command(&script, &profile, capture.as_deref()),
+        Command::Path => {
+            eprintln!("mmc path: not implemented yet (C6)");
+            ExitCode::FAILURE
+        }
+        Command::Farm => {
+            eprintln!("mmc farm: not implemented yet (C8)");
+            ExitCode::FAILURE
+        }
     }
+}
+
+fn run_command(
+    script: &std::path::Path,
+    profile_path: &std::path::Path,
+    capture: Option<&std::path::Path>,
+) -> ExitCode {
+    let profile: Profile = match std::fs::read_to_string(profile_path)
+        .map_err(|e| e.to_string())
+        .and_then(|s| toml::from_str(&s).map_err(|e| e.to_string()))
+    {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("profile {}: {e}", profile_path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let capture = capture.map(|base| Capture {
+        raw: base.with_extension("raw"),
+        timing: Some(append_to_stem(base, "_timing.log")),
+    });
+    let sections_path = capture
+        .as_ref()
+        .map(|c| append_to_stem(&c.raw.with_extension(""), "_sections.json"));
+
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("tokio runtime: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    rt.block_on(async {
+        let session = match Session::connect(&profile, capture).await {
+            Ok(s) => Arc::new(s),
+            Err(e) => {
+                eprintln!("connect {}:{}: {e}", profile.host, profile.port);
+                return ExitCode::FAILURE;
+            }
+        };
+        match run_script(script, session).await {
+            Ok(outcome) => {
+                if let Some(path) = sections_path {
+                    match serde_json::to_string_pretty(&outcome.sections) {
+                        Ok(json) => {
+                            if let Err(e) = std::fs::write(&path, json + "\n") {
+                                eprintln!("write {}: {e}", path.display());
+                                return ExitCode::FAILURE;
+                            }
+                            eprintln!("sections: {}", path.display());
+                        }
+                        Err(e) => {
+                            eprintln!("serialize sections: {e}");
+                            return ExitCode::FAILURE;
+                        }
+                    }
+                } else {
+                    for name in outcome.sections.keys() {
+                        eprintln!("section captured: {name}");
+                    }
+                }
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("script failed: {e}");
+                ExitCode::FAILURE
+            }
+        }
+    })
+}
+
+/// "out/run1" + "_timing.log" -> "out/run1_timing.log"
+fn append_to_stem(base: &std::path::Path, suffix: &str) -> std::path::PathBuf {
+    let mut s = base.as_os_str().to_os_string();
+    s.push(suffix);
+    std::path::PathBuf::from(s)
 }

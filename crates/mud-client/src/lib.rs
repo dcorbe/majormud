@@ -10,5 +10,6 @@ pub mod dialect;
 pub mod events;
 pub mod parse;
 pub mod profile;
+pub mod script;
 pub mod session;
 pub mod wire;
