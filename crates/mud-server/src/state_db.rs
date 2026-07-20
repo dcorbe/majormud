@@ -73,6 +73,10 @@ const TABLES: &[TableDef] = &[
             ("name", "TEXT PRIMARY KEY COLLATE NOCASE"),
             ("password_hash", "TEXT NOT NULL"),
             ("gender", "TEXT NOT NULL CHECK (gender IN ('M', 'F'))"),
+            // crime.md §8: evil banked at permadeath (the GENBB "WCC
+            // MAJOR MUD EVIL" analog) + the once-per-day decay stamp.
+            ("saved_evil", "INTEGER NOT NULL"),
+            ("saved_evil_day", "INTEGER NOT NULL"),
         ],
         constraint: "",
     },
@@ -327,7 +331,8 @@ impl StateDb {
             .map_err(|e| CreateAccountError::Other(e.into()))?
             .to_string();
         let result = self.conn.execute(
-            "INSERT INTO account (name, password_hash, gender) VALUES (?1, ?2, ?3)",
+            "INSERT INTO account (name, password_hash, gender, saved_evil, saved_evil_day) \
+             VALUES (?1, ?2, ?3, 0, 0)",
             params![name, hash, gender_str(gender)],
         );
         match result {
@@ -348,15 +353,15 @@ impl StateDb {
         name: &str,
         password: &str,
     ) -> Result<Option<AccountProfile>, StateError> {
-        let row: Option<(String, String, String)> = self
+        let row: Option<(String, String, String, i64)> = self
             .conn
             .query_row(
-                "SELECT name, password_hash, gender FROM account WHERE name = ?1",
+                "SELECT name, password_hash, gender, saved_evil FROM account WHERE name = ?1",
                 params![name],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .optional()?;
-        let Some((canonical, hash, gender)) = row else {
+        let Some((canonical, hash, gender, saved_evil)) = row else {
             return Ok(None);
         };
         let parsed = PasswordHash::new(&hash)?;
@@ -369,7 +374,39 @@ impl StateDb {
         Ok(Some(AccountProfile {
             name: canonical,
             gender: gender_from(&gender),
+            saved_evil: i16::try_from(saved_evil).unwrap_or(0),
         }))
+    }
+
+    /// crime.md §8: bank a permadying character's evil to the account.
+    /// The retention decay multiplies ONCE per calendar day regardless of
+    /// elapsed days (§8 item 2); negative/zero fame banks 0 — creation
+    /// clamps restored negatives anyway (§6.8), so good standing never
+    /// survives the account round-trip. Retention percent: the DLL's
+    /// option 0x32 default is unread — 90 chosen, ORACLE-VERIFY.
+    pub fn bank_evil(&self, name: &str, fame: i16, wall_secs: i64) -> Result<(), StateError> {
+        const RETENTION_PCT: i64 = 90;
+        let today = wall_secs / 86_400;
+        let prev_day: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT saved_evil_day FROM account WHERE name = ?1",
+                params![name],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(prev_day) = prev_day else {
+            return Ok(()); // no account (fixture player) — nothing to bank
+        };
+        let mut value = i64::from(fame.max(0));
+        if prev_day != today {
+            value = value * RETENTION_PCT / 100;
+        }
+        self.conn.execute(
+            "UPDATE account SET saved_evil = ?2, saved_evil_day = ?3 WHERE name = ?1",
+            params![name, value, today],
+        )?;
+        Ok(())
     }
 
     pub fn account_exists(&self, name: &str) -> Result<bool, StateError> {

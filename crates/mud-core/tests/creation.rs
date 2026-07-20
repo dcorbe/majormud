@@ -99,6 +99,7 @@ fn profile(name: &str) -> AccountProfile {
     AccountProfile {
         name: name.into(),
         gender: Gender::Female,
+        saved_evil: 0,
     }
 }
 
@@ -281,4 +282,36 @@ fn creation_input_is_not_game_commands() {
         shown.contains("You must choose a valid race. [ ? for help ]"),
         "got: {shown:?}"
     );
+}
+
+// --- M7 slice 3: account-banked evil restores at creation ---
+
+#[test]
+fn banked_evil_skips_the_lawful_question_and_seeds_fame() {
+    // crime.md §6.8/§8: the good-path question is only asked when fame
+    // < 1 — a rerolling criminal starts with the banked evil and never
+    // sees the Lawful offer.
+    let mut core = Core::new(world(), test_config());
+    let s = core.attach_account(AccountProfile {
+        name: "Repeat".into(),
+        gender: Gender::Male,
+        saved_evil: 50,
+    });
+    core.drain_events();
+    core.input(s, "2"); // race
+    let _ = core.drain_events();
+    core.input(s, "1"); // class -> straight into the realm
+    let events = core.drain_events();
+    let shown: String = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Output { session, text } if *session == s => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !shown.to_lowercase().contains("lawful"),
+        "no Lawful question for a restored criminal: {shown:?}"
+    );
+    assert_eq!(core.player_fame(s), 50, "banked evil restored");
 }

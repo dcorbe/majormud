@@ -357,3 +357,33 @@ fn monster_kill_and_room_stamp_roundtrip() {
     stamps.sort();
     assert_eq!(stamps, vec![(1, 42, 1_000_600), (9, 7, 1_000_200)]);
 }
+
+// --- M7 slice 3: permadeath evil banking (crime.md §8) ---
+
+#[test]
+fn evil_banks_with_one_time_decay_and_restores() {
+    let db = db();
+    db.create_account("Reaper", "pw", Gender::Male).unwrap();
+    const DAY: i64 = 86_400;
+    // First bank on day 100: a fresh bank decays once (retention 90%).
+    db.bank_evil("Reaper", 100, 100 * DAY).unwrap();
+    let p = db.verify_login("Reaper", "pw").unwrap().unwrap();
+    assert_eq!(p.saved_evil, 90, "banked with one-time decay");
+    // Re-banking the SAME day does not decay again.
+    db.bank_evil("Reaper", 100, 100 * DAY + 60).unwrap();
+    let p = db.verify_login("Reaper", "pw").unwrap().unwrap();
+    assert_eq!(p.saved_evil, 100, "same-day bank saves unchanged");
+    // A later-day bank decays once more.
+    db.bank_evil("Reaper", 100, 101 * DAY).unwrap();
+    let p = db.verify_login("Reaper", "pw").unwrap().unwrap();
+    assert_eq!(p.saved_evil, 90);
+}
+
+#[test]
+fn negative_and_zero_fame_bank_as_zero() {
+    let db = db();
+    db.create_account("Pious", "pw", Gender::Male).unwrap();
+    db.bank_evil("Pious", -120, 86_400).unwrap();
+    let p = db.verify_login("Pious", "pw").unwrap().unwrap();
+    assert_eq!(p.saved_evil, 0, "good standing does not follow the account");
+}

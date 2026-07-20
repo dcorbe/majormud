@@ -72,6 +72,7 @@ fn create(core: &mut Core, name: &str) -> SessionId {
     let s = core.attach_account(AccountProfile {
         name: name.into(),
         gender: Gender::Male,
+        saved_evil: 0,
     });
     core.input(s, "2");
     core.input(s, "1");
@@ -88,6 +89,7 @@ fn class_choice_leads_to_the_lawful_prompt() {
     let s = core.attach_account(AccountProfile {
         name: "Dain".into(),
         gender: Gender::Male,
+        saved_evil: 0,
     });
     core.input(s, "2");
     core.drain_events();
@@ -110,6 +112,7 @@ fn lawful_answer_is_recorded_and_creation_completes() {
     let s = core.attach_account(AccountProfile {
         name: "Dain".into(),
         gender: Gender::Male,
+        saved_evil: 0,
     });
     core.input(s, "2");
     core.input(s, "1");
@@ -133,6 +136,7 @@ fn unrecognized_lawful_answer_reasks() {
     let s = core.attach_account(AccountProfile {
         name: "Dain".into(),
         gender: Gender::Male,
+        saved_evil: 0,
     });
     core.input(s, "2");
     core.input(s, "1");

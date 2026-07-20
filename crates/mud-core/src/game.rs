@@ -374,6 +374,10 @@ impl Coins {
 pub struct AccountProfile {
     pub name: String,
     pub gender: Gender,
+    /// crime.md §8: evil banked by a previous permadeath on this account
+    /// — a re-rolled character starts with it (crime follows the
+    /// account). 0 for fresh accounts.
+    pub saved_evil: i16,
 }
 
 /// Server-operator configuration (the original's sysop config globals).
@@ -392,10 +396,14 @@ pub struct CoreConfig {
     pub rng_seed: u64,
     /// Seconds (= dots) of exit meditation (ORACLE-VERIFY: 10 observed).
     pub exit_meditation_seconds: u8,
-    /// Death recall room (`DAT_00482cfc`/`d00` temples; alignment split and
-    /// per-room DeathRoom overrides arrive with alignment/zones). ORACLE:
-    /// Newhaven deaths recall to Newhaven, Healer.
+    /// Death recall room (`DAT_00482cfc`/`d00` temples; per-room
+    /// DeathRoom overrides arrive with zones). ORACLE: Newhaven deaths
+    /// recall to Newhaven, Healer.
     pub recall_location: RoomId,
+    /// The criminal temple (`DAT_00482d00`, crime.md §6.4): fame >= 0x28
+    /// respawns here. DLL init default = room 142 (the "outlaw start");
+    /// ORACLE-VERIFY against a live criminal death.
+    pub criminal_recall_location: RoomId,
     /// Restored population cooldowns: (template, seconds since its last
     /// kill at boot). Applied before the boot population walk.
     pub restored_population: Vec<(crate::content::MonsterId, i64)>,
@@ -422,6 +430,7 @@ impl Default for CoreConfig {
             rng_seed: 0x4d4d55445f574721, // "MMUD_WG!"
             exit_meditation_seconds: 10,
             recall_location: RoomId { map: 1, room: 2190 },
+            criminal_recall_location: RoomId { map: 1, room: 142 },
             restored_population: Vec::new(),
             restored_room_stamps: Vec::new(),
             ansi: false,
@@ -666,8 +675,10 @@ pub enum Event {
         shop: crate::content::ShopId,
         counts: [i16; 20],
     },
-    /// Permadeath: remove the character record entirely.
-    DeleteCharacter(String),
+    /// Permadeath: remove the character record entirely. `fame` rides
+    /// along so the server can bank the evil points to the account
+    /// (crime.md §8 — crime follows the account).
+    DeleteCharacter { name: String, fame: i16 },
     /// A limited-population template was killed — persist the wall-clock
     /// stamp (check_kill_monster's tmpl+0xb4/+0xb6 write).
     PersistMonsterKill { template: crate::content::MonsterId },
@@ -1583,6 +1594,13 @@ impl Core {
         match self.sessions.get(&session) {
             Some(Session::InGame { player, .. }) => player.fame,
             _ => 0,
+        }
+    }
+
+    /// Test/staging: write a player's fame directly.
+    pub fn set_player_fame(&mut self, session: SessionId, fame: i16) {
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+            player.fame = fame;
         }
     }
 
@@ -9157,25 +9175,33 @@ impl Core {
         };
         player.lives = player.lives.saturating_sub(1);
         if player.lives < 1 {
-            // Permadeath (`death.md` §2c).
+            // Permadeath (`death.md` §2c). Fame rides the delete event
+            // for the account evil bank (crime.md §8).
             let name = player.name.clone();
+            let fame = player.fame;
             self.output_line(session, "You have no lives remaining!");
             self.sessions.remove(&session);
-            self.events.push(Event::DeleteCharacter(name));
+            self.events.push(Event::DeleteCharacter { name, fame });
             self.events.push(Event::Disconnect(session));
             return;
         }
-        // Miracle respawn: full HP/mana at the recall room.
+        // Miracle respawn: full HP/mana at the recall room — the
+        // criminal temple for fame >= 0x28 (crime.md §6.4).
+        let recall = if player.fame >= 0x28 {
+            self.config.criminal_recall_location
+        } else {
+            self.config.recall_location
+        };
         player.current_hp = derived.max_hp;
         player.current_mana = derived.max_mana;
-        player.location = self.config.recall_location;
+        player.location = recall;
         *aided = false;
         let lives = player.lives;
         let snapshot: Box<Player> = player.clone();
         self.output_line(session, "But, due to a miracle, you have been saved.");
         self.output_line(session, &format!("You have {lives} lives left."));
         self.broadcast_to_room(
-            self.config.recall_location,
+            recall,
             Some(session),
             &format!("{name} appeared on the floor in the middle of the room."),
         );
@@ -9525,13 +9551,17 @@ impl Core {
         else {
             unreachable!("dispatched from ChoosingClass");
         };
+        let class = choice.expect("validated above");
+        // crime.md §6.8: the Lawful question is only asked when fame < 1
+        // — a rerolling criminal (account-banked evil, §8) skips it and
+        // starts with the restored points.
+        if profile.saved_evil >= 1 {
+            self.finish_creation(session, profile, race, class, false);
+            return;
+        }
         self.sessions.insert(
             session,
-            Session::ChoosingLawful {
-                profile,
-                race,
-                class: choice.expect("validated above"),
-            },
+            Session::ChoosingLawful { profile, race, class },
         );
         self.output(session, &format!("\n{}\n{}", text::LAWFUL_PARAGRAPH, text::LAWFUL_QUESTION));
     }
@@ -9552,6 +9582,18 @@ impl Core {
         else {
             unreachable!("dispatched from ChoosingLawful");
         };
+        self.finish_creation(session, profile, race, class, lawful);
+    }
+
+    /// roll_stats + realm entry (the tail both creation paths share).
+    fn finish_creation(
+        &mut self,
+        session: SessionId,
+        profile: AccountProfile,
+        race: RaceId,
+        class: ClassId,
+        lawful: bool,
+    ) {
         let player = self.roll_stats(profile, race, class, lawful);
         self.events.push(Event::Persist(Box::new(player.clone())));
         self.broadcast_to_others(session, &text::entered_realm(&player.name));
@@ -9622,10 +9664,10 @@ impl Core {
             poison: 0,
             active_spells: Default::default(),
             // Committed Lawful starts at -51 (crime.md §2.6: the
-            // creation good-path prompt writes 0x544=0xF6 AND fame -51;
-            // N clamps negatives to 0 — moot until account-banked evil
-            // restores land).
-            fame: if lawful { -51 } else { 0 },
+            // creation good-path prompt writes 0x544=0xF6 AND fame -51);
+            // otherwise the account-banked evil restores (§8 — crime
+            // follows the account; negatives clamp to 0, §6.8).
+            fame: if lawful { -51 } else { profile.saved_evil.max(0) },
             ansi: self.config.ansi,
             warn_on_evil: true,
         };
