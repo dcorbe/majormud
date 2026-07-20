@@ -184,6 +184,31 @@ Deliverable: regenerated `mmud_wgnt.sqlite` with `textblock`, crime.md +
 theft.md born, quests.md §6 / gangs.md §7 items closed, zero behavior
 change, full-DB boot test green.
 
+**Slice 2 COMPLETE (2026-07-19, 607 tests, commits cec94a7..HEAD; code
+side — the live oracle pass below is the open item):** punch/kick/
+jumpkick verbs landed (cmd gates decompile-read: no ability → return 0 →
+SAY fallthrough, same surface as tame/mesmerize; punch's hidden/sneak
+divert to mode 4 wired in slice 4 with HIDE); attack mode stored on the
+session (autocombat +8 model), fighter build + EU keyed off it; kick/
+jumpkick damage confirmed to ride the mode-2/3 damage SEEDS (33/66 →
+×1.33/×1.66 shown bands — test-derived). ARMED EU NOW HONORS WEAPON
+SPEED (`+0x3de`; the M4 comment was stale and armed swings always ran at
+1200 — 4 shipped 0-speed weapons like "flurry of blades" now hit the
+6-swing cap, intentional data). Name-gen ported as pure
+`text::generate_name` (decompile-read directly: per-line candidate,
+accept ≤9, LAST candidate on walk-off, caps 28/29, trailing-newline tail
+is the terminator; unit-pinned incl. the 1000-line ceiling), instance
+display names on MonsterInstance (targeting + also-here + combat use
+them; death lines re-read the template name); fixture spawns draw from
+the main stream, density spawns from spawn_rng (draw position: after
+item draws, before the direction pick — L21102). Per-user ANSI:
+`Player.ansi` overrides the global at the funnel, `ansi` toggle command
+(strings OURS), persisted column w/ backfill 1 for pre-M7 rows.
+BACKSTAB MOVED TO SLICE 4: cmd_backstab gates on hidden/sneak state,
+which theft.md owns. PENDING ORACLE (slice-8 sweep or earlier): MA verb
+min-abbrevs, kick/jumpkick swing-verb strings (we reuse the fists verb
+pools — unmeasured), live adjective spawn capture vs our walk.
+
 ## Slice 2 — Quick wins: MA verbs, backstab, name-gen, ANSI
 
 - **Verbs** (`command.rs` VERBS + dispatcher): `punch` (mode 1 — math
