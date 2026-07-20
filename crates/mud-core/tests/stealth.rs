@@ -326,3 +326,102 @@ fn thief_actions_charge_a_delay_that_gates_sneak_and_hide() {
     let own = texts(&core.drain_events(), s);
     assert!(own.contains("Attempting to hide..."), "{own:?}");
 }
+
+// --- HIDE <item> / <n> <currency>: the thief's stash (theft.md §11.2) ---
+
+use mud_core::content::{Item, ItemId};
+
+fn stash_world() -> Content {
+    let mut content = world();
+    content.add_item(Item {
+        id: ItemId(10),
+        name: "ruby".into(),
+        weight: 1,
+        uses: -1,
+        gettable: 1,
+        ..Default::default()
+    });
+    content.add_item(Item {
+        id: ItemId(11),
+        name: "cursed idol".into(),
+        weight: 1,
+        uses: -1,
+        gettable: 1,
+        not_droppable: 1,
+        ..Default::default()
+    });
+    content
+}
+
+#[test]
+fn hidden_items_leave_the_floor_list_until_searched() {
+    let mut core = Core::new(stash_world(), CoreConfig::default());
+    let mut p = person("Stash", 1, false);
+    p.inventory.push((ItemId(10), -1));
+    let s = core.attach_player(p);
+    let other = core.attach_player(person("Passerby", 2, true));
+    core.drain_events();
+
+    core.input(s, "hide ruby");
+    let own = texts(&core.drain_events(), s);
+    assert!(own.contains("You hid ruby."), "{own:?}");
+    assert!(core.player_snapshot(s).inventory.is_empty());
+
+    // A plain look shows nothing on the floor.
+    core.input(other, "look");
+    let seen = texts(&core.drain_events(), other);
+    assert!(!seen.contains("ruby"), "hidden stash invisible: {seen:?}");
+
+    // Waiting out the hide delay, a bare search lists it.
+    for _ in 0..3 {
+        core.tick();
+    }
+    core.drain_events();
+    core.input(other, "search");
+    let seen = texts(&core.drain_events(), other);
+    assert!(seen.contains("ruby"), "search reveals the stash: {seen:?}");
+
+    // And get retrieves it by name even without a search.
+    core.input(s, "get ruby");
+    core.drain_events();
+    assert!(
+        core.player_snapshot(s).inventory.contains(&(ItemId(10), -1)),
+        "the stasher takes it back"
+    );
+}
+
+#[test]
+fn not_droppable_items_refuse_to_hide() {
+    let mut core = Core::new(stash_world(), CoreConfig::default());
+    let mut p = person("Stash", 1, false);
+    p.inventory.push((ItemId(11), -1));
+    let s = core.attach_player(p);
+    core.drain_events();
+    core.input(s, "hide idol");
+    let own = texts(&core.drain_events(), s);
+    assert!(own.contains("You may not hide that item!"), "{own:?}");
+}
+
+#[test]
+fn coins_stash_and_report() {
+    let mut core = Core::new(stash_world(), CoreConfig::default());
+    let mut p = person("Stash", 1, false);
+    p.coins.copper = 100;
+    let s = core.attach_player(p);
+    core.drain_events();
+    core.input(s, "hide 60 copper");
+    let own = texts(&core.drain_events(), s);
+    assert!(own.contains("You hid 60 copper farthings."), "{own:?}");
+    assert_eq!(core.player_snapshot(s).coins.copper, 40);
+    // More than held refuses.
+    for _ in 0..3 {
+        core.tick();
+    }
+    core.drain_events();
+    core.input(s, "hide 500 copper");
+    let own = texts(&core.drain_events(), s);
+    assert!(
+        own.contains("You don't have 500 copper farthings to hide!"),
+        "{own:?}"
+    );
+}

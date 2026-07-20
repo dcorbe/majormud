@@ -968,6 +968,12 @@ pub struct Core {
     /// Ephemeral floor items per room (item, remaining uses), seeded from
     /// the rooms' static placements at boot.
     room_items: BTreeMap<RoomId, Vec<(crate::content::ItemId, i16)>>,
+    /// The thief stash (theft.md §11.2): items hidden in rooms — off the
+    /// notice line, revealed by a bare SEARCH, retrievable by name.
+    room_hidden_items: BTreeMap<RoomId, Vec<(crate::content::ItemId, i16)>>,
+    /// Hidden coin pools per room (the §4.6 hidden-coin fields),
+    /// low->high denominations like `room_coins`.
+    room_hidden_coins: BTreeMap<RoomId, [u32; 5]>,
     /// Live shop stock counts. Boot fills every shelf to max — the pristine
     /// distribution shipped full, and the `shopnow` values in an extracted
     /// .VIR are played-board runtime state. (Cross-restart persistence in
@@ -1055,6 +1061,8 @@ impl Core {
             exit_locks: BTreeMap::new(),
             room_coins: BTreeMap::new(),
             room_items: BTreeMap::new(),
+            room_hidden_items: BTreeMap::new(),
+            room_hidden_coins: BTreeMap::new(),
             shop_stock: BTreeMap::new(),
             restock_events: Vec::new(),
             restock_counter: 0,
@@ -3186,9 +3194,7 @@ impl Core {
                 if args.trim().is_empty() {
                     self.hide_command(session);
                 } else {
-                    // HIDE <item>/<coins> — the stash mechanic joins with
-                    // the room hidden-storage work (theft.md §11.2).
-                    self.say(session, line.trim());
+                    self.hide_stash_command(session, &args);
                 }
             }
             Command::Set(args) => {
@@ -5976,13 +5982,41 @@ impl Core {
         self.add_delay(session, 1);
         let word = args.trim().to_ascii_lowercase();
         if word.is_empty() {
+            let room = self.player(session).location;
             let name = self.player(session).name.clone();
             self.broadcast_to_room(
-                self.player(session).location,
+                room,
                 Some(session),
                 &format!("{name} is searching the area."),
             );
             self.show_room_brief(session);
+            // The hidden stash surfaces to a searcher (theft.md §11.2;
+            // presentation ORACLE-VERIFY — the notice-line frame reused).
+            let stash: Vec<String> = self
+                .room_hidden_items
+                .get(&room)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|(id, _)| self.content.items.get(id))
+                        .map(|i| i.name.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut lines: Vec<String> = stash;
+            if let Some(pool) = self.room_hidden_coins.get(&room) {
+                for (idx, n) in pool.iter().enumerate() {
+                    if *n > 0 {
+                        lines.push(format!("{n} {}", text::currency_name(idx)));
+                    }
+                }
+            }
+            if !lines.is_empty() {
+                self.output_line(
+                    session,
+                    &format!("You notice {} here.", lines.join(", ")),
+                );
+            }
             return;
         }
         let Some(dir) = direction_from_word(&word) else {
@@ -6608,6 +6642,102 @@ impl Core {
                 text::pronoun_possessive(criminal_gender)
             ),
         );
+    }
+
+    /// HIDE <item> / HIDE <n> <currency> (theft.md §11.2): the thief's
+    /// stash. NotDroppable refuses; success is quiet ("You hid %s.").
+    /// The DLL's worn-single-copy rule is unreachable here (our worn
+    /// gear lives outside the inventory vec).
+    fn hide_stash_command(&mut self, session: SessionId, args: &str) {
+        if self.delay_blocked(session) {
+            return;
+        }
+        self.add_delay(session, 1);
+        let words: Vec<String> = args
+            .split_whitespace()
+            .map(|w| w.to_ascii_lowercase())
+            .collect();
+        let room = self.player(session).location;
+        // HIDE <n> <currency>.
+        if let Some(Ok(n)) = words.first().map(|w| w.parse::<u32>()) {
+            let idx = words.get(1).and_then(|w| {
+                (0..5).find(|&i| text::currency_name(i).starts_with(w.as_str()))
+            });
+            let Some(idx) = idx else {
+                self.output_line(session, &format!("Syntax: HIDE {n} {{Currency}}"));
+                return;
+            };
+            if n == 0 {
+                self.output_line(session, &format!("Syntax: HIDE {n} {{Currency}}"));
+                return;
+            }
+            let held = {
+                let c = &self.player(session).coins;
+                match idx {
+                    0 => c.copper,
+                    1 => c.silver,
+                    2 => c.gold,
+                    3 => c.platinum,
+                    _ => c.runic,
+                }
+            };
+            if held < n {
+                self.output_line(
+                    session,
+                    &format!("You don't have {n} {} to hide!", text::currency_name(idx)),
+                );
+                return;
+            }
+            if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+                match idx {
+                    0 => player.coins.copper -= n,
+                    1 => player.coins.silver -= n,
+                    2 => player.coins.gold -= n,
+                    3 => player.coins.platinum -= n,
+                    _ => player.coins.runic -= n,
+                }
+            }
+            self.room_hidden_coins.entry(room).or_insert([0; 5])[idx] += n;
+            self.output_line(
+                session,
+                &format!("You hid {n} {}.", text::currency_name(idx)),
+            );
+            return;
+        }
+        // HIDE <item>.
+        let want = words.join(" ");
+        let found = {
+            let inv = &self.player(session).inventory;
+            inv.iter().position(|(id, _)| {
+                self.content
+                    .items
+                    .get(id)
+                    .is_some_and(|i| word_prefix_match(&i.name, &want))
+            })
+        };
+        let Some(pos) = found else {
+            self.output_line(session, &text::dont_see_here(args.trim()));
+            return;
+        };
+        let (item_id, uses) = self.player(session).inventory[pos];
+        let (not_droppable, name) = self
+            .content
+            .items
+            .get(&item_id)
+            .map(|i| (i.not_droppable != 0, i.name.clone()))
+            .unwrap_or((true, String::new()));
+        if not_droppable {
+            self.output_line(session, text::MAY_NOT_HIDE_ITEM);
+            return;
+        }
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+            player.inventory.remove(pos);
+        }
+        self.room_hidden_items
+            .entry(room)
+            .or_default()
+            .push((item_id, uses));
+        self.output_line(session, &format!("You hid {name}."));
     }
 
     /// crime.md §2.5 (attack_user_monster 26113-26116, cast_monster_target
@@ -7594,7 +7724,30 @@ impl Core {
                 self.output_line(session, &text::dont_see_here(target.trim()));
                 Resolution::Handled
             }
-            FloorMatch::None => Resolution::FallThrough,
+            FloorMatch::None => {
+                // The hidden stash answers to its name (theft.md §11.2 —
+                // knowing what's hidden is enough to take it).
+                let hidden_pos = self.room_hidden_items.get(&room).and_then(|items| {
+                    items.iter().position(|(id, _)| {
+                        self.content
+                            .items
+                            .get(id)
+                            .is_some_and(|i| word_prefix_match(&i.name, &want))
+                    })
+                });
+                if let Some(pos) = hidden_pos {
+                    let (item, uses) =
+                        self.room_hidden_items.get_mut(&room).expect("has items").remove(pos);
+                    let name = self.content.items[&item].name.clone();
+                    if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session)
+                    {
+                        player.inventory.push((item, uses));
+                    }
+                    self.output_line(session, &text::took_item(&name));
+                    return Resolution::Handled;
+                }
+                Resolution::FallThrough
+            }
         }
     }
 
