@@ -6,3 +6,4 @@
 //! backspace obfuscation) and the in-repo `mud-server` reimplementation.
 
 pub mod cli;
+pub mod wire;
