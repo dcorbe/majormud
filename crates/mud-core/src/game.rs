@@ -7370,9 +7370,18 @@ impl Core {
                 }
                 continue;
             }
-            if form.kind != 1 {
-                continue; // rob forms (kind 3): M7 PENDING with theft
-            }
+            // Rob forms (kind 3): monster_rob_user (0x295bd) is a
+            // `return 0` STUB — monster robbery never happens in WG3-NT
+            // (theft.md). The caller then swings with form slot 0 iff
+            // its kind byte is 1 (attack_monster_user 26808-26813),
+            // else this swing re-rolls.
+            let form = if form.kind == 1 {
+                form
+            } else if form.kind == 3 && forms[0].kind == 1 {
+                forms[0]
+            } else {
+                continue; // unknown kinds, or a rob fallback with no melee slot 0
+            };
             let Some(mi) = self.monsters.get_mut(&id) else {
                 return;
             };

@@ -1030,3 +1030,79 @@ fn a_worn_dodge_item_feeds_the_defender_parry() {
         "worn Dodge 5 produces dodges under the same script: {shown:?}"
     );
 }
+
+// --- M7 slice 4: the monster rob form (kind 3) stub port ---
+
+#[test]
+fn rob_forms_fall_back_to_the_melee_slot_zero() {
+    // theft.md: monster_rob_user (0x295bd) is a `return 0` stub — a
+    // kind-3 pick never robs; the caller swings with form slot 0 iff
+    // its kind is 1 (attack_monster_user 26808-26813).
+    let mut content = world();
+    let mut robber = kobold();
+    robber.id = MonsterId(8);
+    robber.name = "cutpurse".into();
+    // Slot 0 melee (weight 0 — never picked directly), slot 1 rob at
+    // weight 100 — every pick lands on the rob form.
+    robber.attacks[0].weight = 0;
+    robber.attacks[1] = AttackForm {
+        kind: 3,
+        accuracy: 0,
+        weight: 100,
+        min_damage: 0,
+        max_damage: 0,
+        hit_msg: None,
+        dodge_msg: None,
+        miss_msg: None,
+        energy: 666,
+    };
+    content.add_monster(robber);
+    let mut core = Core::new(content, config());
+    let s = create(&mut core, "Dain");
+    let m = core
+        .spawn_monster(MonsterId(8), RoomId { map: 1, room: 1 })
+        .unwrap();
+    core.input(s, "attack cutpurse");
+    core.drain_events();
+    let events = run_rounds(&mut core, 6);
+    let shown = text_to(&events, s);
+    let _ = m;
+    assert!(
+        shown.contains("you for") || shown.contains("misses you") || shown.contains("swings at you"),
+        "the rob pick swings with the melee slot instead: {shown:?}"
+    );
+}
+
+#[test]
+fn rob_form_without_a_melee_slot_zero_never_swings() {
+    let mut content = world();
+    let mut robber = kobold();
+    robber.id = MonsterId(9);
+    robber.name = "pickpocket".into();
+    robber.attacks[0] = AttackForm {
+        kind: 3,
+        accuracy: 0,
+        weight: 100,
+        min_damage: 0,
+        max_damage: 0,
+        hit_msg: None,
+        dodge_msg: None,
+        miss_msg: None,
+        energy: 666,
+    };
+    for slot in 1..5 {
+        robber.attacks[slot] = AttackForm::default();
+    }
+    content.add_monster(robber);
+    let mut core = Core::new(content, config());
+    let s = create(&mut core, "Dain");
+    core.spawn_monster(MonsterId(9), RoomId { map: 1, room: 1 });
+    core.input(s, "attack pickpocket");
+    core.drain_events();
+    let events = run_rounds(&mut core, 6);
+    let shown = text_to(&events, s);
+    assert!(
+        !shown.contains("you for") && !shown.contains("misses you"),
+        "kind-3 with a kind-3 slot 0 stays inert: {shown:?}"
+    );
+}
