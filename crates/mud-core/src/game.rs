@@ -214,6 +214,11 @@ pub struct Player {
     /// mode-6 bound is 0x50 (decompile 20386/20420/23882). Fed by the M7
     /// crime system — creation seeds 0.
     pub fame: i16,
+    /// Per-user ANSI. OURS (documented divergence): the real board keys
+    /// this on the MBBS account outside the DLL. Overrides the
+    /// `CoreConfig.ansi` global at the output funnel; toggled by the
+    /// `ansi` command; creation seeds the server global.
+    pub ansi: bool,
 }
 
 /// One player active-spell slot (`spellcasting.md` §1). `spell` is `None`
@@ -3048,6 +3053,7 @@ impl Core {
                     self.say(session, line.trim());
                 }
             }
+            Command::Ansi => self.ansi_command(session),
             Command::Punch(target) => {
                 let mode = crate::combat::AttackType::MartialArts1;
                 if self.ma_command(session, &target, 0x1d, mode) == Resolution::FallThrough {
@@ -5459,6 +5465,21 @@ impl Core {
         self.monsters
             .get(&id)
             .map_or_else(String::new, |m| m.name.clone())
+    }
+
+    /// The `ansi` toggle (OURS — see the Player.ansi divergence note):
+    /// flip, confirm, persist.
+    fn ansi_command(&mut self, session: SessionId) {
+        let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+            return;
+        };
+        player.ansi = !player.ansi;
+        let (line, snapshot) = (
+            if player.ansi { text::ANSI_NOW_ON } else { text::ANSI_NOW_OFF },
+            player.clone(),
+        );
+        self.output_line(session, line);
+        self.events.push(Event::Persist(snapshot));
     }
 
     /// The spawn name roll (`get_random_name`, text::generate_name):
@@ -9413,6 +9434,7 @@ impl Core {
             poison: 0,
             active_spells: Default::default(),
             fame: 0,
+            ansi: self.config.ansi,
         };
         let derived = self.derive_for(&player);
         player.current_hp = derived.max_hp;
@@ -9822,7 +9844,13 @@ impl Core {
             }
             _ => false,
         };
-        let mut text = if self.config.ansi {
+        // Per-user ANSI overrides the global once a character is
+        // attached; login/creation sessions follow the server global.
+        let ansi = match self.sessions.get(&session) {
+            Some(Session::InGame { player, .. }) => player.ansi,
+            _ => self.config.ansi,
+        };
+        let mut text = if ansi {
             text.to_string()
         } else {
             text::strip_ansi(text)
@@ -9830,7 +9858,7 @@ impl Core {
         if erase {
             // ANSI: erase the dangling prompt in place (ESC[79D ESC[K);
             // plain terminals get a newline away from it instead.
-            text = if self.config.ansi {
+            text = if ansi {
                 format!("\r\x1b[K{text}")
             } else {
                 format!("\r\n{text}")

@@ -43,6 +43,9 @@ pub enum Command {
     Kick(String),
     /// `jumpkick [target]` — mode-3 flying feet (cmd_jumpkick 0x51dad).
     JumpKick(String),
+    /// `ansi` — the per-user colour toggle. OURS (divergence): the real
+    /// board keys ANSI on the MBBS account, outside the DLL.
+    Ansi,
     /// `cast [spell [target]]` — bare form prints the syntax line; a cast
     /// NEVER auto-picks a target (spellcasting.md §8.9).
     Cast(String),
@@ -115,7 +118,7 @@ enum Verb {
 /// All direction minimums are ORACLE-verified (oracle_directions.raw):
 /// north/south/west = full word, east = 3 (eat blocks 2), down = 3,
 /// up = 2, diagonals = 6. Hand-authored asymmetry is the original's.
-const VERBS: [(&str, usize, Verb); 44] = [
+const VERBS: [(&str, usize, Verb); 45] = [
     ("north", 5, Verb::Plain(|| Command::Move(Direction::North))),
     ("south", 5, Verb::Plain(|| Command::Move(Direction::South))),
     ("east", 3, Verb::Plain(|| Command::Move(Direction::East))),
@@ -175,6 +178,8 @@ const VERBS: [(&str, usize, Verb); 44] = [
     ("top", 2, Verb::Plain(|| Command::Top)),       // ORACLE: to (t says)
     ("train", 4, Verb::Plain(|| Command::Train)),   // ORACLE: trai (tra says)
     ("quit", 1, Verb::Plain(|| Command::Quit)),     // ORACLE: q
+    // OURS (divergence): no DLL surface exists — full word only.
+    ("ansi", 4, Verb::Plain(|| Command::Ansi)),
 ];
 
 pub fn parse(input: &str) -> Command {

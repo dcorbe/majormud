@@ -54,6 +54,9 @@ fn player(name: &str) -> Player {
         thirst: 1000,
         lives: 9,
         location: HALL,
+        ansi: true, // the per-user flag decides (M7); plain-mode tests
+        // flip it back off on their own players.
+
         ..Default::default()
     }
 }
@@ -95,7 +98,9 @@ fn async_broadcast_erases_the_prompt_and_redraws_it() {
 #[test]
 fn plain_mode_steps_off_the_prompt_with_a_newline() {
     let mut core = Core::new(world(), CoreConfig::default());
-    let alice = core.attach_player(player("Alice"));
+    let mut plain = player("Alice");
+    plain.ansi = false;
+    let alice = core.attach_player(plain);
     let bob = core.attach_player(player("Bob"));
     core.drain_events();
     core.input(bob, "hi");
@@ -113,7 +118,9 @@ fn plain_mode_steps_off_the_prompt_with_a_newline() {
 #[test]
 fn own_command_output_prints_below_the_echoed_line() {
     let mut core = Core::new(world(), CoreConfig::default());
-    let alice = core.attach_player(player("Alice"));
+    let mut plain = player("Alice");
+    plain.ansi = false;
+    let alice = core.attach_player(plain);
     core.drain_events();
     core.input(alice, "look");
     let shown = text_to(&core.drain_events(), alice);

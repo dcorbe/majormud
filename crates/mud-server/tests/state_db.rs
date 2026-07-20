@@ -105,6 +105,16 @@ fn player_save_and_load_roundtrip() {
 }
 
 #[test]
+fn ansi_flag_roundtrips() {
+    let db = db();
+    let mut p = player("Colora");
+    p.ansi = true;
+    db.save_player(&p).unwrap();
+    let loaded = db.load_player("Colora").unwrap().unwrap();
+    assert!(loaded.ansi, "per-user ANSI persists");
+}
+
+#[test]
 fn missing_player_loads_as_none() {
     let db = db();
     assert!(db.load_player("Nobody").expect("query").is_none());
@@ -286,6 +296,7 @@ fn old_database_is_migrated_on_open() {
     assert_eq!(old.coins, Default::default());
     assert_eq!(old.poison, 0, "migrated row backfills poison to 0");
     assert_eq!(old.active_spells, [ActiveSpell::default(); 10]);
+    assert!(old.ansi, "pre-M7 rows backfill ansi ON (the always-on server)");
     drop(db);
 
     // (c) Reopening is idempotent: same data, still writable.

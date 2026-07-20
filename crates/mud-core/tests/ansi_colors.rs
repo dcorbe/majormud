@@ -103,6 +103,8 @@ fn player(name: &str, hp: i32) -> Player {
         thirst: 1000,
         lives: 9,
         location: HALL,
+        ansi: true, // the per-user flag (M7) — this suite tests colours
+
         ..Default::default()
     }
 }
@@ -199,7 +201,9 @@ fn combat_lines_use_the_red_and_cyan_families() {
 #[test]
 fn plain_mode_strips_every_escape() {
     let mut core = Core::new(world(), CoreConfig::default());
-    let s = core.attach_player(player("Plain", 10));
+    let mut plain = player("Plain", 10);
+    plain.ansi = false; // the per-user flag decides (M7)
+    let s = core.attach_player(plain);
     core.spawn_monster(MonsterId(1), HALL).unwrap();
     core.drain_events();
     core.input(s, "look");

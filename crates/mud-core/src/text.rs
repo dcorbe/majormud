@@ -68,6 +68,11 @@ pub mod color {
     pub const RESET: &str = "\x1b[0m";
 }
 
+/// OURS (divergence — the real board keys ANSI on the MBBS account):
+/// the `ansi` toggle's confirmations.
+pub const ANSI_NOW_ON: &str = "ANSI colour is now ON.";
+pub const ANSI_NOW_OFF: &str = "ANSI colour is now OFF.";
+
 /// `get_random_name` (0x424172): the spawn-adjective walk over a name
 /// block. Per line a candidate composes — `A:` base sep suffix, `B:`
 /// prefix sep base, `F:` full replace, `N:` base, anything else the line
