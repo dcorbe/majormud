@@ -17,7 +17,14 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Command {
     /// Interactive session against a target board
-    Play,
+    Play {
+        /// Character profile (TOML)
+        #[arg(long)]
+        profile: PathBuf,
+        /// Capture basename: writes <capture>.raw and <capture>_timing.log
+        #[arg(long)]
+        capture: Option<PathBuf>,
+    },
     /// Run a Lua oracle/bot script headless
     Run {
         /// Lua script to execute

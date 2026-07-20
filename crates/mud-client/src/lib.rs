@@ -12,4 +12,5 @@ pub mod parse;
 pub mod profile;
 pub mod script;
 pub mod session;
+pub mod tui;
 pub mod wire;

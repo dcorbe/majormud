@@ -10,10 +10,7 @@ use mud_client::session::{Capture, Session};
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        Command::Play => {
-            eprintln!("mmc play: not implemented yet (C5)");
-            ExitCode::FAILURE
-        }
+        Command::Play { profile, capture } => play_command(&profile, capture.as_deref()),
         Command::Run {
             script,
             profile,
@@ -28,6 +25,46 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn play_command(profile_path: &std::path::Path, capture: Option<&std::path::Path>) -> ExitCode {
+    let profile: Profile = match std::fs::read_to_string(profile_path)
+        .map_err(|e| e.to_string())
+        .and_then(|s| toml::from_str(&s).map_err(|e| e.to_string()))
+    {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("profile {}: {e}", profile_path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let capture = capture.map(|base| Capture {
+        raw: base.with_extension("raw"),
+        timing: Some(append_to_stem(base, "_timing.log")),
+    });
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("tokio runtime: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    rt.block_on(async {
+        let session = match Session::connect(&profile, capture).await {
+            Ok(s) => Arc::new(s),
+            Err(e) => {
+                eprintln!("connect {}:{}: {e}", profile.host, profile.port);
+                return ExitCode::FAILURE;
+            }
+        };
+        match mud_client::tui::play(session).await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("terminal error: {e}");
+                ExitCode::FAILURE
+            }
+        }
+    })
 }
 
 fn run_command(
