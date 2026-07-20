@@ -16,10 +16,7 @@ fn main() -> ExitCode {
             profile,
             capture,
         } => run_command(&script, &profile, capture.as_deref()),
-        Command::Path => {
-            eprintln!("mmc path: not implemented yet (C6)");
-            ExitCode::FAILURE
-        }
+        Command::Path { from, to, content } => path_command(&from, &to, &content),
         Command::Farm => {
             eprintln!("mmc farm: not implemented yet (C8)");
             ExitCode::FAILURE
@@ -134,6 +131,50 @@ fn run_command(
             }
         }
     })
+}
+
+fn path_command(from: &str, to: &str, content: &std::path::Path) -> ExitCode {
+    fn parse_room(s: &str) -> Option<mud_core::content::RoomId> {
+        let (map, room) = s.split_once('/')?;
+        Some(mud_core::content::RoomId {
+            map: map.parse().ok()?,
+            room: room.parse().ok()?,
+        })
+    }
+    let (Some(from), Some(to)) = (parse_room(from), parse_room(to)) else {
+        eprintln!("rooms must be map/room, e.g. 1/1");
+        return ExitCode::FAILURE;
+    };
+    let graph = match mud_client::graph::RoomGraph::load(content) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let name = |id| {
+        graph
+            .room(id)
+            .map(|r| r.name.clone())
+            .unwrap_or_else(|| "?".into())
+    };
+    match graph.route(from, to) {
+        None => {
+            eprintln!("no route from {}/{} to {}/{}", from.map, from.room, to.map, to.room);
+            ExitCode::FAILURE
+        }
+        Some(steps) => {
+            println!(
+                "{} steps: {} -> {}",
+                steps.len(),
+                name(from),
+                name(to)
+            );
+            let words: Vec<&str> = steps.iter().map(|&d| mud_client::nav::dir_word(d)).collect();
+            println!("{}", words.join(" "));
+            ExitCode::SUCCESS
+        }
+    }
 }
 
 /// "out/run1" + "_timing.log" -> "out/run1_timing.log"

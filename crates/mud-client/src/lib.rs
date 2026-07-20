@@ -8,6 +8,8 @@
 pub mod cli;
 pub mod dialect;
 pub mod events;
+pub mod graph;
+pub mod nav;
 pub mod parse;
 pub mod profile;
 pub mod script;

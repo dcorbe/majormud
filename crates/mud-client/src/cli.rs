@@ -37,8 +37,16 @@ pub enum Command {
         #[arg(long)]
         capture: Option<PathBuf>,
     },
-    /// Compute a route between two rooms
-    Path,
+    /// Compute a route between two rooms (map/room, e.g. 1/1)
+    Path {
+        /// Start room as map/room
+        from: String,
+        /// Target room as map/room
+        to: String,
+        /// Room database (decoded WG3-NT sqlite)
+        #[arg(long, default_value = "re/mmud_wgnt.sqlite")]
+        content: PathBuf,
+    },
     /// Run a farming loop over a set of spawn rooms
     Farm,
 }

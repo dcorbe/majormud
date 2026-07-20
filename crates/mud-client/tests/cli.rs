@@ -36,6 +36,20 @@ fn run_subcommand_takes_script_profile_and_capture() {
 }
 
 #[test]
+fn path_subcommand_takes_rooms_and_db() {
+    use clap::Parser;
+    let cli = Cli::parse_from(["mmc", "path", "1/1", "15/982"]);
+    match cli.command {
+        mud_client::cli::Command::Path { from, to, content } => {
+            assert_eq!(from, "1/1");
+            assert_eq!(to, "15/982");
+            assert_eq!(content.to_str(), Some("re/mmud_wgnt.sqlite"));
+        }
+        _ => panic!("expected path subcommand"),
+    }
+}
+
+#[test]
 fn cli_has_expected_subcommands() {
     let cmd = Cli::command();
     let subs: Vec<String> = cmd
