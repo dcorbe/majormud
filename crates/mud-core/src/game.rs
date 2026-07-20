@@ -219,6 +219,10 @@ pub struct Player {
     /// `CoreConfig.ansi` global at the output funnel; toggled by the
     /// `ansi` command; creation seeds the server global.
     pub ansi: bool,
+    /// `+0x700 & 0x10` — the "Warn on Evil" setting: while set, any
+    /// action that would grant evil points is REFUSED (crime.md §2.1).
+    /// Creation sets it ON (create_player ~53795); `set evil` toggles.
+    pub warn_on_evil: bool,
 }
 
 /// One player active-spell slot (`spellcasting.md` §1). `spell` is `None`
@@ -1571,6 +1575,14 @@ impl Core {
     /// Test/inspection: every live monster instance id.
     pub fn monster_ids(&self) -> Vec<MonsterInstanceId> {
         self.monsters.keys().copied().collect()
+    }
+
+    /// Test/inspection: a player's fame (`+0x542`).
+    pub fn player_fame(&self, session: SessionId) -> i16 {
+        match self.sessions.get(&session) {
+            Some(Session::InGame { player, .. }) => player.fame,
+            _ => 0,
+        }
     }
 
     /// Test/inspection: an instance's template id.
@@ -3054,6 +3066,11 @@ impl Core {
                 }
             }
             Command::Ansi => self.ansi_command(session),
+            Command::Set(args) => {
+                if self.set_command(session, &args) == Resolution::FallThrough {
+                    self.say(session, line.trim());
+                }
+            }
             Command::Punch(target) => {
                 let mode = crate::combat::AttackType::MartialArts1;
                 if self.ma_command(session, &target, 0x1d, mode) == Resolution::FallThrough {
@@ -3428,6 +3445,9 @@ impl Core {
         let Some(monster) = monster else {
             return Resolution::FallThrough;
         };
+        if self.charge_passive_monster_evil(session, monster) {
+            return Resolution::Handled;
+        }
         if let Some(Session::InGame { target, casting, .. }) = self.sessions.get_mut(&session) {
             // Oracle: attacking while already engaged prints *Combat Off*
             // before the new *Combat Engaged*.
@@ -4177,6 +4197,13 @@ impl Core {
                 self.output_line(session, &text::spell_no_effect_on(&name));
                 return;
             }
+            // Offensive casts at passive monsters charge like melee
+            // (crime.md §2.5 cast_monster_target rows).
+            if spell.target_mode.is_offensive()
+                && self.charge_passive_monster_evil(session, monster_id)
+            {
+                return;
+            }
             // The offensive-duration split (cast_monster_target: the
             // engage-only block below is CONDITIONED on duration == 0,
             // 43421-43481): a duration!=0 offensive cast resolves RIGHT
@@ -4478,6 +4505,28 @@ impl Core {
             // area path — the room-lookup refusal, like every other path.
             self.output_line(session, &text::do_not_see_here(words));
             return;
+        }
+        // add_evil_warnings_to_room (crime.md §2.5 last row): an offensive
+        // sweep over a room holding an innocent passive monster charges
+        // ONE 10-point NPC-style hit before any cost; a refusal aborts the
+        // whole cast. (The per-victim 0-point PAIR timers are the PvP
+        // half — slice 4 with rob.)
+        if spell.target_mode.is_offensive() {
+            let passive = self
+                .monsters
+                .iter()
+                .find(|(_, m)| {
+                    m.location == room
+                        && m.current_hp > 0
+                        && matches!(m.behaviour, 0 | 4)
+                        && m.target != Some(session)
+                })
+                .map(|(id, _)| *id);
+            if let Some(id) = passive
+                && self.charge_passive_monster_evil(session, id)
+            {
+                return;
+            }
         }
         // Room protection (§3 step 2) precedes target counting for
         // offensive modes — the same guilt gate and round-cost-only
@@ -5467,6 +5516,27 @@ impl Core {
             .map_or_else(String::new, |m| m.name.clone())
     }
 
+    /// `cmd_set` (0x458b60) — only the EVIL subcommand ships in slice 3;
+    /// the other seventeen (keep/style/gossip/...) fall through to say
+    /// until their systems exist. Subcommand matching is exact-word
+    /// (ORACLE-VERIFY: DLL abbreviation behavior unmeasured).
+    fn set_command(&mut self, session: SessionId, args: &str) -> Resolution {
+        if !args.trim().eq_ignore_ascii_case("evil") {
+            return Resolution::FallThrough;
+        }
+        let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+            return Resolution::Handled;
+        };
+        player.warn_on_evil = !player.warn_on_evil;
+        let (line, snapshot) = (
+            if player.warn_on_evil { text::SET_EVIL_WARN_ON } else { text::SET_EVIL_WARN_OFF },
+            player.clone(),
+        );
+        self.output_line(session, line);
+        self.events.push(Event::Persist(snapshot));
+        Resolution::Handled
+    }
+
     /// The `ansi` toggle (OURS — see the Player.ansi divergence note):
     /// flip, confirm, persist.
     fn ansi_command(&mut self, session: SessionId) {
@@ -5481,6 +5551,56 @@ impl Core {
         self.output_line(session, line);
         self.events.push(Event::Persist(snapshot));
     }
+
+    /// crime.md §2.5 (attack_user_monster 26113-26116, cast_monster_target
+    /// 43255/43330/43417): initiating violence against a passive (mode
+    /// 0/4) monster that is not already fighting you charges 10 evil via
+    /// the NPC path (`crime::charge_npc_evil` — gates, dark cloud,
+    /// minimum-10 bump). Returns true when the action is REFUSED; the
+    /// caller aborts before any engagement. Refusal-before-engagement
+    /// ordering and the own-summon exemption (pet links, slice 5) are
+    /// ORACLE-VERIFY.
+    fn charge_passive_monster_evil(
+        &mut self,
+        session: SessionId,
+        monster: MonsterInstanceId,
+    ) -> bool {
+        let eligible = self
+            .monsters
+            .get(&monster)
+            .is_some_and(|m| matches!(m.behaviour, 0 | 4) && m.target != Some(session));
+        if !eligible {
+            return false;
+        }
+        let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+            return false;
+        };
+        let mut fame = player.fame;
+        let before = crate::crime::legal_level(fame);
+        match crate::crime::charge_npc_evil(&mut fame, player.warn_on_evil, player.lawful, 10) {
+            Err(refusal) => {
+                self.output_line(session, refusal);
+                true
+            }
+            Ok(cloud) => {
+                player.fame = fame;
+                let crossed = crate::crime::legal_level(fame) != before;
+                let snapshot = player.clone();
+                self.output_line(session, cloud);
+                if crossed {
+                    self.update_allowed_worn_items(session);
+                }
+                self.events.push(Event::Persist(snapshot));
+                false
+            }
+        }
+    }
+
+    /// `update_allowed_worn_items` (crime.md §2.4/§6.1): re-validate worn
+    /// alignment-restricted gear when a fame writer crosses a tier
+    /// boundary. Fleshed out with the alignment lattice (slice-3 gate
+    /// task); until then a placeholder so every writer calls it.
+    fn update_allowed_worn_items(&mut self, _session: SessionId) {}
 
     /// The spawn name roll (`get_random_name`, text::generate_name):
     /// walks the template's name block when it has one. The density
@@ -9435,6 +9555,7 @@ impl Core {
             active_spells: Default::default(),
             fame: 0,
             ansi: self.config.ansi,
+            warn_on_evil: true,
         };
         let derived = self.derive_for(&player);
         player.current_hp = derived.max_hp;

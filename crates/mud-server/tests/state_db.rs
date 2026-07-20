@@ -115,6 +115,18 @@ fn ansi_flag_roundtrips() {
 }
 
 #[test]
+fn fame_and_warn_flag_roundtrip() {
+    let db = db();
+    let mut p = player("Rogue");
+    p.fame = 85; // Criminal
+    p.warn_on_evil = false;
+    db.save_player(&p).unwrap();
+    let loaded = db.load_player("Rogue").unwrap().unwrap();
+    assert_eq!(loaded.fame, 85);
+    assert!(!loaded.warn_on_evil);
+}
+
+#[test]
 fn missing_player_loads_as_none() {
     let db = db();
     assert!(db.load_player("Nobody").expect("query").is_none());
@@ -297,6 +309,8 @@ fn old_database_is_migrated_on_open() {
     assert_eq!(old.poison, 0, "migrated row backfills poison to 0");
     assert_eq!(old.active_spells, [ActiveSpell::default(); 10]);
     assert!(old.ansi, "pre-M7 rows backfill ansi ON (the always-on server)");
+    assert_eq!(old.fame, 0, "pre-M7 rows backfill fame 0");
+    assert!(old.warn_on_evil, "pre-M7 rows backfill Warn on Evil ON");
     drop(db);
 
     // (c) Reopening is idempotent: same data, still writable.

@@ -47,6 +47,10 @@ fn kobold() -> Monster {
             AttackForm::default(),
             AttackForm::default(),
         ],
+        // Lair mode: passive presence WITHOUT the mode-0/4 evil charge
+        // (crime.md §2.5 — created characters ship Warn on Evil ON, and
+        // a mode-0 punching bag would refuse every attack).
+        behaviour: 3,
         ..Default::default()
     }
 }
@@ -291,7 +295,7 @@ fn no_swings_without_engagement() {
     let shown = text_to(&events, s);
     assert!(
         !shown.contains("punch") && !shown.contains("hits you"),
-        "behaviour-0 monsters never initiate (M6 acquisition): {shown:?}"
+        "passive-mode monsters never initiate (M6 acquisition): {shown:?}"
     );
 }
 
@@ -498,6 +502,10 @@ fn rat(accuracy: i16, min: i16, max: i16) -> Monster {
             AttackForm::default(),
             AttackForm::default(),
         ],
+        // Lair mode: passive presence WITHOUT the mode-0/4 evil charge
+        // (crime.md §2.5 — created characters ship Warn on Evil ON, and
+        // a mode-0 punching bag would refuse every attack).
+        behaviour: 3,
         ..Default::default()
     }
 }

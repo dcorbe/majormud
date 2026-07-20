@@ -68,6 +68,13 @@ pub mod color {
     pub const RESET: &str = "\x1b[0m";
 }
 
+/// SET EVIL (cmd_set 54203-54212): the warn-ON confirm is the DLL's
+/// string; the warn-OFF wording is ORACLE-VERIFY (unread).
+pub const SET_EVIL_WARN_ON: &str =
+    "You will now be warned and stopped from performing evil actions.";
+pub const SET_EVIL_WARN_OFF: &str =
+    "You will no longer be warned before performing evil actions.";
+
 /// OURS (divergence — the real board keys ANSI on the MBBS account):
 /// the `ansi` toggle's confirmations.
 pub const ANSI_NOW_ON: &str = "ANSI colour is now ON.";

@@ -22,6 +22,9 @@ fn rat_template() -> Monster {
         weapon: None,
         loot: vec![],
         attacks: Default::default(),
+        // Lair mode: attackable without the mode-0/4 evil charge
+        // (created characters ship Warn on Evil ON — crime.md §2.5).
+        behaviour: 3,
         ..Default::default()
     }
 }

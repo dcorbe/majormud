@@ -42,6 +42,9 @@ fn executioner() -> Monster {
             AttackForm::default(),
             AttackForm::default(),
         ],
+        // Lair mode: attackable without the mode-0/4 evil charge
+        // (created characters ship Warn on Evil ON — crime.md §2.5).
+        behaviour: 3,
         ..Default::default()
     }
 }

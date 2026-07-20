@@ -43,6 +43,9 @@ fn monster(id: u16, roam: i16, aggression: i16) -> Monster {
         magic_resist: 0,
         roam_class: roam,
         aggression,
+        // Lair mode: attackable without the mode-0/4 evil charge
+        // (created characters ship Warn on Evil ON — crime.md §2.5).
+        behaviour: 3,
         ..Default::default()
     }
 }

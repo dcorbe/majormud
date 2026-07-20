@@ -46,6 +46,8 @@ pub enum Command {
     /// `ansi` — the per-user colour toggle. OURS (divergence): the real
     /// board keys ANSI on the MBBS account, outside the DLL.
     Ansi,
+    /// `set <option>` — cmd_set 0x458b60; only EVIL ships today.
+    Set(String),
     /// `cast [spell [target]]` — bare form prints the syntax line; a cast
     /// NEVER auto-picks a target (spellcasting.md §8.9).
     Cast(String),
@@ -118,7 +120,7 @@ enum Verb {
 /// All direction minimums are ORACLE-verified (oracle_directions.raw):
 /// north/south/west = full word, east = 3 (eat blocks 2), down = 3,
 /// up = 2, diagonals = 6. Hand-authored asymmetry is the original's.
-const VERBS: [(&str, usize, Verb); 45] = [
+const VERBS: [(&str, usize, Verb); 46] = [
     ("north", 5, Verb::Plain(|| Command::Move(Direction::North))),
     ("south", 5, Verb::Plain(|| Command::Move(Direction::South))),
     ("east", 3, Verb::Plain(|| Command::Move(Direction::East))),
@@ -180,6 +182,9 @@ const VERBS: [(&str, usize, Verb); 45] = [
     ("quit", 1, Verb::Plain(|| Command::Quit)),     // ORACLE: q
     // OURS (divergence): no DLL surface exists — full word only.
     ("ansi", 4, Verb::Plain(|| Command::Ansi)),
+    // ORACLE-VERIFY min abbrev: unmeasured ("se" cannot shadow sell's 3
+    // — "sel" is not a prefix of "set"; keep 3 to be safe).
+    ("set", 3, Verb::WithArgs(Command::Set)),
 ];
 
 pub fn parse(input: &str) -> Command {

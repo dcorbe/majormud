@@ -119,6 +119,10 @@ const TABLES: &[TableDef] = &[
             // Per-user ANSI (M7 slice 2, ours). Migrated rows backfill 1:
             // pre-toggle characters only ever ran on the always-on server.
             ("ansi", "INTEGER NOT NULL CHECK (ansi IN (0, 1))"),
+            // Crime (M7 slice 3): fame (+0x542) and Warn on Evil
+            // (+0x700 & 0x10, backfilled ON — the DLL's creation default).
+            ("fame", "INTEGER NOT NULL"),
+            ("warn_on_evil", "INTEGER NOT NULL CHECK (warn_on_evil IN (0, 1))"),
         ],
         constraint: "",
     },
@@ -303,6 +307,10 @@ impl StateDb {
             // Pre-toggle characters only ever played on the always-on
             // server; keep their colour.
             conn.execute("UPDATE player SET ansi = 1", [])?;
+        } else if col == "warn_on_evil" {
+            // The DLL's creation default — evil actions refuse until the
+            // player opts in with `set evil`.
+            conn.execute("UPDATE player SET warn_on_evil = 1", [])?;
         }
         Ok(())
     }
@@ -463,10 +471,11 @@ impl StateDb {
                  b_charm, hp_base, current_hp, current_mana, hunger, thirst,
                  runic, platinum, gold, silver, copper, lawful,
                  cp_unspent, cp_lifetime, lives, experience, map, room,
-                 poison, ansi)
+                 poison, ansi, fame, warn_on_evil)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
                  ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
-                 ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36)",
+                 ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37,
+                 ?38)",
             params![
                 player.name,
                 gender_str(player.gender),
@@ -504,6 +513,8 @@ impl StateDb {
                 player.location.room,
                 player.poison,
                 player.ansi,
+                player.fame,
+                player.warn_on_evil,
             ],
         )?;
         tx.commit()?;
@@ -675,7 +686,7 @@ impl StateDb {
                      b_charm, hp_base, current_hp, current_mana, hunger, thirst,
                      runic, platinum, gold, silver, copper, lawful,
                      cp_unspent, cp_lifetime, lives, experience, map, room,
-                     poison, ansi
+                     poison, ansi, fame, warn_on_evil
                  FROM player WHERE name = ?1",
                 params![name],
                 |r| {
@@ -729,10 +740,9 @@ impl StateDb {
                         spellbook: BTreeMap::new(),
                         poison: r.get(34)?,
                         active_spells: Default::default(),
-                        // Fame persists with the M7 crime system; until a
-                        // fame source exists every save-load sees 0.
-                        fame: 0,
                         ansi: r.get(35)?,
+                        fame: r.get(36)?,
+                        warn_on_evil: r.get(37)?,
                     })
                 },
             )
