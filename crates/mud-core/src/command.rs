@@ -48,6 +48,11 @@ pub enum Command {
     Ansi,
     /// `set <option>` — cmd_set 0x458b60; only EVIL ships today.
     Set(String),
+    /// `sneak` — arm stealth for the next move (cmd_sneak 0x454641).
+    Sneak,
+    /// `hide` — hide self; item/coin stash forms arrive with the room
+    /// hidden-storage work (cmd_hide 0x466b1f).
+    Hide(String),
     /// `cast [spell [target]]` — bare form prints the syntax line; a cast
     /// NEVER auto-picks a target (spellcasting.md §8.9).
     Cast(String),
@@ -120,7 +125,7 @@ enum Verb {
 /// All direction minimums are ORACLE-verified (oracle_directions.raw):
 /// north/south/west = full word, east = 3 (eat blocks 2), down = 3,
 /// up = 2, diagonals = 6. Hand-authored asymmetry is the original's.
-const VERBS: [(&str, usize, Verb); 46] = [
+const VERBS: [(&str, usize, Verb); 48] = [
     ("north", 5, Verb::Plain(|| Command::Move(Direction::North))),
     ("south", 5, Verb::Plain(|| Command::Move(Direction::South))),
     ("east", 3, Verb::Plain(|| Command::Move(Direction::East))),
@@ -185,6 +190,9 @@ const VERBS: [(&str, usize, Verb); 46] = [
     // ORACLE-VERIFY min abbrev: unmeasured ("se" cannot shadow sell's 3
     // — "sel" is not a prefix of "set"; keep 3 to be safe).
     ("set", 3, Verb::WithArgs(Command::Set)),
+    // ORACLE-VERIFY min abbrevs: unmeasured for both.
+    ("sneak", 2, Verb::Plain(|| Command::Sneak)),
+    ("hide", 3, Verb::WithArgs(Command::Hide)),
 ];
 
 pub fn parse(input: &str) -> Command {

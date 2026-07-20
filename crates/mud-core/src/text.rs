@@ -75,6 +75,28 @@ pub fn item_force_removed(name: &str) -> String {
     format!("Your {name} has been removed.")
 }
 
+/// SNEAK refusal while being fought (theft.md §11.1).
+pub const MAY_NOT_SNEAK: &str = "You may not sneak right now!";
+
+/// Sneak movement lines (theft.md §11.1, perception-filtered, dkyellow).
+pub fn sneak_out(name: &str, direction: Direction) -> String {
+    let tail = match direction {
+        Direction::Up => "sneaking out upwards".to_string(),
+        Direction::Down => "sneaking out downwards".to_string(),
+        d => format!("sneaking out to the {}", direction_shown(d)),
+    };
+    format!("You notice {name} {tail}.")
+}
+
+pub fn sneak_in_from(name: &str, from: Direction) -> String {
+    let tail = match from {
+        Direction::Up => "sneak in from above".to_string(),
+        Direction::Down => "sneak in from below".to_string(),
+        d => format!("sneak in from the {}", direction_shown(d)),
+    };
+    format!("You notice {name} {tail}.")
+}
+
 /// Alignment-restricted exits (crime.md §3, 0x47e31e/0x47e349).
 pub const EXIT_TOO_GOOD: &str = "You are too good to go through this exit!";
 pub const EXIT_TOO_EVIL: &str = "You are too evil to go through this exit!";

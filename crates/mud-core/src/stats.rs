@@ -286,3 +286,26 @@ pub fn derive(inputs: &StatInputs) -> Derived {
         carry_capacity,
     }
 }
+
+/// The shared SNEAK/HIDE success-chance helper (`FUN_0046cc43`,
+/// theft.md §11.3): base Stealth, encumbrance bands (>= 67% −10,
+/// 35-66% −5), −1 per other online player and per live monster in the
+/// room, clamped to the cap (both callers pass 95) and floored at 0.
+/// (The `+0x6f5 & 0x80` two-thirds penalty flag is untraced — omitted.)
+pub fn stealth_chance(
+    stealth: i32,
+    encumbrance_pct: i32,
+    other_players: i32,
+    monsters: i32,
+    cap: i32,
+) -> i32 {
+    let mut chance = stealth;
+    if encumbrance_pct >= 67 {
+        chance -= 10;
+    } else if encumbrance_pct >= 35 {
+        chance -= 5;
+    }
+    chance = chance.min(100);
+    chance -= other_players + monsters;
+    chance.min(cap).max(0)
+}

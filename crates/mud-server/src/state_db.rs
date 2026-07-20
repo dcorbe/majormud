@@ -780,6 +780,9 @@ impl StateDb {
                         ansi: r.get(35)?,
                         fame: r.get(36)?,
                         warn_on_evil: r.get(37)?,
+                        // Runtime stealth flags — never persisted.
+                        hidden: false,
+                        sneak_armed: false,
                     })
                 },
             )

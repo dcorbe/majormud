@@ -223,6 +223,12 @@ pub struct Player {
     /// action that would grant evil points is REFUSED (crime.md §2.1).
     /// Creation sets it ON (create_player ~53795); `set evil` toggles.
     pub warn_on_evil: bool,
+    /// `+0x5f6` — the HIDDEN byte (theft.md §11.2). Runtime only, never
+    /// persisted; cleared by non-sneak movement and combat engagement.
+    pub hidden: bool,
+    /// `+0x6f4` bit 4 — sneak-armed: the next movement runs as
+    /// `sneak()` (theft.md §11.1). Runtime only.
+    pub sneak_armed: bool,
 }
 
 /// One player active-spell slot (`spellcasting.md` §1). `spell` is `None`
@@ -3085,6 +3091,16 @@ impl Core {
                 }
             }
             Command::Ansi => self.ansi_command(session),
+            Command::Sneak => self.sneak_command(session),
+            Command::Hide(args) => {
+                if args.trim().is_empty() {
+                    self.hide_command(session);
+                } else {
+                    // HIDE <item>/<coins> — the stash mechanic joins with
+                    // the room hidden-storage work (theft.md §11.2).
+                    self.say(session, line.trim());
+                }
+            }
             Command::Set(args) => {
                 if self.set_command(session, &args) == Resolution::FallThrough {
                     self.say(session, line.trim());
@@ -5586,6 +5602,107 @@ impl Core {
         );
         self.output_line(session, line);
         self.events.push(Event::Persist(snapshot));
+    }
+
+    /// Test/inspection: the runtime hidden byte (`+0x5f6`).
+    pub fn player_hidden(&self, session: SessionId) -> bool {
+        matches!(self.sessions.get(&session),
+            Some(Session::InGame { player, .. }) if player.hidden)
+    }
+
+    /// The §11.3 chance inputs for the acting player.
+    fn stealth_chance_for(&self, session: SessionId) -> i32 {
+        let Some(Session::InGame { player, derived, .. }) = self.sessions.get(&session) else {
+            return 0;
+        };
+        let room = player.location;
+        let others = self
+            .in_game_sessions()
+            .filter(|(id, p)| *id != session && p.location == room)
+            .count() as i32;
+        let monsters = self
+            .monsters
+            .values()
+            .filter(|m| m.location == room && m.current_hp > 0)
+            .count() as i32;
+        crate::stats::stealth_chance(
+            derived.stealth,
+            self.encumbrance_percent(session),
+            others,
+            monsters,
+            95,
+        )
+    }
+
+    /// `cmd_sneak` (theft.md §11.1): gate on being fought, then
+    /// PerStealth auto-success or the §11.3 roll. Success is SILENT —
+    /// the sneak-armed bit simply waits for the next move. Failure
+    /// self-doubt is perception-gated. (The add_delay gates join with
+    /// the slice-wide delay system.)
+    fn sneak_command(&mut self, session: SessionId) {
+        let being_fought = self
+            .monsters
+            .values()
+            .any(|m| m.target == Some(session) && m.current_hp > 0
+                && m.location == self.player(session).location);
+        let engaged = self.attackers_of(session) >= 1;
+        if being_fought || engaged {
+            self.output_line(session, text::MAY_NOT_SNEAK);
+            return;
+        }
+        self.output_line(session, "Attempting to sneak...");
+        let auto = self
+            .ability_bag(self.player(session))
+            .value(Ability::from_id(0xba).expect("PerStealth in the enum"))
+            > 0;
+        let success = auto || {
+            let chance = self.stealth_chance_for(session);
+            self.rng.roll(0, 100) < chance
+        };
+        if success {
+            if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+                player.sneak_armed = true;
+            }
+            return; // silent — the player is never told sneaking worked
+        }
+        let perception = match self.sessions.get(&session) {
+            Some(Session::InGame { derived, .. }) => derived.perception,
+            _ => 0,
+        };
+        if self.rng.roll(0, 100) < perception {
+            self.output_line(session, "You don't think you're sneaking.");
+        }
+    }
+
+    /// `cmd_hide` with no argument (theft.md §11.2): the self-hide.
+    /// No PerStealth shortcut here, unlike SNEAK.
+    fn hide_command(&mut self, session: SessionId) {
+        let being_fought = self
+            .monsters
+            .values()
+            .any(|m| m.target == Some(session) && m.current_hp > 0
+                && m.location == self.player(session).location);
+        let engaged = self.attackers_of(session) >= 1;
+        self.output_line(session, "Attempting to hide...");
+        if being_fought || engaged {
+            // Unconditional fake failure while being fought (§11.2).
+            self.output_line(session, " You don't think you are hidden.");
+            return;
+        }
+        let chance = self.stealth_chance_for(session);
+        if self.rng.roll(0, 100) < chance {
+            if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+                player.hidden = true;
+            }
+            return; // silent success
+        }
+        let perception = match self.sessions.get(&session) {
+            Some(Session::InGame { derived, .. }) => derived.perception,
+            _ => 0,
+        };
+        if self.rng.roll(0, 100) < perception {
+            self.output_line(session, " You don't think you are hidden.");
+        }
     }
 
     /// crime.md §2.5 (attack_user_monster 26113-26116, cast_monster_target
@@ -9679,6 +9796,8 @@ impl Core {
             fame: if lawful { -51 } else { profile.saved_evil.max(0) },
             ansi: self.config.ansi,
             warn_on_evil: true,
+            hidden: false,
+            sneak_armed: false,
         };
         let derived = self.derive_for(&player);
         player.current_hp = derived.max_hp;
@@ -9900,10 +10019,33 @@ impl Core {
             }
         }
         let name = self.player(session).name.clone();
-        self.broadcast_to_room(from, Some(session), &text::left_via(&name, direction));
+        // Sneak movement (theft.md §11.1): the armed bit is consumed by
+        // this move; the normal leave/arrive broadcasts are replaced by
+        // perception-FILTERED "You notice %s sneaking..." lines, and the
+        // sneaker keeps the hidden byte. A NORMAL move clears it.
+        let sneaking = matches!(self.sessions.get(&session),
+            Some(Session::InGame { player, .. }) if player.sneak_armed);
+        if sneaking {
+            // Self-awareness roll vs own Perception (12574+): a low roll
+            // warns the sneaker — no effect on concealment.
+            let perception = match self.sessions.get(&session) {
+                Some(Session::InGame { derived, .. }) => derived.perception,
+                _ => 0,
+            };
+            if self.rng.roll(0, 100) < perception {
+                self.output_line(session, "You make a sound as you enter the room!");
+            }
+            self.broadcast_sneak(from, session, &text::sneak_out(&name, direction));
+        } else {
+            self.broadcast_to_room(from, Some(session), &text::left_via(&name, direction));
+        }
         match self.sessions.get_mut(&session) {
             Some(Session::InGame { player, moved_this_round, trail, .. }) => {
                 player.location = exit.dest;
+                player.sneak_armed = false;
+                if !sneaking {
+                    player.hidden = false;
+                }
                 // +0x6f4 bit 6 (12501) + the pursuit breadcrumb push.
                 *moved_this_round = true;
                 trail.insert(0, exit.dest);
@@ -9911,12 +10053,43 @@ impl Core {
             }
             _ => unreachable!("mover is in game"),
         }
-        self.broadcast_to_room(
-            exit.dest,
-            Some(session),
-            &text::walks_in_from(&name, direction.opposite()),
-        );
+        if sneaking {
+            self.broadcast_sneak(
+                exit.dest,
+                session,
+                &text::sneak_in_from(&name, direction.opposite()),
+            );
+        } else {
+            self.broadcast_to_room(
+                exit.dest,
+                Some(session),
+                &text::walks_in_from(&name, direction.opposite()),
+            );
+        }
         self.show_room(session);
+    }
+
+    /// A perception-filtered room broadcast (the DLL's tell_room
+    /// perception-filter flag): each other player rolls genrdn(0,100)
+    /// against their own Perception and only sees the line on a pass.
+    fn broadcast_sneak(&mut self, room: RoomId, mover: SessionId, line: &str) {
+        let candidates: Vec<(SessionId, i32)> = self
+            .sessions
+            .iter()
+            .filter_map(|(id, s)| match s {
+                Session::InGame { player, derived, .. }
+                    if *id != mover && player.location == room =>
+                {
+                    Some((*id, derived.perception))
+                }
+                _ => None,
+            })
+            .collect();
+        for (id, perception) in candidates {
+            if self.rng.roll(0, 100) < perception {
+                self.output_line(id, line);
+            }
+        }
     }
 
     fn show_room(&mut self, session: SessionId) {
@@ -10012,7 +10185,7 @@ impl Core {
         // Players first, then live monsters (oracle: NPCs share the line).
         let mut others: Vec<&str> = self
             .in_game_sessions()
-            .filter(|(id, p)| *id != session && p.location == room.id)
+            .filter(|(id, p)| *id != session && p.location == room.id && !p.hidden)
             .map(|(_, p)| p.name.as_str())
             .collect();
         others.extend(
