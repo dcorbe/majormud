@@ -274,6 +274,26 @@ Tests: threshold table unit (all eight boundaries, both signs); gate
 units per unlocked check; persistence round-trip. Oracle: SYSOP-staged
 fame values → status display + guardian/hunter reaction flip.
 
+**Slice 4 IN PROGRESS (2026-07-20, 633 tests):** LANDED — monster rob
+form (kind 3) stub port with the melee-slot-0 fallback (attack_monster_
+user 26808-26813; closes the swing-loop marker); SNEAK/HIDE (§11:
+stealth_chance helper exact, silent successes, perception-gated
+self-doubt, perception-FILTERED sneak movement lines replacing the
+normal broadcasts, hidden players leave also-here, non-sneak movement
+clears the byte; runtime-only Player.hidden/sneak_armed); BACKSTAB
+(cmd_backstab decompile-read: visible = silent plain attack,
+hidden+unarmed or BSAccu-weapon = mode 4, non-BS weapon refuses then
+attacks normally; mode-4 accuracy (Agl+Stealth)/2+Agl/2+BSAccu —
+the +0x7d4 ±5/−15 flag mods untraced VERIFY; full-pool one-swing cost;
+"surprise %s" verb wrap VERIFY; post-hit revert to normal; hidden
+diverts wired into attack and punch per their decompiles). REMAINING —
+evil-pair timers + FORGIVE + retaliation windows (crime.md §4-5, skip
+the use-after-free), rob_user (§4), picklock/traps/SEARCH/DISARM
+(§8-10) + the exit-state runtime model (lock/trap states, re-lock
+timers), HIDE item/coin stash (room hidden storage), the add_delay
+command-delay system (cross-cutting — sneak/hide/picklock/search all
+charge it).
+
 ## Slice 4 — Theft (full kit)
 
 - **Monster rob forms:** exact stub port — kind-3 swing calls a
