@@ -134,3 +134,46 @@ pub fn alignment_refuses(level: LegalLevel, has: impl Fn(u16) -> bool) -> bool {
         LegalLevel::Good | LegalLevel::Saint => has(98) || has(110) || has(112),
     }
 }
+
+/// The victim-quality multiplier (crime.md §2.3, 47530-47555):
+/// committed Lawful x3, Saint (<= -201) x3, Good (<= -51) x2, else x1.
+pub fn victim_multiplier(victim_fame: i16, victim_lawful: bool) -> i32 {
+    if victim_lawful || victim_fame <= -201 {
+        3
+    } else if victim_fame <= -51 {
+        2
+    } else {
+        1
+    }
+}
+
+/// One evil-pair timer node (crime.md §4.1; the DLL's 24-byte
+/// `DAT_00488180` list). We key pairs by NAME instead of usrnum — the
+/// DLL's channel numbers orphan nodes on relog anyway; names age the
+/// same way and survive it (documented divergence).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvilNode {
+    pub attacker: String,
+    pub victim: String,
+    /// Rounds remaining — always seeded 11 (~5.5 min of the attacker's
+    /// 30 s slow ticks).
+    pub rounds: u8,
+    /// The evil points banked by this act (multipliers included) — the
+    /// exact FORGIVE refund.
+    pub points: i32,
+    /// bit0 = rob (vs attack), bit1 = UNNOTICED rob (suppresses the
+    /// room-list star).
+    pub rob_flags: u8,
+}
+
+/// `should_give_evil` results (crime.md §4.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvilCharge {
+    /// The victim holds a live node against this attacker (free
+    /// retaliation), or the attacker already has an attack node.
+    Free,
+    /// A rob node exists: charge again and REPLACE the timer.
+    Replace,
+    /// No node: fresh charge.
+    Fresh,
+}

@@ -75,6 +75,46 @@ pub fn item_force_removed(name: &str) -> String {
     format!("Your {name} has been removed.")
 }
 
+/// ROB / FORGIVE strings (theft.md §3-5, verbatim).
+pub const SYNTAX_ROB: &str = "Syntax: ROB {user/monster}";
+pub const DONT_SEE_ANYWHERE: &str = "You don't see that anywhere!";
+pub const ROB_FROM_THAT: &str = "Why would you want to rob from that?";
+pub const ROB_WAY_OF_LIFE: &str =
+    "You have chosen a way of life which prevents this action.";
+pub const ROB_YOURSELF: &str = "Why would you want to rob yourself?";
+pub const ROB_UNBALANCED: &str =
+    "Such an action would result in a very unbalanced game.";
+pub const ROB_GUILT: &str =
+    "You are overcome with a feeling of guilt and return your hands to your own pockets";
+
+/// Gendered pronouns (`+0x7d6`; FUN_0041d89d/8dd/91d).
+pub fn pronoun_subject(gender: crate::game::Gender) -> &'static str {
+    match gender {
+        crate::game::Gender::Male => "he",
+        crate::game::Gender::Female => "she",
+    }
+}
+pub fn pronoun_object(gender: crate::game::Gender) -> &'static str {
+    match gender {
+        crate::game::Gender::Male => "him",
+        crate::game::Gender::Female => "her",
+    }
+}
+pub fn pronoun_possessive(gender: crate::game::Gender) -> &'static str {
+    match gender {
+        crate::game::Gender::Male => "his",
+        crate::game::Gender::Female => "her",
+    }
+}
+
+/// The five currency display names (table 0x480248; runic's "User
+/// Defined" placeholder is board-configured — ORACLE-VERIFY the live
+/// board's name).
+pub fn currency_name(idx: usize) -> &'static str {
+    ["copper farthings", "silver nobles", "gold crowns", "platinum pieces", "runic coins"]
+        [idx.min(4)]
+}
+
 /// cmd_backstab (0x4889da): a wielded weapon without BSAccu.
 pub const CANNOT_BACKSTAB_WEAPON: &str = "You cannot backstab with this weapon!";
 

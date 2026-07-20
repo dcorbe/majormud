@@ -410,6 +410,9 @@ pub struct CoreConfig {
     /// respawns here. DLL init default = room 142 (the "outlaw start");
     /// ORACLE-VERIFY against a live criminal death.
     pub criminal_recall_location: RoomId,
+    /// PvP level-range limit (option 0x39, `DAT_00482d8c`; crime.md
+    /// §6.5): -1 disables PvP interactions (incl. rob); fallback 100.
+    pub pvp_level_range: i32,
     /// Restored population cooldowns: (template, seconds since its last
     /// kill at boot). Applied before the boot population walk.
     pub restored_population: Vec<(crate::content::MonsterId, i64)>,
@@ -437,6 +440,7 @@ impl Default for CoreConfig {
             exit_meditation_seconds: 10,
             recall_location: RoomId { map: 1, room: 2190 },
             criminal_recall_location: RoomId { map: 1, room: 142 },
+            pvp_level_range: 100,
             restored_population: Vec::new(),
             restored_room_stamps: Vec::new(),
             ansi: false,
@@ -901,6 +905,10 @@ pub struct Core {
     rng: Rng,
     monsters: BTreeMap<MonsterInstanceId, MonsterInstance>,
     next_monster: u64,
+    /// The evil-pair timer list (crime.md §4; `DAT_00488180`). Nodes age
+    /// on the ATTACKER's slow tick and power retaliation-free responses,
+    /// FORGIVE refunds, and the room-list star.
+    evil_timers: Vec<crate::crime::EvilNode>,
     /// Ephemeral floor coin piles per room (low->high denominations).
     room_coins: BTreeMap<RoomId, [u32; 5]>,
     /// Ephemeral floor items per room (item, remaining uses), seeded from
@@ -989,6 +997,7 @@ impl Core {
             rng,
             monsters: BTreeMap::new(),
             next_monster: 1,
+            evil_timers: Vec::new(),
             room_coins: BTreeMap::new(),
             room_items: BTreeMap::new(),
             shop_stock: BTreeMap::new(),
@@ -1919,6 +1928,18 @@ impl Core {
     /// poison damage, bleed/aid, HP regen, mana regen for every in-game
     /// player.
     fn slow_update(&mut self) {
+        // decrement_evil_timers (crime.md §4.2): each ONLINE attacker's
+        // nodes lose one round per slow tick; expired nodes free.
+        let online: Vec<String> = self
+            .in_game_sessions()
+            .map(|(_, p)| p.name.clone())
+            .collect();
+        for node in &mut self.evil_timers {
+            if online.iter().any(|n| n.eq_ignore_ascii_case(&node.attacker)) {
+                node.rounds = node.rounds.saturating_sub(1);
+            }
+        }
+        self.evil_timers.retain(|n| n.rounds > 0);
         let sessions: Vec<SessionId> = self.sessions.keys().copied().collect();
         for id in sessions {
             let Some(Session::InGame { player, derived, .. }) = self.sessions.get(&id) else {
@@ -3091,6 +3112,8 @@ impl Core {
                 }
             }
             Command::Ansi => self.ansi_command(session),
+            Command::Rob(target) => self.rob_command(session, &target),
+            Command::Forgive(target) => self.forgive_command(session, &target),
             Command::Sneak => self.sneak_command(session),
             Command::Hide(args) => {
                 if args.trim().is_empty() {
@@ -5756,6 +5779,389 @@ impl Core {
         if self.rng.roll(0, 100) < perception {
             self.output_line(session, " You don't think you are hidden.");
         }
+    }
+
+
+    /// `cmd_rob` (theft.md §3): parse, resolve player-or-monster, then
+    /// `rob_user`/`rob_monster`. Bare form prints the syntax; unmatched
+    /// targets the don't-see line. (find_action_target kinds 4/8/0x10 —
+    /// items — have no reachable surface here yet.)
+    fn rob_command(&mut self, session: SessionId, target_words: &str) {
+        let want = target_words.trim().to_ascii_lowercase();
+        if want.is_empty() {
+            self.output_line(session, text::SYNTAX_ROB);
+            return;
+        }
+        // §3 kind-1 entry clears the robber's own stealth state.
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+            player.sneak_armed = false;
+            player.hidden = false;
+        }
+        let room = self.player(session).location;
+        let sees_hidden = self
+            .ability_bag(self.player(session))
+            .value(Ability::from_id(57).expect("SeeHidden in the enum"))
+            > 0;
+        let target = self
+            .in_game_sessions()
+            .filter(|(_, p)| p.location == room)
+            .find(|(_, p)| word_prefix_match(&p.name, &want))
+            .map(|(id, p)| (id, p.hidden));
+        if let Some((victim, victim_hidden)) = target {
+            if victim_hidden && !sees_hidden && victim != session {
+                self.output_line(session, text::DONT_SEE_ANYWHERE);
+                return;
+            }
+            self.rob_user(session, victim);
+            return;
+        }
+        if self.find_monster(room, &want).is_some() {
+            // rob_monster (theft.md §6): a no-op — its only crime check
+            // is the committed-Lawful refusal; otherwise SILENT.
+            let lawful = self.player(session).lawful;
+            if lawful {
+                self.output_line(session, text::ROB_WAY_OF_LIFE);
+            }
+            return;
+        }
+        self.output_line(session, text::DONT_SEE_ANYWHERE);
+    }
+
+    /// `FUN_0046c417` (crime.md §6.5) — the PvP-range gate.
+    fn pvp_in_range(&self, a: SessionId, b: SessionId) -> bool {
+        if self.config.pvp_level_range < 0 {
+            return false;
+        }
+        let (al, bl) = (
+            i32::from(self.player(a).level),
+            i32::from(self.player(b).level),
+        );
+        if al < 4 || bl < 4 {
+            return false;
+        }
+        let (an, bn) = (self.player(a).name.clone(), self.player(b).name.clone());
+        if self
+            .evil_timers
+            .iter()
+            .any(|n| n.attacker.eq_ignore_ascii_case(&an) && n.victim.eq_ignore_ascii_case(&bn))
+        {
+            return true; // a live pair node bypasses balance
+        }
+        if crate::crime::legal_level(self.player(b).fame) == crate::crime::LegalLevel::Fiend {
+            return true;
+        }
+        (al - bl).abs() <= self.config.pvp_level_range
+    }
+
+    /// `rob_user` (theft.md §4): gates, the Thievery roll, the evil
+    /// charge, then the quiet loot transfer. Only the BUMP outcome ever
+    /// reaches the victim; the room hears nothing.
+    fn rob_user(&mut self, robber: SessionId, victim: SessionId) {
+        let p = self.player(robber);
+        // §4.1 gate 1: Lawful OR evil-warnings — one shared refusal.
+        if p.lawful || p.warn_on_evil {
+            self.output_line(robber, text::ROB_WAY_OF_LIFE);
+            return;
+        }
+        if robber == victim {
+            self.output_line(robber, text::ROB_YOURSELF);
+            return;
+        }
+        if !self.pvp_in_range(robber, victim) {
+            self.output_line(robber, text::ROB_UNBALANCED);
+            return;
+        }
+        let room = self.player(robber).location;
+        let safe = self
+            .content
+            .rooms
+            .get(&room)
+            .is_some_and(|r| r.protected() || r.room_type == 5);
+        if safe {
+            self.output_line(robber, text::ROB_GUILT);
+            return;
+        }
+        let thievery = match self.sessions.get(&robber) {
+            Some(Session::InGame { derived, .. }) => derived.thievery,
+            _ => 0,
+        };
+        let victim_name = self.player(victim).name.clone();
+        let robber_name = self.player(robber).name.clone();
+        let victim_gender = self.player(victim).gender;
+        let robber_gender = self.player(robber).gender;
+        // Draw 1: the skill d100.
+        let roll = self.rng.roll(1, 100);
+        if roll > thievery + 10 {
+            // Detected — the only outcome the victim ever sees.
+            if self.charge_player_evil(robber, victim, 1, 1) {
+                return;
+            }
+            self.output_line(
+                robber,
+                &format!(
+                    "You bump {victim_name} as you try to rob {}.",
+                    text::pronoun_object(victim_gender)
+                ),
+            );
+            self.output_line(
+                victim,
+                &format!(
+                    "{robber_name} bumps you as {} tries to rob you!",
+                    text::pronoun_subject(robber_gender)
+                ),
+            );
+            return;
+        }
+        if roll > thievery {
+            if self.charge_player_evil(robber, victim, 1, 2) {
+                return;
+            }
+            self.output_line(
+                robber,
+                &format!("Your skills fail as you try to rob {victim_name}."),
+            );
+            return;
+        }
+        // Success path: the charge lands BEFORE the loot draws (§4.2).
+        if self.charge_player_evil(robber, victim, 1, 2) {
+            return;
+        }
+        // Draw 2: coins vs items.
+        if self.rng.roll(1, 100) < 50 {
+            // Draw 3: the currency index — even one the victim lacks.
+            let idx = self.rng.roll(0, 4).clamp(0, 4) as usize;
+            let held = {
+                let v = &self.player(victim).coins;
+                match idx {
+                    0 => v.copper,
+                    1 => v.silver,
+                    2 => v.gold,
+                    3 => v.platinum,
+                    _ => v.runic,
+                }
+            };
+            let amount = if held > 0 {
+                self.rng.roll(0, held.min(i32::MAX as u32) as i32).max(0) as u32
+            } else {
+                0
+            };
+            if amount == 0 {
+                self.output_line(
+                    robber,
+                    &format!("Your skills fail as you try to rob {victim_name}."),
+                );
+                return;
+            }
+            let take = |c: &mut Coins, idx: usize, n: u32, add: bool| {
+                let slot = match idx {
+                    0 => &mut c.copper,
+                    1 => &mut c.silver,
+                    2 => &mut c.gold,
+                    3 => &mut c.platinum,
+                    _ => &mut c.runic,
+                };
+                if add {
+                    *slot += n;
+                } else {
+                    *slot -= n;
+                }
+            };
+            if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&victim) {
+                take(&mut player.coins, idx, amount, false);
+            }
+            if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&robber) {
+                take(&mut player.coins, idx, amount, true);
+            }
+            self.output_line(
+                robber,
+                &format!(
+                    "You stole {amount} {} from {victim_name}.",
+                    text::currency_name(idx)
+                ),
+            );
+            return;
+        }
+        // Item path (§4.3): one d100 per occupied inventory slot; the
+        // LAST sub-50 hit is the candidate, selected only when the item
+        // carries LoyalItem (100). (The 50-slot key ring has no model
+        // here yet — keys live in the inventory; PENDING with the key
+        // system.)
+        let inventory = self.player(victim).inventory.clone();
+        let mut candidate: Option<usize> = None;
+        let mut selected = false;
+        for (i, (item_id, _)) in inventory.iter().enumerate() {
+            if self.rng.roll(1, 100) < 50 {
+                candidate = Some(i);
+                selected = self
+                    .content
+                    .items
+                    .get(item_id)
+                    .is_some_and(|it| {
+                        it.abilities.iter().any(|(a, _)| {
+                            Ability::from_id(100).is_some_and(|l| *a == l)
+                        })
+                    });
+            }
+        }
+        let fail = format!("Your skills fail as you try to rob {victim_name}.");
+        let Some(slot) = candidate.filter(|_| selected) else {
+            self.output_line(robber, &fail);
+            return;
+        };
+        let (item_id, uses) = inventory[slot];
+        // §4.5: the Robable byte gates the transfer. (The DLL's
+        // only-copy-equipped rule is unreachable here: our worn gear
+        // lives outside the inventory vec.)
+        let (robable, item_name) = self
+            .content
+            .items
+            .get(&item_id)
+            .map(|i| (i.robable != 0, i.name.clone()))
+            .unwrap_or((false, String::new()));
+        if !robable {
+            self.output_line(robber, &fail);
+            return;
+        }
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&victim) {
+            player.inventory.remove(slot);
+        }
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&robber) {
+            player.inventory.push((item_id, uses));
+        }
+        self.output_line(
+            robber,
+            &format!("You successfully stole {item_name} from {victim_name}."),
+        );
+    }
+
+    /// The player-victim evil charge (crime.md §2.3-2.4): gate, the
+    /// innocence gate, victim-quality multiplier, minimum-10 bump, and
+    /// the pair-timer bank (rob mode replaces an existing node).
+    /// Returns true when the action is REFUSED.
+    fn charge_player_evil(
+        &mut self,
+        robber: SessionId,
+        victim: SessionId,
+        base_points: i32,
+        rob_mode: u8,
+    ) -> bool {
+        let (victim_fame, victim_lawful, victim_name) = {
+            let v = self.player(victim);
+            (v.fame, v.lawful, v.name.clone())
+        };
+        let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&robber) else {
+            return true;
+        };
+        if player.warn_on_evil {
+            self.output_line(robber, crate::crime::WARN_ON_EVIL_REFUSAL);
+            return true;
+        }
+        if player.fame > 300 {
+            self.output_line(robber, crate::crime::TOO_EVIL_REFUSAL);
+            return true;
+        }
+        if player.lawful {
+            self.output_line(robber, crate::crime::LAWFUL_REFUSAL);
+            return true;
+        }
+        // Innocence gate: only Neutral-band victims yield points; the
+        // timer is banked either way.
+        let mut points = if victim_fame < 0x1e {
+            base_points * crate::crime::victim_multiplier(victim_fame, victim_lawful)
+        } else {
+            0
+        };
+        let fame_now = i32::from(player.fame);
+        if fame_now < 0 && fame_now + points < 10 {
+            points = 10 - fame_now;
+        }
+        let before = crate::crime::legal_level(player.fame);
+        if points > 0 && fame_now < 30000 {
+            player.fame = (fame_now + points)
+                .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+        }
+        let robber_name = player.name.clone();
+        let crossed = crate::crime::legal_level(player.fame) != before;
+        let snapshot = player.clone();
+        self.output_line(robber, crate::crime::DARK_CLOUD);
+        if crossed {
+            self.update_allowed_worn_items(robber);
+        }
+        self.events.push(Event::Persist(snapshot));
+        // Bank/replace the pair timer (§2.3 rob path, §4.1 node shape).
+        let flags = if rob_mode == 2 { 3 } else { 1 };
+        self.evil_timers.retain(|n| {
+            !(n.attacker.eq_ignore_ascii_case(&robber_name)
+                && n.victim.eq_ignore_ascii_case(&victim_name))
+        });
+        self.evil_timers.push(crate::crime::EvilNode {
+            attacker: robber_name,
+            victim: victim_name,
+            rounds: 11,
+            points,
+            rob_flags: flags,
+        });
+        false
+    }
+
+    /// `cmd_forgive` + `attempt_to_forgive` (theft.md §5): the wronged
+    /// party refunds a present criminal's banked points. Our list walk
+    /// unlinks the matched node — the DLL's frees the PREDECESSOR (a
+    /// use-after-free) and is deliberately not cloned.
+    fn forgive_command(&mut self, session: SessionId, target_words: &str) {
+        let want = target_words.trim().to_ascii_lowercase();
+        let room = self.player(session).location;
+        let target = self
+            .in_game_sessions()
+            .filter(|(_, p)| p.location == room)
+            .find(|(_, p)| word_prefix_match(&p.name, &want))
+            .map(|(id, _)| id);
+        let Some(criminal) = target else {
+            self.output_line(
+                session,
+                &format!("You do not see {} here!", target_words.trim()),
+            );
+            return;
+        };
+        let criminal_name = self.player(criminal).name.clone();
+        let criminal_gender = self.player(criminal).gender;
+        let my_name = self.player(session).name.clone();
+        let node_idx = self.evil_timers.iter().position(|n| {
+            n.attacker.eq_ignore_ascii_case(&criminal_name)
+                && n.victim.eq_ignore_ascii_case(&my_name)
+        });
+        let Some(idx) = node_idx else {
+            self.output_line(
+                session,
+                &format!(
+                    "The gods refuse to forgive {criminal_name} for {} actions.",
+                    text::pronoun_possessive(criminal_gender)
+                ),
+            );
+            return;
+        };
+        let node = self.evil_timers.remove(idx);
+        let before = crate::crime::legal_level(self.player(criminal).fame);
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&criminal) {
+            player.fame = (i32::from(player.fame) - node.points)
+                .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+        }
+        if crate::crime::legal_level(self.player(criminal).fame) != before {
+            self.update_allowed_worn_items(criminal);
+        }
+        let snapshot = match self.sessions.get(&criminal) {
+            Some(Session::InGame { player, .. }) => player.clone(),
+            _ => return,
+        };
+        self.events.push(Event::Persist(snapshot));
+        self.output_line(criminal, "The gods have forgiven you for your action.");
+        self.output_line(
+            session,
+            &format!(
+                "The gods have forgiven {criminal_name} for {} action.",
+                text::pronoun_possessive(criminal_gender)
+            ),
+        );
     }
 
     /// crime.md §2.5 (attack_user_monster 26113-26116, cast_monster_target

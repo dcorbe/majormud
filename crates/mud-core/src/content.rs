@@ -358,6 +358,9 @@ pub struct Item {
     pub defense: i16,
     /// 0 = fixture ("You don't see X here." on get).
     pub gettable: i16,
+    /// `+0x42b` (`robable`) — rob_user's item-transfer gate
+    /// (theft.md §4.5); 1395 shipped items carry it.
+    pub robable: i16,
     /// `+0x3a0` — strength needed to swing without the EU penalty.
     pub req_str: i16,
     /// `+0x3de` — weapon speed (EU numerator).

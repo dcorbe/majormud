@@ -404,7 +404,8 @@ fn load_items(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
          class_1, class_2, class_3, class_4, class_5, class_6, class_7, \
          class_8, class_9, class_10, race_1, race_2, race_3, race_4, \
          race_5, race_6, race_7, race_8, race_9, race_10, \
-         desc1, desc2, desc3, desc4, desc5, desc6, desc7, desc8, desc9 \
+         desc1, desc2, desc3, desc4, desc5, desc6, desc7, desc8, desc9, \
+         robable \
          FROM item"
     ))?;
     let mut rows = stmt.query([])?;
@@ -470,6 +471,8 @@ fn load_items(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
             not_droppable: to_i16("item", "notdroppable", row.get(base + 18)?)?,
             retain_after_uses: to_i16("item", "retainafteruses", row.get(base + 19)?)?,
             destroy_on_death: to_i16("item", "destroyondeath", row.get(base + 20)?)?,
+            // robable trails the desc columns (base+50).
+            robable: to_i16("item", "robable", row.get(base + 50)?)?,
         });
     }
     Ok(())
