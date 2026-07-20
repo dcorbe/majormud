@@ -274,7 +274,26 @@ Tests: threshold table unit (all eight boundaries, both signs); gate
 units per unlocked check; persistence round-trip. Oracle: SYSOP-staged
 fame values → status display + guardian/hunter reaction flip.
 
-**Slice 4 IN PROGRESS (2026-07-20, 633 tests):** LANDED — monster rob
+**Slice 4 IN PROGRESS (2026-07-20, 648 tests):** ALSO LANDED since the
+633 mark — ROB <player> (thievery-roll outcomes bump/marginal/success,
+quiet coin+item transfer with the LoyalItem/Robable gates, room never
+told; the player-victim evil charge with victim-quality multipliers +
+innocence gate; the 11-slow-tick evil-pair timer list keyed by name);
+FORGIVE (exact refund via a clean node unlink — the DLL's predecessor-
+free use-after-free is deliberately NOT cloned); PICKLOCK (Exit gained
+param3/para4, loader re-indexed +20/+6-per-dir; runtime lock-state
+overlay keyed (room,dir); movement blocks the 73 shipped locked doors;
+reciprocal-exit unlock; 300s-per-unit re-lock timers via Job::ExitRelock
+with the "just locked!" broadcast; positive-modifier 7/0xb locks never
+re-lock; no crime consequence); SEARCH (trap detection via FindTraps
+roll — informational, no state change — plus the room broadcasts and
+the non-direction refusal). REMAINING in slice 4: DISARM (trap damage
+genrdn(r/2,r+1)/death, trapdoor state-3 falls, spell-traps — needs the
+trap-spell column room+0x5fa pinned) + hidden type-6 exit reveal (SEARCH
+half — reworks how the 1470 shipped type-6 exits render/move) + the HIDE
+item/coin stash + the add_delay command-delay system. Original 633 mark:
+
+LANDED — monster rob
 form (kind 3) stub port with the melee-slot-0 fallback (attack_monster_
 user 26808-26813; closes the swing-loop marker); SNEAK/HIDE (§11:
 stealth_chance helper exact, silent successes, perception-gated
