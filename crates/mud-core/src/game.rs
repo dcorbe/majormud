@@ -927,6 +927,14 @@ pub(crate) struct MonsterInstance {
     /// summons) never swings at its named target. Cleared whenever a lock
     /// is (re)written by combat.
     pub suppress: bool,
+    /// `mon+0x128` bit 0 (int-idx `0x4a`) — the CHARMED bit, the third
+    /// leg of the charm.md §0 state triple (`target` = the owner name
+    /// link, `suppress` = 1, this bit = 1). A full pet: assists its
+    /// owner, skips the pursuit follow-roll, never wanders. Set by the
+    /// Enslave apply (43806/43820) and the Summon-pet path (40050) —
+    /// grudge locks, healed "friends" and summoned hunters carry the
+    /// other two legs WITHOUT this one.
+    pub charmed: bool,
     /// `mon+0x120` — the spawn/home room: check_kill_monster stamps ITS
     /// respawn timer and spawn accounting, wherever the monster died.
     pub home: RoomId,
@@ -1365,6 +1373,7 @@ impl Core {
                 last_move_dir: None,
                 give_up: 0,
                 suppress: false,
+                charmed: false,
                 home: room,
                 coins,
             },
@@ -1645,6 +1654,7 @@ impl Core {
                 last_move_dir: None,
                 give_up: 0,
                 suppress: false,
+                charmed: false,
                 home: room,
                 coins,
             },
@@ -1755,6 +1765,17 @@ impl Core {
         self.monsters.get(&id)?;
         let f = self.build_monster_defender(id);
         Some((f.evasion_a, f.armor, self.monster_save_stat(id)))
+    }
+
+    /// Test hook: the charm.md §0 state triple of a live monster —
+    /// (`charmed` bit `+0x128`, `suppress` byte `+0x116`, owner/grudge
+    /// name link `+0x1a`). A pet is all three; a grudge-holder is the
+    /// link alone; a healed "friend" is link + suppression.
+    pub fn debug_monster_charm(
+        &self,
+        id: MonsterInstanceId,
+    ) -> Option<(bool, bool, Option<SessionId>)> {
+        self.monsters.get(&id).map(|m| (m.charmed, m.suppress, m.target))
     }
 
     /// Test hook: one monster-vs-monster swing
@@ -7040,6 +7061,38 @@ impl Core {
         (self.monster_ability_value(id, Ability::MR) + mr).max(1)
     }
 
+    /// `local_34` as a whole cast run carries it (charm.md §1.1): the
+    /// pre-application ability scan preloads the save stat from the
+    /// TEMPLATE's `charmres` (`knmsr+0x1a0`) for any spell whose ability
+    /// list carries Enslave(6) (decompile 43310-43312) — no `.max(1)`
+    /// floor, so a charmres of 2 halves to a threshold of 1.
+    ///
+    /// EDGE (decompile-verified, and the reason this is not a plain
+    /// "charmres if Enslave" swap): the M.R. default at 43387 keys on
+    /// `local_34 == 0`, and `local_34` starts at 0 (43170) — so a
+    /// charmres-**0** template (48 shipped) silently falls back to the
+    /// ordinary M.R. stat, floored at 1, exactly like a non-Enslave
+    /// spell. Charmres 0 is not a free charm.
+    ///
+    /// The stat is ONE variable in the DLL, read by both the saving throw
+    /// (43600-43614) and the Damage(-MR) scale (43946-43982) — so an
+    /// Enslave spell that also carried a DamageMR row would scale that
+    /// damage by charmres too. No shipped spell pairs them (the four
+    /// Enslave carriers are ability 6 plus targeting-gate rows only).
+    fn monster_cast_save_stat(&self, id: MonsterInstanceId, spell: &crate::content::Spell) -> i32 {
+        if spell.abilities.iter().any(|(a, _)| *a == Ability::Enslave) {
+            let charm_resist = self
+                .monsters
+                .get(&id)
+                .and_then(|m| self.content.monsters.get(&m.template))
+                .map_or(0, |t| i32::from(t.charm_resist));
+            if charm_resist != 0 {
+                return charm_resist;
+            }
+        }
+        self.monster_save_stat(id)
+    }
+
     /// One offensive-cast execution against the engaged monster, invoked by
     /// the combat round driver every round — including the first fire (the
     /// command only engages; MEASURED oracle_spell_cast.raw + §8.9's
@@ -7109,10 +7162,14 @@ impl Core {
             crate::content::SaveClass::Always => true,
             crate::content::SaveClass::IfAntiMagic => anti_magic,
         };
+        // The DLL's `local_34`, preloaded ahead of the attempt loop
+        // (43302-43316 / 43387-43392) and read by the save AND the
+        // Damage(-MR) scale below: `charmres` for an Enslave spell,
+        // M.R. otherwise — see [`Core::monster_cast_save_stat`].
+        let save_stat = self.monster_cast_save_stat(monster_id, &spell);
         let resisted = succeeded && save_allowed && {
-            let stat = self.monster_save_stat(monster_id);
             let rng = &mut self.rng;
-            monster_save_resists(stat, &mut |lo, hi| rng.roll(lo, hi))
+            monster_save_resists(save_stat, &mut |lo, hi| rng.roll(lo, hi))
         };
 
         if !succeeded || resisted {
@@ -7175,8 +7232,8 @@ impl Core {
         // Offensive abilities (spec §4 table): Damage (1), Damage(-MR)
         // (17), Drain (8) and Summon (12) instant; the duration table
         // enters the monster's 5 slots below (the area twins live in
-        // `area_cast`). M7 PENDING: the instant Enslave (charm family,
-        // re-deferred by the M6 design doc). The benign-at-monster
+        // `area_cast`). Enslave (6) charms on both arms (charm.md §1,
+        // the arm below). The benign-at-monster
         // instant arms (Heal/EnergyLevel/CurePoison, cast_monster_target
         // 43824-43882/44131-44160) are DATA-GATED DEAD: the command path
         // refuses benign-at-monster outright (§8.13
@@ -7193,7 +7250,6 @@ impl Core {
         // heal), and the message prints the first slot's amount — the
         // slice-5 area loop shares this combined model, and neither copy
         // must survive if multi-slot content ever appears.
-        let mr = self.monster_save_stat(monster_id);
         // AlterSpDmg(165), from the caster's bag (get_user_ability_value
         // 0xa5): boosts Damage via FUN_0043fef4 (43740) and DamageMR
         // inline BEFORE the MR scale (43940-43941). Never Drain.
@@ -7234,11 +7290,12 @@ impl Core {
                 }
                 // Damage(-MR) (17): the dominant attack-spell damage
                 // (magic missile included) — the boosted amount scaled by
-                // the target's MR, the same stat the save reads
-                // (damage_mr; decompile 43937-43993). No duration gate
-                // either (44287).
+                // the target's MR, literally the same `local_34` the save
+                // read (damage_mr; decompile 43937-43993), which is why an
+                // Enslave spell's charmres would scale it too. No duration
+                // gate either (44287).
                 Ability::DamageMR => {
-                    damage_total += damage_mr(alter_sp_dmg(amount, boost), mr, anti_magic);
+                    damage_total += damage_mr(alter_sp_dmg(amount, boost), save_stat, anti_magic);
                     harms = true;
                 }
                 // Drain (8): instant when duration 0 (target loses it,
@@ -7285,10 +7342,70 @@ impl Core {
                     self.summon_spawn(amount, room, None); // hunt links M7
                 }
                 Ability::Summon => {}
+                // Enslave (6), case 43796-43822 — the charm apply
+                // (charm.md §1.2/§1.3/§1.4).
+                Ability::Enslave => {
+                    // Two gates, both plain compares, no roll: the
+                    // spell's match type must be one of the monster
+                    // classes (43797), and the template's `charmlvl`
+                    // must be at or below the caster's level
+                    // (43798-43800). FAILURE IS SILENT — the DLL skips
+                    // the case body entirely: no message, no slot entry,
+                    // and the mana stays paid. It must NOT fall through
+                    // to the default duration-slot arm.
+                    let match_ok = matches!(
+                        spell.match_type,
+                        crate::content::MatchType::Special4
+                            | crate::content::MatchType::Item6
+                            | crate::content::MatchType::Special8
+                    );
+                    let charm_level = self
+                        .monsters
+                        .get(&monster_id)
+                        .and_then(|m| self.content.monsters.get(&m.template))
+                        .map_or(0, |t| i32::from(t.charm_level));
+                    if !match_ok || charm_level > i32::from(level) {
+                        continue;
+                    }
+                    // Duration arm (43809-43821): the slot entry first,
+                    // through the shared once-flag. Instant (43801-43807)
+                    // takes no slot and no timer at all — permanent until
+                    // a release path fires.
+                    if duration != 0 && entered.is_none() {
+                        entered = Some(self.enter_monster_spell_slot(
+                            monster_id, spell.id, amount, duration,
+                        ));
+                    }
+                    // The §0 triple, written UNCONDITIONALLY — the caller
+                    // never checks `add_cast_spell_to_monster`'s -1
+                    // (43810-43820), so a monster whose 5 slots are full
+                    // of other spells takes the plain cast-fail line AND
+                    // a permanent, timerless charm (§1.4). No rename: the
+                    // display name is untouched, only the internal owner
+                    // link (§1.3).
+                    if let Some(m) = self.monsters.get_mut(&monster_id) {
+                        m.target = Some(session); // +0x1a <- caster name
+                        m.suppress = true; // +0x116 = 1
+                        m.charmed = true; // +0x128 |= 1
+                        m.needs_recompute = true; // +0x140 dirty
+                    }
+                    self.recompute_monster_effects(monster_id);
+                }
+                // Targeting-gate rows carry no payload and never reach a
+                // slot: AffectsUndead(23) is in the case-break list
+                // (43731), AffectsAnimals(80) is excluded from the switch
+                // outright (43723-43724), and Evil(98)/AffectsLiving(108)
+                // fall in the two break ranges at 44205/44208. They gate
+                // eligibility in the pre-application scan instead. The
+                // charm family ships exactly these as its companion rows,
+                // so a charmlvl-gated-out cast must stay slotless.
+                Ability::AffectsUndead
+                | Ability::AffectsAnimals
+                | Ability::Evil
+                | Ability::AffectsLiving => {}
                 // Every other row in a DURATION cast drives the one slot
-                // entry (the cast_monster_target default arm, 43778-43799
-                // — Enslave's charm half is M6, marker below in the
-                // termination). Instant casts leave them to their systems.
+                // entry (the cast_monster_target default arm, 43778-43799).
+                // Instant casts leave them to their systems.
                 _ => {
                     if duration != 0 && entered.is_none() {
                         entered = Some(self.enter_monster_spell_slot(

@@ -262,7 +262,11 @@ pub struct Monster {
     /// sentinel, data convention rather than an engine check.
     pub charm_level: i16,
     /// `knmsr+0x1a0` (`charmres`) — the Enslave SAVE stat, replacing MR for
-    /// ability-6 spells; no floor (charm.md §1.1).
+    /// ability-6 spells; no floor, so charmres 2 halves to a 1% resist
+    /// (charm.md §1.1). A charmres of **0** is NOT a free charm: the
+    /// preload writes it into the same `local_34` the M.R. default keys
+    /// on (`== 0`, decompile 43387), so those 48 shipped templates save
+    /// with M.R. after all — see `Core::monster_cast_save_stat`.
     pub charm_resist: i16,
     /// Backstab defence.
     pub bs_defence: i16,
