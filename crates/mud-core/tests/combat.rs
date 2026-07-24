@@ -166,3 +166,64 @@ fn backstab_uses_direct_threshold_and_weak_parry() {
     let r = calculate_attack(&att, &def, AttackType::Backstab, &mut rolls(&[50, 11, 18]));
     assert_eq!(r.outcome, Outcome::Parried);
 }
+
+/// A roll source that records how many draws were taken, so a test can
+/// pin the RNG stream and not just the outcome.
+fn counted<'a>(
+    values: &'a [i32],
+    taken: &'a mut usize,
+) -> impl FnMut(i32, i32) -> i32 + use<'a> {
+    let mut it = values.iter().copied();
+    move |lo, hi| {
+        let v = it.next().expect("script exhausted");
+        assert!(v >= lo && v <= hi, "scripted roll {v} outside [{lo},{hi}]");
+        *taken += 1;
+        v
+    }
+}
+
+#[test]
+fn a_parrying_defender_always_costs_a_draw() {
+    // 25357: `if ((0 < parry) && (genrdn(0,100) < chance))` — the DLL
+    // draws whenever the defender has ANY parry rating, even when the
+    // computed chance is 0. Skipping the draw would drift the shared RNG
+    // stream for everything that follows.
+    //
+    // Accuracy 5 is below the 9-point floor at 25344, so the chance IS 0
+    // here — and the draw still happens.
+    let att = fighter(5, (0, 0), 0);
+    let mut def = fighter(0, (10, 10), 0);
+    def.parry = 30;
+    let mut taken = 0;
+    // to-hit 5 (the sub-formula threshold), crit 100 (none), damage 10,
+    // parry draw 0 (0 < 0 is false, so the hit stands).
+    let r = calculate_attack(
+        &att,
+        &def,
+        AttackType::Normal,
+        &mut counted(&[5, 100, 10, 0], &mut taken),
+    );
+    assert_eq!(r.outcome, Outcome::Hit);
+    assert_eq!(taken, 4, "the parry draw is taken even at chance 0");
+}
+
+#[test]
+fn accuracy_eight_forces_the_parry_chance_to_zero() {
+    // 25344: `if (*param_1 < 9) chance = 0;` — the guard is on the
+    // ACCURACY, not on the `accuracy >> 3` denominator, so accuracy 8
+    // means no parry at all rather than a denominator of 1.
+    let att = fighter(8, (0, 0), 0);
+    let mut def = fighter(0, (10, 10), 0);
+    def.parry = 30;
+    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[5, 100, 10, 0]));
+    assert_eq!(r.outcome, Outcome::Hit, "accuracy 8 cannot be parried");
+    assert_eq!(r.damage, 10);
+
+    // Accuracy 9 is the first that can: denominator 9>>3 = 1, so the
+    // chance is `30*10` clamped to the 0x5f cap.
+    let att = fighter(9, (0, 0), 0);
+    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[5, 100, 10, 94]));
+    assert_eq!(r.outcome, Outcome::Parried, "94 < the 95 cap");
+    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[5, 100, 10, 95]));
+    assert_eq!(r.outcome, Outcome::Hit, "95 is not < 95");
+}

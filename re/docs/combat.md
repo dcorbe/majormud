@@ -109,9 +109,13 @@ types 6/7 in both.)
 2. Ensure `max >= min`.
 3. **Damage:** `dmg = genrnd(0, max-min+1) + min - def[+6]/10`  (rand in `[min,max]` minus armor/10).
 4. Type multipliers: type 6 → `dmg *= 3`; type 7 → `dmg *= 5`.
-5. **Parry/riposte:** parry chance `p = (def[+0x14] * 10) / (att[0] / 8)`, clamped `[0,95]`.
+5. **Parry/riposte:** parry chance `p = (def[+0x14] * 10) / (att[0] >> 3)`, capped at `0x5f`
+   (95). The guard is on the **accuracy**, not on the shifted denominator: `att[0] < 9` →
+   `p = 0` outright (so accuracy 8 is unparryable rather than dividing by 1).
    Backstab (type 4) reduces it: **[16-bit / WG3-NT]** 16-bit halves (`p/2`); **WG3-NT** `p/5`.
-   If `def[+0x14] > 0` and `genrnd(0,100) < p` → `result = 3` (parried), damage 0, **return**.
+   If `def[+0x14] > 0` → **draw** `genrnd(0,100)`; `< p` → `result = 3` (parried), damage 0,
+   **return**. The draw is taken whenever the defender has any parry rating — including when
+   `p` is 0 — so it is part of the RNG stream either way.
 6. If `dmg < 1` → `result = 1` (no damage / absorbed), damage 0.
    Else → `result = 2` (normal) unless already crit (4); copy message ids from `def[+8]/+10`.
 
