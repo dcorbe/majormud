@@ -265,6 +265,8 @@ fn load_monsters(db: &Connection, content: &mut Content) -> Result<(), LoadError
         .map(|i| format!("itemnumber_{i}, itemuses_{i}, itemdropper_{i}"))
         .collect::<Vec<_>>()
         .join(", ");
+    // APPEND-ONLY: every read below is POSITIONAL — a mid-list insert here
+    // shifts each later index silently (the slice-1 shift pattern).
     let mut stmt = db.prepare(&format!(
         "SELECT number, name, movemsg, deathmsg, {}, {}, \
          hitpoints, experience, expmulti, ac, dr, mr, bsdefence, energy, \

@@ -256,7 +256,10 @@ pub struct Monster {
     pub damage_resist: i16,
     pub magic_resist: i16,
     /// `knmsr+0x120` (`charmlvl`) — Enslave application gate: charmable when
-    /// `charm_level <= caster level`, plain signed compare (charm.md §1.2).
+    /// `charm_level <= caster level`, no roll (charm.md §1.2). The compare is
+    /// SIGNED on the template side (`(int)(short)`, §7) — a negative charmlvl
+    /// always passes; 9999 (381 shipped templates) is the never-in-practice
+    /// sentinel, data convention rather than an engine check.
     pub charm_level: i16,
     /// `knmsr+0x1a0` (`charmres`) — the Enslave SAVE stat, replacing MR for
     /// ability-6 spells; no floor (charm.md §1.1).
