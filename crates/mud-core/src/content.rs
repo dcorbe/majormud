@@ -255,6 +255,12 @@ pub struct Monster {
     pub armour_class: i16,
     pub damage_resist: i16,
     pub magic_resist: i16,
+    /// `knmsr+0x120` (`charmlvl`) — Enslave application gate: charmable when
+    /// `charm_level <= caster level`, plain signed compare (charm.md §1.2).
+    pub charm_level: i16,
+    /// `knmsr+0x1a0` (`charmres`) — the Enslave SAVE stat, replacing MR for
+    /// ability-6 spells; no floor (charm.md §1.1).
+    pub charm_resist: i16,
     /// Backstab defence.
     pub bs_defence: i16,
     /// Per-round energy pool/regen.

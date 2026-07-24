@@ -271,7 +271,7 @@ fn load_monsters(db: &Connection, content: &mut Content) -> Result<(), LoadError
          runic, platinum, gold, silver, copper, {attack_cols}, \
          weaponnumber, {loot_cols}, \"index\", \"group\", follow, alignment, \
          type, something3, nothing2, gamelimit, hpregen, regentime, something2, \
-         desctxt, greettxt, talktxt FROM monster",
+         desctxt, greettxt, talktxt, charmlvl, charmres FROM monster",
         ability_cols("abilitya"),
         ability_cols("abilityb"),
     ))?;
@@ -356,6 +356,11 @@ fn load_monsters(db: &Connection, content: &mut Content) -> Result<(), LoadError
             name_block: opt_text_block("monster", "desctxt", row.get(loot_end + 11)?)?,
             greet_block: opt_text_block("monster", "greettxt", row.get(loot_end + 12)?)?,
             talk_block: opt_text_block("monster", "talktxt", row.get(loot_end + 13)?)?,
+            // charm.md §1: appended at the END of the SELECT — this loader
+            // indexes positionally, so a mid-list insert would shift every
+            // later column.
+            charm_level: to_i16("monster", "charmlvl", row.get(loot_end + 14)?)?,
+            charm_resist: to_i16("monster", "charmres", row.get(loot_end + 15)?)?,
         });
     }
     Ok(())

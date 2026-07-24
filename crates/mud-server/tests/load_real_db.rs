@@ -188,6 +188,9 @@ fn monster_spawn_fields_load_exactly() {
     assert_eq!(rat.game_limit, 0);
     assert_eq!(rat.hp_regen, 1);
     assert_eq!(rat.unique_cooldown, 0);
+    // charm.md §1.1/§1.2: knmsr+0x120 charmlvl, +0x1a0 charmres.
+    assert_eq!(rat.charm_level, 1);
+    assert_eq!(rat.charm_resist, 40);
 
     // Gurbultis (27): Skali's permanent shopkeeper — passive (4), lair (3),
     // zone 2 / level 6 matching his room's band, unique (game_limit 1),
