@@ -1757,6 +1757,17 @@ impl Core {
         Some((f.evasion_a, f.armor, self.monster_save_stat(id)))
     }
 
+    /// Test hook: one monster-vs-monster swing
+    /// ([`Core::attack_monster_monster`], charm.md §3). The driver arms
+    /// that call it in anger land with the pet-assist and hunt branches.
+    pub fn debug_monster_attack_monster(
+        &mut self,
+        attacker: MonsterInstanceId,
+        defender: MonsterInstanceId,
+    ) {
+        self.attack_monster_monster(attacker, defender);
+    }
+
     /// Test hook: mutable access to loaded content.
     pub fn content_mut(&mut self) -> &mut Content {
         &mut self.content
@@ -6906,6 +6917,34 @@ impl Core {
         template + carried + equipped + m.slot_bag.value(ability)
     }
 
+    /// `monster_has_ability` (decompile 0x3d969, 37276-37333): PRESENCE of
+    /// an ability id on a live monster, value-blind — the active-spell
+    /// slots' spell rows first, then the template rows, then the carried /
+    /// wielded / worn items. A value-0 row counts here where
+    /// [`Core::monster_ability_value`] would fold it to nothing, which is
+    /// exactly why the gates that ask "does it have X" call this one.
+    fn monster_has_ability(&self, id: MonsterInstanceId, ability: Ability) -> bool {
+        let Some(m) = self.monsters.get(&id) else {
+            return false;
+        };
+        let item_has = |item: crate::content::ItemId| -> bool {
+            self.content
+                .items
+                .get(&item)
+                .is_some_and(|i| i.abilities.iter().any(|(a, _)| *a == ability))
+        };
+        let tpl = self.content.monsters.get(&m.template);
+        m.active_spells
+            .iter()
+            .filter_map(|s| s.spell.and_then(|sid| self.content.spells.get(&sid)))
+            .any(|s| s.abilities.iter().any(|(a, _)| *a == ability))
+            || tpl.is_some_and(|t| t.abilities.iter().any(|(a, _)| *a == ability))
+            || m.items.iter().any(|(item, _)| item_has(*item))
+            || tpl.is_some_and(|t| {
+                t.weapon.is_some_and(item_has) || t.worn_item.is_some_and(item_has)
+            })
+    }
+
     /// Rebuilds the cached slot fold when the dirty byte (`mon+0x140`) is
     /// set — the monster ability-bag-lite. The DLL leaves the byte for the
     /// next record touch; every write site here recomputes immediately, so
@@ -8671,6 +8710,181 @@ impl Core {
                 m.target = None;
             }
             // Passive modes keep whatever lock they already hold.
+        }
+    }
+
+    /// `move_monster_to_fighter` (decompile 0x2b43e, 25087-25230) in its
+    /// ATTACKER shape, from attack-form slot 0 — the only slot
+    /// `attack_monster_monster` ever loads (27229/27238: `param_3 = local_8 = 0`).
+    /// Returns the fighter and its energy cost (word [5]).
+    ///
+    /// - accuracy [0] = the form's accuracy (`knmsr+0x12e`) + Accuracy(0x16)
+    ///   + Accuracy2(0x69) + Accuracy3(0x6a) (25188-25193);
+    /// - damage [6]/[7] = the form's bounds, both raised by MaxDamage(4)
+    ///   (25196-25198 — one value, both bounds);
+    /// - energy [5] = the form's energy (`knmsr+0x190`), scaled by
+    ///   Speed(0x57) as `EU*val/100` and capped at the template's pool
+    ///   `knmsr+0x7a` (25203-25211); no shipped template carries Speed, so
+    ///   the scale only ever arrives through an active slot.
+    ///
+    /// The form's KIND is not consulted: a monster whose slot 0 is unused
+    /// still swings, with that slot's (zeroed) words — `move_monster_to_
+    /// fighter` fails only when the record or template is missing, which
+    /// is the whole content of the `!= '\0'` guards at 27239-27240.
+    /// The alignment-code 4th argument (`FUN_0042a15c`) is passed its own
+    /// return value here, so its accuracy branch is dead on this path
+    /// (25109-25118) and word [2] stays 0 — as it also does for the
+    /// defender build's `-1`.
+    fn build_monster_attacker_form0(
+        &self,
+        id: MonsterInstanceId,
+    ) -> Option<(crate::combat::Fighter, i32)> {
+        let m = self.monsters.get(&id)?;
+        let tpl = self.content.monsters.get(&m.template)?;
+        let form = tpl.attacks[0];
+        let pool = tpl.energy;
+        let damage = self.monster_ability_value(id, Ability::MaxDamage);
+        let accuracy = i32::from(form.accuracy)
+            + self.monster_ability_value(id, Ability::Accuracy)
+            + self.monster_ability_value(id, Ability::Accuracy2)
+            + self.monster_ability_value(id, Ability::Accuracy3);
+        let mut energy = i32::from(form.energy);
+        let speed = self.monster_ability_value(id, Ability::Speed);
+        if speed != 0 {
+            energy = (energy * speed / 100).min(pool);
+        }
+        Some((
+            crate::combat::Fighter {
+                accuracy,
+                evasion_a: 0,
+                evasion_b: 0,
+                armor: 0,
+                min_damage: i32::from(form.min_damage) + damage,
+                max_damage: i32::from(form.max_damage) + damage,
+                parry: 0,
+                crit_rating: 0, // monsters never crit (hard-zeroed 25187)
+            },
+            energy,
+        ))
+    }
+
+    /// `attack_monster_monster` (decompile 0x2f6ae, 27213-27340;
+    /// `charm.md` §3) — the one monster-vs-monster swing, shared by pets
+    /// (§2.2) and summoned hunters (§6). One swing per call: no form
+    /// selection, no swing loop, and no retaliation from the defender.
+    ///
+    /// Entry gates (27231-27234), both silent and draw-free: the attacker
+    /// must be at FULL energy (`mon+0x114 <= mon+0x16` — the same gate
+    /// `attack_monster_user` opens with at 26706) and must not carry
+    /// Fear(0x3c). There is deliberately NO room compare and no safe-room
+    /// check: the hunt arm swings at a victim it has not caught up with
+    /// (charm.md §6), so the room only ever decides who SEES the line.
+    ///
+    /// DIVERGENCES from the DLL, all documented in charm.md §3:
+    /// - the defender's `+0x14` poison floor is raised from the result
+    ///   block's word [3] (27248-27249), and word [3] (`DAT_00495fdc`) is
+    ///   zeroed on entry to `calculate_attack` (25246) and never written
+    ///   by it — the raise is dead code in WG3-NT, so nothing is ported;
+    /// - `check_kill_monster` runs BEFORE the DamageShield draw and the
+    ///   kill line (27254); our [`Core::monster_killed`] bundles the
+    ///   announcement with the experience split, so the split's
+    ///   "You gain N experience." lines print BEFORE the kill line
+    ///   instead of after. No RNG order change (`monster_killed` draws
+    ///   nothing);
+    /// - the split covers the sessions engaged on the victim; the DLL's
+    ///   `distribute_experience(-1, ...)` also pays idle-autocombat users
+    ///   standing in the room.
+    fn attack_monster_monster(&mut self, attacker: MonsterInstanceId, defender: MonsterInstanceId) {
+        let (Some(a), Some(d)) = (self.monsters.get(&attacker), self.monsters.get(&defender))
+        else {
+            return;
+        };
+        let (attacker_room, defender_room) = (a.location, d.location);
+        let Some(pool) = self.content.monsters.get(&a.template).map(|t| t.energy) else {
+            return;
+        };
+        if a.energy < pool || self.monster_has_ability(attacker, Ability::Fear) {
+            return;
+        }
+        let Some((fighter, cost)) = self.build_monster_attacker_form0(attacker) else {
+            return;
+        };
+        let target = self.build_monster_defender(defender);
+        let rng = &mut self.rng;
+        let result = crate::combat::calculate_attack(
+            &fighter,
+            &target,
+            // Mode 5 for both mode globals (27235-27236) — our plain
+            // `Normal`: no damage seed, no accuracy modifier, and the
+            // hard-zeroed monster crit rating keeps crits off anyway.
+            crate::combat::AttackType::Normal,
+            &mut |lo, hi| rng.roll(lo, hi),
+        );
+        // 27242: the pay gate is checked AFTER the draws — a form costing
+        // more than the whole pool burns rolls and lands nothing.
+        if cost > self.monsters[&attacker].energy {
+            return;
+        }
+        // Both display names are read before the defender's record can
+        // die (the DLL's `strcpy` of `mon+0x8e` at 27253).
+        let attacker_name = self.monster_name(attacker);
+        let defender_name = self.monster_name(defender);
+        let dead = {
+            let m = self.monsters.get_mut(&attacker).expect("checked above");
+            m.energy -= cost;
+            let m = self.monsters.get_mut(&defender).expect("checked above");
+            // 27244-27247: the damage is clamped to what the defender has
+            // left, so a kill lands the HP on exactly 0.
+            m.current_hp -= result.damage.min(m.current_hp);
+            m.current_hp <= 0
+        };
+        // The DamageShield(0x48) bite (27283-27296 survivor / 27307-27320
+        // kill): `genrdn(1, max(val+1,1))` off the ATTACKER's HP, drawn
+        // only when the swing actually did damage, and clamped UP to the
+        // attacker's maximum. The attacker is never checked for death
+        // here — the DLL leaves a shield-drained monster standing at
+        // whatever HP it lands on.
+        let shield = if result.damage >= 1 {
+            self.monster_ability_value(defender, Ability::DamageShield)
+        } else {
+            0
+        };
+        if dead {
+            self.monster_killed(defender, None);
+            self.apply_damage_shield(attacker, shield);
+            self.broadcast_to_room(
+                attacker_room,
+                None,
+                &text::capitalize_first(text::mvm_kill(&attacker_name, &defender_name)),
+            );
+            return;
+        }
+        self.apply_damage_shield(attacker, shield);
+        use crate::combat::Outcome;
+        let line = match result.outcome {
+            Outcome::NoDamage => text::mvm_glance(&attacker_name, &defender_name),
+            Outcome::Parried => text::mvm_dodge(&defender_name, &attacker_name),
+            Outcome::Dodged => text::mvm_miss(&attacker_name, &defender_name),
+            Outcome::Hit | Outcome::Critical => text::mvm_hit(&attacker_name, &defender_name),
+        };
+        self.broadcast_to_room(defender_room, None, &text::capitalize_first(line));
+    }
+
+    /// The DamageShield roll of `attack_monster_monster` (27283-27296),
+    /// shared by its two arms. A zero value means the defender has no
+    /// shield: no draw at all.
+    fn apply_damage_shield(&mut self, attacker: MonsterInstanceId, value: i32) {
+        if value == 0 {
+            return;
+        }
+        let bite = self.rng.roll(1, (value + 1).max(1));
+        let max_hp = self
+            .monsters
+            .get(&attacker)
+            .and_then(|m| self.content.monsters.get(&m.template))
+            .map_or(0, |t| t.hitpoints);
+        if let Some(m) = self.monsters.get_mut(&attacker) {
+            m.current_hp = (m.current_hp - bite).min(max_hp);
         }
     }
 
@@ -10637,11 +10851,20 @@ impl Core {
     }
 
     /// EXACT (decompile 0x2b43e `move_monster_to_fighter`): defender view of
-    /// a monster — evasion [1] = AC, armor [3] = DR*10, crit hard-zeroed.
-    /// The ability fold joins both words (25190-25200): evasion += AC(2)
-    /// through `get_monster_ability_value` — template rows AND active-slot
-    /// debuffs — and the soak += DR(7) RAW (the *10 scale applies only to
-    /// the template word).
+    /// a monster — evasion [1] = AC, armor [3] = DR*10, parry [8] = the
+    /// Dodge(0x22) ability (25185-25186), crit hard-zeroed (25187). The
+    /// ability fold joins the words: evasion += AC(2) (25194-25195)
+    /// through `get_monster_ability_value` — template rows AND
+    /// active-slot debuffs — and the soak += DR(7) RAW (25199-25200; the
+    /// *10 scale applies only to the template word). ONE build for every
+    /// defender: the DLL runs this same function for the
+    /// player-attacks-monster path and for both sides of
+    /// `attack_monster_monster`, so the Dodge word is not m-v-m-specific.
+    /// UNPORTED (both paths, inert on shipped data — zero templates carry
+    /// either ability): Shadow(9) adds 10 to evasion word [2]
+    /// (25120-25122), and DefenseModifier(0x68) rides word [0x92]
+    /// (25201-25202) into the attacker's accuracy inside `calculate_attack`
+    /// (25291) — our [`crate::combat`] engine has no term for the latter.
     fn build_monster_defender(&self, id: MonsterInstanceId) -> crate::combat::Fighter {
         let tpl = self
             .monsters
@@ -10656,7 +10879,7 @@ impl Core {
                 + self.monster_ability_value(id, Ability::DR),
             min_damage: 0,
             max_damage: 0,
-            parry: 0,
+            parry: self.monster_ability_value(id, Ability::Dodge),
             crit_rating: 0,
         }
     }

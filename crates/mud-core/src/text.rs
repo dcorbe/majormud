@@ -1018,6 +1018,44 @@ pub fn monster_dead(name: &str) -> String {
     format!("The {name} is dead.")
 }
 
+// The five monster-vs-monster room lines (`attack_monster_monster`
+// 27255-27328; charm.md §3). Every one is composed into the shared
+// `DAT_004964a9` buffer, first byte upcased ([`capitalize_first`] at the
+// call site), and `tell_room`'d — the survivor lines to the DEFENDER's
+// room, the kill line to the ATTACKER's. VERIFIED against the shipped
+// `.rdata` (0x481f73..0x481fe7): only the hit line ends in "!", and the
+// glance line has TWO slots, not the three the decompiler's mangled
+// symbol name suggests. The DLL prefixes each with a colour code
+// (glance 0;31, dodge/miss 0;36, hit 1;31, kill 1;37) — unpainted here
+// like every other room broadcast (see `monster_swing_lines`).
+
+/// `0x481f87` — a landed monster-vs-monster swing.
+pub fn mvm_hit(attacker: &str, defender: &str) -> String {
+    format!("{attacker} just attacked {defender}!")
+}
+
+/// `0x481f9d` — result 1, the armour-deflected glance. The DLL fills the
+/// possessive slot with the ATTACKER and never names the weapon.
+pub fn mvm_glance(attacker: &str, defender: &str) -> String {
+    format!("{attacker}'s just glanced off of {defender}'s armour.")
+}
+
+/// `0x481fc4` — result 3, the parry. Defender first (27267).
+pub fn mvm_dodge(defender: &str, attacker: &str) -> String {
+    format!("{defender} just dodged an attack from {attacker}.")
+}
+
+/// `0x481fe7` — result 0, the plain miss.
+pub fn mvm_miss(attacker: &str, defender: &str) -> String {
+    format!("{attacker} just missed an attack against {defender}.")
+}
+
+/// `0x481f73` — the kill line (27322); the defender's name is captured
+/// before `check_kill_monster` frees the record (27253-27254).
+pub fn mvm_kill(attacker: &str, defender: &str) -> String {
+    format!("{attacker} just killed {defender}.")
+}
+
 /// VERIFIED (DLL): "You gain %s experience."
 pub fn gain_experience(amount: u64) -> String {
     format!("You gain {amount} experience.")
