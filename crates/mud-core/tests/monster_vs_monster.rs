@@ -17,8 +17,8 @@
 
 use mud_core::ability::Ability;
 use mud_core::content::{
-    AttackForm, Class, ClassId, Content, Direction, Exit, Monster, MonsterId, Race, RaceId, Room,
-    RoomId, StatBlock,
+    AttackForm, Class, ClassId, Content, Direction, Exit, Item, ItemId, Monster, MonsterId, Race,
+    RaceId, Room, RoomId, StatBlock,
 };
 use mud_core::game::{Core, CoreConfig, Event, Gender, MonsterInstanceId, Player, SessionId};
 
@@ -161,6 +161,58 @@ fn swings(
     out
 }
 
+/// Where the shared RNG stream stands, read out through a clean PROBER
+/// (template 3) hammering the quarry: accuracy 40 against AC 50 clamps
+/// the to-hit to 10%, so the transcript is a long mixed sequence of miss
+/// and hit lines and any draw the gated attacker took shows up as a
+/// different one. The quarry's HP is folded in as a second fingerprint.
+#[derive(Debug, PartialEq, Eq)]
+struct StreamProbe {
+    transcript: String,
+    quarry_hp: Option<i32>,
+}
+
+/// Stage for the stream tests: `hunter` (template 1), an AC-50 quarry
+/// (template 2) and the prober (template 3), all in room A.
+type ProbeStage = (Core, SessionId, MonsterInstanceId, MonsterInstanceId, MonsterInstanceId);
+
+fn probe_stage(hunter: Monster) -> ProbeStage {
+    let mut content = world();
+    let mut quarry = brawler(2, "quarry", 200, 5, 5);
+    quarry.armour_class = 50;
+    let mut prober = brawler(3, "prober", 40, 1, 10);
+    prober.name = "prober".into();
+    content.add_monster(hunter);
+    content.add_monster(quarry);
+    content.add_monster(prober);
+    let mut core = Core::new(content, config());
+    let watcher = core.attach_player(player_at("Watcher", A));
+    let a = core.spawn_monster(MonsterId(1), A).expect("hunter spawns");
+    let d = core.spawn_monster(MonsterId(2), A).expect("quarry spawns");
+    let p = core.spawn_monster(MonsterId(3), A).expect("prober spawns");
+    core.drain_events();
+    (core, watcher, a, d, p)
+}
+
+fn read_stream(
+    core: &mut Core,
+    prober: MonsterInstanceId,
+    quarry: MonsterInstanceId,
+    watcher: SessionId,
+    n: usize,
+) -> StreamProbe {
+    StreamProbe {
+        transcript: swings(core, prober, quarry, n, watcher),
+        quarry_hp: core.monster_hp(quarry),
+    }
+}
+
+/// The control: nothing but the prober ever touches the stream.
+fn control_stream(hunter: Monster) -> StreamProbe {
+    let (mut core, watcher, _a, d, p) = probe_stage(hunter);
+    read_stream(&mut core, p, d, watcher, 30)
+}
+
 #[test]
 fn full_energy_gate_blocks_the_second_swing() {
     // 27232: `mon+0x114 <= mon+0x16` — the attacker must be at FULL
@@ -168,7 +220,8 @@ fn full_energy_gate_blocks_the_second_swing() {
     // waits for the pool to refill (same gate as attack_monster_user).
     let mut hunter = brawler(1, "hunter", 200, 5, 5);
     hunter.attacks[0] = form(200, 5, 5, 200);
-    let (mut core, watcher, a, d) = arena(hunter, brawler(2, "quarry", 200, 5, 5), A, A);
+    let (mut core, watcher, a, d) =
+        arena(hunter.clone(), brawler(2, "quarry", 200, 5, 5), A, A);
     let seen = swings(&mut core, a, d, 4, watcher);
     assert_eq!(
         seen.matches("just attacked").count(),
@@ -177,6 +230,26 @@ fn full_energy_gate_blocks_the_second_swing() {
     );
     assert_eq!(core.monster_energy(a), Some(800), "one form-0 EU paid: {seen:?}");
     assert_eq!(core.monster_hp(d), Some(195), "exactly one 5-point hit");
+
+    // ... and the gate is DRAW-FREE: it sits ahead of
+    // `move_monster_to_fighter`, so the blocked calls leave the shared
+    // stream exactly where the one paid swing left it. Both runs take
+    // that first swing; only the number of blocked calls differs.
+    let (mut core, watcher, a, d, p) = probe_stage(hunter.clone());
+    core.debug_monster_attack_monster(a, d);
+    core.drain_events();
+    let control = read_stream(&mut core, p, d, watcher, 30);
+
+    let (mut core, watcher, a, d, p) = probe_stage(hunter);
+    for _ in 0..9 {
+        core.debug_monster_attack_monster(a, d);
+    }
+    core.drain_events();
+    assert_eq!(
+        read_stream(&mut core, p, d, watcher, 30),
+        control,
+        "8 energy-gated calls must cost no draws"
+    );
 }
 
 #[test]
@@ -185,11 +258,26 @@ fn fear_blocks_the_swing() {
     // monster never swings, silently and without any draw.
     let mut hunter = brawler(1, "hunter", 200, 5, 5);
     hunter.abilities = vec![(Ability::Fear, 1)];
-    let (mut core, watcher, a, d) = arena(hunter, brawler(2, "quarry", 200, 5, 5), A, A);
+    let (mut core, watcher, a, d) =
+        arena(hunter.clone(), brawler(2, "quarry", 200, 5, 5), A, A);
     let seen = swings(&mut core, a, d, 5, watcher);
     assert_eq!(seen, "", "a feared monster is silent: {seen:?}");
     assert_eq!(core.monster_hp(d), Some(200), "no damage");
     assert_eq!(core.monster_energy(a), Some(1000), "no energy paid");
+
+    // The Fear gate is likewise ahead of every draw: 20 blocked calls
+    // leave the prober's transcript byte-identical to the control.
+    let control = control_stream(hunter.clone());
+    let (mut core, watcher, a, d, p) = probe_stage(hunter);
+    for _ in 0..20 {
+        core.debug_monster_attack_monster(a, d);
+    }
+    core.drain_events();
+    assert_eq!(
+        read_stream(&mut core, p, d, watcher, 30),
+        control,
+        "a Fear-gated call must cost no draws"
+    );
 }
 
 #[test]
@@ -199,11 +287,28 @@ fn energy_cost_over_the_pool_aborts_after_the_draws() {
     // whole pool therefore burns rolls and lands nothing, forever.
     let mut hunter = brawler(1, "hunter", 200, 5, 5);
     hunter.attacks[0] = form(200, 5, 5, 2000);
-    let (mut core, watcher, a, d) = arena(hunter, brawler(2, "quarry", 200, 5, 5), A, A);
+    let (mut core, watcher, a, d) =
+        arena(hunter.clone(), brawler(2, "quarry", 200, 5, 5), A, A);
     let seen = swings(&mut core, a, d, 5, watcher);
     assert_eq!(seen, "", "no line on the abort: {seen:?}");
     assert_eq!(core.monster_hp(d), Some(200), "no damage");
     assert_eq!(core.monster_energy(a), Some(1000), "no energy paid");
+
+    // The whole point of the finding, and the only thing that separates
+    // this abort from the two entry gates: the DRAWS still happened. Ten
+    // aborted calls therefore move the shared stream, and the prober's
+    // transcript diverges from the control.
+    let control = control_stream(hunter.clone());
+    let (mut core, watcher, a, d, p) = probe_stage(hunter);
+    for _ in 0..10 {
+        core.debug_monster_attack_monster(a, d);
+    }
+    core.drain_events();
+    assert_ne!(
+        read_stream(&mut core, p, d, watcher, 30),
+        control,
+        "an aborted swing must still have burnt its rolls"
+    );
 }
 
 #[test]
@@ -232,13 +337,31 @@ fn glance_line_is_the_two_slot_form() {
     // ("%s's just glanced off of %s's armour.") — the decompiler's mangled
     // symbol name reads like a three-slot weapon line, but the sprintf at
     // 27259 passes exactly the attacker and the defender.
-    let (mut core, watcher, a, d) = arena(
-        brawler(1, "hunter", 200, 0, 0),
-        brawler(2, "quarry", 200, 5, 5),
-        A,
-        A,
-    );
+    //
+    // The attacker WIELDS a named weapon so the assertion discriminates:
+    // a weaponless attacker would render an empty weapon slot and read
+    // the same as no slot at all.
+    let mut hunter = brawler(1, "hunter", 200, 0, 0);
+    hunter.weapon = Some(ItemId(1));
+    let mut content = world();
+    content.add_item(Item {
+        id: ItemId(1),
+        name: "glaive".into(),
+        item_type: 1,
+        ..Default::default()
+    });
+    content.add_monster(hunter);
+    content.add_monster(brawler(2, "quarry", 200, 5, 5));
+    let mut core = Core::new(content, config());
+    let watcher = core.attach_player(player_at("Watcher", A));
+    let a = core.spawn_monster(MonsterId(1), A).expect("hunter spawns");
+    let d = core.spawn_monster(MonsterId(2), A).expect("quarry spawns");
+    core.drain_events();
     let seen = swings(&mut core, a, d, 10, watcher);
+    assert!(
+        !seen.contains("glaive"),
+        "the m-v-m glance line never names the weapon: {seen:?}"
+    );
     assert!(
         seen.contains("Hunter's just glanced off of quarry's armour."),
         "zero-damage connect is the glance line: {seen:?}"
@@ -339,6 +462,13 @@ fn kill_splits_exp_to_engaged_users() {
     );
     assert!(seen.contains("You gain 40 experience."), "split line: {seen:?}");
     assert!(seen.contains("*Combat Off*"), "kill_autocombat breaks combat: {seen:?}");
+    // 27322-27327: `check_kill_monster`'s announcement, then the kill
+    // line, then `distribute_experience` — in that order.
+    let death = seen.find("The quarry is dead.").expect("announcement");
+    let kill = seen.find("Hunter just killed quarry.").expect("kill line");
+    let exp = seen.find("You gain 40 experience.").expect("split line");
+    assert!(death < kill, "the check_kill announcement leads: {seen:?}");
+    assert!(kill < exp, "the split follows the kill line: {seen:?}");
 }
 
 #[test]

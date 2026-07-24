@@ -224,9 +224,12 @@ Formula path — **it is the ordinary combat pipeline**, both sides loaded as fi
 5. `check_kill_monster(defender, -1)` (27254), the display name `strcpy`'d off
    `mon+0x8e` first (27253).
 6. Post-damage **DamageShield** (defender ability 0x48): if present,
-   `genrdn(1, max(val+1,1))` (**RNG**, drawn on the survivor-hit path 27283-27296 and
-   again on the kill path 27307-27320) is subtracted from the attacker's HP, then
-   clamped UP to `mon+0x104`. The attacker is never checked for death there.
+   `genrdn(1, max(val+1,1))` (**RNG**) is subtracted from the attacker's HP, then
+   **capped at** `mon+0x104` (27293-27295 assigns the maximum down onto anything
+   above it; the bite itself only ever subtracts). The attacker is never checked for
+   death there. The two arms differ: the survivor block (27283-27296) sits inside the
+   `damage >= 1` else-arm, but the kill block (27307-27320) has **no damage guard at
+   all** — a kill that landed zero damage still draws.
 
 The attacker fighter is built from attack-form slot 0 **whatever its kind byte** —
 `move_monster_to_fighter` returns 0 only for a missing record or template
@@ -234,7 +237,31 @@ The attacker fighter is built from attack-form slot 0 **whatever its kind byte**
 "is slot 0 a melee form" test. Its parry word `[8]` is Dodge(0x22) (25185-25186) on
 BOTH sides; accuracy folds 0x16/0x69/0x6a (25188-25193), MaxDamage(4) raises both
 damage bounds (25196-25198), and Speed(0x57) scales the energy cost `EU*val/100`
-capped at `knmsr+0x7a` (25203-25211).
+capped at `knmsr+0x7a` (25203-25211; the DLL does that multiply in `longlong`, and
+`sphere of isolation` carries Speed 5000).
+
+**Kind-0 slot 0 is NOT the same as a zeroed slot** (checked against `mmud_wgnt.sqlite`,
+M7 slice 5 review): 125 of the 1101 templates have `attacktype_1 = 0`, and **28 of
+those carry nonzero accuracy/min/max in that slot**. They swing with those words.
+Notable ones:
+
+| template | `charmlvl` | acc | min-max | note |
+|---|---|---|---|---|
+| `dark warlock` | 22 | 49 | 100-15 | min > max, so `calculate_attack` raises max to min → flat **100** |
+| `dying master assassin` | 999 | 120 | 7-20 | |
+| `Horner the Hide` | 999 | 160 | 50-100 | |
+| `amazon battle master` | 9999 | 200 | 5-80 | |
+| `Sharh'Kur` | 999 | 757 | 100-15 | flat 100, as above |
+
+**73** of the 125 kind-0 templates sit under the 9999 charm floor, so this is live for
+pets, not a curiosity.
+
+**The EU trap** (matters for the §2.2 pet-assist driver): **21** templates carry
+`attackenergy_1 > energy`, so the step-4 pay gate can never open — every driver pass
+burns `calculate_attack`'s draws and lands nothing, forever. `bishop`, `priest` and
+`boatman` are the sharp edge: pool 0, form cost 5, and **`charmlvl 0`, i.e. charmable
+by anyone**. Any driver that calls `attack_monster_monster` on a schedule must expect
+these to be permanent RNG sinks; the DLL does not special-case them.
 
 Draw order per swing: `calculate_attack` internals first, then at most one
 DamageShield `genrdn`.

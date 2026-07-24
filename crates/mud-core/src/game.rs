@@ -8725,16 +8725,33 @@ impl Core {
     /// - energy [5] = the form's energy (`knmsr+0x190`), scaled by
     ///   Speed(0x57) as `EU*val/100` and capped at the template's pool
     ///   `knmsr+0x7a` (25203-25211); no shipped template carries Speed, so
-    ///   the scale only ever arrives through an active slot.
+    ///   the scale only ever arrives through an active slot (`sphere of
+    ///   isolation` is Speed 5000). The DLL does that multiply in
+    ///   `longlong` and we match it — an i32 product would be tight if
+    ///   several Speed slots ever stacked onto a 1000-EU form.
     ///
-    /// The form's KIND is not consulted: a monster whose slot 0 is unused
-    /// still swings, with that slot's (zeroed) words — `move_monster_to_
-    /// fighter` fails only when the record or template is missing, which
-    /// is the whole content of the `!= '\0'` guards at 27239-27240.
+    /// The form's KIND is not consulted: `move_monster_to_fighter` fails
+    /// only when the record or template is missing, which is the whole
+    /// content of the `!= '\0'` guards at 27239-27240. A monster whose
+    /// slot 0 is a kind-0 (unused) form therefore still swings — with
+    /// whatever words that slot holds, which is NOT the same as swinging
+    /// with zeroes: 125 of the 1101 shipped templates have
+    /// `attacktype_1 = 0` and 28 of those carry nonzero accuracy/min/max
+    /// there. `dark warlock` (acc 49, min 100, max 15 — min > max, so
+    /// [`crate::combat`] raises max to min and it lands a flat 100) and
+    /// `dying master assassin` (acc 120, 7-20) are real, dangerous
+    /// form-0 fighters. 73 kind-0 templates sit under the 9999
+    /// charm floor, so this is live for pets.
+    ///
+    /// The EU trap that comes with it: 21 templates carry
+    /// `attackenergy_1 > energy`, so the 27242 pay gate can never open
+    /// and they burn draws forever without swinging. `bishop`, `priest`
+    /// and `boatman` are the sharp edge — pool 0, form cost 5, and
+    /// `charmlvl 0`, i.e. charmable by anyone.
+    ///
     /// The alignment-code 4th argument (`FUN_0042a15c`) is passed its own
     /// return value here, so its accuracy branch is dead on this path
-    /// (25109-25118) and word [2] stays 0 — as it also does for the
-    /// defender build's `-1`.
+    /// (25109-25118) and word [2] stays 0.
     fn build_monster_attacker_form0(
         &self,
         id: MonsterInstanceId,
@@ -8751,7 +8768,10 @@ impl Core {
         let mut energy = i32::from(form.energy);
         let speed = self.monster_ability_value(id, Ability::Speed);
         if speed != 0 {
-            energy = (energy * speed / 100).min(pool);
+            // 25205: `(longlong)speed * (longlong)EU / 100`, then capped
+            // at the pool.
+            let scaled = (i64::from(energy) * i64::from(speed) / 100).min(i64::from(pool));
+            energy = i32::try_from(scaled).unwrap_or(pool);
         }
         Some((
             crate::combat::Fighter {
@@ -8785,12 +8805,6 @@ impl Core {
     ///   block's word [3] (27248-27249), and word [3] (`DAT_00495fdc`) is
     ///   zeroed on entry to `calculate_attack` (25246) and never written
     ///   by it — the raise is dead code in WG3-NT, so nothing is ported;
-    /// - `check_kill_monster` runs BEFORE the DamageShield draw and the
-    ///   kill line (27254); our [`Core::monster_killed`] bundles the
-    ///   announcement with the experience split, so the split's
-    ///   "You gain N experience." lines print BEFORE the kill line
-    ///   instead of after. No RNG order change (`monster_killed` draws
-    ///   nothing);
     /// - the split covers the sessions engaged on the victim; the DLL's
     ///   `distribute_experience(-1, ...)` also pays idle-autocombat users
     ///   standing in the room.
@@ -8821,8 +8835,10 @@ impl Core {
             &mut |lo, hi| rng.roll(lo, hi),
         );
         // 27242: the pay gate is checked AFTER the draws — a form costing
-        // more than the whole pool burns rolls and lands nothing.
-        if cost > self.monsters[&attacker].energy {
+        // more than the whole pool burns rolls and lands nothing. The DLL
+        // compares as `uint`, so a cost that resolved NEGATIVE wraps huge
+        // and aborts; an i32 compare would instead REFUND energy below.
+        if cost < 0 || cost > self.monsters[&attacker].energy {
             return;
         }
         // Both display names are read before the defender's record can
@@ -8838,41 +8854,62 @@ impl Core {
             m.current_hp -= result.damage.min(m.current_hp);
             m.current_hp <= 0
         };
-        // The DamageShield(0x48) bite (27283-27296 survivor / 27307-27320
-        // kill): `genrdn(1, max(val+1,1))` off the ATTACKER's HP, drawn
-        // only when the swing actually did damage, and clamped UP to the
-        // attacker's maximum. The attacker is never checked for death
-        // here — the DLL leaves a shield-drained monster standing at
-        // whatever HP it lands on.
-        let shield = if result.damage >= 1 {
-            self.monster_ability_value(defender, Ability::DamageShield)
-        } else {
-            0
-        };
+        // The DamageShield(0x48) bite: `genrdn(1, max(val+1,1))` off the
+        // ATTACKER's HP, then CAPPED at the attacker's maximum. The
+        // attacker is never checked for death here — the DLL leaves a
+        // shield-drained monster standing at whatever HP it lands on.
+        //
+        // The two arms differ, deliberately: the survivor block sits
+        // inside the `damage >= 1` else-arm (27283), but the KILL block at
+        // 27307 has no damage guard at all — a swing that kills for zero
+        // damage (only reachable against an instance already sitting at
+        // 0 HP) still draws. Ported as written.
+        //
+        // The value is read up front because the DLL reads it off the
+        // defender's record AFTER `check_kill_monster` has freed it
+        // (27307 passes the stale `puVar2`); we cannot read a removed
+        // instance, so we snapshot instead of reproducing the read of
+        // freed memory.
+        let shield_value = self.monster_ability_value(defender, Ability::DamageShield);
         if dead {
-            self.monster_killed(defender, None);
-            self.apply_damage_shield(attacker, shield);
+            let exp = self.monster_died(defender, None);
+            self.apply_damage_shield(attacker, shield_value);
             self.broadcast_to_room(
                 attacker_room,
                 None,
-                &text::capitalize_first(text::mvm_kill(&attacker_name, &defender_name)),
+                &text::capitalize_first(text::monster_killed_monster(
+                    &attacker_name,
+                    &defender_name,
+                )),
             );
+            // 27327: `distribute_experience` runs AFTER the kill line.
+            if let Some(exp) = exp {
+                self.split_kill_experience(defender, None, exp);
+            }
             return;
         }
-        self.apply_damage_shield(attacker, shield);
+        if result.damage >= 1 {
+            self.apply_damage_shield(attacker, shield_value);
+        }
         use crate::combat::Outcome;
         let line = match result.outcome {
-            Outcome::NoDamage => text::mvm_glance(&attacker_name, &defender_name),
-            Outcome::Parried => text::mvm_dodge(&defender_name, &attacker_name),
-            Outcome::Dodged => text::mvm_miss(&attacker_name, &defender_name),
-            Outcome::Hit | Outcome::Critical => text::mvm_hit(&attacker_name, &defender_name),
+            Outcome::NoDamage => {
+                text::monster_glanced_off_monster(&attacker_name, &defender_name)
+            }
+            Outcome::Parried => text::monster_dodged_monster(&defender_name, &attacker_name),
+            Outcome::Dodged => text::monster_missed_monster(&attacker_name, &defender_name),
+            Outcome::Hit | Outcome::Critical => {
+                text::monster_attacked_monster(&attacker_name, &defender_name)
+            }
         };
         self.broadcast_to_room(defender_room, None, &text::capitalize_first(line));
     }
 
     /// The DamageShield roll of `attack_monster_monster` (27283-27296),
     /// shared by its two arms. A zero value means the defender has no
-    /// shield: no draw at all.
+    /// shield: no draw at all. The result is CAPPED at the attacker's
+    /// template maximum (27293-27295 assigns the max down onto anything
+    /// above it) — the bite itself only ever subtracts.
     fn apply_damage_shield(&mut self, attacker: MonsterInstanceId, value: i32) {
         if value == 0 {
             return;
@@ -10431,10 +10468,22 @@ impl Core {
     /// room and the split covers only the engaged sessions — nobody
     /// engaged means the experience evaporates (ORACLE-VERIFY: the -1
     /// split's exact recipients are decompile-inferred).
+    ///
+    /// The two halves are separable because `attack_monster_monster`
+    /// interleaves its own kill line between them (27322-27327): see
+    /// [`Core::monster_died`] and [`Core::split_kill_experience`].
     fn monster_killed(&mut self, id: MonsterInstanceId, killer: Option<SessionId>) {
-        let Some(instance) = self.monsters.remove(&id) else {
-            return;
-        };
+        if let Some(exp) = self.monster_died(id, killer) {
+            self.split_kill_experience(id, killer, exp);
+        }
+    }
+
+    /// `check_kill_monster` alone (`death.md` §4) — removal, respawn
+    /// bookkeeping, the coin/loot drop and the death announcement.
+    /// Returns the experience pot for [`Core::split_kill_experience`], or
+    /// `None` if the instance was already gone.
+    fn monster_died(&mut self, id: MonsterInstanceId, killer: Option<SessionId>) -> Option<u64> {
+        let instance = self.monsters.remove(&id)?;
         let tpl = self
             .content
             .monsters
@@ -10529,8 +10578,20 @@ impl Core {
             }
             None => self.broadcast_to_room(room, None, &announcement),
         }
+        Some(exp)
+    }
 
-        // Equal split among the killer and everyone engaged on this target.
+    /// `distribute_experience` (`death.md` §5) — the equal split among the
+    /// killer and everyone engaged on the dead instance. Split out of
+    /// [`Core::monster_killed`] so `attack_monster_monster` can print its
+    /// kill line between the two, which is the DLL's order at
+    /// 27322-27327.
+    fn split_kill_experience(
+        &mut self,
+        id: MonsterInstanceId,
+        killer: Option<SessionId>,
+        exp: u64,
+    ) {
         let mut recipients: Vec<SessionId> = killer.into_iter().collect();
         for (sid, session) in self.sessions.iter() {
             if let Session::InGame { target: Some(t), .. } = session
@@ -10874,11 +10935,23 @@ impl Core {
     /// observed miss rate. Pinned by
     /// `game_combat.rs::monster_dodge_ability_parries_player_swings`.
     ///
-    /// UNPORTED (both paths, inert on shipped data — zero templates carry
-    /// either ability): Shadow(9) adds 10 to evasion word [2]
-    /// (25120-25122), and DefenseModifier(0x68) rides word [0x92]
-    /// (25201-25202) into the attacker's accuracy inside `calculate_attack`
-    /// (25291) — our [`crate::combat`] engine has no term for the latter.
+    /// UNPORTED, all inert on shipped data but NOT all dead code:
+    /// - the alignment-accuracy block at 25107-25118 writes evasion word
+    ///   [2] from AlignmentAccuracy(0x18). It is genuinely dead on the
+    ///   m-v-m path — `attack_monster_monster` passes
+    ///   `FUN_0042a15c`'s own return value, so the `!=` never fires — but
+    ///   it IS live when a PLAYER attacks: 26248 passes the player's
+    ///   alignment code (`FUN_0042a12e`). Zero shipped templates carry
+    ///   0x18 so word [2] stays 0 anyway, and note the DLL immediately
+    ///   overwrites the 0x19 read with the 0x18 one, which makes the
+    ///   single template carrying 0x19 (`gravedigger`, value 15) inert
+    ///   too;
+    /// - Shadow(9) adds 10 to evasion word [2] (25120-25122); zero
+    ///   templates carry it;
+    /// - DefenseModifier(0x68) rides word [0x92] (25201-25202) into the
+    ///   attacker's accuracy inside `calculate_attack` (25291) — our
+    ///   [`crate::combat`] engine has no term for it; zero templates
+    ///   carry it.
     fn build_monster_defender(&self, id: MonsterInstanceId) -> crate::combat::Fighter {
         let tpl = self
             .monsters

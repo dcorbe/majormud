@@ -1030,29 +1030,29 @@ pub fn monster_dead(name: &str) -> String {
 // like every other room broadcast (see `monster_swing_lines`).
 
 /// `0x481f87` — a landed monster-vs-monster swing.
-pub fn mvm_hit(attacker: &str, defender: &str) -> String {
+pub fn monster_attacked_monster(attacker: &str, defender: &str) -> String {
     format!("{attacker} just attacked {defender}!")
 }
 
 /// `0x481f9d` — result 1, the armour-deflected glance. The DLL fills the
 /// possessive slot with the ATTACKER and never names the weapon.
-pub fn mvm_glance(attacker: &str, defender: &str) -> String {
+pub fn monster_glanced_off_monster(attacker: &str, defender: &str) -> String {
     format!("{attacker}'s just glanced off of {defender}'s armour.")
 }
 
 /// `0x481fc4` — result 3, the parry. Defender first (27267).
-pub fn mvm_dodge(defender: &str, attacker: &str) -> String {
+pub fn monster_dodged_monster(defender: &str, attacker: &str) -> String {
     format!("{defender} just dodged an attack from {attacker}.")
 }
 
 /// `0x481fe7` — result 0, the plain miss.
-pub fn mvm_miss(attacker: &str, defender: &str) -> String {
+pub fn monster_missed_monster(attacker: &str, defender: &str) -> String {
     format!("{attacker} just missed an attack against {defender}.")
 }
 
 /// `0x481f73` — the kill line (27322); the defender's name is captured
 /// before `check_kill_monster` frees the record (27253-27254).
-pub fn mvm_kill(attacker: &str, defender: &str) -> String {
+pub fn monster_killed_monster(attacker: &str, defender: &str) -> String {
     format!("{attacker} just killed {defender}.")
 }
 
