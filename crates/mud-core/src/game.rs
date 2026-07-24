@@ -10860,6 +10860,20 @@ impl Core {
     /// defender: the DLL runs this same function for the
     /// player-attacks-monster path and for both sides of
     /// `attack_monster_monster`, so the Dodge word is not m-v-m-specific.
+    ///
+    /// ORACLE-VERIFY (slice 8): the parry word is a LIVE gameplay change
+    /// on the player-attacks-monster path — 167 of the 1101 shipped
+    /// templates carry Dodge(0x22) at values 10..200, and the chance
+    /// `parry*10 / (accuracy/8)` (capped 95, `calculate_attack`
+    /// 25336-25360) turns roughly 28-80% of connecting player swings into
+    /// zero-damage parries (giant bat, Dodge 20 against a ~45-accuracy
+    /// character = 40%). That formula was recovered from the 16-bit
+    /// disassembly and has NEVER been checked against a capture, so this
+    /// wiring amplifies any error in it across a sixth of the bestiary.
+    /// Capture a grind against a Dodge-carrying template and compare the
+    /// observed miss rate. Pinned by
+    /// `game_combat.rs::monster_dodge_ability_parries_player_swings`.
+    ///
     /// UNPORTED (both paths, inert on shipped data — zero templates carry
     /// either ability): Shadow(9) adds 10 to evasion word [2]
     /// (25120-25122), and DefenseModifier(0x68) rides word [0x92]

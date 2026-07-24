@@ -1106,3 +1106,83 @@ fn rob_form_without_a_melee_slot_zero_never_swings() {
         "kind-3 with a kind-3 slot 0 stays inert: {shown:?}"
     );
 }
+
+/// A defenceless sandbag: AC 0, DR 0, and a form that cannot hurt back.
+/// The Dwarf L1 attacker (accuracy 43, damage 1-4) therefore lands a
+/// damaging hit on every swing the parry roll does not cancel.
+fn sandbag(dodge: i16) -> Monster {
+    let mut m = kobold();
+    m.id = MonsterId(11);
+    m.name = "sandbag".into();
+    m.armour_class = 0;
+    m.damage_resist = 0;
+    m.abilities = if dodge == 0 {
+        vec![]
+    } else {
+        vec![(Ability::Dodge, dodge)]
+    };
+    m.attacks[0] = AttackForm {
+        kind: 1,
+        accuracy: 0,
+        weight: 100,
+        min_damage: 0,
+        max_damage: 0,
+        hit_msg: None,
+        dodge_msg: None,
+        miss_msg: None,
+        energy: 666,
+    };
+    m
+}
+
+/// Runs `rounds` player swings against a sandbag carrying `dodge` and
+/// returns (landed hits, HP taken off the sandbag).
+fn sandbag_run(dodge: i16, rounds: u64) -> (usize, i32) {
+    let mut content = world();
+    content.monsters.clear();
+    content.add_monster(sandbag(dodge));
+    let mut core = Core::new(content, config());
+    let s = create(&mut core, "Dain");
+    let m = core
+        .spawn_monster(MonsterId(11), RoomId { map: 1, room: 1 })
+        .expect("the sandbag spawns");
+    core.input(s, "attack sandbag");
+    core.drain_events();
+    let shown = text_to(&run_rounds(&mut core, rounds), s);
+    let hits = shown.matches("You punch sandbag for").count();
+    (hits, 5000 - core.monster_hp(m).expect("the sandbag survives"))
+}
+
+#[test]
+fn monster_dodge_ability_parries_player_swings() {
+    // GAMEPLAY DELTA (M7 slice 5): `build_monster_defender` now feeds
+    // Dodge(0x22) into the fighter's parry word per
+    // `move_monster_to_fighter` 25185-25186, and the DLL runs that ONE
+    // build for the player-attacks-monster path too. 167 of the 1101
+    // shipped templates carry ability 34 at values 10..200, so this turns
+    // a large share of connecting player swings into zero-damage parries.
+    //
+    // Chance per `calculate_attack` 25336-25360: `parry*10 / (accuracy/8)`
+    // capped at 95. Dain is accuracy 43 -> denominator 5, so Dodge 20
+    // buys 40% and Dodge 50 buys the 95% cap.
+    //
+    // ORACLE-VERIFY: the parry formula itself was recovered from the
+    // 16-bit disassembly and has never been checked against a live
+    // capture. Wiring Dodge into the monster defender build amplifies any
+    // error in it across a sixth of the bestiary, so a slice-8 expedition
+    // should capture a player grinding a Dodge-carrying template (e.g.
+    // giant bat, Dodge 20) and compare the observed miss rate.
+    // 40 rounds is 49 swings (the energy pool buys a second swing in
+    // some rounds); with no Dodge every one of them lands.
+    let (control_hits, control_damage) = sandbag_run(0, 40);
+    assert_eq!(control_hits, 49, "a 99%-to-hit swing lands on every swing");
+    assert_eq!(control_damage, 121, "49 swings of 1-4 damage");
+
+    let (dodge_hits, dodge_damage) = sandbag_run(20, 40);
+    assert_eq!(dodge_hits, 30, "Dodge 20 parries ~40% of the swings");
+    assert_eq!(dodge_damage, 73, "only the unparried swings do damage");
+
+    let (capped_hits, capped_damage) = sandbag_run(50, 40);
+    assert_eq!(capped_hits, 4, "Dodge 50 pins the parry chance at its 95 cap");
+    assert_eq!(capped_damage, 10, "almost nothing gets through");
+}
