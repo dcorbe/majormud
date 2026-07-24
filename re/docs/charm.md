@@ -193,42 +193,65 @@ attack against the locked target (`give_monsters_a_free_attack` 23886-23895,
 ## 3. Monster-vs-monster combat — `attack_monster_monster` (`0x2f6ae`, 27213)
 
 The one m-v-m swing function; used by pets (§2.2) and hunters (§6). Preconditions
-(27231-27235): attacker energy `mon+0x16 >= mon+0x114` (full-energy gate) and attacker
-does NOT have ability 0x3c on its template.
+(27231-27234): attacker energy `mon+0x16 >= mon+0x114` (full-energy gate) and attacker
+does NOT have ability 0x3c (Fear) — `monster_has_ability`, so an active spell slot or
+a carried item counts, not just the template rows. There is NO room compare and no
+safe-room check anywhere in the function: a swing can cross a room boundary, which is
+what the §6 hunt arm relies on.
 
 Formula path — **it is the ordinary combat pipeline**, both sides loaded as fighters:
 
-1. `DAT_004877e4 = 5; DAT_004877e0 = 5` — attack mode 5 for both globals (27238-27239;
+1. `DAT_004877e4 = 5; DAT_004877e0 = 5` — attack mode 5 for both globals (27235-27236;
    the mode `combat.md` uses to reshape damage).
 2. `FUN_0042a15c(template)` → attack-alignment code from `knmsr+0xae` (behaviour
    mode): modes 0/4 → 0, 1/2/6 → 2, else 1 (24410-24427); passed as the 4th arg of
-   the attacker's `move_monster_to_fighter(&DAT_00496010, ...)`; the defender is
-   loaded with -1 (27240-27243).
+   the attacker's `move_monster_to_fighter(&DAT_00496010, ...)` (27238) — which
+   compares it against its OWN call of `FUN_0042a15c`, so the equal case skips the
+   0x18/0x19 accuracy block and word `[2]` stays 0 (25109-25118); the defender is
+   loaded with -1 (27240) and takes the same skip.
 3. `piVar6 = calculate_attack(&DAT_00496010, 0x49625c)` — the full accuracy /
    dodge / damage engine of `combat.md` (all its RNG draws happen here, in its
    documented order). Result block: `[0]` result code (1 glance / 3 dodge /
    else-miss when damage < 1; hit otherwise), `[1]` damage, `[3]` floor for the
    defender's `+0x14` counter, `[4]` kill exp (worth × multiplier, `combat.md`
-   §monster-fighter), `[5]` attacker energy cost.
-4. Attacker pays `result[5]` energy (aborts if it exceeds current energy, 27245-27246);
-   defender HP `-= result[1]` (clamped to remaining HP); defender `+0x14` raised to
-   `result[3]`; both records dirtied (27247-27254).
-5. `check_kill_monster(defender, -1)` (27255).
+   §monster-fighter), `[5]` attacker energy cost. **`[3]` is dead**: `DAT_00495fdc`
+   is zeroed on entry to `calculate_attack` (25246) and no path writes it, so the
+   `+0x14` raise below can never fire (M7 slice 5 pass; not ported).
+4. Attacker pays `result[5]` energy — the gate is checked AFTER the draws, so a form
+   costing more than the pool burns rolls and lands nothing (27242-27243); defender HP
+   `-= result[1]` (clamped to remaining HP, 27244-27247); defender `+0x14` raised to
+   `result[3]`; both records dirtied (27248-27252).
+5. `check_kill_monster(defender, -1)` (27254), the display name `strcpy`'d off
+   `mon+0x8e` first (27253).
 6. Post-damage **DamageShield** (defender ability 0x48): if present,
-   `genrdn(1, max(val+1,1))` (**RNG**, drawn on the survivor-hit path 27285-27296 and
-   again on the kill path 27311-27322) is subtracted from the attacker's HP.
+   `genrdn(1, max(val+1,1))` (**RNG**, drawn on the survivor-hit path 27283-27296 and
+   again on the kill path 27307-27320) is subtracted from the attacker's HP, then
+   clamped UP to `mon+0x104`. The attacker is never checked for death there.
+
+The attacker fighter is built from attack-form slot 0 **whatever its kind byte** —
+`move_monster_to_fighter` returns 0 only for a missing record or template
+(25091-25099), so the `!= '\0'` guards at 27239-27240 are validity checks, not an
+"is slot 0 a melee form" test. Its parry word `[8]` is Dodge(0x22) (25185-25186) on
+BOTH sides; accuracy folds 0x16/0x69/0x6a (25188-25193), MaxDamage(4) raises both
+damage bounds (25196-25198), and Speed(0x57) scales the energy cost `EU*val/100`
+capped at `knmsr+0x7a` (25203-25211).
 
 Draw order per swing: `calculate_attack` internals first, then at most one
 DamageShield `genrdn`.
 
 Room strings (each `spr`'d into `DAT_004964a9`, first letter upcased, prefixed with
-the combat color codes, `tell_room` to the defender's room):
+the combat color codes, `tell_room` to the defender's room — the kill line to the
+ATTACKER's room, 27326). VERIFIED byte-for-byte against the shipped `.rdata`
+(M7 slice 5): the earlier transcription of the glance line came from Ghidra's
+mangled symbol name and was wrong in both slot count and spelling.
 
-* hit: `%s just attacked %s!` (`0x481f87`, 27298-27303)
-* glance (`result 1`): `%s's %s just glanced off of %s's armor!` (`0x481f9d`)
-* dodge (`result 3`): `%s just dodged an attack from %s!` (`0x481fc4`)
-* miss: `%s just missed an attack against %s!` (`0x481fe7`)
-* kill: `%s just killed %s!` (`0x481f73`, 27324-27328; name captured before the kill)
+* hit: `%s just attacked %s!` (`0x481f87`, 27298-27304)
+* glance (`result 1`): `%s's just glanced off of %s's armour.` (`0x481f9d`, 27259) —
+  TWO slots, attacker then defender; the weapon is never named
+* dodge (`result 3`): `%s just dodged an attack from %s.` (`0x481fc4`, 27267) —
+  defender first
+* miss: `%s just missed an attack against %s.` (`0x481fe7`, 27275)
+* kill: `%s just killed %s.` (`0x481f73`, 27322-27326; name captured before the kill)
 
 **Experience on a pet kill**: `distribute_experience(-1, result[4], -1, victimId,
 map, room)` (27330) — no killer credit. `distribute_experience` (`0x4c990`, 46819)
