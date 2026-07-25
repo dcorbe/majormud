@@ -60,6 +60,15 @@ const MUTT: MonsterId = MonsterId(6);
 const STRAY: MonsterId = MonsterId(7);
 /// The §4.4 executioner — kills the owner, releases nothing.
 const EXEC: MonsterId = MonsterId(8);
+/// MUTT with aggression **100** and behaviour **1**: the probe for the
+/// cast-damage retaliation twin (43752-43765). MUTT itself is aggression
+/// 0 / behaviour 0, and a monster like that locks in our shared lock body
+/// only through the `behaviour in {3,0,4}` clause — which the cast twin
+/// does NOT have. Asserting the grudge on MUTT would therefore prove
+/// nothing about the roll. Here the roll alone carries it: aggression 100
+/// beats every `genrdn(1,100)`, and behaviour 1 is outside the clause, so
+/// the assertion survives a faithful (clause-free) twin.
+const KEEN: MonsterId = MonsterId(9);
 
 /// (Enslave, 0), duration 60 flat, no save — the state/slot probe.
 const ENSLAVE: SpellId = SpellId(700);
@@ -81,8 +90,11 @@ const BINDSAVE: SpellId = SpellId(770);
 /// Five slot fillers.
 const FILLER_BASE: u16 = 780;
 /// A fixed-damage OFFENSIVE match-4 spell — the cast-damage retaliation
-/// twin (43750-43765), which carries no charmed check at all.
+/// twin (43752-43765), which carries no charmed check at all.
 const SEAR: SpellId = SpellId(790);
+/// SEAR as an AREA (match 12) — the 40371/40600 copies of that twin,
+/// which are equally charm-blind.
+const GALE: SpellId = SpellId(795);
 
 fn spell(id: SpellId, name: &str, short: &str) -> Spell {
     Spell {
@@ -170,6 +182,11 @@ fn world() -> Content {
         ..Default::default()
     };
     content.add_monster(exec);
+    let mut keen = monster(KEEN, "keen mutt", 1, 40);
+    keen.hitpoints = 500;
+    keen.aggression = 100;
+    keen.behaviour = 1;
+    content.add_monster(keen);
     let mut wary = monster(WARY, "wary hound", 1, 1);
     wary.magic_resist = 200;
     content.add_monster(wary);
@@ -239,7 +256,12 @@ fn world() -> Content {
     sear.abilities = vec![(Ability::Damage, 3)];
     sear.duration = 0;
     sear.target_mode = TargetMode::Offensive0;
-    for s in [enslave, thrall, hold, snap, whisper, leash, bind, bindsave, sear] {
+    let mut gale = spell(GALE, "gale", "gale");
+    gale.abilities = vec![(Ability::Damage, 3)];
+    gale.duration = 0;
+    gale.target_mode = TargetMode::Offensive0;
+    gale.match_type = MatchType::AreaC;
+    for s in [enslave, thrall, hold, snap, whisper, leash, bind, bindsave, sear, gale] {
         content.add_spell(s);
     }
     for i in 0..5u16 {
@@ -258,7 +280,7 @@ fn caster() -> Player {
 
 fn caster_named(name: &str, location: RoomId) -> Player {
     let book: BTreeMap<SpellId, bool> = [
-        ENSLAVE, THRALL, HOLD, SNAP, WHISPER, LEASH, BIND, BINDSAVE, SEAR,
+        ENSLAVE, THRALL, HOLD, SNAP, WHISPER, LEASH, BIND, BINDSAVE, SEAR, GALE,
     ]
     .into_iter()
     .chain((0..5).map(|i| SpellId(FILLER_BASE + i)))
@@ -740,6 +762,50 @@ fn a_charmed_pet_follows_without_the_aggression_roll() {
     );
 }
 
+#[test]
+fn the_charmed_follow_skips_the_draw_and_not_merely_the_branch() {
+    // `(mon+0x128 & 1) == 0 && genrdn(0,100) >= aggression` is a C `&&`:
+    // on a charmed monster the left operand is false and `genrdn` is
+    // never CALLED. The sibling test above proves only that the refusal
+    // is unreachable — rewriting our gate to draw first and test after
+    // would still pass it, while silently shifting every seeded golden
+    // downstream of a pursuit tick.
+    //
+    // So measure the stream directly. Both arms are the same template in
+    // the same rooms taking the same single pursuit step; they differ
+    // only in the charmed bit, and the setup draws are excluded because
+    // the counter is sampled after it. KEEN's aggression 100 makes the
+    // control follow too — `genrdn(0,100) >= 100` is false for every
+    // value the generator can produce — so the two arms run the same
+    // path and the delta is the roll and nothing else.
+    let follow_draws = |charm: bool| {
+        let (mut core, s, m) = setup_at(KEEN, CELL);
+        if charm {
+            // The INSTANT arm: a pet with no slot, so the medium upkeep
+            // has nothing to walk in either arm.
+            cast(&mut core, s, "cast snap keen");
+        } else {
+            core.debug_lock_monster(m, s);
+        }
+        assert_eq!(core.debug_monster_charm(m).map(|t| t.0), Some(charm));
+        core.input(s, "n");
+        core.drain_events();
+        let before = core.debug_rng_draws();
+        let (ticks, _) = tick_until(&mut core, s, 20, |c| c.monster_location(m) == Some(DEN));
+        assert_eq!(core.monster_location(m), Some(DEN), "both arms must follow");
+        (ticks, core.debug_rng_draws() - before)
+    };
+    let (pet_ticks, pet_draws) = follow_draws(true);
+    let (grudge_ticks, grudge_draws) = follow_draws(false);
+    assert_eq!(pet_ticks, grudge_ticks, "the two arms must take the same path");
+    assert_eq!(
+        grudge_draws,
+        pet_draws + 1,
+        "the aggression follow-roll is DRAWN for a grudge holder and not \
+         drawn at all for a pet (pet {pet_draws}, grudge {grudge_draws})"
+    );
+}
+
 // §4.3 — the owner attacks its own pet
 
 #[test]
@@ -809,32 +875,69 @@ fn another_players_swing_at_a_pet_changes_nothing() {
 
 #[test]
 fn a_damage_cast_grudges_a_pet_without_releasing_it() {
-    // TWO different twins inside one function. `cast_monster_target`'s
-    // ENTRY grudge (43259-43271, and its 43335 evil-points sibling) opens
-    // with `(mon+0x128 & 1) == 0` — a pet is never locked there, exactly
-    // like the melee twins at 26230/26516. Its post-DAMAGE twin
-    // (43750-43765, and the area copies at 40381/40611) has NO charmed
-    // check at all: it rolls aggression, overwrites the name link and
-    // clears `+0x116` — while LEAVING the charmed bit set. So a damage
-    // spell from the owner does not release the pet; it turns it hostile
-    // and leaves it charmed (never wanders, never rolls to follow).
-    let (mut core, s, m) = setup(MUTT);
-    cast(&mut core, s, "cast ensl mutt");
+    // THREE different twins inside one function. `cast_monster_target`'s
+    // ENTRY grudges (43260-43271, its 43335 evil-points sibling and the
+    // 43470 duration-0 engage arm) all open with `(mon+0x128 & 1) == 0`
+    // — a pet is never locked there, exactly like the melee twins at
+    // 26230/26514. Its post-DAMAGE twin (43752-43765, and the area copies
+    // at 40371/40600) has NO charmed check at all: it rolls aggression,
+    // overwrites the name link and clears `+0x116` — while LEAVING the
+    // charmed bit set. So a damage spell from the owner does not release
+    // the pet; it turns it hostile and leaves it charmed (never wanders,
+    // never rolls to follow).
+    //
+    // KEEN, not MUTT: see the const's doc. Aggression 100 makes the
+    // `genrdn(1,100) < aggression` leg true unconditionally and
+    // behaviour 1 sits outside our shared body's `behaviour in {3,0,4}`
+    // clause — which the cast twin does not have — so the final assertion
+    // rides on the roll and nothing else.
+    let (mut core, s, m) = setup(KEEN);
+    cast(&mut core, s, "cast ensl keen");
     energy_round(&mut core);
-    let shown = cast(&mut core, s, "cast sear mutt");
+    let shown = cast(&mut core, s, "cast sear keen");
     assert!(shown.contains("*Combat Engaged*"), "offensive casts engage: {shown:?}");
     assert_eq!(
         core.debug_monster_charm(m),
         Some((true, true, Some(s))),
         "the entry grudge skips a charmed monster"
     );
-    let hp = core.monster_hp(m).expect("mutt lives");
+    let hp = core.monster_hp(m).expect("keen mutt lives");
     tick_until(&mut core, s, 40, |c| c.monster_hp(m).is_some_and(|h| h < hp));
     assert!(core.monster_hp(m).is_some_and(|h| h < hp), "the cast must land");
     assert_eq!(
         core.debug_monster_charm(m),
         Some((true, false, Some(s))),
         "the damage twin locks without clearing the charmed bit"
+    );
+}
+
+#[test]
+fn an_area_damage_cast_grudges_the_casters_own_pet() {
+    // The AREA copies of that twin (`cast_no_target` 40371-40384 and
+    // 40600-40613) are the same shape: `check_kill_monster`, then a
+    // roam-class gate and `genrdn(1,100) < mon+0x42`, with no charmed
+    // check and — unlike the single-target 43752 arm — no null-template
+    // clause and no `roam == 5` carve-out either. Your own pet is just
+    // another body in the room: it takes the damage and the grudge and
+    // stays charmed.
+    //
+    // This pins `CharmedLock::Ignored` at the area call site, which is
+    // otherwise reachable but unasserted — flipping that tag to `Exempt`
+    // leaves the pet at `(true, true, Some(s))` and fails here.
+    let (mut core, s, m) = setup(KEEN);
+    cast(&mut core, s, "cast ensl keen");
+    assert_eq!(core.debug_monster_charm(m), Some((true, true, Some(s))));
+    energy_round(&mut core);
+    let hp = core.monster_hp(m).expect("keen mutt lives");
+    cast(&mut core, s, "cast gale");
+    assert!(
+        core.monster_hp(m).is_some_and(|h| h < hp),
+        "the area sweep must hit the pet"
+    );
+    assert_eq!(
+        core.debug_monster_charm(m),
+        Some((true, false, Some(s))),
+        "the area twin locks the pet without clearing the charmed bit"
     );
 }
 

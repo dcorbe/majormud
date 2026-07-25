@@ -462,15 +462,31 @@ impl Default for CoreConfig {
 /// `genrdn(lo, hi)`-style PRNG: xorshift64*, uniform in `[lo, hi]`.
 /// Deterministic given the seed; exactness targets distributions, not the
 /// original's roll stream (design decision).
-struct Rng(u64);
+///
+/// `draws` counts every value ever taken. Nothing in the game reads it —
+/// it exists so tests can pin WHERE a `genrdn` is spent, not just what it
+/// decided. Several DLL predicates short-circuit ahead of their roll (the
+/// pursuit follow gate at 19423, the charm-exempt retaliation twins), and
+/// a test that only asserts the outcome cannot tell a skipped DRAW from a
+/// skipped BRANCH — while every seeded golden in the suite depends on the
+/// difference. See [`Core::debug_rng_draws`].
+struct Rng {
+    state: u64,
+    draws: u64,
+}
 
 impl Rng {
+    fn new(seed: u64) -> Rng {
+        Rng { state: seed, draws: 0 }
+    }
+
     fn roll(&mut self, lo: i32, hi: i32) -> i32 {
         debug_assert!(lo <= hi);
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        let x = self.0.wrapping_mul(0x2545F4914F6CDD1D);
+        self.draws += 1;
+        self.state ^= self.state >> 12;
+        self.state ^= self.state << 25;
+        self.state ^= self.state >> 27;
+        let x = self.state.wrapping_mul(0x2545F4914F6CDD1D);
         let span = (hi - lo + 1) as u64;
         lo + (x % span) as i32
     }
@@ -1084,8 +1100,8 @@ impl Core {
         scheduler.schedule_in(FAST_INTERVAL, Job::Fast);
         scheduler.schedule_in(SPAWN_INTERVAL, Job::Spawn);
         scheduler.schedule_in(CLEANUP_INTERVAL, Job::Cleanup);
-        let rng = Rng(config.rng_seed | 1);
-        let spawn_rng = Rng((config.rng_seed ^ 0x5350_4157_4e21_0000) | 1); // "SPAWN!"-ish
+        let rng = Rng::new(config.rng_seed | 1);
+        let spawn_rng = Rng::new((config.rng_seed ^ 0x5350_4157_4e21_0000) | 1); // "SPAWN!"-ish
         let mut core = Core {
             content,
             config,
@@ -1807,6 +1823,15 @@ impl Core {
         id: MonsterInstanceId,
     ) -> Option<(bool, bool, Option<SessionId>)> {
         self.monsters.get(&id).map(|m| (m.charmed, m.suppress, m.target))
+    }
+
+    /// Test hook: how many values the main `genrdn` stream has produced
+    /// since the world was built. The SPAWN stream is separate and is not
+    /// counted. Take a reading either side of an action and the delta is
+    /// its exact draw cost — the only way to prove a short-circuited DLL
+    /// predicate skips the ROLL and not merely the branch.
+    pub fn debug_rng_draws(&self) -> u64 {
+        self.rng.draws
     }
 
     /// Test hook: one monster-vs-monster swing
