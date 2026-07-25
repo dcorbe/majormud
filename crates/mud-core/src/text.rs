@@ -521,6 +521,14 @@ pub const MAY_NOT_CAST_ON_MONSTER: &str = "You may not cast that spell on a mons
 /// (`c flash oracle`), uncharged.
 pub const MAY_NOT_CAST_ON_USER: &str = "You may not cast that spell on a user!";
 
+/// The third member of the same refusal family (`cast_item_target`
+/// 44367-44369): a spell whose match type is not 6 or 7, aimed at a
+/// carried item. ORACLE-VERIFY: never measured live — the wording is
+/// read straight out of the DLL string table (file offset 854240,
+/// exactly 362 bytes past the monster variant, matching the
+/// `0x48632c - 0x4861c2` VA delta).
+pub const MAY_NOT_CAST_ON_ITEM: &str = "You may not cast that spell on an item!";
+
 /// VERIFIED (§8.13): an area cast with no valid target in the room —
 /// a real pre-charge gate (mana unchanged), fired alone AND with other
 /// players present (players never count as area targets).

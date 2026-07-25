@@ -266,14 +266,68 @@ fn match_type_predicates_follow_spec_groupings() {
     assert_eq!(MatchType::from_i16(-1), None);
     let mt = |n| MatchType::from_i16(n).unwrap();
     // spellcasting.md §3/§4 groupings
-    for n in [6, 7] { assert!(mt(n).is_item()); }
+    for n in [6, 7] { assert!(mt(n).accepts_item()); }
     for n in [3, 5, 9, 10, 11, 12, 13] { assert!(mt(n).room_wide()); }
     for n in [3, 5, 9, 11, 12] { assert!(mt(n).hits_monsters()); }
     for n in [3, 5, 9, 10] { assert!(mt(n).splits_magnitude()); }
-    for n in [0, 1, 2, 4, 8] { assert!(!mt(n).room_wide() && !mt(n).is_item()); }
+    for n in [0, 1, 2, 4, 8] { assert!(!mt(n).room_wide() && !mt(n).accepts_item()); }
     assert!(!mt(10).hits_monsters());
     assert!(!mt(13).hits_monsters());
     assert!(!mt(11).splits_magnitude());
+}
+
+#[test]
+fn match_type_acceptance_sets_match_the_cast_entry_points() {
+    use mud_core::content::MatchType;
+    let mt = |n| MatchType::from_i16(n).unwrap();
+    // cast_monster_target 43205 -> {4, 6, 8}.
+    for n in 0..=13 {
+        assert_eq!(mt(n).accepts_monster(), [4, 6, 8].contains(&n), "monster gate, match {n}");
+    }
+    // cast_user_target 41460 -> {0, 2, 6, 8}. Match 1 is the self-only
+    // buff band (barkskin, stoneskin) and is deliberately excluded.
+    for n in 0..=13 {
+        assert_eq!(mt(n).accepts_user(), [0, 2, 6, 8].contains(&n), "user gate, match {n}");
+    }
+    // cast_item_target 44367 -> {6, 7}.
+    for n in 0..=13 {
+        assert_eq!(mt(n).accepts_item(), [6, 7].contains(&n), "item gate, match {n}");
+    }
+}
+
+#[test]
+fn preferred_find_mirrors_get_spell_match_type() {
+    use mud_core::content::{FindScope, MatchType};
+    let mt = |n| MatchType::from_i16(n).unwrap();
+    // get_spell_match_type 45018-45053, modelled bits only: 0x1 monsters,
+    // 0x2 users, 0x4 carried items.
+    let users = FindScope { monsters: false, users: true, items: false };
+    for n in [0, 1, 2] {
+        assert_eq!(mt(n).preferred_find(), users, "0x02/0x82, match {n}");
+    }
+    // 0x801
+    assert_eq!(
+        mt(4).preferred_find(),
+        FindScope { monsters: true, users: false, items: false }
+    );
+    // 0xf837
+    assert_eq!(mt(6).preferred_find(), FindScope::UNIVERSAL);
+    // 0x14
+    assert_eq!(
+        mt(7).preferred_find(),
+        FindScope { monsters: false, users: false, items: true }
+    );
+    // 0x803
+    assert_eq!(
+        mt(8).preferred_find(),
+        FindScope { monsters: true, users: true, items: false }
+    );
+    // The seven area types return 0 — nothing is searched, so the
+    // dispatcher's universal retry does all the work (MEASURED §8.13).
+    for n in [3, 5, 9, 10, 11, 12, 13] {
+        assert!(mt(n).preferred_find().is_empty(), "area mask 0, match {n}");
+        assert!(!mt(n).accepts_monster() && !mt(n).accepts_user() && !mt(n).accepts_item());
+    }
 }
 
 #[test]

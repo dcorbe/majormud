@@ -450,7 +450,10 @@ fn world() -> Content {
         save_class: SaveClass::None,
         base_chance: 15,
         duration_per_level: 0,
-        match_type: MatchType::Single0,
+        // The real spell 1 ships `target` 8 (mud-server's load_real_db
+        // pins it): the cast dispatcher routes on the MATCH type, and 8
+        // is the offensive single-target band.
+        match_type: MatchType::Special8,
         duration: 0,
         element: Element::Magic,
         class_gate_group: 1,

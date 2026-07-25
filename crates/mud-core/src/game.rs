@@ -49,6 +49,17 @@ enum FloorMatch {
     None,
 }
 
+/// What a room-name lookup for a cast resolved — `find_action_target`'s
+/// `*param_4` kind code (decompile 63726): `1` = user, `2` = monster,
+/// `8` = carried item. The cast dispatcher (59278-59320) picks the entry
+/// point off THIS, never off the spell's target mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CastTarget {
+    User(SessionId),
+    Monster(MonsterInstanceId),
+    Item(crate::content::ItemId),
+}
+
 /// Accuracy accumulators (0x16 Accuracy, 0x69, 0x6a) feeding fighter[0].
 fn accuracy_ability(id: u16) -> Ability {
     Ability::from_id(id).expect("accuracy ability ids are in the enum")
@@ -4300,10 +4311,13 @@ impl Core {
             return;
         }
         let offensive = spell.target_mode.is_offensive();
+        let room = self.player(session).location;
         let mut monster = None;
-        if offensive {
-            let room = self.player(session).location;
-            if target.is_empty() {
+        if target.is_empty() {
+            // No target word: the DLL never runs a find at all
+            // (dispatcher 59247-59252 -> `cast_no_target`). Offensive
+            // modes refuse; benign ones fall through to the self tail.
+            if offensive {
                 // MEASURED (§8.9 run 2): a bare offensive cast while
                 // melee-engaged prints *Combat Off* (the engagement
                 // breaks) and THEN its refusal.
@@ -4314,8 +4328,7 @@ impl Core {
                     // DLL charges the round cost here when affordable but
                     // never the mana (decompile cast_no_target
                     // 39185-39195; §8.9: mana unchanged).
-                    if let Some(Session::InGame { energy, .. }) =
-                        self.sessions.get_mut(&session)
+                    if let Some(Session::InGame { energy, .. }) = self.sessions.get_mut(&session)
                         && *energy >= round_cost
                     {
                         *energy -= round_cost;
@@ -4328,92 +4341,98 @@ impl Core {
                 self.output_line(session, text::MUST_SPECIFY_TARGET);
                 return;
             }
-            match self.find_monster(room, &target) {
-                Some(id) => monster = Some(id),
+        } else {
+            // The dispatcher's TWO-STAGE find (decompile 59256-59271):
+            // search the match type's preferred scope first, and when it
+            // comes back empty repeat with the universal mask 0xf037.
+            // The preferred scope is therefore only an ORDERING
+            // preference — every match type can resolve every kind, and
+            // the ACCEPTANCE decision belongs to the entry point the
+            // found kind selects (59278-59320). `spelltype` routes
+            // nothing; it owns hostility only.
+            let preferred = spell.match_type.preferred_find();
+            let found = if preferred.is_empty() {
+                None
+            } else {
+                self.find_cast_target(session, preferred, &target)
+            };
+            let fallback = crate::content::FindScope::UNIVERSAL;
+            match found.or_else(|| self.find_cast_target(session, fallback, &target)) {
                 None => {
                     // MEASURED (§8.9): the entire remainder is one target
                     // string, echoed verbatim.
                     self.output_line(session, &text::do_not_see_here(&target));
                     return;
                 }
-            }
-            // The protected-room flag gates the TARGETED path too
-            // (decompile cast_monster_target 43232, guilt refusal
-            // 44290-44297 — the same room+0x564 & 1 check as the bare-cast
-            // gate above, sitting ahead of the SpellImmu and cost gates):
-            // guilt line, no engagement, and the same round-cost-only
-            // charging as the bare-cast guilt path.
-            if self.content.rooms.get(&room).is_some_and(|r| r.protected()) {
-                if let Some(Session::InGame { energy, .. }) = self.sessions.get_mut(&session)
-                    && *energy >= round_cost
-                {
-                    *energy -= round_cost;
-                }
-                self.output_line(session, text::CAST_GUILT);
-                return;
-            }
-        } else if !target.is_empty() {
-            // Item-target spells (match 6/7 -> cast_item_target, decompile
-            // 0x49232; the dispatcher's find_action_target kind-8 arm at
-            // 59314): resolve the target against the CARRIED inventory.
-            // ORACLE-VERIFY: whether ground/worn items also match, and the
-            // "You are not carrying %s!" kind-4 refusal, are unmeasured —
-            // an unmatched name falls to the do-not-see refusal below.
-            if spell.match_type.is_item() {
-                let want = target.trim().to_ascii_lowercase();
-                let found = self.player(session).inventory.iter().find_map(|(id, _)| {
-                    self.content
-                        .items
-                        .get(id)
-                        .filter(|i| word_prefix_match(&i.name, &want))
-                        .map(|_| *id)
-                });
-                if let Some(item_id) = found {
-                    self.fire_item_cast(session, &spell, item_id);
-                    return;
-                }
-            }
-            // Player-target resolution (match 1/2 benign; MEASURED §8.13):
-            // players in the caster's room match by the §8.9 word-prefix
-            // rule (`c blur ora` -> Oracle). The refusal matrix is
-            // match-type-keyed: only the single-target types carry a
-            // target slot — match 0 benign has none, so its lookup always
-            // falls to the do-not-see refusal (MEASURED §8.9: "cast blur
-            // extra trailing words", no self-cast, no mana, pre-cost).
-            let single_target = matches!(
-                spell.match_type,
-                crate::content::MatchType::Single1 | crate::content::MatchType::Single2
-            );
-            let room = self.player(session).location;
-            let want = target.trim().to_ascii_lowercase();
-            let found = if single_target {
-                self.in_game_sessions()
-                    .filter(|(_, p)| p.location == room)
-                    .find(|(_, p)| word_prefix_match(&p.name, &want))
-                    .map(|(id, _)| id)
-            } else {
-                None
-            };
-            match found {
-                Some(target_id) if target_id != session => {
-                    self.benign_target_cast(session, target_id, &spell);
-                    return;
-                }
-                Some(_) => {
-                    // Own name = a plain self-cast (MEASURED §8.13: the
-                    // castmsgb frames keep the name — "You cast blur on
-                    // Zinvar!" / "Zinvar casts blur on Zinvar!" — which
-                    // is exactly what the self path renders). Fall
-                    // through to the benign self tail below.
-                }
-                None => {
-                    if single_target && self.find_monster(room, &target).is_some() {
-                        // MEASURED (§8.13): `c blur cat` — benign single
-                        // targets are players only, uncharged.
+                Some(CastTarget::Monster(id)) => {
+                    if !spell.match_type.accepts_monster() {
+                        // `cast_monster_target` 43205 / 44311-44315,
+                        // uncharged — MEASURED §8.13 for `c blur cat`
+                        // (match 2) and `c stnk cat` (match 12).
                         self.output_line(session, text::MAY_NOT_CAST_ON_MONSTER);
                         return;
                     }
-                    self.output_line(session, &text::do_not_see_here(&target));
+                    // The protected-room flag gates the TARGETED path too
+                    // (decompile cast_monster_target 43232, guilt refusal
+                    // 44290-44297 — the same room+0x564 & 1 check as the
+                    // bare-cast gate above, sitting ahead of the SpellImmu
+                    // and cost gates). NOT spelltype-gated there, unlike
+                    // its `cast_user_target` twin: guilt line, no
+                    // engagement, and the same round-cost-only charging as
+                    // the bare-cast guilt path.
+                    if self.content.rooms.get(&room).is_some_and(|r| r.protected()) {
+                        if let Some(Session::InGame { energy, .. }) = self.sessions.get_mut(&session)
+                            && *energy >= round_cost
+                        {
+                            *energy -= round_cost;
+                        }
+                        self.output_line(session, text::CAST_GUILT);
+                        return;
+                    }
+                    monster = Some(id);
+                }
+                Some(CastTarget::User(target_id)) => {
+                    if !spell.match_type.accepts_user() {
+                        // `cast_user_target` 41460 / 43064-43066,
+                        // uncharged — MEASURED §8.13 for `c flash oracle`
+                        // (match 12).
+                        self.output_line(session, text::MAY_NOT_CAST_ON_USER);
+                        return;
+                    }
+                    if offensive {
+                        // DIVERGENCE (PvP unimplemented): the DLL hands an
+                        // ACCEPTED offensive user target to
+                        // `cast_user_target`'s hostility gates —
+                        // no-PK-room refusal, evil points, the
+                        // attack-yourself line at 41422, then the same
+                        // roll/effect tail. We have no PvP melee either,
+                        // so the cast simply fails to see the player, as
+                        // it did before this router landed. Reachable
+                        // shape: the 45 learnable offensive match-8
+                        // spells (magic missile and friends).
+                        self.output_line(session, &text::do_not_see_here(&target));
+                        return;
+                    }
+                    if target_id != session {
+                        // Players in the caster's room match by the §8.9
+                        // word-prefix rule (`c blur ora` -> Oracle).
+                        self.benign_target_cast(session, target_id, &spell);
+                        return;
+                    }
+                    // Own name = a plain self-cast (41434: `param_2 ==
+                    // param_3` diverts to `cast_no_target` for every match
+                    // type but 6). MEASURED §8.13: the castmsgb frames
+                    // keep the name — "You cast blur on Zinvar!" /
+                    // "Zinvar casts blur on Zinvar!" — which is exactly
+                    // what the self tail below renders.
+                }
+                Some(CastTarget::Item(item_id)) => {
+                    if !spell.match_type.accepts_item() {
+                        // `cast_item_target` 44367-44369, uncharged.
+                        self.output_line(session, text::MAY_NOT_CAST_ON_ITEM);
+                        return;
+                    }
+                    self.fire_item_cast(session, &spell, item_id);
                     return;
                 }
             }
@@ -4437,66 +4456,81 @@ impl Core {
             {
                 return;
             }
-            // The offensive-duration split (cast_monster_target: the
-            // engage-only block below is CONDITIONED on duration == 0,
-            // 43421-43481): a duration!=0 offensive cast resolves RIGHT
-            // NOW — roll, costs, slot entry — with NO engagement and no
-            // *Combat Engaged* (engage_autocombat appears only in the
-            // duration==0 block and the autocombat-driver re-fire).
-            // The command's triple gate messages first (43554-43580):
-            // round energy prints the already-cast line, mana its
-            // shortfall line. DATA: zero learnable spells reach this
-            // (all 65 shipped offensive-duration spells are monster
-            // payloads) — fixture-covered until content grows one.
-            if spell.duration != 0 {
-                let Some(Session::InGame { energy, player, .. }) = self.sessions.get(&session)
-                else {
-                    return;
-                };
-                if *energy < round_cost {
-                    self.output_line(session, self.already_cast_line(session));
-                    return;
+            // The engage-and-stop split (cast_monster_target 43411-43421):
+            // the block is reached only when the cast is OFFENSIVE
+            // (`spelltype < 3`) *and* instant (`spell+0xce == 0`). A
+            // benign cast takes the 43496 else instead — one-per-round
+            // flag, roll, costs, effects, all inside this command — and so
+            // does an offensive DURATION spell, which resolves RIGHT NOW
+            // with no engagement and no *Combat Engaged* (engage_autocombat
+            // appears only in that block and in the autocombat re-fire).
+            if offensive && spell.duration == 0 {
+                // Engagement is then the command's ENTIRE effect
+                // (MEASURED, oracle_spell_cast.raw 567-637 + decompile
+                // 43439-43481): the manual offensive cast never rolls,
+                // charges or fires directly — it prints the *Combat
+                // Off*/*Combat Engaged* toggle, zeroes the round energy
+                // and arms `casting`; the combat round driver performs
+                // every actual cast. (§8.6's condensed example shows
+                // engage+fire together, but the raw capture shows mana
+                // UNCHANGED at the engagement prompt and the fire arriving
+                // a round later — which is also why a mid-combat re-cast
+                // is never blocked by the one-cast-per-round gate: for
+                // offensive spells the round energy IS that gate.) Mana
+                // and energy shortages are therefore not checked here
+                // either; the per-round attempt handles both silently.
+                if let Some(Session::InGame { target, .. }) = self.sessions.get_mut(&session)
+                    && target.is_some()
+                {
+                    *target = None;
+                    self.output_line(session, text::COMBAT_OFF);
                 }
-                if player.current_mana < mana_cost {
-                    self.output_line(session, self.not_enough_mana_line(session));
-                    return;
+                if let Some(Session::InGame { target, casting, energy, .. }) =
+                    self.sessions.get_mut(&session)
+                {
+                    *target = Some(monster_id);
+                    *casting = Some(spell_id);
+                    // DLL 43468: engagement zeroes the pool — the first
+                    // fire waits for the next combat round's refill.
+                    *energy = 0;
                 }
-                self.offensive_cast_attempt(session, spell_id, monster_id);
+                self.output_line(session, text::COMBAT_ENGAGED);
+                // Retaliation lock (transcript: the filthbug swiped back
+                // after the bare engagement, before any damage landed) —
+                // gated like every damaging path since slice 3.
+                self.retaliation_lock(monster_id, session);
                 return;
             }
-            // Engagement is the command's ENTIRE effect (MEASURED,
-            // oracle_spell_cast.raw 567-637 + decompile cast_monster_target
-            // 43439-43481): the manual offensive cast never rolls, charges
-            // or fires directly — it prints the *Combat Off*/*Combat
-            // Engaged* toggle, zeroes the round energy and arms `casting`;
-            // the combat round driver performs every actual cast. (§8.6's
-            // condensed example shows engage+fire together, but the raw
-            // capture shows mana UNCHANGED at the engagement prompt and the
-            // fire arriving a round later — which is also why a mid-combat
-            // re-cast is never blocked by the one-cast-per-round gate: for
-            // offensive spells the round energy IS that gate.) Mana and
-            // energy shortages are therefore not checked here either; the
-            // per-round attempt handles both silently.
-            if let Some(Session::InGame { target, .. }) = self.sessions.get_mut(&session)
-                && target.is_some()
-            {
-                *target = None;
-                self.output_line(session, text::COMBAT_OFF);
+            // Resolve now. The command's triple gate messages first
+            // (43550-43580): round energy prints the already-cast line,
+            // mana its shortfall line. DATA: no learnable spell reaches
+            // the offensive-duration leg (all 65 shipped offensive
+            // duration spells are monster payloads); the benign leg is
+            // the 208-spell match-4/6/8 band (charm family, curse, blind,
+            // slow, fear, hold person).
+            let Some(Session::InGame { energy, player, .. }) = self.sessions.get(&session) else {
+                return;
+            };
+            if *energy < round_cost {
+                self.output_line(session, self.already_cast_line(session));
+                return;
             }
-            if let Some(Session::InGame { target, casting, energy, .. }) =
-                self.sessions.get_mut(&session)
-            {
-                *target = Some(monster_id);
-                *casting = Some(spell_id);
-                // DLL 43468: engagement zeroes the pool — the first fire
-                // waits for the next combat round's refill.
-                *energy = 0;
+            if player.current_mana < mana_cost {
+                self.output_line(session, self.not_enough_mana_line(session));
+                return;
             }
-            self.output_line(session, text::COMBAT_ENGAGED);
-            // Retaliation lock (transcript: the filthbug swiped back after
-            // the bare engagement, before any damage landed) — gated like
-            // every damaging path since slice 3.
-            self.retaliation_lock(monster_id, session);
+            if !offensive {
+                // 43498-43509: the benign leg CONSUMES the one-per-round
+                // permission bit (`user+0x700 & 4`) the way every other
+                // benign cast path does. The offensive legs never touch
+                // it — their gate is the round energy pool.
+                if let Some(Session::InGame { cast_this_round, .. }) =
+                    self.sessions.get_mut(&session)
+                {
+                    *cast_this_round = true;
+                }
+            }
+            self.offensive_cast_attempt(session, spell_id, monster_id);
             return;
         }
         // Benign spells: roll + costs at the command, unlike offensive
@@ -4718,25 +4752,29 @@ impl Core {
         let room = self.player(session).location;
         // Explicit target words refuse KIND-KEYED before any cost
         // (MEASURED §8.13: `c flash oracle` -> "on a user!", `c stnk cat`
-        // -> "on a monster!", both uncharged).
+        // -> "on a monster!", both uncharged). The DLL has no separate
+        // area arm here at all: `get_spell_match_type` hands the area
+        // types an EMPTY find mask, the dispatcher's universal retry
+        // (59265-59271) resolves the word anyway, and the entry point the
+        // found kind selects refuses it — no area match type is in any of
+        // the three acceptance sets. Same two-stage resolver as the
+        // single-target path, therefore, minus the preferred stage.
         let words = target.trim();
         if !words.is_empty() {
-            let want = words.to_ascii_lowercase();
-            let player_hit = self
-                .in_game_sessions()
-                .filter(|(_, p)| p.location == room)
-                .any(|(_, p)| word_prefix_match(&p.name, &want));
-            if player_hit {
-                self.output_line(session, text::MAY_NOT_CAST_ON_USER);
-                return;
+            match self.find_cast_target(session, crate::content::FindScope::UNIVERSAL, words) {
+                Some(CastTarget::Monster(_)) => {
+                    self.output_line(session, text::MAY_NOT_CAST_ON_MONSTER);
+                }
+                Some(CastTarget::User(_)) => {
+                    self.output_line(session, text::MAY_NOT_CAST_ON_USER);
+                }
+                Some(CastTarget::Item(_)) => {
+                    self.output_line(session, text::MAY_NOT_CAST_ON_ITEM);
+                }
+                // ORACLE-VERIFY: an unmatched word was not measured on the
+                // area path — the room-lookup refusal, like every other path.
+                None => self.output_line(session, &text::do_not_see_here(words)),
             }
-            if self.find_monster(room, words).is_some() {
-                self.output_line(session, text::MAY_NOT_CAST_ON_MONSTER);
-                return;
-            }
-            // ORACLE-VERIFY: an unmatched word was not measured on the
-            // area path — the room-lookup refusal, like every other path.
-            self.output_line(session, &text::do_not_see_here(words));
             return;
         }
         // add_evil_warnings_to_room (crime.md §2.5 last row): an offensive
@@ -7200,8 +7238,12 @@ impl Core {
             // whiffed rounds too) — driver rounds only: the command-time
             // duration path never engaged, and the DLL's fail branch sets
             // no aggro there (44234-44265 prints and moves on). Gated
-            // like every lock since slice 3.
+            // like every lock since slice 3, and on the OFFENSIVE mode:
+            // the grudge write at 43249-43273 is inside the
+            // `spelltype < 3` block, so a failed benign cast at a monster
+            // (the 208-spell match-4/6/8 band) never earns a grudge.
             if spell.duration == 0
+                && spell.target_mode.is_offensive()
                 && self.monsters.get(&monster_id).is_some_and(|m| m.target.is_none())
             {
                 self.retaliation_lock(monster_id, session);
@@ -7233,12 +7275,18 @@ impl Core {
         // (17), Drain (8) and Summon (12) instant; the duration table
         // enters the monster's 5 slots below (the area twins live in
         // `area_cast`). Enslave (6) charms on both arms (charm.md §1,
-        // the arm below). The benign-at-monster
-        // instant arms (Heal/EnergyLevel/CurePoison, cast_monster_target
-        // 43824-43882/44131-44160) are DATA-GATED DEAD: the command path
-        // refuses benign-at-monster outright (§8.13
-        // MAY_NOT_CAST_ON_MONSTER) and the forced-cast route has no
-        // shipped trigger. A non-zero
+        // the arm below). The healing-at-monster INSTANT arms
+        // (Heal(18)/EnergyLevel(11)/CurePoison(20), cast_monster_target
+        // 43824-43882/43883-43900/44131-44160) stay unimplemented on an
+        // ABILITY-SIDE data gate, not a routing one — benign spells do
+        // reach a monster (the match-4/6/8 band above). Of the 1379
+        // shipped spells only five carry one of those three abilities at
+        // match 4/6/8: 943 `sys j`, 1114 `sabre`, 1146 `godheal` and 1252
+        // `dead heal` are instant but UNLEARNABLE (no LearnSp carrier),
+        // and the one learnable carrier — 853 `wrathful curse`, scroll
+        // 1300 — has duration 7, so it takes the slot arm below, exactly
+        // like the DLL's `param_1[0x67] != 0` else at 43872-43880. The
+        // forced-cast route has no shipped trigger either. A non-zero
         // ability value is a FIXED amount that bypasses both the magnitude
         // roll and the resist scaling (but NOT the 17 MR scale, which the
         // DLL applies to the fixed-or-rolled amount alike); value 0 means
@@ -7353,12 +7401,7 @@ impl Core {
                     // the case body entirely: no message, no slot entry,
                     // and the mana stays paid. It must NOT fall through
                     // to the default duration-slot arm.
-                    let match_ok = matches!(
-                        spell.match_type,
-                        crate::content::MatchType::Special4
-                            | crate::content::MatchType::Item6
-                            | crate::content::MatchType::Special8
-                    );
+                    let match_ok = spell.match_type.accepts_monster();
                     let charm_level = self
                         .monsters
                         .get(&monster_id)
@@ -8267,6 +8310,51 @@ impl Core {
                 })
             })
             .map(|(id, _)| *id)
+    }
+
+    /// `find_action_target` (decompile 63726), restricted to the kinds
+    /// [`crate::content::FindScope`] models and searched in the DLL's own
+    /// order: the room's monsters (mask bit `0x1`) first, then the room's
+    /// players (`0x2`), then the caster's carried items (`0x4`). The
+    /// first hit wins — the DLL's multiple-match prompt is not modelled.
+    fn find_cast_target(
+        &self,
+        session: SessionId,
+        scope: crate::content::FindScope,
+        words: &str,
+    ) -> Option<CastTarget> {
+        let room = self.player(session).location;
+        if scope.monsters
+            && let Some(id) = self.find_monster(room, words)
+        {
+            return Some(CastTarget::Monster(id));
+        }
+        let want = words.trim().to_ascii_lowercase();
+        if scope.users
+            && let Some(id) = self
+                .in_game_sessions()
+                .filter(|(_, p)| p.location == room)
+                .find(|(_, p)| word_prefix_match(&p.name, &want))
+                .map(|(id, _)| id)
+        {
+            return Some(CastTarget::User(id));
+        }
+        // ORACLE-VERIFY: the carried set only. Room items (found kind 4 ->
+        // "You are not carrying %s!") and spellbook entries (kind 0x10 ->
+        // "Why would you want to cast a spell on a spell?") are in the
+        // DLL's universal mask but have no measured surface here.
+        if scope.items
+            && let Some(id) = self.player(session).inventory.iter().find_map(|(id, _)| {
+                self.content
+                    .items
+                    .get(id)
+                    .filter(|i| word_prefix_match(&i.name, &want))
+                    .map(|_| *id)
+            })
+        {
+            return Some(CastTarget::Item(id));
+        }
+        None
     }
 
     /// `background_energy`: regenerate energy, then run the two combat

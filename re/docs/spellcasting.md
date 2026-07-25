@@ -57,6 +57,68 @@ the command parser to pick a cast entry point (`cast_no_target` vs
 `cast_user_target` vs `cast_monster_target` vs `cast_item_target`) and required
 target syntax.
 
+### 1.1 Single-target routing law (`cmd_cast` 59253-59320)
+
+**Routing is the resolved target KIND; `spelltype` routes nothing.** With a
+target word present the dispatcher runs `find_action_target` with the
+preferred mask above, and **when that returns nothing it re-runs the search
+with the universal mask `0xf037`** (59265-59271) — so the preferred mask is
+only an ORDERING preference and any match type can resolve any kind. It then
+dispatches purely on the found kind (59278-59320).
+
+`find_action_target` (0x699fc) mask bits and the kind code it writes to
+`*param_4`:
+
+| mask bit | searches | found kind | dispatcher arm |
+|---|---|---|---|
+| `0x001` | room monsters | `2` | `cast_monster_target` |
+| `0x002` | room players | `1` | `cast_user_target` |
+| `0x004`/`0x008`/`0x040` | caster's inventory | `8` | `cast_item_target` |
+| `0x010` | items on the floor | `4` | `You are not carrying %s!` |
+| `0x020` | the caster's spellbook | `0x10` | `Why would you want to cast a spell on a spell?` |
+| `0x080` | — | — | exclude self from the player search |
+| `0x100`/`0x200`/`0x400` | — | — | item sub-type filters |
+| `0x800` | — | — | search CHARMED monsters last (two-pass) |
+
+Nothing found ⇒ `You do not see %s here!`. The search order inside the
+function is monsters → players → inventory → floor → spellbook, and an exact
+`sameas` hit returns immediately; two or more partial hits set `0x20` and
+raise the multiple-match prompt.
+
+**Acceptance is the match type**, re-checked inside each entry point, and
+every refusal is UNCHARGED and pre-roll:
+
+| entry point | accepts `+0xcc` ∈ | else (line) |
+|---|---|---|
+| `cast_monster_target` | `{4, 6, 8}` (43205) | `You may not cast that spell on a monster!` (44311-44315) |
+| `cast_user_target` | `{0, 2, 6, 8}` (41460) | `You may not cast that spell on a user!` (43064-43066) |
+| `cast_item_target` | `{6, 7}` (44367) | `You may not cast that spell on an item!` (44369) |
+
+This is what produces the §8.13 measurements rather than contradicting them:
+`c blur cat` (match **2**) prefers players, finds none, falls back to the
+universal search, lands on the monster and is refused there; `c flash oracle`
+and `c stnk cat` (match **12**, preferred mask `0`) go straight to the
+universal search and are refused by whichever entry point the found kind
+picked.
+
+Data cross-check (`re/mmud_wgnt.sqlite`, 1379 spells / 207 LearnSp-taught):
+match **1** is the self-only buff band (barkskin, stoneskin, magic armour,
+shadowform — 25 learnable, and no entry point accepts it, so they are
+bare-cast only); match **2** is the cast-on-another-player band (bless, blur,
+minor healing — 42 learnable); **208** benign-mode (`spelltype` 3) spells sit
+on match 4/6/8 and DO reach a monster (the charm family, curse, blind, slow,
+fear, hold person); the 69 offensive-mode spells on match 0/1/2/7 do not, and
+not one of them is learnable — every learnable offensive spell is match 4, 8
+or 12.
+
+Inside `cast_monster_target`, `spelltype` (`+0xc4`) is used only for
+hostility: the evil-points/grudge block (43248-43273, autocombat re-fire
+only), the engage-and-stop block (43411-43421, gated on `spelltype < 3` AND
+`duration == 0` — a **benign** monster cast never engages, it consumes the
+one-per-round permission bit at 43498-43509 and resolves inside the command),
+and the elemental-resist scale (43525). Note the protected-room gate at
+43232 is NOT spelltype-gated here, unlike its `cast_user_target` twin.
+
 **Player active-spell slots** (10 slots each), the maintained duration-spell state:
 
 | offset | meaning |

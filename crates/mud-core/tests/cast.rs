@@ -447,6 +447,11 @@ fn world() -> Content {
     // magnitude" (a non-zero value is a fixed, unresisted amount).
     let mut zap = spell(ZAP, "zap", "zapp");
     zap.target_mode = TargetMode::Offensive0;
+    // Offensive single-target attack spells ship match 8 (magic
+    // missile's own shape — see mud-server's load_real_db). The cast
+    // dispatcher routes on the MATCH type, so an offensive match-0
+    // spell would take the uncharged on-a-monster refusal instead.
+    zap.match_type = MatchType::Special8;
     zap.element = Element::Fire;
     zap.abilities = vec![(Ability::Damage, 0)];
     zap.min_base = 10;
@@ -468,6 +473,8 @@ fn world() -> Content {
     hexbolt.mana_cost = 4;
     let mut doom = spell(DOOM, "doom", "doom");
     doom.target_mode = TargetMode::Offensive0;
+    // Match 8, as above.
+    doom.match_type = MatchType::Special8;
     doom.element = Element::Magic;
     doom.abilities = vec![(Ability::Damage, 9)];
     doom.mana_cost = 1;
@@ -510,6 +517,8 @@ fn world() -> Content {
     feast.abilities = vec![(Ability::Alterhunger, 40), (Ability::AlterThirst, 30)];
     let mut leech = spell(LEECH, "leech", "leec");
     leech.target_mode = TargetMode::Offensive0;
+    // Match 8, as above.
+    leech.match_type = MatchType::Special8;
     leech.element = Element::Magic;
     leech.abilities = vec![(Ability::Drain, 9)];
     leech.mana_cost = 1;
@@ -521,6 +530,8 @@ fn world() -> Content {
     // applies it to local_2c whichever way that was selected).
     let mut mrbolt = spell(MRBOLT, "mrbolt", "mrbo");
     mrbolt.target_mode = TargetMode::Offensive0;
+    // Match 8, as above.
+    mrbolt.match_type = MatchType::Special8;
     mrbolt.element = Element::Magic;
     mrbolt.abilities = vec![(Ability::DamageMR, 100)];
     mrbolt.mana_cost = 1;

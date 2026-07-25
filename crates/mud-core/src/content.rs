@@ -437,6 +437,35 @@ impl Element {
     }
 }
 
+/// Which kinds of thing a room-name lookup searches — the modelled bits
+/// of `find_action_target`'s mask (decompile 63726): `0x01` monsters,
+/// `0x02` users, `0x04` carried items.
+///
+/// NOT modelled, and unreachable from the cast path as a result: `0x10`
+/// room items (found kind 4 -> "You are not carrying %s!"), `0x20`
+/// spellbook entries (kind 0x10 -> "Why would you want to cast a spell on
+/// a spell?"), `0x80` exclude-self and `0x800` charmed-monsters-last.
+/// ORACLE-VERIFY: none of the four has a measured surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FindScope {
+    pub monsters: bool,
+    pub users: bool,
+    pub items: bool,
+}
+
+impl FindScope {
+    /// The dispatcher's `0xf037` retry mask (decompile 59265-59271).
+    pub const UNIVERSAL: FindScope = FindScope { monsters: true, users: true, items: true };
+    /// `get_spell_match_type`'s `0` — search nothing.
+    pub const NONE: FindScope = FindScope { monsters: false, users: false, items: false };
+
+    /// True when the scope would search nothing, so the caller can skip
+    /// straight to the universal retry.
+    pub fn is_empty(self) -> bool {
+        !(self.monsters || self.users || self.items)
+    }
+}
+
 /// Spell match/delivery type (`spell+0xcc`, `target`) — selects the cast
 /// entry point and target iteration (spellcasting.md §1, §3, §4). Variant
 /// names are placeholders pending semantic pinning; the predicates encode
@@ -481,8 +510,63 @@ impl MatchType {
         })
     }
 
-    /// Requires an item target (`cast_item_target`, §3).
-    pub fn is_item(self) -> bool {
+    /// The room search `find_action_target` runs FIRST for this match
+    /// type (`get_spell_match_type`, decompile 45018-45053): match 4 ->
+    /// `0x801`, 6 -> `0xf837`, 7 -> `0x14`, 8 -> `0x803`, 0/1/2 -> `0x02`,
+    /// the seven area types -> `0`. It is only an ORDERING preference —
+    /// the dispatcher re-runs the search with [`FindScope::UNIVERSAL`]
+    /// when this one comes back empty (59265-59271).
+    ///
+    /// The `0x80` (exclude-self) bit the offensive 0/1/2 mask `0x82`
+    /// adds is NOT modelled: it only reorders self against another
+    /// player, and the universal fallback re-admits self either way.
+    pub fn preferred_find(self) -> FindScope {
+        match self {
+            // 0x02 / 0x82 — users only.
+            MatchType::Single0 | MatchType::Single1 | MatchType::Single2 => FindScope {
+                monsters: false,
+                users: true,
+                items: false,
+            },
+            // 0x801 — monsters only (charmed ones last, not modelled).
+            MatchType::Special4 => FindScope { monsters: true, users: false, items: false },
+            // 0xf837 — everything.
+            MatchType::Item6 => FindScope::UNIVERSAL,
+            // 0x14 — items only (room items `0x10` + carried `0x04`).
+            MatchType::Item7 => FindScope { monsters: false, users: false, items: true },
+            // 0x803 — monsters and users.
+            MatchType::Special8 => FindScope { monsters: true, users: true, items: false },
+            // 0 — the area types search nothing; an explicit target word
+            // therefore falls straight through to the universal retry and
+            // refuses on whatever KIND it lands (MEASURED §8.13).
+            MatchType::Area3
+            | MatchType::Area5
+            | MatchType::Area9
+            | MatchType::Area10
+            | MatchType::AreaB
+            | MatchType::AreaC
+            | MatchType::AreaD => FindScope::NONE,
+        }
+    }
+
+    /// `cast_monster_target` 43205 — anything else takes the uncharged
+    /// "You may not cast that spell on a monster!" at 44311-44315.
+    pub fn accepts_monster(self) -> bool {
+        matches!(self, MatchType::Special4 | MatchType::Item6 | MatchType::Special8)
+    }
+
+    /// `cast_user_target` 41460 — the self-only buff band (match 1) is
+    /// deliberately absent: 25 of the 207 learnable spells sit there
+    /// (barkskin, stoneskin, magic armour) and none may name a target.
+    pub fn accepts_user(self) -> bool {
+        matches!(
+            self,
+            MatchType::Single0 | MatchType::Single2 | MatchType::Item6 | MatchType::Special8
+        )
+    }
+
+    /// `cast_item_target` 44367 (§3).
+    pub fn accepts_item(self) -> bool {
         matches!(self, MatchType::Item6 | MatchType::Item7)
     }
 
