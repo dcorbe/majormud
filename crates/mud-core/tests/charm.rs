@@ -87,7 +87,15 @@ const BAG: MonsterId = MonsterId(12);
 /// The shipped `bishop`/`priest`/`boatman` shape: energy pool **0** with
 /// a form-0 cost of 5, and `charmlvl` 0 (charmable by anyone). It can
 /// never pay for the swing it has already drawn for (27242).
+///
+/// `attacktype_1` is 0 on all three shipped templates, and so is this
+/// fixture's `kind` — the fighter build never reads it, so the field is
+/// irrelevant to what this probe measures either way. (`old man` #39 and
+/// `healer` #47 are the genuinely-`kind`-1 members of the pool-0 pool.)
 const BISHOP: MonsterId = MonsterId(13);
+/// A second body sharing HOUND's `dog` word: the `0x800` two-pass
+/// ordering probe (§2.3). Inert — 500 HP, behaviour 3, no attack form.
+const CUR: MonsterId = MonsterId(14);
 
 /// (Enslave, 0), duration 60 flat, no save — the state/slot probe.
 const ENSLAVE: SpellId = SpellId(700);
@@ -119,6 +127,14 @@ const GALE: SpellId = SpellId(795);
 /// its case 6. No shipped Enslave pairs the two rows, so this is
 /// fixture-only.
 const VENOMBOND: SpellId = SpellId(800);
+/// A benign match-4 SLOT spell with no save and no damage: the §2.3
+/// two-pass find probe. The slot it leaves says which body the
+/// `0x801` search resolved, with no roll in the way.
+const MARK: SpellId = SpellId(810);
+/// GALE at match **11**, the area type `is_valid_monster_target` waves
+/// through unconditionally (38461) — the control that keeps the pet
+/// exemption pinned to match 9/12 and not to "area casts".
+const SQUALL: SpellId = SpellId(815);
 
 fn spell(id: SpellId, name: &str, short: &str) -> Spell {
     Spell {
@@ -235,12 +251,16 @@ fn world() -> Content {
     bag.hitpoints = 500;
     bag.behaviour = 3;
     content.add_monster(bag);
+    let mut cur = monster(CUR, "wild dog", 9999, 40);
+    cur.hitpoints = 500;
+    cur.behaviour = 3;
+    content.add_monster(cur);
     let mut bishop = monster(BISHOP, "bishop", 0, 40);
     bishop.hitpoints = 200;
     bishop.aggression = 100;
     bishop.behaviour = 1;
     bishop.attacks[0] = AttackForm {
-        kind: 1,
+        kind: 0,
         accuracy: 200,
         weight: 100,
         min_damage: 4,
@@ -323,10 +343,18 @@ fn world() -> Content {
     gale.duration = 0;
     gale.target_mode = TargetMode::Offensive0;
     gale.match_type = MatchType::AreaC;
+    let mut squall = spell(SQUALL, "squall", "squa");
+    squall.abilities = vec![(Ability::Damage, 3)];
+    squall.duration = 0;
+    squall.target_mode = TargetMode::Offensive0;
+    squall.match_type = MatchType::AreaB;
     let mut venombond = spell(VENOMBOND, "venombond", "veno");
     venombond.abilities = vec![(Ability::Enslave, 0), (Ability::Poison, 5)];
+    let mut mark = spell(MARK, "mark", "mark");
+    mark.abilities = vec![(Ability::AC, -5)];
     for s in [
-        enslave, thrall, hold, snap, whisper, leash, bind, bindsave, sear, gale, venombond,
+        enslave, thrall, hold, snap, whisper, leash, bind, bindsave, sear, gale, squall, venombond,
+        mark,
     ] {
         content.add_spell(s);
     }
@@ -346,7 +374,8 @@ fn caster() -> Player {
 
 fn caster_named(name: &str, location: RoomId) -> Player {
     let book: BTreeMap<SpellId, bool> = [
-        ENSLAVE, THRALL, HOLD, SNAP, WHISPER, LEASH, BIND, BINDSAVE, SEAR, GALE, VENOMBOND,
+        ENSLAVE, THRALL, HOLD, SNAP, WHISPER, LEASH, BIND, BINDSAVE, SEAR, GALE, SQUALL, VENOMBOND,
+        MARK,
     ]
     .into_iter()
     .chain((0..5).map(|i| SpellId(FILLER_BASE + i)))
@@ -1026,31 +1055,41 @@ fn a_damage_cast_grudges_a_pet_without_releasing_it() {
 }
 
 #[test]
-fn an_area_damage_cast_grudges_the_casters_own_pet() {
+fn an_area_damage_cast_grudges_somebody_elses_pet() {
     // The AREA copies of that twin (`cast_no_target` 40371-40384 and
     // 40600-40613) are the same shape: `check_kill_monster`, then a
     // roam-class gate and `genrdn(1,100) < mon+0x42`, with no charmed
     // check and — unlike the single-target 43752 arm — no null-template
-    // clause and no `roam == 5` carve-out either. Your own pet is just
-    // another body in the room: it takes the damage and the grudge and
+    // clause and no `roam == 5` carve-out either. A pet reaching this
+    // twin is just another body: it takes the damage and the grudge and
     // stays charmed.
     //
-    // This pins `CharmedLock::Ignored` at the area call site, which is
-    // otherwise reachable but unasserted — flipping that tag to `Exempt`
-    // leaves the pet at `(true, true, Some(s))` and fails here.
+    // MEASURED FROM A BYSTANDER'S CAST, and — like the single-target
+    // sibling above — it has to be, for a second and completely separate
+    // reason: `is_valid_monster_target` (38477-38482) drops YOUR pet out
+    // of a match-9/12 area sweep before any of this runs, so the owner
+    // can never reach the twin at all (`an_area_cast_skips_your_own_pet`
+    // pins that). Vex's pet is not Vex's problem: the name compare
+    // misses, the fall-through admits the body, and the twin fires.
+    //
+    // This pins `CharmedExemption::Ignored` at the area call site, which
+    // is otherwise reachable but unasserted — flipping that tag to
+    // `Exempt` leaves the pet at `(true, true, Some(s))` and fails here.
     let (mut core, s, m) = setup(KEEN);
     cast(&mut core, s, "cast ensl keen");
     assert_eq!(core.debug_monster_charm(m), Some((true, true, Some(s))));
+    let other = core.attach_player(caster_named("Vex", TOWER));
+    core.drain_events();
     energy_round(&mut core);
     let hp = core.monster_hp(m).expect("keen mutt lives");
-    cast(&mut core, s, "cast gale");
+    cast(&mut core, other, "cast gale");
     assert!(
         core.monster_hp(m).is_some_and(|h| h < hp),
-        "the area sweep must hit the pet"
+        "the area sweep must hit a pet that is not the caster's"
     );
     assert_eq!(
         core.debug_monster_charm(m),
-        Some((true, false, Some(s))),
+        Some((true, false, Some(other))),
         "the area twin locks the pet without clearing the charmed bit"
     );
 }
@@ -1302,4 +1341,226 @@ fn a_pool_0_pet_draws_every_pass_and_never_swings() {
     assert_eq!(core.monster_hp(bag), hp, "and the swing never lands");
     assert_eq!(core.monster_energy(pet), Some(0), "nothing is ever paid");
     assert!(core.drain_events().is_empty(), "silently, forever");
+}
+
+// §2.3 — targeting. TWO INDEPENDENT GATES, on DISJOINT call paths.
+//
+// 1. `find_action_target`'s `0x800` bit (63776 / 63820) — an ORDERING,
+//    not an exclusion. The monster block runs TWICE when the bit is set:
+//    pass 1 skips `mon+0x128 & 1`, pass 2 scans ONLY charmed monsters.
+//    Both passes precede the `0x2` user scan, so the bit reorders
+//    nothing but monster-against-monster. Carriers: `cmd_any_attack`
+//    `0x883` (49590) and `cmd_cast`'s preferred masks `0x801` (match 4),
+//    `0x803` (match 8) and `0xf837` (match 6). NOT carried by the
+//    dispatcher's universal retry `0xf037` (59265-59271) — but that
+//    asymmetry has no observable surface, because every match type
+//    `cast_monster_target` ACCEPTS ({4,6,8}, 43205) already searches
+//    monsters in its preferred mask, so the retry only ever lands on a
+//    monster for match types that then refuse it by KIND. Modelled
+//    literally all the same.
+// 2. `is_valid_monster_target` (38430) — a genuine exclusion, and it
+//    lives ONLY on the AREA sweeps (`count_valid_targets` 38610,
+//    `add_duration_spell_to_room` 38707, `add_evil_warnings_to_room`
+//    38803 and the eight `cast_no_target` effect arms). Its switch on
+//    `spell+0xcc` gives match **9 and 12 only** the charm arm
+//    (38477-38488): charmed-or-suppressed AND `mon+0x1a` == your name ->
+//    invalid; the same compare on an unsuppressed body makes your
+//    grudge-holder always-valid. Match 3/5/11 are waved through at 38461
+//    and single-target 4/6/8 never reach the function at all.
+//
+// So charm.md §2.3's "hostile spells can't target your own pet" is true
+// of AREA match 9/12 and of nothing else: a single-target `cast mmis
+// rat` prefers a wild rat, and takes the pet when the pet is the only
+// rat in the room.
+
+/// The §2.3 staging: an owner, a charmable `war dog` and an inert
+/// `wild dog`, in that spawn order — so the pet has the LOWER instance
+/// id and wins a single unordered pass.
+fn two_dogs() -> (Core, SessionId, MonsterInstanceId, MonsterInstanceId) {
+    let mut core = Core::new(world(), config());
+    let pet = core.spawn_monster(HOUND, TOWER).expect("war dog");
+    let wild = core.spawn_monster(CUR, TOWER).expect("wild dog");
+    let s = core.attach_player(caster_named("Zin", TOWER));
+    core.drain_events();
+    (core, s, pet, wild)
+}
+
+fn slotted(core: &Core, m: MonsterInstanceId, spell: SpellId) -> bool {
+    core.monster_active_spells(m)
+        .is_some_and(|slots| slots.iter().any(|s| s.spell == Some(spell)))
+}
+
+#[test]
+fn a_monster_cast_prefers_a_wild_body_over_your_pet() {
+    // Pass 1 of the `0x801` search skips the pet and finds the wild dog
+    // even though the pet is first in the room list.
+    let (mut core, s, pet, wild) = two_dogs();
+    cast(&mut core, s, "cast ensl war");
+    assert_eq!(core.debug_monster_charm(pet), Some((true, true, Some(s))));
+    energy_round(&mut core);
+    cast(&mut core, s, "cast mark dog");
+    assert!(
+        slotted(&core, wild, MARK),
+        "pass 1 must land on the wild body"
+    );
+    assert!(!slotted(&core, pet, MARK), "and never on the pet");
+}
+
+#[test]
+fn a_lone_pet_is_still_a_valid_cast_target() {
+    // Pass 2 (63820): with no wild body left, the charmed-only sweep
+    // finds the pet and the cast lands on it. `0x800` DEPRIORITISES; it
+    // does not hide.
+    let (mut core, s, pet) = setup(HOUND);
+    cast(&mut core, s, "cast ensl war");
+    energy_round(&mut core);
+    let shown = cast(&mut core, s, "cast mark dog");
+    assert!(
+        !shown.contains("You do not see"),
+        "a lone pet is findable: {shown:?}"
+    );
+    assert!(slotted(&core, pet, MARK), "pass 2 resolves the pet");
+}
+
+#[test]
+fn melee_attack_prefers_a_wild_body_over_your_pet() {
+    // `cmd_any_attack` carries `0x800` too (49590, mask `0x883`), so the
+    // same ordering decides which dog ATTACK engages. Read through the
+    // pet: an owner engaged on the WILD dog leaves the pet assisting and
+    // charmed, an owner engaged on the PET releases it (46929).
+    let (mut core, s, pet, wild) = two_dogs();
+    cast(&mut core, s, "cast ensl war");
+    energy_round(&mut core);
+    core.input(s, "attack dog");
+    core.drain_events();
+    let wild_hp = core.monster_hp(wild).expect("wild dog lives");
+    core.debug_monster_consider(pet);
+    assert_eq!(
+        core.debug_monster_charm(pet),
+        Some((true, true, Some(s))),
+        "the owner engaged the WILD dog, so the pet is untouched"
+    );
+    assert!(
+        core.monster_hp(wild).is_some_and(|hp| hp < wild_hp),
+        "and assists against it"
+    );
+}
+
+#[test]
+fn melee_attack_still_finds_a_lone_pet() {
+    // §2.3's "physical attacks are allowed" — and they are a release
+    // path (§4.3), so pass 2 has to hand ATTACK the pet when the pet is
+    // the only match. A find that HID pets would silently disarm the
+    // whole melee release family.
+    let (mut core, s, pet) = setup(HOUND);
+    cast(&mut core, s, "cast ensl war");
+    energy_round(&mut core);
+    let shown = cast(&mut core, s, "attack dog");
+    assert!(
+        shown.contains("*Combat Engaged*"),
+        "ATTACK must resolve the lone pet: {shown:?}"
+    );
+    core.debug_monster_consider(pet);
+    assert_eq!(
+        core.debug_monster_charm(pet),
+        Some((false, false, None)),
+        "and the engagement releases it on the next driver pass"
+    );
+}
+
+#[test]
+fn an_area_cast_skips_your_own_pet() {
+    // 38477-38482: match 12 + charmed + `mon+0x1a` == the caster ->
+    // invalid. The rest of the room burns as usual.
+    let (mut core, s, pet, bag) = kennel(HOUND);
+    cast(&mut core, s, "cast ensl dog");
+    energy_round(&mut core);
+    let pet_hp = core.monster_hp(pet).expect("pet lives");
+    let bag_hp = core.monster_hp(bag).expect("dummy lives");
+    cast(&mut core, s, "cast gale");
+    assert_eq!(
+        core.monster_hp(pet),
+        Some(pet_hp),
+        "your own pet is not a valid match-12 area victim"
+    );
+    assert!(
+        core.monster_hp(bag).is_some_and(|hp| hp < bag_hp),
+        "everything else in the room still takes it"
+    );
+}
+
+#[test]
+fn an_area_cast_skips_a_friend_of_yours() {
+    // The exemption is `charmed OR suppressed` (38477), so the "friend"
+    // state §4.3 leaves behind — link + `+0x116`, charmed bit gone —
+    // is exempt on exactly the same terms.
+    let (mut core, s, pet, bag) = kennel(HOUND);
+    cast(&mut core, s, "cast snap dog"); // instant: no slot to sweep
+    energy_round(&mut core);
+    core.input(s, "attack dog");
+    core.drain_events();
+    core.debug_monster_consider(pet);
+    assert_eq!(
+        core.debug_monster_charm(pet),
+        Some((false, true, Some(s))),
+        "staged as a friend: suppressed, named, not charmed"
+    );
+    energy_round(&mut core); // the melee spent the round pool
+    let pet_hp = core.monster_hp(pet).expect("friend lives");
+    let bag_hp = core.monster_hp(bag).expect("dummy lives");
+    cast(&mut core, s, "cast gale");
+    assert_eq!(core.monster_hp(pet), Some(pet_hp), "a friend is exempt too");
+    assert!(
+        core.monster_hp(bag).is_some_and(|hp| hp < bag_hp),
+        "the sweep still ran"
+    );
+}
+
+#[test]
+fn an_area_cast_on_another_match_type_still_hits_your_pet() {
+    // The carve-out is the switch label, not "area casts": match 3, 5
+    // and 11 take the unconditional `return 1` at 38461 and never reach
+    // the charm compare.
+    let (mut core, s, pet, bag) = kennel(HOUND);
+    cast(&mut core, s, "cast ensl dog");
+    energy_round(&mut core);
+    let pet_hp = core.monster_hp(pet).expect("pet lives");
+    let bag_hp = core.monster_hp(bag).expect("dummy lives");
+    cast(&mut core, s, "cast squall");
+    assert!(
+        core.monster_hp(pet).is_some_and(|hp| hp < pet_hp),
+        "match 11 has no charm arm: the pet burns with everything else"
+    );
+    assert!(core.monster_hp(bag).is_some_and(|hp| hp < bag_hp));
+}
+
+#[test]
+fn an_area_cast_spares_a_ward_the_caster_is_not_famous_enough_for() {
+    // The REST of the 9/12 arm, ported with it because it is the same
+    // three-line fall-through (38489-38499): instance roam class 5 or
+    // 0x25 spares the body from a caster with fame < 0x28, and
+    // behaviour mode 4 spares it outright. Nothing here is charm; it is
+    // what `is_valid_monster_target` does once the name compare misses.
+    let probe = |roam: i16, behaviour: i16, fame: i16| {
+        let mut content = world();
+        let mut ward = monster(GUARD, "gate ward", 9999, 40);
+        ward.hitpoints = 500;
+        ward.roam_class = roam;
+        ward.behaviour = behaviour;
+        content.add_monster(ward);
+        let mut core = Core::new(content, config());
+        let m = core.spawn_monster(GUARD, TOWER).expect("ward");
+        let s = core.attach_player(caster_named("Zin", TOWER));
+        core.set_player_fame(s, fame);
+        core.drain_events();
+        let hp = core.monster_hp(m).expect("ward lives");
+        cast(&mut core, s, "cast gale");
+        core.monster_hp(m).is_some_and(|now| now < hp)
+    };
+    assert!(probe(0, 1, 0), "the control burns");
+    assert!(!probe(5, 1, 0), "roam 5 + fame < 0x28 is spared");
+    assert!(probe(5, 1, 40), "fame 0x28 lifts it");
+    assert!(!probe(0x25, 1, 0), "roam 0x25 + fame < 0x28 is spared");
+    assert!(probe(0x25, 1, 40), "and lifts the same way");
+    assert!(!probe(0, 4, 400), "behaviour 4 is spared at any fame");
 }

@@ -439,25 +439,48 @@ impl Element {
 
 /// Which kinds of thing a room-name lookup searches — the modelled bits
 /// of `find_action_target`'s mask (decompile 63726): `0x01` monsters,
-/// `0x02` users, `0x04` carried items.
+/// `0x02` users, `0x04` carried items, `0x800` charmed monsters LAST.
 ///
 /// NOT modelled, and unreachable from the cast path as a result: `0x10`
 /// room items (found kind 4 -> "You are not carrying %s!"), `0x20`
 /// spellbook entries (kind 0x10 -> "Why would you want to cast a spell on
-/// a spell?"), `0x80` exclude-self and `0x800` charmed-monsters-last.
-/// ORACLE-VERIFY: none of the four has a measured surface.
+/// a spell?") and `0x80` exclude-self. ORACLE-VERIFY: none of the three
+/// has a measured surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FindScope {
     pub monsters: bool,
     pub users: bool,
     pub items: bool,
+    /// Mask bit `0x800`: the monster block runs TWICE — pass 1 skips
+    /// `mon+0x128 & 1` (63776), pass 2 scans ONLY charmed monsters
+    /// (63820). An ORDERING, never an exclusion: a lone pet is still
+    /// found, by pass 2. Both passes precede the `0x02` user scan, so
+    /// the bit never reorders a monster against a player.
+    ///
+    /// Ignored unless `monsters` is set.
+    pub charmed_last: bool,
 }
 
 impl FindScope {
-    /// The dispatcher's `0xf037` retry mask (decompile 59265-59271).
-    pub const UNIVERSAL: FindScope = FindScope { monsters: true, users: true, items: true };
+    /// The dispatcher's `0xf037` retry mask (decompile 59265-59271) —
+    /// note the MISSING `0x800`: the retry treats pets and wild bodies
+    /// alike. (No observable surface: every match type
+    /// `cast_monster_target` accepts already searches monsters in its
+    /// preferred mask, so the retry only reaches a monster for match
+    /// types that then refuse it by kind. Kept literal anyway.)
+    pub const UNIVERSAL: FindScope = FindScope {
+        monsters: true,
+        users: true,
+        items: true,
+        charmed_last: false,
+    };
     /// `get_spell_match_type`'s `0` — search nothing.
-    pub const NONE: FindScope = FindScope { monsters: false, users: false, items: false };
+    pub const NONE: FindScope = FindScope {
+        monsters: false,
+        users: false,
+        items: false,
+        charmed_last: false,
+    };
 
     /// True when the scope would search nothing, so the caller can skip
     /// straight to the universal retry.
@@ -527,16 +550,36 @@ impl MatchType {
                 monsters: false,
                 users: true,
                 items: false,
+                charmed_last: false,
             },
-            // 0x801 — monsters only (charmed ones last, not modelled).
-            MatchType::Special4 => FindScope { monsters: true, users: false, items: false },
-            // 0xf837 — everything.
-            MatchType::Item6 => FindScope::UNIVERSAL,
+            // 0x801 — monsters only, charmed ones last.
+            MatchType::Special4 => FindScope {
+                monsters: true,
+                users: false,
+                items: false,
+                charmed_last: true,
+            },
+            // 0xf837 — everything, charmed monsters last. This is the one
+            // preferred mask that is the universal `0xf037` PLUS `0x800`.
+            MatchType::Item6 => FindScope {
+                charmed_last: true,
+                ..FindScope::UNIVERSAL
+            },
             // 0x14 — items only (room items `0x10` + carried `0x04`).
-            MatchType::Item7 => FindScope { monsters: false, users: false, items: true },
-            // 0x803 — monsters and users (charmed monsters last via the
-            // same `0x800` bit match 4 sets, not modelled).
-            MatchType::Special8 => FindScope { monsters: true, users: true, items: false },
+            MatchType::Item7 => FindScope {
+                monsters: false,
+                users: false,
+                items: true,
+                charmed_last: false,
+            },
+            // 0x803 — monsters and users, charmed monsters last via the
+            // same `0x800` bit match 4 sets.
+            MatchType::Special8 => FindScope {
+                monsters: true,
+                users: true,
+                items: false,
+                charmed_last: true,
+            },
             // 0 — the area types search nothing; an explicit target word
             // therefore falls straight through to the universal retry and
             // refuses on whatever KIND it lands (MEASURED §8.13).

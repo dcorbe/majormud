@@ -300,27 +300,33 @@ fn preferred_find_mirrors_get_spell_match_type() {
     use mud_core::content::{FindScope, MatchType};
     let mt = |n| MatchType::from_i16(n).unwrap();
     // get_spell_match_type 45018-45053, modelled bits only: 0x1 monsters,
-    // 0x2 users, 0x4 carried items.
-    let users = FindScope { monsters: false, users: true, items: false };
+    // 0x2 users, 0x4 carried items, 0x800 charmed monsters last.
+    let users =
+        FindScope { monsters: false, users: true, items: false, charmed_last: false };
     for n in [0, 1, 2] {
         assert_eq!(mt(n).preferred_find(), users, "0x02/0x82, match {n}");
     }
     // 0x801
     assert_eq!(
         mt(4).preferred_find(),
-        FindScope { monsters: true, users: false, items: false }
+        FindScope { monsters: true, users: false, items: false, charmed_last: true }
     );
-    // 0xf837
-    assert_eq!(mt(6).preferred_find(), FindScope::UNIVERSAL);
+    // 0xf837 — the universal retry's 0xf037 PLUS the 0x800 the retry
+    // itself never carries (59265-59271), which is the whole of the
+    // difference between the two masks: the fallback search treats pets
+    // as ordinary bodies.
+    let six = mt(6).preferred_find();
+    assert!(six.monsters && six.users && six.items && six.charmed_last);
+    assert_ne!(six, FindScope::UNIVERSAL, "0xf837 != 0xf037");
     // 0x14
     assert_eq!(
         mt(7).preferred_find(),
-        FindScope { monsters: false, users: false, items: true }
+        FindScope { monsters: false, users: false, items: true, charmed_last: false }
     );
     // 0x803
     assert_eq!(
         mt(8).preferred_find(),
-        FindScope { monsters: true, users: true, items: false }
+        FindScope { monsters: true, users: true, items: false, charmed_last: true }
     );
     // The seven area types return 0 — nothing is searched, so the
     // dispatcher's universal retry does all the work (MEASURED §8.13).

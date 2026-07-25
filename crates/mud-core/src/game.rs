@@ -999,7 +999,7 @@ pub(crate) struct MonsterInstance {
 /// non-wandering, roll-free follower that now attacks its owner.
 /// Deliberate fidelity to a sloppy original, pinned by
 /// `a_damage_cast_grudges_a_pet_without_releasing_it` and
-/// `an_area_damage_cast_grudges_the_casters_own_pet`.
+/// `an_area_damage_cast_grudges_somebody_elses_pet`.
 ///
 /// STILL UNMODELLED at the `Ignored` sites — pre-existing debt in the
 /// shared body, not introduced by this tag:
@@ -1022,6 +1022,31 @@ pub(crate) struct MonsterInstance {
 enum CharmedExemption {
     Exempt,
     Ignored,
+}
+
+/// Which of `find_action_target`'s monster passes a name lookup is
+/// running. The `0x800` mask bit splits the room's monsters into an
+/// UNCHARMED sweep (63776, `(param_7 & 0x800) == 0 || (mon+0x128 & 1) ==
+/// 0`) followed by a CHARMED-ONLY sweep (63820); without the bit there
+/// is a single sweep over everything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MonsterPass {
+    /// No `0x800` — pets and wild bodies in one pass, room order.
+    All,
+    /// `0x800` pass 1.
+    Uncharmed,
+    /// `0x800` pass 2.
+    Charmed,
+}
+
+impl MonsterPass {
+    fn admits(self, charmed: bool) -> bool {
+        match self {
+            MonsterPass::All => true,
+            MonsterPass::Uncharmed => !charmed,
+            MonsterPass::Charmed => charmed,
+        }
+    }
 }
 
 /// A scheduled shop-slot restock, due at an absolute tick. Events live
@@ -2560,6 +2585,18 @@ impl Core {
             // writes the owner link, and kept literal anyway: the two
             // gates come apart the moment a release clears one leg of the
             // triple without the other (§4.2/§4.3 both do).
+            //
+            // TASK 7 MUST REVISIT. Hoisting the charm test to here is a
+            // divergence the shipped state cannot show but the hunt link
+            // will. The DLL's shape is three levels, not two: 19339
+            // gates on `mon+0x1a == 0` (name link) ALONE; 19340 then
+            // splits on `mon+0x22*4 == +0x88` — zero picks the wander
+            // arms, non-zero picks `dir_monster_travelling_coord`
+            // (19376-19380); and `(mon+0x128 & 1) == 0` appears ONLY
+            // inside the two wander arms (19346, 19364). So a charmed
+            // monster carrying a `+0x88` hunt link TRAVELS in the DLL and
+            // would be frozen here. Push the charm test down into the
+            // wander arms when the travel arm lands.
             return;
         }
         let (roam, aggression, from, last) =
@@ -3899,7 +3936,11 @@ impl Core {
         let monster = if target_words.trim().is_empty() {
             self.auto_pick_target(session, room)
         } else {
-            self.find_monster(room, target_words)
+            // `cmd_any_attack` 49590 passes mask `0x883` — the `0x800`
+            // bit rides ATTACK too, so a named swing prefers a wild body
+            // over your own pet and only reaches the pet when nothing
+            // else in the room answers to the name (§2.3).
+            self.find_monster_charmed_last(room, target_words)
         };
         let Some(monster) = monster else {
             return Resolution::FallThrough;
@@ -5035,6 +5076,67 @@ impl Core {
     /// really excludes players like 12 is unsettled (the lowest learnable
     /// 13 is priest chant L6 — §8.13 left it open); revisit before bard/
     /// priest support.
+    /// `is_valid_monster_target` (decompile 38430) — the per-monster gate
+    /// on the AREA sweeps, and ONLY on those: `count_valid_targets`
+    /// (38610), `add_duration_spell_to_room` (38707),
+    /// `add_evil_warnings_to_room` (38803) and the eight `cast_no_target`
+    /// effect arms (39705..40724) call it. `cast_monster_target` never
+    /// does — the single-target path's only charm awareness is the
+    /// `0x800` find ORDERING ([`Core::find_monster_charmed_last`]), which
+    /// is a preference and not a veto. The two gates are independent and
+    /// live on disjoint call paths.
+    ///
+    /// The switch is on `spell+0xcc`, so the MATCH TYPE decides how much
+    /// of the function runs:
+    ///
+    /// * 0/1/2/7 -> invalid (38445-38449); 3/5/0xb -> valid outright
+    ///   (38455-38457), as does the `default` arm that would catch the
+    ///   single-target 4/6/8 if they ever arrived here;
+    /// * 10/0xd -> valid ONLY for your own charmed pet (38501-38509) —
+    ///   the pet-command band. Unreachable: [`MatchType::hits_monsters`]
+    ///   excludes both, exactly as the DLL's `{3,5,9,0xb,0xc}` sweep
+    ///   guards do;
+    /// * **9 and 0xc** -> the real body (38477-38499). This is the ONLY
+    ///   place charm touches player-side targeting:
+    ///   - uncharmed AND `+0x116 == 0` AND `mon+0x1a` == your name ->
+    ///     valid at once (your grudge-holder is always fair game);
+    ///   - charmed OR suppressed, AND `mon+0x1a` == your name -> INVALID.
+    ///     charm.md §2.3's "hostile spells can't target your own pet",
+    ///     correctly scoped: area match 9/12 only, and it covers
+    ///     "friends" (suppressed, uncharmed, §2.4) on the same terms;
+    ///   - else the fall-through: instance roam class 5 or 0x25 with
+    ///     caster fame `player+0x542 < 0x28` -> invalid; behaviour mode
+    ///     4 -> invalid; otherwise valid.
+    ///
+    /// The fall-through is not charm, but it is three lines of the same
+    /// arm and a half-ported predicate is worse than none. ORACLE-VERIFY:
+    /// it has no measured surface. Shipped reachability is real, not
+    /// fixture-only — stinking cloud (131) is a learnable match-12 area.
+    fn is_valid_monster_target(
+        &self,
+        session: SessionId,
+        spell: &crate::content::Spell,
+        id: MonsterInstanceId,
+    ) -> bool {
+        use crate::content::MatchType;
+        if !matches!(spell.match_type, MatchType::Area9 | MatchType::AreaC) {
+            // 3/5/0xb (and the default arm) — no charm awareness at all.
+            return true;
+        }
+        let Some(m) = self.monsters.get(&id) else {
+            return false;
+        };
+        // `sameas(mon+0x1a, user+0x1e)`: the owner/grudge link is a NAME
+        // in the DLL and a SessionId here (see the plan's key mapping).
+        if m.target == Some(session) {
+            return !(m.charmed || m.suppress);
+        }
+        if matches!(m.roam_class, 5 | 0x25) && self.player(session).fame < 0x28 {
+            return false;
+        }
+        m.behaviour != 4
+    }
+
     fn area_cast(&mut self, session: SessionId, spell: &crate::content::Spell, target: &str) {
         let room = self.player(session).location;
         // Explicit target words refuse KIND-KEYED before any cost
@@ -5070,14 +5172,21 @@ impl Core {
         // whole cast. (The per-victim 0-point PAIR timers are the PvP
         // half — slice 4 with rob.)
         if spell.target_mode.is_offensive() {
+            // 38803-38812 conjoins the innocence out-param with
+            // `is_valid_monster_target` itself, so a body the sweep will
+            // not reach is not a body you can be charged for either —
+            // which on match 9/0xc silently retires the `behaviour == 4`
+            // half of the innocence test (38455: valid requires
+            // `+0x106 != 4`).
             let passive = self
                 .monsters
                 .iter()
-                .find(|(_, m)| {
+                .find(|(id, m)| {
                     m.location == room
                         && m.current_hp > 0
                         && matches!(m.behaviour, 0 | 4)
                         && m.target != Some(session)
+                        && self.is_valid_monster_target(session, spell, **id)
                 })
                 .map(|(id, _)| *id);
             if let Some(id) = passive
@@ -5103,11 +5212,18 @@ impl Core {
             self.output_line(session, text::CAST_GUILT);
             return;
         }
-        // Target counting (§3 step 3): live monsters only.
+        // Target counting (§3 step 3): live monsters that pass
+        // `is_valid_monster_target` (`count_valid_targets` 38600-38620 —
+        // the same predicate the effect arms re-run per row, so counting
+        // and applying can never disagree).
         let targets: Vec<MonsterInstanceId> = if spell.match_type.hits_monsters() {
             self.monsters
                 .iter()
-                .filter(|(_, m)| m.location == room && m.current_hp > 0)
+                .filter(|(id, m)| {
+                    m.location == room
+                        && m.current_hp > 0
+                        && self.is_valid_monster_target(session, spell, **id)
+                })
                 .map(|(id, _)| *id)
                 .collect()
         } else {
@@ -5323,7 +5439,9 @@ impl Core {
             // consult the charmed bit exactly as much as the
             // single-target one does — not at all. Unlike 43752 they gate
             // on the INSTANCE roam class with no null-template clause;
-            // pinned by `an_area_damage_cast_grudges_the_casters_own_pet`.
+            // pinned by `an_area_damage_cast_grudges_somebody_elses_pet`.
+            // Reachable for OTHER players' pets only: the caster's own is
+            // dropped upstream by [`Core::is_valid_monster_target`].
             self.retaliation_lock(monster_id, session, CharmedExemption::Ignored);
             if drain_total != 0
                 && let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session)
@@ -6150,6 +6268,10 @@ impl Core {
     /// self-doubt is perception-gated. (The add_delay gates join with
     /// the slice-wide delay system.)
     fn sneak_command(&mut self, session: SessionId) {
+        // M7 slice5: `can_sneak`'s third gate, `monster_could_attack`
+        // (18209), is unported — and its pet exemption (18238-18241:
+        // a threat is a monster that is NOT charmed-and-named-yours and
+        // has `+0x116 == 0`) lands with it, here and in `hide_command`.
         let being_fought = self
             .monsters
             .values()
@@ -6192,6 +6314,8 @@ impl Core {
     /// `cmd_hide` with no argument (theft.md §11.2): the self-hide.
     /// No PerStealth shortcut here, unlike SNEAK.
     fn hide_command(&mut self, session: SessionId) {
+        // M7 slice5: same unported `monster_could_attack` gate as
+        // `sneak_command` — see the note there.
         let being_fought = self
             .monsters
             .values()
@@ -8609,7 +8733,32 @@ impl Core {
     /// prefix-match consecutive words of the name, starting at any word:
     /// "kobold thief", "kobold", "thief", and "kob th" all match
     /// "kobold thief".
+    ///
+    /// This is `find_action_target`'s monster block WITHOUT the `0x800`
+    /// mask bit — one pass over everything, pets included. Callers that
+    /// carry the bit want [`Core::find_monster_charmed_last`].
     fn find_monster(&self, room: RoomId, words: &str) -> Option<MonsterInstanceId> {
+        self.find_monster_pass(room, words, MonsterPass::All)
+    }
+
+    /// The `0x800` search (`cmd_any_attack`'s mask `0x883` at 49590, and
+    /// `cmd_cast`'s preferred `0x801`/`0x803`/`0xf837`): the monster
+    /// block runs twice — 63776 skips `mon+0x128 & 1`, then 63820 scans
+    /// ONLY charmed monsters. Charmed bodies are searched LAST, never
+    /// excluded: with no wild match in the room the second pass hands
+    /// back the pet, which is what keeps a lone pet castable at and,
+    /// crucially, ATTACK-able (§2.3's physical-attack release path).
+    fn find_monster_charmed_last(&self, room: RoomId, words: &str) -> Option<MonsterInstanceId> {
+        self.find_monster_pass(room, words, MonsterPass::Uncharmed)
+            .or_else(|| self.find_monster_pass(room, words, MonsterPass::Charmed))
+    }
+
+    fn find_monster_pass(
+        &self,
+        room: RoomId,
+        words: &str,
+        pass: MonsterPass,
+    ) -> Option<MonsterInstanceId> {
         let want: Vec<String> = words
             .trim()
             .to_ascii_lowercase()
@@ -8621,7 +8770,7 @@ impl Core {
         }
         self.monsters
             .iter()
-            .filter(|(_, m)| m.location == room && m.current_hp > 0)
+            .filter(|(_, m)| m.location == room && m.current_hp > 0 && pass.admits(m.charmed))
             .find(|(_, m)| {
                 // Word-prefix match against the DISPLAY name — the
                 // spawn adjective is targetable ("attack nasty").
@@ -8641,6 +8790,10 @@ impl Core {
     /// order: the room's monsters (mask bit `0x1`) first, then the room's
     /// players (`0x2`), then the caster's carried items (`0x4`). The
     /// first hit wins — the DLL's multiple-match prompt is not modelled.
+    ///
+    /// The monster leg runs as ONE pass or TWO depending on the scope's
+    /// `0x800` bit; either way it finishes before the user scan, so the
+    /// bit orders monsters against monsters and never against a player.
     fn find_cast_target(
         &self,
         session: SessionId,
@@ -8648,9 +8801,14 @@ impl Core {
         words: &str,
     ) -> Option<CastTarget> {
         let room = self.player(session).location;
-        if scope.monsters
-            && let Some(id) = self.find_monster(room, words)
-        {
+        let monster = if !scope.monsters {
+            None
+        } else if scope.charmed_last {
+            self.find_monster_charmed_last(room, words)
+        } else {
+            self.find_monster(room, words)
+        };
+        if let Some(id) = monster {
             return Some(CastTarget::Monster(id));
         }
         let want = words.trim().to_ascii_lowercase();
@@ -12068,6 +12226,14 @@ impl Core {
         // 6 spares fame >= 0x50) takes a full swing sequence. Only a
         // DEATH aborts the move; the +0x6f0 gate caps it at one free
         // attack per medium tick.
+        //
+        // NO charm gate anywhere in it (23865-23895, re-read for M7
+        // slice 5): the locked-runner arm is `sameas(mon+0x1a, fleer)`
+        // plus `+0x116 == 0` and nothing else, so a pet is held off a
+        // fleeing owner by its SUPPRESSION alone — charm.md §2.4's
+        // "what it suppresses" list, third entry. Release the pet
+        // without clearing `+0x116` (the §4.3 "friend" outcome) and it
+        // still declines the free swing; clear `+0x116` and it takes it.
         let roll = self.rng.roll(0, 100);
         if self.attackers_of(session) <= 0 {
             let here: Vec<MonsterInstanceId> = self
