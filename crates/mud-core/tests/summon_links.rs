@@ -395,11 +395,16 @@ fn summon_at_a_monster_writes_the_hunt_link_and_no_name_link() {
 // --- the breadcrumb trail (mon+0x38..+0x60) ---
 
 #[test]
-fn a_moving_monster_pushes_a_ten_deep_trail() {
+fn a_moving_monster_pushes_the_newest_room_to_the_front() {
     // 21572-21574: `mon+0x10 = dest`, memmove the array down one slot,
     // `trail[0] = dest`. Index 0 is therefore the CURRENT room and
     // index 1 the predecessor — the convention
     // `dir_monster_travelling_coord` scans from 1.
+    //
+    // This test is ORDERING only. It used to be called
+    // `a_moving_monster_pushes_a_ten_deep_trail`, which promised
+    // coverage it did not have: two steps produce a three-entry trail and
+    // never approach the bound. The depth bound has its own test below.
     let (mut core, _s) = setup();
     let walker = core.spawn_monster(DUMMY, HALL).expect("fixture template");
     assert_eq!(
@@ -417,6 +422,40 @@ fn a_moving_monster_pushes_a_ten_deep_trail() {
         core.debug_monster_trail(hunter),
         Some(vec![FAR, MID, HALL]),
         "newest first"
+    );
+}
+
+#[test]
+fn the_monster_trail_stops_at_ten_entries_not_twenty() {
+    // charm.md §6.1 / `dir_monster_travelling_coord` 15810 (`iVar4 < 10`):
+    // the MONSTER trail is ten deep, where the player trail that shares
+    // its shape is twenty (12719). That difference is a named divergence
+    // at `dir_toward_monster`'s doc comment and it was completely
+    // unpinned — the ordering test above stops at three entries, so the
+    // cap could have been raised to the player's 20, or dropped
+    // entirely, without a single test noticing.
+    //
+    // `move_monster` has no anti-backtrack of its own (the last-move
+    // memory is `wander_monster`'s), so bouncing the corridor is a legal
+    // way to run the trail past its bound without needing eleven rooms.
+    let (mut core, _s) = setup();
+    let hunter = core.spawn_monster(STALKER, HALL).expect("fixture template");
+    for i in 0..14 {
+        let dir = if i % 2 == 0 { Direction::North } else { Direction::South };
+        assert!(core.debug_move_monster(hunter, dir), "step {i} must land");
+    }
+    core.drain_events();
+    let trail = core.debug_monster_trail(hunter).expect("hunter lives");
+    // 15 rooms were visited (the spawn seed plus 14 steps); ten survive.
+    assert_eq!(trail.len(), 10, "the cap is TEN, not the player's twenty");
+    // And it is the OLDEST that fall off, not the newest: the last step
+    // was index 13, odd, so South back to HALL — which must still be at
+    // the front.
+    assert_eq!(trail[0], HALL, "index 0 is still the current room");
+    assert_eq!(
+        trail,
+        vec![HALL, MID, HALL, MID, HALL, MID, HALL, MID, HALL, MID],
+        "the truncation takes the tail, so the ten NEWEST survive"
     );
 }
 
