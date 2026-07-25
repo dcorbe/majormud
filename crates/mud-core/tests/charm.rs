@@ -73,6 +73,21 @@ const KEEN: MonsterId = MonsterId(9);
 /// "guardian" probe for the shared lock body's draw order. Not in
 /// [`world`]: each arm needs its own template.
 const GUARD: MonsterId = MonsterId(10);
+/// The §2.2 assist pet: a real form-0 fighter whose swing is FREE (form
+/// EU 0 against a 1000 pool), so the 27232 full-energy gate never closes
+/// it out. Aggression 100 / behaviour 1 is deliberate — an aggressive
+/// body is what makes the suppressed-"friend" arm (20494-20511) fire on
+/// a bystander if the charmed guard is missing — and its damage soak
+/// keeps the owner's own swings off the §4.3 release path.
+const HOUND: MonsterId = MonsterId(11);
+/// The pet's quarry: 500 HP, behaviour 3 (lair) and no attack form, so
+/// it never initiates and never swings back — every combat line it takes
+/// is the pet's.
+const BAG: MonsterId = MonsterId(12);
+/// The shipped `bishop`/`priest`/`boatman` shape: energy pool **0** with
+/// a form-0 cost of 5, and `charmlvl` 0 (charmable by anyone). It can
+/// never pay for the swing it has already drawn for (27242).
+const BISHOP: MonsterId = MonsterId(13);
 
 /// (Enslave, 0), duration 60 flat, no save — the state/slot probe.
 const ENSLAVE: SpellId = SpellId(700);
@@ -196,6 +211,44 @@ fn world() -> Content {
     keen.aggression = 100;
     keen.behaviour = 1;
     content.add_monster(keen);
+    let mut hound = monster(HOUND, "war dog", 1, 40);
+    hound.hitpoints = 500;
+    hound.energy = 1000;
+    // 20 points of soak against the owner's unarmed (1, 9) band: the
+    // owner can engage autocombat on its own pet and never land the
+    // damage the §4.3 MELEE release is gated on (game.rs:9043), which is
+    // what keeps the autocombat release below measurable on its own.
+    hound.damage_resist = 20;
+    hound.aggression = 100;
+    hound.behaviour = 1;
+    hound.attacks[0] = AttackForm {
+        kind: 1,
+        accuracy: 500,
+        weight: 100,
+        min_damage: 7,
+        max_damage: 7,
+        energy: 0,
+        ..Default::default()
+    };
+    content.add_monster(hound);
+    let mut bag = monster(BAG, "straw dummy", 9999, 40);
+    bag.hitpoints = 500;
+    bag.behaviour = 3;
+    content.add_monster(bag);
+    let mut bishop = monster(BISHOP, "bishop", 0, 40);
+    bishop.hitpoints = 200;
+    bishop.aggression = 100;
+    bishop.behaviour = 1;
+    bishop.attacks[0] = AttackForm {
+        kind: 1,
+        accuracy: 200,
+        weight: 100,
+        min_damage: 4,
+        max_damage: 6,
+        energy: 5, // > the pool: drawn for, never paid (27242)
+        ..Default::default()
+    };
+    content.add_monster(bishop);
     let mut wary = monster(WARY, "wary hound", 1, 1);
     wary.magic_resist = 200;
     content.add_monster(wary);
@@ -929,9 +982,21 @@ fn a_damage_cast_grudges_a_pet_without_releasing_it() {
     // 26230/26514. Its post-DAMAGE twin (43750-43766, and the area copies
     // at 40371/40601) has NO charmed check at all: it rolls aggression,
     // overwrites the name link and clears `+0x116` — while LEAVING the
-    // charmed bit set. So a damage spell from the owner does not release
-    // the pet; it turns it hostile and leaves it charmed (never wanders,
-    // never rolls to follow).
+    // charmed bit set. So a damage spell does not release the pet; it
+    // turns it hostile and leaves it charmed (never wanders, never rolls
+    // to follow).
+    //
+    // MEASURED FROM A BYSTANDER'S CAST, and it has to be (this changed
+    // when §2.2's assist branch landed): an offensive cast ENGAGES
+    // autocombat on its target, so an owner searing its own pet leaves
+    // the owner's autocombat record pointing AT the pet — and
+    // `FUN_0044cc65` turns exactly that into the self-release (46929) on
+    // the very next driver pass. The pet would come out released by a
+    // completely different mechanism (see
+    // `owner_autocombat_on_pet_releases_as_friend`) before the twin's
+    // grudge could be read. Vex's cast leaves the owner idle, so only the
+    // twin is in the sample — and it sharpens the entry-grudge assertion
+    // too: a stranger's cast does not overwrite the OWNER's link either.
     //
     // KEEN, not MUTT: see the const's doc. Aggression 100 makes the
     // `genrdn(1,100) < aggression` leg true unconditionally and
@@ -940,8 +1005,10 @@ fn a_damage_cast_grudges_a_pet_without_releasing_it() {
     // rides on the roll and nothing else.
     let (mut core, s, m) = setup(KEEN);
     cast(&mut core, s, "cast ensl keen");
+    let other = core.attach_player(caster_named("Vex", TOWER));
+    core.drain_events();
     energy_round(&mut core);
-    let shown = cast(&mut core, s, "cast sear keen");
+    let shown = cast(&mut core, other, "cast sear keen");
     assert!(shown.contains("*Combat Engaged*"), "offensive casts engage: {shown:?}");
     assert_eq!(
         core.debug_monster_charm(m),
@@ -949,12 +1016,12 @@ fn a_damage_cast_grudges_a_pet_without_releasing_it() {
         "the entry grudge skips a charmed monster"
     );
     let hp = core.monster_hp(m).expect("keen mutt lives");
-    tick_until(&mut core, s, 40, |c| c.monster_hp(m).is_some_and(|h| h < hp));
+    tick_until(&mut core, other, 40, |c| c.monster_hp(m).is_some_and(|h| h < hp));
     assert!(core.monster_hp(m).is_some_and(|h| h < hp), "the cast must land");
     assert_eq!(
         core.debug_monster_charm(m),
-        Some((true, false, Some(s))),
-        "the damage twin locks without clearing the charmed bit"
+        Some((true, false, Some(other))),
+        "the damage twin locks onto the attacker without clearing the charmed bit"
     );
 }
 
@@ -1051,4 +1118,188 @@ fn owner_death_keeps_the_pet() {
     );
     let slots = core.monster_active_spells(m).expect("mutt lives");
     assert_eq!(slots[0].spell, Some(ENSLAVE), "the charm slot survives");
+}
+
+// §2.2 — the pet assist branch (`FUN_0044cc65`, 46917-46965), reached
+// from the driver's named-link ladder (`FUN_00423863` 20512-20517).
+
+/// Stage: a pet template and the straw dummy in the tower with the owner.
+fn kennel(pet: MonsterId) -> (Core, SessionId, MonsterInstanceId, MonsterInstanceId) {
+    let mut core = Core::new(world(), config());
+    let p = core.spawn_monster(pet, TOWER).expect("pet template");
+    let q = core.spawn_monster(BAG, TOWER).expect("straw dummy");
+    let s = core.attach_player(caster_named("Zin", TOWER));
+    core.drain_events();
+    (core, s, p, q)
+}
+
+#[test]
+fn pet_assists_owner_target() {
+    // 46955-46960: the owner's autocombat record names a MONSTER, so the
+    // pet swings at it — `attack_monster_monster`, deterministically,
+    // every driver pass, with no roll in front of the decision.
+    let (mut core, s, pet, bag) = kennel(HOUND);
+    cast(&mut core, s, "cast ensl dog");
+    assert_eq!(core.debug_monster_charm(pet), Some((true, true, Some(s))));
+    energy_round(&mut core);
+    core.input(s, "attack dummy");
+    core.drain_events();
+    // Driven by real ticks: this is the branch's only proof that the
+    // combat driver actually reaches it.
+    let (_, shown) = tick_until(&mut core, s, 20, |_| false);
+    assert!(
+        shown.contains("War dog just attacked straw dummy!"),
+        "the pet must swing at the owner's target: {shown:?}"
+    );
+    assert!(
+        core.monster_hp(bag).is_some_and(|hp| hp < 500),
+        "and the damage must land on the quarry"
+    );
+    // The assist is not an acquisition: the pet keeps the whole triple.
+    assert_eq!(
+        core.debug_monster_charm(pet),
+        Some((true, true, Some(s))),
+        "assisting changes no state"
+    );
+}
+
+#[test]
+fn pet_idle_when_owner_idle() {
+    // 20514 (`is_inside_autocombat`) and 46925/46927: an owner with no
+    // autocombat target leaves the pet doing NOTHING — and doing it
+    // without touching the shared stream. A pet must never fall through
+    // to the suppressed-aggressive arm, so an idle owner is idle hands.
+    let (mut core, s, pet, bag) = kennel(HOUND);
+    cast(&mut core, s, "cast ensl dog");
+    energy_round(&mut core);
+    let hp = core.monster_hp(bag);
+    let player_hp = core.player_snapshot(s).current_hp;
+    let draws = core.debug_rng_draws();
+    for _ in 0..4 {
+        core.debug_monster_consider(pet);
+    }
+    assert_eq!(
+        core.debug_rng_draws(),
+        draws,
+        "an idle owner costs the pet not one draw"
+    );
+    assert!(core.drain_events().is_empty(), "and not one line");
+    assert_eq!(core.monster_hp(bag), hp, "nothing is swung at");
+    assert_eq!(
+        core.player_snapshot(s).current_hp,
+        player_hp,
+        "least of all the owner"
+    );
+}
+
+#[test]
+fn pet_never_attacks_others() {
+    // The suppressed-aggressive arm (20494-20511) is guarded by
+    // `(mon+0x128 & 1) == 0`: it is for non-charmed "friends" (§2.2 last
+    // paragraph), and a pet takes the `FUN_0044cc65` arm instead. A
+    // bystander is safe from somebody else's pet whether the owner is
+    // idle or engaged elsewhere.
+    let (mut core, s, pet, _bag) = kennel(HOUND);
+    cast(&mut core, s, "cast ensl dog");
+    let other = core.attach_player(caster_named("Vex", TOWER));
+    core.drain_events();
+    let vex_hp = core.player_snapshot(other).current_hp;
+    for _ in 0..4 {
+        core.debug_monster_consider(pet);
+    }
+    assert_eq!(
+        core.player_snapshot(other).current_hp,
+        vex_hp,
+        "an idle owner's pet does not take the friend arm"
+    );
+    core.input(s, "attack dummy");
+    core.drain_events();
+    for _ in 0..4 {
+        core.debug_monster_consider(pet);
+    }
+    assert_eq!(
+        core.player_snapshot(other).current_hp,
+        vex_hp,
+        "nor does an engaged owner's pet"
+    );
+    // The bystander is not blind — the assist's room line reaches them —
+    // but nothing in that stream is aimed AT them.
+    let seen = text_to(&core.drain_events(), other);
+    assert!(
+        seen.lines()
+            .all(|l| l.trim().is_empty() || l.contains("straw dummy")),
+        "the only lines a bystander gets are the pet's swings at the quarry: {seen:?}"
+    );
+}
+
+#[test]
+fn owner_autocombat_on_pet_releases_as_friend() {
+    // 46929-46953: the owner's autocombat target IS the pet, so the pet
+    // releases itself on the next driver pass — charmed bit off, the
+    // ability-6 slots swept. What is NOT here is the melee twin's
+    // `+0x116 = 0` (26527): suppression SURVIVES, so a slotless ex-pet
+    // degrades into a "friend" (link + suppression) rather than into the
+    // grudge holder the melee path leaves behind.
+    let (mut core, s, pet, _bag) = kennel(HOUND);
+    cast(&mut core, s, "cast snap dog"); // instant: no slot for the sweep
+    assert_eq!(core.debug_monster_charm(pet), Some((true, true, Some(s))));
+    energy_round(&mut core);
+    core.input(s, "attack dog");
+    core.drain_events();
+    core.debug_monster_consider(pet);
+    assert_eq!(
+        core.debug_monster_charm(pet),
+        Some((false, true, Some(s))),
+        "released as a FRIEND: suppression stays set and the link survives"
+    );
+
+    // The SLOTTED twin, for contrast: this arm still never writes
+    // `+0x116` itself — but the slot it sweeps goes through
+    // `perform_spell_termination_monster_upkeep`, whose case 6 IS the
+    // full §4.1 reversal, so suppression and the link go with it. The
+    // "friend" outcome above is the slotless asymmetry (§4.3) and
+    // nothing else.
+    let (mut core, s, pet, _bag) = kennel(HOUND);
+    cast(&mut core, s, "cast ensl dog");
+    energy_round(&mut core);
+    core.input(s, "attack dog");
+    core.drain_events();
+    core.debug_monster_consider(pet);
+    assert_eq!(
+        core.debug_monster_charm(pet),
+        Some((false, false, None)),
+        "a slotted pet's release runs the whole termination"
+    );
+}
+
+#[test]
+fn a_pool_0_pet_draws_every_pass_and_never_swings() {
+    // THE ENERGY TRAP, now live: `attack_monster_monster`'s pay gate sits
+    // AFTER `calculate_attack` (27241 then 27242), so a template whose
+    // form-0 EU exceeds its whole pool resolves a swing it can never pay
+    // for. 21 shipped templates are shaped that way and `bishop`,
+    // `priest` and `boatman` (pool 0, cost 5, `charmlvl` 0) are charmable
+    // by anyone — so a pet like this burns draws on EVERY driver pass,
+    // forever, and never lands a hit. DLL-faithful; pinned, not fixed.
+    let (mut core, s, pet, bag) = kennel(BISHOP);
+    cast(&mut core, s, "cast ensl bishop");
+    assert_eq!(core.debug_monster_charm(pet), Some((true, true, Some(s))));
+    energy_round(&mut core);
+    core.input(s, "attack dummy");
+    core.drain_events();
+    let hp = core.monster_hp(bag);
+    let deltas: Vec<u64> = (0..4)
+        .map(|_| {
+            let before = core.debug_rng_draws();
+            core.debug_monster_consider(pet);
+            core.debug_rng_draws() - before
+        })
+        .collect();
+    assert!(
+        deltas.iter().all(|d| *d > 0),
+        "every pass pays for a resolution it cannot use: {deltas:?}"
+    );
+    assert_eq!(core.monster_hp(bag), hp, "and the swing never lands");
+    assert_eq!(core.monster_energy(pet), Some(0), "nothing is ever paid");
+    assert!(core.drain_events().is_empty(), "silently, forever");
 }

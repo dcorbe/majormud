@@ -1878,6 +1878,15 @@ impl Core {
         self.attack_monster_monster(attacker, defender);
     }
 
+    /// Test hook: one combat-driver pass over a SINGLE monster
+    /// ([`Core::monster_consider`]) with no tick around it. The pet-assist
+    /// branch (charm.md §2.2) is deterministic and draw-free in two of its
+    /// three outcomes, and that is only measurable when the energy round's
+    /// own rolls are out of the sample.
+    pub fn debug_monster_consider(&mut self, id: MonsterInstanceId) {
+        self.monster_consider(id);
+    }
+
     /// Test hook: mutable access to loaded content.
     pub fn content_mut(&mut self) -> &mut Content {
         &mut self.content
@@ -2522,9 +2531,8 @@ impl Core {
     /// a "friend" (a monster that attacks players OTHER than its owner)
     /// rather than into a grudge holder.
     ///
-    /// The call site is the pet-assist branch of the combat driver, which
-    /// lands with the rest of §2.2.
-    #[allow(dead_code)] // wired by the pet-assist branch (charm.md §2.2)
+    /// The call site is [`Core::pet_assist`], the combat driver's
+    /// pet-assist branch.
     fn autocombat_release_charm(&mut self, id: MonsterInstanceId) {
         if let Some(m) = self.monsters.get_mut(&id) {
             m.charmed = false;
@@ -2544,8 +2552,15 @@ impl Core {
         let Some(m) = self.monsters.get(&id) else {
             return;
         };
-        if m.target.is_some() {
-            return; // locked on (`mon+0x1a`); pursuit owns movement
+        if m.target.is_some() || m.charmed {
+            // Locked on (`mon+0x1a`); pursuit owns movement. The charmed
+            // bit is a SECOND, explicit gate in both wander arms (19346
+            // and 19364: `(mon+0x128 & 1) == 0`) — a pet never wanders,
+            // charm.md §2.1. Unreachable while every charm apply also
+            // writes the owner link, and kept literal anyway: the two
+            // gates come apart the moment a release clears one leg of the
+            // triple without the other (§4.2/§4.3 both do).
+            return;
         }
         let (roam, aggression, from, last) =
             (m.roam_class, m.aggression, m.location, m.last_move_dir);
@@ -8753,20 +8768,40 @@ impl Core {
         if m.current_hp <= 0 {
             return;
         }
-        let (room, behaviour, roam, suppress) =
-            (m.location, m.behaviour, m.roam_class, m.suppress);
+        let (room, behaviour, roam, suppress, charmed) =
+            (m.location, m.behaviour, m.roam_class, m.suppress, m.charmed);
         if let Some(victim) = m.target {
             // A2 — locked (20465-20519): no roll, attacked every round the
-            // lock is valid. (The suppressed class-5 ward-defence branch
-            // needs PvP and the charmed pet-assist branch is M7 charm.)
+            // lock is valid. The four arms are the DLL's, in the DLL's
+            // order — suppression, roam class 5, charmed bit, behaviour —
+            // and that order decides two things: roam 5 pre-empts the pet
+            // arm, and the pet arm pre-empts the "friends" arm.
             if !suppress {
                 if self.acquisition_valid(victim, room) {
                     self.bump_attackers(victim);
                     self.monster_attack(id, victim);
                 }
+            } else if roam == 5 {
+                // 20477-20493: the class-5 ward defence. It only ever
+                // swings at players who are in autocombat AGAINST the
+                // named user — PvP, which is M8 — so it is faithfully a
+                // no-op here.
+                //
+                // DECOMPILE over charm.md: this arm sits AHEAD of the
+                // charmed check, so a charmed roam-5 monster lands here
+                // and never assists. §2.2's "charmed pets take the
+                // FUN_0044cc65 branch instead" describes the friends arm
+                // below (which IS charm-gated) and overstates this one.
+            } else if charmed {
+                // 20512-20517: suppressed + charmed = a pet. Deterministic,
+                // no roll, every pass.
+                self.pet_assist(id, victim);
             } else if !matches!(behaviour, 4 | 0 | 3) {
-                // Suppressed aggressive (20492-20509): attacks the first
-                // OTHER valid player — never its named target.
+                // Suppressed aggressive (20494-20511): attacks the first
+                // OTHER valid player — never its named target. The
+                // `(mon+0x128 & 1) == 0` guard is why a PET can never
+                // arrive here: this arm belongs to non-charmed "friends"
+                // (charm.md §2.2 last paragraph, §2.4).
                 let other = self.sessions_in_room(room).into_iter().find(|s| {
                     *s != victim && self.acquisition_valid(*s, room)
                 });
@@ -8837,6 +8872,54 @@ impl Core {
         if let Some(s) = fallback {
             self.bump_attackers(s);
             self.monster_attack(id, s);
+        }
+    }
+
+    /// `FUN_0044cc65` (46917-46965, charm.md §2.2) — everything a pet ever
+    /// does in combat. It reads its OWNER's autocombat record
+    /// (`DAT_004877e8 + usernum*0x14`: `[+0]` user target or -1, `[+4]`
+    /// monster target or 0xffff) and takes one of three outcomes:
+    ///
+    /// - owner fighting a MONSTER -> [`Core::attack_monster_monster`] at
+    ///   it (46958). No roll, no room compare, no acquisition gate: the
+    ///   pet swings every driver pass, at whatever the owner is on, even
+    ///   from another room (§3's missing room check is deliberate).
+    /// - owner fighting the PET ITSELF -> the self-release (46929-46953,
+    ///   [`Core::autocombat_release_charm`]).
+    /// - owner idle -> nothing at all, draw-free. The caller's
+    ///   `is_inside_autocombat` gate (20514) and the two record tests here
+    ///   collapse into one `Option` in our model.
+    ///
+    /// M8 SEAM — the `[+0]` arm at 46963 is `attack_monster_user(pet,
+    /// thatUser)`: a pet joins its owner's PvP. Our autocombat record
+    /// carries only the monster half ([`Session::InGame`]'s `target`), so
+    /// `None` here means "idle" and "fighting a player" alike. When PvP
+    /// lands, the user half of the record grows the second arm and it
+    /// belongs HERE, ahead of the monster one.
+    ///
+    /// An OFFLINE owner never reaches this function (the caller's
+    /// `get_user_number` fails at 20464) — the pursuit tier's give-up
+    /// counter owns that case and releases the pet ~16 s later (§4.2).
+    fn pet_assist(&mut self, id: MonsterInstanceId, owner: SessionId) {
+        let Some(Session::InGame { target, .. }) = self.sessions.get(&owner) else {
+            return;
+        };
+        let Some(quarry) = *target else {
+            return;
+        };
+        if quarry == id {
+            self.autocombat_release_charm(id);
+        } else {
+            // THE ENERGY TRAP, live from here on: the pay gate inside
+            // `attack_monster_monster` sits AFTER `calculate_attack`
+            // (27241 then 27242), so a pet whose form-0 EU exceeds its
+            // whole pool burns draws on every single one of these passes
+            // and never lands a hit. 21 shipped templates are shaped that
+            // way; `bishop`, `priest` and `boatman` are pool 0 / cost 5
+            // with `charmlvl` 0, i.e. charmable by anyone. Faithful, not
+            // an oversight — see [`Core::build_monster_attacker_form0`]
+            // and the pin in tests/charm.rs.
+            self.attack_monster_monster(id, quarry);
         }
     }
 
