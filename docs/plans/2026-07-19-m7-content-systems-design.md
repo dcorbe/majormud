@@ -348,9 +348,9 @@ integration. Oracle expedition: thief character (SYSOP-staged), rob a
 monster + a second character, pick a Newhaven-reachable lock; capture
 every string + fame delta via status.
 
-**Slice 5 COMPLETE (2026-07-25, 742 tests, commits 66b3867..HEAD) —
-charm & pets, plus one unplanned routing fix.** Everything the slice
-scoped landed: `charmlvl`/`charmres` loader columns;
+**Slice 5 COMPLETE (2026-07-25, 764 tests, commits 66b3867..9fcd43b) —
+charm & pets, plus one unplanned routing fix and one late blocker.**
+Everything the slice scoped landed: `charmlvl`/`charmres` loader columns;
 `attack_monster_monster` (form-0 fighter builds, mode-5 pipeline,
 DamageShield, killer-less exp split) closing the M6 monster-vs-monster
 marker; Enslave acquisition (the `charmres` save-stat swap with the
@@ -380,6 +380,33 @@ DLL puts the same id in every free slot — see charm.md §7); the hunt id
 is a typed monotonic `MonsterInstanceId`, which closes charm.md §7's
 stale-link hazard by construction.
 
+**The late blocker: the Enslave eligibility scan was never ported**
+(found by the whole-slice review after the first COMPLETE banner went
+up; fixed in `f6b58ed`). `cast_monster_target`'s pre-application ability
+scan (43295-43376) is a ten-row walk over the SPELL's abilities. The
+slice ported exactly one arm of it — ability 6, the `charmres` save-stat
+preload — and left three refusal siblings behind: AffectsAnimals(80),
+which refuses a target without ability 78; AffectsUndead(23), which
+tests the `undead` COLUMN (`knmsr+0xad`); and AffectsLiving(108), which
+refuses a target carrying ability 109. All four shipped Enslave spells
+carry exactly one of the three, so the omission was not academic:
+`charm animal` was legal on all 1101 templates instead of 155 and
+`control undead` on 1101 instead of 115, and in every illegal case the
+player saw a SUCCESSFUL charm rather than the refusal line. The
+`undead` column joined the loader as an `i16` — it is tri-valued in the
+shipped data (0: 986, 1: 107, **-1**: 8) against a `!= 0` test, so a
+`bool` would have silently dropped eight undead templates.
+
+That the slice could ship without noticing is the interesting part: the
+whole suite ran against hand-built fixtures whose spells carried no
+gate rows, so nothing exercised the gates. The answer was
+`crates/mud-server/tests/charm_real_content.rs` (`97585b4`, 10 tests) —
+the first charm coverage driven by the SHIPPED content rather than
+fixtures, running the entire Enslave chain against the real spells and
+the real bestiary. It is the reason the remaining unported arms of that
+scan (52/144/163, and Evil(98)'s absence) are now named rather than
+merely absent (`f49d178`).
+
 **Unplanned, and this doc did not know about it: the Task-3b routing
 fix** (`493dff8` + `7a193d7`). Single-target casts were routed on
 `spelltype`; the DLL routes on the MATCH type, and the 41434 self-target
@@ -394,6 +421,30 @@ learnable match-12 area carriers were already in the same hole.
 `charge_passive_monster_evil` already implements the 43323 predicate
 exactly — closing it is a call-site change (gate on the ability, not on
 `is_offensive()`) plus the grudge/suppression writes.
+
+**The close-out pass was about ANNOTATIONS, not code.** A 65-mutation
+sweep over the slice killed 47 and left 18, and the survivors clustered
+almost entirely on divergence notes, decompile cites and "this is the
+DLL's shape" claims that nothing kept true — which, for a
+reverse-engineering port, is the deliverable at least as much as the
+code is. What that pass changed: charm.md §1.1 was stated flatly and
+contradicted the code on the `charmres == 0` fallback; §3's unported
+`+0x14` poison floor was described but never named or entered in the
+§8.1 divergence ledger; the Dodge parry and the engage-lock relocation
+were absent from the slice-8 carries entirely (both now head the list
+below); a test comment claimed guardsman was "the `monstertype` of 487
+rooms", conflating a template number with an unrelated spawn zone
+(withdrawn, no replacement — see the comment for why a correct
+derivation needs more than the naive query); and three code comments
+claimed properties nothing can observe (the owner-release write ORDER,
+which is an equivalent mutant because the slot sweep clears suppression
+anyway; the m-v-m damage clamp, whose only reader is the kill test it
+cannot change; and the Enslave arm's `match_ok` term, which is
+unreachable defence in depth). Four mutation survivors were closed with
+real tests instead: both wander arms' charm guard, the `charmlvl`
+boundary, the signed-`charmlvl` compare, and the monster trail's
+ten-entry bound. Each new pin was verified by applying its mutation and
+watching it fail.
 
 **Carries to slice 8**, largest first:
 
