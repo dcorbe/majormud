@@ -222,8 +222,8 @@ pub struct Player {
     /// `+0x542` — fame/notoriety word. Gates monster targeting: behaviour
     /// mode 6 spares players at >= 0x28 (unless already fighting); roam
     /// class 5 "guardians" initiate ONLY at >= 0x28; the flee free-attack
-    /// mode-6 bound is 0x50 (decompile 20386/20420/23882). Fed by the M7
-    /// crime system — creation seeds 0.
+    /// mode-6 bound is 0x50 (decompile 20386/20420/23882). Fed by the
+    /// crime system (`crime.md`, landed) — creation seeds 0.
     pub fame: i16,
     /// Per-user ANSI. OURS (documented divergence): the real board keys
     /// this on the MBBS account outside the DLL. Overrides the
@@ -3994,7 +3994,8 @@ impl Core {
     fn attack_command(&mut self, session: SessionId, target_words: &str) -> Resolution {
         // cmd_attack 49712-49720: a bare attack auto-selects mode-1
         // fists of fury when unarmed with the Punch ability. (The
-        // hidden/sneak divert to mode 4 joins with the M7 theft slice.)
+        // hidden/sneak divert to mode 4 landed with the theft slice and
+        // is the inner branch below.)
         let player = self.player(session);
         let mode = if player.weapon.is_none()
             && self
@@ -5621,8 +5622,10 @@ impl Core {
             // Retaliation lock like every damaging path (gated, slice 3)
             // — but NO caster-side engagement (no *Combat Engaged*
             // MEASURED §8.13 on debuff-only payloads; ORACLE-VERIFY for
-            // damaging sweeps — fixture-only today; evil warnings/crime
-            // = M7). The AREA damage twins (40370-40385 and 40601-40614)
+            // damaging sweeps — fixture-only today; the area path's
+            // ability-52 evil charge is the still-open gap logged at
+            // `offensive_cast_attempt`'s fail arm, 16 learnable match-12
+            // carriers). The AREA damage twins (40370-40385 and 40601-40614)
             // consult the charmed bit exactly as much as the
             // single-target one does — not at all. Unlike 43752 they gate
             // on the INSTANCE roam class with no null-template clause;
@@ -6506,10 +6509,13 @@ impl Core {
     /// self-doubt is perception-gated. (The add_delay gates join with
     /// the slice-wide delay system.)
     fn sneak_command(&mut self, session: SessionId) {
-        // M7 slice5: `can_sneak`'s third gate, `monster_could_attack`
-        // (18209, called at 65462), is unported — and its pet exemption
-        // (18237-18240: a threat is a monster that is NOT
-        // charmed-and-named-yours and has `+0x116 == 0`) lands with it.
+        // UNPORTED (not slice-scoped — it lands with its first consumer,
+        // whichever slice that turns out to be): `can_sneak`'s third
+        // gate, `monster_could_attack` (18209, called at 65462). Its pet
+        // exemption (18237-18240: a threat is a monster that is NOT
+        // charmed-and-named-yours and has `+0x116 == 0`) is charm.md §2.3
+        // material and comes with it — M7 slice 5 deliberately built no
+        // speculative plumbing for a predicate with no caller (YAGNI).
         // FOUR callers in the DLL, all still unported: `can_sneak` 65462,
         // `cmd_hide` 62023, `cmd_close` 52341 and `cmd_lock` 53290. The
         // last three carry the identical four-term guard
@@ -6559,9 +6565,9 @@ impl Core {
     /// `cmd_hide` with no argument (theft.md §11.2): the self-hide.
     /// No PerStealth shortcut here, unlike SNEAK.
     fn hide_command(&mut self, session: SessionId) {
-        // M7 slice5: same unported `monster_could_attack` gate as
-        // `sneak_command` (the 62023 caller) — see the note there for the
-        // full four-caller inventory.
+        // Same unported `monster_could_attack` gate as `sneak_command`
+        // (the 62023 caller) — see the note there for the full
+        // four-caller inventory and the pet exemption that rides along.
         let being_fought = self
             .monsters
             .values()
@@ -7476,9 +7482,12 @@ impl Core {
     /// 0/4) monster that is not already fighting you charges 10 evil via
     /// the NPC path (`crime::charge_npc_evil` — gates, dark cloud,
     /// minimum-10 bump). Returns true when the action is REFUSED; the
-    /// caller aborts before any engagement. Refusal-before-engagement
-    /// ordering and the own-summon exemption (pet links, slice 5) are
-    /// ORACLE-VERIFY.
+    /// caller aborts before any engagement. The own-summon exemption
+    /// (the DLL's `sameas(mon+0x1a, user+0x1e) == 0` term) IS ported —
+    /// M7 slice 5 gave the name link its owner semantics, and the
+    /// `m.target != Some(session)` clause below is that term. What stays
+    /// ORACLE-VERIFY is the refusal-before-engagement ORDERING, which no
+    /// live run has ever exercised.
     fn charge_passive_monster_evil(
         &mut self,
         session: SessionId,
@@ -7929,7 +7938,10 @@ impl Core {
             // already implements the 43323 predicate exactly — it is only
             // gated at the CALL SITE on `is_offensive()` rather than on
             // the ability, so closing this is a call-site change plus the
-            // grudge/suppression writes. Belongs with the M7 crime slice.
+            // grudge/suppression writes. HOME: the crime slice has already
+            // shipped, so this carries to the M7 close-out (slice 8) — it
+            // was logged during slice 5's Task-3b routing fix, which is
+            // what put 25 more spells in front of this gate.
             if spell.duration == 0
                 && spell.target_mode.is_offensive()
                 && self.monsters.get(&monster_id).is_some_and(|m| m.target.is_none())
