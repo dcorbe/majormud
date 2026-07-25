@@ -120,12 +120,59 @@ No pair timer, no multiplier. Apply §2.4 add.
 | offensive spell at a player | `cast_user_target` ×3 | 10 | 41455, 41493, 41591 (same `FUN_0046c417` gate + arena exemption, 41440-41456) |
 | `rob <player>` | `rob_user` → `add_evil_points(a, v, **1**, 0xb, 1 or 2)` | 1 | 17185 (bump-fail, noticed → flag 1), 17199 (skill-fail → flag 2), 17207 (success → flag 2) |
 | `attack <monster>` that is passive (mode 0/4) and hasn't engaged you | `attack_user_monster` → `add_evil_points(a, **-1**, 10, 0xb, 0)` | 10 | 26116 (gate 26113-26116: skipped when mode ∉ {0,4}, when the monster is the player's own summon, or when `mon+0x12e` already targets this user) |
-| offensive spell at a passive monster | `cast_monster_target` ×3 | 10 | 43255, 43330, 43417 |
+| offensive spell at a passive monster | `cast_monster_target` ×3 | 10 | 43255, 43330, 43417 — but see the note below: only **43255** and **43417** are `spelltype`-gated; **43330** keys off the spell's ability instead |
 | area/no-target offensive spell | `cast_no_target` → `add_evil_warnings_to_room` (0x3fa18) | 10 once + 0-point pair timers | 39216, 39245, 39313 → 38774-38812. One 10-point NPC-style hit for the room (38774, 38784, 38806), then `add_evil_points(caster, victim, **0**, 0xb, 0)` per would-be-innocent player target (38790) so each victim gets a retaliation window without extra points. Uses `is_valid_target` (38294-38318: victim fame `< 0x28` **and** `should_give_evil`) and `is_valid_monster_target` (38430-38505; note 38489-38493: roam-class-5 and class-0x25 monsters are *excluded* as area-spell targets when the caster's fame `< 0x28` — innocents cannot accidentally aggro hunters/free-roamers). |
 
 `rob_monster` (0x1fc96, 17442-17458) gives **no** evil points; its only crime check is
 the committed-Lawful refusal (17454, "You have chosen a way of life which prevents
 this action." — same message that blocks `rob_user` for Lawful players, 17163-17167).
+
+#### 2.5.1 `cast_monster_target` 43330 — the ability-52 arm (**M7 PENDING**)
+
+The three `cast_monster_target` call sites are **not** the same gate. Two are
+hostility-gated the way the row above implies; the middle one is not:
+
+| line | enclosing gate |
+|---|---|
+| 43255 | `param_4 != 0` (autocombat re-fire) **and** `spelltype < 3` |
+| 43417 | `spelltype < 3` (the engage-and-stop block) |
+| **43330** | **neither** — it sits inside the spell's ability scan, on `ability == 0x34` |
+
+43323-43347 in full:
+
+```c
+else if (((uVar7 == 0x34) && (room+0x43c != 5 || DAT_004790e8 == 0)) &&
+         ((mon+0x106 == 0 || mon+0x106 == 4) && sameas(mon+0x1a, user+0x1e) == 0)) {
+  if (add_evil_points(param_2, -1, 10, 0xb, 0) != 0) return 0;   // refusal
+  if (/* not no-grudge, not class 0x25, roll/mode gate, not class-5-with-grudge */) {
+    mon[0x50] = 1;                            // grudge flag
+    strcpy(mon+0x1a, user+0x1e);              // remember the caster
+    mon+0x116 = 0;                            // clear suppression
+  }
+}
+```
+
+Ability **0x34 (52) is `EvilInCombat`**. The predicate is otherwise identical to
+`attack_user_monster`'s (26113-26116) and to 43255's: non-arena, monster mode
+∈ {0, 4}, and the monster is not already holding a grudge against this caster.
+
+So in the DLL, cursing a passive monster is a crime **because of what the spell
+carries**, not because of its `spelltype`. Census (`re/mmud_wgnt.sqlite`, 207
+LearnSp-taught spells): 45 learnable spells carry ability 52 — 27 at match 8,
+2 at match 0, 16 at match 12. Of the 29 learnable **benign** (`spelltype` 3)
+single-target match-4/6/8 spells, **25** carry it: curse, greater curse,
+wrathful curse, blind, slow, hold person, confusion, sleep, entangle, mute,
+senselessness, vulnerability, damnation, divine disfavour, rotting flesh,
+partial petrification, burning aura, creeping doom and the seven songs.
+
+**Not implemented.** `Core::charge_passive_monster_evil` already encodes this
+predicate exactly, but its call site in `cmd_cast` gates on
+`TargetMode::is_offensive()` instead of on the ability, so all 25 are currently
+free and earn no grudge. The 16 learnable match-12 AREA spells that carry 52 are
+likewise unhandled on the `area_cast` path — that gap predates the cast-routing
+work; the single-target side merely widens it. Both belong to the M7 crime
+slice, together with the grudge/suppression writes (`mon+0x50`, `mon+0x1a`,
+`mon+0x116`) that neither path performs today.
 
 ### 2.6 Complete writer census of `player+0x542`
 

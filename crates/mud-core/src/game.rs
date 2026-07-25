@@ -4471,6 +4471,14 @@ impl Core {
             }
             // Offensive casts at passive monsters charge like melee
             // (crime.md §2.5 cast_monster_target rows).
+            //
+            // M7 PENDING (`re/docs/crime.md` §2.5, the 43330 row): the
+            // `is_offensive()` gate is OURS, not the DLL's. 43323-43347
+            // charges the same 10 points off the SPELL'S ABILITY 0x34
+            // (EvilInCombat) with no `spelltype` test at all, so 25 of the
+            // 29 learnable benign match-4/6/8 spells (curse, blind, slow,
+            // hold person, the songs) should charge here and do not — see
+            // the long note in `offensive_cast_attempt`'s fail arm.
             if spell.target_mode.is_offensive()
                 && self.charge_passive_monster_evil(session, monster_id)
             {
@@ -7258,10 +7266,37 @@ impl Core {
             // whiffed rounds too) — driver rounds only: the command-time
             // duration path never engaged, and the DLL's fail branch sets
             // no aggro there (44234-44265 prints and moves on). Gated
-            // like every lock since slice 3, and on the OFFENSIVE mode:
-            // the grudge write at 43249-43273 is inside the
-            // `spelltype < 3` block, so a failed benign cast at a monster
-            // (the 208-spell match-4/6/8 band) never earns a grudge.
+            // like every lock since slice 3, and on the OFFENSIVE mode.
+            //
+            // `cast_monster_target` has TWO grudge writes, and only the
+            // FIRST is spelltype-gated:
+            //   43249-43273 — inside `if (param_4 != 0)` (autocombat
+            //     re-fire) AND `spelltype < 3`, so a benign cast never
+            //     reaches it. That is the one this gate mirrors.
+            //   43323-43347 — inside the spell's ABILITY scan, gated on
+            //     neither `spelltype` nor `param_4`: `ability == 0x34`
+            //     (EvilInCombat) + non-arena + monster mode ∈ {0, 4} +
+            //     `sameas(mon+0x1a, user+0x1e) == 0`. Same body:
+            //     `add_evil_points(caster, -1, 10, 0xb, 0)`, refuse on
+            //     non-zero, else `mon[0x50] = 1`, copy the caster's name
+            //     into `mon+0x1a` and clear the suppression byte at
+            //     `mon+0x116`.
+            //
+            // M7 PENDING (`re/docs/crime.md` §2.5, the 43330 row): the
+            // 0x34 arm is NOT implemented. In the DLL, cursing a passive
+            // monster costs 10 evil points and earns a grudge; here it is
+            // free and the monster never retaliates. DATA
+            // (`re/mmud_wgnt.sqlite`): 25 of the 29 learnable benign
+            // match-4/6/8 spells carry ability 52 — curse, blind, slow,
+            // hold person, confusion, sleep, entangle, mute, the seven
+            // songs, creeping doom, wrathful curse. This is a WIDENING of
+            // an existing gap, not a new one: 16 learnable AREA spells
+            // (match 12) already carry ability 52 and are already
+            // unhandled on the `area_cast` path. `charge_passive_monster_evil`
+            // already implements the 43323 predicate exactly — it is only
+            // gated at the CALL SITE on `is_offensive()` rather than on
+            // the ability, so closing this is a call-site change plus the
+            // grudge/suppression writes. Belongs with the M7 crime slice.
             if spell.duration == 0
                 && spell.target_mode.is_offensive()
                 && self.monsters.get(&monster_id).is_some_and(|m| m.target.is_none())
