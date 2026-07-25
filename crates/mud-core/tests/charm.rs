@@ -14,16 +14,14 @@
 //!   cast-fail line AND a permanent, timerless charm;
 //! - the §1.5 draw order (success roll -> save -> magnitude -> duration).
 //!
-//! FIXTURE NOTE — all four shipped Enslave spells (49 song of charming,
-//! 55 enslave, 88 control undead, 92 charm animal) carry `spelltype` 3
-//! (`TargetMode::Benign`) with match type 4. Our command path picks the
-//! monster-target branch off the TARGET MODE, while the DLL picks the cast
-//! entry point off the MATCH type (`get_spell_match_type` -> 0x801 for 4),
-//! so a benign-mode match-4 spell never reaches `offensive_cast_attempt`
-//! here — 158 shipped spells sit in that gap (curse, blind, slow, fear,
-//! the charm family). That routing gap is NOT this task's; the fixtures
-//! below therefore keep match type 4 (the gate the case-6 arm reads) and
-//! use an offensive target mode so the cast routes.
+//! FIXTURE SHAPE — the real one: all four shipped Enslave spells (49 song
+//! of charming, 55 enslave, 88 control undead, 92 charm animal) carry
+//! `spelltype` 3 (`TargetMode::Benign`) with match type 4, and that is
+//! what the fixtures below use. The dispatcher routes them to
+//! `cast_monster_target` off the MATCH type (`get_spell_match_type` ->
+//! 0x801), and the benign target mode then keeps them out of the
+//! engage-and-stop block at 43411-43421 — so every charm here resolves
+//! inside the command, costs and all, and none of them engages combat.
 
 use std::collections::BTreeMap;
 
@@ -83,13 +81,13 @@ fn spell(id: SpellId, name: &str, short: &str) -> Spell {
         required_power: 1,
         min_base: 0,
         max_base: 0,
-        // Offensive so the cast ROUTES (see the fixture note above); the
-        // charm family ships benign-mode.
-        target_mode: TargetMode::Offensive0,
+        // The shipped Enslave shape: spelltype 3 + match 4.
+        target_mode: TargetMode::Benign,
         save_class: SaveClass::None,
         base_chance: 200, // auto-success: >= 200 skips the roll
         duration_per_level: 0,
-        // 43797: the case-6 gate accepts match types 4/6/8 only.
+        // 43797: the case-6 gate accepts match types 4/6/8 only — the
+        // same set the dispatcher routes to `cast_monster_target`.
         match_type: MatchType::Special4,
         duration: 60,
         element: Element::Magic,
@@ -257,6 +255,15 @@ fn cast(core: &mut Core, s: SessionId, line: &str) -> String {
     text_to(&core.drain_events(), s)
 }
 
+/// One combat round: refills the energy pool and clears the
+/// one-cast-per-round permission bit.
+fn energy_round(core: &mut Core) {
+    for _ in 0..5 {
+        core.tick();
+    }
+    core.drain_events();
+}
+
 // --- §1.3 the state triple ---
 
 #[test]
@@ -304,24 +311,22 @@ fn instant_enslave_writes_the_triple_without_a_slot() {
     // inside add_cast_spell_to_monster, which the instant arm never
     // calls); our castmsgb pair still renders from the shared tail, and no
     // shipped Enslave spell is instant, so the live surface is unmeasured.
-    // An INSTANT offensive cast only ENGAGES at the command (the
-    // duration==0 block, 43421-43481); the combat round driver fires it —
-    // so the engagement's own grudge lock (target set, suppression
-    // cleared) lands FIRST and the charm write overwrites it.
+    // The instant arm resolves AT THE COMMAND like every other benign
+    // cast: the engage-and-stop block at 43411-43421 is gated on
+    // `spelltype < 3`, which the charm family (spelltype 3) never
+    // satisfies, so there is no engagement round to wait for and no
+    // grudge lock to overwrite.
     let (mut core, s, m) = setup(RAT);
-    cast(&mut core, s, "cast snap rat");
+    let shown = cast(&mut core, s, "cast snap rat");
+    assert!(!shown.contains("*Combat Engaged*"), "benign never engages: {shown:?}");
     assert_eq!(
         core.debug_monster_charm(m),
-        Some((false, false, Some(s))),
-        "engagement only: the grudge lock, no charm yet"
+        Some((true, true, Some(s))),
+        "the triple lands inside the command"
     );
-    for _ in 0..5 {
-        core.tick();
-    }
-    core.drain_events();
-    assert_eq!(core.debug_monster_charm(m), Some((true, true, Some(s))));
     let slots = core.monster_active_spells(m).expect("rat lives");
     assert!(slots.iter().all(|slot| slot.spell.is_none()), "no slot, no timer");
+    assert_eq!(core.current_mana(s), 96, "full costs paid at the command");
 }
 
 // --- §1.2 the charmlvl gate ---
@@ -357,23 +362,21 @@ fn the_silent_gate_costs_exactly_the_same_draws() {
     // every roll — success, save, magnitude and duration are all drawn
     // before it. A gated-out cast must therefore leave the shared stream
     // exactly where a landing one does; the probe is a second cast whose
-    // rolled band values would shift if it did not.
-    let landed = {
-        let (mut core, s, _m) = setup(RAT);
-        cast(&mut core, s, "cast bind rat");
+    // rolled band values would shift if it did not. The probe cast needs
+    // a fresh round — a benign monster cast spends the one-per-round bit
+    // (43498-43509) — but the round is driven the same way in both worlds,
+    // so the two RNG streams stay aligned.
+    let probe_after = |template: MonsterId, first: &str| {
+        let (mut core, s, _m) = setup(template);
+        cast(&mut core, s, first);
         let probe = core.spawn_monster(WARY, TOWER).expect("hound");
-        core.drain_events();
+        energy_round(&mut core);
         cast(&mut core, s, "cast bind hound");
         core.monster_active_spells(probe).expect("hound lives")[0]
     };
-    let gated = {
-        let (mut core, s, _m) = setup(ELDER);
-        cast(&mut core, s, "cast bind elder");
-        let probe = core.spawn_monster(WARY, TOWER).expect("hound");
-        core.drain_events();
-        cast(&mut core, s, "cast bind hound");
-        core.monster_active_spells(probe).expect("hound lives")[0]
-    };
+    let landed = probe_after(RAT, "cast bind rat");
+    let gated = probe_after(ELDER, "cast bind elder");
+    assert_eq!(landed.spell, Some(BIND), "the probe must actually land");
     assert_eq!(
         (landed.value, landed.remaining),
         (gated.value, gated.remaining),
@@ -475,9 +478,13 @@ fn a_full_slot_table_still_lands_a_permanent_charm() {
     // 38281-38288 returns -1 after printing the plain fail line; the
     // case-6 caller (43810-43820) ignores the return and writes the charm
     // triple anyway — a fully slotted monster keeps a TIMERLESS charm.
+    //
+    // A benign monster cast CONSUMES the one-per-round permission bit
+    // (43498-43509), so filling the table takes one round per filler.
     let (mut core, s, m) = setup(RAT);
     for i in 0..5 {
         cast(&mut core, s, &format!("cast fil{i} rat"));
+        energy_round(&mut core);
     }
     let before = core.monster_active_spells(m).expect("rat lives");
     let shown = cast(&mut core, s, "cast ensl rat");
