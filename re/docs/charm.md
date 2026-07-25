@@ -155,21 +155,63 @@ the named user. Charmed pets take the `FUN_0044cc65` branch instead; suppressed,
 named, non-charmed monsters ("friends", §2.4) attack players *other than* the named
 user, behaviour-mode-gated (20494-20511).
 
-### 2.3 Target exemption — nobody targets a pet by accident
+### 2.3 Target exemption — pets are DEPRIORITISED, not hidden
 
+*(CORRECTED 2026-07-25, M7 slice 5 Task 6. The previous text collapsed two
+mechanisms on two disjoint call paths into one "hostile spells can't target your
+own pet", which is false of every single-target spell in the game.)*
+
+There are **two** gates, and they never both run on the same cast.
+
+* **The find ORDERING — `find_action_target` mask bit `0x800`** (`0x699fc`,
+  63726). When the bit is set the room's monster block runs **twice**: pass 1
+  skips `mon+0x128 & 1` (63776), pass 2 scans ONLY charmed monsters (63820).
+  Charmed bodies are therefore searched **last, never excluded** — with no wild
+  match in the room, pass 2 hands back the pet and the action lands on it. Both
+  passes finish before the `0x2` user scan, so the bit orders monsters against
+  monsters and never against a player. Carriers: `cmd_any_attack` `0x883`
+  (49590) and `cmd_cast`'s preferred masks `0x801` (match 4), `0x803` (match 8)
+  and `0xf837` (match 6). The dispatcher's universal retry `0xf037`
+  (59265-59271) does NOT carry it — no observable consequence, since every match
+  type `cast_monster_target` accepts already searches monsters in its preferred
+  mask, so the retry only reaches a monster for match types that refuse it by
+  kind anyway. Every other caller (`cmd_rob`, `cmd_track`, `cmd_follow`,
+  `cmd_give` — all `0x83`; `cmd_use` `0xf037`) is charm-blind.
+  Net effect: `cast mmis rat` with a pet rat and a wild rat present hits the
+  **wild** one; with only the pet present it hits the **pet**.
+* **The area VETO — `is_valid_monster_target`** (`0x3f1e4`, 38430). A real
+  exclusion, but it lives **only on the AREA sweeps**: `count_valid_targets`
+  (38610), `add_duration_spell_to_room` (38707), `add_evil_warnings_to_room`
+  (38803) and the eight `cast_no_target` effect arms (39705-40724).
+  `cast_monster_target` never calls it, so no single-target cast consults it.
+  Its `switch` is on `spell+0xcc`, so the MATCH TYPE decides how much runs:
+  - 0/1/2/7 → invalid; 3/5/0xb → valid outright (38455-38466), as does the
+    `default` arm that would catch 4/6/8;
+  - 10/0xd → valid ONLY for your own charmed pet (38501-38509) — the pet-command
+    band; the `{3,5,9,0xb,0xc}` sweep guards never pass them, so it is dead;
+  - **9 and 0xc only** → the charm arm (38477-38488): uncharged, `+0x116 == 0`
+    and `mon+0x1a` == your name → valid at once (your grudge-holder is always
+    fair game); charmed **or** suppressed and `mon+0x1a` == your name → INVALID.
+    That covers "friends" (§2.4) on the same terms as pets. Falling through the
+    name compare: instance roam class 5 or `0x25` with caster fame
+    `player+0x542 < 0x28` → invalid, behaviour mode 4 → invalid, else valid
+    (38489-38499).
+
+  So only a match-9/12 AREA cast actually spares your own pet. Shipped and
+  learnable: stinking cloud (131) is match 12.
 * **Monsters never acquire pets.** Monster target acquisition only ever produces
   users (`attack_monster_user`) or the explicit hunt link `mon+0x88`
   (`FUN_00423863` 20452-20460); there is no room-scan for monster victims, so a pet
   is only ever swung at by a §6 hunter that carries its id.
-* **Hostile spells can't target your own pet.** `is_valid_monster_target`
-  (`0x3f1e4`, 38430), match types 9/0xc: if the monster is charmed-or-suppressed and
-  `mon+0x1a` equals *your* name → invalid (return 0, 38477-38488); the same compare
-  on an unsuppressed monster makes your grudge-holder always-valid.
-* **Threat scans ignore your pet.** `monster_could_attack` (`0x...`, 18209) counts a
-  monster as a threat only if NOT (charmed AND named == you) AND `+0x116 == 0`
-  (18238-18241) — your pet (and any "friend") never blocks rest-type actions.
+* **Threat scans ignore your pet.** `monster_could_attack` (`0x20b51`, 18209)
+  counts a monster as a threat only if NOT (charmed AND named == you) AND
+  `+0x116 == 0` (18238-18241) — your pet (and any "friend") never blocks the
+  actions gated on it, which in WG3-NT are `can_sneak` and `cmd_hide`
+  (`theft.md` §11.1/§11.2), not a rest command.
 * **Physical attacks are allowed** — and are a release path (§4.3): the engine does
-  not block `attack_user_monster` against your own pet.
+  not block `attack_user_monster` against your own pet. `cmd_any_attack` carries
+  `0x800`, so a named swing prefers a wild body, but the second pass keeps the
+  pet reachable and the whole §4.3 melee release family with it.
 
 ### 2.4 `+0x116` semantics (suppression) — set/clear inventory
 
