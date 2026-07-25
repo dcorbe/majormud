@@ -2320,7 +2320,7 @@ impl Core {
             .map_or(0, |t| t.energy);
         for idx in 0..5 {
             let mut fear_flee = false;
-            let mut release = false;
+            let mut terminate = false;
             let (spell_id, stored, remaining) = {
                 let Some(m) = self.monsters.get_mut(&id) else {
                     return;
@@ -2382,26 +2382,10 @@ impl Core {
                 // Expiry (19318-19324): clear the slot FIRST, then
                 // terminate with the stored value.
                 m.active_spells[idx] = ActiveSpell::default();
-                for (ability, row) in &spell.abilities {
-                    let v = if *row != 0 { i32::from(*row) } else { stored };
-                    match ability {
-                        // Enslave (6): the charm reversal (44988-44995)
-                        // — charm.md §4.1. Deferred by one statement so
-                        // the shared helper can take the record back.
-                        Ability::Enslave => release = true,
-                        // Poison (19): counter -= v, floored 0
-                        // (45003-45008).
-                        Ability::Poison => {
-                            m.poison = clamp_poison(i32::from(m.poison) - v);
-                        }
-                        // NO other reversal and NO EndCast chain — the
-                        // monster termination handles exactly these two.
-                        _ => {}
-                    }
-                }
+                terminate = true;
             }
-            if release {
-                self.release_charm(id);
+            if terminate {
+                self.terminate_monster_slot(id, &spell, stored);
             }
             if fear_flee
                 && let Some(from) = self.monsters.get(&id).map(|m| m.location)
@@ -2415,6 +2399,43 @@ impl Core {
         // monster sitting at exactly 0 survives the medium pass.
         if self.monsters.get(&id).is_some_and(|m| m.current_hp < 0) {
             self.monster_killed(id, None);
+        }
+    }
+
+    /// `perform_spell_termination_monster_upkeep` (`0x4a45d`, 44972) —
+    /// the WHOLE monster-side termination handler, which is a two-case
+    /// switch and nothing more: case 6 (Enslave, [`Core::release_charm`])
+    /// and case 0x13 (Poison, 45003-45008). No stat reversal, no wear-off
+    /// line, no EndCast chain — the player-side handler's other two dozen
+    /// cases have no monster twin.
+    ///
+    /// `stored` is the slot's saved value; a non-zero ability ROW wins
+    /// over it, the same precedence the routine handler uses.
+    ///
+    /// Every caller goes through here rather than reaching for case 6
+    /// alone: on shipped data the two are equivalent (none of the four
+    /// Enslave spells — 49 song of charming, 55 enslave, 88 control
+    /// undead, 92 charm animal — carries an ability-19 row), but a
+    /// fixture that pairs Enslave with Poison would otherwise leave the
+    /// slot-sweep paths silently forgetting to drain the counter.
+    fn terminate_monster_slot(
+        &mut self,
+        id: MonsterInstanceId,
+        spell: &crate::content::Spell,
+        stored: i32,
+    ) {
+        for (ability, row) in &spell.abilities {
+            let v = if *row != 0 { i32::from(*row) } else { stored };
+            match ability {
+                Ability::Enslave => self.release_charm(id),
+                Ability::Poison => {
+                    if let Some(m) = self.monsters.get_mut(&id) {
+                        m.poison = clamp_poison(i32::from(m.poison) - v);
+                        m.needs_recompute = true;
+                    }
+                }
+                _ => {}
+            }
         }
     }
 
@@ -2446,13 +2467,20 @@ impl Core {
     /// (19455-19487 give-up, 26527-26562 owner melee, 46929-46953
     /// autocombat): walk the 5 slots; a slot whose spell id no longer
     /// resolves is simply zeroed, and a slot whose spell carries
-    /// Enslave(6) is TERMINATED — [`Core::release_charm`] — and zeroed.
-    /// Slots holding anything else are left alone.
+    /// Enslave(6) goes through the FULL termination handler
+    /// ([`Core::terminate_monster_slot`] — 26548 passes the whole spell
+    /// record, not just the charm case) and is then zeroed. Slots holding
+    /// anything else are left alone.
     ///
     /// This is what makes the §4.3 asymmetry: a SLOTLESS pet (instant
     /// Enslave, or a Summon-born pet) has nothing for the sweep to find,
     /// so whichever legs of the triple the caller did not clear itself
     /// survive the release.
+    ///
+    /// DIVERGENCE, unobservable on shipped data: the DLL's termination
+    /// call sits INSIDE the per-ability-row loop (26547), so a spell with
+    /// two ability-6 rows would run the handler twice. We run it once per
+    /// slot. No shipped spell has a repeated row.
     fn sweep_charm_slots(&mut self, id: MonsterInstanceId) {
         for idx in 0..5 {
             let Some(m) = self.monsters.get(&id) else {
@@ -2461,21 +2489,22 @@ impl Core {
             let Some(spell_id) = m.active_spells[idx].spell else {
                 continue;
             };
+            let stored = i32::from(m.active_spells[idx].value);
             // Unknown id (19461-19465): the slot is zeroed but nothing is
             // terminated — the DLL cannot ask an absent record for its
             // ability rows.
-            let (known, charms) = match self.content.spells.get(&spell_id) {
-                None => (false, false),
-                Some(spell) => (
-                    true,
-                    spell.abilities.iter().any(|(a, _)| *a == Ability::Enslave),
-                ),
+            let charmer = match self.content.spells.get(&spell_id) {
+                None => None, // unknown: zero the slot, terminate nothing
+                Some(spell) => {
+                    if spell.abilities.iter().any(|(a, _)| *a == Ability::Enslave) {
+                        Some(spell.clone())
+                    } else {
+                        continue; // an unrelated slot survives untouched
+                    }
+                }
             };
-            if known && !charms {
-                continue; // an unrelated slot survives the sweep untouched
-            }
-            if charms {
-                self.release_charm(id);
+            if let Some(spell) = charmer {
+                self.terminate_monster_slot(id, &spell, stored);
             }
             if let Some(m) = self.monsters.get_mut(&id) {
                 m.active_spells[idx] = ActiveSpell::default();
@@ -2633,6 +2662,7 @@ impl Core {
                 self.monsters.remove(&id);
                 return;
             }
+            m.needs_recompute = true; // 19451: `+0x140` dirty
             m.give_up = 0;
             m.target = None;
             // 19452-19487: a charmed monster additionally loses the bit

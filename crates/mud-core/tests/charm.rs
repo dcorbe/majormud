@@ -99,6 +99,11 @@ const SEAR: SpellId = SpellId(790);
 /// SEAR as an AREA (match 12) — the 40371/40600 copies of that twin,
 /// which are equally charm-blind.
 const GALE: SpellId = SpellId(795);
+/// ENSLAVE carrying (Poison, 5) alongside the charm — the probe for the
+/// slot sweep running the WHOLE termination handler (44972) and not just
+/// its case 6. No shipped Enslave pairs the two rows, so this is
+/// fixture-only.
+const VENOMBOND: SpellId = SpellId(800);
 
 fn spell(id: SpellId, name: &str, short: &str) -> Spell {
     Spell {
@@ -265,7 +270,10 @@ fn world() -> Content {
     gale.duration = 0;
     gale.target_mode = TargetMode::Offensive0;
     gale.match_type = MatchType::AreaC;
-    for s in [enslave, thrall, hold, snap, whisper, leash, bind, bindsave, sear, gale] {
+    let mut venombond = spell(VENOMBOND, "venombond", "veno");
+    venombond.abilities = vec![(Ability::Enslave, 0), (Ability::Poison, 5)];
+    for s in [enslave, thrall, hold, snap, whisper, leash, bind, bindsave, sear, gale, venombond]
+    {
         content.add_spell(s);
     }
     for i in 0..5u16 {
@@ -284,7 +292,7 @@ fn caster() -> Player {
 
 fn caster_named(name: &str, location: RoomId) -> Player {
     let book: BTreeMap<SpellId, bool> = [
-        ENSLAVE, THRALL, HOLD, SNAP, WHISPER, LEASH, BIND, BINDSAVE, SEAR, GALE,
+        ENSLAVE, THRALL, HOLD, SNAP, WHISPER, LEASH, BIND, BINDSAVE, SEAR, GALE, VENOMBOND,
     ]
     .into_iter()
     .chain((0..5).map(|i| SpellId(FILLER_BASE + i)))
@@ -839,6 +847,33 @@ fn owner_melee_releases_a_slotted_pet() {
     assert!(
         slots.iter().all(|slot| slot.spell != Some(ENSLAVE)),
         "the Enslave slot is terminated and cleared"
+    );
+}
+
+#[test]
+fn the_slot_sweep_runs_the_whole_termination_handler_not_just_case_6() {
+    // 26548/19470 hand `perform_spell_termination_monster_upkeep` the
+    // WHOLE spell record once they spot an ability-6 row, so its case
+    // 0x13 (Poison, 45003-45008) fires too. Reaching for the charm
+    // reversal alone is equivalent on shipped data — none of the four
+    // Enslave spells carries an ability-19 row — but it is a real
+    // divergence and a DRY break with the expiry path, which always went
+    // through the full handler.
+    let (mut core, s, m) = setup(MUTT);
+    cast(&mut core, s, "cast veno mutt");
+    assert_eq!(core.debug_monster_charm(m), Some((true, true, Some(s))));
+    assert_eq!(core.monster_poison(m), Some(5), "the apply sets the counter");
+    energy_round(&mut core);
+    melee_until_a_hit(&mut core, s, "mutt", m);
+    assert_eq!(
+        core.debug_monster_charm(m),
+        Some((false, false, None)),
+        "the sweep still runs the charm reversal"
+    );
+    assert_eq!(
+        core.monster_poison(m),
+        Some(0),
+        "and drains the counter the same slot put there"
     );
 }
 
