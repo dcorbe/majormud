@@ -25,7 +25,15 @@ red-first, behavioral authority `re/docs/charm.md` + decompile cites into
 | `mon+0x116` attack-suppression | `suppress: bool` (game.rs:929) |
 | `mon+0x128` bit 0 charmed | **new** `charmed: bool` |
 | `mon+0x88` hunt link | **new** `hunt: Option<MonsterInstanceId>` (Task 7) |
-| `mon+0x34..0x5c` travel trail | **new** `trail: Vec<RoomId>` 10-deep (Task 7) |
+| `mon+0x38..0x5c` travel trail | **new** `trail: Vec<RoomId>` 10-deep (Task 7) |
+
+**Correction (Task 8):** the trail base is **0x38**, not 0x34 — 10 room-id
+entries at `0x38..0x5c` inclusive, ending exactly where the `+0x60`
+back-link array begins (`move_monster` 21572-21574 memmoves 0x24 bytes
+from 0x38 to 0x3c, then writes `0x38`). The 0x34 in the original table
+came from `dir_monster_travelling_coord`'s second read, spelled
+`mon+0x34 + i*4` — which is the same slot as `0x38 + (i-1)*4`, i.e. the
+predecessor entry, not a different array.
 
 The DLL keys the owner by NAME; we key by SessionId. Logout invalidates the
 session, the pursuit tier bumps `give_up` each tick (game.rs:2399 already

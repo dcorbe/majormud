@@ -348,6 +348,64 @@ integration. Oracle expedition: thief character (SYSOP-staged), rob a
 monster + a second character, pick a Newhaven-reachable lock; capture
 every string + fame delta via status.
 
+**Slice 5 COMPLETE (2026-07-25, 742 tests, commits 66b3867..HEAD) —
+charm & pets, plus one unplanned routing fix.** Everything the slice
+scoped landed: `charmlvl`/`charmres` loader columns;
+`attack_monster_monster` (form-0 fighter builds, mode-5 pipeline,
+DamageShield, killer-less exp split) closing the M6 monster-vs-monster
+marker; Enslave acquisition (the `charmres` save-stat swap with the
+`charmres == 0` M.R. fallback, the silent `charmlvl` level gate, the §0
+triple, and the slot-full case that yields a *permanent* timerless
+charm because the caller ignores `add_cast_spell_to_monster`'s -1);
+pet movement (follow-roll skipped, wander refused) and assist
+(`FUN_0044cc65` — owner's monster target, self-release, idle-draw-free);
+the pet targeting exemptions (the `0x800` find is an ORDERING, charmed
+last, not a veto — corrected mid-slice; `is_valid_monster_target`'s area
+gate is the only real veto); all four release paths (expiry reversal,
+give-up/logout sweep with the roam-0x25 despawn variant, owner-melee
+release with its grudge asymmetry, retaliation exemption); and the
+Summon ownership links (`SummonLink::Pet`/`HuntUser`/`HuntMonster`, the
+10-deep monster trail at `mon+0x38..0x5c`, and the `+0x88` hunt driver
+arm whose cold-trail swing crosses room boundaries).
+
+Deviations from the slice plan, all recorded in `re/docs/charm.md` §8:
+`cast_user_target` 0xc IS implemented (it shares its body with
+`cast_no_target` 0xc and needed no PvP, only the `target_id == session`
+discriminator); the owner is keyed by `SessionId` rather than name, so a
+re-login inside the ~16 s give-up window will not re-attach a pet; the
+`attack_monster_monster` exp split pays only engaged sessions, not the
+DLL's idle-autocombat bystanders; the victim-side `+0x60` back-links are
+NOT ported (no reader exists, and the write loop has no `break`, so the
+DLL puts the same id in every free slot — see charm.md §7); the hunt id
+is a typed monotonic `MonsterInstanceId`, which closes charm.md §7's
+stale-link hazard by construction.
+
+**Unplanned, and this doc did not know about it: the Task-3b routing
+fix** (`493dff8` + `7a193d7`). Single-target casts were routed on
+`spelltype`; the DLL routes on the MATCH type, and the 41434 self-target
+divert sits above the acceptance gate. Correcting both sent 25 more
+learnable benign spells (curse, blind, slow, hold person, the songs) at
+monsters for the first time — which **widened an existing crime gap**:
+those 25 carry `EvilInCombat(52)`, and `cast_monster_target` 43323-43347
+charges 10 evil off the ABILITY with no `spelltype` test, then grudges
+and un-suppresses the victim. We do neither. Logged against `crime.md`
+§2.5 as `M7 PENDING` at `offensive_cast_attempt`'s fail arm; 16
+learnable match-12 area carriers were already in the same hole.
+`charge_passive_monster_evil` already implements the 43323 predicate
+exactly — closing it is a call-site change (gate on the ability, not on
+`is_offensive()`) plus the grudge/suppression writes.
+
+**Carries to slice 8:** the live oracle expedition (charm a low monster
+with charm animal / song of charming, walk it, watch one assist round,
+attack it as the owner, let a second charm expire — pin every string and
+retag text.rs ORACLE → MEASURED); the `EvilInCombat(52)` charge above;
+and three ORACLE-VERIFY items in charm.md §8.2 — instant-Enslave
+messaging (fixture-only, no shipped Enslave has duration 0),
+`is_valid_monster_target`'s roam/fame/behaviour-4 fall-through (exhaustive
+from the decompile, zero measured surface), and the match-10/0xd
+pet-command band (decompiled and implemented but unreachable, since those
+match types iterate players only and collect nothing).
+
 ## Slice 5 — Charm & pets
 
 - **Monster-vs-monster combat** (prereq): the swing path per slice-1
@@ -431,7 +489,12 @@ top/broadgang string pins; stock guild-house .HSE render; deed price.
 
 Consolidated oracle re-verification of all M7 strings → retag text.rs;
 marker sweep to zero `M7 PENDING` (gang-war → `M8 PENDING` citing this
-doc); crime.md/theft.md/quests.md/gangs.md updated with as-built cites;
+doc). Known survivors as of slice 5: the two `EvilInCombat(52)` markers
+in `game.rs` (`cast_monster_target` 43323-43347's ability-gated 10-point
+charge + grudge, widened by slice 5's routing fix — see the slice-5
+banner) and `monster_could_attack`'s unported pet exemption, which is
+not slice-scoped and lands with its first consumer.
+crime.md/theft.md/quests.md/gangs.md updated with as-built cites;
 roadmap status line. Hand session on the real DB: toggle ANSI, kick a
 rat, watch "A nasty orc rogue" walk in, charm a pet and let it fight,
 rob a monster, pick a lock, go Seedy and watch the guardian flip, ask an

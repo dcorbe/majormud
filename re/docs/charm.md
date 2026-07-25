@@ -21,6 +21,11 @@ A pet is not one flag but a triple on the live monster record:
 `mon+0x140` is the generic **dirty flag** (persistence), NOT an owner link — every state
 transition below stamps `+0x140 = 1` alongside the real writes.
 
+Two adjacent fields belong to the SUMMON side rather than the charm triple, and are
+documented in §6: the hunt link `mon+0x88` (a monster id, not a name), and the travel
+trail `mon+0x38 .. mon+0x5c` — 10 room-id entries, ending exactly where the `+0x60`
+back-link array begins.
+
 The charmed bit is set at exactly three sites in the whole DLL (grep `| 1` on int-idx
 `0x4a`): Enslave instant apply (43806), Enslave duration apply (43820), and the
 Summon-pet path in `cast_no_target` (40050). All other named/suppressed combinations
@@ -467,23 +472,77 @@ Four handlers, one `generate_monster(map, room, -1, templateId=value, 0, 65000, 
 |------|------|-------------------|----------|---------|---------------|
 | `cast_no_target` case 0xc (match 1/2/6) | 40035-40056 | **caster** | 1 | **yes** (40050) | full pet, timerless (release via §4.2/§4.3 only); success shown as `display_spell_success(..., "everyone", ...)` (40042) |
 | `cast_user_target` case 0xc (match 0/2/6/8) | 42059-42086 | **target user** | 0 | no | hunter vs a player: spawns in the **caster's** room, pursues/attacks the named victim via the grudge machinery |
-| `cast_monster_target` case 0xc (match 4/6/8) | 43902-43931 | (empty) | 0 | no | hunter vs a monster: victim link `summoned+0x88 = victim id` (43921), and the summon's id is pushed into the victim's 10-deep back-link array `victim+0x60+i*4` (43922-43928). `FUN_00423863` then walks the summon toward `+0x88` (`dir_monster_travelling_coord`) and `attack_monster_monster`s when co-located and unsuppressed (20452-20460) |
+| `cast_monster_target` case 0xc (match 4/6/8) | 43902-43931 | (empty) | 0 | no | hunter vs a monster: victim link `summoned+0x88 = victim id` (43921), and the summon's id is written into the victim's 10-deep back-link array `victim+0x60+i*4` (43922-43928, see §7 — it lands in *every* free slot). `FUN_00423863` then walks the summon toward `+0x88` (`dir_monster_travelling_coord`) and swings when the walk has **no step to offer** — see the trail note below |
 | `monster_cast` ability 0xc | 23251-23268 | **target user** | 0 | no | monsters summoning hunters against players; population caps from `knmsr+0x5c` passed instead of the 0/65000 pair |
 
 Duration != 0 on any of these routes to `silly_spell` (summons are instant-only).
-For our `game.rs` `summon_spawn(..., None)` placeholders: the owner argument should be
-the §0 triple — `(owner_name, suppressed, charmed)` = (caster, true, true) for the
-no-target pet form, (victim, false, false) for the player-hunt form, and the
-monster-hunt form carries no name at all, only the `+0x88` victim id + back-link.
+
+### 6.1 The breadcrumb trail and the hunt arm (20448-20463)
+
+The hunter walks its quarry's **travel trail**, a 10-entry ring of room ids at
+`mon+0x38 .. mon+0x5c` inclusive — it ends exactly where the `+0x60` back-link array
+begins. `move_monster` pushes it on every departure (21572-21574:
+`memmove(mon+0x3c, mon+0x38, 0x24)` then `mon+0x38 = dest`), so **index 0 is the
+current room** and index 1 the predecessor.
+
+`dir_monster_travelling_coord` (15790-15816) reads it from index **1**: it scans the
+quarry's trail for the hunter's own room at index `i` and returns the exit whose
+destination is `trail[i-1]` — the room the quarry went to next. (The decompile spells
+that second read as `mon+0x34 + i*4`, which is the same slot as `0x38 + (i-1)*4`; the
+array base is 0x38, not 0x34.) It short-circuits to `-1` when the quarry is already in
+the hunter's room (15797-15799).
+
+The driver's arm is then two-way and **only** on that return value:
+
+* `!= -1` → confusion check, then one `move_monster` step. No roll, one step per pass.
+* `== -1` → if `+0x116 == 0`, `attack_monster_monster`. This is the **cold-trail**
+  case, and it has no room compare — neither here nor inside
+  `attack_monster_monster` (§3). A hunter that cannot find a step swings at its quarry
+  from wherever it is standing, across a room boundary. Co-location is one way to
+  reach this arm (via the 15797 short-circuit), not a condition on it.
+
+The `+0x88` test at 20370 sits **ahead of** every acquisition arm: a monster with a
+hunt link never picks up a player, whatever its behaviour mode or roam class.
+
+### 6.2 As built (M7 slice 5)
+
+`summon_spawn` takes an explicit `SummonLink` tag rather than a nullable session —
+the four sites write genuinely different state, and a bool pair would not have said
+so. `Pet(session)` for `cast_no_target` 0xc, `HuntUser(session)` for `monster_cast`
+0xc **and** for `cast_user_target` 0xc, `HuntMonster(id)` for `cast_monster_target`
+0xc, `None` elsewhere.
+
+`cast_user_target` 0xc **is** implemented, contrary to the slice plan's assumption
+that it needed PvP. It shares its whole body with `cast_no_target` 0xc in our tree
+(both are `benign_success_effects`), and the discriminator is exactly
+`target_id == session`: self → `Pet`, another player → `HuntUser(target)`. The DLL
+uses this handler to sic a monster ON somebody, so tagging both arms `Pet` would hand
+the caster a bodyguard for a spell that is meant to be an attack. Only the pet's
+`attack_monster_user` half of `FUN_0044cc65` is genuinely M8 (game.rs `pet_assist`).
 
 ## 7. UNDETERMINED / flagged
 
 * **Stale hunt links**: nothing clears `summoned+0x88` or the victim's `+0x60`
   back-links on either party's death (`check_kill_monster` 21245+ touches neither);
   monster ids are reused, so a long-lived hunter could redirect onto a recycled id.
-  Not chased.
+  Not chased. **Closed by construction in our port** (M7 slice 5): our
+  `MonsterInstanceId` is a monotonic u64, so an id is never reused and a dangling
+  link is inert rather than misdirected. The DLL agrees on the observable in the
+  simple case — `get_monster_data` fails inside both `dir_monster_travelling_coord`
+  (15797) and `attack_monster_monster` (27226), making the arm a no-op — it is only
+  the *recycled-id* case that diverges, and ours cannot occur.
 * **`+0x60` back-link consumers**: the victim-side array is written (43922-43928) but
   no reader was located in this pass; suspected despawn/cleanup bookkeeping. Open.
+  Two findings from the slice-5 re-read, both reasons **not** to port it speculatively:
+  * The write loop has **no `break`**. It tests all ten slots and stores the summon
+    id into *every* slot that is currently zero — so the first hunter cast at a
+    virgin victim fills all ten entries with the same id, not one. Whatever the array
+    was meant to be, it is not a working list of distinct hunters.
+  * The victim's dirty flag `+0x140` is stamped **inside** that loop (43926), i.e.
+    once per zeroed slot, alongside each write.
+
+  Neither is ported. If a reader ever turns up, port the reader's expectation, not
+  this loop.
 * **Instant-Enslave messaging**: the `spell+0xce == 0` apply path (43801-43807) prints
   nothing in the case body; whether shipped instant-charm spells surface any text
   beyond the generic cast lines needs an oracle run (no shipped-data survey done).
@@ -498,3 +557,51 @@ monster-hunt form carries no name at all, only the `+0x88` victim id + back-link
 * **Ability 0x3c** on the attacker template blocks `attack_monster_monster` entirely
   (27234); id 0x3c is the Fear/random-move ability in the upkeep table — the reuse
   here ("pacifist"?) is unexplained.
+
+## 8. As built (M7 slice 5)
+
+The system above shipped in `crates/mud-core` on the `m7-content` branch. What follows
+is the delta between this document and the code, so a future reader can tell a
+deliberate divergence from a bug.
+
+### 8.1 Divergences we chose
+
+* **Owner keyed by `SessionId`, not name.** The DLL's `mon+0x1a` is a *string*; ours
+  is an `Option<SessionId>`. Everything observable matches — the pursuit tier bumps
+  `give_up` each fast tick on a dead session and releases past 15, the same ~16 s
+  window as §4.2 — with one exception: a player who **re-logs in inside that window**
+  gets a fresh `SessionId`, so the pet will not re-attach to them. The DLL's name key
+  would. Judged the better trade (a name key would need name-uniqueness invariants we
+  do not otherwise have), but it is a real behavioural difference.
+* **Engaged-only experience split.** `attack_monster_monster`'s kill pays only the
+  sessions engaged on the victim; the DLL's `distribute_experience(-1, ...)` also pays
+  idle-autocombat users merely standing in the room. Recorded in §3 and at the
+  function's doc comment.
+* **`+0x60` back-links not ported.** See §7 — no reader exists, and the write loop is
+  defective (no `break`; every free slot takes the same id). Porting a defect with no
+  consumer buys nothing.
+* **Typed hunt id (an improvement, not a divergence in the observable).** `mon+0x88`
+  is a `MonsterInstanceId` from a monotonic u64 counter, which closes §7's stale-link
+  hazard by construction. The DLL's arm is a no-op for a dead id too; only its
+  id-recycling case is unreachable for us.
+* **`monster_could_attack`'s pet exemption** (18237-18240) is unported because the
+  predicate itself has no consumer in our tree — no rest gate, no `close`/`lock`
+  guard. Noted at `sneak_command`, to land with whichever slice grows the first
+  caller.
+
+### 8.2 Open — needs the live board (slice 8 oracle expedition)
+
+* **Instant-Enslave messaging** (§7): the `spell+0xce == 0` apply path prints nothing
+  in the case body. No shipped Enslave spell has duration 0, so the arm is
+  fixture-only and its text — if any — is unmeasured.
+* **`is_valid_monster_target`'s fall-through** (38510-38560): the roam-5 / fame /
+  behaviour-4 sparing arms are implemented exhaustively from the decompile and pinned
+  by fixtures, but no *measured* surface exists for any of them. They are
+  decompile-faithful, not oracle-confirmed.
+* **The match-10/0xd pet-command band** (38502-38509): "valid only for your own
+  charmed pet" is decompiled and implemented, but unreachable — those match types
+  iterate players only, and with players excluded from the sweep they collect nothing
+  and hit the no-effect refusal first.
+* **The whole live lifecycle**: charm a low monster, walk it, watch one assist round,
+  attack it as the owner, let a second charm expire — every string in the tests above
+  is decompile- or inference-derived, and wants retagging ORACLE → MEASURED.
