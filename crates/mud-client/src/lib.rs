@@ -5,6 +5,7 @@
 //! both the live MBBSEmu board (WCCMMUD 1.11p, CP437 + ANSI + anti-bot
 //! backspace obfuscation) and the in-repo `mud-server` reimplementation.
 
+pub mod bot;
 pub mod cli;
 pub mod dialect;
 pub mod events;
