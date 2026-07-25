@@ -27,13 +27,18 @@ use std::collections::BTreeMap;
 
 use mud_core::ability::Ability;
 use mud_core::content::{
-    AttackForm, Class, ClassId, Content, Element, MatchType, Message, MessageId, Monster,
-    MonsterId, Race, RaceId, Room, RoomId, SaveClass, ScalePair, Spell, SpellId, StatBlock,
-    TargetMode,
+    AttackForm, Class, ClassId, Content, Direction, Element, Exit, MatchType, Message, MessageId,
+    Monster, MonsterId, Race, RaceId, Room, RoomId, SaveClass, ScalePair, Spell, SpellId,
+    StatBlock, TargetMode,
 };
 use mud_core::game::{Core, CoreConfig, Event, Gender, MonsterInstanceId, Player, SessionId};
 
 const TOWER: RoomId = RoomId { map: 1, room: 1 };
+/// The §4.2 walking pair, deliberately DISCONNECTED from the exitless
+/// tower: a roam-class-0 fixture never wanders, so no test that ticks in
+/// the tower spends a wander draw.
+const CELL: RoomId = RoomId { map: 1, room: 2 };
+const DEN: RoomId = RoomId { map: 1, room: 3 };
 const MAGE: ClassId = ClassId(1);
 const HUMAN: RaceId = RaceId(1);
 
@@ -47,6 +52,14 @@ const WARY: MonsterId = MonsterId(3);
 const STUBBORN: MonsterId = MonsterId(4);
 /// M.R. 200 with `charmres` **0**: the 43387 fallback probe.
 const HOLLOW: MonsterId = MonsterId(5);
+/// A 500 HP charmable body — the release paths need a pet that survives
+/// a full melee round (and a long walk).
+const MUTT: MonsterId = MonsterId(6);
+/// MUTT with roam class 0x25: the give-up branch DESPAWNS this one
+/// instead of releasing it (19448-19450).
+const STRAY: MonsterId = MonsterId(7);
+/// The §4.4 executioner — kills the owner, releases nothing.
+const EXEC: MonsterId = MonsterId(8);
 
 /// (Enslave, 0), duration 60 flat, no save — the state/slot probe.
 const ENSLAVE: SpellId = SpellId(700);
@@ -67,6 +80,9 @@ const BIND: SpellId = SpellId(760);
 const BINDSAVE: SpellId = SpellId(770);
 /// Five slot fillers.
 const FILLER_BASE: u16 = 780;
+/// A fixed-damage OFFENSIVE match-4 spell — the cast-damage retaliation
+/// twin (43750-43765), which carries no charmed check at all.
+const SEAR: SpellId = SpellId(790);
 
 fn spell(id: SpellId, name: &str, short: &str) -> Spell {
     Spell {
@@ -116,11 +132,44 @@ fn monster(id: MonsterId, name: &str, charm_level: i16, charm_resist: i16) -> Mo
     }
 }
 
+/// A plain two-way corridor exit.
+fn plain_exit(dest: RoomId) -> Option<Exit> {
+    Some(Exit { dest, exit_type: 0, ..Default::default() })
+}
+
 fn world() -> Content {
     let mut content = Content::default();
     content.add_room(Room { id: TOWER, name: "Tower".into(), ..Default::default() });
+    let mut cell = Room { id: CELL, name: "Cell".into(), ..Default::default() };
+    cell.exits[Direction::North as usize] = plain_exit(DEN);
+    let mut den = Room { id: DEN, name: "Den".into(), ..Default::default() };
+    den.exits[Direction::South as usize] = plain_exit(CELL);
+    content.add_room(cell);
+    content.add_room(den);
     content.add_monster(monster(RAT, "giant rat", 1, 40));
     content.add_monster(monster(ELDER, "elder wyrm", 9999, 40));
+    let mut mutt = monster(MUTT, "docile mutt", 1, 40);
+    mutt.hitpoints = 500;
+    content.add_monster(mutt);
+    let mut stray = monster(STRAY, "stray cur", 1, 40);
+    stray.hitpoints = 500;
+    stray.roam_class = 0x25;
+    content.add_monster(stray);
+    let mut exec = monster(EXEC, "executioner", 1, 40);
+    exec.hitpoints = 500;
+    exec.energy = 1000;
+    exec.aggression = 100;
+    exec.behaviour = 2;
+    exec.attacks[0] = AttackForm {
+        kind: 1,
+        accuracy: 500,
+        weight: 100,
+        min_damage: 90,
+        max_damage: 120,
+        energy: 200,
+        ..Default::default()
+    };
+    content.add_monster(exec);
     let mut wary = monster(WARY, "wary hound", 1, 1);
     wary.magic_resist = 200;
     content.add_monster(wary);
@@ -186,7 +235,11 @@ fn world() -> Content {
     bindsave.max_base = 100;
     bindsave.duration_per_level = 40;
     bindsave.save_class = SaveClass::Always;
-    for s in [enslave, thrall, hold, snap, whisper, leash, bind, bindsave] {
+    let mut sear = spell(SEAR, "sear", "sear");
+    sear.abilities = vec![(Ability::Damage, 3)];
+    sear.duration = 0;
+    sear.target_mode = TargetMode::Offensive0;
+    for s in [enslave, thrall, hold, snap, whisper, leash, bind, bindsave, sear] {
         content.add_spell(s);
     }
     for i in 0..5u16 {
@@ -200,25 +253,33 @@ fn world() -> Content {
 
 /// Level 3: above the rat's `charmlvl` 1, below the wyrm's 9999.
 fn caster() -> Player {
+    caster_named("Zin", TOWER)
+}
+
+fn caster_named(name: &str, location: RoomId) -> Player {
     let book: BTreeMap<SpellId, bool> = [
-        ENSLAVE, THRALL, HOLD, SNAP, WHISPER, LEASH, BIND, BINDSAVE,
+        ENSLAVE, THRALL, HOLD, SNAP, WHISPER, LEASH, BIND, BINDSAVE, SEAR,
     ]
     .into_iter()
     .chain((0..5).map(|i| SpellId(FILLER_BASE + i)))
     .map(|s| (s, false))
     .collect();
     Player {
-        name: "Zin".into(),
+        name: name.into(),
         gender: Gender::Male,
         race: HUMAN,
         class: MAGE,
+        // Strength 100: the unarmed default band is (1, 4 + (Str-50)/10),
+        // so a 0-Strength caster can only ever GLANCE — and the §4.3
+        // release sits behind landed damage.
+        stats: StatBlock { strength: 100, ..StatBlock::default() },
         level: 3,
         current_hp: 200,
         current_mana: 100,
         hunger: 1000,
         thirst: 1000,
         lives: 9,
-        location: TOWER,
+        location,
         spellbook: book,
         ..Default::default()
     }
@@ -243,9 +304,13 @@ fn text_to(events: &[Event], session: SessionId) -> String {
 }
 
 fn setup(template: MonsterId) -> (Core, SessionId, MonsterInstanceId) {
+    setup_at(template, TOWER)
+}
+
+fn setup_at(template: MonsterId, room: RoomId) -> (Core, SessionId, MonsterInstanceId) {
     let mut core = Core::new(world(), config());
-    let m = core.spawn_monster(template, TOWER).expect("fixture template");
-    let s = core.attach_player(caster());
+    let m = core.spawn_monster(template, room).expect("fixture template");
+    let s = core.attach_player(caster_named("Zin", room));
     core.drain_events();
     (core, s, m)
 }
@@ -528,4 +593,264 @@ fn the_save_draw_precedes_the_magnitude_and_duration_rolls() {
         no_save, with_save,
         "the save draw sits between the success roll and the value/duration bands"
     );
+}
+
+// --- §4 release paths ---
+
+/// Tick until `done` or `limit` ticks pass, accumulating everything the
+/// owner sees. Returns (ticks spent, output).
+fn tick_until(
+    core: &mut Core,
+    s: SessionId,
+    limit: u32,
+    mut done: impl FnMut(&Core) -> bool,
+) -> (u32, String) {
+    let mut shown = String::new();
+    for t in 1..=limit {
+        core.tick();
+        shown.push_str(&text_to(&core.drain_events(), s));
+        if done(core) {
+            return (t, shown);
+        }
+    }
+    (limit, shown)
+}
+
+/// Swing at `word` until one hit LANDS — the §4.3 release lives in the
+/// post-damage survivor branch (26513), so a whiffed round does nothing.
+fn melee_until_a_hit(core: &mut Core, s: SessionId, word: &str, m: MonsterInstanceId) {
+    let before = core.monster_hp(m).expect("target lives");
+    core.input(s, &format!("attack {word}"));
+    core.drain_events();
+    let (_, _) = tick_until(core, s, 60, |c| {
+        c.monster_hp(m).is_none_or(|hp| hp < before)
+    });
+    assert!(
+        core.monster_hp(m).is_none_or(|hp| hp < before),
+        "the fixture must land a swing"
+    );
+}
+
+// §4.1 — timer expiry
+
+#[test]
+fn charm_expiry_releases_the_triple_silently() {
+    // perform_spell_termination_monster_upkeep case 6 (44988-44995): dirty
+    // byte SET, owner link emptied, suppression off, charmed bit off — and
+    // not one line of output to anybody. The ex-pet is neutral: it holds
+    // no grudge against the caster who enslaved it.
+    let (mut core, s, m) = setup(RAT);
+    cast(&mut core, s, "cast ensl rat");
+    let (_, shown) = tick_until(&mut core, s, 400, |c| {
+        c.debug_monster_charm(m) == Some((false, false, None))
+    });
+    assert_eq!(
+        core.debug_monster_charm(m),
+        Some((false, false, None)),
+        "the 60-tick timer must run out and reverse the triple"
+    );
+    let slots = core.monster_active_spells(m).expect("rat lives");
+    assert!(slots.iter().all(|slot| slot.spell.is_none()), "slot cleared at expiry");
+    assert!(shown.is_empty(), "the reversal is silent: {shown:?}");
+}
+
+// §4.2 — leash give-up / owner logout
+
+#[test]
+fn owner_logout_releases_a_slotted_pet_completely() {
+    // 19412-19415: an offline owner bumps the give-up counter every fast
+    // tick, and past 15 (19446-19487) the non-0x25 branch clears the
+    // counter and the owner link, then clears the charmed bit and
+    // TERMINATES every ability-6 slot — which is what turns the
+    // suppression byte off, since the give-up branch never writes it.
+    let (mut core, s, m) = setup(MUTT);
+    cast(&mut core, s, "cast ensl mutt");
+    assert_eq!(core.debug_monster_charm(m), Some((true, true, Some(s))));
+    core.detach(s);
+    core.drain_events();
+    let (ticks, _) = tick_until(&mut core, s, 40, |c| {
+        c.debug_monster_charm(m).is_some_and(|t| !t.0)
+    });
+    assert!((16..=20).contains(&ticks), "the ~16 s window (19446), got {ticks}");
+    assert_eq!(
+        core.debug_monster_charm(m),
+        Some((false, false, None)),
+        "the slot sweep runs the full §4.1 reversal"
+    );
+    let slots = core.monster_active_spells(m).expect("mutt lives");
+    assert!(slots.iter().all(|slot| slot.spell.is_none()), "the Enslave slot is swept");
+}
+
+#[test]
+fn owner_logout_leaves_a_slotless_pets_suppression_set() {
+    // THE DECOMPILE'S LITERAL SHAPE (19452-19487): the give-up branch
+    // writes `+0x1a = 0` and clears the charmed bit itself, but `+0x116`
+    // is only ever cleared by the slot TERMINATION. An instant-Enslave pet
+    // has no ability-6 slot, so the sweep finds nothing and the ex-pet
+    // ages out still suppressed — a nameless, unsuppressible loiterer.
+    let (mut core, s, m) = setup(MUTT);
+    cast(&mut core, s, "cast snap mutt");
+    assert_eq!(core.debug_monster_charm(m), Some((true, true, Some(s))));
+    core.detach(s);
+    core.drain_events();
+    tick_until(&mut core, s, 40, |c| c.debug_monster_charm(m).is_some_and(|t| !t.0));
+    assert_eq!(
+        core.debug_monster_charm(m),
+        Some((false, true, None)),
+        "no slot to terminate: suppression survives the release"
+    );
+}
+
+#[test]
+fn a_roam_0x25_pet_despawns_instead_of_releasing() {
+    // 19448-19450: the class-0x25 arm of the same give-up branch calls
+    // FUN_004298ec and returns — no reversal, no monster.
+    let (mut core, s, m) = setup(STRAY);
+    cast(&mut core, s, "cast ensl cur");
+    assert_eq!(core.debug_monster_charm(m), Some((true, true, Some(s))));
+    core.detach(s);
+    core.drain_events();
+    tick_until(&mut core, s, 40, |c| c.debug_monster_charm(m).is_none());
+    assert_eq!(core.debug_monster_charm(m), None, "silently despawned");
+}
+
+// §2.1 — the follow roll is skipped for a pet
+
+#[test]
+fn a_charmed_pet_follows_without_the_aggression_roll() {
+    // 19422-19423: `(mon+0x128 & 1) == 0 && genrdn(0,100) >= aggression`
+    // — the roll is only EVALUATED for a non-charmed monster, so the
+    // charmed bit both skips the draw and makes the refusal impossible.
+    // The fixture's aggression is 0, which no `genrdn(0,100)` can ever
+    // beat: an uncharmed monster would refuse (and give up) every single
+    // tick, so arrival in DEN is only reachable through the skip.
+    let (mut core, s, m) = setup_at(MUTT, CELL);
+    cast(&mut core, s, "cast ensl mutt");
+    core.input(s, "n");
+    core.drain_events();
+    let (_, _) = tick_until(&mut core, s, 20, |c| c.monster_location(m) == Some(DEN));
+    assert_eq!(core.monster_location(m), Some(DEN), "the pet always follows");
+    // ... and having followed, it never ages out: the counter only bumps
+    // on a refusal.
+    tick_until(&mut core, s, 30, |_| false);
+    assert_eq!(
+        core.debug_monster_charm(m),
+        Some((true, true, Some(s))),
+        "a following pet never reaches the give-up window"
+    );
+}
+
+// §4.3 — the owner attacks its own pet
+
+#[test]
+fn owner_melee_releases_a_slotted_pet() {
+    // 26526-26562: charmed + `sameas(mon+0x1a, attacker)` -> suppression
+    // off FIRST, then the charmed bit, then the ability-6 slot sweep —
+    // whose termination also empties the owner link.
+    let (mut core, s, m) = setup(MUTT);
+    cast(&mut core, s, "cast ensl mutt");
+    energy_round(&mut core);
+    melee_until_a_hit(&mut core, s, "mutt", m);
+    let (charmed, _, _) = core.debug_monster_charm(m).expect("mutt lives");
+    assert!(!charmed, "the owner's swing releases");
+    let slots = core.monster_active_spells(m).expect("mutt lives");
+    assert!(
+        slots.iter().all(|slot| slot.spell != Some(ENSLAVE)),
+        "the Enslave slot is terminated and cleared"
+    );
+}
+
+#[test]
+fn owner_melee_leaves_a_slotless_pet_as_a_grudge_holder() {
+    // §4.3's asymmetry: an instant-Enslave pet has no ability-6 slot, so
+    // the sweep never empties `+0x1a` — and the branch cleared `+0x116`
+    // on the way in. The ex-pet keeps its owner as a TARGET with
+    // suppression off: a full grudge monster hostile to its former owner.
+    let (mut core, s, m) = setup(MUTT);
+    cast(&mut core, s, "cast snap mutt");
+    energy_round(&mut core);
+    melee_until_a_hit(&mut core, s, "mutt", m);
+    assert_eq!(
+        core.debug_monster_charm(m),
+        Some((false, false, Some(s))),
+        "released into a grudge, not into neutrality"
+    );
+}
+
+#[test]
+fn another_players_swing_at_a_pet_changes_nothing() {
+    // The charmed arm at 26526 is guarded by `sameas` on the OWNER's
+    // name: a different attacker takes neither the release nor the
+    // ordinary retaliation lock (that lives in the non-charmed if-half,
+    // 26514-26525) — the pet does not even turn on them.
+    let (mut core, s, m) = setup(MUTT);
+    cast(&mut core, s, "cast ensl mutt");
+    let other = core.attach_player(caster_named("Vex", TOWER));
+    core.drain_events();
+    energy_round(&mut core);
+    melee_until_a_hit(&mut core, other, "mutt", m);
+    assert_eq!(
+        core.debug_monster_charm(m),
+        Some((true, true, Some(s))),
+        "somebody else's pet is untouchable state-wise"
+    );
+}
+
+// §2.4 / 43750 — the cast-damage retaliation twin
+
+#[test]
+fn a_damage_cast_grudges_a_pet_without_releasing_it() {
+    // TWO different twins inside one function. `cast_monster_target`'s
+    // ENTRY grudge (43259-43271, and its 43335 evil-points sibling) opens
+    // with `(mon+0x128 & 1) == 0` — a pet is never locked there, exactly
+    // like the melee twins at 26230/26516. Its post-DAMAGE twin
+    // (43750-43765, and the area copies at 40381/40611) has NO charmed
+    // check at all: it rolls aggression, overwrites the name link and
+    // clears `+0x116` — while LEAVING the charmed bit set. So a damage
+    // spell from the owner does not release the pet; it turns it hostile
+    // and leaves it charmed (never wanders, never rolls to follow).
+    let (mut core, s, m) = setup(MUTT);
+    cast(&mut core, s, "cast ensl mutt");
+    energy_round(&mut core);
+    let shown = cast(&mut core, s, "cast sear mutt");
+    assert!(shown.contains("*Combat Engaged*"), "offensive casts engage: {shown:?}");
+    assert_eq!(
+        core.debug_monster_charm(m),
+        Some((true, true, Some(s))),
+        "the entry grudge skips a charmed monster"
+    );
+    let hp = core.monster_hp(m).expect("mutt lives");
+    tick_until(&mut core, s, 40, |c| c.monster_hp(m).is_some_and(|h| h < hp));
+    assert!(core.monster_hp(m).is_some_and(|h| h < hp), "the cast must land");
+    assert_eq!(
+        core.debug_monster_charm(m),
+        Some((true, false, Some(s))),
+        "the damage twin locks without clearing the charmed bit"
+    );
+}
+
+// §4.4 — what does NOT release
+
+#[test]
+fn owner_death_keeps_the_pet() {
+    // check_kill_user (12992) contains no monster sweep: the pet outlives
+    // its owner's death untouched. (The respawned owner is the same
+    // session, so pursuit simply resumes.)
+    let mut core = Core::new(world(), CoreConfig { recall_location: TOWER, ..config() });
+    let m = core.spawn_monster(MUTT, TOWER).expect("mutt");
+    let s = core.attach_player(caster());
+    core.drain_events();
+    cast(&mut core, s, "cast ensl mutt");
+    core.spawn_monster(EXEC, TOWER).expect("executioner");
+    let (_, shown) = tick_until(&mut core, s, 400, |c| {
+        c.player_snapshot(s).lives < 9
+    });
+    assert!(shown.contains("You have been killed!"), "the owner must die: {shown:?}");
+    assert_eq!(
+        core.debug_monster_charm(m),
+        Some((true, true, Some(s))),
+        "death releases nothing"
+    );
+    let slots = core.monster_active_spells(m).expect("mutt lives");
+    assert_eq!(slots[0].spell, Some(ENSLAVE), "the charm slot survives");
 }

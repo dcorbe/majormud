@@ -955,6 +955,26 @@ pub(crate) struct MonsterInstance {
     pub coins: [u32; 5],
 }
 
+/// Which retaliation-lock twin a call site models with respect to the
+/// charmed bit — the DLL inlines the lock four times and they do NOT
+/// agree (charm.md §2.4/§4.3):
+///
+/// * [`CharmedLock::Exempt`] — the melee engage (26230), the melee
+///   post-damage branch (26516) and both `cast_monster_target` ENTRY
+///   grudges (43259, 43335) open with `(mon+0x128 & 1) == 0`. A pet is
+///   never locked there and no roll is drawn.
+/// * [`CharmedLock::Ignored`] — the cast-DAMAGE twins (43750-43765
+///   single-target, 40381/40611 area) carry no charmed check at all. A
+///   damage spell can grudge-lock somebody's own pet — clearing `+0x116`
+///   and overwriting the owner link — while LEAVING the charmed bit set,
+///   so the ex-pet stays a non-wandering, roll-free follower that now
+///   attacks its owner. Deliberate fidelity to a sloppy original.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CharmedLock {
+    Exempt,
+    Ignored,
+}
+
 /// A scheduled shop-slot restock, due at an absolute tick. Events live
 /// forever and reschedule themselves, as the original's linked list does.
 #[derive(Debug, Clone, Copy)]
@@ -2242,6 +2262,7 @@ impl Core {
             .map_or(0, |t| t.energy);
         for idx in 0..5 {
             let mut fear_flee = false;
+            let mut release = false;
             let (spell_id, stored, remaining) = {
                 let Some(m) = self.monsters.get_mut(&id) else {
                     return;
@@ -2306,12 +2327,10 @@ impl Core {
                 for (ability, row) in &spell.abilities {
                     let v = if *row != 0 { i32::from(*row) } else { stored };
                     match ability {
-                        // Enslave (6): release the charm — owner name,
-                        // follow flags (44991-44995). M7 PENDING (charm
-                        // family, re-deferred by the M6 design doc):
-                        // until an Enslave cast can CREATE a charm there
-                        // is nothing to release here.
-                        Ability::Enslave => {}
+                        // Enslave (6): the charm reversal (44988-44995)
+                        // — charm.md §4.1. Deferred by one statement so
+                        // the shared helper can take the record back.
+                        Ability::Enslave => release = true,
                         // Poison (19): counter -= v, floored 0
                         // (45003-45008).
                         Ability::Poison => {
@@ -2322,6 +2341,9 @@ impl Core {
                         _ => {}
                     }
                 }
+            }
+            if release {
+                self.release_charm(id);
             }
             if fear_flee
                 && let Some(from) = self.monsters.get(&id).map(|m| m.location)
@@ -2336,6 +2358,91 @@ impl Core {
         if self.monsters.get(&id).is_some_and(|m| m.current_hp < 0) {
             self.monster_killed(id, None);
         }
+    }
+
+    /// `perform_spell_termination_monster_upkeep` case 6 (44988-44995) —
+    /// the charm.md §4.1 reversal, and the ONLY place the whole §0 triple
+    /// comes apart at once:
+    ///
+    /// ```text
+    /// mon+0x140 = 1        ; dirty (SET, not cleared)
+    /// mon+0x1a  = 0        ; owner name emptied
+    /// mon+0x116 = 0        ; suppression off
+    /// mon+0x128 &= ~1      ; charmed bit off
+    /// ```
+    ///
+    /// No message to anyone, in any direction. The released monster is
+    /// NEUTRAL — it holds no grudge against the ex-owner and rejoins
+    /// ordinary wander/acquisition, so it may re-acquire them through the
+    /// normal aggression rolls a moment later.
+    fn release_charm(&mut self, id: MonsterInstanceId) {
+        if let Some(m) = self.monsters.get_mut(&id) {
+            m.needs_recompute = true;
+            m.target = None;
+            m.suppress = false;
+            m.charmed = false;
+        }
+    }
+
+    /// The ability-6 slot sweep, inlined verbatim at three DLL sites
+    /// (19455-19487 give-up, 26526-26562 owner melee, 46929-46953
+    /// autocombat): walk the 5 slots; a slot whose spell id no longer
+    /// resolves is simply zeroed, and a slot whose spell carries
+    /// Enslave(6) is TERMINATED — [`Core::release_charm`] — and zeroed.
+    /// Slots holding anything else are left alone.
+    ///
+    /// This is what makes the §4.3 asymmetry: a SLOTLESS pet (instant
+    /// Enslave, or a Summon-born pet) has nothing for the sweep to find,
+    /// so whichever legs of the triple the caller did not clear itself
+    /// survive the release.
+    fn sweep_charm_slots(&mut self, id: MonsterInstanceId) {
+        for idx in 0..5 {
+            let Some(m) = self.monsters.get(&id) else {
+                return;
+            };
+            let Some(spell_id) = m.active_spells[idx].spell else {
+                continue;
+            };
+            // Unknown id (19461-19465): the slot is zeroed but nothing is
+            // terminated — the DLL cannot ask an absent record for its
+            // ability rows.
+            let (known, charms) = match self.content.spells.get(&spell_id) {
+                None => (false, false),
+                Some(spell) => (
+                    true,
+                    spell.abilities.iter().any(|(a, _)| *a == Ability::Enslave),
+                ),
+            };
+            if known && !charms {
+                continue; // an unrelated slot survives the sweep untouched
+            }
+            if charms {
+                self.release_charm(id);
+            }
+            if let Some(m) = self.monsters.get_mut(&id) {
+                m.active_spells[idx] = ActiveSpell::default();
+                m.needs_recompute = true;
+            }
+        }
+        self.recompute_monster_effects(id);
+    }
+
+    /// `FUN_0044cc65`'s self-target arm (46929-46953, charm.md §2.2/§4.3):
+    /// the owner's autocombat target IS its own pet, so the pet releases
+    /// itself on the next combat pass. Note what is NOT here — unlike the
+    /// melee twin (26526) this arm never touches `+0x116`, so a SLOTLESS
+    /// pet keeps both its owner link and its suppression and degrades into
+    /// a "friend" (a monster that attacks players OTHER than its owner)
+    /// rather than into a grudge holder.
+    ///
+    /// The call site is the pet-assist branch of the combat driver, which
+    /// lands with the rest of §2.2.
+    #[allow(dead_code)] // wired by the pet-assist branch (charm.md §2.2)
+    fn autocombat_release_charm(&mut self, id: MonsterInstanceId) {
+        if let Some(m) = self.monsters.get_mut(&id) {
+            m.charmed = false;
+        }
+        self.sweep_charm_slots(id);
     }
 
     /// The wander half of `medium_update_monster` (decompile 19339-19372;
@@ -2414,6 +2521,7 @@ impl Core {
             return;
         };
         let (mon_room, aggression, roam) = (m.location, m.aggression, m.roam_class);
+        let charmed = m.charmed;
         // One give-up bump per unprosecutable tick (19414/19426/19433/
         // 19440); same-room ticks never bump.
         let mut bump = false;
@@ -2424,8 +2532,17 @@ impl Core {
                     // nothing to do — acquisition owns the same-room case
                 } else if loc.map != mon_room.map || moved {
                     bump = true; // can't chase across maps / a mid-flight runner
-                } else if self.rng.roll(0, 100) >= i32::from(aggression) {
-                    bump = true; // the follow roll failed
+                } else if !charmed && self.rng.roll(0, 100) >= i32::from(aggression) {
+                    // The follow roll failed. A PET never gets here:
+                    // 19422-19423 spells the gate `(mon+0x128 & 1) == 0 &&
+                    // genrdn(0,100) >= aggression`, so the charmed bit
+                    // both skips the DRAW (short-circuit, exactly as the
+                    // DLL's `&&` does — this is RNG-order load-bearing)
+                    // and makes the refusal unreachable: a pet always
+                    // follows, whatever its template aggression says
+                    // (charm.md §2.1). Every OTHER refusal source below
+                    // still bumps the counter.
+                    bump = true;
                 } else {
                     match self.dir_toward_player(victim, mon_room) {
                         None => bump = true,
@@ -2450,12 +2567,24 @@ impl Core {
         // Give-up past 15 (19446): class 0x25 silently despawns
         // (FUN_004298ec — the spawn-accounting half joins with slice 4);
         // everyone else drops the lock and goes back to wandering.
+        // Since the counter bumps once per fast tick on an OFFLINE owner
+        // too (19412-19415), this doubles as the logout release: ~16 s
+        // after the owner drops, the pet is free (charm.md §4.2).
         if m.give_up > 15 {
             if roam == 0x25 {
                 self.monsters.remove(&id);
-            } else {
-                m.give_up = 0;
-                m.target = None;
+                return;
+            }
+            m.give_up = 0;
+            m.target = None;
+            // 19452-19487: a charmed monster additionally loses the bit
+            // and has its ability-6 slots terminated. LITERAL SHAPE — the
+            // branch itself never writes `+0x116`, so suppression comes
+            // off only through the slot termination: a slotless pet ages
+            // out nameless but still SUPPRESSED.
+            if m.charmed {
+                m.charmed = false;
+                self.sweep_charm_slots(id);
             }
         }
     }
@@ -4525,8 +4654,10 @@ impl Core {
                 self.output_line(session, text::COMBAT_ENGAGED);
                 // Retaliation lock (transcript: the filthbug swiped back
                 // after the bare engagement, before any damage landed) —
-                // gated like every damaging path since slice 3.
-                self.retaliation_lock(monster_id, session);
+                // gated like every damaging path since slice 3, and
+                // charm-exempt like the ENTRY twins it stands in for
+                // (43259/43335, and the melee engage at 26230).
+                self.retaliation_lock(monster_id, session, CharmedLock::Exempt);
                 return;
             }
             // Resolve now. The command's triple gate messages first
@@ -5060,8 +5191,10 @@ impl Core {
             // — but NO caster-side engagement (no *Combat Engaged*
             // MEASURED §8.13 on debuff-only payloads; ORACLE-VERIFY for
             // damaging sweeps — fixture-only today; evil warnings/crime
-            // = M7).
-            self.retaliation_lock(monster_id, session);
+            // = M7). The AREA damage twins (40381/40611) consult the
+            // charmed bit exactly as much as the single-target one does —
+            // not at all.
+            self.retaliation_lock(monster_id, session, CharmedLock::Ignored);
             if drain_total != 0
                 && let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session)
             {
@@ -7301,7 +7434,10 @@ impl Core {
                 && spell.target_mode.is_offensive()
                 && self.monsters.get(&monster_id).is_some_and(|m| m.target.is_none())
             {
-                self.retaliation_lock(monster_id, session);
+                // 43259/43335 are both charm-exempt; the `target.is_none()`
+                // gate already makes a pet unreachable here (a pet always
+                // carries its owner link), so the tag is documentation.
+                self.retaliation_lock(monster_id, session, CharmedLock::Exempt);
             }
             return;
         }
@@ -7574,7 +7710,10 @@ impl Core {
             m.current_hp -= damage;
             m.current_hp <= 0
         };
-        self.retaliation_lock(monster_id, session);
+        // The cast-DAMAGE twin (43750-43765) — the one lock site in the
+        // DLL with no charmed check: spell damage grudges a pet without
+        // releasing it (charm.md §2.4, and see [`CharmedLock`]).
+        self.retaliation_lock(monster_id, session, CharmedLock::Ignored);
         // Drain: the stolen HP heals the caster, capped at max (spec §4).
         if drain_total != 0
             && let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session)
@@ -8626,11 +8765,23 @@ impl Core {
     /// and the cast-path twins): a hit monster locks its attacker iff
     /// `genrdn(1,100) < aggression` OR it is a passive mode (3/0/4); the
     /// roll draws either way. Class 0x25 never locks; class 5 keeps an
-    /// existing lock. (The charmed bit-0 exemption is M7.)
-    fn retaliation_lock(&mut self, id: MonsterInstanceId, attacker: SessionId) {
+    /// existing lock. `charm` selects which DLL twin the call site models
+    /// — see [`CharmedLock`].
+    fn retaliation_lock(
+        &mut self,
+        id: MonsterInstanceId,
+        attacker: SessionId,
+        charm: CharmedLock,
+    ) {
         let Some(m) = self.monsters.get(&id) else {
             return;
         };
+        // Ahead of the roll in every twin that has it (26230/26516/43259/
+        // 43335 all open with `(mon+0x128 & 1) == 0`), so an exempt site
+        // draws nothing at all on a pet.
+        if charm == CharmedLock::Exempt && m.charmed {
+            return;
+        }
         if m.roam_class == 0x25 || (m.roam_class == 5 && m.target.is_some()) {
             return;
         }
@@ -8776,15 +8927,45 @@ impl Core {
                         self.monster_killed(target, Some(session));
                         return;
                     }
-                    // Retaliation: gated lock per hit (26514-26525).
-                    self.retaliation_lock(target, session);
+                    // Retaliation: gated lock per hit (26514-26525) —
+                    // except on a charmed target, where the ELSE half of
+                    // the same branch runs the owner release instead
+                    // (26526-26562, charm.md §4.3).
+                    if self.monsters.get(&target).is_some_and(|m| m.charmed) {
+                        self.owner_melee_release(target, session);
+                    } else {
+                        self.retaliation_lock(target, session, CharmedLock::Exempt);
+                    }
                 }
             }
         }
         // The engage-time lock re-mark (26230-26236) — same gates.
         if self.monsters.get(&target).is_some_and(|m| m.target.is_none()) {
-            self.retaliation_lock(target, session);
+            self.retaliation_lock(target, session, CharmedLock::Exempt);
         }
+    }
+
+    /// The charmed half of `attack_user_monster`'s post-damage branch
+    /// (26526-26562, charm.md §4.3). Only the OWNER's own swing does
+    /// anything — `sameas(mon+0x1a, attacker)`; a different player hitting
+    /// somebody's pet gets NOTHING at all: no release, no grudge, no name
+    /// overwrite (the ordinary lock lives in the non-charmed half).
+    ///
+    /// Write order is the DLL's: suppression off FIRST, then the charmed
+    /// bit, then the ability-6 slot sweep — whose termination also empties
+    /// the owner link. On a SLOTLESS pet the sweep finds nothing, so the
+    /// link SURVIVES with suppression already cleared: the ex-pet is a
+    /// full grudge monster hostile to its former owner.
+    fn owner_melee_release(&mut self, id: MonsterInstanceId, attacker: SessionId) {
+        if self.monsters.get(&id).is_none_or(|m| m.target != Some(attacker)) {
+            return;
+        }
+        if let Some(m) = self.monsters.get_mut(&id) {
+            m.needs_recompute = true;
+            m.suppress = false;
+            m.charmed = false;
+        }
+        self.sweep_charm_slots(id);
     }
 
     /// `attack_monster_user` (decompile 26667-27208): entry gates, the
