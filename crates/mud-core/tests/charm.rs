@@ -272,8 +272,9 @@ fn world() -> Content {
     gale.match_type = MatchType::AreaC;
     let mut venombond = spell(VENOMBOND, "venombond", "veno");
     venombond.abilities = vec![(Ability::Enslave, 0), (Ability::Poison, 5)];
-    for s in [enslave, thrall, hold, snap, whisper, leash, bind, bindsave, sear, gale, venombond]
-    {
+    for s in [
+        enslave, thrall, hold, snap, whisper, leash, bind, bindsave, sear, gale, venombond,
+    ] {
         content.add_spell(s);
     }
     for i in 0..5u16 {
@@ -862,7 +863,11 @@ fn the_slot_sweep_runs_the_whole_termination_handler_not_just_case_6() {
     let (mut core, s, m) = setup(MUTT);
     cast(&mut core, s, "cast veno mutt");
     assert_eq!(core.debug_monster_charm(m), Some((true, true, Some(s))));
-    assert_eq!(core.monster_poison(m), Some(5), "the apply sets the counter");
+    assert_eq!(
+        core.monster_poison(m),
+        Some(5),
+        "the apply sets the counter"
+    );
     energy_round(&mut core);
     melee_until_a_hit(&mut core, s, "mutt", m);
     assert_eq!(
