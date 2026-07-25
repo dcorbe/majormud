@@ -7822,11 +7822,16 @@ impl Core {
     /// downstream of it (43443+). First refusing row wins, so the walk
     /// short-circuits in list order like the DLL's `return`.
     ///
-    /// The other arms of the same loop are elsewhere: ability 6 preloads
-    /// the charm save stat ([`Core::monster_cast_save_stat`]), 0x34
-    /// (EvilInCombat) charges evil points, 0x90 suppresses the SpellImmu
-    /// gate below, and 0xa3 confirms spell components. None of those is
-    /// carried by a shipped Enslave spell.
+    /// The other arms of the same loop are elsewhere or unported: ability
+    /// 6 preloads the charm save stat ([`Core::monster_cast_save_stat`]),
+    /// 52 (EvilInCombat) charges evil points, 144 (NonMagicalSpell) sets
+    /// the flag that SKIPS the SpellImmu gate below (43378), and 163
+    /// (SpellComponent) runs the component confirmation. None of those is
+    /// carried by a shipped Enslave spell. Evil(98) has no arm at all —
+    /// 0x62 falls past both the `< 0x51` block and the 0x6c/0x90/0xa3
+    /// chain — so the 88 control-undead row is inert in the scan; its
+    /// only engine effect is the crime.md §6.1 alignment gate at
+    /// learn/cast time.
     ///
     /// Shipped reach: all four Enslave carriers hold exactly one of the
     /// three — 49 song of charming and 55 enslave AffectsLiving, 88
