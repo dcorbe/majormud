@@ -69,6 +69,10 @@ const EXEC: MonsterId = MonsterId(8);
 /// beats every `genrdn(1,100)`, and behaviour 1 is outside the clause, so
 /// the assertion survives a faithful (clause-free) twin.
 const KEEN: MonsterId = MonsterId(9);
+/// Built per-test with a parameterised roam class — the class-5
+/// "guardian" probe for the shared lock body's draw order. Not in
+/// [`world`]: each arm needs its own template.
+const GUARD: MonsterId = MonsterId(10);
 
 /// (Enslave, 0), duration 60 flat, no save — the state/slot probe.
 const ENSLAVE: SpellId = SpellId(700);
@@ -938,6 +942,45 @@ fn an_area_damage_cast_grudges_the_casters_own_pet() {
         core.debug_monster_charm(m),
         Some((true, false, Some(s))),
         "the area twin locks the pet without clearing the charmed bit"
+    );
+}
+
+#[test]
+fn a_class_5_guardian_holding_a_lock_still_spends_the_roll() {
+    // Not charm, but the same shared lock body. `roam != 5 ||
+    // mon+0x1a == 0` is the LAST operand of the `&&` chain in every twin
+    // (26234/26520/43265/43340/43474), so the `genrdn(1,100)` in front of
+    // it has already been spent by the time a class-5 guardian's existing
+    // lock cancels the write. We used to return before the draw.
+    //
+    // Measured through the AREA cast because it is the one damaging path
+    // with a fixed draw sequence: no to-hit, no dodge, no magnitude band
+    // (GALE's damage row is a literal), so the retaliation roll is the
+    // only thing that can move the counter.
+    let draws = |roam: i16| {
+        let mut content = world();
+        let mut guard = monster(GUARD, "gate guardian", 1, 40);
+        guard.hitpoints = 500;
+        guard.aggression = 100;
+        guard.behaviour = 1;
+        guard.roam_class = roam;
+        content.add_monster(guard);
+        let mut core = Core::new(content, config());
+        let m = core.spawn_monster(GUARD, TOWER).expect("guardian");
+        let s = core.attach_player(caster_named("Zin", TOWER));
+        core.drain_events();
+        // A lock already in place: the class-5 clause only bites here.
+        core.debug_lock_monster(m, s);
+        let before = core.debug_rng_draws();
+        cast(&mut core, s, "cast gale");
+        core.debug_rng_draws() - before
+    };
+    let roamer = draws(0);
+    assert!(roamer > 0, "the control must draw its retaliation roll");
+    assert_eq!(
+        draws(5),
+        roamer,
+        "a locked class-5 guardian declines the WRITE, not the ROLL"
     );
 }
 

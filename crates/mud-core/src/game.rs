@@ -8829,11 +8829,22 @@ impl Core {
         if charm == CharmedLock::Exempt && m.charmed {
             return;
         }
-        if m.roam_class == 0x25 || (m.roam_class == 5 && m.target.is_some()) {
+        // Class 0x25 short-circuits AHEAD of the draw in every twin — it
+        // is the second operand of the `&&` chain, before the `genrdn`.
+        if m.roam_class == 0x25 {
             return;
         }
-        let (aggression, behaviour) = (m.aggression, m.behaviour);
+        let (aggression, behaviour, roam, locked) =
+            (m.aggression, m.behaviour, m.roam_class, m.target.is_some());
+        // The roll is unconditional from here: the DLL spends it and only
+        // THEN asks whether a class-5 guardian already holds a lock
+        // (`roam != 5 || mon+0x1a == 0` is the LAST operand of the chain,
+        // 26234/26520/43265/43340/43474). Returning early on that case,
+        // as this used to, skipped a draw the original always makes.
         let roll = self.rng.roll(1, 100);
+        if roam == 5 && locked {
+            return;
+        }
         if roll < i32::from(aggression) || matches!(behaviour, 3 | 0 | 4) {
             let m = self.monsters.get_mut(&id).expect("checked above");
             m.target = Some(attacker);
