@@ -52,6 +52,10 @@ const DUMMY: MonsterId = MonsterId(3);
 const SUMPET: SpellId = SpellId(700);
 /// Benign match-4 Summon → the `cast_monster_target` HUNT arm.
 const SUMHUNT: SpellId = SpellId(710);
+/// Benign match-2 Summon → the `cast_user_target` arm. Match 1 refuses a
+/// named user outright ([`MatchType::accepts_user`]), so the arm that
+/// sics a summon on another player needs a type that admits one.
+const SUMUSER: SpellId = SpellId(720);
 
 fn spell(id: SpellId, name: &str, short: &str) -> Spell {
     Spell {
@@ -211,14 +215,20 @@ fn world() -> Content {
     let mut sumhunt = spell(SUMHUNT, "summon hunter", "hunt");
     sumhunt.abilities = vec![(Ability::Summon, STALKER.0 as i16)];
     sumhunt.match_type = MatchType::Special4;
-    for s in [sumpet, sumhunt] {
+    let mut sumuser = spell(SUMUSER, "summon wraith", "wraith");
+    sumuser.abilities = vec![(Ability::Summon, HOUND.0 as i16)];
+    sumuser.match_type = MatchType::Single2;
+    for s in [sumpet, sumhunt, sumuser] {
         content.add_spell(s);
     }
     content
 }
 
 fn caster_at(location: RoomId) -> Player {
-    let book: BTreeMap<SpellId, bool> = [SUMPET, SUMHUNT].into_iter().map(|s| (s, false)).collect();
+    let book: BTreeMap<SpellId, bool> = [SUMPET, SUMHUNT, SUMUSER]
+        .into_iter()
+        .map(|s| (s, false))
+        .collect();
     Player {
         name: "Zin".into(),
         gender: Gender::Male,
@@ -262,6 +272,15 @@ fn setup() -> (Core, SessionId) {
     let s = core.attach_player(caster_at(HALL));
     core.drain_events();
     (core, s)
+}
+
+/// A second body in the hall, so a benign single-target cast has
+/// somebody other than the caster to land on.
+fn bystander_at(location: RoomId) -> Player {
+    Player {
+        name: "Bex".into(),
+        ..caster_at(location)
+    }
 }
 
 fn cast(core: &mut Core, s: SessionId, line: &str) -> String {
@@ -318,6 +337,33 @@ fn a_summoned_pet_assists_its_owner() {
     assert!(
         core.monster_hp(quarry).is_some_and(|hp| hp < before),
         "the pet swings at its owner's target"
+    );
+}
+
+#[test]
+fn summon_at_another_player_is_a_hunter_not_a_pet() {
+    // `cast_user_target` case 0xc (42079-42081) — the arm that shares
+    // this spawn body with `cast_no_target` 0xc and tags it DIFFERENTLY:
+    // a bare grudge toward the TARGET, no suppression and no charm bit.
+    // The DLL uses this handler to sic a monster ON somebody, so tagging
+    // it `Pet(caster)` would hand the caster a bodyguard instead. The
+    // discriminator is `target_id == session` and nothing else, which is
+    // why this pin exists: the branch is otherwise unwitnessed and reads
+    // like a correction waiting to happen.
+    let (mut core, s) = setup();
+    let bex = core.attach_player(bystander_at(HALL));
+    core.drain_events();
+    cast(&mut core, s, "cast wraith bex");
+    let hunter = instance_of(&core, HOUND);
+    assert_eq!(
+        core.debug_monster_charm(hunter),
+        Some((false, false, Some(bex))),
+        "a grudge toward the target, not the caster's pet"
+    );
+    assert_eq!(
+        core.debug_monster_hunt(hunter),
+        Some(None),
+        "the user-target arm writes no +0x88 link"
     );
 }
 
@@ -434,6 +480,44 @@ fn a_cold_trail_swings_across_the_room_boundary() {
     assert!(
         core.monster_hp(quarry).is_some_and(|hp| hp < before),
         "cold trail swings anyway, across rooms"
+    );
+}
+
+#[test]
+fn a_live_quarry_pre_empts_player_acquisition_entirely() {
+    // 20370 tests `+0x88 != 0` and NOTHING else, ahead of the roam-5 and
+    // aggro blocks: a summoned hunter never picks up a player, ever. The
+    // arm's terminating `return` is the whole of that claim, and it is
+    // easy to mistake for tidy-up — so pin it where deleting it is
+    // observable, which is the CO-LOCATED case. `monster_attack` re-reads
+    // the instance's live location (9646/9653), so a hunter that took a
+    // trail step is already out of the room by the time any fall-through
+    // could reach the bystander; only a hunter standing still is exposed.
+    //
+    // Here the quarry never moved, so the trail is cold, the hunter
+    // swings at it from a standstill — and the caster, an otherwise
+    // wide-open target for a behaviour-1 aggressor sharing its room, is
+    // untouched.
+    let (mut core, s) = setup();
+    let quarry = core.spawn_monster(DUMMY, HALL).expect("fixture template");
+    cast(&mut core, s, "cast hunt dummy");
+    let hunter = instance_of(&core, STALKER);
+    let caster_hp = core.current_hp(s);
+    let quarry_hp = core.monster_hp(quarry).expect("quarry lives");
+    core.debug_monster_consider(hunter);
+    assert!(
+        core.monster_hp(quarry).is_some_and(|hp| hp < quarry_hp),
+        "the hunter is doing its job"
+    );
+    assert_eq!(
+        core.current_hp(s),
+        caster_hp,
+        "and never swings at the player standing next to it"
+    );
+    assert_eq!(
+        core.debug_monster_charm(hunter).map(|(_, _, t)| t),
+        Some(None),
+        "nor acquires one as a name link"
     );
 }
 
