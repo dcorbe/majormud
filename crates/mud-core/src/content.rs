@@ -534,7 +534,8 @@ impl MatchType {
             MatchType::Item6 => FindScope::UNIVERSAL,
             // 0x14 — items only (room items `0x10` + carried `0x04`).
             MatchType::Item7 => FindScope { monsters: false, users: false, items: true },
-            // 0x803 — monsters and users.
+            // 0x803 — monsters and users (charmed monsters last via the
+            // same `0x800` bit match 4 sets, not modelled).
             MatchType::Special8 => FindScope { monsters: true, users: true, items: false },
             // 0 — the area types search nothing; an explicit target word
             // therefore falls straight through to the universal retry and
@@ -555,9 +556,21 @@ impl MatchType {
         matches!(self, MatchType::Special4 | MatchType::Item6 | MatchType::Special8)
     }
 
-    /// `cast_user_target` 41460 — the self-only buff band (match 1) is
-    /// deliberately absent: 25 of the 207 learnable spells sit there
-    /// (barkskin, stoneskin, magic armour) and none may name a target.
+    /// `cast_user_target` 41460 — anything else takes the uncharged
+    /// "You may not cast that spell on a user!" at 43064-43066.
+    ///
+    /// This gate is the LAST in `cast_user_target`, not the first: the
+    /// self-target divert at 41434 (`param_2 == param_3 && match != 6`
+    /// -> `cast_no_target`) runs ahead of it. So the self-only buff band
+    /// (match 1 — 25 of the 207 learnable spells: barkskin, stoneskin,
+    /// magic armour, shadowform) IS castable at the caster's own name
+    /// even though it is absent here; what this predicate refuses is
+    /// naming ANOTHER player. Match 6 is the one type the divert skips,
+    /// so it reaches this gate even self-named — and passes.
+    ///
+    /// Callers that gate a user target must therefore run the self-divert
+    /// first (see `Core::cmd_cast`); `Core::monster_cast_at_player` has
+    /// no self case and uses this predicate directly (decompile 23777).
     pub fn accepts_user(self) -> bool {
         matches!(
             self,

@@ -4392,39 +4392,59 @@ impl Core {
                     monster = Some(id);
                 }
                 Some(CastTarget::User(target_id)) => {
-                    if !spell.match_type.accepts_user() {
-                        // `cast_user_target` 41460 / 43064-43066,
-                        // uncharged — MEASURED §8.13 for `c flash oracle`
-                        // (match 12).
-                        self.output_line(session, text::MAY_NOT_CAST_ON_USER);
-                        return;
-                    }
+                    // `cast_user_target`'s gate ORDER, reproduced (the
+                    // acceptance test is LAST, not first):
+                    //   41422  offensive + self -> attack-yourself refusal
+                    //   41429  protected room
+                    //   41434  self -> divert to `cast_no_target`
+                    //   41438  hostility (param_4)
+                    //   41460  acceptance `{0, 2, 6, 8}`
                     if offensive {
                         // DIVERGENCE (PvP unimplemented): the DLL hands an
-                        // ACCEPTED offensive user target to
-                        // `cast_user_target`'s hostility gates —
-                        // no-PK-room refusal, evil points, the
-                        // attack-yourself line at 41422, then the same
-                        // roll/effect tail. We have no PvP melee either,
-                        // so the cast simply fails to see the player, as
-                        // it did before this router landed. Reachable
-                        // shape: the 45 learnable offensive match-8
-                        // spells (magic missile and friends).
+                        // offensive user target to `cast_user_target`'s
+                        // hostility gates — the attack-yourself line at
+                        // 41422 when it IS the caster, else the no-PK-room
+                        // refusal, evil points, then the roll/effect tail.
+                        // We have no PvP melee either, so the cast simply
+                        // fails to see the player, as it did before this
+                        // router landed. Reachable shape: the 45 learnable
+                        // offensive match-8 spells (magic missile and
+                        // friends). Placed HERE, ahead of the self-divert,
+                        // because 41422 fires ahead of 41434 — the seam
+                        // stays in the DLL's order for the PvP slice.
                         self.output_line(session, &text::do_not_see_here(&target));
                         return;
                     }
-                    if target_id != session {
+                    if target_id == session
+                        && spell.match_type != crate::content::MatchType::Item6
+                    {
+                        // 41434 `if ((param_2 == param_3) && (spell+0xcc
+                        // != 6)) cast_no_target(...)`: naming YOURSELF is
+                        // a plain self-cast, and it diverts BEFORE the
+                        // acceptance gate — so the self-only buff band
+                        // (match 1: barkskin, stoneskin, magic armour,
+                        // shadowform — 25 learnable) is castable by name
+                        // even though 41460 rejects it. Match 6 is the one
+                        // exclusion: it stays on the user path below.
+                        // MEASURED §8.13: the castmsgb frames keep the
+                        // name — "You cast blur on Zinvar!" — which is
+                        // exactly what the self tail renders.
+                        // Fall through to the self tail.
+                    } else {
+                        if !spell.match_type.accepts_user() {
+                            // `cast_user_target` 41460 / 43064-43066,
+                            // uncharged — MEASURED §8.13 for
+                            // `c flash oracle` (match 12).
+                            self.output_line(session, text::MAY_NOT_CAST_ON_USER);
+                            return;
+                        }
                         // Players in the caster's room match by the §8.9
-                        // word-prefix rule (`c blur ora` -> Oracle).
+                        // word-prefix rule (`c blur ora` -> Oracle). A
+                        // match-6 self-name lands here too, by 41434's
+                        // exclusion.
                         self.benign_target_cast(session, target_id, &spell);
                         return;
                     }
-                    // Own name = a plain self-cast (41434: `param_2 ==
-                    // param_3` diverts to `cast_no_target` for every match
-                    // type but 6). MEASURED §8.13: the castmsgb frames
-                    // keep the name — "You cast blur on Zinvar!" /
-                    // "Zinvar casts blur on Zinvar!" — which is exactly
-                    // what the self tail below renders.
                 }
                 Some(CastTarget::Item(item_id)) => {
                     if !spell.match_type.accepts_item() {
@@ -9351,17 +9371,19 @@ impl Core {
         form: &crate::content::AttackForm,
         victim: SessionId,
     ) -> bool {
-        use crate::content::{MatchType, SaveClass};
+        use crate::content::SaveClass;
         let Ok(raw_id) = u16::try_from(form.accuracy) else {
             return false;
         };
         let Some(spell) = self.content.spells.get(&SpellId(raw_id)).cloned() else {
             return false; // unknown id: skip (the DLL would return 0)
         };
-        if !matches!(
-            spell.match_type,
-            MatchType::Single0 | MatchType::Single2 | MatchType::Item6 | MatchType::Special8
-        ) {
+        // The monster path's match gate (23777) is the SAME `{0, 2, 6, 8}`
+        // set `cast_user_target` 41460 tests, so it reuses the predicate.
+        // No self case exists here — a monster is never its own victim —
+        // so unlike the player command path there is no 41434 divert to
+        // sequence ahead of it.
+        if !spell.match_type.accepts_user() {
             // The match-gate ELSE (23777-23779): every match ∉ {0,2,6,8}
             // routes to the area sibling — 101 shipped forms (match 1 x1
             // hooded man `blacknight`, match 11 x1 wererat `plague`,

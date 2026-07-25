@@ -78,6 +78,10 @@ const SPARK: SpellId = SpellId(640);
 const SCRY: SpellId = SpellId(650);
 /// Benign + match 6 — accepted by ALL THREE entry points.
 const SIGHT: SpellId = SpellId(660);
+/// Benign + match 1 — the shipped barkskin/stoneskin/magic-armour band.
+/// NO entry point accepts 1, so it is reachable only through the 41434
+/// self-target divert (bare cast, or the caster's own name).
+const WARD: SpellId = SpellId(670);
 
 fn spell(id: SpellId, name: &str, short: &str, mode: TargetMode, mt: MatchType) -> Spell {
     Spell {
@@ -193,6 +197,7 @@ fn world() -> Content {
         spark,
         scry,
         spell(SIGHT, "sight", "sigh", TargetMode::Benign, MatchType::Item6),
+        spell(WARD, "ward", "ward", TargetMode::Benign, MatchType::Single1),
     ] {
         content.add_spell(s);
     }
@@ -200,7 +205,7 @@ fn world() -> Content {
 }
 
 fn caster(name: &str) -> Player {
-    let book: BTreeMap<SpellId, bool> = [CHARM, SNAP, HEX, BLUR, STAB, SPARK, SCRY, SIGHT]
+    let book: BTreeMap<SpellId, bool> = [CHARM, SNAP, HEX, BLUR, STAB, SPARK, SCRY, SIGHT, WARD]
         .into_iter()
         .map(|s| (s, false))
         .collect();
@@ -399,6 +404,66 @@ fn an_unmatched_name_still_prints_the_room_refusal() {
     assert_eq!(core.current_mana(s), 100, "uncharged");
 }
 
+// --- the 41434 self-target divert, ABOVE the acceptance gate ---
+
+#[test]
+fn a_match_one_spell_accepts_the_casters_own_name() {
+    // REGRESSION: `cast_user_target` runs the self-divert at 41434
+    // (`if ((param_2 == param_3) && (match != 6)) cast_no_target(...)`)
+    // BEFORE the 41460 acceptance gate, so naming yourself never reaches
+    // the `{0,2,6,8}` test at all. Match 1 (25 learnable spells —
+    // barkskin, stoneskin, magic armour, shadowform) is absent from that
+    // set, and `c barkskin <self>` is a habit players have.
+    let (mut core, s, _m) = setup();
+    let shown = cast(&mut core, s, "cast ward zin");
+    assert!(shown.contains("You cast ward on Zin!"), "got: {shown:?}");
+    assert!(!shown.contains("may not cast"), "no refusal: {shown:?}");
+    assert_eq!(core.current_mana(s), 96, "the self tail paid full costs");
+}
+
+#[test]
+fn a_match_one_spell_bare_casts_on_the_self_tail() {
+    // The other reachable form of the same band: no target word, so the
+    // dispatcher never runs a find (59247-59252 -> `cast_no_target`).
+    let (mut core, s, _m) = setup();
+    let shown = cast(&mut core, s, "cast ward");
+    assert!(shown.contains("You cast ward on Zin!"), "got: {shown:?}");
+    assert_eq!(core.current_mana(s), 96);
+}
+
+#[test]
+fn a_match_one_spell_is_still_refused_at_another_user() {
+    // The divert is `param_2 == param_3` ONLY — a different player still
+    // falls through to 41460, where match 1 is absent, so the uncharged
+    // 43066 refusal fires. This is the half the acceptance gate keeps.
+    let mut core =
+        Core::new(world(), CoreConfig { start_location: TOWER, ..Default::default() });
+    let a = core.attach_player(caster("Zin"));
+    let _b = core.attach_player(caster("Oracle"));
+    core.drain_events();
+    let shown = cast(&mut core, a, "cast ward oracle");
+    assert!(shown.contains("You may not cast that spell on a user!\n"), "got: {shown:?}");
+    assert_eq!(core.current_mana(a), 100, "uncharged");
+}
+
+#[test]
+fn a_match_six_spell_reaches_another_user() {
+    // Match 6 is the only type all three entry points accept; 41460 takes
+    // it, so a named player resolves through `cast_user_target`'s tail.
+    // (It is also the ONE type 41434 excludes from the self-divert.)
+    let mut core =
+        Core::new(world(), CoreConfig { start_location: TOWER, ..Default::default() });
+    let a = core.attach_player(caster("Zin"));
+    let b = core.attach_player(caster("Oracle"));
+    core.drain_events();
+    let shown = cast(&mut core, a, "cast sigh oracle");
+    assert!(shown.contains("You cast sight on Oracle!"), "got: {shown:?}");
+    assert!(!shown.contains("may not cast"), "no refusal: {shown:?}");
+    let seen = text_to(&core.drain_events(), b);
+    assert!(seen.is_empty() || !seen.contains("may not"), "target side: {seen:?}");
+    assert_eq!(core.current_mana(a), 96, "full costs paid");
+}
+
 // --- spelltype still owns engagement ---
 
 #[test]
@@ -412,6 +477,25 @@ fn a_benign_monster_cast_never_engages() {
     assert!(shown.contains("You cast snap on black cat!"), "resolved now: {shown:?}");
     assert_eq!(core.current_mana(s), 96, "full costs paid at the command");
     assert!(core.monster_active_spells(m).expect("cat lives")[0].spell.is_none());
+}
+
+#[test]
+fn a_benign_monster_cast_consumes_the_one_per_round_bit() {
+    // 43498-43509: the benign leg of `cast_monster_target` sets the
+    // one-per-round permission bit (`user+0x700 & 4`) like every other
+    // benign path, so the NEXT cast in the same round takes gate 3's
+    // refusal. Discriminator: without the bit the follow-up self-cast
+    // would land (energy is 1000, the first cast spent only 100), so the
+    // refusal line can only come from the bit.
+    let (mut core, s, _m) = setup();
+    let first = cast(&mut core, s, "cast hex cat");
+    assert!(first.contains("You cast hex on black cat!"), "got: {first:?}");
+    let second = cast(&mut core, s, "cast ward");
+    assert!(
+        second.contains("You have already cast a spell this round!"),
+        "the bit was consumed: {second:?}"
+    );
+    assert!(!second.contains("You cast ward"), "the follow-up never resolved: {second:?}");
 }
 
 #[test]

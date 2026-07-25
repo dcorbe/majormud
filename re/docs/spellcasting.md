@@ -101,10 +101,27 @@ and `c stnk cat` (match **12**, preferred mask `0`) go straight to the
 universal search and are refused by whichever entry point the found kind
 picked.
 
+**Acceptance is not the FIRST gate in `cast_user_target`** — the self-target
+divert at 41434 sits ahead of it:
+
+```
+41422  (spelltype ∈ {0,1,2}) && caster == victim  -> "Why would you want to attack yourself?"
+41429  protected room (`room+0x564 & 1`)
+41434  caster == victim && `+0xcc` != 6           -> cast_no_target(...)   <-- divert
+41438  hostility (param_4: PvP gate, evil points)
+41460  acceptance `+0xcc` ∈ {0, 2, 6, 8}
+```
+
+So naming YOURSELF never reaches 41460 unless the spell is match **6**, the
+one type the divert excludes. Every other match type — including the ones
+41460 rejects — falls out to `cast_no_target` and self-casts normally.
+
 Data cross-check (`re/mmud_wgnt.sqlite`, 1379 spells / 207 LearnSp-taught):
 match **1** is the self-only buff band (barkskin, stoneskin, magic armour,
-shadowform — 25 learnable, and no entry point accepts it, so they are
-bare-cast only); match **2** is the cast-on-another-player band (bless, blur,
+shadowform — 25 learnable); no entry point ACCEPTS it, so match 1 can never
+be cast at another player, an item or a monster — but it is castable both
+bare *and* by the caster's own name, via the 41434 divert above;
+match **2** is the cast-on-another-player band (bless, blur,
 minor healing — 42 learnable); **208** benign-mode (`spelltype` 3) spells sit
 on match 4/6/8 and DO reach a monster (the charm family, curse, blind, slow,
 fear, hold person); the 69 offensive-mode spells on match 0/1/2/7 do not, and
