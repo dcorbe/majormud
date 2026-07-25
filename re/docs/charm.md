@@ -43,6 +43,20 @@ During the pre-application ability scan (43302-43316), a spell carrying ability 
 preloads the save stat from the **template**: `local_34 = knmsr+0x1a0` (short,
 Nightmare column **`charmres`**; decompile `local_c[0x68]`, 43311). Non-Enslave spells
 would instead get M.R.: ability 0x24 modifiers + `knmsr+0x70` floored at 1 (43387-43391).
+
+**It is not a clean swap, and `charmres == 0` is NOT a free charm.** The preload writes
+into the same `local_34` the M.R. default keys on. `local_34` is initialised to **0** at
+**43170**, and the default arm at **43387** is guarded by `if (local_34 == 0)` — so a
+template whose `charmres` is 0 preloads a 0, fails to suppress the default, and saves
+with the ordinary M.R. stat (floored at 1) exactly like a non-Enslave spell. The swap
+only takes effect for `charmres != 0`.
+
+This is live on the shipped data, not a corner: **48** of the 1101 templates carry
+`charmres = 0` (`SELECT COUNT(*) FROM monster WHERE charmres=0`), and **38** of those
+have `charmlvl <= 20` — squarely inside the low-level charm band, where they are the
+templates a player will actually try to enslave. Ported at
+`Core::monster_cast_save_stat` and documented on `content::Monster::charm_resist`.
+
 The save itself is the standard one (43604-43617, and the same shape at
 43596-43617 for the forced-cast branch): only when save class `spell+0xc6 == 2`, or
 `== 1` with target AntiMagic (0x33); resisted when
@@ -288,10 +302,14 @@ Formula path — **it is the ordinary combat pipeline**, both sides loaded as fi
    dodge / damage engine of `combat.md` (all its RNG draws happen here, in its
    documented order). Result block: `[0]` result code (1 glance / 3 dodge /
    else-miss when damage < 1; hit otherwise), `[1]` damage, `[3]` floor for the
-   defender's `+0x14` counter, `[4]` kill exp (worth × multiplier, `combat.md`
+   defender's `+0x14` counter — the **periodic HP-drain (poison / bleed) counter**
+   drained once per slow tick (`monsters.md` §2 field map, `slow_update_monster`
+   19276-19279) — `[4]` kill exp (worth × multiplier, `combat.md`
    §monster-fighter), `[5]` attacker energy cost. **`[3]` is dead**: `DAT_00495fdc`
    is zeroed on entry to `calculate_attack` (25246) and no path writes it, so the
-   `+0x14` raise below can never fire (M7 slice 5 pass; not ported).
+   raise-if-greater onto `+0x14` at 27248-27249 can never fire. **Not ported** (M7
+   slice 5) — a monster-vs-monster swing in our port never poisons its defender,
+   which is what the DLL does too, by accident rather than by design. Listed in §8.1.
 4. Attacker pays `result[5]` energy — the gate is checked AFTER the draws, so a form
    costing more than the pool burns rolls and lands nothing (27242-27243); defender HP
    `-= result[1]` (clamped to remaining HP, 27244-27247); defender `+0x14` raised to
@@ -577,6 +595,13 @@ deliberate divergence from a bug.
   sessions engaged on the victim; the DLL's `distribute_experience(-1, ...)` also pays
   idle-autocombat users merely standing in the room. Recorded in §3 and at the
   function's doc comment.
+* **The `+0x14` poison/bleed floor is not ported.** `attack_monster_monster`
+  raises the defender's periodic HP-drain counter to result word `[3]`
+  (27248-27249). Word `[3]` is `DAT_00495fdc`, zeroed on entry to
+  `calculate_attack` (25246) and written by no path in it, so the raise is dead
+  code in WG3-NT and porting it would only add a term that is always 0. See §3
+  step 3. This is the second of the two divergences named at
+  `attack_monster_monster`'s doc comment in `game.rs`.
 * **`+0x60` back-links not ported.** See §7 — no reader exists, and the write loop is
   defective (no `break`; every free slot takes the same id). Porting a defect with no
   consumer buys nothing.
@@ -591,6 +616,31 @@ deliberate divergence from a bug.
 
 ### 8.2 Open — needs the live board (slice 8 oracle expedition)
 
+* **THE BIG ONE — the monster Dodge(0x22) parry, on the PLAYER-attacks-monster
+  path.** Slice 5 gave the shared `build_monster_defender` its parry word (`[8]`
+  ← Dodge(0x22), `move_monster_to_fighter` 25185-25186). That build is not
+  m-v-m-specific: the DLL runs the same function for a player's swing at a
+  monster, so wiring it here changed **ordinary player melee against a sixth of
+  the bestiary**. **167** of the 1101 shipped templates carry Dodge(0x22), at
+  values **10..200**, and `calculate_attack`'s parry block (25336-25360) turns
+  `parry*10 / (accuracy/8)` — capped at 95 — of connecting swings into
+  zero-damage parries: roughly **28-80%** across that band (giant bat, Dodge 20
+  vs a ~45-accuracy character ≈ 40%). That formula was recovered from the 16-bit
+  disassembly and has **never been checked against a capture**, so any error in
+  it is now amplified across 167 templates. This is the single largest live
+  gameplay change the slice made. Capture a grind against a Dodge-carrying
+  template and compare the observed no-damage rate against the prediction.
+  Cited at `game.rs`'s `build_monster_defender` (ORACLE-VERIFY) and pinned for
+  shape — not for magnitude — by
+  `game_combat.rs::monster_dodge_ability_parries_player_swings`.
+* **The engage retaliation lock moved to the ATTACK command** (`12e6178`). The
+  lock used to be taken on the combat round; the DLL takes it once, at
+  engagement, from the ATTACK command (26230 lives in the other arm of the 26112
+  split and cannot follow the round's post-damage branch). This is a change to
+  **all** player melee, not just charm: it moved a `genrdn` draw earlier in the
+  RNG stream and moved a golden in `spell_scenario.rs`. Decompile-justified but
+  unmeasured — a capture of "attack, then let the round run" will confirm both
+  the lock's timing and the draw order around it.
 * **Instant-Enslave messaging** (§7): the `spell+0xce == 0` apply path prints nothing
   in the case body. No shipped Enslave spell has duration 0, so the arm is
   fixture-only and its text — if any — is unmeasured.

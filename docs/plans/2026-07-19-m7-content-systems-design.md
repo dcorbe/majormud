@@ -395,16 +395,58 @@ learnable match-12 area carriers were already in the same hole.
 exactly — closing it is a call-site change (gate on the ability, not on
 `is_offensive()`) plus the grudge/suppression writes.
 
-**Carries to slice 8:** the live oracle expedition (charm a low monster
-with charm animal / song of charming, walk it, watch one assist round,
-attack it as the owner, let a second charm expire — pin every string and
-retag text.rs ORACLE → MEASURED); the `EvilInCombat(52)` charge above;
-and three ORACLE-VERIFY items in charm.md §8.2 — instant-Enslave
-messaging (fixture-only, no shipped Enslave has duration 0),
-`is_valid_monster_target`'s roam/fame/behaviour-4 fall-through (exhaustive
-from the decompile, zero measured surface), and the match-10/0xd
-pet-command band (decompiled and implemented but unreachable, since those
-match types iterate players only and collect nothing).
+**Carries to slice 8**, largest first:
+
+1. **The monster Dodge(0x22) parry on the player-attacks-monster path** —
+   the biggest live gameplay change in the slice, and the one most easily
+   missed because it arrived as a side effect of Task 2. Adding the parry
+   word to the shared `build_monster_defender` also armed it for the
+   PLAYER's swings, because the DLL runs that same
+   `move_monster_to_fighter` build for both. **167 of 1101** templates
+   carry Dodge at 10..200; `parry*10/(accuracy/8)` (cap 95) converts
+   roughly **28-80%** of connecting player swings into zero-damage
+   parries. The formula came out of the 16-bit disassembly and has never
+   been checked against a capture. **Capture a grind against a
+   Dodge-carrying template first** — everything else on this list is
+   smaller. (charm.md §8.2; ORACLE-VERIFY at `build_monster_defender`.)
+2. **The engage retaliation lock's relocation** (`12e6178`) from the
+   combat round to the ATTACK command — a change to all player melee that
+   moved a `genrdn` draw earlier in the stream and moved a golden in
+   `spell_scenario.rs`. Decompile-justified (26230 is in the other arm of
+   the 26112 split), unmeasured. Confirm the timing and the draw order.
+3. The live charm oracle expedition (charm a low monster with charm
+   animal / song of charming, walk it, watch one assist round, attack it
+   as the owner, let a second charm expire — pin every string and retag
+   text.rs ORACLE → MEASURED).
+4. The `EvilInCombat(52)` charge above.
+5. **The pet lifetime that `give_up` never resets.** `give_up` is zeroed
+   only in `monster_attack`'s engage block (`game.rs:9773`, decompile
+   26768-26777) — a path a pet essentially never takes, since a pet
+   swings through `attack_monster_monster` (`pet_assist`) instead. (The
+   one exception is the departure free-attack, which can route a pet into
+   `monster_attack` against a NON-owner who leaves the room; that does
+   reset the counter, but it is incidental, not the pet's own combat.)
+   So in ordinary play a pet's give-up counter only ever
+   climbs, and any 16 fast ticks that each fail to prosecute the follow
+   (different map, no trail, a refused `move_monster`) release it —
+   cumulatively, across its whole life, not consecutively. A pet can
+   therefore be released after a handful of rooms travelled. This is
+   DLL-shaped and pre-existing from M6, but slice 5 is what made it
+   load-bearing: before charm, nothing cared how long a lock survived.
+   Measure a real pet's travel range before deciding it is faithful.
+6. **The unported ability-`0x39` (SeeHidden) chase escape** in that same
+   pursuit predicate: the DLL bumps `give_up` when the quarry is hidden
+   and the pursuer lacks `0x39`, which is how a thief breaks a chase. We
+   do not implement it, so hiding does not shake a pet or a grudge
+   monster. Lands with whichever slice wires hidden-target visibility
+   into pursuit.
+7. Three ORACLE-VERIFY items in charm.md §8.2 — instant-Enslave
+   messaging (fixture-only, no shipped Enslave has duration 0),
+   `is_valid_monster_target`'s roam/fame/behaviour-4 fall-through
+   (exhaustive from the decompile, zero measured surface), and the
+   match-10/0xd pet-command band (decompiled and implemented but
+   unreachable, since those match types iterate players only and collect
+   nothing).
 
 ## Slice 5 — Charm & pets
 
