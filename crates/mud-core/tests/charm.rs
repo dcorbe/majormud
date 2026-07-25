@@ -1525,9 +1525,18 @@ fn a_monster_cast_prefers_a_wild_body_over_your_pet() {
 
 #[test]
 fn a_lone_pet_is_still_a_valid_cast_target() {
-    // Pass 2 (63820): with no wild body left, the charmed-only sweep
-    // finds the pet and the cast lands on it. `0x800` DEPRIORITISES; it
-    // does not hide.
+    // With no wild body left the cast still lands on the pet: `0x800`
+    // DEPRIORITISES, it does not hide (charm.md §2.3).
+    //
+    // This test cannot tell you WHICH mechanism found it, and the comment
+    // that used to claim "pass 2 (63820) resolves the pet" was wrong to
+    // try. MARK is match 4, whose preferred mask `0x801` carries `0x800`;
+    // if pass 2 were deleted, pass 1 would come back empty and the
+    // dispatcher's charm-BLIND universal retry `0xf037` (59265-59271)
+    // would find the same pet one step later — same outcome, same lines.
+    // Verified by deletion: the test stays green either way. Pass 2 is
+    // load-bearing ONLY on `cmd_any_attack` (mask `0x883`, 49590), which
+    // has no retry — see `melee_attack_still_finds_a_lone_pet`.
     let (mut core, s, pet) = setup(HOUND);
     cast(&mut core, s, "cast ensl war");
     energy_round(&mut core);
@@ -1536,7 +1545,7 @@ fn a_lone_pet_is_still_a_valid_cast_target() {
         !shown.contains("You do not see"),
         "a lone pet is findable: {shown:?}"
     );
-    assert!(slotted(&core, pet, MARK), "pass 2 resolves the pet");
+    assert!(slotted(&core, pet, MARK), "and the cast lands on it");
 }
 
 #[test]

@@ -179,6 +179,15 @@ There are **two** gates, and they never both run on the same cast.
   `cmd_give` — all `0x83`; `cmd_use` `0xf037`) is charm-blind.
   Net effect: `cast mmis rat` with a pet rat and a wild rat present hits the
   **wild** one; with only the pet present it hits the **pet**.
+  **Corollary (M7 slice 5 Task 7): pass 2 itself is unobservable on the CAST
+  path.** Its only job is to hand back a lone pet, and on every match type
+  `cast_monster_target` accepts the charm-blind `0xf037` retry would hand back
+  the same body one step later — the two mechanisms are indistinguishable from
+  outside. `cmd_any_attack` (`0x883`, 49590) has **no** retry, so melee ATTACK is
+  the ONE place pass 2 is load-bearing — which is exactly what keeps the §4.3
+  melee-release family reachable. A test that charms the only monster in the
+  room and then casts at it pins the *outcome*, not the *pass*: deleting pass 2
+  leaves it green.
 * **The area VETO — `is_valid_monster_target`** (`0x3f1e4`, 38430). A real
   exclusion, but it lives **only on the AREA sweeps**: `count_valid_targets`
   (38610), `add_duration_spell_to_room` (38707), `add_evil_warnings_to_room`
@@ -205,9 +214,15 @@ There are **two** gates, and they never both run on the same cast.
   is only ever swung at by a §6 hunter that carries its id.
 * **Threat scans ignore your pet.** `monster_could_attack` (`0x20b51`, 18209)
   counts a monster as a threat only if NOT (charmed AND named == you) AND
-  `+0x116 == 0` (18238-18241) — your pet (and any "friend") never blocks the
-  actions gated on it, which in WG3-NT are `can_sneak` and `cmd_hide`
-  (`theft.md` §11.1/§11.2), not a rest command.
+  `+0x116 == 0` (18237-18240) — your pet (and any "friend") never blocks the
+  actions gated on it. There are **four** callers in WG3-NT, not two
+  (re-grepped M7 slice 5 Task 7): `can_sneak` 65462 and `cmd_hide` 62023
+  (`theft.md` §11.1/§11.2), plus **`cmd_close` 52341** and **`cmd_lock` 53290**.
+  `cmd_hide`, `cmd_close` and `cmd_lock` carry the identical four-term guard —
+  `is_inside_autocombat() == 0 && is_being_attacked() == 0 && user+0x6f0 < 1 &&
+  monster_could_attack(-1, user) == 0` — while `can_sneak` runs its own
+  attacker-type/same-room pre-test first and then only `+0x6f0 < 1` before the
+  call. No rest command is among them.
 * **Physical attacks are allowed** — and are a release path (§4.3): the engine does
   not block `attack_user_monster` against your own pet. `cmd_any_attack` carries
   `0x800`, so a named swing prefers a wild body, but the second pass keeps the

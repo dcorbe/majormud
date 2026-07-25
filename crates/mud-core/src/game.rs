@@ -5089,10 +5089,10 @@ impl Core {
     /// The switch is on `spell+0xcc`, so the MATCH TYPE decides how much
     /// of the function runs:
     ///
-    /// * 0/1/2/7 -> invalid (38445-38449); 3/5/0xb -> valid outright
-    ///   (38455-38457), as does the `default` arm that would catch the
+    /// * 0/1/2/7 -> invalid (38461-38465); 3/5/0xb -> valid outright
+    ///   (38467-38470), as does the `default` arm that would catch the
     ///   single-target 4/6/8 if they ever arrived here;
-    /// * 10/0xd -> valid ONLY for your own charmed pet (38501-38509) —
+    /// * 10/0xd -> valid ONLY for your own charmed pet (38502-38509) —
     ///   the pet-command band. Unreachable: [`MatchType::hits_monsters`]
     ///   excludes both, exactly as the DLL's `{3,5,9,0xb,0xc}` sweep
     ///   guards do;
@@ -5112,6 +5112,13 @@ impl Core {
     /// arm and a half-ported predicate is worse than none. ORACLE-VERIFY:
     /// it has no measured surface. Shipped reachability is real, not
     /// fixture-only — stinking cloud (131) is a learnable match-12 area.
+    ///
+    /// The port is an EXHAUSTIVE match, one arm per switch label, so a new
+    /// [`MatchType`] is a compile error rather than a silent `true`. The
+    /// earlier fail-open (`!= Area9|AreaC -> true`) contradicted this doc
+    /// comment on 0/1/2/7 and defaulted the wrong way; unreachable today
+    /// on either shape, since only the `{3,5,9,0xb,0xc}` area sweeps call
+    /// in.
     fn is_valid_monster_target(
         &self,
         session: SessionId,
@@ -5119,13 +5126,36 @@ impl Core {
         id: MonsterInstanceId,
     ) -> bool {
         use crate::content::MatchType;
-        if !matches!(spell.match_type, MatchType::Area9 | MatchType::AreaC) {
-            // 3/5/0xb (and the default arm) — no charm awareness at all.
-            return true;
-        }
         let Some(m) = self.monsters.get(&id) else {
+            // `get_monster_data == 0` (38443-38445): a dead id is never a
+            // target, whatever the match type.
             return false;
         };
+        match spell.match_type {
+            // 38461-38465 — the single-target user classes and the
+            // item class are hard-invalid here.
+            MatchType::Single0 | MatchType::Single1 | MatchType::Single2 | MatchType::Item7 => {
+                return false;
+            }
+            // 38467-38473 — valid outright, no charm awareness. The
+            // `default` arm (4/6/8) lands here too; it is unreachable
+            // because only the area sweeps call this.
+            MatchType::Area3
+            | MatchType::Area5
+            | MatchType::AreaB
+            | MatchType::Special4
+            | MatchType::Item6
+            | MatchType::Special8 => return true,
+            // 38502-38509 — the pet-command band: valid ONLY for your own
+            // charmed pet. Dead in the DLL too (`hits_monsters` and the
+            // `{3,5,9,0xb,0xc}` sweep guards both exclude 10/0xd), and
+            // written out rather than left to a fail-open default.
+            MatchType::Area10 | MatchType::AreaD => {
+                return m.charmed && m.target == Some(session);
+            }
+            // 38475-38501 — the charm arm, below.
+            MatchType::Area9 | MatchType::AreaC => {}
+        }
         // `sameas(mon+0x1a, user+0x1e)`: the owner/grudge link is a NAME
         // in the DLL and a SessionId here (see the plan's key mapping).
         if m.target == Some(session) {
@@ -5171,13 +5201,20 @@ impl Core {
         // ONE 10-point NPC-style hit before any cost; a refusal aborts the
         // whole cast. (The per-victim 0-point PAIR timers are the PvP
         // half — slice 4 with rob.)
-        if spell.target_mode.is_offensive() {
-            // 38803-38812 conjoins the innocence out-param with
+        if spell.target_mode.is_offensive() && spell.match_type.hits_monsters() {
+            // The monster loop is MATCH-GATED (38793-38795): it runs only
+            // for `spell+0xcc` in {3, 5, 9, 0xb, 0xc} — exactly
+            // [`MatchType::hits_monsters`]. An offensive room-wide cast of
+            // any other area type (10/0xd) charges nothing here, so the
+            // gate is a conjunct and not a doc note.
+            //
+            // Inside it, 38802-38805 conjoins the innocence out-param with
             // `is_valid_monster_target` itself, so a body the sweep will
             // not reach is not a body you can be charged for either —
             // which on match 9/0xc silently retires the `behaviour == 4`
-            // half of the innocence test (38455: valid requires
-            // `+0x106 != 4`).
+            // half of the innocence test (38454-38456: innocent requires
+            // `+0x106` in {0, 4} and an unnamed link, but 38495 makes
+            // mode 4 invalid).
             let passive = self
                 .monsters
                 .iter()
@@ -6269,9 +6306,16 @@ impl Core {
     /// the slice-wide delay system.)
     fn sneak_command(&mut self, session: SessionId) {
         // M7 slice5: `can_sneak`'s third gate, `monster_could_attack`
-        // (18209), is unported — and its pet exemption (18238-18241:
-        // a threat is a monster that is NOT charmed-and-named-yours and
-        // has `+0x116 == 0`) lands with it, here and in `hide_command`.
+        // (18209, called at 65462), is unported — and its pet exemption
+        // (18237-18240: a threat is a monster that is NOT
+        // charmed-and-named-yours and has `+0x116 == 0`) lands with it.
+        // FOUR callers in the DLL, all still unported: `can_sneak` 65462,
+        // `cmd_hide` 62023, `cmd_close` 52341 and `cmd_lock` 53290. The
+        // last three carry the identical four-term guard
+        // (`is_inside_autocombat` == 0, `is_being_attacked` == 0,
+        // `+0x6f0 < 1`, `monster_could_attack` == 0); `can_sneak` is the
+        // odd one out (its own attacker-type/same-room pre-test, then
+        // `+0x6f0 < 1` and the call).
         let being_fought = self
             .monsters
             .values()
@@ -6315,7 +6359,8 @@ impl Core {
     /// No PerStealth shortcut here, unlike SNEAK.
     fn hide_command(&mut self, session: SessionId) {
         // M7 slice5: same unported `monster_could_attack` gate as
-        // `sneak_command` — see the note there.
+        // `sneak_command` (the 62023 caller) — see the note there for the
+        // full four-caller inventory.
         let being_fought = self
             .monsters
             .values()
