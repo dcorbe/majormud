@@ -744,15 +744,24 @@ fn a_charmed_pet_follows_without_the_aggression_roll() {
 
 #[test]
 fn owner_melee_releases_a_slotted_pet() {
-    // 26526-26562: charmed + `sameas(mon+0x1a, attacker)` -> suppression
+    // 26527-26562: charmed + `sameas(mon+0x1a, attacker)` -> suppression
     // off FIRST, then the charmed bit, then the ability-6 slot sweep —
     // whose termination also empties the owner link.
+    //
+    // The whole triple is pinned, not just the charmed bit: the engage
+    // lock (26230) lives in the OTHER arm of `if (DAT_004877f4 == '\0')`
+    // (26112) and can never run in the same call, so nothing re-grudges
+    // the ex-pet onto the owner afterwards. §4.1's "released monster is
+    // NEUTRAL" is observable here, and only here, on the melee path.
     let (mut core, s, m) = setup(MUTT);
     cast(&mut core, s, "cast ensl mutt");
     energy_round(&mut core);
     melee_until_a_hit(&mut core, s, "mutt", m);
-    let (charmed, _, _) = core.debug_monster_charm(m).expect("mutt lives");
-    assert!(!charmed, "the owner's swing releases");
+    assert_eq!(
+        core.debug_monster_charm(m),
+        Some((false, false, None)),
+        "the slot sweep empties the owner link and nothing re-locks it"
+    );
     let slots = core.monster_active_spells(m).expect("mutt lives");
     assert!(
         slots.iter().all(|slot| slot.spell != Some(ENSLAVE)),

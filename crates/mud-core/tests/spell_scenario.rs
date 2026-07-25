@@ -1137,12 +1137,16 @@ fn caster_monster_fight_and_the_live_poison_lifecycle() {
         .matches("The moaning spirit attempted to cast draws the breath at you, but failed.")
         .count();
     assert_eq!(landed, 5, "SEED landed casts: {vex_p1:?}");
-    assert_eq!(fizzled, 3, "SEED fizzles: {vex_p1:?}");
+    assert_eq!(fizzled, 2, "SEED fizzles: {vex_p1:?}");
     // HP accounting: every landed drain shows the exact amount it dealt
-    // (SEED rolls 12, 13, 11, 9, 11 — all inside the record band 4..13;
+    // (SEED rolls 13, 5, 11, 9, 11 — all inside the record band 4..13;
     // stream re-pinned for the slice-3 draws: retaliation-gate and
-    // post-swing lock rolls now sit in every monster attack sequence).
-    assert_eq!(core.current_hp(vex), 200 - 56, "SEED drain total: {vex_p1:?}");
+    // post-swing lock rolls now sit in every monster attack sequence.
+    // Re-pinned again in slice 5: the ENGAGE-time lock roll moved off
+    // the tail of the player swing loop and onto the ATTACK command,
+    // where 26230 lives — one draw earlier in the stream, one fizzle
+    // fewer in this window).
+    assert_eq!(core.current_hp(vex), 200 - 49, "SEED drain total: {vex_p1:?}");
     // Victim view, in order: the engagement, a landed line (WITH the
     // damage number), and a fizzle line.
     assert_in_order(
@@ -1151,7 +1155,7 @@ fn caster_monster_fight_and_the_live_poison_lifecycle() {
             ("engaged", "*Combat Engaged*"),
             (
                 "landed cast",
-                "Moaning spirit draws the breath from your body for 12 damage!\n",
+                "Moaning spirit draws the breath from your body for 13 damage!\n",
             ),
             (
                 "fizzle",

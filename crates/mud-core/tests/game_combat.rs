@@ -1174,13 +1174,19 @@ fn monster_dodge_ability_parries_player_swings() {
     // giant bat, Dodge 20) and compare the observed miss rate.
     // 40 rounds is 49 swings (the energy pool buys a second swing in
     // some rounds); with no Dodge every one of them lands.
+    // (The damage totals below moved by a couple of points in M7 slice 5
+    // when the engage-time retaliation lock was pulled out of the swing
+    // loop and back onto the ATTACK command, where 26230 actually lives:
+    // its `genrdn(1,100)` now precedes the round's damage rolls instead
+    // of trailing them. Swing COUNTS are unchanged — this is stream
+    // position, not a behaviour change.)
     let (control_hits, control_damage) = sandbag_run(0, 40);
     assert_eq!(control_hits, 49, "a 99%-to-hit swing lands on every swing");
-    assert_eq!(control_damage, 121, "49 swings of 1-4 damage");
+    assert_eq!(control_damage, 119, "49 swings of 1-4 damage");
 
     let (dodge_hits, dodge_damage) = sandbag_run(20, 40);
-    assert_eq!(dodge_hits, 30, "Dodge 20 parries ~40% of the swings");
-    assert_eq!(dodge_damage, 73, "only the unparried swings do damage");
+    assert_eq!(dodge_hits, 29, "Dodge 20 parries ~40% of the swings");
+    assert_eq!(dodge_damage, 70, "only the unparried swings do damage");
 
     let (capped_hits, capped_damage) = sandbag_run(50, 40);
     assert_eq!(capped_hits, 4, "Dodge 50 pins the parry chance at its 95 cap");

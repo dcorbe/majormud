@@ -3819,6 +3819,28 @@ impl Core {
             *attack_mode = mode;
         }
         self.output_line(session, text::COMBAT_ENGAGED);
+        // The ENGAGE-arm retaliation lock (26230-26237), fired right
+        // after `engage_autocombat` and before any round runs.
+        //
+        // It belongs HERE and nowhere else. `attack_user_monster` splits
+        // on `DAT_004877f4` at 26112: the `== '\0'` half is the ATTACK
+        // command — messages, `engage_autocombat`, this lock, and NO
+        // swings — and its `else` (26241) is the autocombat round, which
+        // swings and carries its own post-damage lock/release pair
+        // (26514-26563). The two are arms of one `if`, so 26230 can
+        // never run after 26527 in the same call. Hanging this re-mark
+        // off the tail of the swing loop let both run and immediately
+        // re-grudged a just-released pet back onto its owner.
+        //
+        // Divergence, pre-existing and untouched: our ATTACK command
+        // goes on to swing, which the DLL's engage arm does not. The
+        // `target.is_none()` gate is likewise ours — 26230 has no such
+        // clause and would re-roll over an existing lock (unobservable
+        // against the same attacker, and a pet is charm-exempt either
+        // way, but it does cost a draw the DLL spends and we do not).
+        if self.monsters.get(&monster).is_some_and(|m| m.target.is_none()) {
+            self.retaliation_lock(monster, session, CharmedLock::Exempt);
+        }
         self.player_attack_sequence(session);
         Resolution::Handled
     }
@@ -8927,10 +8949,10 @@ impl Core {
                         self.monster_killed(target, Some(session));
                         return;
                     }
-                    // Retaliation: gated lock per hit (26514-26525) —
+                    // Retaliation: gated lock per hit (26515-26525) —
                     // except on a charmed target, where the ELSE half of
-                    // the same branch runs the owner release instead
-                    // (26526-26562, charm.md §4.3).
+                    // the same branch (26527) runs the owner release
+                    // instead (26527-26562, charm.md §4.3).
                     if self.monsters.get(&target).is_some_and(|m| m.charmed) {
                         self.owner_melee_release(target, session);
                     } else {
@@ -8939,10 +8961,9 @@ impl Core {
                 }
             }
         }
-        // The engage-time lock re-mark (26230-26236) — same gates.
-        if self.monsters.get(&target).is_some_and(|m| m.target.is_none()) {
-            self.retaliation_lock(target, session, CharmedLock::Exempt);
-        }
+        // NO engage re-mark here: 26230 lives in the other arm of the
+        // 26112 split and cannot follow the round's post-damage branch.
+        // It fires once, at engagement, from the ATTACK command.
     }
 
     /// The charmed half of `attack_user_monster`'s post-damage branch
