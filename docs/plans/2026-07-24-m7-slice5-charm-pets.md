@@ -396,26 +396,46 @@ bit check (unreachable in practice, cheap to be literal).
 
 ### Task 6: Targeting exemptions
 
-Port of §2.3 — nobody targets a pet by accident.
+Port of §2.3 — pets are DEPRIORITIZED in targeting, not hidden.
+
+**CORRECTED after the Task-3b routing work** (verified twice against
+`find_action_target` 63726): the `0x800` mask bit means **charmed monsters
+are searched LAST, not excluded**. `find_action_target` runs two passes —
+the first skips `mon+0x128 & 1` when `0x800` is set, the second scans ONLY
+charmed monsters. `0x800` rides masks `0x801` (match 4), `0x803` (match 8)
+and `0xf837` (match 6), but is ABSENT from the universal retry `0xf037`.
+So `cast mmis rat` with a pet rat and a wild rat present hits the WILD one;
+with only the pet present, pass 1 finds nothing, pass 2 finds the pet, and
+**the pet gets hit**. The original "exclude your own pet" premise was
+wrong — do not implement it.
 
 **Files:**
-- Modify: `crates/mud-core/src/game.rs` — offensive-cast target
-  resolution (game.rs:4299 arm) and the area-cast monster sweep
-  (`area_cast` game.rs:4685 / the monster_count_valid_targets port at
-  game.rs:9452).
-- Test: extend `crates/mud-core/tests/charm.rs`
+- Modify: `crates/mud-core/src/content.rs` — `FindScope` gains the
+  charmed-last ordering flag (a fourth field or an ordering enum; it
+  currently models only inclusion).
+- Modify: `crates/mud-core/src/game.rs` — `find_cast_target`'s monster
+  pass (the Task-3b shared resolver), and the area-cast monster sweep
+  (`area_cast` / the `monster_count_valid_targets` port at ~game.rs:9452).
+- Test: extend `crates/mud-core/tests/charm.rs` and/or
+  `crates/mud-core/tests/cast_routing.rs`
 
 **Behavior:**
-1. **Hostile single-target casts** (`is_valid_monster_target` 38477-38488,
-   match 9/0xc): a monster that is charmed-or-suppressed AND
-   `m.target == Some(caster)` is invalid — the caster's find falls
-   through to the do-not-see refusal. The same compare on an UNsuppressed
-   monster (a grudge-holder) stays valid. Filter at the OFFENSIVE cast
-   resolution only — `find_monster` itself is shared with melee ATTACK,
-   which must keep hitting pets (§2.3: physical attacks are allowed —
-   they're a release path).
-2. **Area casts**: the area monster sweep skips the caster's own
-   pets/friends by the same predicate.
+1. **Two-pass monster resolution**: implement the ordering in the shared
+   resolver. Pass 1 skips charmed monsters when the mask carries `0x800`;
+   pass 2 scans only charmed ones. The universal retry does NOT carry
+   `0x800`, so it treats charmed and wild alike — reproduce that
+   asymmetry exactly, it is what makes a lone pet targetable.
+2. **`is_valid_monster_target`** (38430, 38477-38488, match 9/0xc): read
+   this separately — it is a DIFFERENT gate from the find ordering, and
+   §2.3 claims it makes your own pet an invalid target for hostile spells.
+   Determine from the decompile which shipped call paths actually consult
+   it and whether it survives the routing model; implement what the
+   decompile says, and reconcile §2.3's wording with the two-pass finding.
+3. **Area casts**: determine from the decompile whether the area sweep
+   honors charm at all (it may simply not consult `0x800`) rather than
+   assuming the single-target rule carries over.
+4. Melee ATTACK must keep hitting pets either way (§2.3: physical attacks
+   are allowed — they are a release path).
 3. **Threat scans** (`monster_could_attack` 18238-18241): no consumer in
    our tree yet (no rest gate ported) — leave a one-line
    `M7 slice5: monster_could_attack pet exemption lands with its consumer`
