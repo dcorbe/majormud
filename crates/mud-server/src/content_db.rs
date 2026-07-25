@@ -273,7 +273,7 @@ fn load_monsters(db: &Connection, content: &mut Content) -> Result<(), LoadError
          runic, platinum, gold, silver, copper, {attack_cols}, \
          weaponnumber, {loot_cols}, \"index\", \"group\", follow, alignment, \
          type, something3, nothing2, gamelimit, hpregen, regentime, something2, \
-         desctxt, greettxt, talktxt, charmlvl, charmres FROM monster",
+         desctxt, greettxt, talktxt, charmlvl, charmres, undead FROM monster",
         ability_cols("abilitya"),
         ability_cols("abilityb"),
     ))?;
@@ -363,6 +363,9 @@ fn load_monsters(db: &Connection, content: &mut Content) -> Result<(), LoadError
             // later column.
             charm_level: to_i16("monster", "charmlvl", row.get(loot_end + 14)?)?,
             charm_resist: to_i16("monster", "charmres", row.get(loot_end + 15)?)?,
+            // charm.md §1.1: the AffectsUndead (23) predicate. Tri-valued
+            // (0/1/-1) and tested `!= 0`, so it stays a number.
+            undead: to_i16("monster", "undead", row.get(loot_end + 16)?)?,
         });
     }
     Ok(())

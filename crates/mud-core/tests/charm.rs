@@ -102,6 +102,22 @@ const CUR: MonsterId = MonsterId(14);
 /// is the `monstertype` of 487 rooms, and `storm giant king` (#637,
 /// `charmlvl` 0). A charmed class-5 body is reachable in play.
 const WARDEN: MonsterId = MonsterId(15);
+/// Carries ability **78** (`Animal`) — the only thing an AffectsAnimals
+/// (80) spell accepts (43299-43307). 155 shipped templates carry it.
+const BEAST: MonsterId = MonsterId(16);
+/// Template `undead` byte **1** — the AffectsUndead (23) target
+/// (43317-43324 reads `knmsr+0xad`, the column immediately ahead of
+/// `alignment`). 107 shipped templates hold 1.
+const GHOUL: MonsterId = MonsterId(17);
+/// Template `undead` byte **-1**. The column is TRI-valued in the shipped
+/// data (0: 986, 1: 107, -1: 8) and the DLL tests `!= 0`, so -1 is undead
+/// too — the reason `undead` is an `i16` here and not a `bool`.
+const WRAITH: MonsterId = MonsterId(18);
+/// Carries ability **109** (`NonLiving`) — the one thing an AffectsLiving
+/// (108) spell refuses (43349-43357). Note `undead` is **0** on it: the
+/// two predicates are near-twins in the shipped data but NOT the same
+/// test, and this fixture is the half that separates them.
+const GOLEM: MonsterId = MonsterId(19);
 
 /// (Enslave, 0), duration 60 flat, no save — the state/slot probe.
 const ENSLAVE: SpellId = SpellId(700);
@@ -141,6 +157,12 @@ const MARK: SpellId = SpellId(810);
 /// through unconditionally (38461) — the control that keeps the pet
 /// exemption pinned to match 9/12 and not to "area casts".
 const SQUALL: SpellId = SpellId(815);
+/// The SHIPPED `charm animal` (92) shape: (Enslave, 0) +
+/// (AffectsAnimals, 0).
+const TAME: SpellId = SpellId(820);
+/// The SHIPPED `control undead` (88) shape: (Enslave, 0) +
+/// (AffectsUndead, 0) + (Evil, 0).
+const DOMINATE: SpellId = SpellId(830);
 
 fn spell(id: SpellId, name: &str, short: &str) -> Spell {
     Spell {
@@ -302,6 +324,20 @@ fn world() -> Content {
     let mut hollow = monster(HOLLOW, "hollow husk", 1, 0);
     hollow.magic_resist = 200;
     content.add_monster(hollow);
+    // The §1.1 eligibility-scan trio. RAT is the negative control for all
+    // three: no ability 78, no ability 109, `undead` 0.
+    let mut beast = monster(BEAST, "dire boar", 1, 40);
+    beast.abilities = vec![(Ability::Animal, 0)];
+    content.add_monster(beast);
+    let mut ghoul = monster(GHOUL, "rotting ghoul", 1, 40);
+    ghoul.undead = 1;
+    content.add_monster(ghoul);
+    let mut wraith = monster(WRAITH, "grey wraith", 1, 40);
+    wraith.undead = -1;
+    content.add_monster(wraith);
+    let mut golem = monster(GOLEM, "iron golem", 1, 40);
+    golem.abilities = vec![(Ability::NonLiving, 0)];
+    content.add_monster(golem);
     // The blur castmsgb shape (fixture 901 across the cast suites).
     content.add_message(Message {
         id: MessageId(901),
@@ -378,9 +414,17 @@ fn world() -> Content {
     venombond.abilities = vec![(Ability::Enslave, 0), (Ability::Poison, 5)];
     let mut mark = spell(MARK, "mark", "mark");
     mark.abilities = vec![(Ability::AC, -5)];
+    let mut tame = spell(TAME, "tame", "tame");
+    tame.abilities = vec![(Ability::Enslave, 0), (Ability::AffectsAnimals, 0)];
+    let mut dominate = spell(DOMINATE, "dominate", "domi");
+    dominate.abilities = vec![
+        (Ability::Enslave, 0),
+        (Ability::AffectsUndead, 0),
+        (Ability::Evil, 0),
+    ];
     for s in [
         enslave, thrall, hold, snap, whisper, leash, bind, bindsave, sear, gale, squall, venombond,
-        mark,
+        mark, tame, dominate,
     ] {
         content.add_spell(s);
     }
@@ -401,7 +445,7 @@ fn caster() -> Player {
 fn caster_named(name: &str, location: RoomId) -> Player {
     let book: BTreeMap<SpellId, bool> = [
         ENSLAVE, THRALL, HOLD, SNAP, WHISPER, LEASH, BIND, BINDSAVE, SEAR, GALE, SQUALL, VENOMBOND,
-        MARK,
+        MARK, TAME, DOMINATE,
     ]
     .into_iter()
     .chain((0..5).map(|i| SpellId(FILLER_BASE + i)))
@@ -538,6 +582,146 @@ fn instant_enslave_writes_the_triple_without_a_slot() {
     let slots = core.monster_active_spells(m).expect("rat lives");
     assert!(slots.iter().all(|slot| slot.spell.is_none()), "no slot, no timer");
     assert_eq!(core.current_mana(s), 96, "full costs paid at the command");
+}
+
+// --- §1.1 the eligibility scan (43295-43376) ---
+//
+// The ten-row pre-application scan over the SPELL's ability list, which
+// runs once the caster is known to be able to afford the cast and BEFORE
+// any deduction (the mana/energy sufficiency test sits at 43278; every
+// `iVar3+0xba` / `iVar3+0x602` subtraction is downstream at 43443+).
+// Three of its arms are pure refusals — print 00485de3, `tell_user`,
+// `return 0` — and all four shipped Enslave spells carry exactly one:
+//   49 song of charming  (Enslave, AffectsLiving)
+//   55 enslave           (Enslave, AffectsLiving)
+//   88 control undead    (Enslave, AffectsUndead, Evil)
+//   92 charm animal      (Enslave, AffectsAnimals)
+
+#[test]
+fn affects_animals_refuses_a_target_without_ability_78() {
+    // 43299-43307: `monster_has_ability(0x4e)` == 0 -> "no effect".
+    // The rat is not an animal by the DATA's definition (ability 78 is a
+    // flag, not a species guess), so `charm animal`'s fixture twin
+    // bounces off it — the shipped delta is 155 legal templates out of
+    // 1101.
+    let (mut core, s, m) = setup(RAT);
+    let energy = core.round_energy(s);
+    let shown = cast(&mut core, s, "cast tame rat");
+    assert!(
+        shown.contains("Your spell has no effect on giant rat.\n"),
+        "got: {shown:?}"
+    );
+    assert_eq!(
+        core.debug_monster_charm(m),
+        Some((false, false, None)),
+        "no charm, no owner link, no suppression"
+    );
+    assert_eq!(core.current_mana(s), 100, "the scan precedes the cost");
+    assert_eq!(core.round_energy(s), energy, "no round cost charged");
+}
+
+#[test]
+fn affects_animals_lands_on_an_animal() {
+    // The other side of the same arm: ability 78 present -> the scan
+    // falls through and the charm applies normally.
+    let (mut core, s, m) = setup(BEAST);
+    let shown = cast(&mut core, s, "cast tame boar");
+    assert!(!shown.contains("no effect"), "not refused: {shown:?}");
+    assert_eq!(
+        core.debug_monster_charm(m),
+        Some((true, true, Some(s))),
+        "the §0 triple lands on an animal"
+    );
+    assert_eq!(core.current_mana(s), 96, "full costs paid");
+}
+
+#[test]
+fn affects_undead_refuses_a_living_template() {
+    // 43317-43324: template `undead` byte == 0 -> "no effect". This arm
+    // keys on the COLUMN, never on an ability row.
+    let (mut core, s, m) = setup(RAT);
+    let energy = core.round_energy(s);
+    let shown = cast(&mut core, s, "cast domi rat");
+    assert!(
+        shown.contains("Your spell has no effect on giant rat.\n"),
+        "got: {shown:?}"
+    );
+    assert_eq!(core.debug_monster_charm(m), Some((false, false, None)));
+    assert_eq!(core.current_mana(s), 100, "the scan precedes the cost");
+    assert_eq!(core.round_energy(s), energy, "no round cost charged");
+}
+
+#[test]
+fn affects_undead_accepts_both_nonzero_bytes() {
+    // The column is tri-valued and the DLL's test is `!= 0`, so the 8
+    // shipped `undead == -1` templates are undead exactly like the 107
+    // that hold 1. Modelling the column as a bool would lose them.
+    for (template, word) in [(GHOUL, "ghoul"), (WRAITH, "wraith")] {
+        let (mut core, s, m) = setup(template);
+        let shown = cast(&mut core, s, &format!("cast domi {word}"));
+        assert!(
+            !shown.contains("no effect"),
+            "{word} not refused: {shown:?}"
+        );
+        assert_eq!(
+            core.debug_monster_charm(m),
+            Some((true, true, Some(s))),
+            "the §0 triple lands on {word}"
+        );
+    }
+}
+
+#[test]
+fn affects_living_refuses_a_target_carrying_ability_109() {
+    // 43349-43357: `monster_has_ability(0x6d)` != 0 -> "no effect". The
+    // polarity is INVERTED against the animals arm — presence refuses.
+    let (mut core, s, m) = setup(GOLEM);
+    let energy = core.round_energy(s);
+    let shown = cast(&mut core, s, "cast whis golem");
+    assert!(
+        shown.contains("Your spell has no effect on iron golem.\n"),
+        "got: {shown:?}"
+    );
+    assert_eq!(core.debug_monster_charm(m), Some((false, false, None)));
+    assert_eq!(core.current_mana(s), 100, "the scan precedes the cost");
+    assert_eq!(core.round_energy(s), energy, "no round cost charged");
+}
+
+#[test]
+fn affects_undead_and_affects_living_are_distinct_predicates() {
+    // Near-identical populations in the shipped data, but not the same
+    // test: 6 templates carry `undead != 0` while LACKING ability 109,
+    // and 76 carry 109 with `undead == 0`. GHOUL is the first shape and
+    // GOLEM the second, and each answers the two arms differently.
+    let (mut core, s, m) = setup(GHOUL);
+    let shown = cast(&mut core, s, "cast whis ghoul");
+    assert!(
+        !shown.contains("no effect"),
+        "an undead body with no 109 row is still LIVING to the 108 arm: {shown:?}"
+    );
+    assert_eq!(core.debug_monster_charm(m), Some((true, true, Some(s))));
+
+    let (mut core, s, m) = setup(GOLEM);
+    let shown = cast(&mut core, s, "cast domi golem");
+    assert!(
+        shown.contains("Your spell has no effect on iron golem.\n"),
+        "a 109 row is not an `undead` column: {shown:?}"
+    );
+    assert_eq!(core.debug_monster_charm(m), Some((false, false, None)));
+}
+
+#[test]
+fn the_scan_refusal_leaves_the_round_free() {
+    // `return 0` ahead of the cost band means the caster keeps the round
+    // as well as the mana — the same shape the SpellImmu refusal has.
+    let (mut core, s, _) = setup(RAT);
+    cast(&mut core, s, "cast tame rat");
+    let next = cast(&mut core, s, "cast ensl rat");
+    assert!(
+        !next.contains("already cast"),
+        "the refusal costs no round: {next:?}"
+    );
+    assert_eq!(core.current_mana(s), 96, "only the second cast paid");
 }
 
 // --- §1.2 the charmlvl gate ---

@@ -4904,6 +4904,17 @@ impl Core {
             }
         }
         if let Some(monster_id) = monster {
+            // The pre-application eligibility scan's three refusal arms
+            // (charm.md §1.1). They sit AHEAD of the SpellImmu gate in the
+            // DLL (scan 43295-43376, SpellImmu 43378-43384), so a target
+            // that would trip both takes this refusal — indistinguishable
+            // in output, since both print 00485de3, but the order is what
+            // the decompile does.
+            if self.cast_eligibility_refused(monster_id, &spell) {
+                let name = self.monster_name(monster_id);
+                self.output_line(session, &text::spell_no_effect_on(&name));
+                return;
+            }
             // SpellImmu (139): a monster immune to spells at or below this
             // level refuses the cast before any cost or engagement
             // (decompile cast_monster_target 43630-43638: spell level <
@@ -7801,6 +7812,57 @@ impl Core {
         self.monster_save_stat(id)
     }
 
+    /// The TARGETING half of the pre-application ability scan (charm.md
+    /// §1.1; decompile `cast_monster_target` 43295-43376): a walk over the
+    /// SPELL's ten ability rows, three of whose arms are pure refusals —
+    /// `prf(00485de3)`, `tell_user`, `return 0`. True here means "print
+    /// `spell_no_effect_on` and abort", UNCHARGED: the scan is entered only
+    /// once the caster is known to be able to afford the cast (the
+    /// sufficiency test at 43278) and every mana/energy subtraction is
+    /// downstream of it (43443+). First refusing row wins, so the walk
+    /// short-circuits in list order like the DLL's `return`.
+    ///
+    /// The other arms of the same loop are elsewhere: ability 6 preloads
+    /// the charm save stat ([`Core::monster_cast_save_stat`]), 0x34
+    /// (EvilInCombat) charges evil points, 0x90 suppresses the SpellImmu
+    /// gate below, and 0xa3 confirms spell components. None of those is
+    /// carried by a shipped Enslave spell.
+    ///
+    /// Shipped reach: all four Enslave carriers hold exactly one of the
+    /// three — 49 song of charming and 55 enslave AffectsLiving, 88
+    /// control undead AffectsUndead, 92 charm animal AffectsAnimals — so
+    /// without this, `charm animal` was legal on all 1101 templates
+    /// instead of 155, and `control undead` on 1101 instead of 115.
+    fn cast_eligibility_refused(
+        &self,
+        id: MonsterInstanceId,
+        spell: &crate::content::Spell,
+    ) -> bool {
+        spell.abilities.iter().any(|(ability, _)| match ability {
+            // 43299-43307: AffectsAnimals(80) refuses a target that does
+            // NOT carry Animal(78). Value-blind presence, hence
+            // `monster_has_ability` — the shipped rows are all value 0.
+            Ability::AffectsAnimals => !self.monster_has_ability(id, Ability::Animal),
+            // 43317-43324: AffectsUndead(23) refuses on the TEMPLATE's
+            // `undead` byte (`knmsr+0xad`) being zero. A column, not an
+            // ability row, and the test is `!= 0` — the 8 shipped `-1`
+            // templates are undead.
+            Ability::AffectsUndead => {
+                self.monsters
+                    .get(&id)
+                    .and_then(|m| self.content.monsters.get(&m.template))
+                    .map_or(0, |t| t.undead)
+                    == 0
+            }
+            // 43349-43357: AffectsLiving(108) refuses a target that DOES
+            // carry NonLiving(109) — the inverted polarity of the animals
+            // arm, and a different predicate from the one above (6 shipped
+            // templates are `undead != 0` without a 109 row).
+            Ability::AffectsLiving => self.monster_has_ability(id, Ability::NonLiving),
+            _ => false,
+        })
+    }
+
     /// One offensive-cast execution against the engaged monster, invoked by
     /// the combat round driver every round — including the first fire (the
     /// command only engages; MEASURED oracle_spell_cast.raw + §8.9's
@@ -8145,10 +8207,16 @@ impl Core {
                 // slot: AffectsUndead(23) is in the case-break list
                 // (43731), AffectsAnimals(80) is excluded from the switch
                 // outright (43723-43724), and Evil(98)/AffectsLiving(108)
-                // fall in the two break ranges at 44205/44208. They gate
-                // eligibility in the pre-application scan instead. The
-                // charm family ships exactly these as its companion rows,
-                // so a charmlvl-gated-out cast must stay slotless.
+                // fall in the two break ranges at 44205/44208. Three of
+                // them have already had their say by the time the apply
+                // loop runs — [`Core::cast_eligibility_refused`] is the
+                // pre-application scan (43295-43376), and an ineligible
+                // target never reaches here at all. Evil(98) is the odd
+                // one out: the scan has no arm for it either, so it is
+                // inert in the engine and only reads as documentation on
+                // the 88 control-undead row. The charm family ships
+                // exactly these as its companion rows, so a
+                // charmlvl-gated-out cast must stay slotless.
                 Ability::AffectsUndead
                 | Ability::AffectsAnimals
                 | Ability::Evil

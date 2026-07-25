@@ -268,6 +268,16 @@ pub struct Monster {
     /// on (`== 0`, decompile 43387), so those 48 shipped templates save
     /// with M.R. after all — see `Core::monster_cast_save_stat`.
     pub charm_resist: i16,
+    /// `knmsr+0xad` (`undead`) — the byte the AffectsUndead (23) arm of
+    /// `cast_monster_target`'s eligibility scan tests (43317-43324), and
+    /// the ONLY thing it tests: the flag lives in this column, not in an
+    /// ability row. The test is `!= 0`, and the column is TRI-valued in
+    /// the shipped data (0: 986 templates, 1: 107, **-1**: 8), so the 8
+    /// negatives are undead too — which is why this is an `i16` and not a
+    /// `bool`. Distinct from ability 109 (`NonLiving`), which drives the
+    /// AffectsLiving (108) arm: 6 shipped templates are `undead != 0`
+    /// without carrying 109, and 76 carry 109 with `undead == 0`.
+    pub undead: i16,
     /// Backstab defence.
     pub bs_defence: i16,
     /// Per-round energy pool/regen.
