@@ -1245,6 +1245,21 @@ fn summon_spawns_the_named_monster_with_the_everyone_line() {
         .find(|id| core.monster_template(*id) == Some(RAPTOR))
         .expect("raptor instance");
     assert_eq!(core.monster_target(raptor), Some(s), "summon spawns locked on the victim");
+    // M7 slice 5 Task 7 re-pin, through the explicit `SummonLink` tag:
+    // this route is `HuntUser`, so the spawn is a bare GRUDGE — no
+    // suppression, no charmed bit, and no `+0x88` monster link. It shares
+    // exactly those three writes with `cast_user_target` case 0xc
+    // (42079-42081); only the population-cap arguments differ.
+    assert_eq!(
+        core.debug_monster_charm(raptor),
+        Some((false, false, Some(s))),
+        "a hunter, not a pet"
+    );
+    assert_eq!(
+        core.debug_monster_hunt(raptor),
+        Some(None),
+        "no monster hunt link"
+    );
 }
 
 #[test]

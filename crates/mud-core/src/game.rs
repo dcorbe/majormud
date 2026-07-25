@@ -962,6 +962,35 @@ pub(crate) struct MonsterInstance {
     /// grudge locks, healed "friends" and summoned hunters carry the
     /// other two legs WITHOUT this one.
     pub charmed: bool,
+    /// `mon+0x88` (int-idx `0x22`) — the directed-travel HUNT link: the
+    /// instance id of the monster this one was summoned to kill
+    /// (charm.md §6, written at `cast_monster_target` 43920). It is NOT
+    /// a name link and never a pet bond: the two live on opposite sides
+    /// of the driver's `+0x1a` test (20369/20450) and of the medium
+    /// tick's (19339/19376), so a monster is at most one of "locked on a
+    /// user" and "hunting a monster".
+    ///
+    /// DIVERGENCE, in our favour: the DLL clears this on nobody's death
+    /// (charm.md §7) and reuses monster ids, so a long-lived hunter can
+    /// silently redirect onto a recycled body. [`MonsterInstanceId`]
+    /// comes from a monotonic `u64` counter, so a dangling link here is
+    /// simply dead — the arm finds no instance and does nothing, which
+    /// is what the DLL's own `get_monster_data` failure produces too.
+    /// The link is still never cleared, so the hunter never falls
+    /// through to player acquisition either.
+    pub hunt: Option<MonsterInstanceId>,
+    /// `mon+0x38..+0x60` — the 10-deep breadcrumb trail, newest first.
+    /// `move_monster` shifts it down one slot and writes the NEW room
+    /// into index 0 (21572-21574: `memmove(mon+0x3c, mon+0x38, 0x24)`
+    /// then `mon+0x38 = mon+0x10`), so index 0 always equals `location`
+    /// and index 1 is the predecessor. That is why
+    /// [`Core::dir_toward_monster`] scans from index 1, exactly like the
+    /// 20-deep player trail and [`Core::dir_toward_player`].
+    ///
+    /// Seeded with the spawn room. The DLL leaves the array zeroed at
+    /// generate time, which its scan skips as "no such room"; a one-entry
+    /// seed is the same thing (the scan starts at 1 and finds nothing).
+    pub trail: Vec<RoomId>,
     /// `mon+0x120` — the spawn/home room: check_kill_monster stamps ITS
     /// respawn timer and spawn accounting, wherever the monster died.
     pub home: RoomId,
@@ -1022,6 +1051,38 @@ pub(crate) struct MonsterInstance {
 enum CharmedExemption {
     Exempt,
     Ignored,
+}
+
+/// What a Summon(12) spawn is bound to (charm.md §6). All four DLL
+/// handlers call the same `generate_monster(map, room, -1, templateId,
+/// 0, 65000, -1, 0, 1)` and then write DIFFERENT ownership state, so the
+/// tag is the whole difference between the four routes:
+///
+/// | route | site | `+0x1a` | `+0x116` | charmed | `+0x88` |
+/// |---|---|---|---|---|---|
+/// | [`SummonLink::Pet`] — `cast_no_target` 0xc | 40035-40056 | caster | 1 | yes | — |
+/// | [`SummonLink::HuntUser`] — `cast_user_target` 0xc | 42059-42086 | target user | 0 | no | — |
+/// | [`SummonLink::HuntUser`] — `monster_cast` 0xc | 23251-23268 | victim user | 0 | no | — |
+/// | [`SummonLink::HuntMonster`] — `cast_monster_target` 0xc | 43902-43931 | (empty) | 0 | no | victim id |
+///
+/// The two `HuntUser` rows are genuinely the same three writes; only the
+/// spawn's population-cap arguments differ (the monster route passes
+/// `knmsr+0x5c` for both caps instead of the `0/65000` pair), which is a
+/// `generate_monster` concern and not an ownership one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SummonLink {
+    /// A full, timerless pet — the §0 triple toward the caster. Released
+    /// only by §4.2 (leash give-up / logout) or §4.3 (owner attacks it):
+    /// there is no ability-6 slot behind it for a timer to expire.
+    Pet(SessionId),
+    /// A hunter against a PLAYER: a bare grudge lock, no suppression and
+    /// no charm.
+    HuntUser(SessionId),
+    /// A hunter against a MONSTER: the `+0x88` link and nothing else.
+    HuntMonster(MonsterInstanceId),
+    /// No ownership at all — the monster AREA self-slot summon, whose
+    /// link was not extracted (PLAUSIBLE, see its call site).
+    None,
 }
 
 /// Which of `find_action_target`'s monster passes a name lookup is
@@ -1479,6 +1540,8 @@ impl Core {
                 give_up: 0,
                 suppress: false,
                 charmed: false,
+                hunt: None,
+                trail: vec![room],
                 home: room,
                 coins,
             },
@@ -1760,6 +1823,8 @@ impl Core {
                 give_up: 0,
                 suppress: false,
                 charmed: false,
+                hunt: None,
+                trail: vec![room],
                 home: room,
                 coins,
             },
@@ -1881,6 +1946,30 @@ impl Core {
         id: MonsterInstanceId,
     ) -> Option<(bool, bool, Option<SessionId>)> {
         self.monsters.get(&id).map(|m| (m.charmed, m.suppress, m.target))
+    }
+
+    /// Test hook: the `+0x88` directed-travel hunt link of a live
+    /// monster (charm.md §6). `None` for every body that was not summoned
+    /// by `cast_monster_target` case 0xc; the outer `Option` is
+    /// "instance alive".
+    pub fn debug_monster_hunt(&self, id: MonsterInstanceId) -> Option<Option<MonsterInstanceId>> {
+        self.monsters.get(&id).map(|m| m.hunt)
+    }
+
+    /// Test hook: a live monster's breadcrumb trail (`mon+0x38..+0x60`),
+    /// newest first — index 0 is the current room.
+    pub fn debug_monster_trail(&self, id: MonsterInstanceId) -> Option<Vec<RoomId>> {
+        self.monsters.get(&id).map(|m| m.trail.clone())
+    }
+
+    /// Test hook: force the `+0x116` attack-suppression byte. The state
+    /// combinations the shipped write sites cannot produce (a SUPPRESSED
+    /// hunter, say) are still branches of the ported code, and this is
+    /// the only way to reach them without inventing a spell for it.
+    pub fn debug_suppress_monster(&mut self, id: MonsterInstanceId, suppress: bool) {
+        if let Some(m) = self.monsters.get_mut(&id) {
+            m.suppress = suppress;
+        }
     }
 
     /// Test hook: how many values the main `genrdn` stream has produced
@@ -2565,49 +2654,67 @@ impl Core {
         self.sweep_charm_slots(id);
     }
 
-    /// The wander half of `medium_update_monster` (decompile 19339-19372;
-    /// monsters.md §3). Gated to monsters with no target lock and no
-    /// directed-travel order; switches on the roam class:
-    /// 0/2 stationary; 5 water (no aggression roll, budget consumed before
-    /// the confusion check); default rolls `genrdn(0,100) <
-    /// (100-aggression)/2` then checks confusion, then consumes budget.
-    /// The chosen direction is rejected (budget already spent) when it
-    /// equals the last-move memory.
+    /// The movement half of `medium_update_monster` (decompile
+    /// 19339-19381; monsters.md §3). THREE levels, in the DLL's own
+    /// order — getting the nesting wrong freezes bodies the original
+    /// moves:
+    ///
+    /// 1. 19339 — a monster holding a name link (`mon+0x1a`) does nothing
+    ///    here at all; the pursuit tier owns its movement.
+    /// 2. 19340 — otherwise the `+0x88` hunt link splits the branch:
+    ///    non-zero takes the TRAVEL arm (19376-19380,
+    ///    [`Core::dir_toward_monster`] then one gated step), zero falls
+    ///    through to the wander arms. The travel arm is charm-blind and
+    ///    roam-blind: no budget, no aggression roll, no roam-class
+    ///    switch.
+    /// 3. the wander arms themselves, by roam class: 0/2 stationary;
+    ///    5 water (no aggression roll, budget consumed before the
+    ///    confusion check); default rolls `genrdn(0,100) <
+    ///    (100-aggression)/2` then checks confusion, then consumes
+    ///    budget. The chosen direction is rejected (budget already spent)
+    ///    when it equals the last-move memory.
+    ///
+    /// The charmed test `(mon+0x128 & 1) == 0` belongs to level 3 and
+    /// ONLY to level 3 (19346 and 19364) — a pet never wanders,
+    /// charm.md §2.1. It was hoisted to level 1 before the travel arm
+    /// existed; that was a latent divergence, since a charmed body
+    /// carrying a hunt link travels in the DLL and would have been frozen
+    /// here. Not reachable on our state even so — every charm apply also
+    /// writes the owner link, and every release that clears the link
+    /// clears the bit with it (§4.2/§4.3) — but the shape is the point.
     fn wander_monster(&mut self, id: MonsterInstanceId) {
         let Some(m) = self.monsters.get(&id) else {
             return;
         };
-        if m.target.is_some() || m.charmed {
-            // Locked on (`mon+0x1a`); pursuit owns movement. The charmed
-            // bit is a SECOND, explicit gate in both wander arms (19346
-            // and 19364: `(mon+0x128 & 1) == 0`) — a pet never wanders,
-            // charm.md §2.1. Unreachable while every charm apply also
-            // writes the owner link, and kept literal anyway: the two
-            // gates come apart the moment a release clears one leg of the
-            // triple without the other (§4.2/§4.3 both do).
-            //
-            // TASK 7 MUST REVISIT. Hoisting the charm test to here is a
-            // divergence the shipped state cannot show but the hunt link
-            // will. The DLL's shape is three levels, not two: 19339
-            // gates on `mon+0x1a == 0` (name link) ALONE; 19340 then
-            // splits on `mon+0x22*4 == +0x88` — zero picks the wander
-            // arms, non-zero picks `dir_monster_travelling_coord`
-            // (19376-19380); and `(mon+0x128 & 1) == 0` appears ONLY
-            // inside the two wander arms (19346, 19364). So a charmed
-            // monster carrying a `+0x88` hunt link TRAVELS in the DLL and
-            // would be frozen here. Push the charm test down into the
-            // wander arms when the travel arm lands.
+        if m.target.is_some() {
+            return; // 19339: locked on a user; pursuit owns movement
+        }
+        // 19376-19380: the directed-travel arm. Unlike the driver's twin
+        // (20450-20463) it never swings on a cold trail — the medium tick
+        // only ever walks.
+        if let Some(quarry) = m.hunt {
+            let from = m.location;
+            if let Some(dir) = self.dir_toward_monster(quarry, from)
+                && !self.monster_confusion_fumble(id)
+            {
+                self.move_monster(id, dir, false);
+            }
             return;
         }
-        let (roam, aggression, from, last) =
-            (m.roam_class, m.aggression, m.location, m.last_move_dir);
+        let (roam, aggression, from, last, charmed) = (
+            m.roam_class,
+            m.aggression,
+            m.location,
+            m.last_move_dir,
+            m.charmed,
+        );
         match roam {
             0 | 2 => return,
             5 => {
-                // Water path (19364-19371): cap first (the mon+0x140
+                // Water path (19364-19371): charm, cap (the mon+0x140
                 // dirty-byte bypass is unmodeled — PLAUSIBLE quirk),
                 // budget consumed before the confusion check.
-                if self.wander_budget >= 3 {
+                if charmed || self.wander_budget >= 3 {
                     return;
                 }
                 self.wander_budget += 1;
@@ -2616,8 +2723,10 @@ impl Core {
                 }
             }
             _ => {
-                // Default path (19346-19360): cap, roll, confusion, budget.
-                if self.wander_budget >= 3 {
+                // Default path (19346-19360): charm, cap, roll,
+                // confusion, budget. The charm test precedes the
+                // `genrdn`, so a pet costs no draw.
+                if charmed || self.wander_budget >= 3 {
                     return;
                 }
                 let roll = self.rng.roll(0, 100);
@@ -2752,6 +2861,42 @@ impl Core {
             })
     }
 
+    /// `dir_monster_travelling_coord` (15790-15816) — the monster twin of
+    /// [`Core::dir_toward_player`], reading the VICTIM MONSTER's
+    /// breadcrumb trail instead of a player's.
+    ///
+    /// Three differences from the player version, all decompile-literal:
+    ///
+    /// * the trail is 10 deep, not 20 (15810: `iVar4 < 10`);
+    /// * there is no MAP check on the trail entry (the player version
+    ///   conjoins `player+0x550+i*4 == map` at 15668; this one compares
+    ///   the room word alone). Single-map worlds cannot show it;
+    /// * the co-location test is the VICTIM's current room against the
+    ///   hunter's (15799), so a hunter standing on its quarry gets `None`
+    ///   — which is the driver arm's cue to swing rather than step.
+    ///
+    /// The scan starts at index 1 because index 0 is the victim's CURRENT
+    /// room; finding the hunter's room at index `i` means the victim
+    /// stood there `i` steps ago and left toward `trail[i-1]`.
+    fn dir_toward_monster(
+        &self,
+        victim: MonsterInstanceId,
+        mon_room: RoomId,
+    ) -> Option<crate::content::Direction> {
+        let v = self.monsters.get(&victim)?;
+        if v.location == mon_room {
+            return None;
+        }
+        let i = (1..v.trail.len()).find(|i| v.trail[*i] == mon_room)?;
+        let next_room = v.trail[i - 1];
+        let room = self.content.rooms.get(&mon_room)?;
+        crate::content::Direction::ALL.into_iter().find(|d| {
+            room.exits[*d as usize]
+                .as_ref()
+                .is_some_and(|e| e.dest == next_room)
+        })
+    }
+
     /// `check_monster_confusion` (0x29812): Confusion (0x47) value beats
     /// `genrdn(0,100)` => the fumble line — ConfuseMsg (0x65) names a
     /// custom message (first line, %s = instance name), else the stock
@@ -2878,6 +3023,11 @@ impl Core {
             let m = self.monsters.get_mut(&id).expect("checked above");
             m.last_move_dir = Some(dir);
             m.location = dest;
+            // The breadcrumb push (21572-21574), the exact shape of the
+            // player one at the `move_user` relocation: shift down, write
+            // the NEW room into index 0, cap at ten.
+            m.trail.insert(0, dest);
+            m.trail.truncate(10);
         }
         self.broadcast_to_room(from, None, &text::left_via(&name, dir));
         self.broadcast_to_room(dest, None, &text::monster_moves_in_from(&name, dir.opposite()));
@@ -5740,9 +5890,27 @@ impl Core {
             }
         }
         if !summons.is_empty() {
+            // Both DLL handlers that share this body spawn into the
+            // CASTER's room (40044 and 42069 read the caster player
+            // record), but they tag the spawn differently — and which
+            // one we are in is exactly `target_id == session`:
+            //
+            // * self-cast = `cast_no_target` case 0xc -> the full pet
+            //   triple (40048-40050);
+            // * another player = `cast_user_target` case 0xc -> a bare
+            //   grudge toward the TARGET (42079-42081). A hunter, not a
+            //   pet: it pursues and attacks the person it was cast at.
+            //
+            // Tagging both `Pet(session)` would hand the caster a pet for
+            // a spell the DLL uses to sic a monster ON somebody.
             let room = self.player(session).location;
+            let link = if target_id == session {
+                SummonLink::Pet(session)
+            } else {
+                SummonLink::HuntUser(target_id)
+            };
             for value in summons {
-                self.summon_spawn(value, room, None); // pet links M7
+                self.summon_spawn(value, room, link);
             }
         }
         self.emit_cast_success_lines(session, target_id, spell, display_damage, everyone_target);
@@ -6188,20 +6356,53 @@ impl Core {
     /// One Summon(12) row: the fixed-or-rolled value IS the template id,
     /// spawned into the given room (every apply loop passes it straight
     /// to `generate_monster`: monster single 23259, player self 40044,
-    /// player-at-monster 43911). An unknown template spawns nothing, like
-    /// generate_monster's 0 return. The MONSTER-cast path tags the spawn
-    /// with the victim's name (23263 -> mon+0x1a, +0x116 = 0) — it wakes
-    /// up already hunting. The player-path caster/pet links (40048-40050,
-    /// 43915-43925: +0x116 = 1 guardian suppression, charm ownership) are
-    /// M7 PENDING with the charm system — those summons stand idle.
-    fn summon_spawn(&mut self, template: i32, room: RoomId, lock: Option<SessionId>) {
-        if let Ok(id) = u16::try_from(template)
-            && let Some(spawned) = self.spawn_monster(crate::content::MonsterId(id), room)
-            && let Some(victim) = lock
-            && let Some(m) = self.monsters.get_mut(&spawned)
-        {
-            m.target = Some(victim);
-            m.suppress = false;
+    /// player-at-monster 43911, player-at-user 42069 — all four into the
+    /// CASTER's room). An unknown template spawns nothing, like
+    /// generate_monster's 0 return.
+    ///
+    /// Ownership is entirely in the state written right after the spawn,
+    /// and the four sites write four different things (charm.md §6's
+    /// table) — hence [`SummonLink`] rather than a nullable session.
+    ///
+    /// The spawn itself must stay the FIRST thing this does: `generate_monster`
+    /// owns a documented draw sequence (loot, name) that the spawner
+    /// goldens pin, and none of the link writes below draws at all.
+    fn summon_spawn(&mut self, template: i32, room: RoomId, link: SummonLink) {
+        let Ok(id) = u16::try_from(template) else {
+            return;
+        };
+        let Some(spawned) = self.spawn_monster(crate::content::MonsterId(id), room) else {
+            return;
+        };
+        let Some(m) = self.monsters.get_mut(&spawned) else {
+            return;
+        };
+        match link {
+            // 40048-40050: name link = caster, +0x116 = 1, +0x128 |= 1.
+            SummonLink::Pet(owner) => {
+                m.target = Some(owner);
+                m.suppress = true;
+                m.charmed = true;
+            }
+            // 42079-42081 / 23263-23265: name link = the VICTIM PLAYER,
+            // +0x116 = 0 — an ordinary grudge, prosecuted by the pursuit
+            // tier and the driver's locked branch with no charm anywhere.
+            SummonLink::HuntUser(victim) => {
+                m.target = Some(victim);
+                m.suppress = false;
+            }
+            // 43919-43929: +0x140 dirty, +0x88 = victim id, +0x116 = 0,
+            // and NO name link. The victim-side 10-deep back-link array
+            // (`victim+0x60+i*4`, 43922-43928) is deliberately NOT
+            // ported: charm.md §7 records that no reader for it was ever
+            // located, and a write-only array is state we would have to
+            // keep correct for nothing.
+            SummonLink::HuntMonster(victim) => {
+                m.hunt = Some(victim);
+                m.suppress = false;
+                m.needs_recompute = true;
+            }
+            SummonLink::None => {}
         }
     }
 
@@ -7877,7 +8078,11 @@ impl Core {
                 // 43926); the duration arm is silly_spell — a no-op here
                 // (43927-43929).
                 Ability::Summon if duration == 0 => {
-                    self.summon_spawn(amount, room, None); // hunt links M7
+                    // 43920: the spawn carries the VICTIM's instance id
+                    // in `+0x88` and no name link at all — the driver's
+                    // hunt arm (20450-20463) then walks it to the victim
+                    // and swings.
+                    self.summon_spawn(amount, room, SummonLink::HuntMonster(monster_id));
                 }
                 Ability::Summon => {}
                 // Enslave (6), case 43796-43822 — the charm apply
@@ -8971,8 +9176,14 @@ impl Core {
         if m.current_hp <= 0 {
             return;
         }
-        let (room, behaviour, roam, suppress, charmed) =
-            (m.location, m.behaviour, m.roam_class, m.suppress, m.charmed);
+        let (room, behaviour, roam, suppress, charmed, hunt) = (
+            m.location,
+            m.behaviour,
+            m.roam_class,
+            m.suppress,
+            m.charmed,
+            m.hunt,
+        );
         if let Some(victim) = m.target {
             // A2 — locked (20465-20519): no roll, attacked every round the
             // lock is valid. The four arms are the DLL's, in the DLL's
@@ -9015,8 +9226,45 @@ impl Core {
             }
             return;
         }
-        // A1 — no target. (The directed-travel monster-hunt branch, +0x88,
-        // is monster-vs-monster combat — M7.)
+        // A1 — no target (`mon+0x1a` empty, 20369). The `+0x88` HUNT link
+        // is tested FIRST (20370) and pre-empts every acquisition arm
+        // below: a summoned hunter never picks up a player, ever.
+        if let Some(quarry) = hunt {
+            // charm.md §7's stale-link flag, closed by construction: the
+            // DLL clears `+0x88` on nobody's death and recycles monster
+            // ids, so its hunter can redirect onto an unrelated body.
+            // Our ids never repeat, so a dangling link is inert — and the
+            // DLL agrees on the observable, because `get_monster_data`
+            // fails inside both `dir_monster_travelling_coord` (15797)
+            // and `attack_monster_monster` (27226), leaving the arm a
+            // no-op. What we must NOT do is fall through to acquisition:
+            // the DLL's branch is decided by `+0x88 != 0` alone.
+            if !self.monsters.contains_key(&quarry) {
+                return;
+            }
+            match self.dir_toward_monster(quarry, room) {
+                // 20457-20461: one gated step per driver pass, no roll.
+                Some(dir) => {
+                    if !self.monster_confusion_fumble(id) {
+                        self.move_monster(id, dir, false);
+                    }
+                }
+                // 20452-20455: a cold trail SWINGS — and the arm has no
+                // room compare, nor does `attack_monster_monster`
+                // (charm.md §3), so the hunter hits its quarry across a
+                // room boundary. Decompile-literal and deliberately so;
+                // reachability is fixture-only (no learnable Summon
+                // carrier ships), and the arm needs the hunter to share a
+                // room with SOME player for the driver to reach it at
+                // all (20362-20368).
+                None => {
+                    if !suppress {
+                        self.attack_monster_monster(id, quarry);
+                    }
+                }
+            }
+            return;
+        }
         if roam == 5 {
             // Class-5 guardians (20408-20448): base 100, fame-keyed.
             let candidates = self.sessions_in_room(room);
@@ -10350,7 +10598,7 @@ impl Core {
                         "everyone",
                         amount,
                     );
-                    self.summon_spawn(amount, location, Some(victim));
+                    self.summon_spawn(amount, location, SummonLink::HuntUser(victim));
                 }
                 // Every remaining case is duration-armed only (the
                 // `local_28 != 0` guards) or a no-op break in the DLL.
@@ -10915,7 +11163,7 @@ impl Core {
                         }
                         // PLAUSIBLE: the area self-slot summon's lock was
                         // not extracted; spawn idle.
-                        self.summon_spawn(amount_self, location, None);
+                        self.summon_spawn(amount_self, location, SummonLink::None);
                     }
                 }
                 Ability::DamageMR => {
