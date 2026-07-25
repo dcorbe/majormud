@@ -98,9 +98,23 @@ const BISHOP: MonsterId = MonsterId(13);
 const CUR: MonsterId = MonsterId(14);
 /// HOUND with **roam class 5**: the probe for the A2 ladder's ORDER.
 /// Not a corner case in the shipped data — 13 roam-5 templates carry
-/// `charmlvl` < 9999, among them `guardsman` (#14, `charmlvl` 30), which
-/// is the `monstertype` of 487 rooms, and `storm giant king` (#637,
-/// `charmlvl` 0). A charmed class-5 body is reachable in play.
+/// `charmlvl` < 9999, among them `guardsman` (#14, `charmlvl` 30) and
+/// `storm giant king` (#637, `charmlvl` 0). A charmed class-5 body is
+/// reachable in play: a level-30 caster can enslave a guardsman, and the
+/// arm under test is then what decides that it never assists.
+///
+/// (An earlier version of this comment said guardsman "is the
+/// `monstertype` of 487 rooms". WITHDRAWN — it conflated the template
+/// number 14 with a spawn-zone id of 14, which is an unrelated
+/// population that happens to share the number. Guardsman's roam/mongen
+/// class is its `group` column, **5**. No replacement figure is given:
+/// deriving the true reachable-room count needs the `monsters.md` §1
+/// mongen gates — zone match AND level band AND the per-room caps AND
+/// the weighted competition among every other group-5 candidate in the
+/// band — and the naive query bottoms out (all 46 group-5 rooms whose
+/// level band admits guardsman report `maxarea = 0`, so the cap
+/// semantics are not settled). The qualitative point is the whole point
+/// and stands without a number.)
 const WARDEN: MonsterId = MonsterId(15);
 /// Carries ability **78** (`Animal`) — the only thing an AffectsAnimals
 /// (80) spell accepts (43299-43307). 155 shipped templates carry it.
@@ -118,6 +132,20 @@ const WRAITH: MonsterId = MonsterId(18);
 /// two predicates are near-twins in the shipped data but NOT the same
 /// test, and this fixture is the half that separates them.
 const GOLEM: MonsterId = MonsterId(19);
+/// `charmlvl` **3** — exactly the fixture caster's level, i.e. the ON
+/// point of the 43798-43800 compare. The decompile's gate is `charmlvl
+/// <= caster level`, so this template MUST charm; every other fixture
+/// sits strictly below (1) or absurdly above (9999), which leaves the
+/// boundary itself free to slide. See `charm_level_equal_to_the_caster_
+/// still_charms`.
+const PEER: MonsterId = MonsterId(20);
+/// `charmlvl` **-1**. charm.md §7: the template side of the compare is
+/// `(int)(short)`, a SIGNED widen, so a negative `charmlvl` is below
+/// every caster level and always passes. Read as unsigned it would be
+/// 65535 and this template would be uncharmable — which is exactly the
+/// mistake this fixture exists to catch, and the reason
+/// `content::Monster::charm_level` is an `i16`.
+const INVERTED: MonsterId = MonsterId(21);
 
 /// (Enslave, 0), duration 60 flat, no save — the state/slot probe.
 const ENSLAVE: SpellId = SpellId(700);
@@ -338,6 +366,10 @@ fn world() -> Content {
     let mut golem = monster(GOLEM, "iron golem", 1, 40);
     golem.abilities = vec![(Ability::NonLiving, 0)];
     content.add_monster(golem);
+    // The two `charmlvl` boundary probes: ON the caster's level, and
+    // negative (the signed-widen probe of charm.md §7).
+    content.add_monster(monster(PEER, "peer thrall", 3, 40));
+    content.add_monster(monster(INVERTED, "inverted shade", -1, 40));
     // The blur castmsgb shape (fixture 901 across the cast suites).
     content.add_message(Message {
         id: MessageId(901),
@@ -752,6 +784,49 @@ fn charm_level_above_the_caster_is_silent() {
 }
 
 #[test]
+fn charm_level_equal_to_the_caster_still_charms() {
+    // THE BOUNDARY ITSELF. 43798-43800 is `charmlvl <= caster level`, so
+    // the ON point charms; our gate spells the negation, `charmlvl >
+    // level`, and nothing else in this file sits on the equality —
+    // RAT/MUTT are `charmlvl` 1 against a level-3 caster and ELDER is
+    // 9999. That left `>` free to slide to `>=` (which would make the
+    // gate `charmlvl < level`) with the whole suite still green.
+    //
+    // PEER is `charmlvl` 3 against the level-3 fixture caster: it must
+    // charm, and it must charm through the full §0 triple rather than
+    // merely take a slot.
+    let (mut core, s, m) = setup(PEER);
+    cast(&mut core, s, "cast ensl peer");
+    assert_eq!(
+        core.debug_monster_charm(m),
+        Some((true, true, Some(s))),
+        "charmlvl == caster level is INSIDE the gate (43798-43800 is `<=`)"
+    );
+}
+
+#[test]
+fn a_negative_charm_level_always_charms() {
+    // charm.md §7: the template side of the compare is `(int)(short)` —
+    // a SIGNED widen. A negative `charmlvl` is therefore below every
+    // possible caster level and always passes, and the column stays an
+    // `i16` in `content::Monster` for exactly this reason.
+    //
+    // Read as unsigned, -1 would widen to 65535 and INVERTED would be
+    // the most uncharmable template in the world — a failure mode that
+    // no other fixture here can see, since every other `charmlvl` is
+    // non-negative. Whether the shipped editors ever wrote a negative is
+    // a data question (§7 leaves it open); this pins the ENGINE's
+    // reading of one, which is the half that is code.
+    let (mut core, s, m) = setup(INVERTED);
+    cast(&mut core, s, "cast ensl inverted");
+    assert_eq!(
+        core.debug_monster_charm(m),
+        Some((true, true, Some(s))),
+        "a negative charmlvl passes a signed compare at any caster level"
+    );
+}
+
+#[test]
 fn the_silent_gate_costs_exactly_the_same_draws() {
     // §1.5: the gate sits INSIDE the ability-apply loop, downstream of
     // every roll — success, save, magnitude and duration are all drawn
@@ -780,11 +855,36 @@ fn the_silent_gate_costs_exactly_the_same_draws() {
 }
 
 #[test]
-fn a_non_monster_match_type_never_charms() {
-    // 43797: the case-6 body requires match type 4, 6 or 8. Match 0 (a
-    // single-scope spell) reaches the same apply loop and does nothing.
+fn a_non_monster_match_type_is_refused_before_the_charm_arm() {
+    // The predecessor of this test asserted "no charm, no slot" after
+    // `cast leas rat` and called that a pin on the case-6 match gate
+    // (43797). It was a TAUTOLOGY: a match-0 spell never reaches the
+    // apply loop at all, so the assertion held for a reason that has
+    // nothing to do with the gate — and deleting `!match_ok ||` from the
+    // Enslave arm left it green.
+    //
+    // So assert what the command ACTUALLY does. `cmd_cast` resolves the
+    // target, sees a monster, and refuses on the match type at
+    // `MAY_NOT_CAST_ON_MONSTER` (43205 / 44311-44315) before any ability
+    // is applied. The refusal is UNCHARGED — it sits ahead of every
+    // mana/energy subtraction — which is the part worth pinning, since
+    // the sibling gates in this file (the `charmlvl` one, the
+    // eligibility scan) differ from each other on exactly that.
+    //
+    // The case-6 `match_ok` term itself is unreachable defence in depth;
+    // see the comment at its site in `game.rs`.
     let (mut core, s, m) = setup(RAT);
-    cast(&mut core, s, "cast leas rat");
+    let mana_before = core.player_snapshot(s).current_mana;
+    let shown = cast(&mut core, s, "cast leas rat");
+    assert!(
+        shown.contains("You may not cast that spell on a monster!"),
+        "the match type is refused at the command, not silently in the apply loop: {shown:?}"
+    );
+    assert_eq!(
+        core.player_snapshot(s).current_mana,
+        mana_before,
+        "and the refusal is uncharged (it precedes the cost)"
+    );
     assert_eq!(core.debug_monster_charm(m), Some((false, false, None)));
     let slots = core.monster_active_spells(m).expect("rat lives");
     assert!(slots.iter().all(|slot| slot.spell.is_none()), "no slot entry");
