@@ -441,7 +441,11 @@ fn the_monster_trail_stops_at_ten_entries_not_twenty() {
     let (mut core, _s) = setup();
     let hunter = core.spawn_monster(STALKER, HALL).expect("fixture template");
     for i in 0..14 {
-        let dir = if i % 2 == 0 { Direction::North } else { Direction::South };
+        let dir = if i % 2 == 0 {
+            Direction::North
+        } else {
+            Direction::South
+        };
         assert!(core.debug_move_monster(hunter, dir), "step {i} must land");
     }
     core.drain_events();

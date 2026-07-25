@@ -1221,12 +1221,9 @@ fn a_roam_0x25_pet_despawns_instead_of_releasing() {
 /// the water arm and the default arm alike.
 ///
 /// Returns the core with the pet parked, alone and unlinked, in CELL.
-fn a_charmed_pet_with_no_owner_link(
-    template: MonsterId,
-    word: &str,
-) -> (Core, MonsterInstanceId) {
+fn a_charmed_pet_with_no_owner_link(template: MonsterId, word: &str) -> (Core, MonsterInstanceId) {
     let mut core = Core::new(world(), config());
-    let m = core.spawn_monster(template, CELL).expect("fixture template");
+    let m = core.spawn_monster(template, CELL).expect("fixture");
     let s = core.attach_player(caster_named("Zin", CELL));
     let mut bex = core.attach_player(caster_named("Bex", CELL));
     core.drain_events();
@@ -1291,8 +1288,11 @@ fn a_charmed_pet_never_wanders_the_default_arm() {
     let (mut core, pet) = a_charmed_pet_with_no_owner_link(PACER, "pacing");
     // The CONTROL is the same template in the same room with the same
     // empty link, differing only in the charmed bit — a plain spawn.
-    let control = core.spawn_monster(PACER, CELL).expect("fixture template");
-    assert_eq!(core.debug_monster_charm(control), Some((false, false, None)));
+    let control = core.spawn_monster(PACER, CELL).expect("fixture");
+    assert_eq!(
+        core.debug_monster_charm(control),
+        Some((false, false, None))
+    );
     // Check EVERY tick, not just the last one: a body that wanders out
     // and happens to wander back is not a body that never wandered, and
     // a snapshot at tick 120 cannot tell the two apart.
@@ -1325,8 +1325,11 @@ fn a_charmed_pet_never_wanders_the_water_arm() {
     // and it is the arm that takes no aggression roll — so a class-5 pet
     // is the one most likely to drift if the guard were dropped.
     let (mut core, pet) = a_charmed_pet_with_no_owner_link(SENTINEL, "sentinel");
-    let control = core.spawn_monster(SENTINEL, CELL).expect("fixture template");
-    assert_eq!(core.debug_monster_charm(control), Some((false, false, None)));
+    let control = core.spawn_monster(SENTINEL, CELL).expect("fixture");
+    assert_eq!(
+        core.debug_monster_charm(control),
+        Some((false, false, None))
+    );
     let mut control_left = false;
     for t in 1..=200 {
         core.tick();
