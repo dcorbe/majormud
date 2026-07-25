@@ -96,6 +96,12 @@ const BISHOP: MonsterId = MonsterId(13);
 /// A second body sharing HOUND's `dog` word: the `0x800` two-pass
 /// ordering probe (§2.3). Inert — 500 HP, behaviour 3, no attack form.
 const CUR: MonsterId = MonsterId(14);
+/// HOUND with **roam class 5**: the probe for the A2 ladder's ORDER.
+/// Not a corner case in the shipped data — 13 roam-5 templates carry
+/// `charmlvl` < 9999, among them `guardsman` (#14, `charmlvl` 30), which
+/// is the `monstertype` of 487 rooms, and `storm giant king` (#637,
+/// `charmlvl` 0). A charmed class-5 body is reachable in play.
+const WARDEN: MonsterId = MonsterId(15);
 
 /// (Enslave, 0), duration 60 flat, no save — the state/slot probe.
 const ENSLAVE: SpellId = SpellId(700);
@@ -247,6 +253,26 @@ fn world() -> Content {
         ..Default::default()
     };
     content.add_monster(hound);
+    // HOUND's twin in everything but roam class: same free swing, same
+    // aggressive body, so the ONLY thing that can keep it from assisting
+    // is where the class-5 arm sits in the ladder.
+    let mut warden = monster(WARDEN, "stone warden", 1, 40);
+    warden.hitpoints = 500;
+    warden.energy = 1000;
+    warden.damage_resist = 20;
+    warden.aggression = 100;
+    warden.behaviour = 1;
+    warden.roam_class = 5;
+    warden.attacks[0] = AttackForm {
+        kind: 1,
+        accuracy: 500,
+        weight: 100,
+        min_damage: 7,
+        max_damage: 7,
+        energy: 0,
+        ..Default::default()
+    };
+    content.add_monster(warden);
     let mut bag = monster(BAG, "straw dummy", 9999, 40);
     bag.hitpoints = 500;
     bag.behaviour = 3;
@@ -1208,11 +1234,21 @@ fn pet_idle_when_owner_idle() {
     // autocombat target leaves the pet doing NOTHING — and doing it
     // without touching the shared stream. A pet must never fall through
     // to the suppressed-aggressive arm, so an idle owner is idle hands.
+    //
+    // The BYSTANDER is what makes that clause load-bearing here. With
+    // the owner as the room's only player the friends arm (20494-20511)
+    // has no candidate — it excludes the named user — so the test would
+    // pass with the charmed arm deleted, proving only that the pet does
+    // not attack its own owner. Vex gives the friends arm something to
+    // find, so deleting the charmed arm costs draws, lines and Vex's HP.
     let (mut core, s, pet, bag) = kennel(HOUND);
     cast(&mut core, s, "cast ensl dog");
+    let other = core.attach_player(caster_named("Vex", TOWER));
+    core.drain_events();
     energy_round(&mut core);
     let hp = core.monster_hp(bag);
     let player_hp = core.player_snapshot(s).current_hp;
+    let vex_hp = core.player_snapshot(other).current_hp;
     let draws = core.debug_rng_draws();
     for _ in 0..4 {
         core.debug_monster_consider(pet);
@@ -1228,6 +1264,87 @@ fn pet_idle_when_owner_idle() {
         core.player_snapshot(s).current_hp,
         player_hp,
         "least of all the owner"
+    );
+    assert_eq!(
+        core.player_snapshot(other).current_hp,
+        vex_hp,
+        "nor the bystander the friends arm would have found"
+    );
+}
+
+#[test]
+fn a_charmed_class_five_body_never_assists() {
+    // ORDER, not membership. The A2 ladder in `FUN_00423863` tests
+    // `mon+0x12c == 5` (20477) BEFORE the charmed bit (20512), so a
+    // charmed class-5 monster lands in the ward-defence arm — which only
+    // ever swings at a player in autocombat against its named user, i.e.
+    // PvP, i.e. never here — and NEVER reaches `FUN_0044cc65`. charm.md
+    // §2.2's "charmed pets take the FUN_0044cc65 branch instead"
+    // describes the FRIENDS arm below it, not this one.
+    //
+    // WARDEN is HOUND with `roam_class = 5` and nothing else changed, so
+    // this is a pure ordering probe: it fails if the arm order is
+    // reverted (`else if roam == 5 && !charmed`) AND it fails if the
+    // class-5 arm is removed — both hand the body to the charmed arm,
+    // which assists loudly.
+    let (mut core, s, pet, bag) = kennel(WARDEN);
+    cast(&mut core, s, "cast ensl warden");
+    assert_eq!(core.debug_monster_charm(pet), Some((true, true, Some(s))));
+    energy_round(&mut core);
+    core.input(s, "attack dummy");
+    core.drain_events();
+    let hp = core.monster_hp(bag);
+    let draws = core.debug_rng_draws();
+    for _ in 0..6 {
+        core.debug_monster_consider(pet);
+    }
+    assert_eq!(
+        core.debug_rng_draws(),
+        draws,
+        "the ward arm is a pure no-op: not one draw"
+    );
+    assert!(
+        core.drain_events().is_empty(),
+        "and not one monster-vs-monster line"
+    );
+    assert_eq!(
+        core.monster_hp(bag),
+        hp,
+        "the owner's quarry is never swung at"
+    );
+    assert_eq!(
+        core.debug_monster_charm(pet),
+        Some((true, true, Some(s))),
+        "and the triple is left exactly as the charm wrote it"
+    );
+}
+
+#[test]
+fn an_owner_cast_at_its_own_pet_self_releases() {
+    // The chain `a_damage_cast_grudges_a_pet_without_releasing_it`
+    // reasons about, executed instead of narrated: an offensive cast
+    // ENGAGES autocombat on its target (43411-43421), so an owner
+    // searing its own pet leaves its autocombat record pointing AT the
+    // pet — and 46929 turns exactly that into the self-release on the
+    // very next driver pass. This is why that test has to measure the
+    // damage twin from a BYSTANDER's cast.
+    //
+    // The pet here is SLOTTED, so the release runs the whole
+    // termination handler and the triple goes with it.
+    let (mut core, s, pet, _bag) = kennel(HOUND);
+    cast(&mut core, s, "cast ensl dog");
+    assert_eq!(core.debug_monster_charm(pet), Some((true, true, Some(s))));
+    energy_round(&mut core);
+    let shown = cast(&mut core, s, "cast sear dog");
+    assert!(
+        shown.contains("*Combat Engaged*"),
+        "the offensive cast must engage, not resolve: {shown:?}"
+    );
+    core.debug_monster_consider(pet);
+    assert_eq!(
+        core.debug_monster_charm(pet),
+        Some((false, false, None)),
+        "one driver pass later the pet has released itself"
     );
 }
 
