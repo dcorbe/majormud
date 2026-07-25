@@ -424,7 +424,14 @@ wrong — do not implement it.
    resolver. Pass 1 skips charmed monsters when the mask carries `0x800`;
    pass 2 scans only charmed ones. The universal retry does NOT carry
    `0x800`, so it treats charmed and wild alike — reproduce that
-   asymmetry exactly, it is what makes a lone pet targetable.
+   asymmetry, but note it is **unobservable on the cast path**: every
+   match type `cast_monster_target` accepts ({4,6,8}) already sweeps both
+   passes in its preferred mask, so the retry can find nothing new.
+   (An earlier draft claimed the retry is "what makes a lone pet
+   targetable" — wrong; pass 2 does that.) `cmd_any_attack` (mask
+   `0x883`, 49590) has no retry, so **melee ATTACK is the only place
+   pass 2 is load-bearing** — which is what keeps §4.3's melee-release
+   family reachable.
 2. **`is_valid_monster_target`** (38430, 38477-38488, match 9/0xc): read
    this separately — it is a DIFFERENT gate from the find ordering, and
    §2.3 claims it makes your own pet an invalid target for hostile spells.
@@ -447,11 +454,12 @@ wrong — do not implement it.
    comment.
 
 **Step 1: Failing tests:**
-- `hostile_cast_cannot_target_own_pet` — `cast mmis pet-name` → do-not-see
-  line, nothing charged.
-- `hostile_cast_hits_your_grudge_holder` — unsuppressed monster locked on
-  you: valid target.
-- `area_cast_skips_own_pet` — pet unhurt, other monsters hit.
+- `wild_monster_wins_the_find_over_your_pet` — both present, the WILD one
+  resolves (pass 1).
+- `melee_attack_still_finds_a_lone_pet` — pass 2 on the retry-less ATTACK
+  path, the one place pass 2 is load-bearing.
+- `area_cast_skips_own_pet` — match 9/12 only, via
+  `is_valid_monster_target`; a grudge-holder stays valid.
 - `melee_attack_still_hits_pet` (release covered in Task 4; here just the
   targeting).
 
