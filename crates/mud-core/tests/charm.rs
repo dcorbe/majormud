@@ -1690,3 +1690,84 @@ fn an_area_cast_spares_a_ward_the_caster_is_not_famous_enough_for() {
     assert!(probe(0x25, 1, 40), "and lifts the same way");
     assert!(!probe(0, 4, 400), "behaviour 4 is spared at any fame");
 }
+
+// --- §5 the dead verbs / the player-target placeholder ---
+
+#[test]
+fn tame_and_mesmerize_fall_to_say() {
+    // charm.md §5: `cmd_tame` (50470-50477) and `cmd_mesmerize`
+    // (50482-50493) are `return 0` stubs that ARE in the parse table
+    // (`handle_commands` cases 0x1d/0x1e, 9243-9248). `handle_commands`
+    // hands that 0 back (9844-9846) and `execute_input` reads it as
+    // "input not consumed" (49027), re-running the whole line down the
+    // unknown-input chain (49028-49260) to its last rung: speech.
+    //
+    // So the observable is not an error and not silence — the character
+    // SAYS the line. This test exists to keep it that way: growing a
+    // `tame` or `mesmerize` verb would be a plausible-looking feature and
+    // a divergence, because the DLL's verbs do nothing at all.
+    let (mut core, s, _m) = setup(RAT);
+    let bex = core.attach_player(caster_named("Bex", TOWER));
+    core.drain_events();
+    for line in ["tame bear", "mesmerize rat"] {
+        core.input(s, line);
+        let ev = core.drain_events();
+        assert!(
+            text_to(&ev, s).contains(&format!("You say \"{line}\"")),
+            "{line:?} must reach speech, got: {:?}",
+            text_to(&ev, s)
+        );
+        assert!(
+            text_to(&ev, bex).contains(&format!("Zin says \"{line}\"")),
+            "and the room hears it, got: {:?}",
+            text_to(&ev, bex)
+        );
+    }
+}
+
+#[test]
+fn player_target_enslave_stays_silly() {
+    // charm.md §8 / spellcasting.md §4: Enslave on a PLAYER is a
+    // `silly_spell` placeholder in WG3-NT — the cast resolves normally,
+    // costs mana, prints both halves of the castmsgb pair, and applies
+    // nothing whatsoever. LEASH is the match-0 Enslave fixture, the one
+    // match type that admits a named user at all
+    // (`MatchType::accepts_user`).
+    //
+    // The pin is the ABSENCE: no charm state exists on a player record to
+    // write, so if a future pass ever grows player-side charm it must
+    // come from an oracle run, not from generalising the monster path.
+    let (mut core, s, _m) = setup(RAT);
+    let bex = core.attach_player(caster_named("Bex", TOWER));
+    core.drain_events();
+    let before = core.player_snapshot(bex);
+    core.input(s, "cast leas bex");
+    let ev = core.drain_events();
+    assert!(
+        text_to(&ev, s).contains("You cast leash on Bex!"),
+        "the cast resolves: {:?}",
+        text_to(&ev, s)
+    );
+    assert!(
+        text_to(&ev, bex).contains("Zin casts leash upon you!"),
+        "and the target is told: {:?}",
+        text_to(&ev, bex)
+    );
+    let after = core.player_snapshot(bex);
+    // The generic duration machinery still runs: a `+0xce != 0` spell
+    // enters the target's slot table via `add_cast_spell_to_user`
+    // regardless of what its abilities do (spellcasting.md §4). What is
+    // silly is the ABILITY — the slot folds into the ability bag and
+    // contributes nothing, so the record it sits on is untouched.
+    let slotted = after.active_spells.iter().any(|s| s.spell == Some(LEASH));
+    assert!(slotted, "the slot is entered like any other duration spell");
+    assert_eq!(after.current_hp, before.current_hp, "no effect at all");
+    assert_eq!(after.stats, before.stats, "and no stat touched");
+    assert_eq!(
+        core.debug_monster_charm(_m),
+        Some((false, false, None)),
+        "and nothing leaks onto the monster side either"
+    );
+    // The caster paid for the privilege (mana_cost 4 of 100).
+    assert_eq!(core.player_snapshot(s).current_mana, 96, "still charged");
+}
