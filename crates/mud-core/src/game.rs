@@ -8175,6 +8175,23 @@ impl Core {
                     // the case body entirely: no message, no slot entry,
                     // and the mana stays paid. It must NOT fall through
                     // to the default duration-slot arm.
+                    //
+                    // `match_ok` is DEFENCE IN DEPTH and is not reachable
+                    // from any command path: `cmd_cast` already refuses a
+                    // non-monster match type at the target resolution
+                    // above (`MAY_NOT_CAST_ON_MONSTER`, 43205/44311-44315)
+                    // and returns, so nothing that fails this test can
+                    // arrive here. It is kept because the DLL keeps it —
+                    // the two tests are separate in the decompile and a
+                    // future caller (a monster-cast path, an item proc)
+                    // could enter the apply loop without the command
+                    // gate. Do not expect a test to kill its removal;
+                    // what the command DOES do on a match-0 spell is
+                    // pinned by
+                    // `charm.rs::a_non_monster_match_type_is_refused_before_the_charm_arm`.
+                    // The `charmlvl` half below IS live and is pinned by
+                    // `charm_level_above_the_caster_is_silent` and
+                    // `charm_level_equal_to_the_caster_still_charms`.
                     let match_ok = spell.match_type.accepts_monster();
                     let charm_level = self
                         .monsters
@@ -9698,11 +9715,22 @@ impl Core {
     /// somebody's pet gets NOTHING at all: no release, no grudge, no name
     /// overwrite (the ordinary lock lives in the non-charmed half).
     ///
-    /// Write order is the DLL's: suppression off FIRST, then the charmed
-    /// bit, then the ability-6 slot sweep — whose termination also empties
-    /// the owner link. On a SLOTLESS pet the sweep finds nothing, so the
-    /// link SURVIVES with suppression already cleared: the ex-pet is a
-    /// full grudge monster hostile to its former owner.
+    /// The writes follow the DLL's order — suppression off, then the
+    /// charmed bit, then the ability-6 slot sweep, whose termination also
+    /// empties the owner link. That ORDER is not observable, and this
+    /// comment used to over-claim that it was: [`Core::release_charm`]
+    /// (the sweep's terminator) clears suppression too, so hoisting the
+    /// `suppress = false` below the sweep would land on the same state
+    /// from either arm. Kept in the DLL's order for readability against
+    /// 26527-26562, not because anything can tell.
+    ///
+    /// What IS observable is that the write happens at all, and on the
+    /// SLOTLESS pet specifically: the sweep finds no ability-6 slot,
+    /// terminates nothing, and therefore clears neither suppression nor
+    /// the owner link. So this line is the only thing that unsuppresses
+    /// such a pet, and the link SURVIVES — the ex-pet is a full grudge
+    /// monster hostile to its former owner. Pinned by
+    /// `charm.rs::owner_melee_leaves_a_slotless_pet_as_a_grudge_holder`.
     fn owner_melee_release(&mut self, id: MonsterInstanceId, attacker: SessionId) {
         if self.monsters.get(&id).is_none_or(|m| m.target != Some(attacker)) {
             return;
@@ -10037,8 +10065,15 @@ impl Core {
             let m = self.monsters.get_mut(&attacker).expect("checked above");
             m.energy -= cost;
             let m = self.monsters.get_mut(&defender).expect("checked above");
-            // 27244-27247: the damage is clamped to what the defender has
-            // left, so a kill lands the HP on exactly 0.
+            // 27244-27247: the DLL clamps the subtraction to what the
+            // defender has left, so a kill lands the HP on exactly 0
+            // rather than going negative. Transcribed literally, but be
+            // clear that it is NOT observable here and no test can pin
+            // it: the only reader of the value is the `<= 0` kill test on
+            // the next line, which is unchanged by the clamp, and a kill
+            // removes the instance in `monster_died` before anything else
+            // can look. Kept for fidelity to the decompile, not for
+            // behaviour.
             m.current_hp -= result.damage.min(m.current_hp);
             m.current_hp <= 0
         };
