@@ -2678,10 +2678,25 @@ impl Core {
     /// ONLY to level 3 (19346 and 19364) — a pet never wanders,
     /// charm.md §2.1. It was hoisted to level 1 before the travel arm
     /// existed; that was a latent divergence, since a charmed body
-    /// carrying a hunt link travels in the DLL and would have been frozen
-    /// here. Not reachable on our state even so — every charm apply also
-    /// writes the owner link, and every release that clears the link
-    /// clears the bit with it (§4.2/§4.3) — but the shape is the point.
+    /// carrying a hunt link travels in the DLL and would have been
+    /// frozen here.
+    ///
+    /// Both level-3 copies are load-bearing, and an earlier version of
+    /// this comment was WRONG to say otherwise. It claimed the guards
+    /// were unreachable because "every charm apply also writes the owner
+    /// link, and every release that clears the link clears the bit with
+    /// it". True of the charm paths — and irrelevant, because the link
+    /// is also cleared by code that knows nothing about charm:
+    /// `monster_attack`'s death branch (`check_kill_user`, 27194) and its
+    /// post-swing lock re-roll (26867-26885) both empty `+0x1a` while
+    /// leaving `+0x128` alone. A pet reaches the first of those through
+    /// the departure free-attack, since a NON-owner walking out of the
+    /// room is a valid victim for a suppressed monster. A charmed body
+    /// with no owner link is therefore an ordinary reachable state, it
+    /// falls straight through level 1, and only these guards stop it
+    /// drifting away from where its owner left it. Pinned per arm by
+    /// `charm.rs::a_charmed_pet_never_wanders_the_default_arm` and
+    /// `..._the_water_arm`.
     fn wander_monster(&mut self, id: MonsterInstanceId) {
         let Some(m) = self.monsters.get(&id) else {
             return;

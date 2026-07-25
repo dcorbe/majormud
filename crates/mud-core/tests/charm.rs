@@ -146,6 +146,22 @@ const PEER: MonsterId = MonsterId(20);
 /// mistake this fixture exists to catch, and the reason
 /// `content::Monster::charm_level` is an `i16`.
 const INVERTED: MonsterId = MonsterId(21);
+/// **Roam class 3** — a body that lands in `wander_monster`'s DEFAULT
+/// arm (19346-19360), where classes 0/2 return early and 5 takes the
+/// water arm. Every other charm fixture in this file is roam 0 (the
+/// exitless-tower shape), which is why the wander arms' charm guards
+/// went unpinned: a roam-0 pet returns two levels above them.
+/// Aggression 50 is a compromise the test needs from both ends — high
+/// enough that the departure free-attack fires often, low enough that
+/// the uncharmed control still wanders at `(100-50)/2 = 25%` a tick.
+/// The 500-damage form is what makes that free attack a KILL, which is
+/// the only lock-clear that does not care about roam class.
+const PACER: MonsterId = MonsterId(22);
+/// PACER with **roam class 5** — the water arm (19364-19371), which
+/// takes no aggression roll at all. Aggression 100 here: the wander
+/// roll it would gate is not on this path, so the value is free to
+/// guarantee the free attack.
+const SENTINEL: MonsterId = MonsterId(23);
 
 /// (Enslave, 0), duration 60 flat, no save — the state/slot probe.
 const ENSLAVE: SpellId = SpellId(700);
@@ -252,6 +268,12 @@ fn world() -> Content {
     cell.exits[Direction::North as usize] = plain_exit(DEN);
     let mut den = Room { id: DEN, name: "Den".into(), ..Default::default() };
     den.exits[Direction::South as usize] = plain_exit(CELL);
+    // `attributes & 2` = patrollable, which is the roam-class-5 half of
+    // `move_monster`'s zone leash: a class-5 body may only step into a
+    // patrollable room. SENTINEL (the water-arm wander probe) needs it
+    // to have anywhere to wander TO. Inert for every other fixture —
+    // only the class-5 leash and `protected()` (bit 1) read this field.
+    den.attributes |= 2;
     content.add_room(cell);
     content.add_room(den);
     content.add_monster(monster(RAT, "giant rat", 1, 40));
@@ -370,6 +392,38 @@ fn world() -> Content {
     // negative (the signed-widen probe of charm.md §7).
     content.add_monster(monster(PEER, "peer thrall", 3, 40));
     content.add_monster(monster(INVERTED, "inverted shade", -1, 40));
+    // The two wander-arm probes. Both need a body that can take the
+    // departure free-attack and kill with it, which is what clears the
+    // owner link while LEAVING the charmed bit set — the only state in
+    // which `wander_monster` reaches its charm guards at all.
+    let mut pacer = monster(PACER, "pacing wolf", 1, 40);
+    pacer.hitpoints = 500;
+    pacer.energy = 1000;
+    pacer.aggression = 50;
+    pacer.behaviour = 1;
+    // Roam class 0x26 (the unconditional free roamer) rather than a
+    // zone id: `move_monster`'s gate 5 leashes an ordinary class to
+    // rooms whose `spawn_zone` matches it, and DEN is unzoned like every
+    // other fixture room. 0x26 lands in the same DEFAULT wander arm a
+    // zone id would (the switch only special-cases 0/2 and 5) while
+    // skipping a leash that has nothing to do with what is under test.
+    pacer.roam_class = 0x26;
+    pacer.attacks[0] = AttackForm {
+        kind: 1,
+        accuracy: 5000,
+        weight: 100,
+        min_damage: 500,
+        max_damage: 500,
+        energy: 0,
+        ..Default::default()
+    };
+    content.add_monster(pacer.clone());
+    let mut sentinel = pacer.clone();
+    sentinel.id = SENTINEL;
+    sentinel.name = "tide sentinel".into();
+    sentinel.aggression = 100;
+    sentinel.roam_class = 5;
+    content.add_monster(sentinel);
     // The blur castmsgb shape (fixture 901 across the cast suites).
     content.add_message(Message {
         id: MessageId(901),
@@ -1142,6 +1196,157 @@ fn a_roam_0x25_pet_despawns_instead_of_releasing() {
     core.drain_events();
     tick_until(&mut core, s, 40, |c| c.debug_monster_charm(m).is_none());
     assert_eq!(core.debug_monster_charm(m), None, "silently despawned");
+}
+
+// §2.1 — a pet never wanders (both arms)
+
+/// Drive a charmed body into the ONE state in which `wander_monster`
+/// can reach its charm guards: charmed bit SET, owner link CLEARED.
+///
+/// That combination looks impossible from the charm paths alone — every
+/// apply writes both, and both §4 releases clear both — which is why
+/// this took a real route to reach. The route is `monster_attack`'s own
+/// bookkeeping, which knows nothing about charm: when a player DIES to a
+/// monster, `check_kill_user`'s lock clear (27194, `game.rs`'s
+/// `m.target = None` on the death branch) empties the link and never
+/// touches `+0x128`. A pet gets there through the departure free-attack
+/// — a NON-owner walking out of the room is a valid free-attack victim
+/// for a suppressed monster (`!locked_on_me` is true, since the pet's
+/// lock names its owner), and the fixture's 500-damage form makes the
+/// swing lethal.
+///
+/// The kill clear is deliberately the route used for BOTH arms: unlike
+/// the post-swing lock re-roll, it has no roam-class gate (that re-roll
+/// skips class 5 outright while a lock is held), so one helper reaches
+/// the water arm and the default arm alike.
+///
+/// Returns the core with the pet parked, alone and unlinked, in CELL.
+fn a_charmed_pet_with_no_owner_link(
+    template: MonsterId,
+    word: &str,
+) -> (Core, MonsterInstanceId) {
+    let mut core = Core::new(world(), config());
+    let m = core.spawn_monster(template, CELL).expect("fixture template");
+    let s = core.attach_player(caster_named("Zin", CELL));
+    let mut bex = core.attach_player(caster_named("Bex", CELL));
+    core.drain_events();
+    // The INSTANT arm (§1.4): `spell+0xce == 0` takes no slot and no
+    // timer, so the charm is permanent. A slotted charm would expire
+    // partway through the long tick budgets below and quietly turn the
+    // pet into an ordinary monster — which is a wandering monster, and
+    // would have made these tests fail for a reason that has nothing to
+    // do with the guard under test.
+    cast(&mut core, s, &format!("cast snap {word}"));
+    assert_eq!(
+        core.debug_monster_charm(m).map(|t| t.0),
+        Some(true),
+        "the fixture must actually charm"
+    );
+    // The owner leaves the board. The pet keeps the (now dead) link for
+    // the ~16 fast ticks of the §4.2 give-up window, and this whole
+    // routine spends none of them: player movement is a command, not a
+    // tick. Detaching first is what leaves the room EMPTY afterwards, so
+    // the 5 s driver has nobody for the freshly unlinked body to
+    // re-acquire before the medium tick can wander it.
+    core.detach(s);
+    core.drain_events();
+    for _ in 0..40 {
+        if core.debug_monster_charm(m) == Some((true, true, None)) {
+            return (core, m);
+        }
+        // Bex walks out of CELL. If the free attack fires and kills, the
+        // lock clears; otherwise Bex is in DEN and walks back to try
+        // again. `attackers_this_tick` gates the free attack and is
+        // per-tick, so a bare tick between attempts resets it — and the
+        // pet cannot follow Bex, because its link names Zin.
+        let here = core.player_snapshot(bex).location;
+        core.input(bex, if here == CELL { "n" } else { "s" });
+        core.drain_events();
+        if core.player_snapshot(bex).location == TOWER {
+            // Killed: respawned at the start room, which is exitless.
+            // Re-attach a fresh body to keep trying if the state has not
+            // landed yet.
+            core.detach(bex);
+            bex = core.attach_player(caster_named("Bex", CELL));
+        }
+        core.tick();
+        core.drain_events();
+    }
+    panic!(
+        "never reached charmed-with-no-link; got {:?}",
+        core.debug_monster_charm(m)
+    );
+}
+
+#[test]
+fn a_charmed_pet_never_wanders_the_default_arm() {
+    // charm.md §2.1 / 19346: the default wander arm is guarded by
+    // `(mon+0x128 & 1) == 0` — a pet does not wander, and the test
+    // precedes the `genrdn`, so it costs no draw either.
+    //
+    // Every other charm fixture in this file lives in the exitless,
+    // roam-class-0 tower, where `wander_monster` returns at the class
+    // switch before the guard is consulted. Deleting `charmed ||` from
+    // this arm therefore changed nothing any test could see.
+    let (mut core, pet) = a_charmed_pet_with_no_owner_link(PACER, "pacing");
+    // The CONTROL is the same template in the same room with the same
+    // empty link, differing only in the charmed bit — a plain spawn.
+    let control = core.spawn_monster(PACER, CELL).expect("fixture template");
+    assert_eq!(core.debug_monster_charm(control), Some((false, false, None)));
+    // Check EVERY tick, not just the last one: a body that wanders out
+    // and happens to wander back is not a body that never wandered, and
+    // a snapshot at tick 120 cannot tell the two apart.
+    let mut control_left = false;
+    for t in 1..=200 {
+        core.tick();
+        assert_eq!(
+            core.monster_location(pet),
+            Some(CELL),
+            "a pet never wanders (19346) — it left on tick {t}"
+        );
+        control_left |= core.monster_location(control) == Some(DEN);
+    }
+    core.drain_events();
+    assert!(
+        control_left,
+        "the control must wander, or this test proves nothing"
+    );
+    assert_eq!(
+        core.debug_monster_charm(pet).map(|t| t.0),
+        Some(true),
+        "and the pet was charmed for the whole run, not merely released early"
+    );
+}
+
+#[test]
+fn a_charmed_pet_never_wanders_the_water_arm() {
+    // 19364: the roam-class-5 water arm carries its OWN copy of the
+    // charm guard. It is not reachable through the default arm's code,
+    // and it is the arm that takes no aggression roll — so a class-5 pet
+    // is the one most likely to drift if the guard were dropped.
+    let (mut core, pet) = a_charmed_pet_with_no_owner_link(SENTINEL, "sentinel");
+    let control = core.spawn_monster(SENTINEL, CELL).expect("fixture template");
+    assert_eq!(core.debug_monster_charm(control), Some((false, false, None)));
+    let mut control_left = false;
+    for t in 1..=200 {
+        core.tick();
+        assert_eq!(
+            core.monster_location(pet),
+            Some(CELL),
+            "a pet never wanders, water arm included (19364) — it left on tick {t}"
+        );
+        control_left |= core.monster_location(control) == Some(DEN);
+    }
+    core.drain_events();
+    assert!(
+        control_left,
+        "the control must wander, or this test proves nothing"
+    );
+    assert_eq!(
+        core.debug_monster_charm(pet).map(|t| t.0),
+        Some(true),
+        "and the pet was charmed for the whole run, not merely released early"
+    );
 }
 
 // §2.1 — the follow roll is skipped for a pet
