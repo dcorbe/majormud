@@ -297,7 +297,10 @@ fn caster_named(name: &str, location: RoomId) -> Player {
         class: MAGE,
         // Strength 100: the unarmed default band is (1, 4 + (Str-50)/10),
         // so a 0-Strength caster can only ever GLANCE — and the §4.3
-        // release sits behind landed damage.
+        // release sits behind landed damage. It also moves the accuracy
+        // term `(Str-50)/3` from -16 to +16 for every test in this file,
+        // which nothing here depends on but which is why the pre-M7
+        // fixture's swing outcomes are not comparable to these.
         stats: StatBlock { strength: 100, ..StatBlock::default() },
         level: 3,
         current_hp: 200,
@@ -858,7 +861,7 @@ fn owner_melee_leaves_a_slotless_pet_as_a_grudge_holder() {
 
 #[test]
 fn another_players_swing_at_a_pet_changes_nothing() {
-    // The charmed arm at 26526 is guarded by `sameas` on the OWNER's
+    // The charmed arm at 26527 is guarded by `sameas` on the OWNER's
     // name: a different attacker takes neither the release nor the
     // ordinary retaliation lock (that lives in the non-charmed if-half,
     // 26514-26525) — the pet does not even turn on them.
@@ -875,7 +878,7 @@ fn another_players_swing_at_a_pet_changes_nothing() {
     );
 }
 
-// §2.4 / 43750 — the cast-damage retaliation twin
+// §2.4 / 43752 — the cast-damage retaliation twin
 
 #[test]
 fn a_damage_cast_grudges_a_pet_without_releasing_it() {

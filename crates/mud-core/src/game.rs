@@ -971,22 +971,55 @@ pub(crate) struct MonsterInstance {
     pub coins: [u32; 5],
 }
 
-/// Which retaliation-lock twin a call site models with respect to the
-/// charmed bit — the DLL inlines the lock four times and they do NOT
-/// agree (charm.md §2.4/§4.3):
+/// Whether a call site's retaliation-lock twin exempts charmed monsters.
+/// This tag selects THAT ONE GATE and nothing else — the rest of
+/// [`Core::retaliation_lock`]'s body is the melee twin's, whichever tag
+/// is passed. See the divergence list below before adding a call site.
 ///
-/// * [`CharmedLock::Exempt`] — the melee engage (26230), the melee
-///   post-damage branch (26516) and both `cast_monster_target` ENTRY
-///   grudges (43259, 43335) open with `(mon+0x128 & 1) == 0`. A pet is
-///   never locked there and no roll is drawn.
-/// * [`CharmedLock::Ignored`] — the cast-DAMAGE twins (43750-43765
-///   single-target, 40381/40611 area) carry no charmed check at all. A
-///   damage spell can grudge-lock somebody's own pet — clearing `+0x116`
-///   and overwriting the owner link — while LEAVING the charmed bit set,
-///   so the ex-pet stays a non-wandering, roll-free follower that now
-///   attacks its owner. Deliberate fidelity to a sloppy original.
+/// The DLL inlines the lock EIGHT times and they do not agree
+/// (charm.md §2.4/§4.3). Five open with `(mon+0x128 & 1) == 0`:
+///
+/// * 26230 — the melee ENGAGE arm (the `DAT_004877f4 == '\0'` half of
+///   `attack_user_monster`);
+/// * 26514 — the melee round's post-damage survivor branch (whose `else`
+///   at 26527 is the §4.3 owner release);
+/// * 43260, 43335, 43470 — all three `cast_monster_target` ENTRY grudges:
+///   the `spelltype < 3` autocombat re-fire, its ability-0x34
+///   (EvilInCombat) sibling, and the duration-0 "%s moves to cast %s upon
+///   %s" engage arm.
+///
+/// Those are [`CharmedExemption::Exempt`]: a pet is never locked and no
+/// roll is drawn.
+///
+/// The other three carry no charmed check at all — 43752 (the
+/// single-target cast-DAMAGE twin) and its area copies at 40371 and
+/// 40600. Those are [`CharmedExemption::Ignored`]: a damage spell can
+/// grudge-lock somebody's own pet, clearing `+0x116` and overwriting the
+/// owner link, while LEAVING the charmed bit set — so the ex-pet stays a
+/// non-wandering, roll-free follower that now attacks its owner.
+/// Deliberate fidelity to a sloppy original, pinned by
+/// `a_damage_cast_grudges_a_pet_without_releasing_it` and
+/// `an_area_damage_cast_grudges_the_casters_own_pet`.
+///
+/// STILL UNMODELLED at the `Ignored` sites — pre-existing debt in the
+/// shared body, not introduced by this tag:
+///
+/// 1. **The roam-class arm.** 43752 opens `template == NULL ||
+///    template.group == 0x25`, and 40371/40600 open `instance roam ==
+///    0x25` with no null clause; that arm does `sameas(mon+0x1a,
+///    attacker)` and, on a match, clears `+0x116` — a same-attacker
+///    re-hit unsuppresses an existing grudge. We return and do nothing.
+/// 2. **`roam == 5` holding a lock.** The cast twins have no such
+///    clause: they roll AND write. We roll and then decline the write.
+/// 3. **`behaviour in {3, 0, 4}`.** The cast twins have no such clause;
+///    ours forces the lock regardless of the roll, so a passive monster
+///    is always grudged by a damage spell.
+///
+/// (43752 also reads the TEMPLATE's aggression, `knmsr+0x6e`, where the
+/// melee and area twins read the instance's `mon+0x42`. Not a divergence
+/// here: instance aggression is copied at spawn and never mutated.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CharmedLock {
+enum CharmedExemption {
     Exempt,
     Ignored,
 }
@@ -2410,7 +2443,7 @@ impl Core {
     }
 
     /// The ability-6 slot sweep, inlined verbatim at three DLL sites
-    /// (19455-19487 give-up, 26526-26562 owner melee, 46929-46953
+    /// (19455-19487 give-up, 26527-26562 owner melee, 46929-46953
     /// autocombat): walk the 5 slots; a slot whose spell id no longer
     /// resolves is simply zeroed, and a slot whose spell carries
     /// Enslave(6) is TERMINATED — [`Core::release_charm`] — and zeroed.
@@ -2455,7 +2488,7 @@ impl Core {
     /// `FUN_0044cc65`'s self-target arm (46929-46953, charm.md §2.2/§4.3):
     /// the owner's autocombat target IS its own pet, so the pet releases
     /// itself on the next combat pass. Note what is NOT here — unlike the
-    /// melee twin (26526) this arm never touches `+0x116`, so a SLOTLESS
+    /// melee twin (26527) this arm never touches `+0x116`, so a SLOTLESS
     /// pet keeps both its owner link and its suppression and degrades into
     /// a "friend" (a monster that attacks players OTHER than its owner)
     /// rather than into a grudge holder.
@@ -3864,7 +3897,7 @@ impl Core {
         // against the same attacker, and a pet is charm-exempt either
         // way, but it does cost a draw the DLL spends and we do not).
         if self.monsters.get(&monster).is_some_and(|m| m.target.is_none()) {
-            self.retaliation_lock(monster, session, CharmedLock::Exempt);
+            self.retaliation_lock(monster, session, CharmedExemption::Exempt);
         }
         self.player_attack_sequence(session);
         Resolution::Handled
@@ -4701,10 +4734,13 @@ impl Core {
                 self.output_line(session, text::COMBAT_ENGAGED);
                 // Retaliation lock (transcript: the filthbug swiped back
                 // after the bare engagement, before any damage landed) —
-                // gated like every damaging path since slice 3, and
-                // charm-exempt like the ENTRY twins it stands in for
-                // (43259/43335, and the melee engage at 26230).
-                self.retaliation_lock(monster_id, session, CharmedLock::Exempt);
+                // gated like every damaging path since slice 3. This IS
+                // the 43470 twin: the duration-0 engage arm that prints
+                // "%s moves to cast %s upon %s", zeroes `+0xba`, calls
+                // `engage_autocombat` and then locks. Charm-exempt, like
+                // its two `cast_monster_target` ENTRY siblings at
+                // 43260/43335 and the melee engage at 26230.
+                self.retaliation_lock(monster_id, session, CharmedExemption::Exempt);
                 return;
             }
             // Resolve now. The command's triple gate messages first
@@ -5238,10 +5274,12 @@ impl Core {
             // — but NO caster-side engagement (no *Combat Engaged*
             // MEASURED §8.13 on debuff-only payloads; ORACLE-VERIFY for
             // damaging sweeps — fixture-only today; evil warnings/crime
-            // = M7). The AREA damage twins (40381/40611) consult the
-            // charmed bit exactly as much as the single-target one does —
-            // not at all.
-            self.retaliation_lock(monster_id, session, CharmedLock::Ignored);
+            // = M7). The AREA damage twins (40371-40384 and 40600-40613)
+            // consult the charmed bit exactly as much as the
+            // single-target one does — not at all. Unlike 43752 they gate
+            // on the INSTANCE roam class with no null-template clause;
+            // pinned by `an_area_damage_cast_grudges_the_casters_own_pet`.
+            self.retaliation_lock(monster_id, session, CharmedExemption::Ignored);
             if drain_total != 0
                 && let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session)
             {
@@ -7481,10 +7519,10 @@ impl Core {
                 && spell.target_mode.is_offensive()
                 && self.monsters.get(&monster_id).is_some_and(|m| m.target.is_none())
             {
-                // 43259/43335 are both charm-exempt; the `target.is_none()`
+                // 43260/43335 are both charm-exempt; the `target.is_none()`
                 // gate already makes a pet unreachable here (a pet always
                 // carries its owner link), so the tag is documentation.
-                self.retaliation_lock(monster_id, session, CharmedLock::Exempt);
+                self.retaliation_lock(monster_id, session, CharmedExemption::Exempt);
             }
             return;
         }
@@ -7757,10 +7795,10 @@ impl Core {
             m.current_hp -= damage;
             m.current_hp <= 0
         };
-        // The cast-DAMAGE twin (43750-43765) — the one lock site in the
-        // DLL with no charmed check: spell damage grudges a pet without
-        // releasing it (charm.md §2.4, and see [`CharmedLock`]).
-        self.retaliation_lock(monster_id, session, CharmedLock::Ignored);
+        // The cast-DAMAGE twin (43752-43765) — one of the three lock
+        // sites with no charmed check: spell damage grudges a pet without
+        // releasing it (charm.md §2.4, and see [`CharmedExemption`]).
+        self.retaliation_lock(monster_id, session, CharmedExemption::Ignored);
         // Drain: the stolen HP heals the caster, capped at max (spec §4).
         if drain_total != 0
             && let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session)
@@ -8808,25 +8846,28 @@ impl Core {
         }
     }
 
-    /// The retaliation lock (`attack_user_monster` 26230-26236/26514-26525,
-    /// and the cast-path twins): a hit monster locks its attacker iff
-    /// `genrdn(1,100) < aggression` OR it is a passive mode (3/0/4); the
-    /// roll draws either way. Class 0x25 never locks; class 5 keeps an
-    /// existing lock. `charm` selects which DLL twin the call site models
-    /// — see [`CharmedLock`].
+    /// The retaliation lock, shaped after the MELEE twins
+    /// (`attack_user_monster` 26230-26237 and 26515-26525): a hit monster
+    /// locks its attacker iff `genrdn(1,100) < aggression` OR it is a
+    /// passive mode (3/0/4); the roll draws either way. Class 0x25 never
+    /// locks and never rolls; class 5 rolls but keeps an existing lock.
+    ///
+    /// `charm` decides the charmed-bit gate ONLY — the cast and area
+    /// twins differ from this body in three further ways that it does not
+    /// model. Read [`CharmedExemption`] before adding a call site.
     fn retaliation_lock(
         &mut self,
         id: MonsterInstanceId,
         attacker: SessionId,
-        charm: CharmedLock,
+        charm: CharmedExemption,
     ) {
         let Some(m) = self.monsters.get(&id) else {
             return;
         };
-        // Ahead of the roll in every twin that has it (26230/26516/43259/
-        // 43335 all open with `(mon+0x128 & 1) == 0`), so an exempt site
-        // draws nothing at all on a pet.
-        if charm == CharmedLock::Exempt && m.charmed {
+        // Ahead of the roll in every twin that has it (26230, 26514,
+        // 43260, 43335 and 43470 all OPEN with `(mon+0x128 & 1) == 0`),
+        // so an exempt site draws nothing at all on a pet.
+        if charm == CharmedExemption::Exempt && m.charmed {
             return;
         }
         // Class 0x25 short-circuits AHEAD of the draw in every twin — it
@@ -8992,7 +9033,7 @@ impl Core {
                     if self.monsters.get(&target).is_some_and(|m| m.charmed) {
                         self.owner_melee_release(target, session);
                     } else {
-                        self.retaliation_lock(target, session, CharmedLock::Exempt);
+                        self.retaliation_lock(target, session, CharmedExemption::Exempt);
                     }
                 }
             }
@@ -9003,7 +9044,7 @@ impl Core {
     }
 
     /// The charmed half of `attack_user_monster`'s post-damage branch
-    /// (26526-26562, charm.md §4.3). Only the OWNER's own swing does
+    /// (26527-26562, charm.md §4.3). Only the OWNER's own swing does
     /// anything — `sameas(mon+0x1a, attacker)`; a different player hitting
     /// somebody's pet gets NOTHING at all: no release, no grudge, no name
     /// overwrite (the ordinary lock lives in the non-charmed half).
