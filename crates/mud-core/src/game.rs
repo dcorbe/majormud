@@ -1005,7 +1005,7 @@ pub(crate) struct MonsterInstance {
 /// shared body, not introduced by this tag:
 ///
 /// 1. **The roam-class arm.** 43752 opens `template == NULL ||
-///    template.group == 0x25`, and 40371/40600 open `instance roam ==
+///    template.group == 0x25`, and 40371/40601 open `instance roam ==
 ///    0x25` with no null clause; that arm does `sameas(mon+0x1a,
 ///    attacker)` and, on a match, clears `+0x116` — a same-attacker
 ///    re-hit unsuppresses an existing grudge. We return and do nothing.
@@ -5304,7 +5304,7 @@ impl Core {
             // — but NO caster-side engagement (no *Combat Engaged*
             // MEASURED §8.13 on debuff-only payloads; ORACLE-VERIFY for
             // damaging sweeps — fixture-only today; evil warnings/crime
-            // = M7). The AREA damage twins (40371-40384 and 40600-40613)
+            // = M7). The AREA damage twins (40370-40385 and 40601-40614)
             // consult the charmed bit exactly as much as the
             // single-target one does — not at all. Unlike 43752 they gate
             // on the INSTANCE roam class with no null-template clause;
@@ -7825,7 +7825,7 @@ impl Core {
             m.current_hp -= damage;
             m.current_hp <= 0
         };
-        // The cast-DAMAGE twin (43752-43765) — one of the three lock
+        // The cast-DAMAGE twin (43750-43766) — one of the three lock
         // sites with no charmed check: spell damage grudges a pet without
         // releasing it (charm.md §2.4, and see [`CharmedExemption`]).
         self.retaliation_lock(monster_id, session, CharmedExemption::Ignored);

@@ -180,10 +180,23 @@ knmsr+0x6e` (aggression) → `+0x1a = caster name`, `+0x116 = 1`, charmed bit NO
 `Friend` (34268-34277).
 
 Cleared to 0: grudge acquisition when a monster is damaged and survives —
-`genrdn(1,100) < knmsr+0x6e` locks `+0x1a = attacker`, `+0x116 = 0`
-(`attack_user_monster` 26514-26525; spell-damage twin 43750-43765 etc.; the
-attacker == current-name case just clears `+0x116`, 43752-43756); every §4 release;
-summoned hunters at birth (§6).
+`genrdn(1,100) < aggression` locks `+0x1a = attacker`, `+0x116 = 0`
+(`attack_user_monster` 26515-26525; spell-damage twin 43758-43766; area copies
+40377-40384 and 40607-40614); every §4 release; summoned hunters at birth (§6).
+
+The spell-damage twin's roam-class arm is the OTHER half of that `if`, not a peer
+outcome of the grudge. `check_kill_monster` returns 0 (43750) and then 43751 asks
+`known_monster_data == NULL || knmsr+0x54 == 0x25`; **only on that branch** does
+`sameas(mon+0x1a, attacker)` run, and its whole effect is `+0x116 = 0`
+(43753-43756) — a re-hit by the monster's *current* name-holder unsuppresses it,
+with no roll and no name write. A monster with an ordinary non-`0x25` template
+takes the `else` at 43758 and never reaches the `sameas` at all. The two AREA
+copies are the same shape with one clause missing: they test the INSTANCE's roam
+class (`mon+0x12c == 0x25`, 40371 and 40601) and have no null-record branch.
+
+Aggression source differs by twin, incidentally: 43760 reads the TEMPLATE's
+`knmsr+0x6e`, while the melee (26516) and area (40379/40609) twins read the
+instance's `mon+0x108`.
 
 What it suppresses: the named-branch swing in `FUN_00423863` (20466-20476 fires only
 when `+0x116 == 0`), the monster-vs-monster swing gate (20453), and the free flee
@@ -323,13 +336,29 @@ the counter, and if charmed additionally clear the bit and terminate every slot 
 spell carries ability 6 (19455-19487, same slot sweep as §2.2). A charmed roam-`0x25`
 monster instead despawns silently (`FUN_004298ec`, 19448-19450).
 
+**The branch never writes `+0x116`.** 19451-19453 is the whole of its own state work
+— `+0x140 = 1`, `+0x124 = 0`, `+0x1a = 0` — and the charmed arm at 19454-19455 adds
+only `+0x128 &= ~1`. Suppression comes off through the slot TERMINATION and nowhere
+else, so a **slotless** pet that ages out ends up nameless, uncharmed, and still
+SUPPRESSED: `+0x116` stays 1 with nothing left in `+0x1a` for it to refer to. Since
+the suppression consumers (§2.4) all pair `+0x116 == 0` with a name compare, the
+monster is left permanently unable to swing on the named-branch path — a stuck,
+harmless loiterer. This is reachable on shipped data by two routes: §1.4's
+slot-full permanent charm, and Summon-born pets (§6), both of which carry the
+charmed bit with no ability-6 slot behind it.
+
 ### 4.3 Owner attacks own pet
 
-* **Melee/ranged** (`attack_user_monster` 26050, post-swing survivor branch
-  26513-26563): if the surviving target is charmed and `mon+0x1a` == attacker name:
-  `+0x116 = 0`, charmed bit cleared, ability-6 slot sweep terminated (which also
-  empties `+0x1a`). A *different* player attacking someone's pet triggers **nothing**
-  — the charmed branch has no retaliation lock, no name overwrite.
+* **Melee/ranged** (`attack_user_monster` 26052, post-damage survivor branch
+  26513-26564; the charmed `else` is 26527-26563): if the surviving target is charmed
+  and `mon+0x1a` == attacker name: `+0x116 = 0`, charmed bit cleared, ability-6 slot
+  sweep terminated (which also empties `+0x1a`). A *different* player attacking
+  someone's pet triggers **nothing** — the charmed branch has no retaliation lock,
+  no name overwrite.
+  Note where this branch lives: it is inside the autocombat ROUND arm, the `else`
+  (26241) of `if (DAT_004877f4 == '\0')` (26112). The engage-time lock at 26230 is in
+  the other arm and cannot run in the same call, so a pet released here is left with
+  an empty `+0x1a` and no fresh grudge — §4.1's neutral end state, on the melee path.
 * **Autocombat** targeting the pet: released by the pet's own driver
   (`FUN_0044cc65` 46929-46953, §2.2) on the next combat pass — same sweep.
 * Asymmetry for **slotless** pets (instant Enslave or Summon, §6): the sweep finds no

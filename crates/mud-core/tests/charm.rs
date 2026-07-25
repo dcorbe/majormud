@@ -61,7 +61,7 @@ const STRAY: MonsterId = MonsterId(7);
 /// The §4.4 executioner — kills the owner, releases nothing.
 const EXEC: MonsterId = MonsterId(8);
 /// MUTT with aggression **100** and behaviour **1**: the probe for the
-/// cast-damage retaliation twin (43752-43765). MUTT itself is aggression
+/// cast-damage retaliation twin (43750-43766). MUTT itself is aggression
 /// 0 / behaviour 0, and a monster like that locks in our shared lock body
 /// only through the `behaviour in {3,0,4}` clause — which the cast twin
 /// does NOT have. Asserting the grudge on MUTT would therefore prove
@@ -94,9 +94,9 @@ const BINDSAVE: SpellId = SpellId(770);
 /// Five slot fillers.
 const FILLER_BASE: u16 = 780;
 /// A fixed-damage OFFENSIVE match-4 spell — the cast-damage retaliation
-/// twin (43752-43765), which carries no charmed check at all.
+/// twin (43750-43766), which carries no charmed check at all.
 const SEAR: SpellId = SpellId(790);
-/// SEAR as an AREA (match 12) — the 40371/40600 copies of that twin,
+/// SEAR as an AREA (match 12) — the 40371/40601 copies of that twin,
 /// which are equally charm-blind.
 const GALE: SpellId = SpellId(795);
 /// ENSLAVE carrying (Poison, 5) alongside the charm — the probe for the
@@ -921,8 +921,8 @@ fn a_damage_cast_grudges_a_pet_without_releasing_it() {
     // ENTRY grudges (43260-43271, its 43335 evil-points sibling and the
     // 43470 duration-0 engage arm) all open with `(mon+0x128 & 1) == 0`
     // — a pet is never locked there, exactly like the melee twins at
-    // 26230/26514. Its post-DAMAGE twin (43752-43765, and the area copies
-    // at 40371/40600) has NO charmed check at all: it rolls aggression,
+    // 26230/26514. Its post-DAMAGE twin (43750-43766, and the area copies
+    // at 40371/40601) has NO charmed check at all: it rolls aggression,
     // overwrites the name link and clears `+0x116` — while LEAVING the
     // charmed bit set. So a damage spell from the owner does not release
     // the pet; it turns it hostile and leaves it charmed (never wanders,
