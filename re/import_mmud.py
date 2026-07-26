@@ -58,6 +58,104 @@ def decode_rec(rec, off, size, st):
         return struct.unpack_from("<f" if size == 4 else "<d", rec, off)[0]
     return int.from_bytes(rec[off:off+size], "little", signed=True)
 
+def import_textblocks(db):
+    """WCCTEXT2 — the quest/dialogue/name-generator text-block store.
+
+    Unlike every other game file this is a Btrieve 6.x VARIABLE-length record
+    file; vir_wg.records() cannot read it. Format (solved empirically 2026-07-19,
+    engine cross-ref get_text_block@0x3379c which fetches into a 2024-byte buffer
+    keyed on seq@0 + block id@16 and null-terminates at 0x7e7):
+
+      Page header (all page kinds): byte1 = type ('V' 0x56 = variable/text page,
+      'D' 0x44 = fixed data page holding record heads), LOGICAL page number at
+      +2 (u16) — logical != physical position — and a generation counter at +4.
+      Btrieve shadow-paging leaves stale copies of D pages: the LIVE copy of a
+      logical D page is the physical one with the highest generation byte.
+      (The two FCR/PP page pairs follow the same generation scheme.)
+
+      D pages: 6-byte header, then 30-byte physical records:
+        [usage u16 == 1 when live] [logical 24 bytes] [VRP 4 bytes]
+      logical: seq s16@0 (fragment index within the block), junk@2..15,
+      block id i32@16, next-block link i32@20 (word 10 of the engine record;
+      only ever set on the seq-0 record — asserted below). VRP: the text page
+      as a LOGICAL V-page number, u16 at physical bytes 27-28.
+
+      V pages: [16-byte header][2016-byte fragment][16-byte tail]; exactly one
+      fragment per page (word@10 == 1 file-wide), 1:1 with live head records.
+      Text is stored shifted: plain = (stored - 0x20) & 0xff (newline 0x0a ->
+      '*' 0x2a on disk, ESC 0x1b -> 0x3b, etc.); first 0x00 terminates.
+
+    A block's body = fragments of seq 0..n concatenated. 3267 blocks, 79
+    multi-fragment, ids 0..10003. Known shipped-dangling next-links: 4
+    (133, 440, 2962, 9637) — allowlisted engine-side like the message refs.
+    """
+    src = DATA + "wcctext2.vir"
+    data = open(src, "rb").read()
+    ps, _, _ = V.read_fcr(data)
+    npages = len(data) // ps
+
+    vmap = {}                                   # logical V page -> physical page
+    dpages = {}                                 # logical D page -> (gen, physical)
+    for p in range(npages):
+        off = p * ps
+        h = data[off:off+8]
+        if h[:2] in (b"FC", b"PP"):
+            continue
+        logical = struct.unpack_from("<H", h, 2)[0]
+        if h[1] == 0x56:                        # 'V' text page
+            assert logical not in vmap, "duplicate logical V page %d" % logical
+            vmap[logical] = p
+        elif h[1] == 0x44:                      # 'D' head page (maybe shadowed)
+            if logical not in dpages or h[4] > dpages[logical][0]:
+                dpages[logical] = (h[4], p)
+
+    def fragment(logical_v):
+        off = vmap[logical_v] * ps
+        frag = data[off+16 : off+ps-16]
+        z = frag.find(b"\x00")
+        if z >= 0:
+            frag = frag[:z]
+        return frag
+
+    recs = {}                                   # (block id, seq) -> (next, logical V page)
+    for gen, p in dpages.values():
+        off = p * ps
+        for k in range((ps - 6) // 30):
+            r = data[off+6+30*k : off+6+30*k+30]
+            if len(r) < 30:
+                break
+            if struct.unpack_from("<H", r, 0)[0] != 1:
+                continue                        # free/deleted slot
+            seq = struct.unpack_from("<h", r, 2)[0]
+            bid = struct.unpack_from("<i", r, 18)[0]
+            nxt = struct.unpack_from("<i", r, 22)[0]
+            vp  = struct.unpack_from("<H", r, 27)[0]
+            assert (bid, seq) not in recs, "duplicate live record (%d,%d)" % (bid, seq)
+            assert vp in vmap, "block %d seq %d -> unknown V page %d" % (bid, seq, vp)
+            assert seq == 0 or nxt == 0, "block %d seq %d carries a next-link" % (bid, seq)
+            recs[(bid, seq)] = (nxt, vp)
+
+    byid = {}
+    for (bid, seq), (nxt, vp) in sorted(recs.items()):
+        byid.setdefault(bid, []).append((seq, nxt, vp))
+    db.execute("DROP TABLE IF EXISTS textblock")
+    db.execute('CREATE TABLE textblock ("number" INTEGER PRIMARY KEY,'
+               ' "next" INTEGER, "seq_count" INTEGER, "body" TEXT, "_raw" BLOB)')
+    multi = 0
+    for bid, parts in byid.items():
+        seqs = [s for s, _, _ in parts]
+        assert seqs == list(range(len(seqs))), "block %d seq gap %r" % (bid, seqs)
+        raw = b"".join(fragment(vp) for _, _, vp in parts)
+        body = bytes((b - 0x20) & 0xff for b in raw).decode("latin1")
+        if len(parts) > 1:
+            multi += 1
+        db.execute("INSERT INTO textblock VALUES (?,?,?,?,?)",
+                   (bid, parts[0][1], len(parts), body, raw))
+    db.commit()
+    print("  %-8s %-13s %4d cols  %6d rows  [%d multi-fragment, %d V pages]"
+          % ("textblock", "wcctext2.vir", 4, len(byid), multi, len(vmap)))
+
+
 def main():
     if os.path.exists(OUT):
         os.remove(OUT)
@@ -87,6 +185,7 @@ def main():
             rows += 1
         db.commit()
         print("  %-8s %-13s %4d cols  %6d rows  [%s]" % (table, fn, len(fields), rows, cov))
+    import_textblocks(db)
     db.close()
     print("Wrote", OUT)
 

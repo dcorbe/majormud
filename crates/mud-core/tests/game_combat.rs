@@ -47,6 +47,10 @@ fn kobold() -> Monster {
             AttackForm::default(),
             AttackForm::default(),
         ],
+        // Lair mode: passive presence WITHOUT the mode-0/4 evil charge
+        // (crime.md §2.5 — created characters ship Warn on Evil ON, and
+        // a mode-0 punching bag would refuse every attack).
+        behaviour: 3,
         ..Default::default()
     }
 }
@@ -109,6 +113,7 @@ fn create(core: &mut Core, name: &str) -> SessionId {
     let s = core.attach_account(AccountProfile {
         name: name.into(),
         gender: Gender::Male,
+        saved_evil: 0,
     });
     core.input(s, "2");
     core.input(s, "1");
@@ -291,7 +296,7 @@ fn no_swings_without_engagement() {
     let shown = text_to(&events, s);
     assert!(
         !shown.contains("punch") && !shown.contains("hits you"),
-        "behaviour-0 monsters never initiate (M6 acquisition): {shown:?}"
+        "passive-mode monsters never initiate (M6 acquisition): {shown:?}"
     );
 }
 
@@ -498,6 +503,10 @@ fn rat(accuracy: i16, min: i16, max: i16) -> Monster {
             AttackForm::default(),
             AttackForm::default(),
         ],
+        // Lair mode: passive presence WITHOUT the mode-0/4 evil charge
+        // (crime.md §2.5 — created characters ship Warn on Evil ON, and
+        // a mode-0 punching bag would refuse every attack).
+        behaviour: 3,
         ..Default::default()
     }
 }
@@ -1019,5 +1028,198 @@ fn a_worn_dodge_item_feeds_the_defender_parry() {
     assert!(
         shown.matches("but you dodge out of the way!").count() > 0,
         "worn Dodge 5 produces dodges under the same script: {shown:?}"
+    );
+}
+
+// --- M7 slice 4: the monster rob form (kind 3) stub port ---
+
+#[test]
+fn rob_forms_fall_back_to_the_melee_slot_zero() {
+    // theft.md: monster_rob_user (0x295bd) is a `return 0` stub — a
+    // kind-3 pick never robs; the caller swings with form slot 0 iff
+    // its kind is 1 (attack_monster_user 26808-26813).
+    let mut content = world();
+    let mut robber = kobold();
+    robber.id = MonsterId(8);
+    robber.name = "cutpurse".into();
+    // Slot 0 melee (weight 0 — never picked directly), slot 1 rob at
+    // weight 100 — every pick lands on the rob form.
+    robber.attacks[0].weight = 0;
+    robber.attacks[1] = AttackForm {
+        kind: 3,
+        accuracy: 0,
+        weight: 100,
+        min_damage: 0,
+        max_damage: 0,
+        hit_msg: None,
+        dodge_msg: None,
+        miss_msg: None,
+        energy: 666,
+    };
+    content.add_monster(robber);
+    let mut core = Core::new(content, config());
+    let s = create(&mut core, "Dain");
+    let m = core
+        .spawn_monster(MonsterId(8), RoomId { map: 1, room: 1 })
+        .unwrap();
+    core.input(s, "attack cutpurse");
+    core.drain_events();
+    let events = run_rounds(&mut core, 6);
+    let shown = text_to(&events, s);
+    let _ = m;
+    assert!(
+        shown.contains("you for") || shown.contains("misses you") || shown.contains("swings at you"),
+        "the rob pick swings with the melee slot instead: {shown:?}"
+    );
+}
+
+#[test]
+fn rob_form_without_a_melee_slot_zero_never_swings() {
+    let mut content = world();
+    let mut robber = kobold();
+    robber.id = MonsterId(9);
+    robber.name = "pickpocket".into();
+    robber.attacks[0] = AttackForm {
+        kind: 3,
+        accuracy: 0,
+        weight: 100,
+        min_damage: 0,
+        max_damage: 0,
+        hit_msg: None,
+        dodge_msg: None,
+        miss_msg: None,
+        energy: 666,
+    };
+    for slot in 1..5 {
+        robber.attacks[slot] = AttackForm::default();
+    }
+    content.add_monster(robber);
+    let mut core = Core::new(content, config());
+    let s = create(&mut core, "Dain");
+    core.spawn_monster(MonsterId(9), RoomId { map: 1, room: 1 });
+    core.input(s, "attack pickpocket");
+    core.drain_events();
+    let events = run_rounds(&mut core, 6);
+    let shown = text_to(&events, s);
+    assert!(
+        !shown.contains("you for") && !shown.contains("misses you"),
+        "kind-3 with a kind-3 slot 0 stays inert: {shown:?}"
+    );
+}
+
+/// A defenceless sandbag: AC 0, DR 0, and a form that cannot hurt back.
+/// The Dwarf L1 attacker (accuracy 43, damage 1-4) therefore lands a
+/// damaging hit on every swing the parry roll does not cancel.
+fn sandbag(dodge: i16) -> Monster {
+    let mut m = kobold();
+    m.id = MonsterId(11);
+    m.name = "sandbag".into();
+    m.armour_class = 0;
+    m.damage_resist = 0;
+    m.abilities = if dodge == 0 {
+        vec![]
+    } else {
+        vec![(Ability::Dodge, dodge)]
+    };
+    m.attacks[0] = AttackForm {
+        kind: 1,
+        accuracy: 0,
+        weight: 100,
+        min_damage: 0,
+        max_damage: 0,
+        hit_msg: None,
+        dodge_msg: None,
+        miss_msg: None,
+        energy: 666,
+    };
+    m
+}
+
+/// Runs `rounds` player swings against a sandbag carrying `dodge` and
+/// returns (landed hits, HP taken off the sandbag).
+fn sandbag_run(dodge: i16, rounds: u64) -> (usize, i32) {
+    let mut content = world();
+    content.monsters.clear();
+    content.add_monster(sandbag(dodge));
+    let mut core = Core::new(content, config());
+    let s = create(&mut core, "Dain");
+    let m = core
+        .spawn_monster(MonsterId(11), RoomId { map: 1, room: 1 })
+        .expect("the sandbag spawns");
+    core.input(s, "attack sandbag");
+    core.drain_events();
+    let shown = text_to(&run_rounds(&mut core, rounds), s);
+    let hits = shown.matches("You punch sandbag for").count();
+    (hits, 5000 - core.monster_hp(m).expect("the sandbag survives"))
+}
+
+#[test]
+fn monster_dodge_ability_parries_player_swings() {
+    // GAMEPLAY DELTA (M7 slice 5): `build_monster_defender` now feeds
+    // Dodge(0x22) into the fighter's parry word per
+    // `move_monster_to_fighter` 25185-25186, and the DLL runs that ONE
+    // build for the player-attacks-monster path too. 167 of the 1101
+    // shipped templates carry ability 34 at values 10..200, so this turns
+    // a large share of connecting player swings into zero-damage parries.
+    //
+    // Chance per `calculate_attack` 25336-25360: `parry*10 / (accuracy/8)`
+    // capped at 95. Dain is accuracy 43 -> denominator 5, so Dodge 20
+    // buys 40% and Dodge 50 buys the 95% cap.
+    //
+    // ORACLE-VERIFY: the parry formula itself was recovered from the
+    // 16-bit disassembly and has never been checked against a live
+    // capture. Wiring Dodge into the monster defender build amplifies any
+    // error in it across a sixth of the bestiary, so a slice-8 expedition
+    // should capture a player grinding a Dodge-carrying template (e.g.
+    // giant bat, Dodge 20) and compare the observed miss rate.
+    // 40 rounds is 49 swings (the energy pool buys a second swing in
+    // some rounds); with no Dodge every one of them lands.
+    // (The damage totals below moved by a couple of points in M7 slice 5
+    // when the engage-time retaliation lock was pulled out of the swing
+    // loop and back onto the ATTACK command, where 26230 actually lives:
+    // its `genrdn(1,100)` now precedes the round's damage rolls instead
+    // of trailing them. Swing COUNTS are unchanged — this is stream
+    // position, not a behaviour change.)
+    let (control_hits, control_damage) = sandbag_run(0, 40);
+    assert_eq!(control_hits, 49, "a 99%-to-hit swing lands on every swing");
+    assert_eq!(control_damage, 119, "49 swings of 1-4 damage");
+
+    let (dodge_hits, dodge_damage) = sandbag_run(20, 40);
+    assert_eq!(dodge_hits, 29, "Dodge 20 parries ~40% of the swings");
+    assert_eq!(dodge_damage, 70, "only the unparried swings do damage");
+
+    let (capped_hits, capped_damage) = sandbag_run(50, 40);
+    assert_eq!(capped_hits, 4, "Dodge 50 pins the parry chance at its 95 cap");
+    assert_eq!(capped_damage, 10, "almost nothing gets through");
+}
+
+#[test]
+fn a_parried_swing_renders_the_dodge_wording_not_a_plain_miss() {
+    // MEASURED (charm.md §8.3, `oracle_dodge_parry_*.raw`): the board words
+    // result 3 on the PLAYER-attacks-monster path apart from a plain miss --
+    //
+    //     You swing at giant bat who dodges your attack!
+    //
+    // and WCCMMUD.DLL carries the template verbatim at file offset 0xca40d,
+    // `You %s %s who dodges your attack!`, sitting one slot after the plain
+    // miss `You %s %s!` (0xca3ea) and one before the monster-side result-3
+    // pair (0xca430/0xca464). We rendered both outcomes as the plain miss,
+    // which is what this pins.
+    //
+    // Dodge 50 against Dain's accuracy 43 pins the parry chance at its 95
+    // cap, so a 40-round run is essentially all parries.
+    let mut content = world();
+    content.monsters.clear();
+    content.add_monster(sandbag(50));
+    let mut core = Core::new(content, config());
+    let s = create(&mut core, "Dain");
+    core.spawn_monster(MonsterId(11), RoomId { map: 1, room: 1 })
+        .expect("the sandbag spawns");
+    core.input(s, "attack sandbag");
+    core.drain_events();
+    let shown = text_to(&run_rounds(&mut core, 40), s);
+    assert!(
+        shown.contains("You swing at sandbag who dodges your attack!"),
+        "a parried swing must carry the dodge wording: {shown:?}"
     );
 }

@@ -42,6 +42,9 @@ fn executioner() -> Monster {
             AttackForm::default(),
             AttackForm::default(),
         ],
+        // Lair mode: attackable without the mode-0/4 evil charge
+        // (created characters ship Warn on Evil ON — crime.md §2.5).
+        behaviour: 3,
         ..Default::default()
     }
 }
@@ -116,6 +119,7 @@ fn create(core: &mut Core, name: &str) -> SessionId {
     let s = core.attach_account(AccountProfile {
         name: name.into(),
         gender: Gender::Male,
+        saved_evil: 0,
     });
     core.input(s, "2");
     core.input(s, "1");
@@ -209,7 +213,7 @@ fn out_of_lives_is_the_end() {
         for e in core.drain_events() {
             match e {
                 Event::Output { session, text } if session == s => shown.push_str(&text),
-                Event::DeleteCharacter(ref name) if name == "Dain" => deleted = true,
+                Event::DeleteCharacter { ref name, .. } if name == "Dain" => deleted = true,
                 Event::Disconnect(d) if d == s => disconnected = true,
                 _ => {}
             }
@@ -268,4 +272,68 @@ fn aiding_the_healthy_is_rejected() {
         shown.contains("is in no need of assistance"),
         "got: {shown:?}"
     );
+}
+
+// --- M7 slice 3: criminal respawn split + permadeath evil banking ---
+
+#[test]
+fn criminals_recall_to_the_outlaw_temple() {
+    // crime.md §6.4: fame >= 0x28 respawns at the criminal temple
+    // (DAT_00482d00) instead of the lawful one (DAT_00482cfc).
+    let mut content = world();
+    content.add_room(Room {
+        id: RoomId { map: 1, room: 142 },
+        name: "Outlaw Hovel".into(),
+        description: vec![],
+        room_type: 0,
+        attributes: 0,
+        shop: None,
+        placed_items: vec![],
+        exits: Default::default(),
+        ..Default::default()
+    });
+    let mut core = Core::new(
+        content,
+        CoreConfig {
+            start_location: RoomId { map: 1, room: 1 },
+            recall_location: RoomId { map: 1, room: 2190 },
+            criminal_recall_location: RoomId { map: 1, room: 142 },
+            ..CoreConfig::default()
+        },
+    );
+    let s = create(&mut core, "Cutthroat");
+    core.set_player_fame(s, 40); // Outlaw
+    core.spawn_monster(MonsterId(7), RoomId { map: 1, room: 1 });
+    let shown = fight_to_death(&mut core, s);
+    assert!(shown.contains("miracle"), "died and respawned: {shown:?}");
+    let p = core.player_snapshot(s);
+    assert_eq!(
+        p.location,
+        RoomId { map: 1, room: 142 },
+        "criminal respawn (fame >= 0x28)"
+    );
+}
+
+#[test]
+fn permadeath_reports_the_fame_for_banking() {
+    // crime.md §8: final death banks the evil points to the account
+    // (server side); the delete event carries the fame.
+    let mut core = Core::new(world(), config());
+    let s = create(&mut core, "Doomed");
+    core.set_player_fame(s, 77);
+    core.set_lives(s, 1);
+    core.spawn_monster(MonsterId(7), RoomId { map: 1, room: 1 });
+    core.input(s, "attack executioner");
+    core.drain_events();
+    let mut banked = None;
+    'outer: for _ in 0..600 {
+        core.tick();
+        for e in core.drain_events() {
+            if let Event::DeleteCharacter { name, fame } = e {
+                banked = Some((name, fame));
+                break 'outer;
+            }
+        }
+    }
+    assert_eq!(banked, Some(("Doomed".into(), 77)), "delete carries fame");
 }

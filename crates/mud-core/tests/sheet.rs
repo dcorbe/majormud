@@ -89,6 +89,7 @@ fn create_dwarf_warrior(core: &mut Core, name: &str) -> SessionId {
     let s = core.attach_account(AccountProfile {
         name: name.into(),
         gender: Gender::Male,
+        saved_evil: 0,
     });
     core.input(s, "2");
     core.input(s, "1");

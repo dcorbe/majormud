@@ -73,6 +73,10 @@ const TABLES: &[TableDef] = &[
             ("name", "TEXT PRIMARY KEY COLLATE NOCASE"),
             ("password_hash", "TEXT NOT NULL"),
             ("gender", "TEXT NOT NULL CHECK (gender IN ('M', 'F'))"),
+            // crime.md §8: evil banked at permadeath (the GENBB "WCC
+            // MAJOR MUD EVIL" analog) + the once-per-day decay stamp.
+            ("saved_evil", "INTEGER NOT NULL"),
+            ("saved_evil_day", "INTEGER NOT NULL"),
         ],
         constraint: "",
     },
@@ -116,6 +120,13 @@ const TABLES: &[TableDef] = &[
             // The poison counter (+0xbe) — M5 slice 5; older databases
             // gain it with a 0 default on open.
             ("poison", "INTEGER NOT NULL"),
+            // Per-user ANSI (M7 slice 2, ours). Migrated rows backfill 1:
+            // pre-toggle characters only ever ran on the always-on server.
+            ("ansi", "INTEGER NOT NULL CHECK (ansi IN (0, 1))"),
+            // Crime (M7 slice 3): fame (+0x542) and Warn on Evil
+            // (+0x700 & 0x10, backfilled ON — the DLL's creation default).
+            ("fame", "INTEGER NOT NULL"),
+            ("warn_on_evil", "INTEGER NOT NULL CHECK (warn_on_evil IN (0, 1))"),
         ],
         constraint: "",
     },
@@ -296,6 +307,14 @@ impl StateDb {
             // rolling toward the death floor); 1 HP loads them conscious
             // and slow-tick regeneration heals them back to max.
             conn.execute("UPDATE player SET current_hp = 1", [])?;
+        } else if col == "ansi" {
+            // Pre-toggle characters only ever played on the always-on
+            // server; keep their colour.
+            conn.execute("UPDATE player SET ansi = 1", [])?;
+        } else if col == "warn_on_evil" {
+            // The DLL's creation default — evil actions refuse until the
+            // player opts in with `set evil`.
+            conn.execute("UPDATE player SET warn_on_evil = 1", [])?;
         }
         Ok(())
     }
@@ -312,7 +331,8 @@ impl StateDb {
             .map_err(|e| CreateAccountError::Other(e.into()))?
             .to_string();
         let result = self.conn.execute(
-            "INSERT INTO account (name, password_hash, gender) VALUES (?1, ?2, ?3)",
+            "INSERT INTO account (name, password_hash, gender, saved_evil, saved_evil_day) \
+             VALUES (?1, ?2, ?3, 0, 0)",
             params![name, hash, gender_str(gender)],
         );
         match result {
@@ -333,15 +353,15 @@ impl StateDb {
         name: &str,
         password: &str,
     ) -> Result<Option<AccountProfile>, StateError> {
-        let row: Option<(String, String, String)> = self
+        let row: Option<(String, String, String, i64)> = self
             .conn
             .query_row(
-                "SELECT name, password_hash, gender FROM account WHERE name = ?1",
+                "SELECT name, password_hash, gender, saved_evil FROM account WHERE name = ?1",
                 params![name],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .optional()?;
-        let Some((canonical, hash, gender)) = row else {
+        let Some((canonical, hash, gender, saved_evil)) = row else {
             return Ok(None);
         };
         let parsed = PasswordHash::new(&hash)?;
@@ -354,7 +374,39 @@ impl StateDb {
         Ok(Some(AccountProfile {
             name: canonical,
             gender: gender_from(&gender),
+            saved_evil: i16::try_from(saved_evil).unwrap_or(0),
         }))
+    }
+
+    /// crime.md §8: bank a permadying character's evil to the account.
+    /// The retention decay multiplies ONCE per calendar day regardless of
+    /// elapsed days (§8 item 2); negative/zero fame banks 0 — creation
+    /// clamps restored negatives anyway (§6.8), so good standing never
+    /// survives the account round-trip. Retention percent: the DLL's
+    /// option 0x32 default is unread — 90 chosen, ORACLE-VERIFY.
+    pub fn bank_evil(&self, name: &str, fame: i16, wall_secs: i64) -> Result<(), StateError> {
+        const RETENTION_PCT: i64 = 90;
+        let today = wall_secs / 86_400;
+        let prev_day: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT saved_evil_day FROM account WHERE name = ?1",
+                params![name],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(prev_day) = prev_day else {
+            return Ok(()); // no account (fixture player) — nothing to bank
+        };
+        let mut value = i64::from(fame.max(0));
+        if prev_day != today {
+            value = value * RETENTION_PCT / 100;
+        }
+        self.conn.execute(
+            "UPDATE account SET saved_evil = ?2, saved_evil_day = ?3 WHERE name = ?1",
+            params![name, value, today],
+        )?;
+        Ok(())
     }
 
     pub fn account_exists(&self, name: &str) -> Result<bool, StateError> {
@@ -456,10 +508,11 @@ impl StateDb {
                  b_charm, hp_base, current_hp, current_mana, hunger, thirst,
                  runic, platinum, gold, silver, copper, lawful,
                  cp_unspent, cp_lifetime, lives, experience, map, room,
-                 poison)
+                 poison, ansi, fame, warn_on_evil)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
                  ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
-                 ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35)",
+                 ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37,
+                 ?38)",
             params![
                 player.name,
                 gender_str(player.gender),
@@ -496,6 +549,9 @@ impl StateDb {
                 player.location.map,
                 player.location.room,
                 player.poison,
+                player.ansi,
+                player.fame,
+                player.warn_on_evil,
             ],
         )?;
         tx.commit()?;
@@ -667,7 +723,7 @@ impl StateDb {
                      b_charm, hp_base, current_hp, current_mana, hunger, thirst,
                      runic, platinum, gold, silver, copper, lawful,
                      cp_unspent, cp_lifetime, lives, experience, map, room,
-                     poison
+                     poison, ansi, fame, warn_on_evil
                  FROM player WHERE name = ?1",
                 params![name],
                 |r| {
@@ -721,9 +777,12 @@ impl StateDb {
                         spellbook: BTreeMap::new(),
                         poison: r.get(34)?,
                         active_spells: Default::default(),
-                        // Fame persists with the M7 crime system; until a
-                        // fame source exists every save-load sees 0.
-                        fame: 0,
+                        ansi: r.get(35)?,
+                        fame: r.get(36)?,
+                        warn_on_evil: r.get(37)?,
+                        // Runtime stealth flags — never persisted.
+                        hidden: false,
+                        sneak_armed: false,
                     })
                 },
             )

@@ -1,0 +1,79 @@
+    6.970 === config acc-high: target 'giant bat' ===
+   10.592 --- inventory (pre-staging) ---
+   10.592     | The giant bat snaps at you, but you dodge out of the way!
+   10.592     | [HP=31]:The giant bat bites you for 5 damage!
+   10.592     | [HP=26]:i
+   10.592     | You are carrying 282 copper farthings, gilded robes (Torso), chain coif (Head),
+   10.592     | displacer fur cloak (Back), beaded belt (Waist), violet orchid (Worn), smoky
+   10.592     | black talisman (Neck), wooden hammer (Weapon Hand)
+   10.592     | You have no keys.
+   10.592     | Wealth: 282 copper farthings
+   10.592     | Encumbrance: 605/2880 - Light [21%]
+   10.592     | [HP=26]:
+   13.584 --- zero runic ---
+   13.584     | /xcash 0 runic
+   13.584     | [xcash] runic: 0 -> 0; type 'i' to confirm.
+   13.584     | The giant bat snaps at you with its teeth!
+   13.584     | [HP=26]:
+   16.390 --- zero platinum ---
+   16.390     | /xcash 0 platinum
+   16.390     | [xcash] platinum: 0 -> 0; type 'i' to confirm.
+   19.206 --- zero gold ---
+   19.207     | The giant bat bites you for 2 damage!
+   19.207     | [HP=24]:The giant bat bites you for 3 damage!
+   19.207     | [HP=21]:[HP=22]:/xcash 0 gold
+   19.207     | [xcash] gold: 0 -> 0; type 'i' to confirm.
+   22.023 --- zero silver ---
+   22.023     | /xcash 0 silver
+   22.023     | [xcash] silver: 0 -> 0; type 'i' to confirm.
+   24.830 --- purse ---
+   24.830     | The giant bat bites you for 3 damage!
+   24.830     | [HP=19]:/xcash 600 copper
+   24.830     | [xcash] copper: 282 -> 600; type 'i' to confirm.
+   28.550 --- STATS (accuracy inputs) ---
+   28.550     | st
+   28.550     | Name: Oracle Delver                    Lives/CP:      8/110
+   28.550     | Race: Dwarf       Exp: 2200            Perception:     35
+   28.550     | Class: Warrior    Level: 2             Stealth:         0
+   28.550     | Hits:    19/64    Armour Class:   0/0  Thievery:        0
+   28.550     |                                        Traps:           0
+   28.550     |                                        Picklocks:       0
+   28.550     | Strength:  50     Agility: 30          Tracking:        0
+   28.550     | Intellect: 30     Health:  50          Martial Arts:   15
+   28.550     | Willpower: 50     Charm:   30          MagicRes:       55
+   28.550     | [HP=19]:The giant bat bites you for 4 damage!
+   28.550     | [HP=15]:The giant bat bites you for 5 damage!
+   28.550     | [HP=10]:
+   32.158 --- INVENTORY (encumbrance) ---
+   32.159     | i
+   32.159     | You are carrying 600 copper farthings, gilded robes (Torso), chain coif (Head),
+   32.159     | displacer fur cloak (Back), beaded belt (Waist), violet orchid (Worn), smoky
+   32.159     | black talisman (Neck), wooden hammer (Weapon Hand)
+   32.159     | You have no keys.
+   32.159     | Wealth: 600 copper farthings
+   32.159     | Encumbrance: 711/2880 - Light [24%]
+   32.159     | [HP=10]:
+   32.159 ENCUMBRANCE 711/2880 = 24%
+   32.159 level 2, ratings 0, skill 14, accuracy 43, floor(acc/8) = 5, predicted parry 0.4
+   32.159 max HP 64; fight floor 16, sweep floor 44
+   32.159 === heal cycle ===
+   39.779 --- buy healing ---
+   39.779     | buy healing
+   39.779     | You hand over 108 copper farthings and all your wounds are healed.
+   39.779     | [HP=64]:
+   39.779 HP after healing = 64
+   52.686 === engaging giant bat in room 1452 ===
+   57.102 PROGRESS 0
+   59.707   dodge | You swing at giant bat who dodges your attack!
+   64.434   dodge | You swing at giant bat who dodges your attack!
+   69.140   dodge | You swing at giant bat who dodges your attack!
+   73.834   dodge | You swing at giant bat who dodges your attack!
+   79.775   dodge | You swing at giant bat who dodges your attack!
+   84.499   glance| Your swing at giant bat hits, but glances off its armour.
+   89.224   miss  | You swing at giant bat!
+   95.165   miss  | You swing at giant bat!
+   99.873   dodge | You swing at giant bat who dodges your attack!
+  104.587   dodge | You swing at giant bat who dodges your attack!
+  110.527   dodge | You swing at giant bat who dodges your attack!
+  115.227   miss  | You swing at giant bat!
+  117.640 PROGRESS 12/400 {'hit': 0, 'glance': 1, 'dodge': 8, 'miss': 3, 'novel': 0} connect=0.750

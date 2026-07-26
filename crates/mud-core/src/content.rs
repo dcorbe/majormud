@@ -37,6 +37,11 @@ pub struct RaceId(pub u16);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct ClassId(pub u16);
 
+/// WCCTEXT2 block number (`get_text_block` 0x3379c key; vir_schemas.md
+/// "WCCTEXT2"). Shipped ids run 0..=10003.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct TextBlockId(pub u16);
+
 /// The ten exit directions, in the game's storage order
 /// (`roomexit_1` = North … `roomexit_10` = Down).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -112,9 +117,19 @@ pub struct Exit {
     /// ("borrow skiff|go skiff|row skiff" — oracle).
     pub trigger_msg: Option<MessageId>,
     /// Raw `para1_N` (`room+0x374+d*4`): damage for types 9/0x18, the
-    /// secret gate for 7/0xb (monsters.md §3 move_monster switch). Types
-    /// 8/10 fold theirs into `dest`/`trigger_msg` at load.
+    /// secret gate for 7/0xb (monsters.md §3 move_monster switch), the
+    /// TOO-GOOD fame bound for type 0x14 (crime.md §6.3). Types 8/10
+    /// fold theirs into `dest`/`trigger_msg` at load.
     pub param: i32,
+    /// Raw `para2_N` (`room+0x39c+d*2`): type-2 lock state (2 locked /
+    /// 1 picked), the 7/0xb pick modifier, the TOO-EVIL fame bound for
+    /// type 0x14 (theft.md §8.1 union).
+    pub param2: i32,
+    /// Raw `para3_N` (`room+0x3b0+d*4`): type-2 pick modifier; 7/0xb
+    /// re-lock delay units.
+    pub param3: i32,
+    /// Raw `para4_N` (`room+0x3d8+d*4`): type-2 re-lock delay units.
+    pub param4: i32,
     /// `para2_N` (`room+0x39c+d*2`) nonzero = door closed (type 2/9;
     /// shipped doors all start closed). Runtime open/close arrives with
     /// the player door commands.
@@ -240,6 +255,29 @@ pub struct Monster {
     pub armour_class: i16,
     pub damage_resist: i16,
     pub magic_resist: i16,
+    /// `knmsr+0x120` (`charmlvl`) — Enslave application gate: charmable when
+    /// `charm_level <= caster level`, no roll (charm.md §1.2). The compare is
+    /// SIGNED on the template side (`(int)(short)`, §7) — a negative charmlvl
+    /// always passes; 9999 (381 shipped templates) is the never-in-practice
+    /// sentinel, data convention rather than an engine check.
+    pub charm_level: i16,
+    /// `knmsr+0x1a0` (`charmres`) — the Enslave SAVE stat, replacing MR for
+    /// ability-6 spells; no floor, so charmres 2 halves to a 1% resist
+    /// (charm.md §1.1). A charmres of **0** is NOT a free charm: the
+    /// preload writes it into the same `local_34` the M.R. default keys
+    /// on (`== 0`, decompile 43387), so those 48 shipped templates save
+    /// with M.R. after all — see `Core::monster_cast_save_stat`.
+    pub charm_resist: i16,
+    /// `knmsr+0xad` (`undead`) — the byte the AffectsUndead (23) arm of
+    /// `cast_monster_target`'s eligibility scan tests (43317-43324), and
+    /// the ONLY thing it tests: the flag lives in this column, not in an
+    /// ability row. The test is `!= 0`, and the column is TRI-valued in
+    /// the shipped data (0: 986 templates, 1: 107, **-1**: 8), so the 8
+    /// negatives are undead too — which is why this is an `i16` and not a
+    /// `bool`. Distinct from ability 109 (`NonLiving`), which drives the
+    /// AffectsLiving (108) arm: 6 shipped templates are `undead != 0`
+    /// without carrying 109, and 76 carry 109 with `undead == 0`.
+    pub undead: i16,
     /// Backstab defence.
     pub bs_defence: i16,
     /// Per-round energy pool/regen.
@@ -287,6 +325,26 @@ pub struct Monster {
     /// shipped NPCs), folded into get_monster_ability_value alongside the
     /// weapon and carried slots (0x3d71f tail). Never dropped at death.
     pub worn_item: Option<ItemId>,
+    /// `knmsr+0x124` (sqlite `desctxt` — Nightmare's label misleads) — the
+    /// get_random_name adjective block (`A:`/`B:`/`F:`/`N:` lines).
+    pub name_block: Option<TextBlockId>,
+    /// `greettxt` — the ask-conversation keyword block (quests.md §3).
+    pub greet_block: Option<TextBlockId>,
+    /// `talktxt` — dialogue block (21 shipped users).
+    pub talk_block: Option<TextBlockId>,
+}
+
+/// One WCCTEXT2 text block: quest scripts, ask-conversation keyword tables,
+/// name-generator adjective lists, ANSI art (vir_schemas.md "WCCTEXT2").
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TextBlock {
+    pub id: TextBlockId,
+    /// Word 10 of the engine record — a link to a companion block (e.g. an
+    /// ask keyword table's spoken text). Exact consumer semantics land with
+    /// the M7 quest VM.
+    pub next: Option<TextBlockId>,
+    /// Decoded body; lines separated by `\n`, embedded ANSI preserved.
+    pub body: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -329,6 +387,9 @@ pub struct Item {
     pub defense: i16,
     /// 0 = fixture ("You don't see X here." on get).
     pub gettable: i16,
+    /// `+0x42b` (`robable`) — rob_user's item-transfer gate
+    /// (theft.md §4.5); 1395 shipped items carry it.
+    pub robable: i16,
     /// `+0x3a0` — strength needed to swing without the EU penalty.
     pub req_str: i16,
     /// `+0x3de` — weapon speed (EU numerator).
@@ -386,6 +447,58 @@ impl Element {
     }
 }
 
+/// Which kinds of thing a room-name lookup searches — the modelled bits
+/// of `find_action_target`'s mask (decompile 63726): `0x01` monsters,
+/// `0x02` users, `0x04` carried items, `0x800` charmed monsters LAST.
+///
+/// NOT modelled, and unreachable from the cast path as a result: `0x10`
+/// room items (found kind 4 -> "You are not carrying %s!"), `0x20`
+/// spellbook entries (kind 0x10 -> "Why would you want to cast a spell on
+/// a spell?") and `0x80` exclude-self. ORACLE-VERIFY: none of the three
+/// has a measured surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FindScope {
+    pub monsters: bool,
+    pub users: bool,
+    pub items: bool,
+    /// Mask bit `0x800`: the monster block runs TWICE — pass 1 skips
+    /// `mon+0x128 & 1` (63776), pass 2 scans ONLY charmed monsters
+    /// (63820). An ORDERING, never an exclusion: a lone pet is still
+    /// found, by pass 2. Both passes precede the `0x02` user scan, so
+    /// the bit never reorders a monster against a player.
+    ///
+    /// Ignored unless `monsters` is set.
+    pub charmed_last: bool,
+}
+
+impl FindScope {
+    /// The dispatcher's `0xf037` retry mask (decompile 59265-59271) —
+    /// note the MISSING `0x800`: the retry treats pets and wild bodies
+    /// alike. (No observable surface: every match type
+    /// `cast_monster_target` accepts already searches monsters in its
+    /// preferred mask, so the retry only reaches a monster for match
+    /// types that then refuse it by kind. Kept literal anyway.)
+    pub const UNIVERSAL: FindScope = FindScope {
+        monsters: true,
+        users: true,
+        items: true,
+        charmed_last: false,
+    };
+    /// `get_spell_match_type`'s `0` — search nothing.
+    pub const NONE: FindScope = FindScope {
+        monsters: false,
+        users: false,
+        items: false,
+        charmed_last: false,
+    };
+
+    /// True when the scope would search nothing, so the caller can skip
+    /// straight to the universal retry.
+    pub fn is_empty(self) -> bool {
+        !(self.monsters || self.users || self.items)
+    }
+}
+
 /// Spell match/delivery type (`spell+0xcc`, `target`) — selects the cast
 /// entry point and target iteration (spellcasting.md §1, §3, §4). Variant
 /// names are placeholders pending semantic pinning; the predicates encode
@@ -430,8 +543,96 @@ impl MatchType {
         })
     }
 
-    /// Requires an item target (`cast_item_target`, §3).
-    pub fn is_item(self) -> bool {
+    /// The room search `find_action_target` runs FIRST for this match
+    /// type (`get_spell_match_type`, decompile 45018-45053): match 4 ->
+    /// `0x801`, 6 -> `0xf837`, 7 -> `0x14`, 8 -> `0x803`, 0/1/2 -> `0x02`,
+    /// the seven area types -> `0`. It is only an ORDERING preference —
+    /// the dispatcher re-runs the search with [`FindScope::UNIVERSAL`]
+    /// when this one comes back empty (59265-59271).
+    ///
+    /// The `0x80` (exclude-self) bit the offensive 0/1/2 mask `0x82`
+    /// adds is NOT modelled: it only reorders self against another
+    /// player, and the universal fallback re-admits self either way.
+    pub fn preferred_find(self) -> FindScope {
+        match self {
+            // 0x02 / 0x82 — users only.
+            MatchType::Single0 | MatchType::Single1 | MatchType::Single2 => FindScope {
+                monsters: false,
+                users: true,
+                items: false,
+                charmed_last: false,
+            },
+            // 0x801 — monsters only, charmed ones last.
+            MatchType::Special4 => FindScope {
+                monsters: true,
+                users: false,
+                items: false,
+                charmed_last: true,
+            },
+            // 0xf837 — everything, charmed monsters last. This is the one
+            // preferred mask that is the universal `0xf037` PLUS `0x800`.
+            MatchType::Item6 => FindScope {
+                charmed_last: true,
+                ..FindScope::UNIVERSAL
+            },
+            // 0x14 — items only (room items `0x10` + carried `0x04`).
+            MatchType::Item7 => FindScope {
+                monsters: false,
+                users: false,
+                items: true,
+                charmed_last: false,
+            },
+            // 0x803 — monsters and users, charmed monsters last via the
+            // same `0x800` bit match 4 sets.
+            MatchType::Special8 => FindScope {
+                monsters: true,
+                users: true,
+                items: false,
+                charmed_last: true,
+            },
+            // 0 — the area types search nothing; an explicit target word
+            // therefore falls straight through to the universal retry and
+            // refuses on whatever KIND it lands (MEASURED §8.13).
+            MatchType::Area3
+            | MatchType::Area5
+            | MatchType::Area9
+            | MatchType::Area10
+            | MatchType::AreaB
+            | MatchType::AreaC
+            | MatchType::AreaD => FindScope::NONE,
+        }
+    }
+
+    /// `cast_monster_target` 43205 — anything else takes the uncharged
+    /// "You may not cast that spell on a monster!" at 44311-44315.
+    pub fn accepts_monster(self) -> bool {
+        matches!(self, MatchType::Special4 | MatchType::Item6 | MatchType::Special8)
+    }
+
+    /// `cast_user_target` 41460 — anything else takes the uncharged
+    /// "You may not cast that spell on a user!" at 43064-43066.
+    ///
+    /// This gate is the LAST in `cast_user_target`, not the first: the
+    /// self-target divert at 41434 (`param_2 == param_3 && match != 6`
+    /// -> `cast_no_target`) runs ahead of it. So the self-only buff band
+    /// (match 1 — 25 of the 207 learnable spells: barkskin, stoneskin,
+    /// magic armour, shadowform) IS castable at the caster's own name
+    /// even though it is absent here; what this predicate refuses is
+    /// naming ANOTHER player. Match 6 is the one type the divert skips,
+    /// so it reaches this gate even self-named — and passes.
+    ///
+    /// Callers that gate a user target must therefore run the self-divert
+    /// first (see `Core::cmd_cast`); `Core::monster_cast_at_player` has
+    /// no self case and uses this predicate directly (decompile 23777).
+    pub fn accepts_user(self) -> bool {
+        matches!(
+            self,
+            MatchType::Single0 | MatchType::Single2 | MatchType::Item6 | MatchType::Special8
+        )
+    }
+
+    /// `cast_item_target` 44367 (§3).
+    pub fn accepts_item(self) -> bool {
         matches!(self, MatchType::Item6 | MatchType::Item7)
     }
 
@@ -718,6 +919,15 @@ pub const KNOWN_DANGLING_SPELL_MESSAGES: [(SpellId, MessageId); 1] =
 pub const KNOWN_DANGLING_MONSTER_ITEMS: [(MonsterId, ItemId); 1] =
     [(MonsterId(602), ItemId(2078))]; // saracen commander
 
+/// See [`KNOWN_DANGLING_MONSTER_MESSAGES`]. Four shipped seq-0 next-links
+/// name blocks that don't exist (the engine's get_text_block simply fails).
+pub const KNOWN_DANGLING_TEXTBLOCK_NEXT: [(TextBlockId, TextBlockId); 4] = [
+    (TextBlockId(133), TextBlockId(134)),
+    (TextBlockId(440), TextBlockId(441)),
+    (TextBlockId(2962), TextBlockId(2963)),
+    (TextBlockId(9637), TextBlockId(9638)),
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContentError {
     UnresolvedExit {
@@ -752,6 +962,17 @@ pub enum ContentError {
         field: &'static str,
         monster: MonsterId,
     },
+    /// A monster's name/greet/talk column names a text block that does not
+    /// exist.
+    DanglingMonsterTextBlock {
+        monster: MonsterId,
+        block: TextBlockId,
+    },
+    /// A text block's next-link names a missing block.
+    DanglingTextBlockNext {
+        block: TextBlockId,
+        next: TextBlockId,
+    },
 }
 
 /// All static content, keyed for deterministic iteration.
@@ -765,6 +986,7 @@ pub struct Content {
     pub shops: BTreeMap<ShopId, Shop>,
     pub races: BTreeMap<RaceId, Race>,
     pub classes: BTreeMap<ClassId, Class>,
+    pub textblocks: BTreeMap<TextBlockId, TextBlock>,
 }
 
 impl Content {
@@ -786,6 +1008,10 @@ impl Content {
 
     pub fn add_message(&mut self, message: Message) {
         self.messages.insert(message.id, message);
+    }
+
+    pub fn add_text_block(&mut self, block: TextBlock) {
+        self.textblocks.insert(block.id, block);
     }
 
     pub fn add_shop(&mut self, shop: Shop) {
@@ -856,6 +1082,27 @@ impl Content {
                     errors.push(ContentError::DanglingMonsterItem {
                         monster: monster.id,
                         item,
+                    });
+                }
+            }
+            let blocks = [monster.name_block, monster.greet_block, monster.talk_block];
+            for block in blocks.into_iter().flatten() {
+                if !self.textblocks.contains_key(&block) {
+                    errors.push(ContentError::DanglingMonsterTextBlock {
+                        monster: monster.id,
+                        block,
+                    });
+                }
+            }
+        }
+
+        for block in self.textblocks.values() {
+            if let Some(next) = block.next {
+                let known = KNOWN_DANGLING_TEXTBLOCK_NEXT.contains(&(block.id, next));
+                if !known && !self.textblocks.contains_key(&next) {
+                    errors.push(ContentError::DanglingTextBlockNext {
+                        block: block.id,
+                        next,
                     });
                 }
             }

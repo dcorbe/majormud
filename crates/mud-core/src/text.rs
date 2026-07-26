@@ -68,6 +68,171 @@ pub mod color {
     pub const RESET: &str = "\x1b[0m";
 }
 
+/// ORACLE-VERIFY: forced removal when gear becomes alignment-illegal
+/// (update_allowed_worn_items, crime.md §2.4 — wording from the M4
+/// deferral note, unmeasured).
+pub fn item_force_removed(name: &str) -> String {
+    format!("Your {name} has been removed.")
+}
+
+/// SEARCH refusal for a non-direction argument (theft.md §9).
+pub const SEARCH_WHY: &str = "Why would you want to search that?";
+
+/// PICKLOCK strings (theft.md §8, verbatim).
+pub const SYNTAX_PICKLOCK: &str = "Syntax: PICKLOCK {direction}";
+pub const PICK_FAILS: &str = "Your skill fails you this time.";
+/// ORACLE-VERIFY: walking into a locked type-2 door (the open-door
+/// command family is unmodeled; wording guessed).
+pub const DOOR_CLOSED: &str = "The door is closed!";
+
+/// ROB / FORGIVE strings (theft.md §3-5, verbatim).
+pub const SYNTAX_ROB: &str = "Syntax: ROB {user/monster}";
+pub const DONT_SEE_ANYWHERE: &str = "You don't see that anywhere!";
+pub const ROB_FROM_THAT: &str = "Why would you want to rob from that?";
+pub const ROB_WAY_OF_LIFE: &str =
+    "You have chosen a way of life which prevents this action.";
+pub const ROB_YOURSELF: &str = "Why would you want to rob yourself?";
+pub const ROB_UNBALANCED: &str =
+    "Such an action would result in a very unbalanced game.";
+pub const ROB_GUILT: &str =
+    "You are overcome with a feeling of guilt and return your hands to your own pockets";
+
+/// Gendered pronouns (`+0x7d6`; FUN_0041d89d/8dd/91d).
+pub fn pronoun_subject(gender: crate::game::Gender) -> &'static str {
+    match gender {
+        crate::game::Gender::Male => "he",
+        crate::game::Gender::Female => "she",
+    }
+}
+pub fn pronoun_object(gender: crate::game::Gender) -> &'static str {
+    match gender {
+        crate::game::Gender::Male => "him",
+        crate::game::Gender::Female => "her",
+    }
+}
+pub fn pronoun_possessive(gender: crate::game::Gender) -> &'static str {
+    match gender {
+        crate::game::Gender::Male => "his",
+        crate::game::Gender::Female => "her",
+    }
+}
+
+/// The five currency display names (table 0x480248; runic's "User
+/// Defined" placeholder is board-configured — ORACLE-VERIFY the live
+/// board's name).
+pub fn currency_name(idx: usize) -> &'static str {
+    ["copper farthings", "silver nobles", "gold crowns", "platinum pieces", "runic coins"]
+        [idx.min(4)]
+}
+
+/// cmd_backstab (0x4889da): a wielded weapon without BSAccu.
+pub const CANNOT_BACKSTAB_WEAPON: &str = "You cannot backstab with this weapon!";
+
+/// HIDE <item> refusal for NotDroppable gear (theft.md §11.2).
+pub const MAY_NOT_HIDE_ITEM: &str = "You may not hide that item!";
+
+/// The command-delay gate (theft.md §11, [plain]).
+pub const MUST_WAIT: &str = "You must wait before you may do that!";
+
+/// SNEAK refusal while being fought (theft.md §11.1).
+pub const MAY_NOT_SNEAK: &str = "You may not sneak right now!";
+
+/// Sneak movement lines (theft.md §11.1, perception-filtered, dkyellow).
+pub fn sneak_out(name: &str, direction: Direction) -> String {
+    let tail = match direction {
+        Direction::Up => "sneaking out upwards".to_string(),
+        Direction::Down => "sneaking out downwards".to_string(),
+        d => format!("sneaking out to the {}", direction_shown(d)),
+    };
+    format!("You notice {name} {tail}.")
+}
+
+pub fn sneak_in_from(name: &str, from: Direction) -> String {
+    let tail = match from {
+        Direction::Up => "sneak in from above".to_string(),
+        Direction::Down => "sneak in from below".to_string(),
+        d => format!("sneak in from the {}", direction_shown(d)),
+    };
+    format!("You notice {name} {tail}.")
+}
+
+/// Alignment-restricted exits (crime.md §3, 0x47e31e/0x47e349).
+pub const EXIT_TOO_GOOD: &str = "You are too good to go through this exit!";
+pub const EXIT_TOO_EVIL: &str = "You are too evil to go through this exit!";
+
+/// SET EVIL (cmd_set 54203-54212): the warn-ON confirm is the DLL's
+/// string; the warn-OFF wording is ORACLE-VERIFY (unread).
+pub const SET_EVIL_WARN_ON: &str =
+    "You will now be warned and stopped from performing evil actions.";
+pub const SET_EVIL_WARN_OFF: &str =
+    "You will no longer be warned before performing evil actions.";
+
+/// OURS (divergence — the real board keys ANSI on the MBBS account):
+/// the `ansi` toggle's confirmations.
+pub const ANSI_NOW_ON: &str = "ANSI colour is now ON.";
+pub const ANSI_NOW_OFF: &str = "ANSI colour is now OFF.";
+
+/// `get_random_name` (0x424172): the spawn-adjective walk over a name
+/// block. Per line a candidate composes — `A:` base sep suffix, `B:`
+/// prefix sep base, `F:` full replace, `N:` base, anything else the line
+/// verbatim — then `genrdn(0,100)` accepts on <= 9; running off the block
+/// (or the 1000-line ceiling) keeps the LAST candidate. Separator " "
+/// (`DAT_00480efa`), strncpy/strncat caps 28/29 bytes, empty final
+/// candidate falls back to the base name. A trailing newline's empty tail
+/// is the buffer terminator, not a line; interior empty lines compose an
+/// empty candidate (the DLL's verbatim branch).
+pub fn generate_name(base: &str, block: &str, roll: &mut dyn FnMut(i32, i32) -> i32) -> String {
+    fn take(s: &str, n: usize) -> &str {
+        if s.len() <= n {
+            return s;
+        }
+        let mut end = n;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        &s[..end]
+    }
+    let mut pieces: Vec<&str> = block.split('\n').collect();
+    if pieces.last() == Some(&"") {
+        pieces.pop();
+    }
+    let mut candidate = String::new();
+    for (i, line) in pieces.iter().enumerate() {
+        if i >= 1000 {
+            break;
+        }
+        let bytes = line.as_bytes();
+        if bytes.len() >= 2 && bytes[1] == b':' {
+            let tail = &line[2..];
+            match bytes[0] {
+                b'A' => {
+                    candidate = format!("{base} ");
+                    let room = 0x1dusize.saturating_sub(candidate.len());
+                    candidate.push_str(take(tail, room));
+                }
+                b'B' => {
+                    candidate = format!("{} ", take(tail, 0x1c));
+                    let room = 0x1dusize.saturating_sub(candidate.len());
+                    candidate.push_str(take(base, room));
+                }
+                b'F' => candidate = take(tail, 0x1d).to_string(),
+                b'N' => candidate = take(base, 0x1d).to_string(),
+                _ => candidate = take(line, 0x1d).to_string(),
+            }
+        } else {
+            candidate = take(line, 0x1d).to_string();
+        }
+        if roll(0, 100) <= 9 {
+            break;
+        }
+    }
+    if candidate.is_empty() {
+        base.to_string()
+    } else {
+        candidate
+    }
+}
+
 /// Removes every ANSI escape sequence (the MBBS non-graphics path).
 pub fn strip_ansi(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
@@ -355,6 +520,14 @@ pub const MAY_NOT_CAST_ON_MONSTER: &str = "You may not cast that spell on a mons
 /// VERIFIED (§8.13): an area cast with an explicit player word
 /// (`c flash oracle`), uncharged.
 pub const MAY_NOT_CAST_ON_USER: &str = "You may not cast that spell on a user!";
+
+/// The third member of the same refusal family (`cast_item_target`
+/// 44367-44369): a spell whose match type is not 6 or 7, aimed at a
+/// carried item. ORACLE-VERIFY: never measured live — the wording is
+/// read straight out of the DLL string table (file offset 854240,
+/// exactly 362 bytes past the monster variant, matching the
+/// `0x48632c - 0x4861c2` VA delta).
+pub const MAY_NOT_CAST_ON_ITEM: &str = "You may not cast that spell on an item!";
 
 /// VERIFIED (§8.13): an area cast with no valid target in the room —
 /// a real pre-charge gate (mana unchanged), fired alone AND with other
@@ -745,8 +918,31 @@ pub fn player_hit(verb: &str, target: &str, damage: i32) -> String {
 }
 
 /// "You swing at kobold thief!" — the verb is the weapon's miss verb.
+/// This is result 0, the to-hit failure; result 3 has its own wording, see
+/// [`player_dodge`].
 pub fn player_miss(verb: &str, target: &str) -> String {
     format!("{}You {verb} {target}!{}", color::YOUR_MISS, color::RESET)
+}
+
+/// "You swing at kobold thief who dodges your attack!" — result 3, the
+/// defender's parry.
+///
+/// MEASURED (`charm.md` §8.3, `re/oracle/oracle_dodge_parry_*.raw`): the
+/// board words this apart from the plain miss above, which we used to
+/// render for both outcomes. WCCMMUD.DLL carries the template verbatim at
+/// file offset 0xca40d, `You %s %s who dodges your attack!` — one slot
+/// after the plain miss `You %s %s!` (0xca3ea) and one before the
+/// monster-side result-3 pair (0xca430 victim view, 0xca464 room view).
+///
+/// ORACLE-VERIFY: the COLOUR is assumed to match the plain miss; the
+/// capture that pinned the wording was ANSI-stripped, so the attribute
+/// bytes ahead of this line are still unmeasured.
+pub fn player_dodge(verb: &str, target: &str) -> String {
+    format!(
+        "{}You {verb} {target} who dodges your attack!{}",
+        color::YOUR_MISS,
+        color::RESET
+    )
 }
 
 /// "Your swing at kobold thief hits, but glances off its armour."
@@ -851,6 +1047,44 @@ pub fn drops_to_ground(name: &str) -> String {
 /// ORACLE-VERIFY).
 pub fn monster_dead(name: &str) -> String {
     format!("The {name} is dead.")
+}
+
+// The five monster-vs-monster room lines (`attack_monster_monster`
+// 27255-27328; charm.md §3). Every one is composed into the shared
+// `DAT_004964a9` buffer, first byte upcased ([`capitalize_first`] at the
+// call site), and `tell_room`'d — the survivor lines to the DEFENDER's
+// room, the kill line to the ATTACKER's. VERIFIED against the shipped
+// `.rdata` (0x481f73..0x481fe7): only the hit line ends in "!", and the
+// glance line has TWO slots, not the three the decompiler's mangled
+// symbol name suggests. The DLL prefixes each with a colour code
+// (glance 0;31, dodge/miss 0;36, hit 1;31, kill 1;37) — unpainted here
+// like every other room broadcast (see `monster_swing_lines`).
+
+/// `0x481f87` — a landed monster-vs-monster swing.
+pub fn monster_attacked_monster(attacker: &str, defender: &str) -> String {
+    format!("{attacker} just attacked {defender}!")
+}
+
+/// `0x481f9d` — result 1, the armour-deflected glance. The DLL fills the
+/// possessive slot with the ATTACKER and never names the weapon.
+pub fn monster_glanced_off_monster(attacker: &str, defender: &str) -> String {
+    format!("{attacker}'s just glanced off of {defender}'s armour.")
+}
+
+/// `0x481fc4` — result 3, the parry. Defender first (27267).
+pub fn monster_dodged_monster(defender: &str, attacker: &str) -> String {
+    format!("{defender} just dodged an attack from {attacker}.")
+}
+
+/// `0x481fe7` — result 0, the plain miss.
+pub fn monster_missed_monster(attacker: &str, defender: &str) -> String {
+    format!("{attacker} just missed an attack against {defender}.")
+}
+
+/// `0x481f73` — the kill line (27322); the defender's name is captured
+/// before `check_kill_monster` frees the record (27253-27254).
+pub fn monster_killed_monster(attacker: &str, defender: &str) -> String {
+    format!("{attacker} just killed {defender}.")
 }
 
 /// VERIFIED (DLL): "You gain %s experience."

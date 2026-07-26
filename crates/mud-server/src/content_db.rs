@@ -13,6 +13,7 @@ use mud_core::content::{
     AbilityValue, AttackForm, Class, ClassId, Content, Element, Exit, Item, ItemId, LootSlot,
     MatchType, Message, MessageId, Monster, MonsterId, PlacedItem, Race, RaceId, Room, RoomId,
     SaveClass, ScalePair, Shop, ShopId, ShopStock, Spell, SpellId, StatBlock, TargetMode,
+    TextBlock, TextBlockId,
 };
 use rusqlite::Connection;
 
@@ -56,6 +57,7 @@ pub fn load(path: &Path) -> Result<Content, LoadError> {
     load_shops(&db, &mut content)?;
     load_races(&db, &mut content)?;
     load_classes(&db, &mut content)?;
+    load_textblocks(&db, &mut content)?;
     Ok(content)
 }
 
@@ -119,7 +121,7 @@ fn ability_cols(prefix: &str) -> String {
 
 fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
     let exits = (1..=10)
-        .map(|i| format!("roomexit_{i}, roomtype_{i}, para1_{i}, para2_{i}"))
+        .map(|i| format!("roomexit_{i}, roomtype_{i}, para1_{i}, para2_{i}, para3_{i}, para4_{i}"))
         .collect::<Vec<_>>()
         .join(", ");
     let descs = (1..=7)
@@ -150,7 +152,7 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
         }
         let mut placed_items = Vec::new();
         for i in 0..17 {
-            let base = 51 + i * 2;
+            let base = 71 + i * 2;
             let item: i64 = row.get(base)?;
             if item > 0 {
                 let quantity = to_i16("room", "roomitemqty", row.get(base + 1)?)?;
@@ -164,37 +166,37 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
             id,
             name: row.get(2)?,
             description,
-            room_type: to_i16("room", "type", row.get(51 + 17 * 2)?)?,
-            attributes: to_i16("room", "attributes", row.get(51 + 17 * 2 + 1)?)?,
+            room_type: to_i16("room", "type", row.get(71 + 17 * 2)?)?,
+            attributes: to_i16("room", "attributes", row.get(71 + 17 * 2 + 1)?)?,
             shop: (shopnum > 0)
                 .then(|| to_u16("room", "shopnum", shopnum).map(ShopId))
                 .transpose()?,
             placed_items,
             exits: Default::default(),
-            spawn_zone: to_i16("room", "monstertype", row.get(87)?)?,
-            spawn_cap: to_i16("room", "maxregen", row.get(88)?)?,
-            min_level: to_i16("room", "minindex", row.get(89)?)?,
-            max_level: to_i16("room", "maxindex", row.get(90)?)?,
-            respawn_delay: to_i16("room", "delay", row.get(91)?)?,
+            spawn_zone: to_i16("room", "monstertype", row.get(107)?)?,
+            spawn_cap: to_i16("room", "maxregen", row.get(108)?)?,
+            min_level: to_i16("room", "minindex", row.get(109)?)?,
+            max_level: to_i16("room", "maxindex", row.get(110)?)?,
+            respawn_delay: to_i16("room", "delay", row.get(111)?)?,
             // Forced spawn is the u4 at room+0x468 (generate_monster
             // 20168/20233); Nightmare's `bynumber` Long@0x466 straddles it
             // by two bytes, so the id is the column's high word.
             forced_monster: {
-                let bynumber: i64 = row.get(93)?;
+                let bynumber: i64 = row.get(113)?;
                 let forced = (bynumber >> 16) & 0xffff;
                 (forced > 0)
                     .then(|| to_u16("room", "bynumber", forced).map(MonsterId))
                     .transpose()?
             },
             boss_monster: {
-                let permnpc: i64 = row.get(92)?;
+                let permnpc: i64 = row.get(112)?;
                 (permnpc > 0)
                     .then(|| to_u16("room", "permnpc", permnpc).map(MonsterId))
                     .transpose()?
             },
             // controlroom names a room on the SAME map (monsters.md §2).
             linked_room: {
-                let control: i64 = row.get(94)?;
+                let control: i64 = row.get(114)?;
                 (control > 0)
                     .then(|| {
                         to_u16("room", "controlroom", control)
@@ -202,28 +204,30 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
                     })
                     .transpose()?
             },
-            linked_cap: to_i16("room", "maxarea", row.get(95)?)?,
+            linked_cap: to_i16("room", "maxarea", row.get(115)?)?,
         };
         for d in 0..10 {
-            let dest: i64 = row.get(11 + d * 4)?;
+            let dest: i64 = row.get(11 + d * 6)?;
             if dest <= 0 {
                 continue;
             }
-            let exit_type = to_u16("room", "roomtype", row.get(12 + d * 4)?)?;
+            let exit_type = to_u16("room", "roomtype", row.get(12 + d * 6)?)?;
             // Exit type 8 is a map-change portal: destination map in para1.
             // Type 10 is a text-triggered exit: para1 is its phrase message.
             let dest_map = if exit_type == 8 {
-                to_u16("room", "para1", row.get(13 + d * 4)?)?
+                to_u16("room", "para1", row.get(13 + d * 6)?)?
             } else {
                 map
             };
             let trigger_msg = if exit_type == 10 {
-                opt_message("room", "para1", row.get(13 + d * 4)?)?
+                opt_message("room", "para1", row.get(13 + d * 6)?)?
             } else {
                 None
             };
-            let para1: i64 = row.get(13 + d * 4)?;
-            let para2: i64 = row.get(14 + d * 4)?;
+            let para1: i64 = row.get(13 + d * 6)?;
+            let para2: i64 = row.get(14 + d * 6)?;
+            let para3: i64 = row.get(15 + d * 6)?;
+            let para4: i64 = row.get(16 + d * 6)?;
             room.exits[d] = Some(Exit {
                 dest: RoomId {
                     map: dest_map,
@@ -234,6 +238,9 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
                 // Raw para1: damage for types 9/0x18, the secret gate for
                 // 7/0xb (monsters.md §3); clamped, ids never exceed i32.
                 param: i32::try_from(para1).unwrap_or(0),
+                param2: i32::try_from(para2).unwrap_or(0),
+                param3: i32::try_from(para3).unwrap_or(0),
+                param4: i32::try_from(para4).unwrap_or(0),
                 // para2 != 0 = door closed (all shipped doors).
                 door_closed: para2 != 0,
             });
@@ -258,12 +265,15 @@ fn load_monsters(db: &Connection, content: &mut Content) -> Result<(), LoadError
         .map(|i| format!("itemnumber_{i}, itemuses_{i}, itemdropper_{i}"))
         .collect::<Vec<_>>()
         .join(", ");
+    // APPEND-ONLY: every read below is POSITIONAL — a mid-list insert here
+    // shifts each later index silently (the slice-1 shift pattern).
     let mut stmt = db.prepare(&format!(
         "SELECT number, name, movemsg, deathmsg, {}, {}, \
          hitpoints, experience, expmulti, ac, dr, mr, bsdefence, energy, \
          runic, platinum, gold, silver, copper, {attack_cols}, \
          weaponnumber, {loot_cols}, \"index\", \"group\", follow, alignment, \
-         type, something3, nothing2, gamelimit, hpregen, regentime, something2 FROM monster",
+         type, something3, nothing2, gamelimit, hpregen, regentime, something2, \
+         desctxt, greettxt, talktxt, charmlvl, charmres, undead FROM monster",
         ability_cols("abilitya"),
         ability_cols("abilityb"),
     ))?;
@@ -345,6 +355,41 @@ fn load_monsters(db: &Connection, content: &mut Content) -> Result<(), LoadError
                 0 => None,
                 id => Some(ItemId(id)),
             },
+            name_block: opt_text_block("monster", "desctxt", row.get(loot_end + 11)?)?,
+            greet_block: opt_text_block("monster", "greettxt", row.get(loot_end + 12)?)?,
+            talk_block: opt_text_block("monster", "talktxt", row.get(loot_end + 13)?)?,
+            // charm.md §1: appended at the END of the SELECT — this loader
+            // indexes positionally, so a mid-list insert would shift every
+            // later column.
+            charm_level: to_i16("monster", "charmlvl", row.get(loot_end + 14)?)?,
+            charm_resist: to_i16("monster", "charmres", row.get(loot_end + 15)?)?,
+            // charm.md §1.1: the AffectsUndead (23) predicate. Tri-valued
+            // (0/1/-1) and tested `!= 0`, so it stays a number.
+            undead: to_i16("monster", "undead", row.get(loot_end + 16)?)?,
+        });
+    }
+    Ok(())
+}
+
+fn opt_text_block(
+    table: &'static str,
+    col: &'static str,
+    v: i64,
+) -> Result<Option<TextBlockId>, LoadError> {
+    match to_u16(table, col, v)? {
+        0 => Ok(None),
+        id => Ok(Some(TextBlockId(id))),
+    }
+}
+
+fn load_textblocks(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
+    let mut stmt = db.prepare("SELECT number, next, body FROM textblock")?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        content.add_text_block(TextBlock {
+            id: TextBlockId(to_u16("textblock", "number", row.get(0)?)?),
+            next: opt_text_block("textblock", "next", row.get(1)?)?,
+            body: row.get(2)?,
         });
     }
     Ok(())
@@ -373,7 +418,8 @@ fn load_items(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
          class_1, class_2, class_3, class_4, class_5, class_6, class_7, \
          class_8, class_9, class_10, race_1, race_2, race_3, race_4, \
          race_5, race_6, race_7, race_8, race_9, race_10, \
-         desc1, desc2, desc3, desc4, desc5, desc6, desc7, desc8, desc9 \
+         desc1, desc2, desc3, desc4, desc5, desc6, desc7, desc8, desc9, \
+         robable \
          FROM item"
     ))?;
     let mut rows = stmt.query([])?;
@@ -439,6 +485,8 @@ fn load_items(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
             not_droppable: to_i16("item", "notdroppable", row.get(base + 18)?)?,
             retain_after_uses: to_i16("item", "retainafteruses", row.get(base + 19)?)?,
             destroy_on_death: to_i16("item", "destroyondeath", row.get(base + 20)?)?,
+            // robable trails the desc columns (base+50).
+            robable: to_i16("item", "robable", row.get(base + 50)?)?,
         });
     }
     Ok(())

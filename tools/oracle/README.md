@@ -83,6 +83,78 @@ Character: Oracle Delver, Dwarf Warrior, not Lawful, default stats.
     +0xb0, maxHP +0xae, poison counter +0xbe, room +0xc8**), restart.
     Floor coin piles persist across restarts; live monsters don't.
 
+- Dodge-parry expedition (2026-07-26, slice 8) added more:
+  - **`sysop summon <item-or-spell>` needs the `WCCSYSOP` key.** Without it
+    the verb falls through to the SAY fallback and you get
+    `You say "sysop summon ..."` — which looks like a syntax error but is a
+    permission failure. Grant it from the sysop account (`sysop` at the BBS
+    login) with `/SYS ADDKEY <user> WCCSYSOP`; `/SYS LISTKEYS <user>`
+    confirms. `/SYS` also has REMOVEKEY, RESETPW, LISTACCOUNTS, KICK.
+  - A few items refuse to be conjured: `A strange force stops you from
+    getting this item.` (seen on `platinum ring`) — the summon line still
+    prints `<item> conjured.` first, so check for both.
+  - **Check for Cursed (ability 82) / CURSED (83) before staging any item as
+    an experimental variable.** A cursed item cannot be taken off once worn,
+    so a configuration built on one can only be changed by DYING (which drops
+    everything and costs a life). This bit the dodge-parry runs: every
+    negative-accuracy item worth wearing for its size — `smoky black talisman`
+    and `shining white talisman` (-20), `malachite ring` (-12), `spiked
+    collar` (-5) — is cursed. The removable negatives are the shields
+    (`tower shield` -6, `black shield` -5, `kite shield` -4, all 250-500
+    weight, so they move the encumbrance band too) and `darkwood ring` (-3,
+    weight 10).
+  - **Host-side commands are the only reliable escape.** `/xgoto` is
+    intercepted by MBBSEmu before the module sees it, so it works even while
+    mortally wounded, and unlike a walked flee it cannot be broken by the
+    free attack a monster gets on movement. `/xcash <n> [denom]` sets the
+    purse; `/xwhere` dumps the location key.
+  - **`/xexp` grants experience but does NOT level the character** — the exp
+    total moves and the level does not. Levelling requires visiting a
+    **trainer** (shop type 8). Room 1/289 "Halls of Training, Entrance"
+    carries shop 39 "Sysop Trainer", `shopclasslimit` 0 (every class) and a
+    level band 1..999, and it has no walking path from the world, so `/xgoto`
+    is the only way in. The verb is `train`, and one level reads:
+
+        You hand over 50 copper farthings and you receive training to
+        attain level 2.
+        You receive the following:
+        10 additional character points
+        2 additional lives
+
+    So a level costs coin, and **grants lives** — L1→L2 took a Dwarf Warrior
+    from 35 to 44 max HP, +10 CP and +2 lives. Levelling is therefore also the
+    cheapest way to refill the life budget an expedition burns.
+  - **Something in room 1/289 pulses `The river bashes you up against some
+    rocks!`** (10-18 dmg on a ~4 s cadence) even though the room renders as a
+    marble chamber. It killed a level-2 character standing at the trainer.
+    Whether this is a property of the room (its `roomtype_2` is 7, but that
+    flag is shared with casinos and jail cells, so it is not diagnostic) or a
+    room-effect subsystem that `/xgoto` fails to resynchronise is UNRESOLVED —
+    heal and train in short bursts, and leave immediately.
+  - **Mortally wounded is a dead end.** At HP < 0 every recovery verb
+    refuses with `You may not do that while you are mortally wounded!` —
+    `buy healing`, drinking a conjured potion, everything. The only exits
+    are bleeding to the −200 death threshold or being finished off; both
+    cost one life. Budget lives, and set the HP floor generously.
+  - **Death drops the ENTIRE inventory** (worn included) and costs one life;
+    the character revives at full HP at the area deathroom. Any staged kit
+    must therefore be re-summoned at the start of every run.
+  - **Coins weigh about a third of a unit each**, so the purse is a real
+    encumbrance term: 4000 copper carried as healing money silently pushed a
+    run from 26% to 65% encumbrance, which crosses the `enc < 33` cutoff in
+    `move_player_to_fighter` and changes the character's ACCURACY. That is
+    useful as a deliberate lever (`/xcash` sets it exactly) but it will
+    corrupt a run if unnoticed — assert the encumbrance band before
+    collecting.
+  - `buy healing` at the Newhaven healer (1/2190) is a full heal and prints
+    `You hand over N copper farthings and all your wounds are healed.`
+  - The status prompt is written INLINE ahead of game text and several game
+    lines can share one physical line (`[HP=22]:You punch giant rat for 5
+    damage!`). Split transcripts on `\[HP=-?\d+\]:` before matching, or
+    every regex anchored at `^` silently fails. Match monster nouns on a
+    word boundary too — `prepa*rat*ions` in room prose otherwise counts as a
+    swing at a `rat`.
+
 ## Scripts
 
 - `mudlib.py` — session driver (login, expect, capture).

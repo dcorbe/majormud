@@ -117,6 +117,7 @@ fn create_class(core: &mut Core, name: &str, class_choice: &str) -> SessionId {
     let s = core.attach_account(AccountProfile {
         name: name.into(),
         gender: Gender::Male,
+        saved_evil: 0,
     });
     core.input(s, "2"); // Dwarf
     core.input(s, class_choice);

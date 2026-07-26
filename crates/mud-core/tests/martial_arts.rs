@@ -48,9 +48,9 @@ fn world() -> Content {
         id: ClassId(1),
         name: "Mystic".into(),
         abilities: vec![
-            (Ability::from_id(0x1d).unwrap(), 1),
-            (Ability::from_id(0x1e).unwrap(), 1),
-            (Ability::from_id(0x23).unwrap(), 1),
+            (Ability::from_id(0x1d).unwrap(), 1),  // Punch V=1
+            (Ability::from_id(0x1e).unwrap(), 8),  // Kick V=8 (disjoint band)
+            (Ability::from_id(0x23).unwrap(), 16), // JumpKick V=16
         ],
         hp_per_level: 5,
         hp_seed: 4,
@@ -104,13 +104,13 @@ fn fighter(name: &str, class: u16, level: u16) -> Player {
     }
 }
 
-/// Collect the shown damage numbers from N combat rounds of punching.
-fn damage_census(class: u16, level: u16, rounds: u32) -> Vec<i32> {
+/// Collect the shown damage numbers from N combat rounds of `cmd`.
+fn damage_census_cmd(class: u16, level: u16, rounds: u32, cmd: &str) -> Vec<i32> {
     let mut core = Core::new(world(), CoreConfig::default());
     let s = core.attach_player(fighter("Student", class, level));
     core.spawn_monster(MonsterId(1), DOJO).unwrap();
     core.drain_events();
-    core.input(s, "attack dummy");
+    core.input(s, cmd);
     let mut out = Vec::new();
     for _ in 0..rounds * 5 {
         core.tick();
@@ -126,6 +126,10 @@ fn damage_census(class: u16, level: u16, rounds: u32) -> Vec<i32> {
         }
     }
     out
+}
+
+fn damage_census(class: u16, level: u16, rounds: u32) -> Vec<i32> {
+    damage_census_cmd(class, level, rounds, "attack dummy")
 }
 
 #[test]
@@ -162,5 +166,80 @@ fn plain_class_keeps_the_1_to_4_fists() {
     assert!(
         hits.iter().all(|d| (1..=4).contains(d)),
         "plain fists 1..=4: {hits:?}"
+    );
+}
+
+// --- M7 slice 2: the explicit MA verbs (cmd_punch 0x51e37 / cmd_kick
+// 0x51df2 / cmd_jumpkick 0x51dad -> combat.md "Unarmed attack modes") ---
+
+#[test]
+fn kick_uses_the_mode_2_formula() {
+    // L10 V8: min = 10*8/8 + 2 = 12, max = 10*8/6 + 7 = 20, then the
+    // mode-2 damage seed (33 -> x133/100, combat.rs tuning) stretches
+    // the shown band to 15..=26. Disjoint from the punch band (3..=9),
+    // so a mode mixup fails loudly.
+    let hits = damage_census_cmd(1, 10, 30, "kick dummy");
+    assert!(!hits.is_empty(), "some kicks landed");
+    assert!(
+        hits.iter().all(|d| (15..=26).contains(d)),
+        "mode-2 band 15..=26: {hits:?}"
+    );
+}
+
+#[test]
+fn jumpkick_uses_the_mode_3_formula() {
+    // L10 V16: min = 10*16/8 + 2 = 22, max = 10*16/6 + 8 = 34, then
+    // the mode-3 damage seed (66 -> x166/100) stretches the shown band
+    // to 36..=56.
+    let hits = damage_census_cmd(1, 10, 60, "jumpkick dummy");
+    assert!(!hits.is_empty(), "some jumpkicks landed");
+    assert!(
+        hits.iter().all(|d| (36..=56).contains(d)),
+        "mode-3 band 36..=56: {hits:?}"
+    );
+}
+
+#[test]
+fn punch_verb_reaches_the_mode_1_formula() {
+    // The explicit verb, not the bare-attack auto-pick: same band as
+    // mystic_bare_attack_uses_the_punch_formula (L1: 2..=7).
+    let hits = damage_census_cmd(1, 1, 30, "punch dummy");
+    assert!(!hits.is_empty(), "some punches landed");
+    assert!(
+        hits.iter().all(|d| (2..=7).contains(d)),
+        "mode-1 band 2..=7: {hits:?}"
+    );
+}
+
+#[test]
+fn ma_verbs_without_the_ability_fall_through_to_say() {
+    // cmd_kick returns 0 without Kick (0x1e) -> unconsumed input -> the
+    // parser's universal SAY fallback (same path as tame/mesmerize,
+    // charm.md §5). The warrior says the words; nothing engages.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let s = core.attach_player(fighter("Bruiser", 2, 10));
+    core.spawn_monster(MonsterId(1), DOJO).unwrap();
+    core.drain_events();
+    core.input(s, "kick dummy");
+    let events = core.drain_events();
+    let said = events.iter().any(|e| {
+        matches!(e, Event::Output { text, .. } if text.contains("kick dummy"))
+    });
+    let engaged = events.iter().any(|e| {
+        matches!(e, Event::Output { text, .. } if text.contains("Combat Engaged"))
+    });
+    assert!(said, "warrior kick falls through to say: {events:?}");
+    assert!(!engaged, "no engagement without the ability: {events:?}");
+}
+
+#[test]
+fn jumpkick_swings_slower_than_punch() {
+    // EU speeds: mode 1 = 1150, mode 3 = 1900 (combat.md mode table) —
+    // the jumpkicker banks energy across rounds and lands fewer swings.
+    let punches = damage_census_cmd(1, 10, 40, "punch dummy").len();
+    let jumpkicks = damage_census_cmd(1, 10, 40, "jumpkick dummy").len();
+    assert!(
+        jumpkicks < punches,
+        "jumpkick ({jumpkicks}) must swing less than punch ({punches})"
     );
 }

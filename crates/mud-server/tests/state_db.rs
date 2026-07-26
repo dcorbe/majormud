@@ -105,6 +105,28 @@ fn player_save_and_load_roundtrip() {
 }
 
 #[test]
+fn ansi_flag_roundtrips() {
+    let db = db();
+    let mut p = player("Colora");
+    p.ansi = true;
+    db.save_player(&p).unwrap();
+    let loaded = db.load_player("Colora").unwrap().unwrap();
+    assert!(loaded.ansi, "per-user ANSI persists");
+}
+
+#[test]
+fn fame_and_warn_flag_roundtrip() {
+    let db = db();
+    let mut p = player("Rogue");
+    p.fame = 85; // Criminal
+    p.warn_on_evil = false;
+    db.save_player(&p).unwrap();
+    let loaded = db.load_player("Rogue").unwrap().unwrap();
+    assert_eq!(loaded.fame, 85);
+    assert!(!loaded.warn_on_evil);
+}
+
+#[test]
 fn missing_player_loads_as_none() {
     let db = db();
     assert!(db.load_player("Nobody").expect("query").is_none());
@@ -286,6 +308,9 @@ fn old_database_is_migrated_on_open() {
     assert_eq!(old.coins, Default::default());
     assert_eq!(old.poison, 0, "migrated row backfills poison to 0");
     assert_eq!(old.active_spells, [ActiveSpell::default(); 10]);
+    assert!(old.ansi, "pre-M7 rows backfill ansi ON (the always-on server)");
+    assert_eq!(old.fame, 0, "pre-M7 rows backfill fame 0");
+    assert!(old.warn_on_evil, "pre-M7 rows backfill Warn on Evil ON");
     drop(db);
 
     // (c) Reopening is idempotent: same data, still writable.
@@ -331,4 +356,34 @@ fn monster_kill_and_room_stamp_roundtrip() {
     let mut stamps = db.load_room_stamps().expect("load");
     stamps.sort();
     assert_eq!(stamps, vec![(1, 42, 1_000_600), (9, 7, 1_000_200)]);
+}
+
+// --- M7 slice 3: permadeath evil banking (crime.md §8) ---
+
+#[test]
+fn evil_banks_with_one_time_decay_and_restores() {
+    let db = db();
+    db.create_account("Reaper", "pw", Gender::Male).unwrap();
+    const DAY: i64 = 86_400;
+    // First bank on day 100: a fresh bank decays once (retention 90%).
+    db.bank_evil("Reaper", 100, 100 * DAY).unwrap();
+    let p = db.verify_login("Reaper", "pw").unwrap().unwrap();
+    assert_eq!(p.saved_evil, 90, "banked with one-time decay");
+    // Re-banking the SAME day does not decay again.
+    db.bank_evil("Reaper", 100, 100 * DAY + 60).unwrap();
+    let p = db.verify_login("Reaper", "pw").unwrap().unwrap();
+    assert_eq!(p.saved_evil, 100, "same-day bank saves unchanged");
+    // A later-day bank decays once more.
+    db.bank_evil("Reaper", 100, 101 * DAY).unwrap();
+    let p = db.verify_login("Reaper", "pw").unwrap().unwrap();
+    assert_eq!(p.saved_evil, 90);
+}
+
+#[test]
+fn negative_and_zero_fame_bank_as_zero() {
+    let db = db();
+    db.create_account("Pious", "pw", Gender::Male).unwrap();
+    db.bank_evil("Pious", -120, 86_400).unwrap();
+    let p = db.verify_login("Pious", "pw").unwrap().unwrap();
+    assert_eq!(p.saved_evil, 0, "good standing does not follow the account");
 }

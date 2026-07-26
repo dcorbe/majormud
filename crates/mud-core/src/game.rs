@@ -49,6 +49,17 @@ enum FloorMatch {
     None,
 }
 
+/// What a room-name lookup for a cast resolved — `find_action_target`'s
+/// `*param_4` kind code (decompile 63726): `1` = user, `2` = monster,
+/// `8` = carried item. The cast dispatcher (59278-59320) picks the entry
+/// point off THIS, never off the spell's target mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CastTarget {
+    User(SessionId),
+    Monster(MonsterInstanceId),
+    Item(crate::content::ItemId),
+}
+
 /// Accuracy accumulators (0x16 Accuracy, 0x69, 0x6a) feeding fighter[0].
 fn accuracy_ability(id: u16) -> Ability {
     Ability::from_id(id).expect("accuracy ability ids are in the enum")
@@ -211,9 +222,24 @@ pub struct Player {
     /// `+0x542` — fame/notoriety word. Gates monster targeting: behaviour
     /// mode 6 spares players at >= 0x28 (unless already fighting); roam
     /// class 5 "guardians" initiate ONLY at >= 0x28; the flee free-attack
-    /// mode-6 bound is 0x50 (decompile 20386/20420/23882). Fed by the M7
-    /// crime system — creation seeds 0.
+    /// mode-6 bound is 0x50 (decompile 20386/20420/23882). Fed by the
+    /// crime system (`crime.md`, landed) — creation seeds 0.
     pub fame: i16,
+    /// Per-user ANSI. OURS (documented divergence): the real board keys
+    /// this on the MBBS account outside the DLL. Overrides the
+    /// `CoreConfig.ansi` global at the output funnel; toggled by the
+    /// `ansi` command; creation seeds the server global.
+    pub ansi: bool,
+    /// `+0x700 & 0x10` — the "Warn on Evil" setting: while set, any
+    /// action that would grant evil points is REFUSED (crime.md §2.1).
+    /// Creation sets it ON (create_player ~53795); `set evil` toggles.
+    pub warn_on_evil: bool,
+    /// `+0x5f6` — the HIDDEN byte (theft.md §11.2). Runtime only, never
+    /// persisted; cleared by non-sneak movement and combat engagement.
+    pub hidden: bool,
+    /// `+0x6f4` bit 4 — sneak-armed: the next movement runs as
+    /// `sneak()` (theft.md §11.1). Runtime only.
+    pub sneak_armed: bool,
 }
 
 /// One player active-spell slot (`spellcasting.md` §1). `spell` is `None`
@@ -245,9 +271,8 @@ impl Player {
 }
 
 /// Why a spell can('t) be learned/used by this character.
-/// [`Core::spell_gate`] covers gates 1-2 (spellcasting.md §2); the
-/// alignment lattice (gate 3) is deferred with M4's other alignment
-/// gates — no starter scroll carries one.
+/// [`Core::spell_gate`] covers gates 1-3 (spellcasting.md §2 + the
+/// crime.md §6.1 alignment lattice).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpellGate {
     Ok,
@@ -256,6 +281,8 @@ pub enum SpellGate {
     /// Right class, character level below spell.required_power (+0xbe).
     /// Oracle-proven level gate (spellcasting.md §8.3).
     TooPowerful,
+    /// Refused by the alignment lattice at the caster's legal level.
+    Alignment,
 }
 
 /// The five coin denominations, high to low (`+0x610..+0x620`). All prices
@@ -364,6 +391,10 @@ impl Coins {
 pub struct AccountProfile {
     pub name: String,
     pub gender: Gender,
+    /// crime.md §8: evil banked by a previous permadeath on this account
+    /// — a re-rolled character starts with it (crime follows the
+    /// account). 0 for fresh accounts.
+    pub saved_evil: i16,
 }
 
 /// Server-operator configuration (the original's sysop config globals).
@@ -382,10 +413,17 @@ pub struct CoreConfig {
     pub rng_seed: u64,
     /// Seconds (= dots) of exit meditation (ORACLE-VERIFY: 10 observed).
     pub exit_meditation_seconds: u8,
-    /// Death recall room (`DAT_00482cfc`/`d00` temples; alignment split and
-    /// per-room DeathRoom overrides arrive with alignment/zones). ORACLE:
-    /// Newhaven deaths recall to Newhaven, Healer.
+    /// Death recall room (`DAT_00482cfc`/`d00` temples; per-room
+    /// DeathRoom overrides arrive with zones). ORACLE: Newhaven deaths
+    /// recall to Newhaven, Healer.
     pub recall_location: RoomId,
+    /// The criminal temple (`DAT_00482d00`, crime.md §6.4): fame >= 0x28
+    /// respawns here. DLL init default = room 142 (the "outlaw start");
+    /// ORACLE-VERIFY against a live criminal death.
+    pub criminal_recall_location: RoomId,
+    /// PvP level-range limit (option 0x39, `DAT_00482d8c`; crime.md
+    /// §6.5): -1 disables PvP interactions (incl. rob); fallback 100.
+    pub pvp_level_range: i32,
     /// Restored population cooldowns: (template, seconds since its last
     /// kill at boot). Applied before the boot population walk.
     pub restored_population: Vec<(crate::content::MonsterId, i64)>,
@@ -412,6 +450,8 @@ impl Default for CoreConfig {
             rng_seed: 0x4d4d55445f574721, // "MMUD_WG!"
             exit_meditation_seconds: 10,
             recall_location: RoomId { map: 1, room: 2190 },
+            criminal_recall_location: RoomId { map: 1, room: 142 },
+            pvp_level_range: 100,
             restored_population: Vec::new(),
             restored_room_stamps: Vec::new(),
             ansi: false,
@@ -422,15 +462,31 @@ impl Default for CoreConfig {
 /// `genrdn(lo, hi)`-style PRNG: xorshift64*, uniform in `[lo, hi]`.
 /// Deterministic given the seed; exactness targets distributions, not the
 /// original's roll stream (design decision).
-struct Rng(u64);
+///
+/// `draws` counts every value ever taken. Nothing in the game reads it —
+/// it exists so tests can pin WHERE a `genrdn` is spent, not just what it
+/// decided. Several DLL predicates short-circuit ahead of their roll (the
+/// pursuit follow gate at 19423, the charm-exempt retaliation twins), and
+/// a test that only asserts the outcome cannot tell a skipped DRAW from a
+/// skipped BRANCH — while every seeded golden in the suite depends on the
+/// difference. See [`Core::debug_rng_draws`].
+struct Rng {
+    state: u64,
+    draws: u64,
+}
 
 impl Rng {
+    fn new(seed: u64) -> Rng {
+        Rng { state: seed, draws: 0 }
+    }
+
     fn roll(&mut self, lo: i32, hi: i32) -> i32 {
         debug_assert!(lo <= hi);
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        let x = self.0.wrapping_mul(0x2545F4914F6CDD1D);
+        self.draws += 1;
+        self.state ^= self.state >> 12;
+        self.state ^= self.state << 25;
+        self.state ^= self.state >> 27;
+        let x = self.state.wrapping_mul(0x2545F4914F6CDD1D);
         let span = (hi - lo + 1) as u64;
         lo + (x % span) as i32
     }
@@ -656,8 +712,10 @@ pub enum Event {
         shop: crate::content::ShopId,
         counts: [i16; 20],
     },
-    /// Permadeath: remove the character record entirely.
-    DeleteCharacter(String),
+    /// Permadeath: remove the character record entirely. `fame` rides
+    /// along so the server can bank the evil points to the account
+    /// (crime.md §8 — crime follows the account).
+    DeleteCharacter { name: String, fame: i16 },
     /// A limited-population template was killed — persist the wall-clock
     /// stamp (check_kill_monster's tmpl+0xb4/+0xb6 write).
     PersistMonsterKill { template: crate::content::MonsterId },
@@ -720,7 +778,58 @@ enum Session {
         /// discipline) and the end-of-entry sweep redraws it; input
         /// consumes it silently (the echoed Enter broke the line).
         at_prompt: bool,
+        /// The attack mode (`DAT_004877e4`, kept per-fighter in the
+        /// autocombat record +8 and restored each round): cmd_attack
+        /// auto-picks MartialArts1 unarmed with Punch; punch/kick/
+        /// jumpkick set modes 1/2/3 (combat.md "Unarmed attack modes").
+        attack_mode: crate::combat::AttackType,
+        /// `add_delay` units remaining (the thief-family command delay;
+        /// aged one per fast tick — unit length ORACLE-VERIFY). Only
+        /// SNEAK and HIDE gate on it per theft.md; every charging
+        /// command extends it.
+        delay: u8,
     },
+}
+
+/// Direction-word resolution for argument-taking commands (PICKLOCK
+/// etc.): the two-letter aliases and full-name prefixes.
+fn direction_from_word(word: &str) -> Option<crate::content::Direction> {
+    use crate::content::Direction as D;
+    match word {
+        "n" => return Some(D::North),
+        "s" => return Some(D::South),
+        "e" => return Some(D::East),
+        "w" => return Some(D::West),
+        "ne" => return Some(D::NorthEast),
+        "nw" => return Some(D::NorthWest),
+        "se" => return Some(D::SouthEast),
+        "sw" => return Some(D::SouthWest),
+        "u" => return Some(D::Up),
+        "d" => return Some(D::Down),
+        _ => {}
+    }
+    if word.is_empty() {
+        return None;
+    }
+    // Diagonals first so "north" cannot shadow "northeast" prefixes.
+    for d in [
+        D::NorthEast,
+        D::NorthWest,
+        D::SouthEast,
+        D::SouthWest,
+        D::North,
+        D::South,
+        D::East,
+        D::West,
+        D::Up,
+        D::Down,
+    ] {
+        let name = crate::text::direction_shown(d);
+        if name.starts_with(word) {
+            return Some(d);
+        }
+    }
+    None
 }
 
 /// Self-rescheduling background jobs (`combat_rounds.md` §1). Medium (3 s)
@@ -747,6 +856,10 @@ enum Job {
     /// DAT_00482138 is never reset within a process). A standalone server
     /// re-runs the shelf reconciliation every 24 h instead.
     Cleanup,
+    /// A picked lock's re-lock kick (theft.md §8.6; 300 s per delay
+    /// unit, scheduled whole rather than the DLL's head-decrement walk —
+    /// documented simplification).
+    ExitRelock(RoomId, u8),
 }
 
 const SLOW_INTERVAL: u64 = 30;
@@ -781,6 +894,11 @@ pub struct MonsterInstanceId(pub u64);
 #[derive(Debug, Clone)]
 pub(crate) struct MonsterInstance {
     pub template: crate::content::MonsterId,
+    /// The spawn-composed display name (`get_random_name` over the
+    /// template's name block; the base template name when there is
+    /// none). Death announcements re-read the TEMPLATE name instead
+    /// (check_kill_monster; spellcasting.md §8.10).
+    pub name: String,
     pub location: RoomId,
     pub current_hp: i32,
     /// Current energy pool (`mon+0x16`); regen/max = the template's `energy`.
@@ -836,6 +954,43 @@ pub(crate) struct MonsterInstance {
     /// summons) never swings at its named target. Cleared whenever a lock
     /// is (re)written by combat.
     pub suppress: bool,
+    /// `mon+0x128` bit 0 (int-idx `0x4a`) — the CHARMED bit, the third
+    /// leg of the charm.md §0 state triple (`target` = the owner name
+    /// link, `suppress` = 1, this bit = 1). A full pet: assists its
+    /// owner, skips the pursuit follow-roll, never wanders. Set by the
+    /// Enslave apply (43806/43820) and the Summon-pet path (40050) —
+    /// grudge locks, healed "friends" and summoned hunters carry the
+    /// other two legs WITHOUT this one.
+    pub charmed: bool,
+    /// `mon+0x88` (int-idx `0x22`) — the directed-travel HUNT link: the
+    /// instance id of the monster this one was summoned to kill
+    /// (charm.md §6, written at `cast_monster_target` 43920). It is NOT
+    /// a name link and never a pet bond: the two live on opposite sides
+    /// of the driver's `+0x1a` test (20369/20450) and of the medium
+    /// tick's (19339/19376), so a monster is at most one of "locked on a
+    /// user" and "hunting a monster".
+    ///
+    /// DIVERGENCE, in our favour: the DLL clears this on nobody's death
+    /// (charm.md §7) and reuses monster ids, so a long-lived hunter can
+    /// silently redirect onto a recycled body. [`MonsterInstanceId`]
+    /// comes from a monotonic `u64` counter, so a dangling link here is
+    /// simply dead — the arm finds no instance and does nothing, which
+    /// is what the DLL's own `get_monster_data` failure produces too.
+    /// The link is still never cleared, so the hunter never falls
+    /// through to player acquisition either.
+    pub hunt: Option<MonsterInstanceId>,
+    /// `mon+0x38..+0x60` — the 10-deep breadcrumb trail, newest first.
+    /// `move_monster` shifts it down one slot and writes the NEW room
+    /// into index 0 (21572-21574: `memmove(mon+0x3c, mon+0x38, 0x24)`
+    /// then `mon+0x38 = mon+0x10`), so index 0 always equals `location`
+    /// and index 1 is the predecessor. That is why
+    /// [`Core::dir_toward_monster`] scans from index 1, exactly like the
+    /// 20-deep player trail and [`Core::dir_toward_player`].
+    ///
+    /// Seeded with the spawn room. The DLL leaves the array zeroed at
+    /// generate time, which its scan skips as "no such room"; a one-entry
+    /// seed is the same thing (the scan starts at 1 and finds nothing).
+    pub trail: Vec<RoomId>,
     /// `mon+0x120` — the spawn/home room: check_kill_monster stamps ITS
     /// respawn timer and spawn accounting, wherever the monster died.
     pub home: RoomId,
@@ -843,6 +998,116 @@ pub(crate) struct MonsterInstance {
     /// rolled `lngrnd(0, max+1)` at generate time (fixture spawns copy the
     /// template maxes verbatim to keep M3-era goldens byte-stable).
     pub coins: [u32; 5],
+}
+
+/// Whether a call site's retaliation-lock twin exempts charmed monsters.
+/// This tag selects THAT ONE GATE and nothing else — the rest of
+/// [`Core::retaliation_lock`]'s body is the melee twin's, whichever tag
+/// is passed. See the divergence list below before adding a call site.
+///
+/// The DLL inlines the lock EIGHT times and they do not agree
+/// (charm.md §2.4/§4.3). Five open with `(mon+0x128 & 1) == 0`:
+///
+/// * 26230 — the melee ENGAGE arm (the `DAT_004877f4 == '\0'` half of
+///   `attack_user_monster`);
+/// * 26514 — the melee round's post-damage survivor branch (whose `else`
+///   at 26527 is the §4.3 owner release);
+/// * 43260, 43335, 43470 — all three `cast_monster_target` ENTRY grudges:
+///   the `spelltype < 3` autocombat re-fire, its ability-0x34
+///   (EvilInCombat) sibling, and the duration-0 "%s moves to cast %s upon
+///   %s" engage arm.
+///
+/// Those are [`CharmedExemption::Exempt`]: a pet is never locked and no
+/// roll is drawn.
+///
+/// The other three carry no charmed check at all — 43752 (the
+/// single-target cast-DAMAGE twin) and its area copies at 40371 and
+/// 40600. Those are [`CharmedExemption::Ignored`]: a damage spell can
+/// grudge-lock somebody's own pet, clearing `+0x116` and overwriting the
+/// owner link, while LEAVING the charmed bit set — so the ex-pet stays a
+/// non-wandering, roll-free follower that now attacks its owner.
+/// Deliberate fidelity to a sloppy original, pinned by
+/// `a_damage_cast_grudges_a_pet_without_releasing_it` and
+/// `an_area_damage_cast_grudges_somebody_elses_pet`.
+///
+/// STILL UNMODELLED at the `Ignored` sites — pre-existing debt in the
+/// shared body, not introduced by this tag:
+///
+/// 1. **The roam-class arm.** 43752 opens `template == NULL ||
+///    template.group == 0x25`, and 40371/40601 open `instance roam ==
+///    0x25` with no null clause; that arm does `sameas(mon+0x1a,
+///    attacker)` and, on a match, clears `+0x116` — a same-attacker
+///    re-hit unsuppresses an existing grudge. We return and do nothing.
+/// 2. **`roam == 5` holding a lock.** The cast twins have no such
+///    clause: they roll AND write. We roll and then decline the write.
+/// 3. **`behaviour in {3, 0, 4}`.** The cast twins have no such clause;
+///    ours forces the lock regardless of the roll, so a passive monster
+///    is always grudged by a damage spell.
+///
+/// (43752 also reads the TEMPLATE's aggression, `knmsr+0x6e`, where the
+/// melee and area twins read the instance's `mon+0x42`. Not a divergence
+/// here: instance aggression is copied at spawn and never mutated.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CharmedExemption {
+    Exempt,
+    Ignored,
+}
+
+/// What a Summon(12) spawn is bound to (charm.md §6). All four DLL
+/// handlers call the same `generate_monster(map, room, -1, templateId,
+/// 0, 65000, -1, 0, 1)` and then write DIFFERENT ownership state, so the
+/// tag is the whole difference between the four routes:
+///
+/// | route | site | `+0x1a` | `+0x116` | charmed | `+0x88` |
+/// |---|---|---|---|---|---|
+/// | [`SummonLink::Pet`] — `cast_no_target` 0xc | 40035-40056 | caster | 1 | yes | — |
+/// | [`SummonLink::HuntUser`] — `cast_user_target` 0xc | 42059-42086 | target user | 0 | no | — |
+/// | [`SummonLink::HuntUser`] — `monster_cast` 0xc | 23251-23268 | victim user | 0 | no | — |
+/// | [`SummonLink::HuntMonster`] — `cast_monster_target` 0xc | 43902-43931 | (empty) | 0 | no | victim id |
+///
+/// The two `HuntUser` rows are genuinely the same three writes; only the
+/// spawn's population-cap arguments differ (the monster route passes
+/// `knmsr+0x5c` for both caps instead of the `0/65000` pair), which is a
+/// `generate_monster` concern and not an ownership one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SummonLink {
+    /// A full, timerless pet — the §0 triple toward the caster. Released
+    /// only by §4.2 (leash give-up / logout) or §4.3 (owner attacks it):
+    /// there is no ability-6 slot behind it for a timer to expire.
+    Pet(SessionId),
+    /// A hunter against a PLAYER: a bare grudge lock, no suppression and
+    /// no charm.
+    HuntUser(SessionId),
+    /// A hunter against a MONSTER: the `+0x88` link and nothing else.
+    HuntMonster(MonsterInstanceId),
+    /// No ownership at all — the monster AREA self-slot summon, whose
+    /// link was not extracted (PLAUSIBLE, see its call site).
+    None,
+}
+
+/// Which of `find_action_target`'s monster passes a name lookup is
+/// running. The `0x800` mask bit splits the room's monsters into an
+/// UNCHARMED sweep (63776, `(param_7 & 0x800) == 0 || (mon+0x128 & 1) ==
+/// 0`) followed by a CHARMED-ONLY sweep (63820); without the bit there
+/// is a single sweep over everything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MonsterPass {
+    /// No `0x800` — pets and wild bodies in one pass, room order.
+    All,
+    /// `0x800` pass 1.
+    Uncharmed,
+    /// `0x800` pass 2.
+    Charmed,
+}
+
+impl MonsterPass {
+    fn admits(self, charmed: bool) -> bool {
+        match self {
+            MonsterPass::All => true,
+            MonsterPass::Uncharmed => !charmed,
+            MonsterPass::Charmed => charmed,
+        }
+    }
 }
 
 /// A scheduled shop-slot restock, due at an absolute tick. Events live
@@ -864,11 +1129,25 @@ pub struct Core {
     rng: Rng,
     monsters: BTreeMap<MonsterInstanceId, MonsterInstance>,
     next_monster: u64,
+    /// The evil-pair timer list (crime.md §4; `DAT_00488180`). Nodes age
+    /// on the ATTACKER's slow tick and power retaliation-free responses,
+    /// FORGIVE refunds, and the room-list star.
+    evil_timers: Vec<crate::crime::EvilNode>,
+    /// Runtime exit lock-state overlay (theft.md §8.1 unions): keyed
+    /// (room, direction), value = the state word (2 locked, 1 picked).
+    /// Absent = the shipped disk state.
+    exit_locks: BTreeMap<(RoomId, u8), i32>,
     /// Ephemeral floor coin piles per room (low->high denominations).
     room_coins: BTreeMap<RoomId, [u32; 5]>,
     /// Ephemeral floor items per room (item, remaining uses), seeded from
     /// the rooms' static placements at boot.
     room_items: BTreeMap<RoomId, Vec<(crate::content::ItemId, i16)>>,
+    /// The thief stash (theft.md §11.2): items hidden in rooms — off the
+    /// notice line, revealed by a bare SEARCH, retrievable by name.
+    room_hidden_items: BTreeMap<RoomId, Vec<(crate::content::ItemId, i16)>>,
+    /// Hidden coin pools per room (the §4.6 hidden-coin fields),
+    /// low->high denominations like `room_coins`.
+    room_hidden_coins: BTreeMap<RoomId, [u32; 5]>,
     /// Live shop stock counts. Boot fills every shelf to max — the pristine
     /// distribution shipped full, and the `shopnow` values in an extracted
     /// .VIR are played-board runtime state. (Cross-restart persistence in
@@ -940,8 +1219,8 @@ impl Core {
         scheduler.schedule_in(FAST_INTERVAL, Job::Fast);
         scheduler.schedule_in(SPAWN_INTERVAL, Job::Spawn);
         scheduler.schedule_in(CLEANUP_INTERVAL, Job::Cleanup);
-        let rng = Rng(config.rng_seed | 1);
-        let spawn_rng = Rng((config.rng_seed ^ 0x5350_4157_4e21_0000) | 1); // "SPAWN!"-ish
+        let rng = Rng::new(config.rng_seed | 1);
+        let spawn_rng = Rng::new((config.rng_seed ^ 0x5350_4157_4e21_0000) | 1); // "SPAWN!"-ish
         let mut core = Core {
             content,
             config,
@@ -952,8 +1231,12 @@ impl Core {
             rng,
             monsters: BTreeMap::new(),
             next_monster: 1,
+            evil_timers: Vec::new(),
+            exit_locks: BTreeMap::new(),
             room_coins: BTreeMap::new(),
             room_items: BTreeMap::new(),
+            room_hidden_items: BTreeMap::new(),
+            room_hidden_coins: BTreeMap::new(),
             shop_stock: BTreeMap::new(),
             restock_events: Vec::new(),
             restock_counter: 0,
@@ -1229,12 +1512,16 @@ impl Core {
                 items.push((slot.item, slot.uses));
             }
         }
+        // Name roll (L21102 get_random_name, AFTER the item draws and
+        // BEFORE the entry-direction pick — the decompile draw order).
+        let name = self.roll_spawn_name(template, &name, true);
         let id = MonsterInstanceId(self.next_monster);
         self.next_monster += 1;
         self.monsters.insert(
             id,
             MonsterInstance {
                 template,
+                name: name.clone(),
                 location: room,
                 current_hp: hitpoints,
                 energy,
@@ -1252,6 +1539,9 @@ impl Core {
                 last_move_dir: None,
                 give_up: 0,
                 suppress: false,
+                charmed: false,
+                hunt: None,
+                trail: vec![room],
                 home: room,
                 coins,
             },
@@ -1508,10 +1798,13 @@ impl Core {
         let (aggression, behaviour) = (tpl.aggression, tpl.behaviour);
         let (roam_class, herd_mode, herd_rank) = (tpl.roam_class, tpl.herd_mode, tpl.exp_multi);
         let coins = tpl.coins;
+        let base = tpl.name.clone();
+        let name = self.roll_spawn_name(template, &base, false);
         self.monsters.insert(
             id,
             MonsterInstance {
                 template,
+                name,
                 location: room,
                 current_hp: hitpoints,
                 energy,
@@ -1529,6 +1822,9 @@ impl Core {
                 last_move_dir: None,
                 give_up: 0,
                 suppress: false,
+                charmed: false,
+                hunt: None,
+                trail: vec![room],
                 home: room,
                 coins,
             },
@@ -1549,6 +1845,21 @@ impl Core {
     /// Test/inspection: every live monster instance id.
     pub fn monster_ids(&self) -> Vec<MonsterInstanceId> {
         self.monsters.keys().copied().collect()
+    }
+
+    /// Test/inspection: a player's fame (`+0x542`).
+    pub fn player_fame(&self, session: SessionId) -> i16 {
+        match self.sessions.get(&session) {
+            Some(Session::InGame { player, .. }) => player.fame,
+            _ => 0,
+        }
+    }
+
+    /// Test/staging: write a player's fame directly.
+    pub fn set_player_fame(&mut self, session: SessionId, fame: i16) {
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+            player.fame = fame;
+        }
     }
 
     /// Test/inspection: an instance's template id.
@@ -1624,6 +1935,70 @@ impl Core {
         self.monsters.get(&id)?;
         let f = self.build_monster_defender(id);
         Some((f.evasion_a, f.armor, self.monster_save_stat(id)))
+    }
+
+    /// Test hook: the charm.md §0 state triple of a live monster —
+    /// (`charmed` bit `+0x128`, `suppress` byte `+0x116`, owner/grudge
+    /// name link `+0x1a`). A pet is all three; a grudge-holder is the
+    /// link alone; a healed "friend" is link + suppression.
+    pub fn debug_monster_charm(
+        &self,
+        id: MonsterInstanceId,
+    ) -> Option<(bool, bool, Option<SessionId>)> {
+        self.monsters.get(&id).map(|m| (m.charmed, m.suppress, m.target))
+    }
+
+    /// Test hook: the `+0x88` directed-travel hunt link of a live
+    /// monster (charm.md §6). `None` for every body that was not summoned
+    /// by `cast_monster_target` case 0xc; the outer `Option` is
+    /// "instance alive".
+    pub fn debug_monster_hunt(&self, id: MonsterInstanceId) -> Option<Option<MonsterInstanceId>> {
+        self.monsters.get(&id).map(|m| m.hunt)
+    }
+
+    /// Test hook: a live monster's breadcrumb trail (`mon+0x38..+0x60`),
+    /// newest first — index 0 is the current room.
+    pub fn debug_monster_trail(&self, id: MonsterInstanceId) -> Option<Vec<RoomId>> {
+        self.monsters.get(&id).map(|m| m.trail.clone())
+    }
+
+    /// Test hook: force the `+0x116` attack-suppression byte. The state
+    /// combinations the shipped write sites cannot produce (a SUPPRESSED
+    /// hunter, say) are still branches of the ported code, and this is
+    /// the only way to reach them without inventing a spell for it.
+    pub fn debug_suppress_monster(&mut self, id: MonsterInstanceId, suppress: bool) {
+        if let Some(m) = self.monsters.get_mut(&id) {
+            m.suppress = suppress;
+        }
+    }
+
+    /// Test hook: how many values the main `genrdn` stream has produced
+    /// since the world was built. The SPAWN stream is separate and is not
+    /// counted. Take a reading either side of an action and the delta is
+    /// its exact draw cost — the only way to prove a short-circuited DLL
+    /// predicate skips the ROLL and not merely the branch.
+    pub fn debug_rng_draws(&self) -> u64 {
+        self.rng.draws
+    }
+
+    /// Test hook: one monster-vs-monster swing
+    /// ([`Core::attack_monster_monster`], charm.md §3). The driver arms
+    /// that call it in anger land with the pet-assist and hunt branches.
+    pub fn debug_monster_attack_monster(
+        &mut self,
+        attacker: MonsterInstanceId,
+        defender: MonsterInstanceId,
+    ) {
+        self.attack_monster_monster(attacker, defender);
+    }
+
+    /// Test hook: one combat-driver pass over a SINGLE monster
+    /// ([`Core::monster_consider`]) with no tick around it. The pet-assist
+    /// branch (charm.md §2.2) is deterministic and draw-free in two of its
+    /// three outcomes, and that is only measurable when the energy round's
+    /// own rolls are out of the sample.
+    pub fn debug_monster_consider(&mut self, id: MonsterInstanceId) {
+        self.monster_consider(id);
     }
 
     /// Test hook: mutable access to loaded content.
@@ -1716,6 +2091,13 @@ impl Core {
                 }
                 Job::ExitStep(session) => self.exit_step(session),
                 Job::Fast => {
+                    // Age the thief-family command delays.
+                    let ids: Vec<SessionId> = self.sessions.keys().copied().collect();
+                    for id in ids {
+                        if let Some(Session::InGame { delay, .. }) = self.sessions.get_mut(&id) {
+                            *delay = delay.saturating_sub(1);
+                        }
+                    }
                     self.fast_update();
                     self.scheduler.schedule_in(FAST_INTERVAL, Job::Fast);
                 }
@@ -1723,6 +2105,7 @@ impl Core {
                     self.spawn_pass();
                     self.scheduler.schedule_in(SPAWN_INTERVAL, Job::Spawn);
                 }
+                Job::ExitRelock(room, dir) => self.relock_exit(room, dir),
                 Job::Cleanup => {
                     self.reconcile_shelves();
                     self.scheduler.schedule_in(CLEANUP_INTERVAL, Job::Cleanup);
@@ -1860,6 +2243,18 @@ impl Core {
     /// poison damage, bleed/aid, HP regen, mana regen for every in-game
     /// player.
     fn slow_update(&mut self) {
+        // decrement_evil_timers (crime.md §4.2): each ONLINE attacker's
+        // nodes lose one round per slow tick; expired nodes free.
+        let online: Vec<String> = self
+            .in_game_sessions()
+            .map(|(_, p)| p.name.clone())
+            .collect();
+        for node in &mut self.evil_timers {
+            if online.iter().any(|n| n.eq_ignore_ascii_case(&node.attacker)) {
+                node.rounds = node.rounds.saturating_sub(1);
+            }
+        }
+        self.evil_timers.retain(|n| n.rounds > 0);
         let sessions: Vec<SessionId> = self.sessions.keys().copied().collect();
         for id in sessions {
             let Some(Session::InGame { player, derived, .. }) = self.sessions.get(&id) else {
@@ -2048,6 +2443,7 @@ impl Core {
             .map_or(0, |t| t.energy);
         for idx in 0..5 {
             let mut fear_flee = false;
+            let mut terminate = false;
             let (spell_id, stored, remaining) = {
                 let Some(m) = self.monsters.get_mut(&id) else {
                     return;
@@ -2109,25 +2505,10 @@ impl Core {
                 // Expiry (19318-19324): clear the slot FIRST, then
                 // terminate with the stored value.
                 m.active_spells[idx] = ActiveSpell::default();
-                for (ability, row) in &spell.abilities {
-                    let v = if *row != 0 { i32::from(*row) } else { stored };
-                    match ability {
-                        // Enslave (6): release the charm — owner name,
-                        // follow flags (44991-44995). M7 PENDING (charm
-                        // family, re-deferred by the M6 design doc):
-                        // until an Enslave cast can CREATE a charm there
-                        // is nothing to release here.
-                        Ability::Enslave => {}
-                        // Poison (19): counter -= v, floored 0
-                        // (45003-45008).
-                        Ability::Poison => {
-                            m.poison = clamp_poison(i32::from(m.poison) - v);
-                        }
-                        // NO other reversal and NO EndCast chain — the
-                        // monster termination handles exactly these two.
-                        _ => {}
-                    }
-                }
+                terminate = true;
+            }
+            if terminate {
+                self.terminate_monster_slot(id, &spell, stored);
             }
             if fear_flee
                 && let Some(from) = self.monsters.get(&id).map(|m| m.location)
@@ -2144,30 +2525,211 @@ impl Core {
         }
     }
 
-    /// The wander half of `medium_update_monster` (decompile 19339-19372;
-    /// monsters.md §3). Gated to monsters with no target lock and no
-    /// directed-travel order; switches on the roam class:
-    /// 0/2 stationary; 5 water (no aggression roll, budget consumed before
-    /// the confusion check); default rolls `genrdn(0,100) <
-    /// (100-aggression)/2` then checks confusion, then consumes budget.
-    /// The chosen direction is rejected (budget already spent) when it
-    /// equals the last-move memory.
+    /// `perform_spell_termination_monster_upkeep` (`0x4a45d`, 44972) —
+    /// the WHOLE monster-side termination handler, which is a two-case
+    /// switch and nothing more: case 6 (Enslave, [`Core::release_charm`])
+    /// and case 0x13 (Poison, 45003-45008). No stat reversal, no wear-off
+    /// line, no EndCast chain — the player-side handler's other two dozen
+    /// cases have no monster twin.
+    ///
+    /// `stored` is the slot's saved value; a non-zero ability ROW wins
+    /// over it, the same precedence the routine handler uses.
+    ///
+    /// Every caller goes through here rather than reaching for case 6
+    /// alone: on shipped data the two are equivalent (none of the four
+    /// Enslave spells — 49 song of charming, 55 enslave, 88 control
+    /// undead, 92 charm animal — carries an ability-19 row), but a
+    /// fixture that pairs Enslave with Poison would otherwise leave the
+    /// slot-sweep paths silently forgetting to drain the counter.
+    fn terminate_monster_slot(
+        &mut self,
+        id: MonsterInstanceId,
+        spell: &crate::content::Spell,
+        stored: i32,
+    ) {
+        for (ability, row) in &spell.abilities {
+            let v = if *row != 0 { i32::from(*row) } else { stored };
+            match ability {
+                Ability::Enslave => self.release_charm(id),
+                Ability::Poison => {
+                    if let Some(m) = self.monsters.get_mut(&id) {
+                        m.poison = clamp_poison(i32::from(m.poison) - v);
+                        m.needs_recompute = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// `perform_spell_termination_monster_upkeep` case 6 (44988-44995) —
+    /// the charm.md §4.1 reversal, and the ONLY place the whole §0 triple
+    /// comes apart at once:
+    ///
+    /// ```text
+    /// mon+0x140 = 1        ; dirty (SET, not cleared)
+    /// mon+0x1a  = 0        ; owner name emptied
+    /// mon+0x116 = 0        ; suppression off
+    /// mon+0x128 &= ~1      ; charmed bit off
+    /// ```
+    ///
+    /// No message to anyone, in any direction. The released monster is
+    /// NEUTRAL — it holds no grudge against the ex-owner and rejoins
+    /// ordinary wander/acquisition, so it may re-acquire them through the
+    /// normal aggression rolls a moment later.
+    fn release_charm(&mut self, id: MonsterInstanceId) {
+        if let Some(m) = self.monsters.get_mut(&id) {
+            m.needs_recompute = true;
+            m.target = None;
+            m.suppress = false;
+            m.charmed = false;
+        }
+    }
+
+    /// The ability-6 slot sweep, inlined verbatim at three DLL sites
+    /// (19455-19487 give-up, 26527-26562 owner melee, 46929-46953
+    /// autocombat): walk the 5 slots; a slot whose spell id no longer
+    /// resolves is simply zeroed, and a slot whose spell carries
+    /// Enslave(6) goes through the FULL termination handler
+    /// ([`Core::terminate_monster_slot`] — 26548 passes the whole spell
+    /// record, not just the charm case) and is then zeroed. Slots holding
+    /// anything else are left alone.
+    ///
+    /// This is what makes the §4.3 asymmetry: a SLOTLESS pet (instant
+    /// Enslave, or a Summon-born pet) has nothing for the sweep to find,
+    /// so whichever legs of the triple the caller did not clear itself
+    /// survive the release.
+    ///
+    /// DIVERGENCE, unobservable on shipped data: the DLL's termination
+    /// call sits INSIDE the per-ability-row loop (26547), so a spell with
+    /// two ability-6 rows would run the handler twice. We run it once per
+    /// slot. No shipped spell has a repeated row.
+    fn sweep_charm_slots(&mut self, id: MonsterInstanceId) {
+        for idx in 0..5 {
+            let Some(m) = self.monsters.get(&id) else {
+                return;
+            };
+            let Some(spell_id) = m.active_spells[idx].spell else {
+                continue;
+            };
+            let stored = i32::from(m.active_spells[idx].value);
+            // Unknown id (19461-19465): the slot is zeroed but nothing is
+            // terminated — the DLL cannot ask an absent record for its
+            // ability rows.
+            let charmer = match self.content.spells.get(&spell_id) {
+                None => None, // unknown: zero the slot, terminate nothing
+                Some(spell) => {
+                    if spell.abilities.iter().any(|(a, _)| *a == Ability::Enslave) {
+                        Some(spell.clone())
+                    } else {
+                        continue; // an unrelated slot survives untouched
+                    }
+                }
+            };
+            if let Some(spell) = charmer {
+                self.terminate_monster_slot(id, &spell, stored);
+            }
+            if let Some(m) = self.monsters.get_mut(&id) {
+                m.active_spells[idx] = ActiveSpell::default();
+                m.needs_recompute = true;
+            }
+        }
+        self.recompute_monster_effects(id);
+    }
+
+    /// `FUN_0044cc65`'s self-target arm (46929-46953, charm.md §2.2/§4.3):
+    /// the owner's autocombat target IS its own pet, so the pet releases
+    /// itself on the next combat pass. Note what is NOT here — unlike the
+    /// melee twin (26527) this arm never touches `+0x116`, so a SLOTLESS
+    /// pet keeps both its owner link and its suppression and degrades into
+    /// a "friend" (a monster that attacks players OTHER than its owner)
+    /// rather than into a grudge holder.
+    ///
+    /// The call site is [`Core::pet_assist`], the combat driver's
+    /// pet-assist branch.
+    fn autocombat_release_charm(&mut self, id: MonsterInstanceId) {
+        if let Some(m) = self.monsters.get_mut(&id) {
+            m.charmed = false;
+        }
+        self.sweep_charm_slots(id);
+    }
+
+    /// The movement half of `medium_update_monster` (decompile
+    /// 19339-19381; monsters.md §3). THREE levels, in the DLL's own
+    /// order — getting the nesting wrong freezes bodies the original
+    /// moves:
+    ///
+    /// 1. 19339 — a monster holding a name link (`mon+0x1a`) does nothing
+    ///    here at all; the pursuit tier owns its movement.
+    /// 2. 19340 — otherwise the `+0x88` hunt link splits the branch:
+    ///    non-zero takes the TRAVEL arm (19376-19380,
+    ///    [`Core::dir_toward_monster`] then one gated step), zero falls
+    ///    through to the wander arms. The travel arm is charm-blind and
+    ///    roam-blind: no budget, no aggression roll, no roam-class
+    ///    switch.
+    /// 3. the wander arms themselves, by roam class: 0/2 stationary;
+    ///    5 water (no aggression roll, budget consumed before the
+    ///    confusion check); default rolls `genrdn(0,100) <
+    ///    (100-aggression)/2` then checks confusion, then consumes
+    ///    budget. The chosen direction is rejected (budget already spent)
+    ///    when it equals the last-move memory.
+    ///
+    /// The charmed test `(mon+0x128 & 1) == 0` belongs to level 3 and
+    /// ONLY to level 3 (19346 and 19364) — a pet never wanders,
+    /// charm.md §2.1. It was hoisted to level 1 before the travel arm
+    /// existed; that was a latent divergence, since a charmed body
+    /// carrying a hunt link travels in the DLL and would have been
+    /// frozen here.
+    ///
+    /// Both level-3 copies are load-bearing, and an earlier version of
+    /// this comment was WRONG to say otherwise. It claimed the guards
+    /// were unreachable because "every charm apply also writes the owner
+    /// link, and every release that clears the link clears the bit with
+    /// it". True of the charm paths — and irrelevant, because the link
+    /// is also cleared by code that knows nothing about charm:
+    /// `monster_attack`'s death branch (`check_kill_user`, 27194) and its
+    /// post-swing lock re-roll (26867-26885) both empty `+0x1a` while
+    /// leaving `+0x128` alone. A pet reaches the first of those through
+    /// the departure free-attack, since a NON-owner walking out of the
+    /// room is a valid victim for a suppressed monster. A charmed body
+    /// with no owner link is therefore an ordinary reachable state, it
+    /// falls straight through level 1, and only these guards stop it
+    /// drifting away from where its owner left it. Pinned per arm by
+    /// `charm.rs::a_charmed_pet_never_wanders_the_default_arm` and
+    /// `..._the_water_arm`.
     fn wander_monster(&mut self, id: MonsterInstanceId) {
         let Some(m) = self.monsters.get(&id) else {
             return;
         };
         if m.target.is_some() {
-            return; // locked on (`mon+0x1a`); pursuit owns movement
+            return; // 19339: locked on a user; pursuit owns movement
         }
-        let (roam, aggression, from, last) =
-            (m.roam_class, m.aggression, m.location, m.last_move_dir);
+        // 19376-19380: the directed-travel arm. Unlike the driver's twin
+        // (20450-20463) it never swings on a cold trail — the medium tick
+        // only ever walks.
+        if let Some(quarry) = m.hunt {
+            let from = m.location;
+            if let Some(dir) = self.dir_toward_monster(quarry, from)
+                && !self.monster_confusion_fumble(id)
+            {
+                self.move_monster(id, dir, false);
+            }
+            return;
+        }
+        let (roam, aggression, from, last, charmed) = (
+            m.roam_class,
+            m.aggression,
+            m.location,
+            m.last_move_dir,
+            m.charmed,
+        );
         match roam {
             0 | 2 => return,
             5 => {
-                // Water path (19364-19371): cap first (the mon+0x140
+                // Water path (19364-19371): charm, cap (the mon+0x140
                 // dirty-byte bypass is unmodeled — PLAUSIBLE quirk),
                 // budget consumed before the confusion check.
-                if self.wander_budget >= 3 {
+                if charmed || self.wander_budget >= 3 {
                     return;
                 }
                 self.wander_budget += 1;
@@ -2176,8 +2738,10 @@ impl Core {
                 }
             }
             _ => {
-                // Default path (19346-19360): cap, roll, confusion, budget.
-                if self.wander_budget >= 3 {
+                // Default path (19346-19360): charm, cap, roll,
+                // confusion, budget. The charm test precedes the
+                // `genrdn`, so a pet costs no draw.
+                if charmed || self.wander_budget >= 3 {
                     return;
                 }
                 let roll = self.rng.roll(0, 100);
@@ -2220,6 +2784,7 @@ impl Core {
             return;
         };
         let (mon_room, aggression, roam) = (m.location, m.aggression, m.roam_class);
+        let charmed = m.charmed;
         // One give-up bump per unprosecutable tick (19414/19426/19433/
         // 19440); same-room ticks never bump.
         let mut bump = false;
@@ -2230,8 +2795,17 @@ impl Core {
                     // nothing to do — acquisition owns the same-room case
                 } else if loc.map != mon_room.map || moved {
                     bump = true; // can't chase across maps / a mid-flight runner
-                } else if self.rng.roll(0, 100) >= i32::from(aggression) {
-                    bump = true; // the follow roll failed
+                } else if !charmed && self.rng.roll(0, 100) >= i32::from(aggression) {
+                    // The follow roll failed. A PET never gets here:
+                    // 19422-19423 spells the gate `(mon+0x128 & 1) == 0 &&
+                    // genrdn(0,100) >= aggression`, so the charmed bit
+                    // both skips the DRAW (short-circuit, exactly as the
+                    // DLL's `&&` does — this is RNG-order load-bearing)
+                    // and makes the refusal unreachable: a pet always
+                    // follows, whatever its template aggression says
+                    // (charm.md §2.1). Every OTHER refusal source below
+                    // still bumps the counter.
+                    bump = true;
                 } else {
                     match self.dir_toward_player(victim, mon_room) {
                         None => bump = true,
@@ -2256,12 +2830,25 @@ impl Core {
         // Give-up past 15 (19446): class 0x25 silently despawns
         // (FUN_004298ec — the spawn-accounting half joins with slice 4);
         // everyone else drops the lock and goes back to wandering.
+        // Since the counter bumps once per fast tick on an OFFLINE owner
+        // too (19412-19415), this doubles as the logout release: ~16 s
+        // after the owner drops, the pet is free (charm.md §4.2).
         if m.give_up > 15 {
             if roam == 0x25 {
                 self.monsters.remove(&id);
-            } else {
-                m.give_up = 0;
-                m.target = None;
+                return;
+            }
+            m.needs_recompute = true; // 19451: `+0x140` dirty
+            m.give_up = 0;
+            m.target = None;
+            // 19452-19487: a charmed monster additionally loses the bit
+            // and has its ability-6 slots terminated. LITERAL SHAPE — the
+            // branch itself never writes `+0x116`, so suppression comes
+            // off only through the slot termination: a slotless pet ages
+            // out nameless but still SUPPRESSED.
+            if m.charmed {
+                m.charmed = false;
+                self.sweep_charm_slots(id);
             }
         }
     }
@@ -2287,6 +2874,42 @@ impl Core {
                     .as_ref()
                     .is_some_and(|e| e.dest == next_room)
             })
+    }
+
+    /// `dir_monster_travelling_coord` (15790-15816) — the monster twin of
+    /// [`Core::dir_toward_player`], reading the VICTIM MONSTER's
+    /// breadcrumb trail instead of a player's.
+    ///
+    /// Three differences from the player version, all decompile-literal:
+    ///
+    /// * the trail is 10 deep, not 20 (15810: `iVar4 < 10`);
+    /// * there is no MAP check on the trail entry (the player version
+    ///   conjoins `player+0x550+i*4 == map` at 15668; this one compares
+    ///   the room word alone). Single-map worlds cannot show it;
+    /// * the co-location test is the VICTIM's current room against the
+    ///   hunter's (15799), so a hunter standing on its quarry gets `None`
+    ///   — which is the driver arm's cue to swing rather than step.
+    ///
+    /// The scan starts at index 1 because index 0 is the victim's CURRENT
+    /// room; finding the hunter's room at index `i` means the victim
+    /// stood there `i` steps ago and left toward `trail[i-1]`.
+    fn dir_toward_monster(
+        &self,
+        victim: MonsterInstanceId,
+        mon_room: RoomId,
+    ) -> Option<crate::content::Direction> {
+        let v = self.monsters.get(&victim)?;
+        if v.location == mon_room {
+            return None;
+        }
+        let i = (1..v.trail.len()).find(|i| v.trail[*i] == mon_room)?;
+        let next_room = v.trail[i - 1];
+        let room = self.content.rooms.get(&mon_room)?;
+        crate::content::Direction::ALL.into_iter().find(|d| {
+            room.exits[*d as usize]
+                .as_ref()
+                .is_some_and(|e| e.dest == next_room)
+        })
     }
 
     /// `check_monster_confusion` (0x29812): Confusion (0x47) value beats
@@ -2415,6 +3038,11 @@ impl Core {
             let m = self.monsters.get_mut(&id).expect("checked above");
             m.last_move_dir = Some(dir);
             m.location = dest;
+            // The breadcrumb push (21572-21574), the exact shape of the
+            // player one at the `move_user` relocation: shift down, write
+            // the NEW room into index 0, cap at ten.
+            m.trail.insert(0, dest);
+            m.trail.truncate(10);
         }
         self.broadcast_to_room(from, None, &text::left_via(&name, dir));
         self.broadcast_to_room(dest, None, &text::monster_moves_in_from(&name, dir.opposite()));
@@ -2691,6 +3319,8 @@ impl Core {
                 attackers_this_tick: 0,
                 trail: vec![trail_seed],
                 at_prompt: false,
+                attack_mode: crate::combat::AttackType::Normal,
+                delay: 0,
             });
         self.show_room(id);
         self.show_prompt(id);
@@ -3030,6 +3660,55 @@ impl Core {
                     self.say(session, line.trim());
                 }
             }
+            Command::Ansi => self.ansi_command(session),
+            Command::Picklock(args) => self.picklock_command(session, &args),
+            Command::Search(args) => self.search_command(session, &args),
+            Command::Disarm(args) => self.disarm_command(session, &args),
+            Command::Rob(target) => self.rob_command(session, &target),
+            Command::Forgive(target) => self.forgive_command(session, &target),
+            Command::Sneak => self.sneak_command(session),
+            Command::Hide(args) => {
+                if args.trim().is_empty() {
+                    self.hide_command(session);
+                } else {
+                    self.hide_stash_command(session, &args);
+                }
+            }
+            Command::Set(args) => {
+                if self.set_command(session, &args) == Resolution::FallThrough {
+                    self.say(session, line.trim());
+                }
+            }
+            Command::Punch(target) => {
+                // cmd_punch: hidden/sneaking AND unarmed diverts to the
+                // backstab mode; armed (or visible) punches stay mode 1.
+                let p = self.player(session);
+                let mode = if (p.hidden || p.sneak_armed) && p.weapon.is_none() {
+                    crate::combat::AttackType::Backstab
+                } else {
+                    crate::combat::AttackType::MartialArts1
+                };
+                if self.ma_command(session, &target, 0x1d, mode) == Resolution::FallThrough {
+                    self.say(session, line.trim());
+                }
+            }
+            Command::Backstab(target) => {
+                if self.backstab_command(session, &target) == Resolution::FallThrough {
+                    self.say(session, line.trim());
+                }
+            }
+            Command::Kick(target) => {
+                let mode = crate::combat::AttackType::MartialArts2;
+                if self.ma_command(session, &target, 0x1e, mode) == Resolution::FallThrough {
+                    self.say(session, line.trim());
+                }
+            }
+            Command::JumpKick(target) => {
+                let mode = crate::combat::AttackType::MartialArts3;
+                if self.ma_command(session, &target, 0x23, mode) == Resolution::FallThrough {
+                    self.say(session, line.trim());
+                }
+            }
             // Cast never falls through to say: an unresolvable spell prints
             // the do-not-know line (MEASURED §8.6/§8.9). Invoke is its kai
             // twin (§8.12).
@@ -3328,6 +4007,93 @@ impl Core {
     /// testimony): no argument auto-picks; an unresolvable target falls
     /// through to SAY (oracle-observed).
     fn attack_command(&mut self, session: SessionId, target_words: &str) -> Resolution {
+        // cmd_attack 49712-49720: a bare attack auto-selects mode-1
+        // fists of fury when unarmed with the Punch ability. (The
+        // hidden/sneak divert to mode 4 landed with the theft slice and
+        // is the inner branch below.)
+        let player = self.player(session);
+        let mode = if player.weapon.is_none()
+            && self
+                .ability_bag(player)
+                .value(Ability::from_id(0x1d).expect("Punch in the enum"))
+                > 0
+        {
+            // 49716-49724: hidden/sneak-armed diverts the unarmed
+            // auto-pick to the backstab mode.
+            if player.hidden || player.sneak_armed {
+                crate::combat::AttackType::Backstab
+            } else {
+                crate::combat::AttackType::MartialArts1
+            }
+        } else {
+            crate::combat::AttackType::Normal
+        };
+        self.attack_with_mode(session, target_words, mode)
+    }
+
+    /// `cmd_backstab` (0x51573): visible = a silent plain attack;
+    /// hidden/sneaking = mode 4 when unarmed or the weapon carries
+    /// BSAccu (0x74) — a non-backstab weapon prints the refusal and
+    /// attacks normally (the DLL leaves its two mode globals
+    /// DISAGREEING there; the effective fighter mode is normal).
+    fn backstab_command(&mut self, session: SessionId, target_words: &str) -> Resolution {
+        let player = self.player(session);
+        let stealthy = player.hidden || player.sneak_armed;
+        let mode = if !stealthy {
+            crate::combat::AttackType::Normal
+        } else {
+            match player.weapon {
+                None => crate::combat::AttackType::Backstab,
+                Some((id, _)) => {
+                    let bs_capable = self
+                        .content
+                        .items
+                        .get(&id)
+                        .is_some_and(|i| {
+                            i.abilities.iter().any(|(a, _)| {
+                                Ability::from_id(0x74).is_some_and(|b| *a == b)
+                            })
+                        });
+                    if bs_capable {
+                        crate::combat::AttackType::Backstab
+                    } else {
+                        self.output_line(session, text::CANNOT_BACKSTAB_WEAPON);
+                        crate::combat::AttackType::Normal
+                    }
+                }
+            }
+        };
+        self.attack_with_mode(session, target_words, mode)
+    }
+
+    /// The MA verb family (cmd_punch 0x51e37 / cmd_kick 0x51df2 /
+    /// cmd_jumpkick 0x51dad): gate on the granting ability — without it
+    /// the handler returns 0 and the input falls through to SAY — then
+    /// set the attack mode and run the shared attack path.
+    fn ma_command(
+        &mut self,
+        session: SessionId,
+        target_words: &str,
+        ability_id: u16,
+        mode: crate::combat::AttackType,
+    ) -> Resolution {
+        let player = self.player(session);
+        let granted = self
+            .ability_bag(player)
+            .value(Ability::from_id(ability_id).expect("MA ability in the enum"))
+            > 0;
+        if !granted {
+            return Resolution::FallThrough;
+        }
+        self.attack_with_mode(session, target_words, mode)
+    }
+
+    fn attack_with_mode(
+        &mut self,
+        session: SessionId,
+        target_words: &str,
+        mode: crate::combat::AttackType,
+    ) -> Resolution {
         if self.player(session).current_hp < 1 {
             self.output_line(session, text::MORTALLY_WOUNDED);
             return Resolution::Handled;
@@ -3336,11 +4102,18 @@ impl Core {
         let monster = if target_words.trim().is_empty() {
             self.auto_pick_target(session, room)
         } else {
-            self.find_monster(room, target_words)
+            // `cmd_any_attack` 49590 passes mask `0x883` — the `0x800`
+            // bit rides ATTACK too, so a named swing prefers a wild body
+            // over your own pet and only reaches the pet when nothing
+            // else in the room answers to the name (§2.3).
+            self.find_monster_charmed_last(room, target_words)
         };
         let Some(monster) = monster else {
             return Resolution::FallThrough;
         };
+        if self.charge_passive_monster_evil(session, monster) {
+            return Resolution::Handled;
+        }
         if let Some(Session::InGame { target, casting, .. }) = self.sessions.get_mut(&session) {
             // Oracle: attacking while already engaged prints *Combat Off*
             // before the new *Combat Engaged*.
@@ -3350,10 +4123,34 @@ impl Core {
                 self.output_line(session, text::COMBAT_OFF);
             }
         }
-        if let Some(Session::InGame { target, .. }) = self.sessions.get_mut(&session) {
+        if let Some(Session::InGame { target, attack_mode, .. }) = self.sessions.get_mut(&session)
+        {
             *target = Some(monster);
+            *attack_mode = mode;
         }
         self.output_line(session, text::COMBAT_ENGAGED);
+        // The ENGAGE-arm retaliation lock (26230-26237), fired right
+        // after `engage_autocombat` and before any round runs.
+        //
+        // It belongs HERE and nowhere else. `attack_user_monster` splits
+        // on `DAT_004877f4` at 26112: the `== '\0'` half is the ATTACK
+        // command — messages, `engage_autocombat`, this lock, and NO
+        // swings — and its `else` (26241) is the autocombat round, which
+        // swings and carries its own post-damage lock/release pair
+        // (26514-26563). The two are arms of one `if`, so 26230 can
+        // never run after 26527 in the same call. Hanging this re-mark
+        // off the tail of the swing loop let both run and immediately
+        // re-grudged a just-released pet back onto its owner.
+        //
+        // Divergence, pre-existing and untouched: our ATTACK command
+        // goes on to swing, which the DLL's engage arm does not. The
+        // `target.is_none()` gate is likewise ours — 26230 has no such
+        // clause and would re-roll over an existing lock (unobservable
+        // against the same attacker, and a pet is charm-exempt either
+        // way, but it does cost a draw the DLL spends and we do not).
+        if self.monsters.get(&monster).is_some_and(|m| m.target.is_none()) {
+            self.retaliation_lock(monster, session, CharmedExemption::Exempt);
+        }
         self.player_attack_sequence(session);
         Resolution::Handled
     }
@@ -3701,12 +4498,19 @@ impl Core {
         room.shop
     }
 
-    /// `user_can_use` (0x1fced): class/race allowlists (a match bypasses
+    /// `user_can_use` (0x1fced): the alignment lattice FIRST (crime.md
+    /// §6.1 — ahead of every class/race check, and the allowlist bypass
+    /// does not reach it), then class/race allowlists (a match bypasses
     /// the permission matrix), AntiMagic vs Magical, MinLevel/MaxLevel
-    /// abilities, then the class weapon/armour matrix. The alignment
-    /// ability gates (Good/Evil/Neutral vs legal level) await the crime
-    /// system — no legal points exist yet.
+    /// abilities, then the class weapon/armour matrix.
     fn user_can_use(&self, player: &Player, item: &crate::content::Item) -> bool {
+        let level = crate::crime::legal_level(player.fame);
+        let has = |id: u16| {
+            Ability::from_id(id).is_some_and(|a| item.abilities.iter().any(|(ab, _)| *ab == a))
+        };
+        if crate::crime::alignment_refuses(level, has) {
+            return false;
+        }
         // Item type 0xb requires a class from a config list; no type-11
         // items ship in the 1.11p data.
         if item.item_type == 11 {
@@ -3799,6 +4603,16 @@ impl Core {
         }
         if i32::from(player.level) < i32::from(spell.required_power) {
             return SpellGate::TooPowerful;
+        }
+        // Gate 3 — the crime.md §6.1 lattice (user_can_use_spell
+        // 17811-17846, identical table to items).
+        let level = crate::crime::legal_level(player.fame);
+        let has = |id: u16| {
+            Ability::from_id(id)
+                .is_some_and(|a| spell.abilities.iter().any(|(ab, _)| *ab == a))
+        };
+        if crate::crime::alignment_refuses(level, has) {
+            return SpellGate::Alignment;
         }
         SpellGate::Ok
     }
@@ -3958,10 +4772,13 @@ impl Core {
             return;
         }
         let offensive = spell.target_mode.is_offensive();
+        let room = self.player(session).location;
         let mut monster = None;
-        if offensive {
-            let room = self.player(session).location;
-            if target.is_empty() {
+        if target.is_empty() {
+            // No target word: the DLL never runs a find at all
+            // (dispatcher 59247-59252 -> `cast_no_target`). Offensive
+            // modes refuse; benign ones fall through to the self tail.
+            if offensive {
                 // MEASURED (§8.9 run 2): a bare offensive cast while
                 // melee-engaged prints *Combat Off* (the engagement
                 // breaks) and THEN its refusal.
@@ -3972,8 +4789,7 @@ impl Core {
                     // DLL charges the round cost here when affordable but
                     // never the mana (decompile cast_no_target
                     // 39185-39195; §8.9: mana unchanged).
-                    if let Some(Session::InGame { energy, .. }) =
-                        self.sessions.get_mut(&session)
+                    if let Some(Session::InGame { energy, .. }) = self.sessions.get_mut(&session)
                         && *energy >= round_cost
                     {
                         *energy -= round_cost;
@@ -3986,97 +4802,134 @@ impl Core {
                 self.output_line(session, text::MUST_SPECIFY_TARGET);
                 return;
             }
-            match self.find_monster(room, &target) {
-                Some(id) => monster = Some(id),
+        } else {
+            // The dispatcher's TWO-STAGE find (decompile 59256-59271):
+            // search the match type's preferred scope first, and when it
+            // comes back empty repeat with the universal mask 0xf037.
+            // The preferred scope is therefore only an ORDERING
+            // preference — every match type can resolve every kind, and
+            // the ACCEPTANCE decision belongs to the entry point the
+            // found kind selects (59278-59320). `spelltype` routes
+            // nothing; it owns hostility only.
+            let preferred = spell.match_type.preferred_find();
+            let found = if preferred.is_empty() {
+                None
+            } else {
+                self.find_cast_target(session, preferred, &target)
+            };
+            let fallback = crate::content::FindScope::UNIVERSAL;
+            match found.or_else(|| self.find_cast_target(session, fallback, &target)) {
                 None => {
                     // MEASURED (§8.9): the entire remainder is one target
                     // string, echoed verbatim.
                     self.output_line(session, &text::do_not_see_here(&target));
                     return;
                 }
-            }
-            // The protected-room flag gates the TARGETED path too
-            // (decompile cast_monster_target 43232, guilt refusal
-            // 44290-44297 — the same room+0x564 & 1 check as the bare-cast
-            // gate above, sitting ahead of the SpellImmu and cost gates):
-            // guilt line, no engagement, and the same round-cost-only
-            // charging as the bare-cast guilt path.
-            if self.content.rooms.get(&room).is_some_and(|r| r.protected()) {
-                if let Some(Session::InGame { energy, .. }) = self.sessions.get_mut(&session)
-                    && *energy >= round_cost
-                {
-                    *energy -= round_cost;
-                }
-                self.output_line(session, text::CAST_GUILT);
-                return;
-            }
-        } else if !target.is_empty() {
-            // Item-target spells (match 6/7 -> cast_item_target, decompile
-            // 0x49232; the dispatcher's find_action_target kind-8 arm at
-            // 59314): resolve the target against the CARRIED inventory.
-            // ORACLE-VERIFY: whether ground/worn items also match, and the
-            // "You are not carrying %s!" kind-4 refusal, are unmeasured —
-            // an unmatched name falls to the do-not-see refusal below.
-            if spell.match_type.is_item() {
-                let want = target.trim().to_ascii_lowercase();
-                let found = self.player(session).inventory.iter().find_map(|(id, _)| {
-                    self.content
-                        .items
-                        .get(id)
-                        .filter(|i| word_prefix_match(&i.name, &want))
-                        .map(|_| *id)
-                });
-                if let Some(item_id) = found {
-                    self.fire_item_cast(session, &spell, item_id);
-                    return;
-                }
-            }
-            // Player-target resolution (match 1/2 benign; MEASURED §8.13):
-            // players in the caster's room match by the §8.9 word-prefix
-            // rule (`c blur ora` -> Oracle). The refusal matrix is
-            // match-type-keyed: only the single-target types carry a
-            // target slot — match 0 benign has none, so its lookup always
-            // falls to the do-not-see refusal (MEASURED §8.9: "cast blur
-            // extra trailing words", no self-cast, no mana, pre-cost).
-            let single_target = matches!(
-                spell.match_type,
-                crate::content::MatchType::Single1 | crate::content::MatchType::Single2
-            );
-            let room = self.player(session).location;
-            let want = target.trim().to_ascii_lowercase();
-            let found = if single_target {
-                self.in_game_sessions()
-                    .filter(|(_, p)| p.location == room)
-                    .find(|(_, p)| word_prefix_match(&p.name, &want))
-                    .map(|(id, _)| id)
-            } else {
-                None
-            };
-            match found {
-                Some(target_id) if target_id != session => {
-                    self.benign_target_cast(session, target_id, &spell);
-                    return;
-                }
-                Some(_) => {
-                    // Own name = a plain self-cast (MEASURED §8.13: the
-                    // castmsgb frames keep the name — "You cast blur on
-                    // Zinvar!" / "Zinvar casts blur on Zinvar!" — which
-                    // is exactly what the self path renders). Fall
-                    // through to the benign self tail below.
-                }
-                None => {
-                    if single_target && self.find_monster(room, &target).is_some() {
-                        // MEASURED (§8.13): `c blur cat` — benign single
-                        // targets are players only, uncharged.
+                Some(CastTarget::Monster(id)) => {
+                    if !spell.match_type.accepts_monster() {
+                        // `cast_monster_target` 43205 / 44311-44315,
+                        // uncharged — MEASURED §8.13 for `c blur cat`
+                        // (match 2) and `c stnk cat` (match 12).
                         self.output_line(session, text::MAY_NOT_CAST_ON_MONSTER);
                         return;
                     }
-                    self.output_line(session, &text::do_not_see_here(&target));
+                    // The protected-room flag gates the TARGETED path too
+                    // (decompile cast_monster_target 43232, guilt refusal
+                    // 44290-44297 — the same room+0x564 & 1 check as the
+                    // bare-cast gate above, sitting ahead of the SpellImmu
+                    // and cost gates). NOT spelltype-gated there, unlike
+                    // its `cast_user_target` twin: guilt line, no
+                    // engagement, and the same round-cost-only charging as
+                    // the bare-cast guilt path.
+                    if self.content.rooms.get(&room).is_some_and(|r| r.protected()) {
+                        if let Some(Session::InGame { energy, .. }) = self.sessions.get_mut(&session)
+                            && *energy >= round_cost
+                        {
+                            *energy -= round_cost;
+                        }
+                        self.output_line(session, text::CAST_GUILT);
+                        return;
+                    }
+                    monster = Some(id);
+                }
+                Some(CastTarget::User(target_id)) => {
+                    // `cast_user_target`'s gate ORDER, reproduced (the
+                    // acceptance test is LAST, not first):
+                    //   41422  offensive + self -> attack-yourself refusal
+                    //   41429  protected room
+                    //   41434  self -> divert to `cast_no_target`
+                    //   41438  hostility (param_4)
+                    //   41460  acceptance `{0, 2, 6, 8}`
+                    if offensive {
+                        // DIVERGENCE (PvP unimplemented): the DLL hands an
+                        // offensive user target to `cast_user_target`'s
+                        // hostility gates — the attack-yourself line at
+                        // 41422 when it IS the caster, else the no-PK-room
+                        // refusal, evil points, then the roll/effect tail.
+                        // We have no PvP melee either, so the cast simply
+                        // fails to see the player, as it did before this
+                        // router landed. Reachable shape: the 45 learnable
+                        // offensive match-8 spells (magic missile and
+                        // friends). Placed HERE, ahead of the self-divert,
+                        // because 41422 fires ahead of 41434 — the seam
+                        // stays in the DLL's order for the PvP slice.
+                        self.output_line(session, &text::do_not_see_here(&target));
+                        return;
+                    }
+                    if target_id == session
+                        && spell.match_type != crate::content::MatchType::Item6
+                    {
+                        // 41434 `if ((param_2 == param_3) && (spell+0xcc
+                        // != 6)) cast_no_target(...)`: naming YOURSELF is
+                        // a plain self-cast, and it diverts BEFORE the
+                        // acceptance gate — so the self-only buff band
+                        // (match 1: barkskin, stoneskin, magic armour,
+                        // shadowform — 25 learnable) is castable by name
+                        // even though 41460 rejects it. Match 6 is the one
+                        // exclusion: it stays on the user path below.
+                        // MEASURED §8.13: the castmsgb frames keep the
+                        // name — "You cast blur on Zinvar!" — which is
+                        // exactly what the self tail renders.
+                        // Fall through to the self tail.
+                    } else {
+                        if !spell.match_type.accepts_user() {
+                            // `cast_user_target` 41460 / 43064-43066,
+                            // uncharged — MEASURED §8.13 for
+                            // `c flash oracle` (match 12).
+                            self.output_line(session, text::MAY_NOT_CAST_ON_USER);
+                            return;
+                        }
+                        // Players in the caster's room match by the §8.9
+                        // word-prefix rule (`c blur ora` -> Oracle). A
+                        // match-6 self-name lands here too, by 41434's
+                        // exclusion.
+                        self.benign_target_cast(session, target_id, &spell);
+                        return;
+                    }
+                }
+                Some(CastTarget::Item(item_id)) => {
+                    if !spell.match_type.accepts_item() {
+                        // `cast_item_target` 44367-44369, uncharged.
+                        self.output_line(session, text::MAY_NOT_CAST_ON_ITEM);
+                        return;
+                    }
+                    self.fire_item_cast(session, &spell, item_id);
                     return;
                 }
             }
         }
         if let Some(monster_id) = monster {
+            // The pre-application eligibility scan's three refusal arms
+            // (charm.md §1.1). They sit AHEAD of the SpellImmu gate in the
+            // DLL (scan 43295-43376, SpellImmu 43378-43384), so a target
+            // that would trip both takes this refusal — indistinguishable
+            // in output, since both print 00485de3, but the order is what
+            // the decompile does.
+            if self.cast_eligibility_refused(monster_id, &spell) {
+                let name = self.monster_name(monster_id);
+                self.output_line(session, &text::spell_no_effect_on(&name));
+                return;
+            }
             // SpellImmu (139): a monster immune to spells at or below this
             // level refuses the cast before any cost or engagement
             // (decompile cast_monster_target 43630-43638: spell level <
@@ -4088,66 +4941,101 @@ impl Core {
                 self.output_line(session, &text::spell_no_effect_on(&name));
                 return;
             }
-            // The offensive-duration split (cast_monster_target: the
-            // engage-only block below is CONDITIONED on duration == 0,
-            // 43421-43481): a duration!=0 offensive cast resolves RIGHT
-            // NOW — roll, costs, slot entry — with NO engagement and no
-            // *Combat Engaged* (engage_autocombat appears only in the
-            // duration==0 block and the autocombat-driver re-fire).
-            // The command's triple gate messages first (43554-43580):
-            // round energy prints the already-cast line, mana its
-            // shortfall line. DATA: zero learnable spells reach this
-            // (all 65 shipped offensive-duration spells are monster
-            // payloads) — fixture-covered until content grows one.
-            if spell.duration != 0 {
-                let Some(Session::InGame { energy, player, .. }) = self.sessions.get(&session)
-                else {
-                    return;
-                };
-                if *energy < round_cost {
-                    self.output_line(session, self.already_cast_line(session));
-                    return;
-                }
-                if player.current_mana < mana_cost {
-                    self.output_line(session, self.not_enough_mana_line(session));
-                    return;
-                }
-                self.offensive_cast_attempt(session, spell_id, monster_id);
+            // Offensive casts at passive monsters charge like melee
+            // (crime.md §2.5 cast_monster_target rows).
+            //
+            // M7 PENDING (`re/docs/crime.md` §2.5, the 43330 row): the
+            // `is_offensive()` gate is OURS, not the DLL's. 43323-43347
+            // charges the same 10 points off the SPELL'S ABILITY 0x34
+            // (EvilInCombat) with no `spelltype` test at all, so 25 of the
+            // 29 learnable benign match-4/6/8 spells (curse, blind, slow,
+            // hold person, the songs) should charge here and do not — see
+            // the long note in `offensive_cast_attempt`'s fail arm.
+            if spell.target_mode.is_offensive()
+                && self.charge_passive_monster_evil(session, monster_id)
+            {
                 return;
             }
-            // Engagement is the command's ENTIRE effect (MEASURED,
-            // oracle_spell_cast.raw 567-637 + decompile cast_monster_target
-            // 43439-43481): the manual offensive cast never rolls, charges
-            // or fires directly — it prints the *Combat Off*/*Combat
-            // Engaged* toggle, zeroes the round energy and arms `casting`;
-            // the combat round driver performs every actual cast. (§8.6's
-            // condensed example shows engage+fire together, but the raw
-            // capture shows mana UNCHANGED at the engagement prompt and the
-            // fire arriving a round later — which is also why a mid-combat
-            // re-cast is never blocked by the one-cast-per-round gate: for
-            // offensive spells the round energy IS that gate.) Mana and
-            // energy shortages are therefore not checked here either; the
-            // per-round attempt handles both silently.
-            if let Some(Session::InGame { target, .. }) = self.sessions.get_mut(&session)
-                && target.is_some()
-            {
-                *target = None;
-                self.output_line(session, text::COMBAT_OFF);
+            // The engage-and-stop split (cast_monster_target 43411-43421):
+            // the block is reached only when the cast is OFFENSIVE
+            // (`spelltype < 3`) *and* instant (`spell+0xce == 0`). A
+            // benign cast takes the 43496 else instead — one-per-round
+            // flag, roll, costs, effects, all inside this command — and so
+            // does an offensive DURATION spell, which resolves RIGHT NOW
+            // with no engagement and no *Combat Engaged* (engage_autocombat
+            // appears only in that block and in the autocombat re-fire).
+            if offensive && spell.duration == 0 {
+                // Engagement is then the command's ENTIRE effect
+                // (MEASURED, oracle_spell_cast.raw 567-637 + decompile
+                // 43439-43481): the manual offensive cast never rolls,
+                // charges or fires directly — it prints the *Combat
+                // Off*/*Combat Engaged* toggle, zeroes the round energy
+                // and arms `casting`; the combat round driver performs
+                // every actual cast. (§8.6's condensed example shows
+                // engage+fire together, but the raw capture shows mana
+                // UNCHANGED at the engagement prompt and the fire arriving
+                // a round later — which is also why a mid-combat re-cast
+                // is never blocked by the one-cast-per-round gate: for
+                // offensive spells the round energy IS that gate.) Mana
+                // and energy shortages are therefore not checked here
+                // either; the per-round attempt handles both silently.
+                if let Some(Session::InGame { target, .. }) = self.sessions.get_mut(&session)
+                    && target.is_some()
+                {
+                    *target = None;
+                    self.output_line(session, text::COMBAT_OFF);
+                }
+                if let Some(Session::InGame { target, casting, energy, .. }) =
+                    self.sessions.get_mut(&session)
+                {
+                    *target = Some(monster_id);
+                    *casting = Some(spell_id);
+                    // DLL 43468: engagement zeroes the pool — the first
+                    // fire waits for the next combat round's refill.
+                    *energy = 0;
+                }
+                self.output_line(session, text::COMBAT_ENGAGED);
+                // Retaliation lock (transcript: the filthbug swiped back
+                // after the bare engagement, before any damage landed) —
+                // gated like every damaging path since slice 3. This IS
+                // the 43470 twin: the duration-0 engage arm that prints
+                // "%s moves to cast %s upon %s", zeroes `+0xba`, calls
+                // `engage_autocombat` and then locks. Charm-exempt, like
+                // its two `cast_monster_target` ENTRY siblings at
+                // 43260/43335 and the melee engage at 26230.
+                self.retaliation_lock(monster_id, session, CharmedExemption::Exempt);
+                return;
             }
-            if let Some(Session::InGame { target, casting, energy, .. }) =
-                self.sessions.get_mut(&session)
-            {
-                *target = Some(monster_id);
-                *casting = Some(spell_id);
-                // DLL 43468: engagement zeroes the pool — the first fire
-                // waits for the next combat round's refill.
-                *energy = 0;
+            // Resolve now. The command's triple gate messages first
+            // (43550-43580): round energy prints the already-cast line,
+            // mana its shortfall line. DATA: no learnable spell reaches
+            // the offensive-duration leg (all 65 shipped offensive
+            // duration spells are monster payloads); the benign leg is
+            // the 208-spell match-4/6/8 band (charm family, curse, blind,
+            // slow, fear, hold person).
+            let Some(Session::InGame { energy, player, .. }) = self.sessions.get(&session) else {
+                return;
+            };
+            if *energy < round_cost {
+                self.output_line(session, self.already_cast_line(session));
+                return;
             }
-            self.output_line(session, text::COMBAT_ENGAGED);
-            // Retaliation lock (transcript: the filthbug swiped back after
-            // the bare engagement, before any damage landed) — gated like
-            // every damaging path since slice 3.
-            self.retaliation_lock(monster_id, session);
+            if player.current_mana < mana_cost {
+                self.output_line(session, self.not_enough_mana_line(session));
+                return;
+            }
+            if !offensive {
+                // 43498-43509: the benign leg CONSUMES the one-per-round
+                // permission bit (`user+0x700 & 4`) the way every other
+                // benign cast path does. The offensive legs never touch
+                // it — their gate is the round energy pool.
+                if let Some(Session::InGame { cast_this_round, .. }) =
+                    self.sessions.get_mut(&session)
+                {
+                    *cast_this_round = true;
+                }
+            }
+            self.offensive_cast_attempt(session, spell_id, monster_id);
             return;
         }
         // Benign spells: roll + costs at the command, unlike offensive
@@ -4365,30 +5253,161 @@ impl Core {
     /// really excludes players like 12 is unsettled (the lowest learnable
     /// 13 is priest chant L6 — §8.13 left it open); revisit before bard/
     /// priest support.
+    /// `is_valid_monster_target` (decompile 38430) — the per-monster gate
+    /// on the AREA sweeps, and ONLY on those: `count_valid_targets`
+    /// (38610), `add_duration_spell_to_room` (38707),
+    /// `add_evil_warnings_to_room` (38803) and the eight `cast_no_target`
+    /// effect arms (39705..40724) call it. `cast_monster_target` never
+    /// does — the single-target path's only charm awareness is the
+    /// `0x800` find ORDERING ([`Core::find_monster_charmed_last`]), which
+    /// is a preference and not a veto. The two gates are independent and
+    /// live on disjoint call paths.
+    ///
+    /// The switch is on `spell+0xcc`, so the MATCH TYPE decides how much
+    /// of the function runs:
+    ///
+    /// * 0/1/2/7 -> invalid (38461-38465); 3/5/0xb -> valid outright
+    ///   (38467-38470), as does the `default` arm that would catch the
+    ///   single-target 4/6/8 if they ever arrived here;
+    /// * 10/0xd -> valid ONLY for your own charmed pet (38502-38509) —
+    ///   the pet-command band. Unreachable: [`MatchType::hits_monsters`]
+    ///   excludes both, exactly as the DLL's `{3,5,9,0xb,0xc}` sweep
+    ///   guards do;
+    /// * **9 and 0xc** -> the real body (38477-38499). This is the ONLY
+    ///   place charm touches player-side targeting:
+    ///   - uncharmed AND `+0x116 == 0` AND `mon+0x1a` == your name ->
+    ///     valid at once (your grudge-holder is always fair game);
+    ///   - charmed OR suppressed, AND `mon+0x1a` == your name -> INVALID.
+    ///     charm.md §2.3's "hostile spells can't target your own pet",
+    ///     correctly scoped: area match 9/12 only, and it covers
+    ///     "friends" (suppressed, uncharmed, §2.4) on the same terms;
+    ///   - else the fall-through: instance roam class 5 or 0x25 with
+    ///     caster fame `player+0x542 < 0x28` -> invalid; behaviour mode
+    ///     4 -> invalid; otherwise valid.
+    ///
+    /// The fall-through is not charm, but it is three lines of the same
+    /// arm and a half-ported predicate is worse than none. ORACLE-VERIFY:
+    /// it has no measured surface. Shipped reachability is real, not
+    /// fixture-only — stinking cloud (131) is a learnable match-12 area.
+    ///
+    /// The port is an EXHAUSTIVE match, one arm per switch label, so a new
+    /// [`MatchType`] is a compile error rather than a silent `true`. The
+    /// earlier fail-open (`!= Area9|AreaC -> true`) contradicted this doc
+    /// comment on 0/1/2/7 and defaulted the wrong way; unreachable today
+    /// on either shape, since only the `{3,5,9,0xb,0xc}` area sweeps call
+    /// in.
+    fn is_valid_monster_target(
+        &self,
+        session: SessionId,
+        spell: &crate::content::Spell,
+        id: MonsterInstanceId,
+    ) -> bool {
+        use crate::content::MatchType;
+        let Some(m) = self.monsters.get(&id) else {
+            // `get_monster_data == 0` (38443-38445): a dead id is never a
+            // target, whatever the match type.
+            return false;
+        };
+        match spell.match_type {
+            // 38461-38465 — the single-target user classes and the
+            // item class are hard-invalid here.
+            MatchType::Single0 | MatchType::Single1 | MatchType::Single2 | MatchType::Item7 => {
+                return false;
+            }
+            // 38467-38473 — valid outright, no charm awareness. The
+            // `default` arm (4/6/8) lands here too; it is unreachable
+            // because only the area sweeps call this.
+            MatchType::Area3
+            | MatchType::Area5
+            | MatchType::AreaB
+            | MatchType::Special4
+            | MatchType::Item6
+            | MatchType::Special8 => return true,
+            // 38502-38509 — the pet-command band: valid ONLY for your own
+            // charmed pet. Dead in the DLL too (`hits_monsters` and the
+            // `{3,5,9,0xb,0xc}` sweep guards both exclude 10/0xd), and
+            // written out rather than left to a fail-open default.
+            MatchType::Area10 | MatchType::AreaD => {
+                return m.charmed && m.target == Some(session);
+            }
+            // 38475-38501 — the charm arm, below.
+            MatchType::Area9 | MatchType::AreaC => {}
+        }
+        // `sameas(mon+0x1a, user+0x1e)`: the owner/grudge link is a NAME
+        // in the DLL and a SessionId here (see the plan's key mapping).
+        if m.target == Some(session) {
+            return !(m.charmed || m.suppress);
+        }
+        if matches!(m.roam_class, 5 | 0x25) && self.player(session).fame < 0x28 {
+            return false;
+        }
+        m.behaviour != 4
+    }
+
     fn area_cast(&mut self, session: SessionId, spell: &crate::content::Spell, target: &str) {
         let room = self.player(session).location;
         // Explicit target words refuse KIND-KEYED before any cost
         // (MEASURED §8.13: `c flash oracle` -> "on a user!", `c stnk cat`
-        // -> "on a monster!", both uncharged).
+        // -> "on a monster!", both uncharged). The DLL has no separate
+        // area arm here at all: `get_spell_match_type` hands the area
+        // types an EMPTY find mask, the dispatcher's universal retry
+        // (59265-59271) resolves the word anyway, and the entry point the
+        // found kind selects refuses it — no area match type is in any of
+        // the three acceptance sets. Same two-stage resolver as the
+        // single-target path, therefore, minus the preferred stage.
         let words = target.trim();
         if !words.is_empty() {
-            let want = words.to_ascii_lowercase();
-            let player_hit = self
-                .in_game_sessions()
-                .filter(|(_, p)| p.location == room)
-                .any(|(_, p)| word_prefix_match(&p.name, &want));
-            if player_hit {
-                self.output_line(session, text::MAY_NOT_CAST_ON_USER);
-                return;
+            match self.find_cast_target(session, crate::content::FindScope::UNIVERSAL, words) {
+                Some(CastTarget::Monster(_)) => {
+                    self.output_line(session, text::MAY_NOT_CAST_ON_MONSTER);
+                }
+                Some(CastTarget::User(_)) => {
+                    self.output_line(session, text::MAY_NOT_CAST_ON_USER);
+                }
+                Some(CastTarget::Item(_)) => {
+                    self.output_line(session, text::MAY_NOT_CAST_ON_ITEM);
+                }
+                // ORACLE-VERIFY: an unmatched word was not measured on the
+                // area path — the room-lookup refusal, like every other path.
+                None => self.output_line(session, &text::do_not_see_here(words)),
             }
-            if self.find_monster(room, words).is_some() {
-                self.output_line(session, text::MAY_NOT_CAST_ON_MONSTER);
-                return;
-            }
-            // ORACLE-VERIFY: an unmatched word was not measured on the
-            // area path — the room-lookup refusal, like every other path.
-            self.output_line(session, &text::do_not_see_here(words));
             return;
+        }
+        // add_evil_warnings_to_room (crime.md §2.5 last row): an offensive
+        // sweep over a room holding an innocent passive monster charges
+        // ONE 10-point NPC-style hit before any cost; a refusal aborts the
+        // whole cast. (The per-victim 0-point PAIR timers are the PvP
+        // half — slice 4 with rob.)
+        if spell.target_mode.is_offensive() && spell.match_type.hits_monsters() {
+            // The monster loop is MATCH-GATED (38793-38795): it runs only
+            // for `spell+0xcc` in {3, 5, 9, 0xb, 0xc} — exactly
+            // [`MatchType::hits_monsters`]. An offensive room-wide cast of
+            // any other area type (10/0xd) charges nothing here, so the
+            // gate is a conjunct and not a doc note.
+            //
+            // Inside it, 38802-38805 conjoins the innocence out-param with
+            // `is_valid_monster_target` itself, so a body the sweep will
+            // not reach is not a body you can be charged for either —
+            // which on match 9/0xc silently retires the `behaviour == 4`
+            // half of the innocence test (38454-38456: innocent requires
+            // `+0x106` in {0, 4} and an unnamed link, but 38495 makes
+            // mode 4 invalid).
+            let passive = self
+                .monsters
+                .iter()
+                .find(|(id, m)| {
+                    m.location == room
+                        && m.current_hp > 0
+                        && matches!(m.behaviour, 0 | 4)
+                        && m.target != Some(session)
+                        && self.is_valid_monster_target(session, spell, **id)
+                })
+                .map(|(id, _)| *id);
+            if let Some(id) = passive
+                && self.charge_passive_monster_evil(session, id)
+            {
+                return;
+            }
         }
         // Room protection (§3 step 2) precedes target counting for
         // offensive modes — the same guilt gate and round-cost-only
@@ -4407,11 +5426,18 @@ impl Core {
             self.output_line(session, text::CAST_GUILT);
             return;
         }
-        // Target counting (§3 step 3): live monsters only.
+        // Target counting (§3 step 3): live monsters that pass
+        // `is_valid_monster_target` (`count_valid_targets` 38600-38620 —
+        // the same predicate the effect arms re-run per row, so counting
+        // and applying can never disagree).
         let targets: Vec<MonsterInstanceId> = if spell.match_type.hits_monsters() {
             self.monsters
                 .iter()
-                .filter(|(_, m)| m.location == room && m.current_hp > 0)
+                .filter(|(id, m)| {
+                    m.location == room
+                        && m.current_hp > 0
+                        && self.is_valid_monster_target(session, spell, **id)
+                })
                 .map(|(id, _)| *id)
                 .collect()
         } else {
@@ -4622,9 +5648,17 @@ impl Core {
             // Retaliation lock like every damaging path (gated, slice 3)
             // — but NO caster-side engagement (no *Combat Engaged*
             // MEASURED §8.13 on debuff-only payloads; ORACLE-VERIFY for
-            // damaging sweeps — fixture-only today; evil warnings/crime
-            // = M7).
-            self.retaliation_lock(monster_id, session);
+            // damaging sweeps — fixture-only today; the area path's
+            // ability-52 evil charge is the still-open gap logged at
+            // `offensive_cast_attempt`'s fail arm, 16 learnable match-12
+            // carriers). The AREA damage twins (40370-40385 and 40601-40614)
+            // consult the charmed bit exactly as much as the
+            // single-target one does — not at all. Unlike 43752 they gate
+            // on the INSTANCE roam class with no null-template clause;
+            // pinned by `an_area_damage_cast_grudges_somebody_elses_pet`.
+            // Reachable for OTHER players' pets only: the caster's own is
+            // dropped upstream by [`Core::is_valid_monster_target`].
+            self.retaliation_lock(monster_id, session, CharmedExemption::Ignored);
             if drain_total != 0
                 && let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session)
             {
@@ -4885,9 +5919,27 @@ impl Core {
             }
         }
         if !summons.is_empty() {
+            // Both DLL handlers that share this body spawn into the
+            // CASTER's room (40044 and 42069 read the caster player
+            // record), but they tag the spawn differently — and which
+            // one we are in is exactly `target_id == session`:
+            //
+            // * self-cast = `cast_no_target` case 0xc -> the full pet
+            //   triple (40048-40050);
+            // * another player = `cast_user_target` case 0xc -> a bare
+            //   grudge toward the TARGET (42079-42081). A hunter, not a
+            //   pet: it pursues and attacks the person it was cast at.
+            //
+            // Tagging both `Pet(session)` would hand the caster a pet for
+            // a spell the DLL uses to sic a monster ON somebody.
             let room = self.player(session).location;
+            let link = if target_id == session {
+                SummonLink::Pet(session)
+            } else {
+                SummonLink::HuntUser(target_id)
+            };
             for value in summons {
-                self.summon_spawn(value, room, None); // pet links M7
+                self.summon_spawn(value, room, link);
             }
         }
         self.emit_cast_success_lines(session, target_id, spell, display_damage, everyone_target);
@@ -5333,20 +6385,53 @@ impl Core {
     /// One Summon(12) row: the fixed-or-rolled value IS the template id,
     /// spawned into the given room (every apply loop passes it straight
     /// to `generate_monster`: monster single 23259, player self 40044,
-    /// player-at-monster 43911). An unknown template spawns nothing, like
-    /// generate_monster's 0 return. The MONSTER-cast path tags the spawn
-    /// with the victim's name (23263 -> mon+0x1a, +0x116 = 0) — it wakes
-    /// up already hunting. The player-path caster/pet links (40048-40050,
-    /// 43915-43925: +0x116 = 1 guardian suppression, charm ownership) are
-    /// M7 PENDING with the charm system — those summons stand idle.
-    fn summon_spawn(&mut self, template: i32, room: RoomId, lock: Option<SessionId>) {
-        if let Ok(id) = u16::try_from(template)
-            && let Some(spawned) = self.spawn_monster(crate::content::MonsterId(id), room)
-            && let Some(victim) = lock
-            && let Some(m) = self.monsters.get_mut(&spawned)
-        {
-            m.target = Some(victim);
-            m.suppress = false;
+    /// player-at-monster 43911, player-at-user 42069 — all four into the
+    /// CASTER's room). An unknown template spawns nothing, like
+    /// generate_monster's 0 return.
+    ///
+    /// Ownership is entirely in the state written right after the spawn,
+    /// and the four sites write four different things (charm.md §6's
+    /// table) — hence [`SummonLink`] rather than a nullable session.
+    ///
+    /// The spawn itself must stay the FIRST thing this does: `generate_monster`
+    /// owns a documented draw sequence (loot, name) that the spawner
+    /// goldens pin, and none of the link writes below draws at all.
+    fn summon_spawn(&mut self, template: i32, room: RoomId, link: SummonLink) {
+        let Ok(id) = u16::try_from(template) else {
+            return;
+        };
+        let Some(spawned) = self.spawn_monster(crate::content::MonsterId(id), room) else {
+            return;
+        };
+        let Some(m) = self.monsters.get_mut(&spawned) else {
+            return;
+        };
+        match link {
+            // 40048-40050: name link = caster, +0x116 = 1, +0x128 |= 1.
+            SummonLink::Pet(owner) => {
+                m.target = Some(owner);
+                m.suppress = true;
+                m.charmed = true;
+            }
+            // 42079-42081 / 23263-23265: name link = the VICTIM PLAYER,
+            // +0x116 = 0 — an ordinary grudge, prosecuted by the pursuit
+            // tier and the driver's locked branch with no charm anywhere.
+            SummonLink::HuntUser(victim) => {
+                m.target = Some(victim);
+                m.suppress = false;
+            }
+            // 43919-43929: +0x140 dirty, +0x88 = victim id, +0x116 = 0,
+            // and NO name link. The victim-side 10-deep back-link array
+            // (`victim+0x60+i*4`, 43922-43928) is deliberately NOT
+            // ported: charm.md §7 records that no reader for it was ever
+            // located, and a write-only array is state we would have to
+            // keep correct for nothing.
+            SummonLink::HuntMonster(victim) => {
+                m.hunt = Some(victim);
+                m.suppress = false;
+                m.needs_recompute = true;
+            }
+            SummonLink::None => {}
         }
     }
 
@@ -5370,12 +6455,1177 @@ impl Core {
         held
     }
 
-    /// A live monster's template name (empty if the instance is gone).
+    /// A live monster's display name (empty if the instance is gone) —
+    /// the spawn-composed adjective name, not the template's.
     fn monster_name(&self, id: MonsterInstanceId) -> String {
         self.monsters
             .get(&id)
-            .and_then(|m| self.content.monsters.get(&m.template))
-            .map_or_else(String::new, |t| t.name.clone())
+            .map_or_else(String::new, |m| m.name.clone())
+    }
+
+    /// `cmd_set` (0x458b60) — only the EVIL subcommand ships in slice 3;
+    /// the other seventeen (keep/style/gossip/...) fall through to say
+    /// until their systems exist. Subcommand matching is exact-word
+    /// (ORACLE-VERIFY: DLL abbreviation behavior unmeasured).
+    fn set_command(&mut self, session: SessionId, args: &str) -> Resolution {
+        if !args.trim().eq_ignore_ascii_case("evil") {
+            return Resolution::FallThrough;
+        }
+        let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+            return Resolution::Handled;
+        };
+        player.warn_on_evil = !player.warn_on_evil;
+        let (line, snapshot) = (
+            if player.warn_on_evil { text::SET_EVIL_WARN_ON } else { text::SET_EVIL_WARN_OFF },
+            player.clone(),
+        );
+        self.output_line(session, line);
+        self.events.push(Event::Persist(snapshot));
+        Resolution::Handled
+    }
+
+    /// The `ansi` toggle (OURS — see the Player.ansi divergence note):
+    /// flip, confirm, persist.
+    fn ansi_command(&mut self, session: SessionId) {
+        let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+            return;
+        };
+        player.ansi = !player.ansi;
+        let (line, snapshot) = (
+            if player.ansi { text::ANSI_NOW_ON } else { text::ANSI_NOW_OFF },
+            player.clone(),
+        );
+        self.output_line(session, line);
+        self.events.push(Event::Persist(snapshot));
+    }
+
+    /// Test/inspection: the runtime hidden byte (`+0x5f6`).
+    pub fn player_hidden(&self, session: SessionId) -> bool {
+        matches!(self.sessions.get(&session),
+            Some(Session::InGame { player, .. }) if player.hidden)
+    }
+
+    /// The §11.3 chance inputs for the acting player.
+    fn stealth_chance_for(&self, session: SessionId) -> i32 {
+        let Some(Session::InGame { player, derived, .. }) = self.sessions.get(&session) else {
+            return 0;
+        };
+        let room = player.location;
+        let others = self
+            .in_game_sessions()
+            .filter(|(id, p)| *id != session && p.location == room)
+            .count() as i32;
+        let monsters = self
+            .monsters
+            .values()
+            .filter(|m| m.location == room && m.current_hp > 0)
+            .count() as i32;
+        crate::stats::stealth_chance(
+            derived.stealth,
+            self.encumbrance_percent(session),
+            others,
+            monsters,
+            95,
+        )
+    }
+
+    /// `cmd_sneak` (theft.md §11.1): gate on being fought, then
+    /// PerStealth auto-success or the §11.3 roll. Success is SILENT —
+    /// the sneak-armed bit simply waits for the next move. Failure
+    /// self-doubt is perception-gated. (The add_delay gates join with
+    /// the slice-wide delay system.)
+    fn sneak_command(&mut self, session: SessionId) {
+        // UNPORTED (not slice-scoped — it lands with its first consumer,
+        // whichever slice that turns out to be): `can_sneak`'s third
+        // gate, `monster_could_attack` (18209, called at 65462). Its pet
+        // exemption (18237-18240: a threat is a monster that is NOT
+        // charmed-and-named-yours and has `+0x116 == 0`) is charm.md §2.3
+        // material and comes with it — M7 slice 5 deliberately built no
+        // speculative plumbing for a predicate with no caller (YAGNI).
+        // FOUR callers in the DLL, all still unported: `can_sneak` 65462,
+        // `cmd_hide` 62023, `cmd_close` 52341 and `cmd_lock` 53290. The
+        // last three carry the identical four-term guard
+        // (`is_inside_autocombat` == 0, `is_being_attacked` == 0,
+        // `+0x6f0 < 1`, `monster_could_attack` == 0); `can_sneak` is the
+        // odd one out (its own attacker-type/same-room pre-test, then
+        // `+0x6f0 < 1` and the call).
+        let being_fought = self
+            .monsters
+            .values()
+            .any(|m| m.target == Some(session) && m.current_hp > 0
+                && m.location == self.player(session).location);
+        let engaged = self.attackers_of(session) >= 1;
+        if being_fought || engaged {
+            self.output_line(session, text::MAY_NOT_SNEAK);
+            self.add_delay(session, 1);
+            return;
+        }
+        if self.delay_blocked(session) {
+            return;
+        }
+        self.add_delay(session, 1);
+        self.output_line(session, "Attempting to sneak...");
+        let auto = self
+            .ability_bag(self.player(session))
+            .value(Ability::from_id(0xba).expect("PerStealth in the enum"))
+            > 0;
+        let success = auto || {
+            let chance = self.stealth_chance_for(session);
+            self.rng.roll(0, 100) < chance
+        };
+        if success {
+            if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+                player.sneak_armed = true;
+            }
+            return; // silent — the player is never told sneaking worked
+        }
+        let perception = match self.sessions.get(&session) {
+            Some(Session::InGame { derived, .. }) => derived.perception,
+            _ => 0,
+        };
+        if self.rng.roll(0, 100) < perception {
+            self.output_line(session, "You don't think you're sneaking.");
+        }
+    }
+
+    /// `cmd_hide` with no argument (theft.md §11.2): the self-hide.
+    /// No PerStealth shortcut here, unlike SNEAK.
+    fn hide_command(&mut self, session: SessionId) {
+        // Same unported `monster_could_attack` gate as `sneak_command`
+        // (the 62023 caller) — see the note there for the full
+        // four-caller inventory and the pet exemption that rides along.
+        let being_fought = self
+            .monsters
+            .values()
+            .any(|m| m.target == Some(session) && m.current_hp > 0
+                && m.location == self.player(session).location);
+        let engaged = self.attackers_of(session) >= 1;
+        if being_fought || engaged {
+            // Unconditional fake failure while being fought (§11.2).
+            self.output_line(session, "Attempting to hide...");
+            self.output_line(session, " You don't think you are hidden.");
+            self.add_delay(session, 1);
+            return;
+        }
+        if self.delay_blocked(session) {
+            return;
+        }
+        self.add_delay(session, 1);
+        self.output_line(session, "Attempting to hide...");
+        let chance = self.stealth_chance_for(session);
+        if self.rng.roll(0, 100) < chance {
+            if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+                player.hidden = true;
+            }
+            return; // silent success
+        }
+        let perception = match self.sessions.get(&session) {
+            Some(Session::InGame { derived, .. }) => derived.perception,
+            _ => 0,
+        };
+        if self.rng.roll(0, 100) < perception {
+            self.output_line(session, " You don't think you are hidden.");
+        }
+    }
+
+
+
+
+
+    /// `cmd_disarm` (theft.md §10): DISARM TRAP <direction>. A missing
+    /// or bad direction is a SILENT return (the DLL's `return 1`).
+    /// Mechanical (type 9) traps only; 0x18 spell traps await the
+    /// room-cast plumbing (PENDING).
+    fn disarm_command(&mut self, session: SessionId, args: &str) {
+        let words: Vec<&str> = args.split_whitespace().collect();
+        let Some(dir) = words.get(1).and_then(|w| direction_from_word(&w.to_ascii_lowercase()))
+        else {
+            return; // silent, per the DLL
+        };
+        let room = self.player(session).location;
+        let d = dir as usize as u8;
+        let fail = format!(
+            "You failed to disarm any trap to the {}.",
+            text::direction_shown(dir)
+        );
+        let exit = self
+            .content
+            .rooms
+            .get(&room)
+            .and_then(|r| r.exits[dir as usize].clone());
+        let Some(exit) = exit.filter(|e| e.exit_type == 9) else {
+            self.output_line(session, &fail);
+            return;
+        };
+        // Trap state shares the 0x39c word (the lock overlay): 0/3
+        // armed, 1/4 disarmed.
+        let state = *self.exit_locks.get(&(room, d)).unwrap_or(&exit.param2);
+        if !matches!(state, 0 | 3) {
+            self.output_line(session, &fail);
+            return;
+        }
+        let skill = match self.sessions.get(&session) {
+            Some(Session::InGame { derived, .. }) => derived.disarm_traps,
+            _ => 0,
+        };
+        let roll = self.rng.roll(0, 100);
+        if roll < skill {
+            self.output_line(
+                session,
+                &format!(
+                    "You successfully disarmed the trap to the {}.",
+                    text::direction_shown(dir)
+                ),
+            );
+            self.exit_locks.insert((room, d), if state == 3 { 4 } else { 1 });
+            self.scheduler.schedule_in(300, Job::ExitRelock(room, d));
+            return;
+        }
+        if roll < skill + 10 {
+            self.output_line(session, &fail); // near miss — safe
+            return;
+        }
+        // Triggered: the message record (user line 1, room line 2 with
+        // the name bound), then the consequence.
+        let name = self.player(session).name.clone();
+        if exit.param4 > 0
+            && let Ok(id) = u16::try_from(exit.param4)
+            && let Some(msg) = self.content.messages.get(&crate::content::MessageId(id))
+        {
+            let user_line = msg.lines.first().cloned().unwrap_or_default();
+            let room_line = msg
+                .lines
+                .get(1)
+                .map(|l| l.replacen("%s", &name, 1))
+                .unwrap_or_default();
+            if !user_line.is_empty() {
+                self.output_line(session, &user_line);
+            }
+            if !room_line.is_empty() {
+                self.broadcast_to_room(room, Some(session), &room_line);
+            }
+        }
+        if state == 3 {
+            // Trapdoor: you fall through (move_user mode 7 — modeled as
+            // a forced relocation; the mode-7 spell arm is PENDING).
+            if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+                player.location = exit.dest;
+            }
+            self.show_room(session);
+            return;
+        }
+        let rating = exit.param.max(1);
+        let dmg = self.rng.roll(rating / 2, rating + 1).max(0);
+        let dropped;
+        {
+            let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+                return;
+            };
+            let was_up = player.current_hp > 0;
+            player.current_hp -= dmg;
+            dropped = was_up && player.current_hp < 0;
+        }
+        if dropped {
+            let line = text::drops_to_ground(&name);
+            self.output_line(session, &line);
+            self.broadcast_to_room(room, Some(session), &line);
+        }
+        if self.player(session).current_hp <= DEATH_FLOOR {
+            self.player_killed(session);
+        }
+    }
+
+    /// `cmd_search` / `search_for_hidden_exits` (theft.md §9). Bare form
+    /// re-lists the room and broadcasts "searching the area"; a
+    /// directional search broadcasts "searching for exits" then reveals
+    /// a trap (type 9, FindTraps roll — no state change) or reports
+    /// nothing. Hidden type-6 exit reveal rides the DISARM/trap-state
+    /// pass. Non-directions are refused.
+    fn search_command(&mut self, session: SessionId, args: &str) {
+        self.add_delay(session, 1);
+        let word = args.trim().to_ascii_lowercase();
+        if word.is_empty() {
+            let room = self.player(session).location;
+            let name = self.player(session).name.clone();
+            self.broadcast_to_room(
+                room,
+                Some(session),
+                &format!("{name} is searching the area."),
+            );
+            self.show_room_brief(session);
+            // The hidden stash surfaces to a searcher (theft.md §11.2;
+            // presentation ORACLE-VERIFY — the notice-line frame reused).
+            let stash: Vec<String> = self
+                .room_hidden_items
+                .get(&room)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|(id, _)| self.content.items.get(id))
+                        .map(|i| i.name.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut lines: Vec<String> = stash;
+            if let Some(pool) = self.room_hidden_coins.get(&room) {
+                for (idx, n) in pool.iter().enumerate() {
+                    if *n > 0 {
+                        lines.push(format!("{n} {}", text::currency_name(idx)));
+                    }
+                }
+            }
+            if !lines.is_empty() {
+                self.output_line(
+                    session,
+                    &format!("You notice {} here.", lines.join(", ")),
+                );
+            }
+            return;
+        }
+        let Some(dir) = direction_from_word(&word) else {
+            self.output_line(session, text::SEARCH_WHY);
+            return;
+        };
+        let room = self.player(session).location;
+        let name = self.player(session).name.clone();
+        self.broadcast_to_room(
+            room,
+            Some(session),
+            &format!("{name} is searching for exits."),
+        );
+        let nothing = match dir {
+            Direction::Up => "You notice nothing different above you.".to_string(),
+            Direction::Down => "You notice nothing different below you.".to_string(),
+            d => format!("You notice nothing different to the {}.", text::direction_shown(d)),
+        };
+        let exit = self
+            .content
+            .rooms
+            .get(&room)
+            .and_then(|r| r.exits[dir as usize].clone());
+        let d = dir as usize as u8;
+        // Hidden type-6 exits (state & 2): roll < max(Perception-15, 3)
+        // reveals — state 4, plus the ~5 min re-hide kick.
+        if let Some(hexit) = exit.clone().filter(|e| e.exit_type == 6) {
+            let state = *self.exit_locks.get(&(room, d)).unwrap_or(&hexit.param);
+            if state & 2 != 0 {
+                let perception = match self.sessions.get(&session) {
+                    Some(Session::InGame { derived, .. }) => derived.perception,
+                    _ => 0,
+                };
+                if self.rng.roll(0, 100) < (perception - 15).max(3) {
+                    self.exit_locks.insert((room, d), 4);
+                    self.scheduler.schedule_in(300, Job::ExitRelock(room, d));
+                    let line = match dir {
+                        Direction::Up => "You found an exit upwards!".to_string(),
+                        Direction::Down => "You found an exit downwards!".to_string(),
+                        d => format!("You found an exit to the {}!", text::direction_shown(d)),
+                    };
+                    self.output_line(session, &line);
+                    return;
+                }
+            }
+            self.output_line(session, &nothing);
+            return;
+        }
+        let Some(exit) = exit.filter(|e| e.exit_type == 9) else {
+            self.output_line(session, &nothing);
+            return;
+        };
+        let find_traps = match self.sessions.get(&session) {
+            Some(Session::InGame { derived, .. }) => derived.find_traps,
+            _ => 0,
+        };
+        if self.rng.roll(0, 100) < find_traps {
+            let line = match dir {
+                Direction::Up => "You found a trap above you!".to_string(),
+                Direction::Down => "You found a trap below you!".to_string(),
+                d => format!("You found a trap to the {}!", text::direction_shown(d)),
+            };
+            let _ = exit; // finding changes no state (§9)
+            self.output_line(session, &line);
+        } else {
+            self.output_line(session, &nothing);
+        }
+    }
+
+    /// `add_delay`: extend the session's command delay.
+    fn add_delay(&mut self, session: SessionId, units: u8) {
+        if let Some(Session::InGame { delay, .. }) = self.sessions.get_mut(&session) {
+            *delay = delay.saturating_add(units);
+        }
+    }
+
+    /// The SNEAK/HIDE delay gate (theft.md §11): refuse while units
+    /// remain. Returns true when blocked.
+    fn delay_blocked(&mut self, session: SessionId) -> bool {
+        let waiting = matches!(self.sessions.get(&session),
+            Some(Session::InGame { delay, .. }) if *delay > 0);
+        if waiting {
+            self.output_line(session, text::MUST_WAIT);
+        }
+        waiting
+    }
+
+    /// Hidden type-6 exit check (theft.md §9/§8.6): found state 4 in
+    /// the overlay (else the disk para1) reveals it; everything else —
+    /// state 2 and the re-hidden ticker codes — stays concealed. Ticker
+    /// semantics UNDETERMINED beyond concealment.
+    fn exit_hidden6(&self, room: RoomId, d: u8, exit: &crate::content::Exit) -> bool {
+        exit.exit_type == 6
+            && *self.exit_locks.get(&(room, d)).unwrap_or(&exit.param) != 4
+    }
+
+    /// The effective lock state for a pickable exit (theft.md §8.1): the
+    /// runtime overlay, else the shipped disk word — type 2 keeps it in
+    /// para2 (0x39c), types 7/0xb in para1 (0x374). 2 = locked.
+    fn exit_lock_state(&self, room: RoomId, d: u8, exit: &crate::content::Exit) -> i32 {
+        if let Some(state) = self.exit_locks.get(&(room, d)) {
+            return *state;
+        }
+        match exit.exit_type {
+            2 => exit.param2,
+            7 | 0xb => exit.param,
+            _ => 0,
+        }
+    }
+
+    /// `cmd_picklock` (theft.md §8). One shared fail string masks every
+    /// refusal ("no such exit", wrong type, already open, skill-less,
+    /// and the failed roll alike).
+    fn picklock_command(&mut self, session: SessionId, args: &str) {
+        let word = args.trim().to_ascii_lowercase();
+        let dir = direction_from_word(&word);
+        let Some(dir) = dir else {
+            self.output_line(session, text::SYNTAX_PICKLOCK);
+            return;
+        };
+        self.break_combat(session);
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+            player.sneak_armed = false;
+            player.hidden = false;
+        }
+        let room = self.player(session).location;
+        let d = dir as usize as u8;
+        let exit = self
+            .content
+            .rooms
+            .get(&room)
+            .and_then(|r| r.exits[dir as usize].clone());
+        let fail = text::PICK_FAILS;
+        let Some(exit) = exit else {
+            self.output_line(session, fail);
+            return;
+        };
+        self.add_delay(session, 2);
+        let pickable = matches!(exit.exit_type, 2 | 7 | 0xb);
+        if !pickable || self.exit_lock_state(room, d, &exit) != 2 {
+            self.output_line(session, fail);
+            return;
+        }
+        let skill = match self.sessions.get(&session) {
+            Some(Session::InGame { derived, .. }) => derived.picklocks,
+            _ => 0,
+        };
+        // Modifier + roll (§8.2/8.3): type 2 keeps its modifier in
+        // para3; 7/0xb in para2 (typically negative — hard locks).
+        let modifier = if exit.exit_type == 2 { exit.param3 } else { exit.param2 };
+        let success = skill >= 1 && self.rng.roll(0, 100) < modifier + skill;
+        if !success {
+            self.add_delay(session, 2); // the second charge (§8.2)
+            // §8.4: a failed 7/0xb pick fires the room lock-trap spell
+            // (room+0x5fa) — no sqlite column is pinned for it yet
+            // (PENDING with the trap pass), so the fail line prints.
+            self.output_line(session, fail);
+            return;
+        }
+        self.exit_locks.insert((room, d), 1);
+        // Re-lock (§8.6): 300 s per unit; type 7/0xb locks with a
+        // POSITIVE pick modifier never re-lock.
+        let delay_units = if exit.exit_type == 2 { exit.param4 } else { exit.param3 };
+        let relocks = exit.exit_type == 2 || modifier < 1;
+        if relocks {
+            let secs = 300 * i64::from(delay_units.max(1));
+            self.scheduler
+                .schedule_in(secs as u64, Job::ExitRelock(room, d));
+        }
+        // Reciprocal exit (§8.2): the destination's opposite unlocks on
+        // its own timer.
+        let opposite = dir.opposite();
+        if let Some(back) = self
+            .content
+            .rooms
+            .get(&exit.dest)
+            .and_then(|r| r.exits[opposite as usize].clone())
+            .filter(|b| b.dest == room && matches!(b.exit_type, 2 | 7 | 0xb))
+        {
+            let bd = opposite as usize as u8;
+            self.exit_locks.insert((exit.dest, bd), 1);
+            let bmod = if back.exit_type == 2 { back.param3 } else { back.param2 };
+            let bdelay = if back.exit_type == 2 { back.param4 } else { back.param3 };
+            if back.exit_type == 2 || bmod < 1 {
+                let secs = 300 * i64::from(bdelay.max(1));
+                self.scheduler
+                    .schedule_in(secs as u64, Job::ExitRelock(exit.dest, bd));
+            }
+        }
+        // §8.5: room first, then the picker.
+        let name = self.player(session).name.clone();
+        let leaf = if exit.exit_type == 0xb { "gate" } else { "door" };
+        let line = match dir {
+            Direction::Up => format!("You see {name} pick the lock on the {leaf} above you."),
+            Direction::Down => format!("You see {name} pick the lock on the {leaf} below you."),
+            d => format!(
+                "You see {name} pick the lock on the {leaf} to the {}.",
+                text::direction_shown(d)
+            ),
+        };
+        self.broadcast_to_room(room, Some(session), &line);
+        self.output_line(session, &format!("You successfully unlocked the {leaf}."));
+    }
+
+    /// One re-lock kick (theft.md §8.6): back to locked with the room
+    /// broadcast, unless someone already re-locked it.
+    fn relock_exit(&mut self, room: RoomId, d: u8) {
+        let Some(exit) = self
+            .content
+            .rooms
+            .get(&room)
+            .and_then(|r| r.exits[d as usize].clone())
+        else {
+            return;
+        };
+        // Hidden exits re-hide to their shipped state (§8.6 type 6).
+        if exit.exit_type == 6 {
+            self.exit_locks.insert((room, d), exit.param);
+            return;
+        }
+        // Traps re-arm silently (§8.6: 0x39c 1->0, 4->3).
+        if matches!(exit.exit_type, 9 | 0x18) {
+            let state = *self.exit_locks.get(&(room, d)).unwrap_or(&exit.param2);
+            let rearmed = match state {
+                1 => 0,
+                4 => 3,
+                other => other,
+            };
+            self.exit_locks.insert((room, d), rearmed);
+            return;
+        }
+        if self.exit_lock_state(room, d, &exit) == 2 {
+            return; // already locked again
+        }
+        self.exit_locks.insert((room, d), 2);
+        let leaf = if exit.exit_type == 0xb { "gate" } else { "door" };
+        let dir = crate::content::Direction::ALL[d as usize];
+        let line = format!(
+            "The {leaf} to the {} just locked!",
+            text::direction_shown(dir)
+        );
+        self.broadcast_to_room(room, None, &line);
+    }
+
+    /// `cmd_rob` (theft.md §3): parse, resolve player-or-monster, then
+    /// `rob_user`/`rob_monster`. Bare form prints the syntax; unmatched
+    /// targets the don't-see line. (find_action_target kinds 4/8/0x10 —
+    /// items — have no reachable surface here yet.)
+    fn rob_command(&mut self, session: SessionId, target_words: &str) {
+        let want = target_words.trim().to_ascii_lowercase();
+        if want.is_empty() {
+            self.output_line(session, text::SYNTAX_ROB);
+            return;
+        }
+        // §3 kind-1 entry clears the robber's own stealth state.
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+            player.sneak_armed = false;
+            player.hidden = false;
+        }
+        let room = self.player(session).location;
+        let sees_hidden = self
+            .ability_bag(self.player(session))
+            .value(Ability::from_id(57).expect("SeeHidden in the enum"))
+            > 0;
+        let target = self
+            .in_game_sessions()
+            .filter(|(_, p)| p.location == room)
+            .find(|(_, p)| word_prefix_match(&p.name, &want))
+            .map(|(id, p)| (id, p.hidden));
+        if let Some((victim, victim_hidden)) = target {
+            if victim_hidden && !sees_hidden && victim != session {
+                self.output_line(session, text::DONT_SEE_ANYWHERE);
+                return;
+            }
+            self.add_delay(session, 1);
+            self.rob_user(session, victim);
+            return;
+        }
+        if self.find_monster(room, &want).is_some() {
+            // rob_monster (theft.md §6): a no-op — its only crime check
+            // is the committed-Lawful refusal; otherwise SILENT.
+            let lawful = self.player(session).lawful;
+            if lawful {
+                self.output_line(session, text::ROB_WAY_OF_LIFE);
+            }
+            return;
+        }
+        self.output_line(session, text::DONT_SEE_ANYWHERE);
+    }
+
+    /// `FUN_0046c417` (crime.md §6.5) — the PvP-range gate.
+    fn pvp_in_range(&self, a: SessionId, b: SessionId) -> bool {
+        if self.config.pvp_level_range < 0 {
+            return false;
+        }
+        let (al, bl) = (
+            i32::from(self.player(a).level),
+            i32::from(self.player(b).level),
+        );
+        if al < 4 || bl < 4 {
+            return false;
+        }
+        let (an, bn) = (self.player(a).name.clone(), self.player(b).name.clone());
+        if self
+            .evil_timers
+            .iter()
+            .any(|n| n.attacker.eq_ignore_ascii_case(&an) && n.victim.eq_ignore_ascii_case(&bn))
+        {
+            return true; // a live pair node bypasses balance
+        }
+        if crate::crime::legal_level(self.player(b).fame) == crate::crime::LegalLevel::Fiend {
+            return true;
+        }
+        (al - bl).abs() <= self.config.pvp_level_range
+    }
+
+    /// `rob_user` (theft.md §4): gates, the Thievery roll, the evil
+    /// charge, then the quiet loot transfer. Only the BUMP outcome ever
+    /// reaches the victim; the room hears nothing.
+    fn rob_user(&mut self, robber: SessionId, victim: SessionId) {
+        let p = self.player(robber);
+        // §4.1 gate 1: Lawful OR evil-warnings — one shared refusal.
+        if p.lawful || p.warn_on_evil {
+            self.output_line(robber, text::ROB_WAY_OF_LIFE);
+            return;
+        }
+        if robber == victim {
+            self.output_line(robber, text::ROB_YOURSELF);
+            return;
+        }
+        if !self.pvp_in_range(robber, victim) {
+            self.output_line(robber, text::ROB_UNBALANCED);
+            return;
+        }
+        let room = self.player(robber).location;
+        let safe = self
+            .content
+            .rooms
+            .get(&room)
+            .is_some_and(|r| r.protected() || r.room_type == 5);
+        if safe {
+            self.output_line(robber, text::ROB_GUILT);
+            return;
+        }
+        let thievery = match self.sessions.get(&robber) {
+            Some(Session::InGame { derived, .. }) => derived.thievery,
+            _ => 0,
+        };
+        let victim_name = self.player(victim).name.clone();
+        let robber_name = self.player(robber).name.clone();
+        let victim_gender = self.player(victim).gender;
+        let robber_gender = self.player(robber).gender;
+        // Draw 1: the skill d100.
+        let roll = self.rng.roll(1, 100);
+        if roll > thievery + 10 {
+            // Detected — the only outcome the victim ever sees.
+            if self.charge_player_evil(robber, victim, 1, 1) {
+                return;
+            }
+            self.output_line(
+                robber,
+                &format!(
+                    "You bump {victim_name} as you try to rob {}.",
+                    text::pronoun_object(victim_gender)
+                ),
+            );
+            self.output_line(
+                victim,
+                &format!(
+                    "{robber_name} bumps you as {} tries to rob you!",
+                    text::pronoun_subject(robber_gender)
+                ),
+            );
+            return;
+        }
+        if roll > thievery {
+            if self.charge_player_evil(robber, victim, 1, 2) {
+                return;
+            }
+            self.output_line(
+                robber,
+                &format!("Your skills fail as you try to rob {victim_name}."),
+            );
+            return;
+        }
+        // Success path: the charge lands BEFORE the loot draws (§4.2).
+        if self.charge_player_evil(robber, victim, 1, 2) {
+            return;
+        }
+        // Draw 2: coins vs items.
+        if self.rng.roll(1, 100) < 50 {
+            // Draw 3: the currency index — even one the victim lacks.
+            let idx = self.rng.roll(0, 4).clamp(0, 4) as usize;
+            let held = {
+                let v = &self.player(victim).coins;
+                match idx {
+                    0 => v.copper,
+                    1 => v.silver,
+                    2 => v.gold,
+                    3 => v.platinum,
+                    _ => v.runic,
+                }
+            };
+            let amount = if held > 0 {
+                self.rng.roll(0, held.min(i32::MAX as u32) as i32).max(0) as u32
+            } else {
+                0
+            };
+            if amount == 0 {
+                self.output_line(
+                    robber,
+                    &format!("Your skills fail as you try to rob {victim_name}."),
+                );
+                return;
+            }
+            let take = |c: &mut Coins, idx: usize, n: u32, add: bool| {
+                let slot = match idx {
+                    0 => &mut c.copper,
+                    1 => &mut c.silver,
+                    2 => &mut c.gold,
+                    3 => &mut c.platinum,
+                    _ => &mut c.runic,
+                };
+                if add {
+                    *slot += n;
+                } else {
+                    *slot -= n;
+                }
+            };
+            if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&victim) {
+                take(&mut player.coins, idx, amount, false);
+            }
+            if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&robber) {
+                take(&mut player.coins, idx, amount, true);
+            }
+            self.output_line(
+                robber,
+                &format!(
+                    "You stole {amount} {} from {victim_name}.",
+                    text::currency_name(idx)
+                ),
+            );
+            return;
+        }
+        // Item path (§4.3): one d100 per occupied inventory slot; the
+        // LAST sub-50 hit is the candidate, selected only when the item
+        // carries LoyalItem (100). (The 50-slot key ring has no model
+        // here yet — keys live in the inventory; PENDING with the key
+        // system.)
+        let inventory = self.player(victim).inventory.clone();
+        let mut candidate: Option<usize> = None;
+        let mut selected = false;
+        for (i, (item_id, _)) in inventory.iter().enumerate() {
+            if self.rng.roll(1, 100) < 50 {
+                candidate = Some(i);
+                selected = self
+                    .content
+                    .items
+                    .get(item_id)
+                    .is_some_and(|it| {
+                        it.abilities.iter().any(|(a, _)| {
+                            Ability::from_id(100).is_some_and(|l| *a == l)
+                        })
+                    });
+            }
+        }
+        let fail = format!("Your skills fail as you try to rob {victim_name}.");
+        let Some(slot) = candidate.filter(|_| selected) else {
+            self.output_line(robber, &fail);
+            return;
+        };
+        let (item_id, uses) = inventory[slot];
+        // §4.5: the Robable byte gates the transfer. (The DLL's
+        // only-copy-equipped rule is unreachable here: our worn gear
+        // lives outside the inventory vec.)
+        let (robable, item_name) = self
+            .content
+            .items
+            .get(&item_id)
+            .map(|i| (i.robable != 0, i.name.clone()))
+            .unwrap_or((false, String::new()));
+        if !robable {
+            self.output_line(robber, &fail);
+            return;
+        }
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&victim) {
+            player.inventory.remove(slot);
+        }
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&robber) {
+            player.inventory.push((item_id, uses));
+        }
+        self.output_line(
+            robber,
+            &format!("You successfully stole {item_name} from {victim_name}."),
+        );
+    }
+
+    /// The player-victim evil charge (crime.md §2.3-2.4): gate, the
+    /// innocence gate, victim-quality multiplier, minimum-10 bump, and
+    /// the pair-timer bank (rob mode replaces an existing node).
+    /// Returns true when the action is REFUSED.
+    fn charge_player_evil(
+        &mut self,
+        robber: SessionId,
+        victim: SessionId,
+        base_points: i32,
+        rob_mode: u8,
+    ) -> bool {
+        let (victim_fame, victim_lawful, victim_name) = {
+            let v = self.player(victim);
+            (v.fame, v.lawful, v.name.clone())
+        };
+        let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&robber) else {
+            return true;
+        };
+        if player.warn_on_evil {
+            self.output_line(robber, crate::crime::WARN_ON_EVIL_REFUSAL);
+            return true;
+        }
+        if player.fame > 300 {
+            self.output_line(robber, crate::crime::TOO_EVIL_REFUSAL);
+            return true;
+        }
+        if player.lawful {
+            self.output_line(robber, crate::crime::LAWFUL_REFUSAL);
+            return true;
+        }
+        // Innocence gate: only Neutral-band victims yield points; the
+        // timer is banked either way.
+        let mut points = if victim_fame < 0x1e {
+            base_points * crate::crime::victim_multiplier(victim_fame, victim_lawful)
+        } else {
+            0
+        };
+        let fame_now = i32::from(player.fame);
+        if fame_now < 0 && fame_now + points < 10 {
+            points = 10 - fame_now;
+        }
+        let before = crate::crime::legal_level(player.fame);
+        if points > 0 && fame_now < 30000 {
+            player.fame = (fame_now + points)
+                .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+        }
+        let robber_name = player.name.clone();
+        let crossed = crate::crime::legal_level(player.fame) != before;
+        let snapshot = player.clone();
+        self.output_line(robber, crate::crime::DARK_CLOUD);
+        if crossed {
+            self.update_allowed_worn_items(robber);
+        }
+        self.events.push(Event::Persist(snapshot));
+        // Bank/replace the pair timer (§2.3 rob path, §4.1 node shape).
+        let flags = if rob_mode == 2 { 3 } else { 1 };
+        self.evil_timers.retain(|n| {
+            !(n.attacker.eq_ignore_ascii_case(&robber_name)
+                && n.victim.eq_ignore_ascii_case(&victim_name))
+        });
+        self.evil_timers.push(crate::crime::EvilNode {
+            attacker: robber_name,
+            victim: victim_name,
+            rounds: 11,
+            points,
+            rob_flags: flags,
+        });
+        false
+    }
+
+    /// `cmd_forgive` + `attempt_to_forgive` (theft.md §5): the wronged
+    /// party refunds a present criminal's banked points. Our list walk
+    /// unlinks the matched node — the DLL's frees the PREDECESSOR (a
+    /// use-after-free) and is deliberately not cloned.
+    fn forgive_command(&mut self, session: SessionId, target_words: &str) {
+        let want = target_words.trim().to_ascii_lowercase();
+        let room = self.player(session).location;
+        let target = self
+            .in_game_sessions()
+            .filter(|(_, p)| p.location == room)
+            .find(|(_, p)| word_prefix_match(&p.name, &want))
+            .map(|(id, _)| id);
+        let Some(criminal) = target else {
+            self.output_line(
+                session,
+                &format!("You do not see {} here!", target_words.trim()),
+            );
+            return;
+        };
+        let criminal_name = self.player(criminal).name.clone();
+        let criminal_gender = self.player(criminal).gender;
+        let my_name = self.player(session).name.clone();
+        let node_idx = self.evil_timers.iter().position(|n| {
+            n.attacker.eq_ignore_ascii_case(&criminal_name)
+                && n.victim.eq_ignore_ascii_case(&my_name)
+        });
+        let Some(idx) = node_idx else {
+            self.output_line(
+                session,
+                &format!(
+                    "The gods refuse to forgive {criminal_name} for {} actions.",
+                    text::pronoun_possessive(criminal_gender)
+                ),
+            );
+            return;
+        };
+        let node = self.evil_timers.remove(idx);
+        let before = crate::crime::legal_level(self.player(criminal).fame);
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&criminal) {
+            player.fame = (i32::from(player.fame) - node.points)
+                .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+        }
+        if crate::crime::legal_level(self.player(criminal).fame) != before {
+            self.update_allowed_worn_items(criminal);
+        }
+        let snapshot = match self.sessions.get(&criminal) {
+            Some(Session::InGame { player, .. }) => player.clone(),
+            _ => return,
+        };
+        self.events.push(Event::Persist(snapshot));
+        self.output_line(criminal, "The gods have forgiven you for your action.");
+        self.output_line(
+            session,
+            &format!(
+                "The gods have forgiven {criminal_name} for {} action.",
+                text::pronoun_possessive(criminal_gender)
+            ),
+        );
+    }
+
+    /// HIDE <item> / HIDE <n> <currency> (theft.md §11.2): the thief's
+    /// stash. NotDroppable refuses; success is quiet ("You hid %s.").
+    /// The DLL's worn-single-copy rule is unreachable here (our worn
+    /// gear lives outside the inventory vec).
+    fn hide_stash_command(&mut self, session: SessionId, args: &str) {
+        if self.delay_blocked(session) {
+            return;
+        }
+        self.add_delay(session, 1);
+        let words: Vec<String> = args
+            .split_whitespace()
+            .map(|w| w.to_ascii_lowercase())
+            .collect();
+        let room = self.player(session).location;
+        // HIDE <n> <currency>.
+        if let Some(Ok(n)) = words.first().map(|w| w.parse::<u32>()) {
+            let idx = words.get(1).and_then(|w| {
+                (0..5).find(|&i| text::currency_name(i).starts_with(w.as_str()))
+            });
+            let Some(idx) = idx else {
+                self.output_line(session, &format!("Syntax: HIDE {n} {{Currency}}"));
+                return;
+            };
+            if n == 0 {
+                self.output_line(session, &format!("Syntax: HIDE {n} {{Currency}}"));
+                return;
+            }
+            let held = {
+                let c = &self.player(session).coins;
+                match idx {
+                    0 => c.copper,
+                    1 => c.silver,
+                    2 => c.gold,
+                    3 => c.platinum,
+                    _ => c.runic,
+                }
+            };
+            if held < n {
+                self.output_line(
+                    session,
+                    &format!("You don't have {n} {} to hide!", text::currency_name(idx)),
+                );
+                return;
+            }
+            if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+                match idx {
+                    0 => player.coins.copper -= n,
+                    1 => player.coins.silver -= n,
+                    2 => player.coins.gold -= n,
+                    3 => player.coins.platinum -= n,
+                    _ => player.coins.runic -= n,
+                }
+            }
+            self.room_hidden_coins.entry(room).or_insert([0; 5])[idx] += n;
+            self.output_line(
+                session,
+                &format!("You hid {n} {}.", text::currency_name(idx)),
+            );
+            return;
+        }
+        // HIDE <item>.
+        let want = words.join(" ");
+        let found = {
+            let inv = &self.player(session).inventory;
+            inv.iter().position(|(id, _)| {
+                self.content
+                    .items
+                    .get(id)
+                    .is_some_and(|i| word_prefix_match(&i.name, &want))
+            })
+        };
+        let Some(pos) = found else {
+            self.output_line(session, &text::dont_see_here(args.trim()));
+            return;
+        };
+        let (item_id, uses) = self.player(session).inventory[pos];
+        let (not_droppable, name) = self
+            .content
+            .items
+            .get(&item_id)
+            .map(|i| (i.not_droppable != 0, i.name.clone()))
+            .unwrap_or((true, String::new()));
+        if not_droppable {
+            self.output_line(session, text::MAY_NOT_HIDE_ITEM);
+            return;
+        }
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+            player.inventory.remove(pos);
+        }
+        self.room_hidden_items
+            .entry(room)
+            .or_default()
+            .push((item_id, uses));
+        self.output_line(session, &format!("You hid {name}."));
+    }
+
+    /// crime.md §2.5 (attack_user_monster 26113-26116, cast_monster_target
+    /// 43255/43330/43417): initiating violence against a passive (mode
+    /// 0/4) monster that is not already fighting you charges 10 evil via
+    /// the NPC path (`crime::charge_npc_evil` — gates, dark cloud,
+    /// minimum-10 bump). Returns true when the action is REFUSED; the
+    /// caller aborts before any engagement. The own-summon exemption
+    /// (the DLL's `sameas(mon+0x1a, user+0x1e) == 0` term) IS ported —
+    /// M7 slice 5 gave the name link its owner semantics, and the
+    /// `m.target != Some(session)` clause below is that term. What stays
+    /// ORACLE-VERIFY is the refusal-before-engagement ORDERING, which no
+    /// live run has ever exercised.
+    fn charge_passive_monster_evil(
+        &mut self,
+        session: SessionId,
+        monster: MonsterInstanceId,
+    ) -> bool {
+        let eligible = self
+            .monsters
+            .get(&monster)
+            .is_some_and(|m| matches!(m.behaviour, 0 | 4) && m.target != Some(session));
+        if !eligible {
+            return false;
+        }
+        let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+            return false;
+        };
+        let mut fame = player.fame;
+        let before = crate::crime::legal_level(fame);
+        match crate::crime::charge_npc_evil(&mut fame, player.warn_on_evil, player.lawful, 10) {
+            Err(refusal) => {
+                self.output_line(session, refusal);
+                true
+            }
+            Ok(cloud) => {
+                player.fame = fame;
+                let crossed = crate::crime::legal_level(fame) != before;
+                let snapshot = player.clone();
+                self.output_line(session, cloud);
+                if crossed {
+                    self.update_allowed_worn_items(session);
+                }
+                self.events.push(Event::Persist(snapshot));
+                false
+            }
+        }
+    }
+
+    /// `update_allowed_worn_items` (crime.md §2.4/§6.1): when a fame
+    /// writer crosses a tier boundary, every worn piece and the wielded
+    /// weapon re-run `user_can_use`; anything now refused is forced back
+    /// to the pack. Removal wording ORACLE-VERIFY (M4 deferral note).
+    fn update_allowed_worn_items(&mut self, session: SessionId) {
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+            return;
+        };
+        let mut evict: Vec<(bool, usize)> = Vec::new(); // (is_weapon, worn index)
+        for (i, (id, _)) in player.worn.iter().enumerate() {
+            if let Some(item) = self.content.items.get(id)
+                && !self.user_can_use(player, item)
+            {
+                evict.push((false, i));
+            }
+        }
+        if let Some((id, _)) = player.weapon
+            && let Some(item) = self.content.items.get(&id)
+            && !self.user_can_use(player, item)
+        {
+            evict.push((true, 0));
+        }
+        if evict.is_empty() {
+            return;
+        }
+        let mut lines = Vec::new();
+        {
+            let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+                return;
+            };
+            for (is_weapon, idx) in evict.into_iter().rev() {
+                let entry = if is_weapon {
+                    player.weapon.take()
+                } else {
+                    Some(player.worn.remove(idx))
+                };
+                if let Some(entry) = entry {
+                    player.inventory.push(entry);
+                    lines.push(entry.0);
+                }
+            }
+        }
+        for id in lines {
+            let name = self
+                .content
+                .items
+                .get(&id)
+                .map_or_else(String::new, |i| i.name.clone());
+            self.output_line(session, &text::item_force_removed(&name));
+        }
+        self.refresh_derived(session);
+    }
+
+    /// The spawn name roll (`get_random_name`, text::generate_name):
+    /// walks the template's name block when it has one. The density
+    /// spawner draws from its own stream (`spawn_rng`, the M6 seeded-
+    /// golden divergence); the `--spawn` fixture path draws from the
+    /// main stream like its other rolls.
+    fn roll_spawn_name(
+        &mut self,
+        template: crate::content::MonsterId,
+        base: &str,
+        spawner_stream: bool,
+    ) -> String {
+        let Some(body) = self
+            .content
+            .monsters
+            .get(&template)
+            .and_then(|t| t.name_block)
+            .and_then(|b| self.content.textblocks.get(&b))
+            .map(|b| b.body.clone())
+        else {
+            return base.to_string();
+        };
+        let rng = if spawner_stream { &mut self.spawn_rng } else { &mut self.rng };
+        text::generate_name(base, &body, &mut |lo, hi| rng.roll(lo, hi))
     }
 
     /// `get_monster_ability_value` (decompile 37150-37270): the template's
@@ -5420,6 +7670,34 @@ impl Core {
                 t.weapon.map_or(0, &item_rows) + t.worn_item.map_or(0, &item_rows)
             });
         template + carried + equipped + m.slot_bag.value(ability)
+    }
+
+    /// `monster_has_ability` (decompile 0x3d969, 37276-37333): PRESENCE of
+    /// an ability id on a live monster, value-blind — the active-spell
+    /// slots' spell rows first, then the template rows, then the carried /
+    /// wielded / worn items. A value-0 row counts here where
+    /// [`Core::monster_ability_value`] would fold it to nothing, which is
+    /// exactly why the gates that ask "does it have X" call this one.
+    fn monster_has_ability(&self, id: MonsterInstanceId, ability: Ability) -> bool {
+        let Some(m) = self.monsters.get(&id) else {
+            return false;
+        };
+        let item_has = |item: crate::content::ItemId| -> bool {
+            self.content
+                .items
+                .get(&item)
+                .is_some_and(|i| i.abilities.iter().any(|(a, _)| *a == ability))
+        };
+        let tpl = self.content.monsters.get(&m.template);
+        m.active_spells
+            .iter()
+            .filter_map(|s| s.spell.and_then(|sid| self.content.spells.get(&sid)))
+            .any(|s| s.abilities.iter().any(|(a, _)| *a == ability))
+            || tpl.is_some_and(|t| t.abilities.iter().any(|(a, _)| *a == ability))
+            || m.items.iter().any(|(item, _)| item_has(*item))
+            || tpl.is_some_and(|t| {
+                t.weapon.is_some_and(item_has) || t.worn_item.is_some_and(item_has)
+            })
     }
 
     /// Rebuilds the cached slot fold when the dirty byte (`mon+0x140`) is
@@ -5517,6 +7795,94 @@ impl Core {
         (self.monster_ability_value(id, Ability::MR) + mr).max(1)
     }
 
+    /// `local_34` as a whole cast run carries it (charm.md §1.1): the
+    /// pre-application ability scan preloads the save stat from the
+    /// TEMPLATE's `charmres` (`knmsr+0x1a0`) for any spell whose ability
+    /// list carries Enslave(6) (decompile 43310-43312) — no `.max(1)`
+    /// floor, so a charmres of 2 halves to a threshold of 1.
+    ///
+    /// EDGE (decompile-verified, and the reason this is not a plain
+    /// "charmres if Enslave" swap): the M.R. default at 43387 keys on
+    /// `local_34 == 0`, and `local_34` starts at 0 (43170) — so a
+    /// charmres-**0** template (48 shipped) silently falls back to the
+    /// ordinary M.R. stat, floored at 1, exactly like a non-Enslave
+    /// spell. Charmres 0 is not a free charm.
+    ///
+    /// The stat is ONE variable in the DLL, read by both the saving throw
+    /// (43600-43614) and the Damage(-MR) scale (43946-43982) — so an
+    /// Enslave spell that also carried a DamageMR row would scale that
+    /// damage by charmres too. No shipped spell pairs them (the four
+    /// Enslave carriers are ability 6 plus targeting-gate rows only).
+    fn monster_cast_save_stat(&self, id: MonsterInstanceId, spell: &crate::content::Spell) -> i32 {
+        if spell.abilities.iter().any(|(a, _)| *a == Ability::Enslave) {
+            let charm_resist = self
+                .monsters
+                .get(&id)
+                .and_then(|m| self.content.monsters.get(&m.template))
+                .map_or(0, |t| i32::from(t.charm_resist));
+            if charm_resist != 0 {
+                return charm_resist;
+            }
+        }
+        self.monster_save_stat(id)
+    }
+
+    /// The TARGETING half of the pre-application ability scan (charm.md
+    /// §1.1; decompile `cast_monster_target` 43295-43376): a walk over the
+    /// SPELL's ten ability rows, three of whose arms are pure refusals —
+    /// `prf(00485de3)`, `tell_user`, `return 0`. True here means "print
+    /// `spell_no_effect_on` and abort", UNCHARGED: the scan is entered only
+    /// once the caster is known to be able to afford the cast (the
+    /// sufficiency test at 43278) and every mana/energy subtraction is
+    /// downstream of it (43443+). First refusing row wins, so the walk
+    /// short-circuits in list order like the DLL's `return`.
+    ///
+    /// The other arms of the same loop are elsewhere or unported: ability
+    /// 6 preloads the charm save stat ([`Core::monster_cast_save_stat`]),
+    /// 52 (EvilInCombat) charges evil points, 144 (NonMagicalSpell) sets
+    /// the flag that SKIPS the SpellImmu gate below (43378), and 163
+    /// (SpellComponent) runs the component confirmation. None of those is
+    /// carried by a shipped Enslave spell. Evil(98) has no arm at all —
+    /// 0x62 falls past both the `< 0x51` block and the 0x6c/0x90/0xa3
+    /// chain — so the 88 control-undead row is inert in the scan; its
+    /// only engine effect is the crime.md §6.1 alignment gate at
+    /// learn/cast time.
+    ///
+    /// Shipped reach: all four Enslave carriers hold exactly one of the
+    /// three — 49 song of charming and 55 enslave AffectsLiving, 88
+    /// control undead AffectsUndead, 92 charm animal AffectsAnimals — so
+    /// without this, `charm animal` was legal on all 1101 templates
+    /// instead of 155, and `control undead` on 1101 instead of 115.
+    fn cast_eligibility_refused(
+        &self,
+        id: MonsterInstanceId,
+        spell: &crate::content::Spell,
+    ) -> bool {
+        spell.abilities.iter().any(|(ability, _)| match ability {
+            // 43299-43307: AffectsAnimals(80) refuses a target that does
+            // NOT carry Animal(78). Value-blind presence, hence
+            // `monster_has_ability` — the shipped rows are all value 0.
+            Ability::AffectsAnimals => !self.monster_has_ability(id, Ability::Animal),
+            // 43317-43324: AffectsUndead(23) refuses on the TEMPLATE's
+            // `undead` byte (`knmsr+0xad`) being zero. A column, not an
+            // ability row, and the test is `!= 0` — the 8 shipped `-1`
+            // templates are undead.
+            Ability::AffectsUndead => {
+                self.monsters
+                    .get(&id)
+                    .and_then(|m| self.content.monsters.get(&m.template))
+                    .map_or(0, |t| t.undead)
+                    == 0
+            }
+            // 43349-43357: AffectsLiving(108) refuses a target that DOES
+            // carry NonLiving(109) — the inverted polarity of the animals
+            // arm, and a different predicate from the one above (6 shipped
+            // templates are `undead != 0` without a 109 row).
+            Ability::AffectsLiving => self.monster_has_ability(id, Ability::NonLiving),
+            _ => false,
+        })
+    }
+
     /// One offensive-cast execution against the engaged monster, invoked by
     /// the combat round driver every round — including the first fire (the
     /// command only engages; MEASURED oracle_spell_cast.raw + §8.9's
@@ -5586,10 +7952,14 @@ impl Core {
             crate::content::SaveClass::Always => true,
             crate::content::SaveClass::IfAntiMagic => anti_magic,
         };
+        // The DLL's `local_34`, preloaded ahead of the attempt loop
+        // (43302-43316 / 43387-43392) and read by the save AND the
+        // Damage(-MR) scale below: `charmres` for an Enslave spell,
+        // M.R. otherwise — see [`Core::monster_cast_save_stat`].
+        let save_stat = self.monster_cast_save_stat(monster_id, &spell);
         let resisted = succeeded && save_allowed && {
-            let stat = self.monster_save_stat(monster_id);
             let rng = &mut self.rng;
-            monster_save_resists(stat, &mut |lo, hi| rng.roll(lo, hi))
+            monster_save_resists(save_stat, &mut |lo, hi| rng.roll(lo, hi))
         };
 
         if !succeeded || resisted {
@@ -5620,11 +7990,48 @@ impl Core {
             // whiffed rounds too) — driver rounds only: the command-time
             // duration path never engaged, and the DLL's fail branch sets
             // no aggro there (44234-44265 prints and moves on). Gated
-            // like every lock since slice 3.
+            // like every lock since slice 3, and on the OFFENSIVE mode.
+            //
+            // `cast_monster_target` has TWO grudge writes, and only the
+            // FIRST is spelltype-gated:
+            //   43249-43273 — inside `if (param_4 != 0)` (autocombat
+            //     re-fire) AND `spelltype < 3`, so a benign cast never
+            //     reaches it. That is the one this gate mirrors.
+            //   43323-43347 — inside the spell's ABILITY scan, gated on
+            //     neither `spelltype` nor `param_4`: `ability == 0x34`
+            //     (EvilInCombat) + non-arena + monster mode ∈ {0, 4} +
+            //     `sameas(mon+0x1a, user+0x1e) == 0`. Same body:
+            //     `add_evil_points(caster, -1, 10, 0xb, 0)`, refuse on
+            //     non-zero, else `mon[0x50] = 1`, copy the caster's name
+            //     into `mon+0x1a` and clear the suppression byte at
+            //     `mon+0x116`.
+            //
+            // M7 PENDING (`re/docs/crime.md` §2.5, the 43330 row): the
+            // 0x34 arm is NOT implemented. In the DLL, cursing a passive
+            // monster costs 10 evil points and earns a grudge; here it is
+            // free and the monster never retaliates. DATA
+            // (`re/mmud_wgnt.sqlite`): 25 of the 29 learnable benign
+            // match-4/6/8 spells carry ability 52 — curse, blind, slow,
+            // hold person, confusion, sleep, entangle, mute, the seven
+            // songs, creeping doom, wrathful curse. This is a WIDENING of
+            // an existing gap, not a new one: 16 learnable AREA spells
+            // (match 12) already carry ability 52 and are already
+            // unhandled on the `area_cast` path. `charge_passive_monster_evil`
+            // already implements the 43323 predicate exactly — it is only
+            // gated at the CALL SITE on `is_offensive()` rather than on
+            // the ability, so closing this is a call-site change plus the
+            // grudge/suppression writes. HOME: the crime slice has already
+            // shipped, so this carries to the M7 close-out (slice 8) — it
+            // was logged during slice 5's Task-3b routing fix, which is
+            // what put 25 more spells in front of this gate.
             if spell.duration == 0
+                && spell.target_mode.is_offensive()
                 && self.monsters.get(&monster_id).is_some_and(|m| m.target.is_none())
             {
-                self.retaliation_lock(monster_id, session);
+                // 43260/43335 are both charm-exempt; the `target.is_none()`
+                // gate already makes a pet unreachable here (a pet always
+                // carries its owner link), so the tag is documentation.
+                self.retaliation_lock(monster_id, session, CharmedExemption::Exempt);
             }
             return;
         }
@@ -5652,13 +8059,19 @@ impl Core {
         // Offensive abilities (spec §4 table): Damage (1), Damage(-MR)
         // (17), Drain (8) and Summon (12) instant; the duration table
         // enters the monster's 5 slots below (the area twins live in
-        // `area_cast`). M7 PENDING: the instant Enslave (charm family,
-        // re-deferred by the M6 design doc). The benign-at-monster
-        // instant arms (Heal/EnergyLevel/CurePoison, cast_monster_target
-        // 43824-43882/44131-44160) are DATA-GATED DEAD: the command path
-        // refuses benign-at-monster outright (§8.13
-        // MAY_NOT_CAST_ON_MONSTER) and the forced-cast route has no
-        // shipped trigger. A non-zero
+        // `area_cast`). Enslave (6) charms on both arms (charm.md §1,
+        // the arm below). The healing-at-monster INSTANT arms
+        // (Heal(18)/EnergyLevel(11)/CurePoison(20), cast_monster_target
+        // 43824-43882/43883-43900/44131-44160) stay unimplemented on an
+        // ABILITY-SIDE data gate, not a routing one — benign spells do
+        // reach a monster (the match-4/6/8 band above). Of the 1379
+        // shipped spells only five carry one of those three abilities at
+        // match 4/6/8: 943 `sys j`, 1114 `sabre`, 1146 `godheal` and 1252
+        // `dead heal` are instant but UNLEARNABLE (no LearnSp carrier),
+        // and the one learnable carrier — 853 `wrathful curse`, scroll
+        // 1300 — has duration 7, so it takes the slot arm below, exactly
+        // like the DLL's `param_1[0x67] != 0` else at 43872-43880. The
+        // forced-cast route has no shipped trigger either. A non-zero
         // ability value is a FIXED amount that bypasses both the magnitude
         // roll and the resist scaling (but NOT the 17 MR scale, which the
         // DLL applies to the fixed-or-rolled amount alike); value 0 means
@@ -5670,7 +8083,6 @@ impl Core {
         // heal), and the message prints the first slot's amount — the
         // slice-5 area loop shares this combined model, and neither copy
         // must survive if multi-slot content ever appears.
-        let mr = self.monster_save_stat(monster_id);
         // AlterSpDmg(165), from the caster's bag (get_user_ability_value
         // 0xa5): boosts Damage via FUN_0043fef4 (43740) and DamageMR
         // inline BEFORE the MR scale (43940-43941). Never Drain.
@@ -5711,11 +8123,12 @@ impl Core {
                 }
                 // Damage(-MR) (17): the dominant attack-spell damage
                 // (magic missile included) — the boosted amount scaled by
-                // the target's MR, the same stat the save reads
-                // (damage_mr; decompile 43937-43993). No duration gate
-                // either (44287).
+                // the target's MR, literally the same `local_34` the save
+                // read (damage_mr; decompile 43937-43993), which is why an
+                // Enslave spell's charmres would scale it too. No duration
+                // gate either (44287).
                 Ability::DamageMR => {
-                    damage_total += damage_mr(alter_sp_dmg(amount, boost), mr, anti_magic);
+                    damage_total += damage_mr(alter_sp_dmg(amount, boost), save_stat, anti_magic);
                     harms = true;
                 }
                 // Drain (8): instant when duration 0 (target loses it,
@@ -5759,13 +8172,95 @@ impl Core {
                 // 43926); the duration arm is silly_spell — a no-op here
                 // (43927-43929).
                 Ability::Summon if duration == 0 => {
-                    self.summon_spawn(amount, room, None); // hunt links M7
+                    // 43920: the spawn carries the VICTIM's instance id
+                    // in `+0x88` and no name link at all — the driver's
+                    // hunt arm (20450-20463) then walks it to the victim
+                    // and swings.
+                    self.summon_spawn(amount, room, SummonLink::HuntMonster(monster_id));
                 }
                 Ability::Summon => {}
+                // Enslave (6), case 43796-43822 — the charm apply
+                // (charm.md §1.2/§1.3/§1.4).
+                Ability::Enslave => {
+                    // Two gates, both plain compares, no roll: the
+                    // spell's match type must be one of the monster
+                    // classes (43797), and the template's `charmlvl`
+                    // must be at or below the caster's level
+                    // (43798-43800). FAILURE IS SILENT — the DLL skips
+                    // the case body entirely: no message, no slot entry,
+                    // and the mana stays paid. It must NOT fall through
+                    // to the default duration-slot arm.
+                    //
+                    // `match_ok` is DEFENCE IN DEPTH and is not reachable
+                    // from any command path: `cmd_cast` already refuses a
+                    // non-monster match type at the target resolution
+                    // above (`MAY_NOT_CAST_ON_MONSTER`, 43205/44311-44315)
+                    // and returns, so nothing that fails this test can
+                    // arrive here. It is kept because the DLL keeps it —
+                    // the two tests are separate in the decompile and a
+                    // future caller (a monster-cast path, an item proc)
+                    // could enter the apply loop without the command
+                    // gate. Do not expect a test to kill its removal;
+                    // what the command DOES do on a match-0 spell is
+                    // pinned by
+                    // `charm.rs::a_non_monster_match_type_is_refused_before_the_charm_arm`.
+                    // The `charmlvl` half below IS live and is pinned by
+                    // `charm_level_above_the_caster_is_silent` and
+                    // `charm_level_equal_to_the_caster_still_charms`.
+                    let match_ok = spell.match_type.accepts_monster();
+                    let charm_level = self
+                        .monsters
+                        .get(&monster_id)
+                        .and_then(|m| self.content.monsters.get(&m.template))
+                        .map_or(0, |t| i32::from(t.charm_level));
+                    if !match_ok || charm_level > i32::from(level) {
+                        continue;
+                    }
+                    // Duration arm (43809-43821): the slot entry first,
+                    // through the shared once-flag. Instant (43801-43807)
+                    // takes no slot and no timer at all — permanent until
+                    // a release path fires.
+                    if duration != 0 && entered.is_none() {
+                        entered = Some(self.enter_monster_spell_slot(
+                            monster_id, spell.id, amount, duration,
+                        ));
+                    }
+                    // The §0 triple, written UNCONDITIONALLY — the caller
+                    // never checks `add_cast_spell_to_monster`'s -1
+                    // (43810-43820), so a monster whose 5 slots are full
+                    // of other spells takes the plain cast-fail line AND
+                    // a permanent, timerless charm (§1.4). No rename: the
+                    // display name is untouched, only the internal owner
+                    // link (§1.3).
+                    if let Some(m) = self.monsters.get_mut(&monster_id) {
+                        m.target = Some(session); // +0x1a <- caster name
+                        m.suppress = true; // +0x116 = 1
+                        m.charmed = true; // +0x128 |= 1
+                        m.needs_recompute = true; // +0x140 dirty
+                    }
+                    self.recompute_monster_effects(monster_id);
+                }
+                // Targeting-gate rows carry no payload and never reach a
+                // slot: AffectsUndead(23) is in the case-break list
+                // (43731), AffectsAnimals(80) is excluded from the switch
+                // outright (43723-43724), and Evil(98)/AffectsLiving(108)
+                // fall in the two break ranges at 44205/44208. Three of
+                // them have already had their say by the time the apply
+                // loop runs — [`Core::cast_eligibility_refused`] is the
+                // pre-application scan (43295-43376), and an ineligible
+                // target never reaches here at all. Evil(98) is the odd
+                // one out: the scan has no arm for it either, so it is
+                // inert in the engine and only reads as documentation on
+                // the 88 control-undead row. The charm family ships
+                // exactly these as its companion rows, so a
+                // charmlvl-gated-out cast must stay slotless.
+                Ability::AffectsUndead
+                | Ability::AffectsAnimals
+                | Ability::Evil
+                | Ability::AffectsLiving => {}
                 // Every other row in a DURATION cast drives the one slot
-                // entry (the cast_monster_target default arm, 43778-43799
-                // — Enslave's charm half is M6, marker below in the
-                // termination). Instant casts leave them to their systems.
+                // entry (the cast_monster_target default arm, 43778-43799).
+                // Instant casts leave them to their systems.
                 _ => {
                     if duration != 0 && entered.is_none() {
                         entered = Some(self.enter_monster_spell_slot(
@@ -5836,7 +8331,10 @@ impl Core {
             m.current_hp -= damage;
             m.current_hp <= 0
         };
-        self.retaliation_lock(monster_id, session);
+        // The cast-DAMAGE twin (43750-43766) — one of the three lock
+        // sites with no charmed check: spell damage grudges a pet without
+        // releasing it (charm.md §2.4, and see [`CharmedExemption`]).
+        self.retaliation_lock(monster_id, session, CharmedExemption::Ignored);
         // Drain: the stolen HP heals the caster, capped at max (spec §4).
         if drain_total != 0
             && let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session)
@@ -5878,6 +8376,9 @@ impl Core {
             SpellGate::Ok => None,
             SpellGate::WrongClass => Some(text::CANT_USE_SUFFIX),
             SpellGate::TooPowerful => Some(text::TOO_POWERFUL_SUFFIX),
+            // ORACLE-VERIFY: no alignment-gated scroll was measured on a
+            // shop shelf; the can't-use suffix is the least-wrong frame.
+            SpellGate::Alignment => Some(text::CANT_USE_SUFFIX),
         }
     }
 
@@ -6237,7 +8738,30 @@ impl Core {
                 self.output_line(session, &text::dont_see_here(target.trim()));
                 Resolution::Handled
             }
-            FloorMatch::None => Resolution::FallThrough,
+            FloorMatch::None => {
+                // The hidden stash answers to its name (theft.md §11.2 —
+                // knowing what's hidden is enough to take it).
+                let hidden_pos = self.room_hidden_items.get(&room).and_then(|items| {
+                    items.iter().position(|(id, _)| {
+                        self.content
+                            .items
+                            .get(id)
+                            .is_some_and(|i| word_prefix_match(&i.name, &want))
+                    })
+                });
+                if let Some(pos) = hidden_pos {
+                    let (item, uses) =
+                        self.room_hidden_items.get_mut(&room).expect("has items").remove(pos);
+                    let name = self.content.items[&item].name.clone();
+                    if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session)
+                    {
+                        player.inventory.push((item, uses));
+                    }
+                    self.output_line(session, &text::took_item(&name));
+                    return Resolution::Handled;
+                }
+                Resolution::FallThrough
+            }
         }
     }
 
@@ -6576,7 +9100,32 @@ impl Core {
     /// prefix-match consecutive words of the name, starting at any word:
     /// "kobold thief", "kobold", "thief", and "kob th" all match
     /// "kobold thief".
+    ///
+    /// This is `find_action_target`'s monster block WITHOUT the `0x800`
+    /// mask bit — one pass over everything, pets included. Callers that
+    /// carry the bit want [`Core::find_monster_charmed_last`].
     fn find_monster(&self, room: RoomId, words: &str) -> Option<MonsterInstanceId> {
+        self.find_monster_pass(room, words, MonsterPass::All)
+    }
+
+    /// The `0x800` search (`cmd_any_attack`'s mask `0x883` at 49590, and
+    /// `cmd_cast`'s preferred `0x801`/`0x803`/`0xf837`): the monster
+    /// block runs twice — 63776 skips `mon+0x128 & 1`, then 63820 scans
+    /// ONLY charmed monsters. Charmed bodies are searched LAST, never
+    /// excluded: with no wild match in the room the second pass hands
+    /// back the pet, which is what keeps a lone pet castable at and,
+    /// crucially, ATTACK-able (§2.3's physical-attack release path).
+    fn find_monster_charmed_last(&self, room: RoomId, words: &str) -> Option<MonsterInstanceId> {
+        self.find_monster_pass(room, words, MonsterPass::Uncharmed)
+            .or_else(|| self.find_monster_pass(room, words, MonsterPass::Charmed))
+    }
+
+    fn find_monster_pass(
+        &self,
+        room: RoomId,
+        words: &str,
+        pass: MonsterPass,
+    ) -> Option<MonsterInstanceId> {
         let want: Vec<String> = words
             .trim()
             .to_ascii_lowercase()
@@ -6588,19 +9137,73 @@ impl Core {
         }
         self.monsters
             .iter()
-            .filter(|(_, m)| m.location == room && m.current_hp > 0)
+            .filter(|(_, m)| m.location == room && m.current_hp > 0 && pass.admits(m.charmed))
             .find(|(_, m)| {
-                self.content.monsters.get(&m.template).is_some_and(|t| {
-                    let name: Vec<&str> = t.name.split_whitespace().collect();
-                    (0..name.len()).any(|start| {
-                        want.len() <= name.len() - start
-                            && want.iter().enumerate().all(|(i, w)| {
-                                name[start + i].to_ascii_lowercase().starts_with(w)
-                            })
-                    })
+                // Word-prefix match against the DISPLAY name — the
+                // spawn adjective is targetable ("attack nasty").
+                let name: Vec<&str> = m.name.split_whitespace().collect();
+                (0..name.len()).any(|start| {
+                    want.len() <= name.len() - start
+                        && want.iter().enumerate().all(|(i, w)| {
+                            name[start + i].to_ascii_lowercase().starts_with(w)
+                        })
                 })
             })
             .map(|(id, _)| *id)
+    }
+
+    /// `find_action_target` (decompile 63726), restricted to the kinds
+    /// [`crate::content::FindScope`] models and searched in the DLL's own
+    /// order: the room's monsters (mask bit `0x1`) first, then the room's
+    /// players (`0x2`), then the caster's carried items (`0x4`). The
+    /// first hit wins — the DLL's multiple-match prompt is not modelled.
+    ///
+    /// The monster leg runs as ONE pass or TWO depending on the scope's
+    /// `0x800` bit; either way it finishes before the user scan, so the
+    /// bit orders monsters against monsters and never against a player.
+    fn find_cast_target(
+        &self,
+        session: SessionId,
+        scope: crate::content::FindScope,
+        words: &str,
+    ) -> Option<CastTarget> {
+        let room = self.player(session).location;
+        let monster = if !scope.monsters {
+            None
+        } else if scope.charmed_last {
+            self.find_monster_charmed_last(room, words)
+        } else {
+            self.find_monster(room, words)
+        };
+        if let Some(id) = monster {
+            return Some(CastTarget::Monster(id));
+        }
+        let want = words.trim().to_ascii_lowercase();
+        if scope.users
+            && let Some(id) = self
+                .in_game_sessions()
+                .filter(|(_, p)| p.location == room)
+                .find(|(_, p)| word_prefix_match(&p.name, &want))
+                .map(|(id, _)| id)
+        {
+            return Some(CastTarget::User(id));
+        }
+        // ORACLE-VERIFY: the carried set only. Room items (found kind 4 ->
+        // "You are not carrying %s!") and spellbook entries (kind 0x10 ->
+        // "Why would you want to cast a spell on a spell?") are in the
+        // DLL's universal mask but have no measured surface here.
+        if scope.items
+            && let Some(id) = self.player(session).inventory.iter().find_map(|(id, _)| {
+                self.content
+                    .items
+                    .get(id)
+                    .filter(|i| word_prefix_match(&i.name, &want))
+                    .map(|_| *id)
+            })
+        {
+            return Some(CastTarget::Item(id));
+        }
+        None
     }
 
     /// `background_energy`: regenerate energy, then run the two combat
@@ -6690,20 +9293,46 @@ impl Core {
         if m.current_hp <= 0 {
             return;
         }
-        let (room, behaviour, roam, suppress) =
-            (m.location, m.behaviour, m.roam_class, m.suppress);
+        let (room, behaviour, roam, suppress, charmed, hunt) = (
+            m.location,
+            m.behaviour,
+            m.roam_class,
+            m.suppress,
+            m.charmed,
+            m.hunt,
+        );
         if let Some(victim) = m.target {
             // A2 — locked (20465-20519): no roll, attacked every round the
-            // lock is valid. (The suppressed class-5 ward-defence branch
-            // needs PvP and the charmed pet-assist branch is M7 charm.)
+            // lock is valid. The four arms are the DLL's, in the DLL's
+            // order — suppression, roam class 5, charmed bit, behaviour —
+            // and that order decides two things: roam 5 pre-empts the pet
+            // arm, and the pet arm pre-empts the "friends" arm.
             if !suppress {
                 if self.acquisition_valid(victim, room) {
                     self.bump_attackers(victim);
                     self.monster_attack(id, victim);
                 }
+            } else if roam == 5 {
+                // 20477-20493: the class-5 ward defence. It only ever
+                // swings at players who are in autocombat AGAINST the
+                // named user — PvP, which is M8 — so it is faithfully a
+                // no-op here.
+                //
+                // DECOMPILE over charm.md: this arm sits AHEAD of the
+                // charmed check, so a charmed roam-5 monster lands here
+                // and never assists. §2.2's "charmed pets take the
+                // FUN_0044cc65 branch instead" describes the friends arm
+                // below (which IS charm-gated) and overstates this one.
+            } else if charmed {
+                // 20512-20517: suppressed + charmed = a pet. Deterministic,
+                // no roll, every pass.
+                self.pet_assist(id, victim);
             } else if !matches!(behaviour, 4 | 0 | 3) {
-                // Suppressed aggressive (20492-20509): attacks the first
-                // OTHER valid player — never its named target.
+                // Suppressed aggressive (20494-20511): attacks the first
+                // OTHER valid player — never its named target. The
+                // `(mon+0x128 & 1) == 0` guard is why a PET can never
+                // arrive here: this arm belongs to non-charmed "friends"
+                // (charm.md §2.2 last paragraph, §2.4).
                 let other = self.sessions_in_room(room).into_iter().find(|s| {
                     *s != victim && self.acquisition_valid(*s, room)
                 });
@@ -6714,8 +9343,45 @@ impl Core {
             }
             return;
         }
-        // A1 — no target. (The directed-travel monster-hunt branch, +0x88,
-        // is monster-vs-monster combat — M7.)
+        // A1 — no target (`mon+0x1a` empty, 20369). The `+0x88` HUNT link
+        // is tested FIRST (20370) and pre-empts every acquisition arm
+        // below: a summoned hunter never picks up a player, ever.
+        if let Some(quarry) = hunt {
+            // charm.md §7's stale-link flag, closed by construction: the
+            // DLL clears `+0x88` on nobody's death and recycles monster
+            // ids, so its hunter can redirect onto an unrelated body.
+            // Our ids never repeat, so a dangling link is inert — and the
+            // DLL agrees on the observable, because `get_monster_data`
+            // fails inside both `dir_monster_travelling_coord` (15797)
+            // and `attack_monster_monster` (27226), leaving the arm a
+            // no-op. What we must NOT do is fall through to acquisition:
+            // the DLL's branch is decided by `+0x88 != 0` alone.
+            if !self.monsters.contains_key(&quarry) {
+                return;
+            }
+            match self.dir_toward_monster(quarry, room) {
+                // 20457-20461: one gated step per driver pass, no roll.
+                Some(dir) => {
+                    if !self.monster_confusion_fumble(id) {
+                        self.move_monster(id, dir, false);
+                    }
+                }
+                // 20452-20455: a cold trail SWINGS — and the arm has no
+                // room compare, nor does `attack_monster_monster`
+                // (charm.md §3), so the hunter hits its quarry across a
+                // room boundary. Decompile-literal and deliberately so;
+                // reachability is fixture-only (no learnable Summon
+                // carrier ships), and the arm needs the hunter to share a
+                // room with SOME player for the driver to reach it at
+                // all (20362-20368).
+                None => {
+                    if !suppress {
+                        self.attack_monster_monster(id, quarry);
+                    }
+                }
+            }
+            return;
+        }
         if roam == 5 {
             // Class-5 guardians (20408-20448): base 100, fame-keyed.
             let candidates = self.sessions_in_room(room);
@@ -6777,6 +9443,54 @@ impl Core {
         }
     }
 
+    /// `FUN_0044cc65` (46917-46965, charm.md §2.2) — everything a pet ever
+    /// does in combat. It reads its OWNER's autocombat record
+    /// (`DAT_004877e8 + usernum*0x14`: `[+0]` user target or -1, `[+4]`
+    /// monster target or 0xffff) and takes one of three outcomes:
+    ///
+    /// - owner fighting a MONSTER -> [`Core::attack_monster_monster`] at
+    ///   it (46958). No roll, no room compare, no acquisition gate: the
+    ///   pet swings every driver pass, at whatever the owner is on, even
+    ///   from another room (§3's missing room check is deliberate).
+    /// - owner fighting the PET ITSELF -> the self-release (46929-46953,
+    ///   [`Core::autocombat_release_charm`]).
+    /// - owner idle -> nothing at all, draw-free. The caller's
+    ///   `is_inside_autocombat` gate (20514) and the two record tests here
+    ///   collapse into one `Option` in our model.
+    ///
+    /// M8 SEAM — the `[+0]` arm at 46963 is `attack_monster_user(pet,
+    /// thatUser)`: a pet joins its owner's PvP. Our autocombat record
+    /// carries only the monster half ([`Session::InGame`]'s `target`), so
+    /// `None` here means "idle" and "fighting a player" alike. When PvP
+    /// lands, the user half of the record grows the second arm and it
+    /// belongs HERE, ahead of the monster one.
+    ///
+    /// An OFFLINE owner never reaches this function (the caller's
+    /// `get_user_number` fails at 20464) — the pursuit tier's give-up
+    /// counter owns that case and releases the pet ~16 s later (§4.2).
+    fn pet_assist(&mut self, id: MonsterInstanceId, owner: SessionId) {
+        let Some(Session::InGame { target, .. }) = self.sessions.get(&owner) else {
+            return;
+        };
+        let Some(quarry) = *target else {
+            return;
+        };
+        if quarry == id {
+            self.autocombat_release_charm(id);
+        } else {
+            // THE ENERGY TRAP, live from here on: the pay gate inside
+            // `attack_monster_monster` sits AFTER `calculate_attack`
+            // (27241 then 27242), so a pet whose form-0 EU exceeds its
+            // whole pool burns draws on every single one of these passes
+            // and never lands a hit. 21 shipped templates are shaped that
+            // way; `bishop`, `priest` and `boatman` are pool 0 / cost 5
+            // with `charmlvl` 0, i.e. charmable by anyone. Faithful, not
+            // an oversight — see [`Core::build_monster_attacker_form0`]
+            // and the pin in tests/charm.rs.
+            self.attack_monster_monster(id, quarry);
+        }
+    }
+
     /// `FUN_004237de` (20296-20330): same room + the sneak/moved gates.
     /// Hidden/sneak state is unmodeled; the moved-this-round flag is live.
     fn acquisition_valid(&self, session: SessionId, room: RoomId) -> bool {
@@ -6813,20 +9527,46 @@ impl Core {
         }
     }
 
-    /// The retaliation lock (`attack_user_monster` 26230-26236/26514-26525,
-    /// and the cast-path twins): a hit monster locks its attacker iff
-    /// `genrdn(1,100) < aggression` OR it is a passive mode (3/0/4); the
-    /// roll draws either way. Class 0x25 never locks; class 5 keeps an
-    /// existing lock. (The charmed bit-0 exemption is M7.)
-    fn retaliation_lock(&mut self, id: MonsterInstanceId, attacker: SessionId) {
+    /// The retaliation lock, shaped after the MELEE twins
+    /// (`attack_user_monster` 26230-26237 and 26515-26525): a hit monster
+    /// locks its attacker iff `genrdn(1,100) < aggression` OR it is a
+    /// passive mode (3/0/4); the roll draws either way. Class 0x25 never
+    /// locks and never rolls; class 5 rolls but keeps an existing lock.
+    ///
+    /// `charm` decides the charmed-bit gate ONLY — the cast and area
+    /// twins differ from this body in three further ways that it does not
+    /// model. Read [`CharmedExemption`] before adding a call site.
+    fn retaliation_lock(
+        &mut self,
+        id: MonsterInstanceId,
+        attacker: SessionId,
+        charm: CharmedExemption,
+    ) {
         let Some(m) = self.monsters.get(&id) else {
             return;
         };
-        if m.roam_class == 0x25 || (m.roam_class == 5 && m.target.is_some()) {
+        // Ahead of the roll in every twin that has it (26230, 26514,
+        // 43260, 43335 and 43470 all OPEN with `(mon+0x128 & 1) == 0`),
+        // so an exempt site draws nothing at all on a pet.
+        if charm == CharmedExemption::Exempt && m.charmed {
             return;
         }
-        let (aggression, behaviour) = (m.aggression, m.behaviour);
+        // Class 0x25 short-circuits AHEAD of the draw in every twin — it
+        // is the second operand of the `&&` chain, before the `genrdn`.
+        if m.roam_class == 0x25 {
+            return;
+        }
+        let (aggression, behaviour, roam, locked) =
+            (m.aggression, m.behaviour, m.roam_class, m.target.is_some());
+        // The roll is unconditional from here: the DLL spends it and only
+        // THEN asks whether a class-5 guardian already holds a lock
+        // (`roam != 5 || mon+0x1a == 0` is the LAST operand of the chain,
+        // 26234/26520/43265/43340/43474). Returning early on that case,
+        // as this used to, skipped a draw the original always makes.
         let roll = self.rng.roll(1, 100);
+        if roam == 5 && locked {
+            return;
+        }
         if roll < i32::from(aggression) || matches!(behaviour, 3 | 0 | 4) {
             let m = self.monsters.get_mut(&id).expect("checked above");
             m.target = Some(attacker);
@@ -6866,12 +9606,24 @@ impl Core {
         }
 
         let attacker = self.build_player_attacker(session);
-        let eu = self.player_energy_used(session);
+        let mode_now = match self.sessions.get(&session) {
+            Some(Session::InGame { attack_mode, .. }) => *attack_mode,
+            _ => crate::combat::AttackType::Normal,
+        };
+        // Special attacks cost the FULL pool = one swing
+        // (combat_rounds.md: backstab/bash/smash).
+        let eu = if mode_now == crate::combat::AttackType::Backstab {
+            match self.sessions.get(&session) {
+                Some(Session::InGame { energy, .. }) => (*energy).max(1),
+                _ => PLAYER_ENERGY_MAX,
+            }
+        } else {
+            self.player_energy_used(session)
+        };
         let target_name = self
             .monsters
             .get(&target)
-            .and_then(|m| self.content.monsters.get(&m.template))
-            .map(|t| t.name.clone())
+            .map(|m| m.name.clone())
             .expect("validated above");
         let (hit_verbs, miss_verbs) = self.weapon_verbs(session);
 
@@ -6887,32 +9639,57 @@ impl Core {
             *energy -= eu;
 
             let defender = self.build_monster_defender(target);
+            let mode = match self.sessions.get(&session) {
+                Some(Session::InGame { attack_mode, .. }) => *attack_mode,
+                _ => crate::combat::AttackType::Normal,
+            };
             let rng = &mut self.rng;
             let result = crate::combat::calculate_attack(
                 &attacker,
                 &defender,
-                crate::combat::AttackType::Normal,
+                mode,
                 &mut |lo, hi| rng.roll(lo, hi),
             );
             use crate::combat::Outcome;
-            let hit_verb = {
+            let mut hit_verb = {
                 let n = hit_verbs.len().max(1) as i32;
                 let pick = if hit_verbs.len() > 1 { self.rng.roll(0, n - 1) } else { 0 };
                 hit_verbs.get(pick as usize).cloned().unwrap_or_else(|| "punch".into())
             };
-            let miss_verb = {
+            let mut miss_verb = {
                 let n = miss_verbs.len().max(1) as i32;
                 let pick = if miss_verbs.len() > 1 { self.rng.roll(0, n - 1) } else { 0 };
                 miss_verbs.get(pick as usize).cloned().unwrap_or_else(|| "swing at".into())
             };
+            if mode == crate::combat::AttackType::Backstab {
+                // Mode 4 wraps the verb slots in "surprise %s"
+                // (move_player_to_fighter 24751-24758); wording of the
+                // rendered line ORACLE-VERIFY.
+                hit_verb = format!("surprise {hit_verb}");
+                miss_verb = format!("surprise {miss_verb}");
+            }
+            if mode == crate::combat::AttackType::Backstab
+                && matches!(result.outcome, Outcome::Hit | Outcome::NoDamage | Outcome::Critical)
+            {
+                // The autocombat +8 revert: backstab drops to a normal
+                // attack after the first landed hit (M3 extraction).
+                if let Some(Session::InGame { attack_mode, .. }) =
+                    self.sessions.get_mut(&session)
+                {
+                    *attack_mode = crate::combat::AttackType::Normal;
+                }
+            }
             match result.outcome {
-                // combat_rounds.md §5: result 3 renders distinct
-                // dodge/parry flavor for the player view too — this
-                // conflation is a pre-existing M3 gap. ORACLE-VERIFY:
-                // needs a player-view capture of a monster
-                // dodging/parrying a swing.
-                Outcome::Dodged | Outcome::Parried => {
+                // combat_rounds.md §5: result 3 renders distinct dodge/parry
+                // flavor for the player view too. MEASURED (charm.md §8.3):
+                // it does — `You swing at giant bat who dodges your attack!`
+                // — so the two outcomes are rendered apart. Result 0 is the
+                // to-hit failure and keeps the plain miss line.
+                Outcome::Dodged => {
                     self.output_line(session, &text::player_miss(&miss_verb, &target_name));
+                }
+                Outcome::Parried => {
+                    self.output_line(session, &text::player_dodge(&miss_verb, &target_name));
                 }
                 Outcome::NoDamage => {
                     self.output_line(session, &text::player_glance(&miss_verb, &target_name));
@@ -6933,15 +9710,55 @@ impl Core {
                         self.monster_killed(target, Some(session));
                         return;
                     }
-                    // Retaliation: gated lock per hit (26514-26525).
-                    self.retaliation_lock(target, session);
+                    // Retaliation: gated lock per hit (26515-26525) —
+                    // except on a charmed target, where the ELSE half of
+                    // the same branch (26527) runs the owner release
+                    // instead (26527-26562, charm.md §4.3).
+                    if self.monsters.get(&target).is_some_and(|m| m.charmed) {
+                        self.owner_melee_release(target, session);
+                    } else {
+                        self.retaliation_lock(target, session, CharmedExemption::Exempt);
+                    }
                 }
             }
         }
-        // The engage-time lock re-mark (26230-26236) — same gates.
-        if self.monsters.get(&target).is_some_and(|m| m.target.is_none()) {
-            self.retaliation_lock(target, session);
+        // NO engage re-mark here: 26230 lives in the other arm of the
+        // 26112 split and cannot follow the round's post-damage branch.
+        // It fires once, at engagement, from the ATTACK command.
+    }
+
+    /// The charmed half of `attack_user_monster`'s post-damage branch
+    /// (26527-26562, charm.md §4.3). Only the OWNER's own swing does
+    /// anything — `sameas(mon+0x1a, attacker)`; a different player hitting
+    /// somebody's pet gets NOTHING at all: no release, no grudge, no name
+    /// overwrite (the ordinary lock lives in the non-charmed half).
+    ///
+    /// The writes follow the DLL's order — suppression off, then the
+    /// charmed bit, then the ability-6 slot sweep, whose termination also
+    /// empties the owner link. That ORDER is not observable, and this
+    /// comment used to over-claim that it was: [`Core::release_charm`]
+    /// (the sweep's terminator) clears suppression too, so hoisting the
+    /// `suppress = false` below the sweep would land on the same state
+    /// from either arm. Kept in the DLL's order for readability against
+    /// 26527-26562, not because anything can tell.
+    ///
+    /// What IS observable is that the write happens at all, and on the
+    /// SLOTLESS pet specifically: the sweep finds no ability-6 slot,
+    /// terminates nothing, and therefore clears neither suppression nor
+    /// the owner link. So this line is the only thing that unsuppresses
+    /// such a pet, and the link SURVIVES — the ex-pet is a full grudge
+    /// monster hostile to its former owner. Pinned by
+    /// `charm.rs::owner_melee_leaves_a_slotless_pet_as_a_grudge_holder`.
+    fn owner_melee_release(&mut self, id: MonsterInstanceId, attacker: SessionId) {
+        if self.monsters.get(&id).is_none_or(|m| m.target != Some(attacker)) {
+            return;
         }
+        if let Some(m) = self.monsters.get_mut(&id) {
+            m.needs_recompute = true;
+            m.suppress = false;
+            m.charmed = false;
+        }
+        self.sweep_charm_slots(id);
     }
 
     /// `attack_monster_user` (decompile 26667-27208): entry gates, the
@@ -7032,9 +9849,18 @@ impl Core {
                 }
                 continue;
             }
-            if form.kind != 1 {
-                continue; // rob forms (kind 3): M7 PENDING with theft
-            }
+            // Rob forms (kind 3): monster_rob_user (0x295bd) is a
+            // `return 0` STUB — monster robbery never happens in WG3-NT
+            // (theft.md). The caller then swings with form slot 0 iff
+            // its kind byte is 1 (attack_monster_user 26808-26813),
+            // else this swing re-rolls.
+            let form = if form.kind == 1 {
+                form
+            } else if form.kind == 3 && forms[0].kind == 1 {
+                forms[0]
+            } else {
+                continue; // unknown kinds, or a rob fallback with no melee slot 0
+            };
             let Some(mi) = self.monsters.get_mut(&id) else {
                 return;
             };
@@ -7118,6 +9944,225 @@ impl Core {
                 m.target = None;
             }
             // Passive modes keep whatever lock they already hold.
+        }
+    }
+
+    /// `move_monster_to_fighter` (decompile 0x2b43e, 25087-25230) in its
+    /// ATTACKER shape, from attack-form slot 0 — the only slot
+    /// `attack_monster_monster` ever loads (27229/27238: `param_3 = local_8 = 0`).
+    /// Returns the fighter and its energy cost (word [5]).
+    ///
+    /// - accuracy [0] = the form's accuracy (`knmsr+0x12e`) + Accuracy(0x16)
+    ///   + Accuracy2(0x69) + Accuracy3(0x6a) (25188-25193);
+    /// - damage [6]/[7] = the form's bounds, both raised by MaxDamage(4)
+    ///   (25196-25198 — one value, both bounds);
+    /// - energy [5] = the form's energy (`knmsr+0x190`), scaled by
+    ///   Speed(0x57) as `EU*val/100` and capped at the template's pool
+    ///   `knmsr+0x7a` (25203-25211); no shipped template carries Speed, so
+    ///   the scale only ever arrives through an active slot (`sphere of
+    ///   isolation` is Speed 5000). The DLL does that multiply in
+    ///   `longlong` and we match it — an i32 product would be tight if
+    ///   several Speed slots ever stacked onto a 1000-EU form.
+    ///
+    /// The form's KIND is not consulted: `move_monster_to_fighter` fails
+    /// only when the record or template is missing, which is the whole
+    /// content of the `!= '\0'` guards at 27239-27240. A monster whose
+    /// slot 0 is a kind-0 (unused) form therefore still swings — with
+    /// whatever words that slot holds, which is NOT the same as swinging
+    /// with zeroes: 125 of the 1101 shipped templates have
+    /// `attacktype_1 = 0` and 28 of those carry nonzero accuracy/min/max
+    /// there. `dark warlock` (acc 49, min 100, max 15 — min > max, so
+    /// [`crate::combat`] raises max to min and it lands a flat 100) and
+    /// `dying master assassin` (acc 120, 7-20) are real, dangerous
+    /// form-0 fighters. 73 kind-0 templates sit under the 9999
+    /// charm floor, so this is live for pets.
+    ///
+    /// The EU trap that comes with it: 21 templates carry
+    /// `attackenergy_1 > energy`, so the 27242 pay gate can never open
+    /// and they burn draws forever without swinging. `bishop`, `priest`
+    /// and `boatman` are the sharp edge — pool 0, form cost 5, and
+    /// `charmlvl 0`, i.e. charmable by anyone.
+    ///
+    /// The alignment-code 4th argument (`FUN_0042a15c`) is passed its own
+    /// return value here, so its accuracy branch is dead on this path
+    /// (25109-25118) and word [2] stays 0.
+    fn build_monster_attacker_form0(
+        &self,
+        id: MonsterInstanceId,
+    ) -> Option<(crate::combat::Fighter, i32)> {
+        let m = self.monsters.get(&id)?;
+        let tpl = self.content.monsters.get(&m.template)?;
+        let form = tpl.attacks[0];
+        let pool = tpl.energy;
+        let damage = self.monster_ability_value(id, Ability::MaxDamage);
+        let accuracy = i32::from(form.accuracy)
+            + self.monster_ability_value(id, Ability::Accuracy)
+            + self.monster_ability_value(id, Ability::Accuracy2)
+            + self.monster_ability_value(id, Ability::Accuracy3);
+        let mut energy = i32::from(form.energy);
+        let speed = self.monster_ability_value(id, Ability::Speed);
+        if speed != 0 {
+            // 25205: `(longlong)speed * (longlong)EU / 100`, then capped
+            // at the pool.
+            let scaled = (i64::from(energy) * i64::from(speed) / 100).min(i64::from(pool));
+            energy = i32::try_from(scaled).unwrap_or(pool);
+        }
+        Some((
+            crate::combat::Fighter {
+                accuracy,
+                evasion_a: 0,
+                evasion_b: 0,
+                armor: 0,
+                min_damage: i32::from(form.min_damage) + damage,
+                max_damage: i32::from(form.max_damage) + damage,
+                parry: 0,
+                crit_rating: 0, // monsters never crit (hard-zeroed 25187)
+            },
+            energy,
+        ))
+    }
+
+    /// `attack_monster_monster` (decompile 0x2f6ae, 27213-27340;
+    /// `charm.md` §3) — the one monster-vs-monster swing, shared by pets
+    /// (§2.2) and summoned hunters (§6). One swing per call: no form
+    /// selection, no swing loop, and no retaliation from the defender.
+    ///
+    /// Entry gates (27231-27234), both silent and draw-free: the attacker
+    /// must be at FULL energy (`mon+0x114 <= mon+0x16` — the same gate
+    /// `attack_monster_user` opens with at 26706) and must not carry
+    /// Fear(0x3c). There is deliberately NO room compare and no safe-room
+    /// check: the hunt arm swings at a victim it has not caught up with
+    /// (charm.md §6), so the room only ever decides who SEES the line.
+    ///
+    /// DIVERGENCES from the DLL, all documented in charm.md §3:
+    /// - the defender's `+0x14` poison floor is raised from the result
+    ///   block's word [3] (27248-27249), and word [3] (`DAT_00495fdc`) is
+    ///   zeroed on entry to `calculate_attack` (25246) and never written
+    ///   by it — the raise is dead code in WG3-NT, so nothing is ported;
+    /// - the split covers the sessions engaged on the victim; the DLL's
+    ///   `distribute_experience(-1, ...)` also pays idle-autocombat users
+    ///   standing in the room.
+    fn attack_monster_monster(&mut self, attacker: MonsterInstanceId, defender: MonsterInstanceId) {
+        let (Some(a), Some(d)) = (self.monsters.get(&attacker), self.monsters.get(&defender))
+        else {
+            return;
+        };
+        let (attacker_room, defender_room) = (a.location, d.location);
+        let Some(pool) = self.content.monsters.get(&a.template).map(|t| t.energy) else {
+            return;
+        };
+        if a.energy < pool || self.monster_has_ability(attacker, Ability::Fear) {
+            return;
+        }
+        let Some((fighter, cost)) = self.build_monster_attacker_form0(attacker) else {
+            return;
+        };
+        let target = self.build_monster_defender(defender);
+        let rng = &mut self.rng;
+        let result = crate::combat::calculate_attack(
+            &fighter,
+            &target,
+            // Mode 5 for both mode globals (27235-27236) — our plain
+            // `Normal`: no damage seed, no accuracy modifier, and the
+            // hard-zeroed monster crit rating keeps crits off anyway.
+            crate::combat::AttackType::Normal,
+            &mut |lo, hi| rng.roll(lo, hi),
+        );
+        // 27242: the pay gate is checked AFTER the draws — a form costing
+        // more than the whole pool burns rolls and lands nothing. The DLL
+        // compares as `uint`, so a cost that resolved NEGATIVE wraps huge
+        // and aborts; an i32 compare would instead REFUND energy below.
+        if cost < 0 || cost > self.monsters[&attacker].energy {
+            return;
+        }
+        // Both display names are read before the defender's record can
+        // die (the DLL's `strcpy` of `mon+0x8e` at 27253).
+        let attacker_name = self.monster_name(attacker);
+        let defender_name = self.monster_name(defender);
+        let dead = {
+            let m = self.monsters.get_mut(&attacker).expect("checked above");
+            m.energy -= cost;
+            let m = self.monsters.get_mut(&defender).expect("checked above");
+            // 27244-27247: the DLL clamps the subtraction to what the
+            // defender has left, so a kill lands the HP on exactly 0
+            // rather than going negative. Transcribed literally, but be
+            // clear that it is NOT observable here and no test can pin
+            // it: the only reader of the value is the `<= 0` kill test on
+            // the next line, which is unchanged by the clamp, and a kill
+            // removes the instance in `monster_died` before anything else
+            // can look. Kept for fidelity to the decompile, not for
+            // behaviour.
+            m.current_hp -= result.damage.min(m.current_hp);
+            m.current_hp <= 0
+        };
+        // The DamageShield(0x48) bite: `genrdn(1, max(val+1,1))` off the
+        // ATTACKER's HP, then CAPPED at the attacker's maximum. The
+        // attacker is never checked for death here — the DLL leaves a
+        // shield-drained monster standing at whatever HP it lands on.
+        //
+        // The two arms differ, deliberately: the survivor block sits
+        // inside the `damage >= 1` else-arm (27283), but the KILL block at
+        // 27307 has no damage guard at all — a swing that kills for zero
+        // damage (only reachable against an instance already sitting at
+        // 0 HP) still draws. Ported as written.
+        //
+        // The value is read up front because the DLL reads it off the
+        // defender's record AFTER `check_kill_monster` has freed it
+        // (27307 passes the stale `puVar2`); we cannot read a removed
+        // instance, so we snapshot instead of reproducing the read of
+        // freed memory.
+        let shield_value = self.monster_ability_value(defender, Ability::DamageShield);
+        if dead {
+            let exp = self.monster_died(defender, None);
+            self.apply_damage_shield(attacker, shield_value);
+            self.broadcast_to_room(
+                attacker_room,
+                None,
+                &text::capitalize_first(text::monster_killed_monster(
+                    &attacker_name,
+                    &defender_name,
+                )),
+            );
+            // 27327: `distribute_experience` runs AFTER the kill line.
+            if let Some(exp) = exp {
+                self.split_kill_experience(defender, None, exp);
+            }
+            return;
+        }
+        if result.damage >= 1 {
+            self.apply_damage_shield(attacker, shield_value);
+        }
+        use crate::combat::Outcome;
+        let line = match result.outcome {
+            Outcome::NoDamage => {
+                text::monster_glanced_off_monster(&attacker_name, &defender_name)
+            }
+            Outcome::Parried => text::monster_dodged_monster(&defender_name, &attacker_name),
+            Outcome::Dodged => text::monster_missed_monster(&attacker_name, &defender_name),
+            Outcome::Hit | Outcome::Critical => {
+                text::monster_attacked_monster(&attacker_name, &defender_name)
+            }
+        };
+        self.broadcast_to_room(defender_room, None, &text::capitalize_first(line));
+    }
+
+    /// The DamageShield roll of `attack_monster_monster` (27283-27296),
+    /// shared by its two arms. A zero value means the defender has no
+    /// shield: no draw at all. The result is CAPPED at the attacker's
+    /// template maximum (27293-27295 assigns the max down onto anything
+    /// above it) — the bite itself only ever subtracts.
+    fn apply_damage_shield(&mut self, attacker: MonsterInstanceId, value: i32) {
+        if value == 0 {
+            return;
+        }
+        let bite = self.rng.roll(1, (value + 1).max(1));
+        let max_hp = self
+            .monsters
+            .get(&attacker)
+            .and_then(|m| self.content.monsters.get(&m.template))
+            .map_or(0, |t| t.hitpoints);
+        if let Some(m) = self.monsters.get_mut(&attacker) {
+            m.current_hp = (m.current_hp - bite).min(max_hp);
         }
     }
 
@@ -7342,17 +10387,19 @@ impl Core {
         form: &crate::content::AttackForm,
         victim: SessionId,
     ) -> bool {
-        use crate::content::{MatchType, SaveClass};
+        use crate::content::SaveClass;
         let Ok(raw_id) = u16::try_from(form.accuracy) else {
             return false;
         };
         let Some(spell) = self.content.spells.get(&SpellId(raw_id)).cloned() else {
             return false; // unknown id: skip (the DLL would return 0)
         };
-        if !matches!(
-            spell.match_type,
-            MatchType::Single0 | MatchType::Single2 | MatchType::Item6 | MatchType::Special8
-        ) {
+        // The monster path's match gate (23777) is the SAME `{0, 2, 6, 8}`
+        // set `cast_user_target` 41460 tests, so it reuses the predicate.
+        // No self case exists here — a monster is never its own victim —
+        // so unlike the player command path there is no 41434 divert to
+        // sequence ahead of it.
+        if !spell.match_type.accepts_user() {
             // The match-gate ELSE (23777-23779): every match ∉ {0,2,6,8}
             // routes to the area sibling — 101 shipped forms (match 1 x1
             // hooded man `blacknight`, match 11 x1 wererat `plague`,
@@ -7689,7 +10736,7 @@ impl Core {
                         "everyone",
                         amount,
                     );
-                    self.summon_spawn(amount, location, Some(victim));
+                    self.summon_spawn(amount, location, SummonLink::HuntUser(victim));
                 }
                 // Every remaining case is duration-armed only (the
                 // `local_28 != 0` guards) or a no-op break in the DLL.
@@ -8254,7 +11301,7 @@ impl Core {
                         }
                         // PLAUSIBLE: the area self-slot summon's lock was
                         // not extracted; spawn idle.
-                        self.summon_spawn(amount_self, location, None);
+                        self.summon_spawn(amount_self, location, SummonLink::None);
                     }
                 }
                 Ability::DamageMR => {
@@ -8664,10 +11711,22 @@ impl Core {
     /// room and the split covers only the engaged sessions — nobody
     /// engaged means the experience evaporates (ORACLE-VERIFY: the -1
     /// split's exact recipients are decompile-inferred).
+    ///
+    /// The two halves are separable because `attack_monster_monster`
+    /// interleaves its own kill line between them (27322-27327): see
+    /// [`Core::monster_died`] and [`Core::split_kill_experience`].
     fn monster_killed(&mut self, id: MonsterInstanceId, killer: Option<SessionId>) {
-        let Some(instance) = self.monsters.remove(&id) else {
-            return;
-        };
+        if let Some(exp) = self.monster_died(id, killer) {
+            self.split_kill_experience(id, killer, exp);
+        }
+    }
+
+    /// `check_kill_monster` alone (`death.md` §4) — removal, respawn
+    /// bookkeeping, the coin/loot drop and the death announcement.
+    /// Returns the experience pot for [`Core::split_kill_experience`], or
+    /// `None` if the instance was already gone.
+    fn monster_died(&mut self, id: MonsterInstanceId, killer: Option<SessionId>) -> Option<u64> {
+        let instance = self.monsters.remove(&id)?;
         let tpl = self
             .content
             .monsters
@@ -8762,8 +11821,20 @@ impl Core {
             }
             None => self.broadcast_to_room(room, None, &announcement),
         }
+        Some(exp)
+    }
 
-        // Equal split among the killer and everyone engaged on this target.
+    /// `distribute_experience` (`death.md` §5) — the equal split among the
+    /// killer and everyone engaged on the dead instance. Split out of
+    /// [`Core::monster_killed`] so `attack_monster_monster` can print its
+    /// kill line between the two, which is the DLL's order at
+    /// 27322-27327.
+    fn split_kill_experience(
+        &mut self,
+        id: MonsterInstanceId,
+        killer: Option<SessionId>,
+        exp: u64,
+    ) {
         let mut recipients: Vec<SessionId> = killer.into_iter().collect();
         for (sid, session) in self.sessions.iter() {
             if let Session::InGame { target: Some(t), .. } = session
@@ -8837,25 +11908,33 @@ impl Core {
         };
         player.lives = player.lives.saturating_sub(1);
         if player.lives < 1 {
-            // Permadeath (`death.md` §2c).
+            // Permadeath (`death.md` §2c). Fame rides the delete event
+            // for the account evil bank (crime.md §8).
             let name = player.name.clone();
+            let fame = player.fame;
             self.output_line(session, "You have no lives remaining!");
             self.sessions.remove(&session);
-            self.events.push(Event::DeleteCharacter(name));
+            self.events.push(Event::DeleteCharacter { name, fame });
             self.events.push(Event::Disconnect(session));
             return;
         }
-        // Miracle respawn: full HP/mana at the recall room.
+        // Miracle respawn: full HP/mana at the recall room — the
+        // criminal temple for fame >= 0x28 (crime.md §6.4).
+        let recall = if player.fame >= 0x28 {
+            self.config.criminal_recall_location
+        } else {
+            self.config.recall_location
+        };
         player.current_hp = derived.max_hp;
         player.current_mana = derived.max_mana;
-        player.location = self.config.recall_location;
+        player.location = recall;
         *aided = false;
         let lives = player.lives;
         let snapshot: Box<Player> = player.clone();
         self.output_line(session, "But, due to a miracle, you have been saved.");
         self.output_line(session, &format!("You have {lives} lives left."));
         self.broadcast_to_room(
-            self.config.recall_location,
+            recall,
             Some(session),
             &format!("{name} appeared on the floor in the middle of the room."),
         );
@@ -8927,39 +12006,72 @@ impl Core {
         let dyn_accuracy = bag.value(accuracy_ability(0x16))
             + bag.value(accuracy_ability(0x69))
             + bag.value(accuracy_ability(0x6a));
-        // Unarmed with the Punch ability (0x1d) = mode-1 "fists of fury"
-        // (cmd_attack 49712-49720 auto-selects it for a bare attack;
-        // move_player_to_fighter 24539-24571): min = L*V/8 + 2,
-        // max = (L+3)*V/4 + 6 with L = level capped at 20 and V = the
-        // folded Punch value, plus PunchACY (89) on accuracy and
-        // PunchDmg (92) on both damage bounds. ORACLE pin: Nekojin
-        // Mystic L1 V1 Str40 punched raw 2..6 (shown 1..5 through the
-        // rat's DR 1). Kick/jumpkick (modes 2/3, their own verbs) are a
-        // parser addition still pending; plain classes keep 1-4 fists.
-        let punch = if weapon.is_none() {
-            bag.value(Ability::from_id(0x1d).expect("Punch in the enum"))
-        } else {
-            0
+        // Unarmed MA modes (combat.md "Unarmed attack modes",
+        // move_player_to_fighter 24520-24660 + add-ons 24890-24916):
+        // the stored attack mode (autocombat +8) picks the style —
+        // 1 fists of fury (Punch 0x1d): min L*V/8+2, max (L+3)*V/4+6;
+        // 2 lightning feet (Kick 0x1e): max L*V/6+7;
+        // 3 flying feet (JumpKick 0x23): max L*V/6+8 — L = level capped
+        // at 20, V = the folded style ability, plus the per-style
+        // ACY/Dmg add-on pair. ORACLE pin: Nekojin Mystic L1 V1 Str40
+        // punched raw 2..6 (shown 1..5 through the rat's DR 1).
+        use crate::combat::AttackType;
+        let mode = match self.sessions.get(&session) {
+            Some(Session::InGame { attack_mode, .. }) => *attack_mode,
+            _ => AttackType::Normal,
         };
-        let punch_acy = if punch > 0 {
-            bag.value(Ability::from_id(0x59).expect("PunchACY in the enum"))
-        } else {
-            0
+        // (style V ability, ACY add-on, Dmg add-on) per unarmed mode.
+        let style = match mode {
+            AttackType::MartialArts1 => Some((0x1d, 0x59, 0x5c)),
+            AttackType::MartialArts2 => Some((0x1e, 0x5a, 0x5d)),
+            AttackType::MartialArts3 => Some((0x23, 0x5b, 0x5e)),
+            _ => None,
         };
-        let accuracy = (str_ - 50) / 3
-            + 2 * ((combat - 1) * isqrt(level) + 2 * combat + level / 2 + skill / 2 - 2)
-            + (agl - 50) / 6
-            + dyn_accuracy
-            + punch_acy;
+        let fold = |id: u16| bag.value(Ability::from_id(id).expect("MA ability in the enum"));
+        let (v, style_acy, style_dmg) = match style {
+            Some((v_id, acy_id, dmg_id)) if weapon.is_none() => {
+                let v = fold(v_id);
+                if v > 0 {
+                    (v, fold(acy_id), fold(dmg_id))
+                } else {
+                    (0, 0, 0)
+                }
+            }
+            _ => (0, 0, 0),
+        };
+        let accuracy = if mode == AttackType::Backstab {
+            // Mode-4 accuracy (move_player_to_fighter 24817-24841):
+            // (Agl + Stealth)/2 + Agl/2 + BSAccu (0x74). The +0x7d4
+            // flag mods (+5/-15) and the +0x6f5&0x80 -10 are untraced
+            // runtime bits — omitted, ORACLE-VERIFY.
+            let stealth = match self.sessions.get(&session) {
+                Some(Session::InGame { derived, .. }) => derived.stealth,
+                _ => 0,
+            };
+            (agl + stealth) / 2
+                + agl / 2
+                + bag.value(Ability::from_id(0x74).expect("BSAccu in the enum"))
+                + dyn_accuracy
+        } else {
+            (str_ - 50) / 3
+                + 2 * ((combat - 1) * isqrt(level) + 2 * combat + level / 2 + skill / 2 - 2)
+                + (agl - 50) / 6
+                + dyn_accuracy
+                + style_acy
+        };
 
         // Weapon damage (or the unarmed defaults), plus the Strength
         // bonuses: max += (Str-50)/10; min += 2*(Str-100)/10 when positive.
         let (base_min, base_max) = match weapon {
             Some(w) => (i32::from(w.min_damage), i32::from(w.max_damage)),
-            None if punch > 0 => {
+            None if v > 0 => {
                 let l = level.min(20);
-                let dmg = bag.value(Ability::from_id(0x5c).expect("PunchDmg in the enum"));
-                (l * punch / 8 + 2 + dmg, (l + 3) * punch / 4 + 6 + dmg)
+                let max = match mode {
+                    AttackType::MartialArts2 => l * v / 6 + 7,
+                    AttackType::MartialArts3 => l * v / 6 + 8,
+                    _ => (l + 3) * v / 4 + 6,
+                };
+                (l * v / 8 + 2 + style_dmg, max + style_dmg)
             }
             None => (1, 4),
         };
@@ -9043,11 +12155,59 @@ impl Core {
     }
 
     /// EXACT (decompile 0x2b43e `move_monster_to_fighter`): defender view of
-    /// a monster — evasion [1] = AC, armor [3] = DR*10, crit hard-zeroed.
-    /// The ability fold joins both words (25190-25200): evasion += AC(2)
-    /// through `get_monster_ability_value` — template rows AND active-slot
-    /// debuffs — and the soak += DR(7) RAW (the *10 scale applies only to
-    /// the template word).
+    /// a monster — evasion [1] = AC, armor [3] = DR*10, parry [8] = the
+    /// Dodge(0x22) ability (25185-25186), crit hard-zeroed (25187). The
+    /// ability fold joins the words: evasion += AC(2) (25194-25195)
+    /// through `get_monster_ability_value` — template rows AND
+    /// active-slot debuffs — and the soak += DR(7) RAW (25199-25200; the
+    /// *10 scale applies only to the template word). ONE build for every
+    /// defender: the DLL runs this same function for the
+    /// player-attacks-monster path and for both sides of
+    /// `attack_monster_monster`, so the Dodge word is not m-v-m-specific.
+    ///
+    /// MEASURED (charm.md §8.3, 2026-07-26): the parry word is a LIVE
+    /// gameplay change on the player-attacks-monster path — 167 of the 1101
+    /// shipped templates carry Dodge(0x22) at values 10..200, and the chance
+    /// `parry*10 / (accuracy/8)` (capped 95, `calculate_attack` 25336-25360)
+    /// turns roughly 28-80% of connecting player swings into zero-damage
+    /// parries. An expedition ground giant bats (Dodge 20) at two accuracies,
+    /// changing nothing else:
+    ///
+    ///   accuracy 23 (denominator 2, predicted 0.95): 28/31 parried,
+    ///     CI [0.743, 0.980]
+    ///   accuracy 43 (denominator 5, predicted 0.40): 26/58 parried,
+    ///     CI [0.317, 0.585]
+    ///
+    /// Both contain their prediction and the two intervals are DISJOINT, so
+    /// the formula's division by accuracy is real and roughly the right size
+    /// — a rule that ignored accuracy could not move the same target from
+    /// ~90% to ~45%. The transcripts also favour the cap being 95, not 100.
+    ///
+    /// ORACLE-VERIFY, narrowed: the linear point is consistent but not
+    /// PINNED — 0.50 (d=4) and 0.333 (d=6) both sit inside its interval, and
+    /// separating them needs ~92 and ~207 connecting swings against the 58
+    /// collected. The measured 0.448 leans toward d=4, i.e. toward our
+    /// ACCURACY derivation reading a few points high, rather than toward the
+    /// parry formula being wrong. Pinned for shape by
+    /// `game_combat.rs::monster_dodge_ability_parries_player_swings`.
+    ///
+    /// UNPORTED, all inert on shipped data but NOT all dead code:
+    /// - the alignment-accuracy block at 25107-25118 writes evasion word
+    ///   [2] from AlignmentAccuracy(0x18). It is genuinely dead on the
+    ///   m-v-m path — `attack_monster_monster` passes
+    ///   `FUN_0042a15c`'s own return value, so the `!=` never fires — but
+    ///   it IS live when a PLAYER attacks: 26248 passes the player's
+    ///   alignment code (`FUN_0042a12e`). Zero shipped templates carry
+    ///   0x18 so word [2] stays 0 anyway, and note the DLL immediately
+    ///   overwrites the 0x19 read with the 0x18 one, which makes the
+    ///   single template carrying 0x19 (`gravedigger`, value 15) inert
+    ///   too;
+    /// - Shadow(9) adds 10 to evasion word [2] (25120-25122); zero
+    ///   templates carry it;
+    /// - DefenseModifier(0x68) rides word [0x92] (25201-25202) into the
+    ///   attacker's accuracy inside `calculate_attack` (25291) — our
+    ///   [`crate::combat`] engine has no term for it; zero templates
+    ///   carry it.
     fn build_monster_defender(&self, id: MonsterInstanceId) -> crate::combat::Fighter {
         let tpl = self
             .monsters
@@ -9062,18 +12222,21 @@ impl Core {
                 + self.monster_ability_value(id, Ability::DR),
             min_damage: 0,
             max_damage: 0,
-            parry: 0,
+            parry: self.monster_ability_value(id, Ability::Dodge),
             crit_rating: 0,
         }
     }
 
     /// EXACT (decompile 0x2a0c8 `compute_energy_used`):
     /// EU = speed*1000 / ((combat*level + 45) * (Agl+150) * 1500/9000) + bonus,
-    /// divide-by-zero guard = 50. Unarmed fists speed = 1200 (0x4b0; the
-    /// 1800 variant fires when player flag +0x7c8 & 2 is set — semantics
-    /// not yet traced). Weapon speeds join in M4.
+    /// divide-by-zero guard = 50. Speeds (combat.md mode table): armed =
+    /// the weapon's `+0x3de` speed (0-speed weapons like "flurry of
+    /// blades" hit the 6-swing round cap — intentional data); unarmed by
+    /// attack mode — 1150 fists of fury / 1400 kicks / 1900 jumpkick /
+    /// 1200 plain fists. (The flagged +0x7c8&2 variants are untraced.)
     fn player_energy_used(&self, session: SessionId) -> i32 {
-        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+        let Some(Session::InGame { player, attack_mode, .. }) = self.sessions.get(&session)
+        else {
             return PLAYER_ENERGY_MAX;
         };
         let combat = self
@@ -9086,14 +12249,19 @@ impl Core {
         if i == 0 || den == 0 {
             return 50;
         }
-        // Fists speed 1200 (0x4b0); the mode-1 punch swings at 1150
-        // (0x47e, move_player_to_fighter 24532-24534).
-        let unarmed_punch = player.weapon.is_none()
-            && self
-                .ability_bag(player)
-                .value(Ability::from_id(0x1d).expect("Punch in the enum"))
-                > 0;
-        let speed = if unarmed_punch { 1150 } else { 1200 };
+        use crate::combat::AttackType;
+        let speed = match player
+            .weapon
+            .and_then(|(id, _)| self.content.items.get(&id))
+        {
+            Some(w) => i32::from(w.speed),
+            None => match attack_mode {
+                AttackType::MartialArts1 => 1150,
+                AttackType::MartialArts2 => 1400,
+                AttackType::MartialArts3 => 1900,
+                _ => 1200,
+            },
+        };
         speed * 1000 / den
     }
 
@@ -9179,13 +12347,17 @@ impl Core {
         else {
             unreachable!("dispatched from ChoosingClass");
         };
+        let class = choice.expect("validated above");
+        // crime.md §6.8: the Lawful question is only asked when fame < 1
+        // — a rerolling criminal (account-banked evil, §8) skips it and
+        // starts with the restored points.
+        if profile.saved_evil >= 1 {
+            self.finish_creation(session, profile, race, class, false);
+            return;
+        }
         self.sessions.insert(
             session,
-            Session::ChoosingLawful {
-                profile,
-                race,
-                class: choice.expect("validated above"),
-            },
+            Session::ChoosingLawful { profile, race, class },
         );
         self.output(session, &format!("\n{}\n{}", text::LAWFUL_PARAGRAPH, text::LAWFUL_QUESTION));
     }
@@ -9206,6 +12378,18 @@ impl Core {
         else {
             unreachable!("dispatched from ChoosingLawful");
         };
+        self.finish_creation(session, profile, race, class, lawful);
+    }
+
+    /// roll_stats + realm entry (the tail both creation paths share).
+    fn finish_creation(
+        &mut self,
+        session: SessionId,
+        profile: AccountProfile,
+        race: RaceId,
+        class: ClassId,
+        lawful: bool,
+    ) {
         let player = self.roll_stats(profile, race, class, lawful);
         self.events.push(Event::Persist(Box::new(player.clone())));
         self.broadcast_to_others(session, &text::entered_realm(&player.name));
@@ -9225,6 +12409,8 @@ impl Core {
                 attackers_this_tick: 0,
                 trail: vec![trail_seed],
                 at_prompt: false,
+                attack_mode: crate::combat::AttackType::Normal,
+                delay: 0,
             });
         // Oracle: first entry shows the stat sheet, not the room.
         self.show_sheet(session);
@@ -9274,7 +12460,15 @@ impl Core {
             spellbook: BTreeMap::new(),
             poison: 0,
             active_spells: Default::default(),
-            fame: 0,
+            // Committed Lawful starts at -51 (crime.md §2.6: the
+            // creation good-path prompt writes 0x544=0xF6 AND fame -51);
+            // otherwise the account-banked evil restores (§8 — crime
+            // follows the account; negatives clamp to 0, §6.8).
+            fame: if lawful { -51 } else { profile.saved_evil.max(0) },
+            ansi: self.config.ansi,
+            warn_on_evil: true,
+            hidden: false,
+            sneak_armed: false,
         };
         let derived = self.derive_for(&player);
         player.current_hp = derived.max_hp;
@@ -9436,6 +12630,39 @@ impl Core {
             self.output_line(session, text::NO_EXIT);
             return;
         }
+        // Hidden type-6 exits are no-exits until found (theft.md §9).
+        if self.exit_hidden6(from, direction as usize as u8, &exit) {
+            self.output_line(session, text::NO_EXIT);
+            return;
+        }
+        // Locked pickable exits block until picked (theft.md §8; the
+        // door-open command family is still unmodeled — a locked type-2
+        // door refuses with the closed-door line, secret types stay
+        // masked as no-exit. Wordings ORACLE-VERIFY).
+        if matches!(exit.exit_type, 2 | 7 | 0xb)
+            && self.exit_lock_state(from, direction as usize as u8, &exit) == 2
+        {
+            if exit.exit_type == 2 {
+                self.output_line(session, text::DOOR_CLOSED);
+            } else {
+                self.output_line(session, text::NO_EXIT);
+            }
+            return;
+        }
+        // Alignment-restricted exits (type 0x14, crime.md §6.3
+        // move_user 12433-12448): fame below paramA = too good, above
+        // paramB = too evil.
+        if exit.exit_type == 0x14 {
+            let fame = i32::from(self.player(session).fame);
+            if fame < exit.param {
+                self.output_line(session, text::EXIT_TOO_GOOD);
+                return;
+            }
+            if fame > exit.param2 {
+                self.output_line(session, text::EXIT_TOO_EVIL);
+                return;
+            }
+        }
         // give_monsters_a_free_attack (23846-23905), before the move
         // commits: one room roll per departure — drawn even with nothing
         // to hit — then the first eligible monster (roll <= aggression;
@@ -9443,6 +12670,14 @@ impl Core {
         // 6 spares fame >= 0x50) takes a full swing sequence. Only a
         // DEATH aborts the move; the +0x6f0 gate caps it at one free
         // attack per medium tick.
+        //
+        // NO charm gate anywhere in it (23865-23895, re-read for M7
+        // slice 5): the locked-runner arm is `sameas(mon+0x1a, fleer)`
+        // plus `+0x116 == 0` and nothing else, so a pet is held off a
+        // fleeing owner by its SUPPRESSION alone — charm.md §2.4's
+        // "what it suppresses" list, third entry. Release the pet
+        // without clearing `+0x116` (the §4.3 "friend" outcome) and it
+        // still declines the free swing; clear `+0x116` and it takes it.
         let roll = self.rng.roll(0, 100);
         if self.attackers_of(session) <= 0 {
             let here: Vec<MonsterInstanceId> = self
@@ -9482,10 +12717,33 @@ impl Core {
             }
         }
         let name = self.player(session).name.clone();
-        self.broadcast_to_room(from, Some(session), &text::left_via(&name, direction));
+        // Sneak movement (theft.md §11.1): the armed bit is consumed by
+        // this move; the normal leave/arrive broadcasts are replaced by
+        // perception-FILTERED "You notice %s sneaking..." lines, and the
+        // sneaker keeps the hidden byte. A NORMAL move clears it.
+        let sneaking = matches!(self.sessions.get(&session),
+            Some(Session::InGame { player, .. }) if player.sneak_armed);
+        if sneaking {
+            // Self-awareness roll vs own Perception (12574+): a low roll
+            // warns the sneaker — no effect on concealment.
+            let perception = match self.sessions.get(&session) {
+                Some(Session::InGame { derived, .. }) => derived.perception,
+                _ => 0,
+            };
+            if self.rng.roll(0, 100) < perception {
+                self.output_line(session, "You make a sound as you enter the room!");
+            }
+            self.broadcast_sneak(from, session, &text::sneak_out(&name, direction));
+        } else {
+            self.broadcast_to_room(from, Some(session), &text::left_via(&name, direction));
+        }
         match self.sessions.get_mut(&session) {
             Some(Session::InGame { player, moved_this_round, trail, .. }) => {
                 player.location = exit.dest;
+                player.sneak_armed = false;
+                if !sneaking {
+                    player.hidden = false;
+                }
                 // +0x6f4 bit 6 (12501) + the pursuit breadcrumb push.
                 *moved_this_round = true;
                 trail.insert(0, exit.dest);
@@ -9493,12 +12751,43 @@ impl Core {
             }
             _ => unreachable!("mover is in game"),
         }
-        self.broadcast_to_room(
-            exit.dest,
-            Some(session),
-            &text::walks_in_from(&name, direction.opposite()),
-        );
+        if sneaking {
+            self.broadcast_sneak(
+                exit.dest,
+                session,
+                &text::sneak_in_from(&name, direction.opposite()),
+            );
+        } else {
+            self.broadcast_to_room(
+                exit.dest,
+                Some(session),
+                &text::walks_in_from(&name, direction.opposite()),
+            );
+        }
         self.show_room(session);
+    }
+
+    /// A perception-filtered room broadcast (the DLL's tell_room
+    /// perception-filter flag): each other player rolls genrdn(0,100)
+    /// against their own Perception and only sees the line on a pass.
+    fn broadcast_sneak(&mut self, room: RoomId, mover: SessionId, line: &str) {
+        let candidates: Vec<(SessionId, i32)> = self
+            .sessions
+            .iter()
+            .filter_map(|(id, s)| match s {
+                Session::InGame { player, derived, .. }
+                    if *id != mover && player.location == room =>
+                {
+                    Some((*id, derived.perception))
+                }
+                _ => None,
+            })
+            .collect();
+        for (id, perception) in candidates {
+            if self.rng.roll(0, 100) < perception {
+                self.output_line(id, line);
+            }
+        }
     }
 
     fn show_room(&mut self, session: SessionId) {
@@ -9510,9 +12799,15 @@ impl Core {
     /// "closed door <dir>"; action exits (10) and unfound secrets
     /// (7/0xb — found-state is unmodeled runtime, unfound is the shipped
     /// default) stay hidden. Other typed variants ORACLE-VERIFY.
-    fn exit_entry(d: Direction, exit: &crate::content::Exit) -> Option<String> {
+    fn exit_entry(
+        &self,
+        room: RoomId,
+        d: Direction,
+        exit: &crate::content::Exit,
+    ) -> Option<String> {
         match exit.exit_type {
             10 | 7 | 0xb => None,
+            6 if self.exit_hidden6(room, d as usize as u8, exit) => None,
             2 if exit.door_closed => {
                 Some(format!("closed door {}", text::direction_shown(d)))
             }
@@ -9523,13 +12818,14 @@ impl Core {
     /// The `exits` command: just the obvious-exits line (oracle).
     fn show_exits_line(&mut self, session: SessionId) {
         let player = self.player(session);
-        let room = &self.content.rooms[&player.location];
+        let room_id = player.location;
+        let room = &self.content.rooms[&room_id];
         let exits: Vec<String> = Direction::ALL
             .into_iter()
             .filter_map(|d| {
                 room.exits[d as usize]
                     .as_ref()
-                    .and_then(|e| Self::exit_entry(d, e))
+                    .and_then(|e| self.exit_entry(room_id, d, e))
             })
             .collect();
         let line = if exits.is_empty() {
@@ -9594,15 +12890,14 @@ impl Core {
         // Players first, then live monsters (oracle: NPCs share the line).
         let mut others: Vec<&str> = self
             .in_game_sessions()
-            .filter(|(id, p)| *id != session && p.location == room.id)
+            .filter(|(id, p)| *id != session && p.location == room.id && !p.hidden)
             .map(|(_, p)| p.name.as_str())
             .collect();
         others.extend(
             self.monsters
                 .values()
                 .filter(|m| m.location == room.id)
-                .filter_map(|m| self.content.monsters.get(&m.template))
-                .map(|t| t.name.as_str()),
+                .map(|m| m.name.as_str()),
         );
         if !others.is_empty() {
             // Oracle palette: "0;35 Also here: 1;35 <name> 0m 0;35 ." —
@@ -9631,7 +12926,7 @@ impl Core {
             .filter_map(|d| {
                 room.exits[d as usize]
                     .as_ref()
-                    .and_then(|e| Self::exit_entry(d, e))
+                    .and_then(|e| self.exit_entry(room.id, d, e))
             })
             .collect();
         out.push_str(text::color::GREEN);
@@ -9685,7 +12980,13 @@ impl Core {
             }
             _ => false,
         };
-        let mut text = if self.config.ansi {
+        // Per-user ANSI overrides the global once a character is
+        // attached; login/creation sessions follow the server global.
+        let ansi = match self.sessions.get(&session) {
+            Some(Session::InGame { player, .. }) => player.ansi,
+            _ => self.config.ansi,
+        };
+        let mut text = if ansi {
             text.to_string()
         } else {
             text::strip_ansi(text)
@@ -9693,7 +12994,7 @@ impl Core {
         if erase {
             // ANSI: erase the dangling prompt in place (ESC[79D ESC[K);
             // plain terminals get a newline away from it instead.
-            text = if self.config.ansi {
+            text = if ansi {
                 format!("\r\x1b[K{text}")
             } else {
                 format!("\r\n{text}")

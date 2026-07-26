@@ -105,6 +105,7 @@ fn create(core: &mut Core, name: &str, race: &str, class: &str) -> SessionId {
     let s = core.attach_account(AccountProfile {
         name: name.into(),
         gender: Gender::Male,
+        saved_evil: 0,
     });
     core.input(s, race);
     core.input(s, class);

@@ -57,6 +57,85 @@ the command parser to pick a cast entry point (`cast_no_target` vs
 `cast_user_target` vs `cast_monster_target` vs `cast_item_target`) and required
 target syntax.
 
+### 1.1 Single-target routing law (`cmd_cast` 59253-59320)
+
+**Routing is the resolved target KIND; `spelltype` routes nothing.** With a
+target word present the dispatcher runs `find_action_target` with the
+preferred mask above, and **when that returns nothing it re-runs the search
+with the universal mask `0xf037`** (59265-59271) — so the preferred mask is
+only an ORDERING preference and any match type can resolve any kind. It then
+dispatches purely on the found kind (59278-59320).
+
+`find_action_target` (0x699fc) mask bits and the kind code it writes to
+`*param_4`:
+
+| mask bit | searches | found kind | dispatcher arm |
+|---|---|---|---|
+| `0x001` | room monsters | `2` | `cast_monster_target` |
+| `0x002` | room players | `1` | `cast_user_target` |
+| `0x004`/`0x008`/`0x040` | caster's inventory | `8` | `cast_item_target` |
+| `0x010` | items on the floor | `4` | `You are not carrying %s!` |
+| `0x020` | the caster's spellbook | `0x10` | `Why would you want to cast a spell on a spell?` |
+| `0x080` | — | — | exclude self from the player search |
+| `0x100`/`0x200`/`0x400` | — | — | item sub-type filters |
+| `0x800` | — | — | search CHARMED monsters last (two-pass) |
+
+Nothing found ⇒ `You do not see %s here!`. The search order inside the
+function is monsters → players → inventory → floor → spellbook, and an exact
+`sameas` hit returns immediately; two or more partial hits set `0x20` and
+raise the multiple-match prompt.
+
+**Acceptance is the match type**, re-checked inside each entry point, and
+every refusal is UNCHARGED and pre-roll:
+
+| entry point | accepts `+0xcc` ∈ | else (line) |
+|---|---|---|
+| `cast_monster_target` | `{4, 6, 8}` (43205) | `You may not cast that spell on a monster!` (44311-44315) |
+| `cast_user_target` | `{0, 2, 6, 8}` (41460) | `You may not cast that spell on a user!` (43064-43066) |
+| `cast_item_target` | `{6, 7}` (44367) | `You may not cast that spell on an item!` (44369) |
+
+This is what produces the §8.13 measurements rather than contradicting them:
+`c blur cat` (match **2**) prefers players, finds none, falls back to the
+universal search, lands on the monster and is refused there; `c flash oracle`
+and `c stnk cat` (match **12**, preferred mask `0`) go straight to the
+universal search and are refused by whichever entry point the found kind
+picked.
+
+**Acceptance is not the FIRST gate in `cast_user_target`** — the self-target
+divert at 41434 sits ahead of it:
+
+```
+41422  (spelltype ∈ {0,1,2}) && caster == victim  -> "Why would you want to attack yourself?"
+41429  protected room (`room+0x564 & 1`)
+41434  caster == victim && `+0xcc` != 6           -> cast_no_target(...)   <-- divert
+41438  hostility (param_4: PvP gate, evil points)
+41460  acceptance `+0xcc` ∈ {0, 2, 6, 8}
+```
+
+So naming YOURSELF never reaches 41460 unless the spell is match **6**, the
+one type the divert excludes. Every other match type — including the ones
+41460 rejects — falls out to `cast_no_target` and self-casts normally.
+
+Data cross-check (`re/mmud_wgnt.sqlite`, 1379 spells / 207 LearnSp-taught):
+match **1** is the self-only buff band (barkskin, stoneskin, magic armour,
+shadowform — 25 learnable); no entry point ACCEPTS it, so match 1 can never
+be cast at another player, an item or a monster — but it is castable both
+bare *and* by the caster's own name, via the 41434 divert above;
+match **2** is the cast-on-another-player band (bless, blur,
+minor healing — 42 learnable); **208** benign-mode (`spelltype` 3) spells sit
+on match 4/6/8 and DO reach a monster (the charm family, curse, blind, slow,
+fear, hold person); the 69 offensive-mode spells on match 0/1/2/7 do not, and
+not one of them is learnable — every learnable offensive spell is match 4, 8
+or 12.
+
+Inside `cast_monster_target`, `spelltype` (`+0xc4`) is used only for
+hostility: the evil-points/grudge block (43248-43273, autocombat re-fire
+only), the engage-and-stop block (43411-43421, gated on `spelltype < 3` AND
+`duration == 0` — a **benign** monster cast never engages, it consumes the
+one-per-round permission bit at 43498-43509 and resolves inside the command),
+and the elemental-resist scale (43525). Note the protected-room gate at
+43232 is NOT spelltype-gated here, unlike its `cast_user_target` twin.
+
 **Player active-spell slots** (10 slots each), the maintained duration-spell state:
 
 | offset | meaning |
@@ -207,7 +286,7 @@ Selected instant handlers (ability id → field), player target:
 |---------|----|----------------|
 | Damage | 1 | HP `+0xb0 -= V`; routes through the combat kill path — `check_kill_user` / `distribute_experience` (matches `combat.md`). Resisted by element (see below). MR is ignored. |
 | Damage(-MR) | 17/0x11 | Like Damage, but `V` is scaled by the target's **MR** first — the SAME stat the saving throw reads (monster: M.R.(36) modifiers + template `mr` word, floored at 1, `cast_monster_target` 43387-43392; player: `user+0xc2`). Both paths first boost `V` by the caster's **AlterSpDmg** (165/0xa5) percent (43940-43941; plain Damage gets the identical boost via the 39025-39030 helper). Without **AntiMagic** (51) on the target: `red = clamp((MR-50)/2, 0, 50)` (43946-43954); if `red == 0` the damage is instead **amplified**: `V' = V + V*(50-MR)/100` (43974-43975) — a floor-MR target takes +49%, MR 50 is the unchanged pivot; else `V' = V - V*red/100` (43982). With AntiMagic: `red = clamp(MR/2, 0, 75)` (43957-43968), no amplification (`red == 0` ⇒ `V' = V`, 43978). All divisions truncate toward zero. Monster-target body 43937-43993; player-target twin `cast_no_target` 40137-40198. **This is the damage path the shipped attack spells predominantly use**: of the 336 instant (`duration=0`) offensive (`spelltype<3`) spells, 171 carry 17 (magic missile — spell 1 — included, value 0 = rolled magnitude; no shipped 17 slot carries a fixed value) vs 98 carrying plain Damage(1). |
-| Enslave | 6 | `silly_spell` placeholder in WG3-NT (charm on players not implemented here) |
+| Enslave | 6 | `silly_spell` placeholder in WG3-NT (charm on players not implemented here). The **monster-target** path is fully implemented — gate `knmsr+0x120 charmlvl <= caster level`, save vs `knmsr+0x1a0 charmres/2` — see `charm.md` §1 |
 | Drain | 8 | target HP `-= V`, caster HP `+= V` (capped at caster max `+0xae`); kill-checked |
 | EnergyLevel | 11/0xb | round pool `+0xba += V` (capped at max `+0xb8`) |
 | Summon | 12/0xc | `generate_monster` into the room, tagged owned by caster |
@@ -424,7 +503,8 @@ casting:
    `+0x18 -= v`, EnergyLevel (11) `+0x16 += v` (cap `+0x114`), Heal (18) `+0x18
    += v`, Cure Poison (20) `+0x14 -= v`, Fear (60) random flee (`move_monster`).
    `perform_spell_termination_monster_upkeep` reverses only Enslave (6, releases
-   charm: reset name/owner bit `+0x128 & ~1`, flags `+0x140`/`+0x116`) and Poison
+   charm, 44988-44995: empty owner name `+0x1a`, `+0x116 = 0`, `+0x128 & ~1`,
+   dirty `+0x140 = 1` — full charm/pet system in `charm.md` §4) and Poison
    (19/0x13, `+0x14 -= v`). Monsters have **no** stat-buff reversal, mana, or
    EndCast chaining.
    Addition (corrected during slice 6): the monster poison counter `+0x14`

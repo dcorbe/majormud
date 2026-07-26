@@ -233,8 +233,11 @@ fn core_thread(
                         eprintln!("failed to persist stamp {}/{}: {e}", room.map, room.room);
                     }
                 }
-                Event::DeleteCharacter(name) => {
+                Event::DeleteCharacter { name, fame } => {
                     let db = state.lock().expect("state db lock");
+                    if let Err(e) = db.bank_evil(&name, fame, wall_now()) {
+                        eprintln!("failed to bank evil for {name}: {e}");
+                    }
                     if let Err(e) = db.delete_player(&name) {
                         eprintln!("failed to delete {name}: {e}");
                     }
@@ -462,6 +465,7 @@ async fn login(
                 return Ok(Some(AccountProfile {
                     name,
                     gender,
+                    saved_evil: 0,
                 }));
             }
             Err(CreateAccountError::NameTaken) => {

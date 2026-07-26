@@ -36,6 +36,37 @@ pub enum Command {
     Train,
     /// `attack [target]` — empty target means auto-pick.
     Attack(String),
+    /// `punch [target]` — mode-1 fists of fury (cmd_punch 0x51e37);
+    /// without the Punch ability the input is unconsumed (say).
+    Punch(String),
+    /// `kick [target]` — mode-2 lightning feet (cmd_kick 0x51df2).
+    Kick(String),
+    /// `jumpkick [target]` — mode-3 flying feet (cmd_jumpkick 0x51dad).
+    JumpKick(String),
+    /// `ansi` — the per-user colour toggle. OURS (divergence): the real
+    /// board keys ANSI on the MBBS account, outside the DLL.
+    Ansi,
+    /// `set <option>` — cmd_set 0x458b60; only EVIL ships today.
+    Set(String),
+    /// `rob [target]` — cmd_rob 0x4528fb; bare form prints the syntax.
+    Rob(String),
+    /// `picklock <direction>` — cmd_picklock 0x454856.
+    Picklock(String),
+    /// `search [direction]` — cmd_search 0x454fc9.
+    Search(String),
+    /// `disarm trap <direction>` — cmd_disarm 0x468bed.
+    Disarm(String),
+    /// `forgive <player>` — refund a live pair timer (cmd_forgive).
+    Forgive(String),
+    /// `sneak` — arm stealth for the next move (cmd_sneak 0x454641).
+    Sneak,
+    /// `backstab [target]` — cmd_backstab 0x51573: mode 4 when
+    /// hidden/sneaking (weapon must carry BSAccu 0x74), else a plain
+    /// attack.
+    Backstab(String),
+    /// `hide` — hide self; item/coin stash forms arrive with the room
+    /// hidden-storage work (cmd_hide 0x466b1f).
+    Hide(String),
     /// `cast [spell [target]]` — bare form prints the syntax line; a cast
     /// NEVER auto-picks a target (spellcasting.md §8.9).
     Cast(String),
@@ -108,7 +139,7 @@ enum Verb {
 /// All direction minimums are ORACLE-verified (oracle_directions.raw):
 /// north/south/west = full word, east = 3 (eat blocks 2), down = 3,
 /// up = 2, diagonals = 6. Hand-authored asymmetry is the original's.
-const VERBS: [(&str, usize, Verb); 41] = [
+const VERBS: [(&str, usize, Verb); 54] = [
     ("north", 5, Verb::Plain(|| Command::Move(Direction::North))),
     ("south", 5, Verb::Plain(|| Command::Move(Direction::South))),
     ("east", 3, Verb::Plain(|| Command::Move(Direction::East))),
@@ -120,6 +151,15 @@ const VERBS: [(&str, usize, Verb); 41] = [
     ("up", 2, Verb::Plain(|| Command::Move(Direction::Up))),
     ("down", 3, Verb::Plain(|| Command::Move(Direction::Down))),
     ("attack", 1, Verb::WithArgs(Command::Attack)), // ORACLE: a/at/att
+    // ORACLE-VERIFY min abbrevs for the MA verbs: unmeasured. `k` and
+    // `j` are unambiguous today; `p` is reserved against a future `put`
+    // (the quest-VM wildcard family), so punch takes 2.
+    ("punch", 2, Verb::WithArgs(Command::Punch)),
+    // ORACLE-VERIFY min abbrev: unmeasured; `b` is free (`bu` still
+    // reaches buy — not a prefix of backstab).
+    ("backstab", 1, Verb::WithArgs(Command::Backstab)),
+    ("kick", 1, Verb::WithArgs(Command::Kick)),
+    ("jumpkick", 1, Verb::WithArgs(Command::JumpKick)),
     // Min 1 like attack, so `c` and `c args` both cast (MEASURED §8.9).
     // ORACLE-VERIFY: only c/cast measured; ca/cas assumed by prefix model.
     ("cast", 1, Verb::WithArgs(Command::Cast)),
@@ -162,6 +202,27 @@ const VERBS: [(&str, usize, Verb); 41] = [
     ("top", 2, Verb::Plain(|| Command::Top)),       // ORACLE: to (t says)
     ("train", 4, Verb::Plain(|| Command::Train)),   // ORACLE: trai (tra says)
     ("quit", 1, Verb::Plain(|| Command::Quit)),     // ORACLE: q
+    // OURS (divergence): no DLL surface exists — full word only.
+    ("ansi", 4, Verb::Plain(|| Command::Ansi)),
+    // ORACLE-VERIFY min abbrev: unmeasured ("se" cannot shadow sell's 3
+    // — "sel" is not a prefix of "set"; keep 3 to be safe).
+    ("set", 3, Verb::WithArgs(Command::Set)),
+    // ORACLE-VERIFY min abbrevs: unmeasured for both.
+    ("sneak", 2, Verb::Plain(|| Command::Sneak)),
+    ("hide", 3, Verb::WithArgs(Command::Hide)),
+    // ORACLE-VERIFY min abbrevs: unmeasured ("ro" cannot shadow
+    // remove's 3 — "rem" is not a prefix of "rob").
+    ("rob", 2, Verb::WithArgs(Command::Rob)),
+    // ORACLE-VERIFY min abbrev: unmeasured; "pi" is free (punch is 2 at
+    // "pu").
+    ("picklock", 2, Verb::WithArgs(Command::Picklock)),
+    // ORACLE-VERIFY min abbrev: unmeasured; "se" cannot shadow sell(3)
+    // or set(3) — both need 3 chars and neither is a prefix of search.
+    ("search", 2, Verb::WithArgs(Command::Search)),
+    // ORACLE-VERIFY min abbrev: unmeasured; "di" cannot shadow drop's 2
+    // ("dr") and "d" stays the down alias.
+    ("disarm", 3, Verb::WithArgs(Command::Disarm)),
+    ("forgive", 4, Verb::WithArgs(Command::Forgive)),
 ];
 
 pub fn parse(input: &str) -> Command {

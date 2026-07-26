@@ -30,6 +30,9 @@ fn exit(dest: RoomId, exit_type: u16) -> Option<Exit> {
         exit_type,
         trigger_msg: None,
         param: 0,
+        param2: 0,
+        param3: 0,
+        param4: 0,
         door_closed: exit_type == 2, // shipped doors are closed (para2=2)
     })
 }
@@ -43,6 +46,9 @@ fn monster(id: u16, roam: i16, aggression: i16) -> Monster {
         magic_resist: 0,
         roam_class: roam,
         aggression,
+        // Lair mode: attackable without the mode-0/4 evil charge
+        // (created characters ship Warn on Evil ON — crime.md §2.5).
+        behaviour: 3,
         ..Default::default()
     }
 }
@@ -104,6 +110,7 @@ fn create(core: &mut Core, name: &str) -> SessionId {
     let s = core.attach_account(AccountProfile {
         name: name.into(),
         gender: Gender::Male,
+        saved_evil: 0,
     });
     core.input(s, "2");
     core.input(s, "1");
@@ -490,6 +497,9 @@ fn damage_exit_wounds_the_crossing_monster() {
         exit_type: 9,
         trigger_msg: None,
         param: 10,
+        param2: 0,
+        param3: 0,
+        param4: 0,
         door_closed: false,
     });
     let mut b = room(B, 9);
@@ -519,6 +529,9 @@ fn secret_passage_needs_class_5_or_0x26() {
         exit_type: 7,
         trigger_msg: None,
         param: 3,
+        param2: 0,
+        param3: 0,
+        param4: 0,
         door_closed: false,
     });
     let mut b = room(B, 9);

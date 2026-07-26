@@ -73,7 +73,11 @@ fn spell(id: SpellId, name: &str, short: &str) -> Spell {
         save_class: SaveClass::None,
         base_chance: 200, // auto-success: >= 200 skips the roll
         duration_per_level: 0,
-        match_type: MatchType::Single0,
+        // Match 8 = the shipped offensive single-target shape (magic
+        // missile's own). The cast dispatcher routes on the MATCH type
+        // (`get_spell_match_type`), so a match-0 spell would never reach
+        // `cast_monster_target` at all.
+        match_type: MatchType::Special8,
         duration: 30,
         element: Element::Magic,
         class_gate_group: 1,

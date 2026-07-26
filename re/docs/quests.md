@@ -171,29 +171,45 @@ no party split** — quest exp bypasses the "you have progressed too far" limit
 move them, and `checkitem`/`failitem` gate on possession. Quest logic (e.g.
 "turn in the token") is scripted, not built in.
 
-### 4.3 Class-skill rewards and completion thresholds (`FUN_00414d23`, 0x414d23)
+### 4.3 Stat-ability rewards and completion thresholds (`FUN_00414d23`, 0x414d23)
 This function — reachable as **`load_player`** post-processing (0x15084 → call at
 0x414d23) and via the god command **`verify <user> abilities`** (0x… → 0x414d23)
 — is the completion detector. It scans the 30-slot table, reads each quest
-counter, and applies **hardcoded thresholds** that grant class abilities
-(`FUN_0046c507`) or penalise:
+counter, and applies **hardcoded thresholds** that grant permanent stat
+abilities (`FUN_0046c507(player, abilityId, value)`) or penalise. The exact
+`(abilityId, value)` push-args were recovered by disassembling 0x414d23
+(`wg_nt_ghidra/exports/FUN_00414d23.asm`; call-site addresses cited per row):
 
-| quest flag | value | action |
-|------------|-------|--------|
-| IceSorc (0x7d) | == 2 | grant ability ×1 |
-| Good (0x7e) > 7 **or** Neutral (0x7f) > 7 **or** Evil (0x80) > 3 | — | grant ability **N×**, N by class (`switch +0x92`): classes 1/2/3/0xf → 1×; 4/0xb → 2×; 5/0xc/0xd → 2×; 6/9/10 → 4×; 7/8/0xe → 3× |
-| DarkDruid (0x81) | == 2 | grant ability ×1 |
-| BloodChamp (0x82) | == 2 | grant ability ×1 |
-| SheDragon (0x83) | == 3 | grant ability ×2 |
-| SheDragon (0x83) | == 2 | **penalty**: strip 35,000,000 exp, de-level (`FUN_00414c39`), clear the flag; "*You have been stripped of 35,000 [thousand] … exit and re-enter*" |
-| Wererat (0x84) | == 2 | grant ability ×1 |
+| quest flag | value | grants `(id, value)` | asm call site |
+|------------|-------|----------------------|---------------|
+| IceSorc (0x7d) | == 2 | AC (0x02) +1 | 0x414e52 |
+| Good (0x7e) > 7 **or** Neutral (0x7f) > 7 **or** Evil (0x80) > 3 | — | by class (`switch +0x92`), see below | 0x414e74+ |
+| DarkDruid (0x81) | == 2 | S.C. (0x46) +1 | 0x414f66 |
+| BloodChamp (0x82) | == 2 | Accuracy (0x16) +3 | 0x414f79 |
+| SheDragon (0x83) | == 3 | Crits (0x3a) +1, S.C. (0x46) +2 | 0x414f8b, 0x414f98 |
+| SheDragon (0x83) | == 2 | **penalty**: strip 35,000,000 exp (`0x2160ec0`), de-level (`FUN_00414c39`), clear the flag; "*You have been stripped of 35,000 [thousand] … exit and re-enter*" | 0x414fae |
+| Wererat (0x84) | == 2 | Dodge (0x22) +1 | 0x415070 |
 
-So **completion = the counter reaching a fixed value**; the reward is applied by
-re-running this pass at login (idempotent — `giveability`/`FUN_0046c507` only
-adds if not already present or below target). The specific ability id/value each
-grant pushes is set by caller-side arguments the decompiler did not recover
-(see §6), but load_player's validation (§4.4) reveals they are the **signature
-class skills** Smash (0x20), Perfect Stealth (0xba), Meditate (0xbb).
+Alignment-path (Good/Neutral/Evil) per-class grants (jump table 0x414ea1):
+
+| class (`+0x92`) | grants |
+|-----------------|--------|
+| 1, 2, 3, 0xf | MaxDamage (0x04) +1 |
+| 4, 0xb | AC (0x02) +1, MaxMana (0x45) +6 |
+| 5, 0xc, 0xd | S.C. (0x46) +1, MaxMana (0x45) +10 |
+| 6, 9, 10 | BsMinDmg (0x75) +6, BsMaxDmg (0x76) +6, Stealth (0x1b) +1, MaxMana (0x45) +4 |
+| 7, 8, 0xe | BsMinDmg (0x75) +10, BsMaxDmg (0x76) +10, Stealth (0x1b) +2 |
+| 0 / others | nothing |
+
+So **completion = the counter reaching a fixed value**, and the rewards are
+**permanent stat boosts** (AC, MaxDamage, Accuracy, Dodge, Crits, S.C., MaxMana,
+Stealth, backstab min/max damage — names per `abilities.md`), **not** the class
+skills Smash/PerStealth/Meditate (that earlier inference was wrong; the class
+skills are validated separately in §4.4). Idempotence comes from the scan loop
+itself: before granting, any slot holding one of the reward ids
+{0x02, 0x04, 0x16, 0x1b, 0x22, 0x3a, 0x45, 0x46, 0x75, 0x76} is zeroed
+(`LAB_00414dd0`, asm 0x414dd0) — since `FUN_0046c507` *accumulates*, the pass
+clears old grants and re-grants fresh on every run.
 
 Note: MageBane (0x32), Phoenix (0x85) and DaoLord (0x86) counters are **not**
 handled in this threshold switch — their rewards must be granted purely by the
@@ -230,23 +246,27 @@ perform a class change.** Evidence:
   *gate* (require the player already be class X), never an assignment.
 
 What the class-named quests actually do: their counters, on reaching threshold,
-cause `FUN_00414d23` to **grant that class its signature ability** (Smash /
-Perfect Stealth / Meditate, per §4.3-4.4). In other words these are
-**class-power / class-mastery quests** — you must already be (and remain) the
-right class and level to keep the reward — rather than class-*change* quests.
-The actual advanced-class *transition* is the separate one-time menu reclass.
+cause `FUN_00414d23` to **grant permanent stat abilities** (per the recovered
+§4.3 table — e.g. DarkDruid → S.C. +1, BloodChamp → Accuracy +3, and the
+alignment-path quests grant a class-flavoured stat package). In other words
+these are **class-power / class-mastery quests** — the alignment-path package is
+even re-derived from your *current* class on every pass — rather than
+class-*change* quests. The actual advanced-class *transition* is the separate
+one-time menu reclass. (The class skills Smash/PerStealth/Meditate are managed
+by §4.4's login validation, not granted here.)
 
 ---
 
 ## 6. Undetermined / flagged
 
-- **Exact granted ability per quest.** `FUN_0046c507` and the reward calls in
-  `FUN_00414d23` take their `(abilityId, value)` via caller-pushed stack args
-  that Ghidra rendered as `FUN_0046c507()` with no visible arguments. The
-  identities are inferred from `load_player`'s validation set (Smash 0x20,
-  PerStealth 0xba, Meditate 0xbb) but the precise id/value each threshold pushes
-  is not directly readable here; a disassembly pass over 0x414d23 (the push
-  sequences before each `call 0x46c507`) would confirm them.
+- ~~**Exact granted ability per quest.**~~ **CLOSED (2026-07-19).** The push
+  sequences before each `call 0x46c507` in 0x414d23 were recovered by
+  disassembly (`wg_nt_ghidra/exports/FUN_00414d23.asm`, generated with
+  `DumpAsm.java`); the full `(abilityId, value)` table is now in §4.3. The
+  earlier Smash/PerStealth/Meditate inference was wrong — the grants are
+  permanent stat abilities (AC/MaxDamage/Accuracy/Dodge/Crits/S.C./MaxMana/
+  Stealth/BsMinDmg/BsMaxDmg), and §4.4's class-skill validation is a separate
+  mechanism.
 - **MageBane (0x32), Phoenix (0x85), DaoLord (0x86)** counters exist and are set
   by scripts but are not consumed by the `FUN_00414d23` threshold switch. Their
   completion effect (if any beyond data-side `addexp`/`giveitem`/`giveability`)

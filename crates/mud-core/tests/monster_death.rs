@@ -26,6 +26,9 @@ fn dying_rat() -> Monster {
         weapon: None,
         loot: vec![],
         attacks: [AttackForm::default(); 5],
+        // Lair mode: attackable without the mode-0/4 evil charge
+        // (created characters ship Warn on Evil ON — crime.md §2.5).
+        behaviour: 3,
         ..Default::default()
     }
 }
@@ -88,6 +91,7 @@ fn create(core: &mut Core, name: &str) -> SessionId {
     let s = core.attach_account(AccountProfile {
         name: name.into(),
         gender: Gender::Male,
+        saved_evil: 0,
     });
     core.input(s, "2");
     core.input(s, "1");

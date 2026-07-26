@@ -142,19 +142,30 @@ pub fn calculate_attack(
     damage *= multiplier;
 
     // --- parry/riposte (cancels even a crit) ---
+    // EXACT (decompile 25344-25360). Two details that are easy to get
+    // wrong and both reachable:
+    //  - the floor at 25344 is on the ACCURACY (`if (*param_1 < 9)
+    //    chance = 0`), not on the `accuracy >> 3` denominator, so
+    //    accuracy 8 cannot be parried at all — it does NOT fall through
+    //    to a denominator of 1 and a near-certain parry;
+    //  - the draw at 25357 is guarded only by `0 < parry`, so a defender
+    //    with any parry rating costs a draw even when the chance is 0.
+    //    Skipping it would drift the shared RNG stream (`monster_vs_
+    //    monster`'s kind-0 forms carry accuracy 5).
     if defender.parry > 0 {
-        let denom = attacker.accuracy / 8;
-        if denom > 0 {
-            let mut p = (defender.parry * 10 / denom).clamp(0, 95);
-            if attack_type == AttackType::Backstab {
-                p /= 5;
-            }
-            if p > 0 && roll(0, 100) < p {
-                return AttackResult {
-                    outcome: Outcome::Parried,
-                    damage: 0,
-                };
-            }
+        let mut chance = if attacker.accuracy < 9 {
+            0
+        } else {
+            (defender.parry * 10 / (attacker.accuracy / 8)).min(95)
+        };
+        if attack_type == AttackType::Backstab {
+            chance /= 5;
+        }
+        if roll(0, 100) < chance {
+            return AttackResult {
+                outcome: Outcome::Parried,
+                damage: 0,
+            };
         }
     }
 
