@@ -382,7 +382,7 @@ MAXHP = int(maxhp.group(2)) if maxhp else 35
 # SWEEPING is what actually kills this character: every hostile room lands a
 # free attack on entry, and a dark cultist hits for 2..10.  Two runs died in
 # the sweep, not the fight, so rooms are only entered near full health.
-FLOOR = max(14, int(MAXHP * 0.25))
+FLOOR = max(16, int(MAXHP * 0.45))
 SWEEP_FLOOR = int(MAXHP * 0.70)
 note(f"max HP {MAXHP}; fight floor {FLOOR}, sweep floor {SWEEP_FLOOR}")
 
@@ -461,11 +461,11 @@ while swings() < SWING_TARGET and time.time() < deadline:
         target_room = None
         engaged = False
         continue
-    intruder = next((a for a in AVOID if a in new), None)
-    if intruder:
-        note(f"{intruder} arrived - disengaging")
-        engaged = False
-        continue
+    # Deliberately DO NOT disengage when something else wanders in. Doing so
+    # cost almost all the throughput of an earlier run: dark cultists wander
+    # the tunnels constantly, and every arrival threw the engagement away for
+    # a heal-and-resweep cycle that cost more health than staying did. The HP
+    # floor is the real safety net; an intruder just brings it closer.
 
     quiet = quiet + 1 if not new.strip() else 0
     if quiet >= 8:

@@ -709,6 +709,41 @@ of exactly 100, i.e. ~1% of connects get through, where a 95 cap lets ~5%
 through; we saw 3/31 = 9.7%, comfortable under 95 and unlikely (~0.3%) under
 100. Evidence, not proof.
 
+**Result — the linear region, and the accuracy dependence.** Same character,
+same target, talisman off: level 2, encumbrance 24% → skill 14 → **accuracy
+43**, so `floor(43/8) = 5` and `20*10/5` predicts **40%**
+(`oracle_dodge_parry_acc-high.raw`):
+
+    swings 60:  dodge 26   glance 32   miss 2   hit 0
+    parry = 26/58 connecting = 0.448,  95% CI [0.317, 0.585]
+
+The interval contains the predicted 0.40. It does NOT separate 0.40 from its
+immediate neighbours — 0.50 (d=4) and 0.333 (d=6) are both inside — which
+needs roughly 92 and 207 connecting swings respectively, against the 58
+collected before the run aborted. What it does exclude decisively is 0.66
+(d=3) and the 0.95 cap.
+
+**That exclusion is the point.** Taken together the two blocks are a
+two-point test of the formula's ACCURACY DEPENDENCE, which no single block
+can give:
+
+| block   | accuracy | floor(acc/8) | predicted | measured | 95% CI         |
+|---------|----------|--------------|-----------|----------|----------------|
+| acc-mid | 23       | 2            | 0.95      | 0.903    | [0.743, 0.980] |
+| acc-high| 43       | 5            | 0.40      | 0.448    | [0.317, 0.585] |
+
+The intervals are disjoint. Nothing changed between them but the character's
+accuracy — same template, same Dodge 20, same weapon, same rooms — and the
+parry rate moved from ~90% to ~45%, in the predicted direction and close to
+the predicted magnitude. A formula that did not divide by accuracy cannot
+produce that.
+
+So: the shape is confirmed and the cap is confirmed; the exact denominator in
+the linear region is consistent-but-not-pinned. Note that 0.448 sits nearer
+d=4 (accuracy 32-39) than the d=5 we compute, which — if it survives a larger
+sample — would indict our ACCURACY derivation rather than the parry formula,
+and would sit alongside the two anomalies below as the same class of problem.
+
 **Open, and NOT settled by the above: the to-hit model.** The same transcripts
 give 31/37 = 0.838 connecting against a predicted 0.67, with the prediction
 just outside the 95% interval [0.680, 0.938]. Borderline at n=37, but it points

@@ -12165,22 +12165,30 @@ impl Core {
     /// player-attacks-monster path and for both sides of
     /// `attack_monster_monster`, so the Dodge word is not m-v-m-specific.
     ///
-    /// MEASURED at the cap (charm.md §8.3, 2026-07-26): the parry word is a
-    /// LIVE gameplay change on the player-attacks-monster path — 167 of the
-    /// 1101 shipped templates carry Dodge(0x22) at values 10..200, and the
-    /// chance `parry*10 / (accuracy/8)` (capped 95, `calculate_attack`
-    /// 25336-25360) turns roughly 28-80% of connecting player swings into
-    /// zero-damage parries. An expedition ground giant bats (Dodge 20) at
-    /// accuracy 23, i.e. denominator 2 and a predicted 95% cap, and got
-    /// 28/31 connecting swings parried, 95% CI [0.743, 0.980] — consistent
-    /// with 0.95 and excluding every lower step. The transcripts also favour
-    /// the cap being 95 rather than 100.
+    /// MEASURED (charm.md §8.3, 2026-07-26): the parry word is a LIVE
+    /// gameplay change on the player-attacks-monster path — 167 of the 1101
+    /// shipped templates carry Dodge(0x22) at values 10..200, and the chance
+    /// `parry*10 / (accuracy/8)` (capped 95, `calculate_attack` 25336-25360)
+    /// turns roughly 28-80% of connecting player swings into zero-damage
+    /// parries. An expedition ground giant bats (Dodge 20) at two accuracies,
+    /// changing nothing else:
     ///
-    /// ORACLE-VERIFY, still: the LINEAR region. Every measured point so far
-    /// saturates at the cap, so nothing yet distinguishes this formula from
-    /// any other rule that saturates there — grind a configuration whose
-    /// `floor(accuracy/8)` puts Dodge 20 below 95 (accuracy 40-47 predicts
-    /// 40%) and compare. Pinned for shape by
+    ///   accuracy 23 (denominator 2, predicted 0.95): 28/31 parried,
+    ///     CI [0.743, 0.980]
+    ///   accuracy 43 (denominator 5, predicted 0.40): 26/58 parried,
+    ///     CI [0.317, 0.585]
+    ///
+    /// Both contain their prediction and the two intervals are DISJOINT, so
+    /// the formula's division by accuracy is real and roughly the right size
+    /// — a rule that ignored accuracy could not move the same target from
+    /// ~90% to ~45%. The transcripts also favour the cap being 95, not 100.
+    ///
+    /// ORACLE-VERIFY, narrowed: the linear point is consistent but not
+    /// PINNED — 0.50 (d=4) and 0.333 (d=6) both sit inside its interval, and
+    /// separating them needs ~92 and ~207 connecting swings against the 58
+    /// collected. The measured 0.448 leans toward d=4, i.e. toward our
+    /// ACCURACY derivation reading a few points high, rather than toward the
+    /// parry formula being wrong. Pinned for shape by
     /// `game_combat.rs::monster_dodge_ability_parries_player_swings`.
     ///
     /// UNPORTED, all inert on shipped data but NOT all dead code:
