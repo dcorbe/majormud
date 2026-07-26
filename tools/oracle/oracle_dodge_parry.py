@@ -185,6 +185,17 @@ def hp():
     return int(m[-1]) if m else None
 
 
+def flat(text):
+    """Collapse whitespace so item names survive the inventory's line wrap.
+
+    `i` wraps mid-name -- "smoky\nblack talisman (Neck)" -- so a plain
+    `"smoky black talisman (" in inv` is False and every membership test
+    silently fails. That is how a stale accuracy item stayed worn through a
+    config change AND slipped past the guard meant to catch exactly that.
+    """
+    return " ".join(text.split())
+
+
 # --- swing classification -------------------------------------------------
 # Permissive by design: the point is to discover how the board words a parry,
 # so anything naming the target that is not one of the three known shapes is
@@ -273,7 +284,16 @@ if (hp() or 0) < 0:
     note(f"=== recovered at HP {hp()} ===")
     sess.dump(2.0)
 
-inv = cmd("i", tag="inventory (pre-staging)")
+inv = flat(cmd("i", tag="inventory (pre-staging)"))
+
+# Gear PERSISTS between runs, so a previous config's accuracy item is still
+# worn unless it is taken off. That silently turned an "acc-high" run into a
+# duplicate of "acc-mid" once -- the talisman was still round the character's
+# neck and the accuracy was 23, not the 43 the config assumed.
+for item in GEAR_ACCURACY:
+    if item not in EXTRA and f"{item} (" in inv:
+        cmd(f"remove {item}", tag=f"remove {item}", drain=1.4)
+
 for item in KIT + EXTRA + [WEAPON]:
     if item not in inv:
         cmd(f"sysop summon {item}", tag=f"summon {item}", drain=1.4)
@@ -292,7 +312,15 @@ cmd(f"/xcash {COPPER} copper", tag="purse", drain=1.0)
 # The analyzer's inputs: `st` gives Str/Agl/level, `i` gives the encumbrance
 # percent that sets `skill`, and both pin the configuration in the transcript.
 stats = cmd("st", tag="STATS (accuracy inputs)")
-inv = cmd("i", tag="INVENTORY (encumbrance)")
+inv = flat(cmd("i", tag="INVENTORY (encumbrance)"))
+
+# Trust the board, not the config: re-derive `ratings` from what is actually
+# WORN (an item renders as "<name> (Slot)") and refuse to collect if it
+# disagrees with the configuration we think we are running.
+worn_ratings = sum(v for item, v in GEAR_ACCURACY.items() if f"{item} (" in inv)
+if worn_ratings != RATINGS:
+    sys.exit(f"{CONFIG} expects ratings {RATINGS} but the character is wearing "
+             f"gear worth {worn_ratings}; staging failed")
 m = re.search(r"Encumbrance:\s*(\d+)/(\d+)[^\[]*\[(\d+)%\]", inv)
 if not m:
     sys.exit("could not read encumbrance; refusing to run blind")

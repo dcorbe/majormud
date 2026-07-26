@@ -1,0 +1,168 @@
+    6.839 === config acc-mid: target 'giant bat' ===
+    6.839 === character is down; dying deliberately to revive ===
+  143.834 === recovered at HP 44 ===
+  149.452 --- inventory (pre-staging) ---
+  149.452     | i
+  149.452     | You are carrying Nothing!
+  149.452     | You have no keys.
+  149.452     | Wealth: 0 copper farthings
+  149.452     | Encumbrance: 0/2880 - None [0%]
+  149.452     | [HP=44]:
+  152.713 --- summon gilded robes ---
+  152.714     | sysop summon gilded robes
+  152.714     | gilded robes conjured.
+  152.714     | [HP=44]:
+  155.927 --- summon chain coif ---
+  155.927     | sysop summon chain coif
+  155.927     | chain coif conjured.
+  155.927     | [HP=44]:
+  158.947 --- summon displacer fur cloak ---
+  158.947     | sysop summon displacer fur cloak
+  158.947     | displacer fur cloak conjured.
+  158.947     | [HP=44]:
+  162.329 --- summon beaded belt ---
+  162.329     | sysop summon beaded belt
+  162.329     | beaded belt conjured.
+  162.329     | [HP=44]:
+  165.410 --- summon violet orchid ---
+  165.410     | sysop summon violet orchid
+  165.410     | violet orchid conjured.
+  165.410     | [HP=44]:
+  168.706 --- summon smoky black talisman ---
+  168.706     | sysop summon smoky black talisman
+  168.706     | smoky black talisman conjured.
+  168.706     | [HP=44]:
+  171.762 --- summon wooden hammer ---
+  171.762     | sysop summon wooden hammer
+  171.762     | wooden hammer conjured.
+  171.762     | [HP=44]:
+  174.973 --- wear gilded robes ---
+  174.973     | wear gilded robes
+  174.973     | You are now wearing gilded robes.
+  174.973     | [HP=44]:
+  178.185 --- wear chain coif ---
+  178.186     | wear chain coif
+  178.186     | You are now wearing chain coif.
+  178.186     | [HP=44]:
+  181.399 --- wear displacer fur cloak ---
+  181.399     | wear displacer fur cloak
+  181.399     | You are now wearing displacer fur cloak.
+  181.399     | [HP=44]:
+  184.633 --- wear beaded belt ---
+  184.634     | wear beaded belt
+  184.634     | You are now wearing beaded belt.
+  184.634     | [HP=54]:
+  187.843 --- wear violet orchid ---
+  187.843     | wear violet orchid
+  187.843     | You are now wearing violet orchid.
+  187.843     | [HP=64]:
+  191.062 --- wear smoky black talisman ---
+  191.062     | wear smoky black talisman
+  191.062     | You are now wearing smoky black talisman.
+  191.062     | [HP=64]:
+  194.277 --- wield wooden hammer ---
+  194.277     | wield wooden hammer
+  194.277     | You are now holding wooden hammer.
+  194.277     | This weapon feels heavy in your hands.
+  194.277     | [HP=64]:
+  197.091 --- zero runic ---
+  197.092     | /xcash 0 runic
+  197.092     | [xcash] runic: 0 -> 0; type 'i' to confirm.
+  199.899 --- zero platinum ---
+  199.899     | /xcash 0 platinum
+  199.899     | [xcash] platinum: 0 -> 0; type 'i' to confirm.
+  202.762 --- zero gold ---
+  202.763     | /xcash 0 gold
+  202.763     | [xcash] gold: 0 -> 0; type 'i' to confirm.
+  205.593 --- zero silver ---
+  205.594     | /xcash 0 silver
+  205.594     | [xcash] silver: 0 -> 0; type 'i' to confirm.
+  208.403 --- purse ---
+  208.408     | /xcash 600 copper
+  208.408     | [xcash] copper: 0 -> 600; type 'i' to confirm.
+  212.180 --- STATS (accuracy inputs) ---
+  212.180     | st
+  212.180     | Name: Oracle Delver                    Lives/CP:      8/110
+  212.180     | Race: Dwarf       Exp: 2200            Perception:     35
+  212.180     | Class: Warrior    Level: 2             Stealth:         0
+  212.180     | Hits:    64/64    Armour Class:   0/0  Thievery:        0
+  212.180     |                                        Traps:           0
+  212.180     |                                        Picklocks:       0
+  212.180     | Strength:  50     Agility: 30          Tracking:        0
+  212.180     | Intellect: 30     Health:  50          Martial Arts:   15
+  212.180     | Willpower: 50     Charm:   30          MagicRes:       55
+  212.180     | [HP=64]:
+  215.805 --- INVENTORY (encumbrance) ---
+  215.806     | i
+  215.806     | You are carrying 600 copper farthings, gilded robes (Torso), chain coif (Head),
+  215.806     | displacer fur cloak (Back), beaded belt (Waist), violet orchid (Worn), smoky
+  215.806     | black talisman (Neck), wooden hammer (Weapon Hand)
+  215.806     | You have no keys.
+  215.806     | Wealth: 600 copper farthings
+  215.806     | Encumbrance: 711/2880 - Light [24%]
+  215.806     | [HP=64]:
+  215.806 ENCUMBRANCE 711/2880 = 24%
+  215.806 level 2, ratings -20, skill -7, accuracy 23, floor(acc/8) = 2, predicted parry 0.95
+  215.806 max HP 64; fight floor 16, sweep floor 44
+  228.718 room 1452: dark cultist present - leaving
+  241.557 room 1454: dark cultist present - leaving
+  241.557 === heal cycle ===
+  249.202 --- buy healing ---
+  249.202     | buy healing
+  249.202     | You hand over 60 copper farthings and all your wounds are healed.
+  249.202     | [HP=64]:
+  249.203 HP after healing = 64
+  255.595 room 1455: dark cultist present - leaving
+  262.147 room 1456: dark cultist present - leaving
+  294.447 room 1461: dark cultist present - leaving
+  294.447 === heal cycle ===
+  302.071 --- buy healing ---
+  302.071     | buy healing
+  302.071     | You hand over 46 copper farthings and all your wounds are healed.
+  302.071     | [HP=64]:
+  302.071 HP after healing = 64
+  314.944 room 1463: grey spider present - leaving
+  327.814 === engaging giant bat in room 1465 ===
+  332.272 PROGRESS 0
+  333.436   dodge | You swing at giant bat who dodges your attack!
+  339.360   dodge | You swing at giant bat who dodges your attack!
+  344.103   dodge | You swing at giant bat who dodges your attack!
+  348.800   dodge | You swing at giant bat who dodges your attack!
+  353.494   dodge | You swing at giant bat who dodges your attack!
+  359.467   dodge | You swing at giant bat who dodges your attack!
+  364.179   glance| Your swing at giant bat hits, but glances off its armour.
+  368.859   dodge | You swing at giant bat who dodges your attack!
+  374.788   dodge | You swing at giant bat who dodges your attack!
+  374.788 === heal cycle ===
+  382.404 --- buy healing ---
+  382.404     | *Combat Off*
+  382.404     | [HP=11]:buy healing
+  382.404     | You hand over 106 copper farthings and all your wounds are healed.
+  382.404     | [HP=64]:
+  382.405 HP after healing = 64
+  382.405 returning to the bat in room 1465
+  393.084 PROGRESS 9/300 {'hit': 0, 'glance': 1, 'dodge': 8, 'miss': 0, 'novel': 0} connect=1.000
+  395.656   miss  | You swing at giant bat!
+  400.394   dodge | You swing at giant bat who dodges your attack!
+  405.096   dodge | You swing at giant bat who dodges your attack!
+  411.020   dodge | You swing at giant bat who dodges your attack!
+  415.756   dodge | You swing at giant bat who dodges your attack!
+  420.457   dodge | You swing at giant bat who dodges your attack!
+  425.148   miss  | You swing at giant bat!
+  431.100   dodge | You swing at giant bat who dodges your attack!
+  435.811   dodge | You swing at giant bat who dodges your attack!
+  440.538 === heal cycle ===
+  448.050 --- buy healing ---
+  448.050     | buy healing
+  448.050     | You hand over 106 copper farthings and all your wounds are healed.
+  448.050     | [HP=64]:*Combat Off*
+  448.050     | [HP=64]:
+  448.051 HP after healing = 64
+  448.051 returning to the bat in room 1465
+  458.774 PROGRESS 18/300 {'hit': 0, 'glance': 1, 'dodge': 15, 'miss': 2, 'novel': 0} connect=0.889
+  461.003   dodge | You swing at giant bat who dodges your attack!
+  466.942   glance| Your swing at giant bat hits, but glances off its armour.
+  471.669   dodge | You swing at giant bat who dodges your attack!
+  477.608   dodge | You swing at giant bat who dodges your attack!
+  482.329   dodge | You swing at giant bat who dodges your attack!
+  487.060   miss  | You swing at giant bat!

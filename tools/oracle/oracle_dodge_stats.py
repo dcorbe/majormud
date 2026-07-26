@@ -7,24 +7,27 @@ model.  Prints to stdout only -- it never touches the board or the repo.
 
 Channel model (see oracle_dodge_parry.py for why the sandbag hammer makes this
 clean).  With a weapon whose damage floors to 0 against the target's DR, every
-connecting unparried swing renders as a glance, so per swing:
+connecting unparried swing renders as a glance, and -- MEASURED 2026-07-26 --
+the board words a parry apart from a plain miss, so each swing falls in
+exactly one bucket:
 
-    P(miss-shaped) = (1 - h) + h * p        <- to-hit failures AND parries, IF
-                                               the board renders a parry as a
-                                               plain miss
-    P(glance)      = h * (1 - p)
-    P(hit)         = ~0                     <- only crits
+    miss   = the to-hit roll failed              -> (1 - h)
+    dodge  = connected but parried  (result 3)   -> h * p
+    glance = connected, unparried, 0 damage      -> h * (1 - p)
+    hit    = ~0, only crits get through the DR
 
-`h` comes from the port's to-hit model, `threshold = clamp(100 - defense^2 /
-(accuracy^2/14/10), 10, 99)`, with defense = the target's AC.  The parry
-estimate is then
+That makes the parry rate a DIRECT measurement over connecting swings,
 
-    p_hat = 1 - (glance + hit) / h
+    p_hat = dodge / (dodge + glance + hit)
 
-reported with an exact (Clopper-Pearson) 95% interval propagated from the
-connect count.  The verdict lists every candidate step `min(95, dodge*10/d)`
-for integer denominators d, so a wrong-but-adjacent accuracy is visible rather
-than hidden.
+with an exact (Clopper-Pearson) 95% interval and no dependence on the to-hit
+model at all.  The to-hit rate is reported alongside as an independent check
+against `threshold = clamp(100 - defense^2 / (accuracy^2/14/10), 10, 99)`,
+where defense is the target's AC -- the two were entangled before the dodge
+line was found, and are not any more.
+
+The verdict lists every candidate step `min(95, dodge*10/d)` for integer
+denominators d, so a wrong-but-adjacent accuracy is visible rather than hidden.
 
 Usage: python3 oracle_dodge_stats.py <raw> [--accuracy N] [--dodge N] [--ac N]
 """
@@ -116,6 +119,8 @@ RE_MISS = re.compile(r"^You (\w+(?: at)?) ([^!]*)!$")
 SKIP = ("Also here", "just arrived", "just left", "wanders", "into the room",
         "is dead", "You killed", "experience", "You notice", "sysop summon",
         "You are now", "You say")
+# The echoed attack command ("a bat") is not a swing.
+ECHO = re.compile(r"^a(?:tt?a?c?k?)? \w+$", re.I)
 
 counts = {"hit": 0, "glance": 0, "dodge": 0, "miss": 0, "novel": 0}
 novel_lines = []
@@ -130,7 +135,7 @@ for physical in text.splitlines():
         line = line.strip()
         if not line or not NOUN_RE.search(line):
             continue
-        if any(s in line for s in SKIP):
+        if any(s in line for s in SKIP) or ECHO.match(line):
             continue
         if line.startswith(("The ", "A ", "An ")):
             continue                   # the monster swinging at the player
