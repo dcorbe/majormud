@@ -20,6 +20,9 @@ fn quarterstaff() -> Item {
         gettable: 1,
         speed: 1200,
         accuracy: 4,
+        // A wielded weapon's `+0x342` counts toward the evasion word too —
+        // see `wielded_weapon_evasion_counts_toward_the_fighter`.
+        evasion: 30,
         ..Item::default()
     }
 }
@@ -256,6 +259,32 @@ fn worn_item_abilities_feed_derived_stats() {
     let defender = core.defender_debug(s);
     assert_eq!(defender.evasion_a, 2, "Σ worn +0x342 ÷ 10");
     assert_eq!(defender.armor, 7, "Σ worn +0x39c, raw");
+}
+
+/// The evasion accumulator is seeded by the WIELDED weapon and only then
+/// summed over the worn slots. `move_player_to_fighter`: `local_c = 0`
+/// (24466), `local_c = weapon+0x342` (24683, a plain assignment), then
+/// `local_c += item+0x342` per worn slot (24797), and `[1] = local_c/10`
+/// (24866). The soak word `[3]` gets no such seed — the weapon never
+/// touches it, only the worn loop at 24789 does.
+///
+/// Pinned because the worn loop reads as the only contributor if you stop
+/// at 24797, and a reviewer working from that alone would delete the
+/// weapon term as a divergence. It is not one.
+#[test]
+fn wielded_weapon_evasion_counts_toward_the_fighter() {
+    let mut core = Core::new(world(), config());
+    let s = create(&mut core, "Dain");
+    let bare = core.defender_debug(s).evasion_a;
+    assert_eq!(bare, 0, "naked: no weapon, no worn armour");
+
+    core.give_item(s, ItemId(100));
+    core.input(s, "arm quarterstaff");
+    core.drain_events();
+    // Staff evasion 30 -> (30 + 0)/10.
+    assert_eq!(core.defender_debug(s).evasion_a, 3);
+    // ...and contributes nothing to the soak.
+    assert_eq!(core.defender_debug(s).armor, 0);
 }
 
 #[test]
