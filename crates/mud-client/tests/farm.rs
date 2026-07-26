@@ -5,9 +5,12 @@
 
 use std::time::{Duration, Instant};
 
-use mud_client::events::Event;
 use mud_client::bot::BotConfig;
-use mud_client::farm::{ACK_TIMEOUT, FarmConfig, FarmPlan, Gate, HealWatch, parse_health, parse_room_id};
+use mud_client::events::Event;
+use mud_client::farm::{
+    ACK_TIMEOUT, FarmConfig, FarmPlan, Gate, HealWatch, is_player_death, parse_health,
+    parse_room_id,
+};
 use mud_client::graph::{ExitEdge, GraphRoom, RoomGraph};
 use mud_core::content::{Direction, RoomId};
 
@@ -319,7 +322,10 @@ fn a_heal_that_never_moves_hp_gives_up_and_rearms() {
 
     assert!(!w.on_event(&prompt(12)), "first prompt sets the baseline");
     assert!(!w.on_event(&prompt(12)));
-    assert!(w.on_event(&prompt(12)), "three flat prompts means it never landed");
+    assert!(
+        w.on_event(&prompt(12)),
+        "three flat prompts means it never landed"
+    );
 }
 
 /// Once it has given up it must go quiet, or every later prompt rearms
@@ -457,4 +463,35 @@ fn finds_the_health_line_inside_a_transcript() {
         "[HP=27]:",
     );
     assert_eq!(parse_health(transcript), Some((27, 35)));
+}
+
+// ---------------------------------------------------------------------
+// is_player_death: knowing when to stop.
+//
+// The board prints "<name> is dead." when the character dies, and
+// "The <template> is dead." for a monster that has no death message of
+// its own. Confusing the two either strands a corpse farming an empty
+// room or ends a healthy run on someone else's kill.
+// ---------------------------------------------------------------------
+
+#[test]
+fn recognises_the_players_own_death() {
+    assert!(is_player_death("Nav is dead.", "Nav"));
+}
+
+#[test]
+fn a_monster_death_is_not_the_players() {
+    // The fallback wording for a monster with no death message: the
+    // leading "The " is the whole difference.
+    assert!(!is_player_death("The giant rat is dead.", "Nav"));
+    assert!(!is_player_death(
+        "The giant rat falls to the ground with a tortured squeak.",
+        "Nav"
+    ));
+}
+
+/// Another player dying is not our problem.
+#[test]
+fn someone_elses_death_is_not_ours() {
+    assert!(!is_player_death("Vexil is dead.", "Nav"));
 }

@@ -59,6 +59,12 @@ pub struct FarmConfig {
     /// How long to hold off sending after the board says it dropped our
     /// input ("Why don't you slow down for a few seconds?").
     pub slowdown_backoff_ms: u64,
+    /// How long a stop may go quiet before the runner pokes it with a
+    /// `look`. The live board reprints the prompt on every regen tick, so
+    /// the poke rarely fires there; the in-process server answers input
+    /// and then goes silent, where without it a dwell rule that counts
+    /// prompts would wait forever. The poke doubles as a respawn check.
+    pub idle_poke_ms: u64,
     /// Prompts to wait for a heal to show progress before concluding it
     /// never landed and re-arming the policy.
     pub heal_retry_prompts: u32,
@@ -80,6 +86,7 @@ impl Default for FarmConfig {
             dwell_idle_prompts: 3,
             depart_at_percent: 80,
             slowdown_backoff_ms: 5000,
+            idle_poke_ms: 2000,
             heal_retry_prompts: 3,
             heal_refused: Vec::new(),
         }
@@ -354,4 +361,414 @@ pub async fn discover_max_hp(session: &crate::session::Session) -> Option<i32> {
         .await
         .ok()?;
     parse_health(&session.since(mark)).map(|(_, max)| max)
+}
+
+/// Why the run stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FarmEnd {
+    /// The configured number of laps was walked.
+    LoopsDone,
+    /// `[farm].max_seconds` elapsed.
+    TimeUp,
+    /// The character died. Nothing else matters after this.
+    Died,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FarmStats {
+    pub kills: u32,
+    pub loops: u32,
+    pub flees: u32,
+    pub slowdowns: u32,
+}
+
+#[derive(Debug)]
+pub enum FarmError {
+    /// The character is not standing where `[farm].start` says. Every
+    /// room id in the circuit is relative to that, so the runner refuses
+    /// rather than walking a live character blind.
+    NotAtStart {
+        expected: String,
+        saw: Option<String>,
+    },
+    /// A flee (or anything else) left the character somewhere that is
+    /// not the stop or one of its neighbors, so there is no honest way
+    /// to work out where "back" is.
+    Lost {
+        saw: String,
+    },
+    Nav(crate::nav::NavError),
+    /// The session ended under us.
+    Disconnected,
+}
+
+impl std::fmt::Display for FarmError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FarmError::NotAtStart { expected, saw } => write!(
+                f,
+                "not at the configured start: expected {expected:?}, saw {saw:?}"
+            ),
+            FarmError::Lost { saw } => {
+                write!(f, "lost: {saw:?} is not the stop or any neighbor of it")
+            }
+            FarmError::Nav(e) => write!(f, "{e}"),
+            FarmError::Disconnected => write!(f, "disconnected"),
+        }
+    }
+}
+
+impl std::error::Error for FarmError {}
+
+/// The player's own death line. The board prints `<name> is dead.` for a
+/// player and `The <template> is dead.` (or the template's own wording)
+/// for a monster, so matching the capitalised username cannot collide
+/// with a kill.
+pub fn is_player_death(line: &str, username: &str) -> bool {
+    line.trim() == format!("{username} is dead.")
+}
+
+/// Run the patrol.
+///
+/// One sender at a time, by construction. The navigator and the bot both
+/// send movement and both read `RoomSeen`, so letting them run at once
+/// would have them fighting over the same events: instead the runner is
+/// a sequence of phases, and each phase owns the connection outright.
+///
+/// - **Travel** is [`crate::nav::Navigator::goto`] alone. The bot sees
+///   nothing, because feeding it events while suppressing its commands
+///   would leave it believing it had swung. Aggro in transit is survived
+///   rather than fought; `[farm].depart_at_percent` is what keeps a
+///   wounded character from setting off in the first place.
+/// - **Farm** is a fresh [`Bot`] per stop — latches start clean, so no
+///   reset API is needed — driven by the pump below.
+/// - **Recover** is what happens when a flee moves the character with no
+///   navigator involved: work out where it landed, walk back, and after
+///   a few round trips give up on the stop rather than flee-loop.
+pub async fn run_farm(
+    session: &crate::session::Session,
+    graph: std::sync::Arc<RoomGraph>,
+    plan: &FarmPlan,
+    bot_config: &crate::bot::BotConfig,
+    cfg: &FarmConfig,
+) -> Result<(FarmEnd, FarmStats), FarmError> {
+    let started = Instant::now();
+    let mut stats = FarmStats::default();
+    let nav = crate::nav::Navigator::new(graph.clone());
+
+    // Every percent policy divides by this, and a wrong value mis-scales
+    // heal and flee silently. 0 means the profile did not say, so ask.
+    let mut bot_config = bot_config.clone();
+    if bot_config.max_hp == 0
+        && let Some(max) = discover_max_hp(session).await
+    {
+        bot_config.max_hp = max;
+    }
+
+    verify_start(session, &graph, plan.start).await?;
+
+    let mut current = plan.start;
+    loop {
+        for &stop in &plan.circuit {
+            if let Some(end) = time_up(started, cfg) {
+                return Ok((end, stats));
+            }
+            if current != stop {
+                travel(
+                    session,
+                    &nav,
+                    &mut current,
+                    stop,
+                    cfg,
+                    &bot_config,
+                    &mut stats,
+                )
+                .await?;
+            }
+            match farm_stop(
+                session,
+                &nav,
+                &graph,
+                stop,
+                &bot_config,
+                cfg,
+                started,
+                &mut stats,
+            )
+            .await?
+            {
+                StopEnd::Dwelt => {}
+                StopEnd::Died => return Ok((FarmEnd::Died, stats)),
+                StopEnd::TimeUp => return Ok((FarmEnd::TimeUp, stats)),
+            }
+        }
+        stats.loops += 1;
+        if cfg.loops != 0 && stats.loops >= cfg.loops {
+            return Ok((FarmEnd::LoopsDone, stats));
+        }
+    }
+}
+
+fn time_up(started: Instant, cfg: &FarmConfig) -> Option<FarmEnd> {
+    (cfg.max_seconds != 0 && started.elapsed().as_secs() >= cfg.max_seconds)
+        .then_some(FarmEnd::TimeUp)
+}
+
+/// Confirm by room name that the character is where the profile claims.
+async fn verify_start(
+    session: &crate::session::Session,
+    graph: &RoomGraph,
+    start: RoomId,
+) -> Result<(), FarmError> {
+    let expected = graph
+        .room(start)
+        .map(|r| r.name.clone())
+        .unwrap_or_default();
+    let mut events = session.events();
+    while events.try_recv().is_ok() {}
+    session.send("look");
+    let saw = next_room(session, &mut events, Duration::from_secs(15)).await;
+    match saw {
+        Some(name) if name == expected => Ok(()),
+        saw => Err(FarmError::NotAtStart { expected, saw }),
+    }
+}
+
+/// The next room block, or `None` if the board did not print one in time.
+async fn next_room(
+    _session: &crate::session::Session,
+    events: &mut tokio::sync::broadcast::Receiver<Event>,
+    within: Duration,
+) -> Option<String> {
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        match tokio::time::timeout_at(deadline, events.recv()).await {
+            Ok(Ok(Event::RoomSeen(room))) => return Some(room.name),
+            Ok(Ok(_)) => continue,
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+            Ok(Err(_)) | Err(_) => return None,
+        }
+    }
+}
+
+/// Walk one leg. Nothing else sends while this runs.
+#[allow(clippy::too_many_arguments)]
+async fn travel(
+    session: &crate::session::Session,
+    nav: &crate::nav::Navigator,
+    current: &mut RoomId,
+    stop: RoomId,
+    cfg: &FarmConfig,
+    bot_config: &crate::bot::BotConfig,
+    _stats: &mut FarmStats,
+) -> Result<(), FarmError> {
+    wait_for_departure_health(session, cfg, bot_config).await;
+    nav.goto(session, *current, stop)
+        .await
+        .map_err(FarmError::Nav)?;
+    *current = stop;
+    Ok(())
+}
+
+/// Hold at the stop until HP is fit to travel. Travel is unprotected —
+/// the bot is not driving while the navigator walks — so setting off
+/// wounded is how a farm run ends in a corpse.
+async fn wait_for_departure_health(
+    session: &crate::session::Session,
+    cfg: &FarmConfig,
+    bot_config: &crate::bot::BotConfig,
+) {
+    if cfg.depart_at_percent == 0 || bot_config.max_hp <= 0 {
+        return;
+    }
+    let target = bot_config.max_hp * cfg.depart_at_percent as i32 / 100;
+    let mut state = session.state();
+    // Bounded: a character that cannot reach the threshold (poisoned, no
+    // heal configured) must not wedge the patrol forever.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    while state.borrow().hp < target {
+        if tokio::time::timeout_at(deadline, state.changed())
+            .await
+            .is_err()
+        {
+            return;
+        }
+    }
+}
+
+enum StopEnd {
+    Dwelt,
+    Died,
+    TimeUp,
+}
+
+/// Farm one stop until it goes quiet.
+///
+/// A fresh [`crate::bot::Bot`] per stop: its latches (engaged, fled, the
+/// heal debounce) all start clean, which is also how a lagged broadcast
+/// is recovered — throw the bot away and re-`look` rather than carry on
+/// with state that silently missed events.
+#[allow(clippy::too_many_arguments)]
+async fn farm_stop(
+    session: &crate::session::Session,
+    nav: &crate::nav::Navigator,
+    graph: &RoomGraph,
+    stop: RoomId,
+    bot_config: &crate::bot::BotConfig,
+    cfg: &FarmConfig,
+    started: Instant,
+    stats: &mut FarmStats,
+) -> Result<StopEnd, FarmError> {
+    let stop_name = graph.room(stop).map(|r| r.name.clone()).unwrap_or_default();
+    let username = session.profile().username.clone();
+    let backoff = Duration::from_millis(cfg.slowdown_backoff_ms);
+    let poke_after = Duration::from_millis(cfg.idle_poke_ms);
+
+    // Flee round trips tolerated before the stop is written off. Without
+    // this a character that flees on every prompt never leaves the room
+    // pair it is bouncing between.
+    let mut recoveries_left = 3u32;
+
+    let mut events = session.events();
+    while events.try_recv().is_ok() {}
+
+    let mut bot = crate::bot::Bot::new(bot_config.clone());
+    let mut gate = Gate::new(backoff);
+    let mut heal = HealWatch::new(bot_config, cfg);
+    let mut idle_prompts = 0u32;
+    let mut acted_since_prompt = false;
+
+    // Seed the bot: exits to flee through, and anything already here.
+    gate.push("look".into());
+
+    loop {
+        if time_up(started, cfg).is_some() {
+            return Ok(StopEnd::TimeUp);
+        }
+
+        // Release whatever the gate is willing to send.
+        let now = Instant::now();
+        while let Some(cmd) = gate.poll(now) {
+            heal.on_sent(&cmd);
+            session.send(&cmd);
+        }
+
+        // Sleep until the next event, the gate's own deadline, or the
+        // idle poke — whichever comes first.
+        let wake = gate
+            .next_deadline()
+            .map(|d| d.min(now + poke_after))
+            .unwrap_or(now + poke_after);
+        let wake = tokio::time::Instant::from_std(wake);
+
+        let ev = match tokio::time::timeout_at(wake, events.recv()).await {
+            Ok(Ok(ev)) => ev,
+            // Dropped events desync a stateful bot: it can miss the death
+            // that ends a fight and sit latched on a corpse. Start over
+            // rather than carry on with a bot that quietly lost track.
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {
+                bot = crate::bot::Bot::new(bot_config.clone());
+                gate = Gate::new(backoff);
+                gate.push("look".into());
+                continue;
+            }
+            Ok(Err(_)) => return Err(FarmError::Disconnected),
+            // Nothing happening. Ask the room whether that is still true;
+            // the answer is a prompt, which is what dwell counts.
+            Err(_) => {
+                if gate.in_flight().is_none() && bot.engaged().is_none() {
+                    gate.push("look".into());
+                }
+                continue;
+            }
+        };
+
+        if let Event::SlowDown = ev {
+            stats.slowdowns += 1;
+        }
+        if let Event::Line(line) = &ev {
+            if is_player_death(line, &username) {
+                return Ok(StopEnd::Died);
+            }
+            if line.contains("falls to the ground") {
+                stats.kills += 1;
+            }
+        }
+        if let Event::Prompt { hp, .. } = ev
+            && hp <= 0
+        {
+            return Ok(StopEnd::Died);
+        }
+
+        // A room block naming somewhere else means the character moved
+        // without the navigator — the bot fled.
+        if let Event::RoomSeen(room) = &ev
+            && room.name != stop_name
+        {
+            stats.flees += 1;
+            if recoveries_left == 0 {
+                // Give up on this stop, but walk back to it so the next
+                // leg starts from where the plan believes we are.
+                return recover(session, nav, graph, stop, &room.name)
+                    .await
+                    .map(|()| StopEnd::Dwelt);
+            }
+            recoveries_left -= 1;
+            recover(session, nav, graph, stop, &room.name).await?;
+            // Back at the stop with a clean slate.
+            events = session.events();
+            bot = crate::bot::Bot::new(bot_config.clone());
+            gate = Gate::new(backoff);
+            heal = HealWatch::new(bot_config, cfg);
+            gate.push("look".into());
+            idle_prompts = 0;
+            acted_since_prompt = false;
+            continue;
+        }
+
+        gate.on_event(&ev, Instant::now());
+        if heal.on_event(&ev) {
+            bot.rearm();
+        }
+
+        let actions = bot.on_event(&ev);
+        if !actions.is_empty() {
+            acted_since_prompt = true;
+        }
+        for crate::bot::BotAction::Send(cmd) in actions {
+            gate.push(cmd);
+        }
+
+        // The stop is done when the board has answered repeatedly with
+        // nothing for the bot to do and no fight outstanding. Only the
+        // bot's own decisions count as activity: the idle `look` is the
+        // runner asking whether anything is happening, and counting it
+        // would answer its own question and dwell forever.
+        if let Event::Prompt { .. } = ev {
+            if acted_since_prompt || bot.engaged().is_some() {
+                idle_prompts = 0;
+            } else {
+                idle_prompts += 1;
+                if idle_prompts >= cfg.dwell_idle_prompts {
+                    return Ok(StopEnd::Dwelt);
+                }
+            }
+            acted_since_prompt = false;
+        }
+    }
+}
+
+/// Find out where a flee left us and walk back to the stop.
+async fn recover(
+    session: &crate::session::Session,
+    nav: &crate::nav::Navigator,
+    graph: &RoomGraph,
+    stop: RoomId,
+    saw: &str,
+) -> Result<(), FarmError> {
+    let _ = graph;
+    let at = nav
+        .localize(stop, saw)
+        .ok_or_else(|| FarmError::Lost { saw: saw.into() })?;
+    nav.goto(session, at, stop).await.map_err(FarmError::Nav)
 }
