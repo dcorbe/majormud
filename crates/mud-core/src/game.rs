@@ -12101,8 +12101,9 @@ impl Core {
     }
 
     /// EXACT (decompile): defender view of a player. Naked: evasion 0
-    /// (item ratings/10; the dynamic AC accumulator +0x70c joins when
-    /// content carries AC(2) buffs), armor 0; parry is the word[10]
+    /// (Σ worn `+0x342` ÷ 10; the dynamic AC accumulator +0x70c joins when
+    /// content carries AC(2) buffs), armor 0 (Σ worn `+0x39c`, raw — the
+    /// ÷10 happens in `calculate_attack`); parry is the word[10]
     /// formula — `dodgeAbil(0x22) + (Chm-50)/5 + level/5 + (Agl-50)/3`
     /// (combat.md "Parry") — plus the low-encumbrance bonus
     /// (10 - enc/10), forced -1 when helpless. The Dodge term reads the
@@ -12124,23 +12125,26 @@ impl Core {
             }
             p
         };
-        let armor: i32 = player
-            .worn
-            .iter()
-            .filter_map(|(id, _)| self.content.items.get(id))
-            .map(|i| i32::from(i.evasion))
-            .sum();
+        let worn = || {
+            player
+                .worn
+                .iter()
+                .filter_map(|(id, _)| self.content.items.get(id))
+        };
+        // `[3]` — Σ worn `+0x39c` (24789), RAW. The word is a tenths-scale
+        // quantity: `calculate_attack` subtracts `[3]/10` from damage
+        // (25335), and `move_monster_to_fighter` reaches the same scale from
+        // the other side by multiplying the whole-unit monster `dr` by 10
+        // (25180). Shipped item `dr` is already pre-multiplied.
+        let armor: i32 = worn().map(|i| i32::from(i.damage_resist)).sum();
+        // `[1]` — Σ `+0x342` (24788), ÷10 at 24866. Drives the quadratic
+        // to-hit term at 25311, never the soak.
         let defense: i32 = (i32::from(
             player
                 .weapon
                 .and_then(|(id, _)| self.content.items.get(&id))
-                .map_or(0, |w| w.damage_resist),
-        ) + player
-            .worn
-            .iter()
-            .filter_map(|(id, _)| self.content.items.get(id))
-            .map(|i| i32::from(i.damage_resist))
-            .sum::<i32>())
+                .map_or(0, |w| w.evasion),
+        ) + worn().map(|i| i32::from(i.evasion)).sum::<i32>())
             / 10;
         crate::combat::Fighter {
             accuracy: 0,

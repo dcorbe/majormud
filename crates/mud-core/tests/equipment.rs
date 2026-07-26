@@ -31,7 +31,10 @@ fn helmet() -> Item {
         weight: 60,
         item_type: 0,
         uses: -1,
+        // Deliberately unequal, and neither a multiple of the other, so a
+        // transposition of the two fighter words cannot pass silently.
         evasion: 20,
+        damage_resist: 7,
         worn_on: 2,
         gettable: 1,
         // +5 accuracy while worn, to prove abilities flow to the bag.
@@ -243,9 +246,16 @@ fn worn_item_abilities_feed_derived_stats() {
         core.combat_debug(s2).0
     };
     assert_eq!(fighter.accuracy, naked.accuracy + 5);
-    // And the worn AC contributes to the defender's armor.
+
+    // The two worn armour columns feed DIFFERENT fighter words
+    // (`move_player_to_fighter` 24788-24789): `+0x342` (`ac`) accumulates
+    // into [1] and is divided by 10 at 24866, driving the quadratic to-hit
+    // term; `+0x39c` (`dr`) accumulates into [3] raw, and it is
+    // `calculate_attack` that divides by 10 when it subtracts the soak
+    // (25335). The helmet is evasion 20 / DR 7.
     let defender = core.defender_debug(s);
-    assert_eq!(defender.armor, 20);
+    assert_eq!(defender.evasion_a, 2, "Σ worn +0x342 ÷ 10");
+    assert_eq!(defender.armor, 7, "Σ worn +0x39c, raw");
 }
 
 #[test]
