@@ -263,11 +263,13 @@ fn farm_command(
             }
             Some(Ok((end, stats))) => {
                 println!(
-                    "{end:?}: {} kills, {} laps, {} flees, {} slowdowns",
-                    stats.kills, stats.loops, stats.flees, stats.slowdowns
+                    "{end:?}: {} kills, {} laps, {} flees, {} slowdowns, {} interrupts",
+                    stats.kills, stats.loops, stats.flees, stats.slowdowns, stats.interrupts
                 );
                 match end {
-                    FarmEnd::Died => ExitCode::FAILURE,
+                    // Both mean the patrol stopped short because the
+                    // character could not go on.
+                    FarmEnd::Died | FarmEnd::TooHurt => ExitCode::FAILURE,
                     _ => ExitCode::SUCCESS,
                 }
             }

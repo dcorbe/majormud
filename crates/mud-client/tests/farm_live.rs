@@ -376,3 +376,67 @@ async fn recovers_from_a_flee_and_moves_on() {
         "should have navigated back to the stop it fled from"
     );
 }
+
+/// Travel used to be blind: goto walked, and every event that was not a
+/// room block went in the bin. Now a wounded character stops walking,
+/// defends where it stands, and picks the leg back up.
+///
+/// The threshold is set above 100% so that every prompt reads as an
+/// emergency — the same trick `recovers_from_a_flee_and_moves_on` uses
+/// with flee_at_percent, and for the same reason: the fixture rat is
+/// passive and cannot actually hurt anyone, so real damage would have to
+/// be choreographed. What is genuinely under test is the machinery — the
+/// interrupt is noticed, the leg is not abandoned, and the patrol still
+/// finishes standing where the plan says.
+#[tokio::test]
+async fn an_interrupted_leg_is_defended_and_resumed() {
+    let server = start().await;
+    let session = logged_in(server.local_addr(), "Wounded").await;
+
+    let cfg = FarmConfig {
+        interrupt_at_percent: 101,
+        ..farm_config(&["1/3"], 1)
+    };
+    let (end, stats) = farm(&session, BotConfig::default(), cfg)
+        .await
+        .expect("farm run");
+
+    assert_eq!(end, FarmEnd::LoopsDone);
+    assert!(
+        stats.interrupts >= 1,
+        "the walk should have been interrupted: {stats:?}"
+    );
+    assert_eq!(
+        session
+            .state()
+            .borrow()
+            .room
+            .as_ref()
+            .map(|r| r.name.clone()),
+        Some("Rat Cellar".into()),
+        "the interrupted leg has to be finished, not abandoned"
+    );
+}
+
+/// Defending is bounded. A character that keeps being interrupted is not
+/// going to walk this leg, and carrying on regardless is how a farm run
+/// ends in a corpse — so the budget runs out and the run stops, standing
+/// somewhere known.
+#[tokio::test]
+async fn the_interrupt_budget_ends_the_run() {
+    let server = start().await;
+    let session = logged_in(server.local_addr(), "Doomed").await;
+
+    let cfg = FarmConfig {
+        interrupt_at_percent: 101,
+        travel_interrupts: 0,
+        ..farm_config(&["1/3"], 1)
+    };
+    let (end, stats) = farm(&session, BotConfig::default(), cfg)
+        .await
+        .expect("farm run");
+
+    assert_eq!(end, FarmEnd::TooHurt);
+    assert_eq!(stats.interrupts, 1);
+    assert_eq!(stats.loops, 0, "it never finished a lap");
+}

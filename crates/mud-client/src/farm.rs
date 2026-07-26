@@ -52,9 +52,9 @@ pub struct FarmConfig {
     /// fight and nothing to do.
     pub dwell_idle_prompts: u32,
     /// Never start a leg below this hp% (needs a known max HP); 0
-    /// disables the gate. Travel is unprotected — the bot does not fight
-    /// or flee while the navigator is walking — so this is what keeps a
-    /// wounded character from setting off.
+    /// disables the gate. This is the first of the two travel defences:
+    /// it keeps a wounded character from setting off at all, while
+    /// `interrupt_at_percent` stops one that gets hurt on the way.
     pub depart_at_percent: u32,
     /// How long to hold off sending after the board says it dropped our
     /// input ("Why don't you slow down for a few seconds?").
@@ -92,6 +92,20 @@ pub struct FarmConfig {
     /// next prompt would trip the guard again — a run that burns its
     /// whole interrupt budget without walking a step.
     pub interrupt_at_percent: u32,
+    /// Interruptions tolerated on a single leg before the run gives up.
+    /// A character that keeps being stopped is not going to walk this
+    /// leg, and walking it anyway is how a run ends in a corpse.
+    pub travel_interrupts: u32,
+    /// Cap on defending one interruption, in seconds.
+    ///
+    /// Not optional polish: a stop only ends on its dwell rule or the
+    /// run's own max_seconds, which defaults to unlimited — and a heal
+    /// that never lands re-arms the policy on every retry, resetting the
+    /// dwell counter forever. Defending is entered *because* hp is low,
+    /// which is exactly when that happens, so a protected travel without
+    /// this could wedge a live character in a corridor. That would be
+    /// strictly worse than the unprotected travel it replaces.
+    pub defend_seconds: u64,
     /// Navigation limits, as `[farm.nav]`. The runner is the only thing
     /// in the client that builds a [`crate::nav::Navigator`] — `mmc path`
     /// asks the graph directly and `mmc play` never navigates — so the
@@ -120,6 +134,8 @@ impl Default for FarmConfig {
             // Below the 80% departure gate, and at the point the bot
             // policy would itself want to stop and heal.
             interrupt_at_percent: 50,
+            travel_interrupts: 3,
+            defend_seconds: 60,
             nav: crate::nav::NavConfig::default(),
         }
     }
@@ -412,6 +428,11 @@ pub enum FarmEnd {
     TimeUp,
     /// The character died. Nothing else matters after this.
     Died,
+    /// A leg was interrupted more often than
+    /// [`FarmConfig::travel_interrupts`] allows. An expected outcome
+    /// rather than an error: the character is standing somewhere known
+    /// and is simply too hurt to keep patrolling.
+    TooHurt,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -420,6 +441,8 @@ pub struct FarmStats {
     pub loops: u32,
     pub flees: u32,
     pub slowdowns: u32,
+    /// Legs stopped part-way by the travel guard.
+    pub interrupts: u32,
 }
 
 #[derive(Debug)]
@@ -532,11 +555,16 @@ impl crate::nav::TravelGuard for FarmGuard {
 /// would have them fighting over the same events: instead the runner is
 /// a sequence of phases, and each phase owns the connection outright.
 ///
-/// - **Travel** is [`crate::nav::Navigator::goto`] alone. The bot sees
-///   nothing, because feeding it events while suppressing its commands
-///   would leave it believing it had swung. Aggro in transit is survived
-///   rather than fought; `[farm].depart_at_percent` is what keeps a
-///   wounded character from setting off in the first place.
+/// - **Travel** is [`crate::nav::Navigator::goto`] under a
+///   [`FarmGuard`]. The bot still does not drive it — feeding it events
+///   while suppressing its commands would leave it believing it had
+///   swung — but the walk is no longer blind: the guard watches every
+///   event goto goes past, including the ones its between-step drain
+///   throws away, and hands the connection back when the character is
+///   hurt or dead. The runner then defends where it stands and picks
+///   the leg back up. `[farm].depart_at_percent` still keeps a wounded
+///   character from setting off; what is new is that aggro in transit
+///   is fought rather than merely survived.
 /// - **Farm** is a fresh [`Bot`] per stop — latches start clean, so no
 ///   reset API is needed — driven by the pump below.
 /// - **Recover** is what happens when a flee moves the character with no
@@ -571,16 +599,24 @@ pub async fn run_farm(
                 return Ok((end, stats));
             }
             if current != stop {
-                travel(
+                match travel(
                     session,
                     &nav,
+                    &graph,
                     &mut current,
                     stop,
                     cfg,
                     &bot_config,
+                    started,
                     &mut stats,
                 )
-                .await?;
+                .await?
+                {
+                    LegEnd::Arrived => {}
+                    LegEnd::Died => return Ok((FarmEnd::Died, stats)),
+                    LegEnd::TimeUp => return Ok((FarmEnd::TimeUp, stats)),
+                    LegEnd::TooHurt => return Ok((FarmEnd::TooHurt, stats)),
+                }
             }
             match farm_stop(
                 session,
@@ -590,6 +626,7 @@ pub async fn run_farm(
                 &bot_config,
                 cfg,
                 started,
+                None,
                 &mut stats,
             )
             .await?
@@ -648,28 +685,103 @@ async fn next_room(
     }
 }
 
-/// Walk one leg. Nothing else sends while this runs.
+/// How a leg ended.
+enum LegEnd {
+    Arrived,
+    Died,
+    TimeUp,
+    TooHurt,
+}
+
+/// Walk one leg, defending it where necessary. Nothing else sends while
+/// this runs: the navigator holds the connection for the walk, the
+/// defend pump holds it while defending, never both at once.
+///
+/// Worst case is bounded, and worth stating because it is long:
+/// `travel_interrupts` interruptions, each costing up to
+/// `defend_seconds` of defending — inside which the stop pump may itself
+/// spend three flee round trips — plus up to two minutes waiting on the
+/// departure gate before each attempt.
 #[allow(clippy::too_many_arguments)]
 async fn travel(
     session: &crate::session::Session,
     nav: &crate::nav::Navigator,
+    graph: &RoomGraph,
     current: &mut RoomId,
     stop: RoomId,
     cfg: &FarmConfig,
     bot_config: &crate::bot::BotConfig,
-    _stats: &mut FarmStats,
-) -> Result<(), FarmError> {
-    wait_for_departure_health(session, cfg, bot_config).await;
-    *current = nav
-        .goto(session, *current, stop, &mut crate::nav::NoGuard)
-        .await
-        .map_err(FarmError::Nav)?;
-    Ok(())
+    started: Instant,
+    stats: &mut FarmStats,
+) -> Result<LegEnd, FarmError> {
+    use crate::nav::{Interrupt, NavErrorKind};
+
+    let mut guard = FarmGuard::new(
+        bot_config.max_hp,
+        cfg.interrupt_at_percent,
+        &session.profile().username,
+    );
+    let mut budget = cfg.travel_interrupts;
+
+    loop {
+        if time_up(started, cfg).is_some() {
+            return Ok(LegEnd::TimeUp);
+        }
+        wait_for_departure_health(session, cfg, bot_config).await;
+
+        let err = match nav.goto(session, *current, stop, &mut guard).await {
+            Ok(at) => {
+                *current = at;
+                return Ok(LegEnd::Arrived);
+            }
+            Err(e) => e,
+        };
+        // Every exit from here writes the position first. A resumed leg
+        // that started from a stale `current` would be walking a route
+        // computed from a lie, which is the failure verified navigation
+        // exists to prevent.
+        *current = err.at;
+
+        match err.kind {
+            NavErrorKind::Interrupted(Interrupt::Died) => return Ok(LegEnd::Died),
+            NavErrorKind::Interrupted(Interrupt::Hurt { .. }) => {
+                stats.interrupts += 1;
+                if budget == 0 {
+                    return Ok(LegEnd::TooHurt);
+                }
+                budget -= 1;
+
+                // Defend where we stand. The stop pump already knows how
+                // to fight, heal, flee and walk back, and it takes the
+                // room as an argument — there is no second pump to
+                // write, and a corridor is farmed exactly like a stop.
+                let until = Instant::now() + Duration::from_secs(cfg.defend_seconds);
+                match farm_stop(
+                    session,
+                    nav,
+                    graph,
+                    err.at,
+                    bot_config,
+                    cfg,
+                    started,
+                    Some(until),
+                    stats,
+                )
+                .await?
+                {
+                    StopEnd::Dwelt => continue,
+                    StopEnd::Died => return Ok(LegEnd::Died),
+                    StopEnd::TimeUp => return Ok(LegEnd::TimeUp),
+                }
+            }
+            _ => Err(FarmError::Nav(err))?,
+        }
+    }
 }
 
-/// Hold at the stop until HP is fit to travel. Travel is unprotected —
-/// the bot is not driving while the navigator walks — so setting off
-/// wounded is how a farm run ends in a corpse.
+/// Hold at the stop until HP is fit to travel. The bot is not driving
+/// while the navigator walks, so setting off wounded means relying on
+/// the travel guard to stop the leg part-way — cheaper to leave fit.
 async fn wait_for_departure_health(
     session: &crate::session::Session,
     cfg: &FarmConfig,
@@ -714,6 +826,8 @@ async fn farm_stop(
     bot_config: &crate::bot::BotConfig,
     cfg: &FarmConfig,
     started: Instant,
+    // Hard cap on this stop, or None to stay until it goes quiet.
+    until: Option<Instant>,
     stats: &mut FarmStats,
 ) -> Result<StopEnd, FarmError> {
     let stop_name = graph.room(stop).map(|r| r.name.clone()).unwrap_or_default();
@@ -741,6 +855,11 @@ async fn farm_stop(
     loop {
         if time_up(started, cfg).is_some() {
             return Ok(StopEnd::TimeUp);
+        }
+        // Defending is capped: see FarmConfig::defend_seconds for why a
+        // stop that cannot go quiet must still end.
+        if until.is_some_and(|d| Instant::now() >= d) {
+            return Ok(StopEnd::Dwelt);
         }
 
         // Release whatever the gate is willing to send.
