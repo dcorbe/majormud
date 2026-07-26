@@ -93,6 +93,16 @@ Character: Oracle Delver, Dwarf Warrior, not Lawful, default stats.
   - A few items refuse to be conjured: `A strange force stops you from
     getting this item.` (seen on `platinum ring`) — the summon line still
     prints `<item> conjured.` first, so check for both.
+  - **Check for Cursed (ability 82) / CURSED (83) before staging any item as
+    an experimental variable.** A cursed item cannot be taken off once worn,
+    so a configuration built on one can only be changed by DYING (which drops
+    everything and costs a life). This bit the dodge-parry runs: every
+    negative-accuracy item worth wearing for its size — `smoky black talisman`
+    and `shining white talisman` (-20), `malachite ring` (-12), `spiked
+    collar` (-5) — is cursed. The removable negatives are the shields
+    (`tower shield` -6, `black shield` -5, `kite shield` -4, all 250-500
+    weight, so they move the encumbrance band too) and `darkwood ring` (-3,
+    weight 10).
   - **Host-side commands are the only reliable escape.** `/xgoto` is
     intercepted by MBBSEmu before the module sees it, so it works even while
     mortally wounded, and unlike a walked flee it cannot be broken by the
