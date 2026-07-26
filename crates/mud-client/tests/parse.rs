@@ -368,15 +368,27 @@ fn corpus_all_files_parse_and_prompt_totals_match() {
         .filter(|p| p.extension().is_some_and(|x| x == "raw"))
         .collect();
     files.sort();
-    assert_eq!(files.len(), 51, "corpus size changed");
+    // The corpus GROWS: `re/oracle/` is shared with the server track, and
+    // every oracle expedition adds transcripts. Both numbers below therefore
+    // move by design — when they do, recompute the ground truth rather than
+    // taking the Rust parser's word for it (see below) and update them.
+    assert_eq!(files.len(), 56, "corpus size changed");
     let mut prompts = 0;
     for f in &files {
         let ev = corpus_events(f);
         prompts += count(&ev, |e| matches!(e, Event::Prompt { .. }));
     }
-    // Ground truth computed with the Python reference pipeline
-    // (mudlib.py semantics + backspace resolution) over the same files.
-    assert_eq!(prompts, 5347);
+    // Ground truth computed with the Python reference pipeline (mudlib.py
+    // semantics: CP437 decode, ANSI strip, anti-bot backspace resolution)
+    // over the same files, NOT with this parser — the point is to
+    // cross-validate the Rust wire layer against the reference, so deriving
+    // the number from the thing under test would make it circular.
+    //
+    // 5347 over the 51 files that predate the 2026-07-26 dodge-parry
+    // expedition; that expedition's five captures contribute 598 more
+    // (death_revive 46, training 111, parry acc-mid 141, acc-mid2 47,
+    // acc-high 253).
+    assert_eq!(prompts, 5945);
 }
 
 #[test]

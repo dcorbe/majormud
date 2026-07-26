@@ -100,7 +100,13 @@ fn world() -> Content {
         energy: 1000,
         roam_class: 7,
         level: 1,
-        behaviour: 0, // passive: it will not chase or fight back
+        // Lair: it will not chase or fight back, and -- unlike behaviour 0 --
+        // swinging at it is not a crime. M7's crime system charges evil for
+        // attacking an unprovoked behaviour-0/4 monster, and a freshly created
+        // character ships with evil warnings ON, so the server refuses the
+        // attack outright with "To do this action, you must turn off your evil
+        // warnings." A mode-0 fixture is simply unattackable now.
+        behaviour: 3,
         herd_mode: 0,
         ..Default::default()
     });

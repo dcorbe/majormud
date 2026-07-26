@@ -69,7 +69,10 @@ fn directions() -> Vec<&'static str> {
 
 #[test]
 fn corpus_is_present() {
-    assert_eq!(corpus_files().len(), 51, "corpus size changed");
+    // `re/oracle/` is shared with the server track, so this grows whenever an
+    // oracle expedition lands transcripts — the assertion is a tripwire to
+    // re-check the goldens in parse.rs, not a claim that the corpus is fixed.
+    assert_eq!(corpus_files().len(), 56, "corpus size changed");
 }
 
 #[test]
