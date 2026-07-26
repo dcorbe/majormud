@@ -8,9 +8,10 @@ use std::time::{Duration, Instant};
 use mud_client::bot::BotConfig;
 use mud_client::events::Event;
 use mud_client::farm::{
-    ACK_TIMEOUT, FarmConfig, FarmPlan, Gate, HealWatch, is_player_death, parse_health,
+    ACK_TIMEOUT, FarmConfig, FarmGuard, FarmPlan, Gate, HealWatch, is_player_death, parse_health,
     parse_room_id,
 };
+use mud_client::nav::{Interrupt, TravelGuard};
 use mud_client::graph::{ExitEdge, GraphRoom, RoomGraph};
 use mud_core::content::{Direction, RoomId};
 
@@ -494,4 +495,152 @@ fn a_monster_death_is_not_the_players() {
 #[test]
 fn someone_elses_death_is_not_ours() {
     assert!(!is_player_death("Vexil is dead.", "Nav"));
+}
+
+// ---------------------------------------------------------------------
+// FarmGuard: the policy that decides a walk has become the wrong thing
+// to be doing. Pure — events in, an interrupt or nothing out. It never
+// sends, so travel stays a single-sender phase.
+// ---------------------------------------------------------------------
+
+fn guard(max_hp: i32, hurt_at_percent: u32) -> FarmGuard {
+    FarmGuard::new(max_hp, hurt_at_percent, "Farmer")
+}
+
+#[test]
+fn our_own_death_line_stops_the_walk() {
+    assert_eq!(
+        guard(100, 50).on_event(&Event::Line("Farmer is dead.".into())),
+        Some(Interrupt::Died)
+    );
+}
+
+/// Somebody else dying is news, not an emergency. `<name> is dead.` is
+/// the player form and it names whoever it happened to.
+#[test]
+fn another_players_death_line_is_not_ours() {
+    assert_eq!(
+        guard(100, 50).on_event(&Event::Line("Vexil is dead.".into())),
+        None
+    );
+}
+
+/// Monsters die with a different line entirely, and a walk that stopped
+/// for every kill in earshot would never get anywhere.
+#[test]
+fn a_monster_death_is_not_a_death() {
+    assert_eq!(
+        guard(100, 50).on_event(&Event::Line(
+            "The giant rat falls to the ground, dead.".into()
+        )),
+        None
+    );
+}
+
+/// HP reads negative while downed, and no command lands until a revive.
+#[test]
+fn a_downed_prompt_stops_the_walk() {
+    assert_eq!(guard(100, 50).on_event(&prompt(-3)), Some(Interrupt::Died));
+    assert_eq!(guard(100, 50).on_event(&prompt(0)), Some(Interrupt::Died));
+}
+
+#[test]
+fn hurt_trips_below_the_threshold_and_not_at_it() {
+    assert_eq!(
+        guard(100, 50).on_event(&prompt(49)),
+        Some(Interrupt::Hurt { hp: 49 })
+    );
+    assert_eq!(guard(100, 50).on_event(&prompt(50)), None);
+}
+
+/// Every percent policy in the client divides by max HP, and 0 means the
+/// profile never said. Guessing would mis-scale the one decision that
+/// keeps a character alive, so the percent trip goes quiet — but dying
+/// is not a percentage, and that still stops the walk.
+#[test]
+fn an_unknown_max_hp_disables_the_percent_trip_but_not_death() {
+    assert_eq!(guard(0, 50).on_event(&prompt(1)), None);
+    assert_eq!(guard(0, 50).on_event(&prompt(-1)), Some(Interrupt::Died));
+}
+
+/// The recovery walk uses this: a character that just fled is already
+/// below any sane threshold, so a guard that tripped on hp% would make
+/// walking back impossible exactly when it is needed.
+#[test]
+fn a_zero_threshold_never_trips_on_hp() {
+    assert_eq!(FarmGuard::death_only("Farmer").on_event(&prompt(1)), None);
+    assert_eq!(
+        FarmGuard::death_only("Farmer").on_event(&prompt(-1)),
+        Some(Interrupt::Died)
+    );
+}
+
+#[test]
+fn nothing_else_is_an_emergency() {
+    let mut g = guard(100, 50);
+    assert_eq!(g.on_event(&Event::SlowDown), None);
+    assert_eq!(
+        g.on_event(&Event::CombatMiss {
+            line: "You swing and miss.".into()
+        }),
+        None
+    );
+    assert_eq!(
+        g.on_event(&Event::ActorEntered {
+            name: "a giant rat".into(),
+            from: Some("east".into()),
+        }),
+        None
+    );
+}
+
+/// No latches. The runner may hand the same guard to a resumed leg, and
+/// a still-wounded character must still be able to stop it.
+#[test]
+fn the_guard_keeps_no_memory_between_trips() {
+    let mut g = guard(100, 50);
+    assert_eq!(g.on_event(&prompt(20)), Some(Interrupt::Hurt { hp: 20 }));
+    assert_eq!(g.on_event(&prompt(20)), Some(Interrupt::Hurt { hp: 20 }));
+}
+
+// ---------------------------------------------------------------------
+// The two travel thresholds have to agree, and the plan is where that
+// gets settled — before the client connects.
+// ---------------------------------------------------------------------
+
+/// Interrupting above the departure gate is a run that goes nowhere: the
+/// defend pump ends, wait_for_departure_health releases at
+/// depart_at_percent, and the very next prompt trips a higher guard. The
+/// whole interrupt budget burns in three prompts without walking a step.
+#[test]
+fn a_threshold_above_the_departure_gate_is_refused() {
+    let cfg = FarmConfig {
+        depart_at_percent: 80,
+        interrupt_at_percent: 90,
+        ..config("1/1", &["1/2"])
+    };
+    let err = FarmPlan::build(&cfg, &graph()).expect_err("must refuse");
+    assert!(err.contains("90"), "error should name the threshold: {err}");
+    assert!(err.contains("80"), "error should name the gate: {err}");
+}
+
+#[test]
+fn a_threshold_at_the_departure_gate_is_allowed() {
+    let cfg = FarmConfig {
+        depart_at_percent: 80,
+        interrupt_at_percent: 80,
+        ..config("1/1", &["1/2"])
+    };
+    assert!(FarmPlan::build(&cfg, &graph()).is_ok());
+}
+
+/// With the gate disabled there is nothing to disagree with.
+#[test]
+fn a_disabled_departure_gate_constrains_nothing() {
+    let cfg = FarmConfig {
+        depart_at_percent: 0,
+        interrupt_at_percent: 101,
+        ..config("1/1", &["1/2"])
+    };
+    assert!(FarmPlan::build(&cfg, &graph()).is_ok());
 }

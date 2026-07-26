@@ -82,6 +82,16 @@ pub struct FarmConfig {
     /// captured off the board yet, and inventing one would be a fixture
     /// that is tidier than reality.
     pub heal_refused: Vec<String>,
+    /// Stop walking a leg when hp drops below this percent, defend where
+    /// the character stands, and resume once it is fit to travel again.
+    /// 0 disables the hp trip; dying still stops the walk.
+    ///
+    /// Must not exceed `depart_at_percent`, and [`FarmPlan::build`]
+    /// refuses the pair when it does: the defend pump would end, the
+    /// departure gate would release at the lower number, and the very
+    /// next prompt would trip the guard again — a run that burns its
+    /// whole interrupt budget without walking a step.
+    pub interrupt_at_percent: u32,
     /// Navigation limits, as `[farm.nav]`. The runner is the only thing
     /// in the client that builds a [`crate::nav::Navigator`] — `mmc path`
     /// asks the graph directly and `mmc play` never navigates — so the
@@ -107,6 +117,9 @@ impl Default for FarmConfig {
             idle_poke_ms: 5000,
             heal_retry_prompts: 3,
             heal_refused: Vec::new(),
+            // Below the 80% departure gate, and at the point the bot
+            // policy would itself want to stop and heal.
+            interrupt_at_percent: 50,
             nav: crate::nav::NavConfig::default(),
         }
     }
@@ -123,6 +136,14 @@ impl FarmPlan {
     pub fn build(cfg: &FarmConfig, graph: &RoomGraph) -> Result<FarmPlan, String> {
         if cfg.circuit.is_empty() {
             return Err("circuit is empty; [farm].circuit needs at least one room".into());
+        }
+        if cfg.depart_at_percent != 0 && cfg.interrupt_at_percent > cfg.depart_at_percent {
+            return Err(format!(
+                "interrupt_at_percent ({}) is above depart_at_percent ({}): \
+                 the patrol would set off at {}% and be interrupted immediately, \
+                 burning its interrupt budget without walking a step",
+                cfg.interrupt_at_percent, cfg.depart_at_percent, cfg.depart_at_percent
+            ));
         }
         let resolve = |s: &String| -> Result<RoomId, String> {
             let id = parse_room_id(s)
@@ -445,6 +466,63 @@ impl std::error::Error for FarmError {}
 /// with a kill.
 pub fn is_player_death(line: &str, username: &str) -> bool {
     line.trim() == format!("{username} is dead.")
+}
+
+/// The runner's travel guard: what makes walking the wrong thing to be
+/// doing right now.
+///
+/// Pure and stateless — events in, an interrupt or nothing out, no
+/// latches. The runner hands the same guard to a resumed leg, so a
+/// character that is still wounded has to be able to stop it again.
+pub struct FarmGuard {
+    max_hp: i32,
+    hurt_at_percent: u32,
+    username: String,
+}
+
+impl FarmGuard {
+    pub fn new(max_hp: i32, hurt_at_percent: u32, username: &str) -> Self {
+        FarmGuard {
+            max_hp,
+            hurt_at_percent,
+            username: username.to_string(),
+        }
+    }
+
+    /// A guard that stops only for a death.
+    ///
+    /// This is what the recovery walk uses. `recover` runs immediately
+    /// after AutoFlee bolted at `flee_at_percent`, which is *below*
+    /// `interrupt_at_percent` by construction — so a guard watching hp%
+    /// would trip on the first prompt of every walk back, and recovery
+    /// would become impossible exactly when it is needed. The character
+    /// has already decided to run and the walk back is one hop; the only
+    /// thing left worth stopping for is dying.
+    pub fn death_only(username: &str) -> Self {
+        FarmGuard::new(0, 0, username)
+    }
+}
+
+impl crate::nav::TravelGuard for FarmGuard {
+    fn on_event(&mut self, ev: &Event) -> Option<crate::nav::Interrupt> {
+        use crate::nav::Interrupt;
+        match ev {
+            Event::Line(line) if is_player_death(line, &self.username) => Some(Interrupt::Died),
+            // HP reads negative while downed, and nothing lands until a
+            // revive.
+            Event::Prompt { hp, .. } if *hp <= 0 => Some(Interrupt::Died),
+            // 0 max HP means the profile never said and the probe found
+            // nothing. Guessing would mis-scale the one decision keeping
+            // the character alive, so say nothing rather than something
+            // wrong.
+            Event::Prompt { hp, .. }
+                if self.max_hp > 0 && *hp * 100 / self.max_hp < self.hurt_at_percent as i32 =>
+            {
+                Some(Interrupt::Hurt { hp: *hp })
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Run the patrol.
