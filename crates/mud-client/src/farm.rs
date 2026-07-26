@@ -324,3 +324,34 @@ impl HealWatch {
         self.prompts = None;
     }
 }
+
+/// `Health:    27/35    [77%]` -> `(27, 35)`, searching anywhere in the
+/// given text.
+///
+/// The board prints this for the `health` command ("he"), with a
+/// `Mana:`/`Kai:` pool appended for casters. Only the health half is
+/// read; the layout is `mud_core::text::health_line`, and the captures
+/// in `re/oracle` agree with it down to the spacing.
+pub fn parse_health(text: &str) -> Option<(i32, i32)> {
+    static HEALTH_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"Health:\s*(\d+)/(\d+)").unwrap());
+    let c = HEALTH_RE.captures(text)?;
+    Some((c[1].parse().ok()?, c[2].parse().ok()?))
+}
+
+/// Ask the board for the character's maximum HP.
+///
+/// [`crate::bot::BotConfig::max_hp`] scales every percent policy the bot
+/// has, and a wrong value mis-scales them silently while `0` disables
+/// them outright. Nothing else in the client parses a max HP — the
+/// prompt only carries the current value — so the runner asks rather
+/// than trusting a number typed into a profile.
+pub async fn discover_max_hp(session: &crate::session::Session) -> Option<i32> {
+    let mark = session.mark();
+    session.send("health");
+    session
+        .expect("Health:", std::time::Duration::from_secs(15))
+        .await
+        .ok()?;
+    parse_health(&session.since(mark)).map(|(_, max)| max)
+}

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use mud_client::events::Event;
 use mud_client::bot::BotConfig;
-use mud_client::farm::{ACK_TIMEOUT, FarmConfig, FarmPlan, Gate, HealWatch, parse_room_id};
+use mud_client::farm::{ACK_TIMEOUT, FarmConfig, FarmPlan, Gate, HealWatch, parse_health, parse_room_id};
 use mud_client::graph::{ExitEdge, GraphRoom, RoomGraph};
 use mud_core::content::{Direction, RoomId};
 
@@ -404,4 +404,57 @@ fn resending_the_heal_restarts_the_watch() {
     assert!(!w.on_event(&prompt(12)), "baseline should have reset");
     assert!(!w.on_event(&prompt(12)));
     assert!(w.on_event(&prompt(12)));
+}
+
+// ---------------------------------------------------------------------
+// parse_health: where BotConfig.max_hp comes from.
+//
+// Every percent policy the bot has — heal below 50%, flee below 25% —
+// divides by max_hp, and a max_hp of 0 disables both silently. Making
+// the operator type their character's max HP into the profile correctly
+// is a trap, so the runner asks the board instead. These lines are
+// lifted verbatim out of the corpus, spacing included.
+// ---------------------------------------------------------------------
+
+#[test]
+fn reads_the_boards_health_line() {
+    assert_eq!(parse_health("Health:    35/35    [100%]"), Some((35, 35)));
+    assert_eq!(parse_health("Health:    27/35    [77%]"), Some((27, 35)));
+}
+
+#[test]
+fn reads_a_health_line_with_a_mana_pool_after_it() {
+    assert_eq!(
+        parse_health("Health:    29/29    [100%]  Mana:   8/18  [44%]"),
+        Some((29, 29))
+    );
+}
+
+/// Mystics print Kai where everyone else prints Mana. The health half is
+/// identical, and it is the only half that matters here.
+#[test]
+fn reads_a_mystics_health_line() {
+    assert_eq!(
+        parse_health("Health:    28/31    [90%]  Kai:   0/1   [0%]"),
+        Some((28, 31))
+    );
+}
+
+#[test]
+fn ignores_lines_that_are_not_a_health_report() {
+    assert_eq!(parse_health("[HP=35]:"), None);
+    assert_eq!(parse_health("You are in good health."), None);
+    assert_eq!(parse_health(""), None);
+}
+
+/// The line arrives inside a screenful of other output, not alone.
+#[test]
+fn finds_the_health_line_inside_a_transcript() {
+    let transcript = concat!(
+        "health\r\n",
+        "Name: Nav                     Lvl: 1  Exp: 0\r\n",
+        "Health:    27/35    [77%]\r\n",
+        "[HP=27]:",
+    );
+    assert_eq!(parse_health(transcript), Some((27, 35)));
 }
