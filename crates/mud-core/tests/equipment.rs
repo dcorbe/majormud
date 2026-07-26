@@ -46,6 +46,23 @@ fn helmet() -> Item {
     }
 }
 
+/// Carries the two dynamic-accumulator abilities and no armour columns, so
+/// each term is attributable: AC(2) -> `+0x70c` -> fighter `[1]`, and
+/// DR(7) -> `+0x7b6` -> fighter `[3]`.
+fn warded_amulet() -> Item {
+    Item {
+        id: ItemId(300),
+        name: "warded amulet".into(),
+        weight: 5,
+        item_type: 0,
+        uses: -1,
+        worn_on: 8,
+        gettable: 1,
+        abilities: vec![(Ability::AC, 5), (Ability::DR, 30)],
+        ..Item::default()
+    }
+}
+
 fn world() -> Content {
     let mut content = Content::default();
     content.add_room(Room {
@@ -61,6 +78,7 @@ fn world() -> Content {
     });
     content.add_item(quarterstaff());
     content.add_item(helmet());
+    content.add_item(warded_amulet());
     content.add_race(Race {
         id: RaceId(2),
         name: "Dwarf".into(),
@@ -352,4 +370,30 @@ fn carrying_line_suffixes_and_grouping_match_the_oracle() {
         shown.contains("3 sickle"),
         "unarmed sickles regroup: {shown:?}"
     );
+}
+
+/// The two dynamic accumulators reach the fighter words on the DEFENDER
+/// side, exactly as the accuracy accumulator (`+0x70a`) already reaches the
+/// attacker's. `move_player_to_fighter`: `[1] += player+0x70c` (24885) and
+/// `[3] += player+0x7b6` (24888), both raw. `update_dynamic_with_ability`
+/// (0x3dba6, 37455) is what fills them — case 2 -> `+0x70c`, case 7 ->
+/// `+0x7b6`.
+///
+/// Both are added in the SAME units as the item sums they join, which is
+/// why AC(2) is not scaled here while `get_armour_rating` multiplies it by
+/// 10: the fighter's `[1]` is already the ÷10 quantity, the rating's
+/// accumulator is not. The two agree in display units, and the measured
+/// talisman capture pins that agreement.
+#[test]
+fn ac_and_dr_abilities_reach_the_defender_words() {
+    let mut core = Core::new(world(), config());
+    let s = create(&mut core, "Dain");
+    core.give_item(s, ItemId(300));
+    core.input(s, "wear amulet");
+    core.drain_events();
+
+    let d = core.defender_debug(s);
+    // No armour columns on the amulet, so each word is the ability alone.
+    assert_eq!(d.evasion_a, 5, "AC(2) joins [1] raw (+0x70c, 24885)");
+    assert_eq!(d.armor, 30, "DR(7) joins [3] raw (+0x7b6, 24888)");
 }

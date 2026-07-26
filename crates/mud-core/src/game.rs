@@ -12203,16 +12203,40 @@ impl Core {
         // (25335), and `move_monster_to_fighter` reaches the same scale from
         // the other side by multiplying the whole-unit monster `dr` by 10
         // (25180). Shipped item `dr` is already pre-multiplied.
-        let armor: i32 = worn().map(|i| i32::from(i.damage_resist)).sum();
-        // `[1]` — Σ `+0x342` (24788), ÷10 at 24866. Drives the quadratic
-        // to-hit term at 25311, never the soak.
+        let bag = self.ability_bag(player);
+        // `[3] += player+0x7b6` (24888), raw and in the same tenths as the
+        // item sum. `update_dynamic_with_ability` case 7 fills it (37475).
+        //
+        // PENDING: the DLL then scales `[3]` by `(player+0x7b8 + 100)/100`
+        // (24889) — a DR PERCENT we do not apply, because the ability that
+        // writes `+0x7b8` is not readable here. Ghidra reaches that store
+        // via `if (param_2 != 0xe)`, i.e. ability 14, but its own brace
+        // nesting in that region is provably wrong (it emits `case 0x4b/
+        // 0x4c/0x57` *after* the inner switch closes), and ability 14 is
+        // `RoomIllu` — its shipped carriers hold 9999 on a portal and 100
+        // on two rings, which is light, not a doubling of damage
+        // resistance. `AlterDRpercent`(99) is what the id table describes
+        // for this, and it has two shipped spell carriers, but no visible
+        // writer in `update_dynamic_with_ability`. Wiring either one on
+        // this evidence would be a guess with live consequences, so the
+        // term is left unapplied and named. Settle it from the 16-bit
+        // disassembly or a capture before porting.
+        let armor: i32 =
+            worn().map(|i| i32::from(i.damage_resist)).sum::<i32>() + bag.value(Ability::DR);
+        // `[1]` — Σ `+0x342` (24788), ÷10 at 24866, then `+= player+0x70c`
+        // (24885, `update_dynamic_with_ability` case 2 at 37469). Drives
+        // the quadratic to-hit term at 25311, never the soak. The AC term
+        // is added AFTER the ÷10, which is why it is unscaled here while
+        // `get_armour_rating` multiplies it by 10 — that accumulator has
+        // not been divided yet. Both agree in display units.
         let defense: i32 = (i32::from(
             player
                 .weapon
                 .and_then(|(id, _)| self.content.items.get(&id))
                 .map_or(0, |w| w.evasion),
         ) + worn().map(|i| i32::from(i.evasion)).sum::<i32>())
-            / 10;
+            / 10
+            + bag.value(Ability::AC);
         crate::combat::Fighter {
             accuracy: 0,
             evasion_a: defense,
