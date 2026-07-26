@@ -3,7 +3,10 @@
 //! client connects, so a typo in a room id fails at startup rather than
 //! halfway around a patrol circuit.
 
-use mud_client::farm::{FarmConfig, FarmPlan, parse_room_id};
+use std::time::{Duration, Instant};
+
+use mud_client::events::Event;
+use mud_client::farm::{ACK_TIMEOUT, FarmConfig, FarmPlan, Gate, parse_room_id};
 use mud_client::graph::{ExitEdge, GraphRoom, RoomGraph};
 use mud_core::content::{Direction, RoomId};
 
@@ -140,4 +143,143 @@ fn rejects_a_start_the_graph_does_not_know() {
 fn accepts_a_single_stop_circuit() {
     let plan = FarmPlan::build(&config("1/1", &["1/2"]), &graph()).unwrap();
     assert_eq!(plan.circuit, vec![rid(1, 2)]);
+}
+
+// ---------------------------------------------------------------------
+// Gate: the runner's only outbound path.
+//
+// Session::send is unbounded and unacknowledged, and the live board
+// paces at 1500ms, so firing every bot decision straight at it queues
+// minutes of stale commands with no way to cancel. The gate holds one
+// command in flight until the board's prompt acknowledges it, and it is
+// what turns Event::SlowDown — which means the board DROPPED our input —
+// back into a resend.
+// ---------------------------------------------------------------------
+
+const BACKOFF: Duration = Duration::from_millis(5000);
+
+fn gate() -> Gate {
+    Gate::new(BACKOFF)
+}
+
+fn prompt(hp: i32) -> Event {
+    Event::Prompt { hp, mana: None }
+}
+
+#[test]
+fn an_empty_gate_sends_nothing() {
+    let mut g = gate();
+    assert_eq!(g.poll(Instant::now()), None);
+}
+
+#[test]
+fn holds_one_command_in_flight_until_the_prompt_acks_it() {
+    let t0 = Instant::now();
+    let mut g = gate();
+    g.push("a rat".into());
+    g.push("get copper".into());
+
+    assert_eq!(g.poll(t0), Some("a rat".to_string()));
+    // The board has not answered yet, so nothing else goes out.
+    assert_eq!(g.poll(t0 + Duration::from_millis(10)), None);
+    assert_eq!(g.in_flight(), Some("a rat"));
+
+    g.on_event(&prompt(30), t0 + Duration::from_millis(20));
+    assert_eq!(g.in_flight(), None);
+    assert_eq!(
+        g.poll(t0 + Duration::from_millis(30)),
+        Some("get copper".to_string())
+    );
+}
+
+#[test]
+fn slow_down_resends_the_command_the_board_dropped() {
+    let t0 = Instant::now();
+    let mut g = gate();
+    g.push("a rat".into());
+    assert_eq!(g.poll(t0), Some("a rat".to_string()));
+
+    // "Why don't you slow down for a few seconds?" — the swing never
+    // happened, so it has to go out again once the board calms down.
+    g.on_event(&Event::SlowDown, t0);
+    assert_eq!(
+        g.poll(t0 + Duration::from_millis(1)),
+        None,
+        "must back off first"
+    );
+    assert_eq!(g.poll(t0 + BACKOFF), Some("a rat".to_string()));
+}
+
+#[test]
+fn a_burst_of_slow_downs_resends_once() {
+    let t0 = Instant::now();
+    let mut g = gate();
+    g.push("a rat".into());
+    assert_eq!(g.poll(t0), Some("a rat".to_string()));
+
+    // The board repeats the scolding for every line it drops.
+    for i in 0..3 {
+        g.on_event(&Event::SlowDown, t0 + Duration::from_millis(i));
+    }
+
+    assert_eq!(g.poll(t0 + BACKOFF * 2), Some("a rat".to_string()));
+    assert_eq!(g.poll(t0 + BACKOFF * 3), None, "resent more than once");
+}
+
+#[test]
+fn a_later_slow_down_extends_the_backoff() {
+    let t0 = Instant::now();
+    let mut g = gate();
+    g.push("a rat".into());
+    g.poll(t0);
+    g.on_event(&Event::SlowDown, t0);
+    g.on_event(&Event::SlowDown, t0 + Duration::from_millis(2000));
+
+    // Backoff runs from the *last* scolding, not the first.
+    assert_eq!(g.poll(t0 + BACKOFF), None);
+    assert_eq!(
+        g.poll(t0 + Duration::from_millis(2000) + BACKOFF),
+        Some("a rat".to_string())
+    );
+}
+
+/// Flood control with an idle gate: there is nothing to resend, but the
+/// board is still angry, so the next command waits too.
+#[test]
+fn slow_down_with_nothing_in_flight_still_backs_off() {
+    let t0 = Instant::now();
+    let mut g = gate();
+    g.on_event(&Event::SlowDown, t0);
+    g.push("a rat".into());
+
+    assert_eq!(g.poll(t0 + Duration::from_millis(1)), None);
+    assert_eq!(g.poll(t0 + BACKOFF), Some("a rat".to_string()));
+}
+
+/// A prompt is not guaranteed — the board can eat a command silently.
+/// Waiting forever would wedge the runner, so in-flight expires.
+#[test]
+fn an_unacked_command_expires_so_the_queue_keeps_moving() {
+    let t0 = Instant::now();
+    let mut g = gate();
+    g.push("a rat".into());
+    g.push("get copper".into());
+    assert_eq!(g.poll(t0), Some("a rat".to_string()));
+
+    assert_eq!(g.poll(t0 + ACK_TIMEOUT - Duration::from_millis(1)), None);
+    assert_eq!(g.poll(t0 + ACK_TIMEOUT), Some("get copper".to_string()));
+}
+
+#[test]
+fn next_deadline_is_when_the_backoff_ends() {
+    let t0 = Instant::now();
+    let mut g = gate();
+    assert_eq!(g.next_deadline(), None, "idle gate has no deadline");
+
+    g.push("a rat".into());
+    g.poll(t0);
+    assert_eq!(g.next_deadline(), Some(t0 + ACK_TIMEOUT));
+
+    g.on_event(&Event::SlowDown, t0);
+    assert_eq!(g.next_deadline(), Some(t0 + BACKOFF));
 }

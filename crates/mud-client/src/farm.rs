@@ -7,13 +7,21 @@
 //! a typo in `[farm].circuit` must fail before the client connects, not
 //! halfway around the lap with a live character standing in a spawn.
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
 use mud_core::content::RoomId;
 
+use crate::events::Event;
 use crate::graph::RoomGraph;
+
+/// How long to wait for the prompt that acknowledges a sent command
+/// before assuming the board swallowed it and moving on. Waiting forever
+/// would wedge the runner on any line the board answers silently.
+pub const ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// `"1/860"` -> map 1, room 860. The `mmc path` argument syntax.
 pub fn parse_room_id(s: &str) -> Option<RoomId> {
@@ -123,5 +131,99 @@ impl FarmPlan {
         }
 
         Ok(FarmPlan { start, circuit })
+    }
+}
+
+/// The runner's only outbound path.
+///
+/// [`crate::session::Session::send`] is an unbounded, unacknowledged
+/// queue, and the live board paces at 1500ms, so firing every bot
+/// decision straight at it buries the character under minutes of stale
+/// commands with no way to cancel. The gate keeps exactly one command in
+/// flight until the board's prompt acknowledges it.
+///
+/// It is also the only thing that acts on [`Event::SlowDown`], which
+/// means the board *dropped* our input. The dropped command goes back to
+/// the front of the queue and sending pauses until the board calms down.
+/// The bot's own latches stay truthful through all of this: it decided to
+/// swing once, and the swing does eventually happen, so nothing has to
+/// re-arm.
+pub struct Gate {
+    queue: VecDeque<String>,
+    /// The command awaiting its prompt, and when it went out.
+    in_flight: Option<(String, Instant)>,
+    /// Nothing may be sent before this instant (flood control).
+    blocked_until: Option<Instant>,
+    backoff: Duration,
+}
+
+impl Gate {
+    pub fn new(backoff: Duration) -> Self {
+        Gate {
+            queue: VecDeque::new(),
+            in_flight: None,
+            blocked_until: None,
+            backoff,
+        }
+    }
+
+    /// Queue a command. Order is preserved; a resend jumps ahead of it.
+    pub fn push(&mut self, line: String) {
+        self.queue.push_back(line);
+    }
+
+    /// The command awaiting acknowledgement, if any.
+    pub fn in_flight(&self) -> Option<&str> {
+        self.in_flight.as_ref().map(|(line, _)| line.as_str())
+    }
+
+    pub fn on_event(&mut self, ev: &Event, now: Instant) {
+        match ev {
+            // The board answered, so whatever we sent landed.
+            Event::Prompt { .. } => self.in_flight = None,
+            Event::SlowDown => {
+                // Flood control ate the in-flight command. Taking it here
+                // is what keeps a burst of scoldings from queueing a
+                // resend apiece: the second SlowDown finds nothing left.
+                if let Some((line, _)) = self.in_flight.take() {
+                    self.queue.push_front(line);
+                }
+                self.blocked_until = Some(now + self.backoff);
+            }
+            _ => {}
+        }
+    }
+
+    /// The next command clear to send, or `None` while the gate is
+    /// waiting on an acknowledgement or a backoff.
+    pub fn poll(&mut self, now: Instant) -> Option<String> {
+        if let Some(until) = self.blocked_until {
+            if now < until {
+                return None;
+            }
+            self.blocked_until = None;
+        }
+        if let Some((_, sent_at)) = &self.in_flight {
+            if now.duration_since(*sent_at) < ACK_TIMEOUT {
+                return None;
+            }
+            self.in_flight = None;
+        }
+        let line = self.queue.pop_front()?;
+        self.in_flight = Some((line.clone(), now));
+        Some(line)
+    }
+
+    /// When the gate could next release a command without any new event
+    /// arriving — a backoff expiry or an unacknowledged send timing out.
+    /// The runner sleeps until this rather than polling.
+    pub fn next_deadline(&self) -> Option<Instant> {
+        let backoff = self.blocked_until;
+        let ack = self.in_flight.as_ref().map(|(_, at)| *at + ACK_TIMEOUT);
+        match (backoff, ack) {
+            // Both must pass before anything can go out.
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        }
     }
 }
