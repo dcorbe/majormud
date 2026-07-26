@@ -82,6 +82,12 @@ pub struct FarmConfig {
     /// captured off the board yet, and inventing one would be a fixture
     /// that is tidier than reality.
     pub heal_refused: Vec<String>,
+    /// Navigation limits, as `[farm.nav]`. The runner is the only thing
+    /// in the client that builds a [`crate::nav::Navigator`] — `mmc path`
+    /// asks the graph directly and `mmc play` never navigates — so the
+    /// limits live under the table that owns them rather than at the top
+    /// level, where they would read as global and honoured by nothing.
+    pub nav: crate::nav::NavConfig,
 }
 
 impl Default for FarmConfig {
@@ -101,6 +107,7 @@ impl Default for FarmConfig {
             idle_poke_ms: 5000,
             heal_retry_prompts: 3,
             heal_refused: Vec::new(),
+            nav: crate::nav::NavConfig::default(),
         }
     }
 }
@@ -466,7 +473,7 @@ pub async fn run_farm(
 ) -> Result<(FarmEnd, FarmStats), FarmError> {
     let started = Instant::now();
     let mut stats = FarmStats::default();
-    let nav = crate::nav::Navigator::new(graph.clone());
+    let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone());
 
     // Every percent policy divides by this, and a wrong value mis-scales
     // heal and flee silently. 0 means the profile did not say, so ask.

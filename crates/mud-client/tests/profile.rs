@@ -113,6 +113,53 @@ fn bot_and_farm_tables_parse_and_round_trip() {
     assert_eq!(p, back);
 }
 
+/// Navigation limits live under the table that owns them. A profile
+/// that says nothing about them still gets the shipped values, and a
+/// profile that overrides one does not silently zero the rest.
+#[test]
+fn nav_limits_default_and_override_independently() {
+    let bare: Profile = toml::from_str(
+        r#"
+        target = "rust"
+        host = "127.0.0.1"
+        port = 2325
+        username = "Alice"
+        password = "pw"
+
+        [farm]
+        start = "1/1"
+        circuit = ["1/2"]
+        "#,
+    )
+    .unwrap();
+    assert_eq!(
+        bare.farm.expect("[farm] table").nav,
+        mud_client::nav::NavConfig::default()
+    );
+
+    let tuned: Profile = toml::from_str(
+        r#"
+        target = "rust"
+        host = "127.0.0.1"
+        port = 2325
+        username = "Alice"
+        password = "pw"
+
+        [farm]
+        start = "1/1"
+        circuit = ["1/2"]
+
+        [farm.nav]
+        step_timeout_ms = 30000
+        "#,
+    )
+    .unwrap();
+    assert_eq!(
+        tuned.farm.expect("[farm] table").nav.step_timeout_ms,
+        30000
+    );
+}
+
 #[test]
 fn profile_round_trips() {
     let p: Profile = toml::from_str(

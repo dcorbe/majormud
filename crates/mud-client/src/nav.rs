@@ -5,6 +5,8 @@
 
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
+
 use crate::graph::RoomGraph;
 use crate::session::{ExpectError, Session};
 use mud_core::content::{Direction, RoomId};
@@ -47,11 +49,33 @@ impl std::fmt::Display for NavError {
 
 impl std::error::Error for NavError {}
 
+/// Navigation limits.
+///
+/// Only the step deadline is configurable, and only because it is the
+/// one limit whose right value differs by board: the in-process server
+/// answers instantly, the live board under load does not. `max_failures`
+/// stays a constant until something can exercise it — a knob no test can
+/// move is a knob that quietly rots.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NavConfig {
+    /// Per-step arrival deadline.
+    pub step_timeout_ms: u64,
+}
+
+impl Default for NavConfig {
+    fn default() -> Self {
+        NavConfig {
+            step_timeout_ms: 15_000,
+        }
+    }
+}
+
+/// Verification failures tolerated before a walk aborts.
+const MAX_FAILURES: u32 = 3;
+
 pub struct Navigator {
     graph: Arc<RoomGraph>,
-    /// Consecutive verification failures tolerated before aborting.
-    max_failures: u32,
-    /// Per-step arrival deadline.
     step_timeout: std::time::Duration,
 }
 
@@ -72,11 +96,10 @@ pub fn dir_word(d: Direction) -> &'static str {
 }
 
 impl Navigator {
-    pub fn new(graph: Arc<RoomGraph>) -> Self {
+    pub fn new(graph: Arc<RoomGraph>, cfg: NavConfig) -> Self {
         Navigator {
             graph,
-            max_failures: 3,
-            step_timeout: std::time::Duration::from_secs(15),
+            step_timeout: std::time::Duration::from_millis(cfg.step_timeout_ms),
         }
     }
 
@@ -144,7 +167,7 @@ impl Navigator {
                         saw: seen.clone(),
                     },
                 };
-                if failures > self.max_failures {
+                if failures > MAX_FAILURES {
                     return Err(desync(current));
                 }
                 match self.localize(current, &seen) {

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use mud_client::dialect::{self, Target};
 use mud_client::graph::{ExitEdge, GraphRoom, RoomGraph};
-use mud_client::nav::{NavErrorKind, Navigator};
+use mud_client::nav::{NavConfig, NavErrorKind, Navigator};
 use mud_client::profile::Profile;
 use mud_client::session::Session;
 use mud_core::content::{
@@ -151,7 +151,7 @@ async fn start() -> Server {
 async fn goto_walks_verified_route() {
     let server = start().await;
     let session = logged_in_session(server.local_addr()).await;
-    let nav = Navigator::new(Arc::new(client_graph("Market Street")));
+    let nav = Navigator::new(Arc::new(client_graph("Market Street")), NavConfig::default());
 
     let at = nav
         .goto(
@@ -177,7 +177,7 @@ async fn goto_detects_desync_on_name_mismatch() {
     let session = logged_in_session(server.local_addr()).await;
     // Client graph believes room 3 is called "Crystal Cavern"; the
     // server will print "Market Street" -> desync error, no blind walk.
-    let nav = Navigator::new(Arc::new(client_graph("Crystal Cavern")));
+    let nav = Navigator::new(Arc::new(client_graph("Crystal Cavern")), NavConfig::default());
 
     let err = nav
         .goto(
@@ -205,7 +205,7 @@ async fn goto_detects_desync_on_name_mismatch() {
 async fn goto_without_route_fails_fast() {
     let server = start().await;
     let session = logged_in_session(server.local_addr()).await;
-    let nav = Navigator::new(Arc::new(client_graph("Market Street")));
+    let nav = Navigator::new(Arc::new(client_graph("Market Street")), NavConfig::default());
     let err = nav
         .goto(
             &session,
@@ -217,6 +217,66 @@ async fn goto_without_route_fails_fast() {
     assert!(matches!(err.kind, NavErrorKind::NoRoute));
     // Nothing was walked, so the character is still at the start.
     assert_eq!(err.at, RoomId { map: 1, room: 1 });
+}
+
+/// A graph that believes in an exit the board does not have. Walking it
+/// earns "There is no exit in that direction!" and no room block at all,
+/// which is the shape of every step that never lands.
+fn graph_with_a_phantom_exit() -> RoomGraph {
+    let mut gates = GraphRoom {
+        name: "Town Gates".into(),
+        exits: Default::default(),
+    };
+    gates.exits[Direction::East as usize] = Some(ExitEdge {
+        dest: RoomId { map: 1, room: 3 },
+        exit_type: 0,
+    });
+    RoomGraph::from_rooms(vec![
+        (RoomId { map: 1, room: 1 }, gates),
+        (
+            RoomId { map: 1, room: 3 },
+            GraphRoom {
+                name: "Market Street".into(),
+                exits: Default::default(),
+            },
+        ),
+    ])
+}
+
+/// A step that never lands must give up on the clock, not hang. The
+/// deadline is configuration precisely so this is provable in
+/// milliseconds instead of the fifteen seconds that is right for a
+/// laggy live board.
+#[tokio::test]
+async fn a_step_that_never_lands_times_out_on_the_configured_deadline() {
+    let server = start().await;
+    let session = logged_in_session(server.local_addr()).await;
+    let nav = Navigator::new(
+        Arc::new(graph_with_a_phantom_exit()),
+        NavConfig {
+            step_timeout_ms: 200,
+        },
+    );
+
+    let started = std::time::Instant::now();
+    let err = nav
+        .goto(
+            &session,
+            RoomId { map: 1, room: 1 },
+            RoomId { map: 1, room: 3 },
+        )
+        .await
+        .expect_err("the board has no east exit here");
+
+    assert!(matches!(
+        err.kind,
+        NavErrorKind::Expect(mud_client::session::ExpectError::Timeout { .. })
+    ));
+    assert_eq!(err.at, RoomId { map: 1, room: 1 });
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "gave up on the hardcoded 15s deadline, not the configured 200ms"
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -231,7 +291,7 @@ async fn goto_without_route_fails_fast() {
 
 #[test]
 fn localize_finds_a_neighbor_by_name() {
-    let nav = Navigator::new(Arc::new(client_graph("Market Street")));
+    let nav = Navigator::new(Arc::new(client_graph("Market Street")), NavConfig::default());
     // From Town Square, east leads to Market Street.
     assert_eq!(
         nav.localize(RoomId { map: 1, room: 2 }, "Market Street"),
@@ -243,7 +303,7 @@ fn localize_finds_a_neighbor_by_name() {
 /// That is a legitimate answer, not a desync.
 #[test]
 fn localize_accepts_not_having_moved() {
-    let nav = Navigator::new(Arc::new(client_graph("Market Street")));
+    let nav = Navigator::new(Arc::new(client_graph("Market Street")), NavConfig::default());
     assert_eq!(
         nav.localize(RoomId { map: 1, room: 2 }, "Town Square"),
         Some(RoomId { map: 1, room: 2 })
@@ -255,13 +315,13 @@ fn localize_accepts_not_having_moved() {
 /// exists to prevent.
 #[test]
 fn localize_gives_up_on_a_room_that_is_not_adjacent() {
-    let nav = Navigator::new(Arc::new(client_graph("Market Street")));
+    let nav = Navigator::new(Arc::new(client_graph("Market Street")), NavConfig::default());
     assert_eq!(nav.localize(RoomId { map: 1, room: 1 }, "Market Street"), None);
     assert_eq!(nav.localize(RoomId { map: 1, room: 1 }, "Nowhere At All"), None);
 }
 
 #[test]
 fn localize_gives_up_when_the_starting_room_is_unknown() {
-    let nav = Navigator::new(Arc::new(client_graph("Market Street")));
+    let nav = Navigator::new(Arc::new(client_graph("Market Street")), NavConfig::default());
     assert_eq!(nav.localize(RoomId { map: 9, room: 9 }, "Town Square"), None);
 }
