@@ -744,19 +744,58 @@ d=4 (accuracy 32-39) than the d=5 we compute, which — if it survives a larger
 sample — would indict our ACCURACY derivation rather than the parry formula,
 and would sit alongside the two anomalies below as the same class of problem.
 
-**Open, and NOT settled by the above: the to-hit model.** The same transcripts
-give 31/37 = 0.838 connecting against a predicted 0.67, with the prediction
-just outside the 95% interval [0.680, 0.938]. Borderline at n=37, but it points
-the same way as a second anomaly the expedition tripped over: worn AC soaked
-far less damage than the port models — a grey spider (3..12) bit for 3 and 9,
-and a giant bat (2..5) for 2, 4 and 5, i.e. the full undiminished ranges,
-through a displayed `Armour Class: 13`. `build_player_defender` sets
-`armor = sum(worn item.ac)` = 130 and `calculate_attack` subtracts `armor/10`
-= 13, which would have made the character immune to both. If the DLL's armour
-word instead holds the DISPLAYED value (13, so a soak of 1), our soak is 10x
-too strong — and the same 10x question would apply to monster AC on the to-hit
-side, which is exactly where the discrepancy above appears. Both want their own
-capture; neither affects the parry result, which is counted directly.
+**RESOLVED (2026-07-26, same day): the armour anomaly was a column swap, not
+a 10x.** This paragraph originally read: worn AC soaked far less damage than
+the port models — a grey spider (3..12) bit for 3 and 9, and a giant bat
+(2..5) for 2, 4 and 5, i.e. the full undiminished ranges — and guessed that
+the DLL's armour word holds the DISPLAYED value, making our soak 10x too
+strong. That guess was wrong, and two of the facts it rested on were wrong
+with it.
+
+`move_player_to_fighter` (24786-24815) accumulates **two different item
+columns into two different fighter words**: `+0x342` (DB `ac`) into `[1]`,
+÷10 at 24866, which is the TO-HIT term; `+0x39c` (DB `dr`) into `[3]`, raw,
+which is the soak `calculate_attack` divides by 10 at 25335. The port had
+them crossed. Both columns ship pre-multiplied by 10 and are genuinely
+independent — 319 of the 565 AC-bearing shipped items carry no DR at all —
+so the effect was not a rescale: it invented resistance out of the AC of
+every piece of armour in the game.
+
+The transcripts pin both numbers, because the status line prints the pair
+(`get_armour_rating` 16956 → 31553-31556 divides both by 10). The acc-high
+set was gilded robes 70/0, chain coif 45/8, displacer fur cloak 10/0, beaded
+belt 0/0, violet orchid 0/0 — Σac **125**, Σdr **8** — and the board printed
+`Armour Class:  12/0`. Σdr/10 = 0 is exactly the soak the bats demonstrated.
+Σac/10 = 12 would have made that character immune.
+
+Two corrections to the original text:
+
+* **No transcript ever showed `Armour Class: 13`.** The three captures read
+  `12/0` (acc-high), `0/0` (acc-mid) and `0/0` (acc-mid2). The 13 came from
+  reasoning about a 130-`ac` tunic, not from a capture — and 130/13 turns out
+  to be `rigid leather tunic`'s ac/dr pair, i.e. the very two columns at
+  issue, which is how the coincidence went unnoticed.
+* **The smoky black talisman's -20 is ability 2 (AC), not accuracy.** The
+  item carries BOTH a -20 `accuracy` column and an AC(2) -20 ability, so the
+  acc-mid block varied the character's AC as well as their accuracy — which
+  is why its display reads `0/0` rather than `12/0`: 125 + (-20×10) = -75,
+  clamped at 0 by 17045-17048. The parry result is unaffected either way,
+  being counted directly over player swings.
+
+Fixed on branch `armour-columns`; pinned by
+`crates/mud-server/tests/armour_real_content.rs`, which reproduces `12/0`
+from the shipped columns with no board. The AC(2)/DR(7) dynamic
+accumulators (`+0x70c`/`+0x7b6`) were unported for players and now land too.
+
+**Still open: the to-hit model.** The same transcripts give 31/37 = 0.838
+connecting against a predicted 0.67, with the prediction just outside the
+95% interval [0.680, 0.938]. Borderline at n=37, and no longer supported by
+the armour anomaly, which has a different cause. It now has a fair test it
+did not have before — the player's evasion word was 0 for every geared
+character until this fix, so any earlier to-hit comparison was made against
+a defence the port was not applying. Re-measure before drawing anything from
+it. The monster side of the same question (whether template AC at
+`game.rs:12219` needs its own scale check) is untouched by this fix.
 
 Also unresolved: the board reports `Encumbrance: x/2880` for a Str-50
 character where `stats.rs` computes `str * 48` = 2400. Encumbrance feeds
