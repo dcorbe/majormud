@@ -1,5 +1,20 @@
 # M7 Content Systems — Design
 
+> **BRANCHING CHANGED, 2026-07-26.** Slices 1-5 and the slice-8 Dodge-parry
+> expedition were merged to `main` **mid-milestone**, together with the
+> `mud-client` track (C0-C9), and `main` is now a rolling trunk that both
+> tracks develop on. Since M0 `main` had carried only completed milestones;
+> that convention is retired. The reason is that the tracks were never really
+> independent — `crates/mud-client`'s parser tests call `mud_core::text`
+> directly, six of them boot `mud-server` in-process, and both write to
+> `re/oracle/` — so separate branches only let that coupling drift unnoticed.
+> The merge proved the point immediately: three client tests broke, one of
+> them because M7's crime system made a passive fixture monster unattackable,
+> and none of those breaks were visible while the branches were apart.
+>
+> Slices 6 (quest VM), 7 (gangs) and 8 (close-out) remain outstanding, and
+> `M7 PENDING` markers are live on `main`.
+
 Milestone 7 of the MUD reimplementation
 (`2026-07-16-mud-reimplementation-design.md`): quest text-block VM, gangs +
 `.HSE` guild houses, charm/pets, theft (full thief kit), crime/fame,
