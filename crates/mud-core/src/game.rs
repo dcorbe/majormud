@@ -12128,18 +12128,18 @@ impl Core {
             .worn
             .iter()
             .filter_map(|(id, _)| self.content.items.get(id))
-            .map(|i| i32::from(i.ac))
+            .map(|i| i32::from(i.evasion))
             .sum();
         let defense: i32 = (i32::from(
             player
                 .weapon
                 .and_then(|(id, _)| self.content.items.get(&id))
-                .map_or(0, |w| w.defense),
+                .map_or(0, |w| w.damage_resist),
         ) + player
             .worn
             .iter()
             .filter_map(|(id, _)| self.content.items.get(id))
-            .map(|i| i32::from(i.defense))
+            .map(|i| i32::from(i.damage_resist))
             .sum::<i32>())
             / 10;
         crate::combat::Fighter {

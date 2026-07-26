@@ -31,7 +31,7 @@ fn helmet() -> Item {
         weight: 60,
         item_type: 0,
         uses: -1,
-        ac: 20,
+        evasion: 20,
         worn_on: 2,
         gettable: 1,
         // +5 accuracy while worn, to prove abilities flow to the bag.

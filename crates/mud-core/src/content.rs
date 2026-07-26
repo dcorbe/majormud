@@ -373,8 +373,12 @@ pub struct Item {
     /// `+0x33e`/`+0x340` — weapon damage range.
     pub min_damage: i16,
     pub max_damage: i16,
-    /// `ac` column — armor value contribution (fighter [3] via Σ`+0x39c`).
-    pub ac: i16,
+    /// `+0x342` (`ac` column) — summed over WORN slots into fighter `[1]`,
+    /// then ÷10 (`move_player_to_fighter` 24788/24866). Feeds the TO-HIT
+    /// evasion term, not the damage soak; shown as the FIRST number of the
+    /// status line's `Armour Class: A/B`. Tenths scale — shipped values are
+    /// pre-multiplied by 10 (rigid leather tunic 130 → a displayed 13).
+    pub evasion: i16,
     /// `+0x394` — weapon sub-type/hands (1 or 3 = two-handed).
     pub weapon_type: i16,
     /// `+0x396` — armor class-strength requirement.
@@ -383,8 +387,13 @@ pub struct Item {
     pub worn_on: i16,
     /// `+0x39a` — to-hit/skill rating (feeds attacker accuracy).
     pub accuracy: i16,
-    /// `+0x342` — defense rating (feeds defender evasion /10).
-    pub defense: i16,
+    /// `+0x39c` (`dr` column) — summed over WORN slots into fighter `[3]`
+    /// RAW (`move_player_to_fighter` 24789); `calculate_attack` subtracts
+    /// `[3]/10` from damage (25335). This is the DAMAGE SOAK, and the
+    /// SECOND number of `Armour Class: A/B`. Same tenths scale as
+    /// [`Item::evasion`] — the two were wired to each other's word until
+    /// the 2026-07-26 oracle capture caught it (charm.md §8.3).
+    pub damage_resist: i16,
     /// 0 = fixture ("You don't see X here." on get).
     pub gettable: i16,
     /// `+0x42b` (`robable`) — rob_user's item-transfer gate
