@@ -63,3 +63,42 @@ fn cli_has_expected_subcommands() {
         );
     }
 }
+
+#[test]
+fn farm_subcommand_takes_profile_capture_and_content() {
+    use clap::Parser;
+    let cli = Cli::parse_from([
+        "mmc",
+        "farm",
+        "--profile",
+        "chars/nav.toml",
+        "--capture",
+        "out/farm1",
+        "--content",
+        "re/other.sqlite",
+    ]);
+    match cli.command {
+        mud_client::cli::Command::Farm {
+            profile,
+            capture,
+            content,
+        } => {
+            assert_eq!(profile.to_str(), Some("chars/nav.toml"));
+            assert_eq!(capture.as_deref().and_then(|p| p.to_str()), Some("out/farm1"));
+            assert_eq!(content.as_deref().and_then(|p| p.to_str()), Some("re/other.sqlite"));
+        }
+        _ => panic!("expected farm subcommand"),
+    }
+}
+
+/// Without --content the room database comes from [farm].content in the
+/// profile, so the flag has no default of its own to disagree with it.
+#[test]
+fn farm_content_defaults_to_the_profile() {
+    use clap::Parser;
+    let cli = Cli::parse_from(["mmc", "farm", "--profile", "chars/nav.toml"]);
+    match cli.command {
+        mud_client::cli::Command::Farm { content, .. } => assert_eq!(content, None),
+        _ => panic!("expected farm subcommand"),
+    }
+}

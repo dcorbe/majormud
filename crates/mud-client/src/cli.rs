@@ -47,6 +47,16 @@ pub enum Command {
         #[arg(long, default_value = "re/mmud_wgnt.sqlite")]
         content: PathBuf,
     },
-    /// Run a farming loop over a set of spawn rooms
-    Farm,
+    /// Walk the profile's patrol circuit, farming each stop
+    Farm {
+        /// Character profile (TOML); needs a [farm] table
+        #[arg(long)]
+        profile: PathBuf,
+        /// Capture basename: writes <capture>.raw and <capture>_timing.log
+        #[arg(long)]
+        capture: Option<PathBuf>,
+        /// Room database, overriding the profile's [farm].content
+        #[arg(long)]
+        content: Option<PathBuf>,
+    },
 }

@@ -17,10 +17,11 @@ fn main() -> ExitCode {
             capture,
         } => run_command(&script, &profile, capture.as_deref()),
         Command::Path { from, to, content } => path_command(&from, &to, &content),
-        Command::Farm => {
-            eprintln!("mmc farm: not implemented yet (C8)");
-            ExitCode::FAILURE
-        }
+        Command::Farm {
+            profile,
+            capture,
+            content,
+        } => farm_command(&profile, capture.as_deref(), content.as_deref()),
     }
 }
 
@@ -169,6 +170,113 @@ fn path_command(from: &str, to: &str, content: &std::path::Path) -> ExitCode {
             ExitCode::SUCCESS
         }
     }
+}
+
+fn farm_command(
+    profile_path: &std::path::Path,
+    capture: Option<&std::path::Path>,
+    content: Option<&std::path::Path>,
+) -> ExitCode {
+    use mud_client::farm::{FarmEnd, FarmPlan, run_farm};
+
+    let profile: Profile = match std::fs::read_to_string(profile_path)
+        .map_err(|e| e.to_string())
+        .and_then(|s| toml::from_str(&s).map_err(|e| e.to_string()))
+    {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("profile {}: {e}", profile_path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(farm_config) = profile.farm.clone() else {
+        eprintln!(
+            "profile {} has no [farm] table: nothing to patrol",
+            profile_path.display()
+        );
+        return ExitCode::FAILURE;
+    };
+    let bot_config = profile.bot.clone().unwrap_or_default();
+
+    // Load the graph and validate the whole circuit before connecting:
+    // a typo should cost nothing more than an error message.
+    let db = content.unwrap_or(&farm_config.content);
+    let graph = match mud_client::graph::RoomGraph::load(db) {
+        Ok(g) => Arc::new(g),
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let plan = match FarmPlan::build(&farm_config, &graph) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[farm]: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let capture = capture.map(|base| Capture {
+        raw: base.with_extension("raw"),
+        timing: Some(append_to_stem(base, "_timing.log")),
+    });
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("tokio runtime: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    rt.block_on(async {
+        let session = match Session::connect(&profile, capture).await {
+            Ok(s) => Arc::new(s),
+            Err(e) => {
+                eprintln!("connect {}:{}: {e}", profile.host, profile.port);
+                return ExitCode::FAILURE;
+            }
+        };
+        match mud_client::dialect::login(&session, &profile).await {
+            Ok(mud_client::dialect::LoginOutcome::InGame) => {}
+            Ok(mud_client::dialect::LoginOutcome::CharacterCreation) => {
+                if let Err(e) = mud_client::dialect::finish_creation(&session).await {
+                    eprintln!("character creation: {e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+            Err(e) => {
+                eprintln!("login: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+
+        // Ctrl-C hangs up where it stands. There is no session close
+        // API, and sending "x" would mean waiting out exit meditation
+        // while the operator has already asked to stop.
+        let outcome = tokio::select! {
+            r = run_farm(&session, graph.clone(), &plan, &bot_config, &farm_config) => Some(r),
+            _ = tokio::signal::ctrl_c() => None,
+        };
+        match outcome {
+            None => {
+                eprintln!("interrupted");
+                ExitCode::FAILURE
+            }
+            Some(Ok((end, stats))) => {
+                println!(
+                    "{end:?}: {} kills, {} laps, {} flees, {} slowdowns",
+                    stats.kills, stats.loops, stats.flees, stats.slowdowns
+                );
+                match end {
+                    FarmEnd::Died => ExitCode::FAILURE,
+                    _ => ExitCode::SUCCESS,
+                }
+            }
+            Some(Err(e)) => {
+                eprintln!("farm: {e}");
+                ExitCode::FAILURE
+            }
+        }
+    })
 }
 
 /// "out/run1" + "_timing.log" -> "out/run1_timing.log"
