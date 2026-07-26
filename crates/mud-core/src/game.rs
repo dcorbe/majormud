@@ -9680,13 +9680,16 @@ impl Core {
                 }
             }
             match result.outcome {
-                // combat_rounds.md §5: result 3 renders distinct
-                // dodge/parry flavor for the player view too — this
-                // conflation is a pre-existing M3 gap. ORACLE-VERIFY:
-                // needs a player-view capture of a monster
-                // dodging/parrying a swing.
-                Outcome::Dodged | Outcome::Parried => {
+                // combat_rounds.md §5: result 3 renders distinct dodge/parry
+                // flavor for the player view too. MEASURED (charm.md §8.3):
+                // it does — `You swing at giant bat who dodges your attack!`
+                // — so the two outcomes are rendered apart. Result 0 is the
+                // to-hit failure and keeps the plain miss line.
+                Outcome::Dodged => {
                     self.output_line(session, &text::player_miss(&miss_verb, &target_name));
+                }
+                Outcome::Parried => {
+                    self.output_line(session, &text::player_dodge(&miss_verb, &target_name));
                 }
                 Outcome::NoDamage => {
                     self.output_line(session, &text::player_glance(&miss_verb, &target_name));

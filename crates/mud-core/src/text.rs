@@ -918,8 +918,31 @@ pub fn player_hit(verb: &str, target: &str, damage: i32) -> String {
 }
 
 /// "You swing at kobold thief!" — the verb is the weapon's miss verb.
+/// This is result 0, the to-hit failure; result 3 has its own wording, see
+/// [`player_dodge`].
 pub fn player_miss(verb: &str, target: &str) -> String {
     format!("{}You {verb} {target}!{}", color::YOUR_MISS, color::RESET)
+}
+
+/// "You swing at kobold thief who dodges your attack!" — result 3, the
+/// defender's parry.
+///
+/// MEASURED (`charm.md` §8.3, `re/oracle/oracle_dodge_parry_*.raw`): the
+/// board words this apart from the plain miss above, which we used to
+/// render for both outcomes. WCCMMUD.DLL carries the template verbatim at
+/// file offset 0xca40d, `You %s %s who dodges your attack!` — one slot
+/// after the plain miss `You %s %s!` (0xca3ea) and one before the
+/// monster-side result-3 pair (0xca430 victim view, 0xca464 room view).
+///
+/// ORACLE-VERIFY: the COLOUR is assumed to match the plain miss; the
+/// capture that pinned the wording was ANSI-stripped, so the attribute
+/// bytes ahead of this line are still unmeasured.
+pub fn player_dodge(verb: &str, target: &str) -> String {
+    format!(
+        "{}You {verb} {target} who dodges your attack!{}",
+        color::YOUR_MISS,
+        color::RESET
+    )
 }
 
 /// "Your swing at kobold thief hits, but glances off its armour."

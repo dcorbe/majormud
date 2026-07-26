@@ -1192,3 +1192,34 @@ fn monster_dodge_ability_parries_player_swings() {
     assert_eq!(capped_hits, 4, "Dodge 50 pins the parry chance at its 95 cap");
     assert_eq!(capped_damage, 10, "almost nothing gets through");
 }
+
+#[test]
+fn a_parried_swing_renders_the_dodge_wording_not_a_plain_miss() {
+    // MEASURED (charm.md §8.3, `oracle_dodge_parry_*.raw`): the board words
+    // result 3 on the PLAYER-attacks-monster path apart from a plain miss --
+    //
+    //     You swing at giant bat who dodges your attack!
+    //
+    // and WCCMMUD.DLL carries the template verbatim at file offset 0xca40d,
+    // `You %s %s who dodges your attack!`, sitting one slot after the plain
+    // miss `You %s %s!` (0xca3ea) and one before the monster-side result-3
+    // pair (0xca430/0xca464). We rendered both outcomes as the plain miss,
+    // which is what this pins.
+    //
+    // Dodge 50 against Dain's accuracy 43 pins the parry chance at its 95
+    // cap, so a 40-round run is essentially all parries.
+    let mut content = world();
+    content.monsters.clear();
+    content.add_monster(sandbag(50));
+    let mut core = Core::new(content, config());
+    let s = create(&mut core, "Dain");
+    core.spawn_monster(MonsterId(11), RoomId { map: 1, room: 1 })
+        .expect("the sandbag spawns");
+    core.input(s, "attack sandbag");
+    core.drain_events();
+    let shown = text_to(&run_rounds(&mut core, 40), s);
+    assert!(
+        shown.contains("You swing at sandbag who dodges your attack!"),
+        "a parried swing must carry the dodge wording: {shown:?}"
+    );
+}
