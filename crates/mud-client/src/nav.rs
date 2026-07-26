@@ -96,7 +96,7 @@ impl Navigator {
 
                 // Stale room blocks (a prior look, an earlier step's
                 // echo) must not satisfy this step's verification.
-                while events.try_recv().is_ok() {}
+                crate::session::drain(&mut events);
                 session.send(dir_word(step));
                 let seen = self.wait_room(&mut events).await?;
                 if seen == expected_name {

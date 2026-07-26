@@ -537,7 +537,7 @@ async fn verify_start(
         .map(|r| r.name.clone())
         .unwrap_or_default();
     let mut events = session.events();
-    while events.try_recv().is_ok() {}
+    crate::session::drain(&mut events);
     session.send("look");
     let saw = next_room(session, &mut events, Duration::from_secs(15)).await;
     match saw {
@@ -642,7 +642,7 @@ async fn farm_stop(
     let mut recoveries_left = 3u32;
 
     let mut events = session.events();
-    while events.try_recv().is_ok() {}
+    crate::session::drain(&mut events);
 
     let mut bot = crate::bot::Bot::new(bot_config.clone());
     let mut gate = Gate::new(backoff);

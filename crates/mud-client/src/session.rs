@@ -389,6 +389,24 @@ impl Session {
     }
 }
 
+/// Throw away everything already queued on an event receiver.
+///
+/// `Lagged` is not `Empty`: tokio drops the oldest messages, reports the
+/// overflow once, and then hands back the oldest message still retained.
+/// So a drain written `while try_recv().is_ok() {}` stops at the lag with
+/// stale events still queued — and a stale room block is exactly what
+/// [`crate::nav::Navigator::goto`] drains to prevent, since one can
+/// satisfy the next step's arrival check and drift the position silently.
+pub fn drain(events: &mut broadcast::Receiver<Event>) {
+    use broadcast::error::TryRecvError;
+    loop {
+        match events.try_recv() {
+            Ok(_) | Err(TryRecvError::Lagged(_)) => continue,
+            Err(TryRecvError::Empty | TryRecvError::Closed) => return,
+        }
+    }
+}
+
 /// Fold an event into the rolling state; returns whether it changed.
 fn apply_event(state: &mut GameState, ev: &Event) -> bool {
     match ev {
