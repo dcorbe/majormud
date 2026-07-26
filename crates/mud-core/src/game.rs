@@ -12165,17 +12165,22 @@ impl Core {
     /// player-attacks-monster path and for both sides of
     /// `attack_monster_monster`, so the Dodge word is not m-v-m-specific.
     ///
-    /// ORACLE-VERIFY (slice 8): the parry word is a LIVE gameplay change
-    /// on the player-attacks-monster path — 167 of the 1101 shipped
-    /// templates carry Dodge(0x22) at values 10..200, and the chance
-    /// `parry*10 / (accuracy/8)` (capped 95, `calculate_attack`
+    /// MEASURED at the cap (charm.md §8.3, 2026-07-26): the parry word is a
+    /// LIVE gameplay change on the player-attacks-monster path — 167 of the
+    /// 1101 shipped templates carry Dodge(0x22) at values 10..200, and the
+    /// chance `parry*10 / (accuracy/8)` (capped 95, `calculate_attack`
     /// 25336-25360) turns roughly 28-80% of connecting player swings into
-    /// zero-damage parries (giant bat, Dodge 20 against a ~45-accuracy
-    /// character = 40%). That formula was recovered from the 16-bit
-    /// disassembly and has NEVER been checked against a capture, so this
-    /// wiring amplifies any error in it across a sixth of the bestiary.
-    /// Capture a grind against a Dodge-carrying template and compare the
-    /// observed miss rate. Pinned by
+    /// zero-damage parries. An expedition ground giant bats (Dodge 20) at
+    /// accuracy 23, i.e. denominator 2 and a predicted 95% cap, and got
+    /// 28/31 connecting swings parried, 95% CI [0.743, 0.980] — consistent
+    /// with 0.95 and excluding every lower step. The transcripts also favour
+    /// the cap being 95 rather than 100.
+    ///
+    /// ORACLE-VERIFY, still: the LINEAR region. Every measured point so far
+    /// saturates at the cap, so nothing yet distinguishes this formula from
+    /// any other rule that saturates there — grind a configuration whose
+    /// `floor(accuracy/8)` puts Dodge 20 below 95 (accuracy 40-47 predicts
+    /// 40%) and compare. Pinned for shape by
     /// `game_combat.rs::monster_dodge_ability_parries_player_swings`.
     ///
     /// UNPORTED, all inert on shipped data but NOT all dead code:

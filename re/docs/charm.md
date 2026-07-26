@@ -616,8 +616,15 @@ deliberate divergence from a bug.
 
 ### 8.2 Open — needs the live board (slice 8 oracle expedition)
 
-* **THE BIG ONE — the monster Dodge(0x22) parry, on the PLAYER-attacks-monster
-  path.** Slice 5 gave the shared `build_monster_defender` its parry word (`[8]`
+* ~~**THE BIG ONE — the monster Dodge(0x22) parry**~~ — **PARTLY MEASURED, see
+  §8.3.** The 2026-07-26 expedition confirmed the formula at its 95 cap
+  (28/31 connecting swings parried at a predicted 0.95) and found that the
+  board words result 3 apart from a plain miss, which our port conflated. The
+  LINEAR region of the step function is still open; so, newly, is the to-hit
+  model, which the same transcripts put in question. Original statement of the
+  problem retained below.
+
+  Slice 5 gave the shared `build_monster_defender` its parry word (`[8]`
   ← Dodge(0x22), `move_monster_to_fighter` 25185-25186). That build is not
   m-v-m-specific: the DLL runs the same function for a player's swing at a
   monster, so wiring it here changed **ordinary player melee against a sixth of
@@ -655,3 +662,67 @@ deliberate divergence from a bug.
 * **The whole live lifecycle**: charm a low monster, walk it, watch one assist round,
   attack it as the owner, let a second charm expire — every string in the tests above
   is decompile- or inference-derived, and wants retagging ORACLE → MEASURED.
+
+### 8.3 MEASURED (2026-07-26 expedition) — the Dodge parry
+
+Transcripts: `re/oracle/oracle_dodge_parry_acc-mid{,2}.raw` (+ timing logs),
+harness `tools/oracle/oracle_dodge_parry.py`, analysis
+`tools/oracle/oracle_dodge_stats.py`.
+
+**Method.** Oracle Delver (Dwarf Warrior, Str 50 / Agl 30, combat factor 6)
+swings a summoned wooden hammer (1..1 damage, accuracy 0) at giant bats
+(#71, AC 10, DR 1, Dodge(0x22) 20) in the caves under Newhaven. Str 50 adds
+no damage bonus, so every connect lands at exactly `1 - DR*10/10 = 0`: the bat
+never dies, and every connecting unparried swing renders as a glance. Accuracy
+is set by worn NEGATIVE-accuracy gear rather than by level, which decouples the
+step of `floor(accuracy/8)` being probed from the hit points the character
+needs to survive.
+
+**The rendering finding, which changes how this is measured at all.** The board
+words result 3 on the player-attacks-monster path DISTINCTLY:
+
+    You swing at giant bat who dodges your attack!
+
+against the plain to-hit miss `You swing at giant bat!`. `WCCMMUD.DLL` carries
+it verbatim at file offset **0xca40d**, `You %s %s who dodges your attack!`,
+sitting one slot after the plain miss (0xca3ea) and one before the monster-side
+result-3 pair (0xca430 victim view, 0xca464 room view) — so the player family
+is the same hit/miss/dodge triple the monster family already has. We rendered
+both outcomes as the plain miss; fixed, with `text::player_dodge`. The line's
+COLOUR is still unmeasured (the capture was ANSI-stripped) and inherits the
+plain miss's.
+
+Because the two are worded apart, the parry rate is counted DIRECTLY over
+connecting swings and does not depend on the to-hit model at all.
+
+**Result — the 95 cap holds.** Level 2 wearing the smoky black talisman
+(accuracy -20), encumbrance 24% → skill -7 → **accuracy 23**, so
+`floor(23/8) = 2` and `20*10/2 = 100` caps to a predicted **95%**:
+
+    swings 37:  dodge 28   glance 3   miss 6   hit 0
+    parry = 28/31 connecting = 0.903,  95% CI [0.743, 0.980]
+
+The interval contains 0.95 and excludes every lower step (d=3 → 0.66,
+d=4 → 0.50, d=5 → 0.40), and the no-parry null. The data also favours the cap
+being **95 rather than 100**: an uncapped `chance = 100` still fails on a roll
+of exactly 100, i.e. ~1% of connects get through, where a 95 cap lets ~5%
+through; we saw 3/31 = 9.7%, comfortable under 95 and unlikely (~0.3%) under
+100. Evidence, not proof.
+
+**Open, and NOT settled by the above: the to-hit model.** The same transcripts
+give 31/37 = 0.838 connecting against a predicted 0.67, with the prediction
+just outside the 95% interval [0.680, 0.938]. Borderline at n=37, but it points
+the same way as a second anomaly the expedition tripped over: worn AC soaked
+far less damage than the port models — a grey spider (3..12) bit for 3 and 9,
+and a giant bat (2..5) for 2, 4 and 5, i.e. the full undiminished ranges,
+through a displayed `Armour Class: 13`. `build_player_defender` sets
+`armor = sum(worn item.ac)` = 130 and `calculate_attack` subtracts `armor/10`
+= 13, which would have made the character immune to both. If the DLL's armour
+word instead holds the DISPLAYED value (13, so a soak of 1), our soak is 10x
+too strong — and the same 10x question would apply to monster AC on the to-hit
+side, which is exactly where the discrepancy above appears. Both want their own
+capture; neither affects the parry result, which is counted directly.
+
+Also unresolved: the board reports `Encumbrance: x/2880` for a Str-50
+character where `stats.rs` computes `str * 48` = 2400. Encumbrance feeds
+`skill` and hence accuracy, so this is not cosmetic.
