@@ -1,0 +1,28 @@
+[package]
+name = "mud-client"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.28"
+mud-core = { path = "../mud-core" }
+mlua = { version = "0.10", features = ["lua54", "vendored"] }
+regex = "1"
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time", "signal"] }
+toml = "0.8"
+
+[dev-dependencies]
+mud-server = { path = "../mud-server" }
+
+[[bin]]
+name = "mmc"
+path = "src/bin/mmc.rs"
+
+[lints]
+workspace = true
