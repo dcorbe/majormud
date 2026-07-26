@@ -927,10 +927,15 @@ async fn farm_stop(
                 // leg starts from where the plan believes we are.
                 return recover(session, nav, graph, stop, &room.name)
                     .await
-                    .map(|()| StopEnd::Dwelt);
+                    .map(|end| match end {
+                        RecoverEnd::Back => StopEnd::Dwelt,
+                        RecoverEnd::Died => StopEnd::Died,
+                    });
             }
             recoveries_left -= 1;
-            recover(session, nav, graph, stop, &room.name).await?;
+            if let RecoverEnd::Died = recover(session, nav, graph, stop, &room.name).await? {
+                return Ok(StopEnd::Died);
+            }
             // Back at the stop with a clean slate.
             events = session.events();
             bot = crate::bot::Bot::new(bot_config.clone());
@@ -974,20 +979,43 @@ async fn farm_stop(
     }
 }
 
+/// How a walk back ended.
+enum RecoverEnd {
+    Back,
+    Died,
+}
+
 /// Find out where a flee left us and walk back to the stop.
+///
+/// The walk back is guarded, but only against dying. Guarding it on hp%
+/// like an ordinary leg would break it outright: `recover` is called
+/// immediately after AutoFlee bolted at `flee_at_percent`, which sits
+/// *below* `interrupt_at_percent` by construction, so the guard would
+/// trip on the first prompt of every recovery and make walking back
+/// impossible exactly when it is needed. It would also want to defend
+/// where it stood, and the defending pump is what called `recover` —
+/// mutually recursive `async fn`s do not compile.
+///
+/// The character has already decided to run and the walk back is one
+/// hop. The only thing left worth stopping for is a death, which used
+/// to pass unnoticed here.
 async fn recover(
     session: &crate::session::Session,
     nav: &crate::nav::Navigator,
     graph: &RoomGraph,
     stop: RoomId,
     saw: &str,
-) -> Result<(), FarmError> {
+) -> Result<RecoverEnd, FarmError> {
     let _ = graph;
     let at = nav
         .localize(stop, saw)
         .ok_or_else(|| FarmError::Lost { saw: saw.into() })?;
-    nav.goto(session, at, stop, &mut crate::nav::NoGuard)
-        .await
-        .map(|_| ())
-        .map_err(FarmError::Nav)
+    let mut guard = FarmGuard::death_only(&session.profile().username);
+    match nav.goto(session, at, stop, &mut guard).await {
+        Ok(_) => Ok(RecoverEnd::Back),
+        Err(e) if matches!(e.kind, crate::nav::NavErrorKind::Interrupted(_)) => {
+            Ok(RecoverEnd::Died)
+        }
+        Err(e) => Err(FarmError::Nav(e)),
+    }
 }
