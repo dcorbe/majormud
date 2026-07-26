@@ -6,8 +6,9 @@
 //! adds the clamped dodge base twice (decompile line 13638), the DOS build
 //! once. The spec (WG3-NT) wins per the design's fidelity rule.
 
+use mud_core::ability::Ability;
 use mud_core::content::{
-    Class, ClassId, Content, Race, RaceId, Room, RoomId, StatBlock,
+    Class, ClassId, Content, Item, ItemId, Race, RaceId, Room, RoomId, StatBlock,
 };
 use mud_core::game::{AccountProfile, Core, CoreConfig, Event, Gender, SessionId};
 
@@ -176,4 +177,113 @@ fn new_character_hp_is_the_derived_maximum() {
     assert_eq!(persisted.current_mana, 0);
     assert_eq!(persisted.hp_base, 4);
     let _ = s;
+}
+
+/// A worn armour fixture: `+0x342` (`ac`), `+0x39c` (`dr`), `+0x396`
+/// (armour class-strength code, which selects the AC(Blur) divisor).
+fn gear(id: u16, name: &str, worn_on: i16, evasion: i16, damage_resist: i16) -> Item {
+    Item {
+        id: ItemId(id),
+        name: name.into(),
+        weight: 10,
+        item_type: 0,
+        uses: -1,
+        evasion,
+        damage_resist,
+        worn_on,
+        gettable: 1,
+        ..Item::default()
+    }
+}
+
+/// The 2026-07-26 oracle set, with the shipped columns verbatim
+/// (`re/mmud_wgnt.sqlite`): gilded robes ac 70 / dr 0, chain coif 45 / 8,
+/// displacer fur cloak 10 / 0, beaded belt 0 / 0, violet orchid 0 / 0.
+fn oracle_gear(content: &mut Content) {
+    content.add_item(gear(364, "gilded robes", 11, 70, 0));
+    content.add_item(gear(23, "chain coif", 2, 45, 8));
+    content.add_item(gear(1386, "displacer fur cloak", 7, 10, 0));
+    content.add_item(gear(1126, "beaded belt", 10, 0, 0));
+    content.add_item(gear(1919, "violet orchid", 16, 0, 0));
+}
+
+fn wear_all(core: &mut Core, s: SessionId, names: &[(u16, &str)]) {
+    for (id, name) in names {
+        core.give_item(s, ItemId(*id));
+        core.input(s, &format!("wear {name}"));
+    }
+    core.drain_events();
+}
+
+/// MEASURED (`re/oracle/oracle_dodge_parry_acc-high.raw`): Oracle Delver in
+/// exactly this set read `Armour Class:  12/0` on the live board.
+///
+/// `get_armour_rating` (16956) returns Σ`+0x342` and out-params Σ`+0x39c`;
+/// the status line divides BOTH by 10 (31553-31556). Σac = 70+45+10 = 125
+/// → 12; Σdr = 8 → 0. This is the pair that proves the two columns are not
+/// interchangeable — see `game_combat::worn_dr_soaks_damage_but_worn_ac_does_not`.
+#[test]
+fn geared_sheet_matches_the_measured_armour_class_pair() {
+    let mut content = world();
+    oracle_gear(&mut content);
+    let mut core = Core::new(content, config());
+    let s = create_dwarf_warrior(&mut core, "Oracle Delver");
+    wear_all(
+        &mut core,
+        s,
+        &[
+            (364, "robes"),
+            (23, "coif"),
+            (1386, "cloak"),
+            (1126, "belt"),
+            (1919, "orchid"),
+        ],
+    );
+
+    core.input(s, "stat");
+    let shown = text_to(&core.drain_events(), s);
+    assert!(
+        shown.contains("Armour Class:  12/0"),
+        "measured pair from the acc-high capture: {shown:?}"
+    );
+}
+
+/// The AC(2) ability reaches the DISPLAY, scaled by 10, and the result is
+/// clamped at 0 — `ac = Σ+0x342 + ability2*10; if (ac < 0) ac = 0` (17045-
+/// 17048). Note the odd calling convention that makes this easy to misread:
+/// `get_user_ability_value(7, -1, player, 2, &local_c)` collects ability 7
+/// into its RETURN (discarded here) and ability **2** into `local_c`
+/// (36832-36864) — so it is AC(2), not DR(7), that moves this number.
+///
+/// MEASURED: the same character wearing the smoky black talisman (ability
+/// 2 = -20) read `Armour Class:   0/0`, not `-8/0`
+/// (`oracle_dodge_parry_acc-mid.raw`). 125 + (-20*10) = -75, clamped.
+#[test]
+fn the_ac_ability_scales_by_ten_and_the_display_clamps_at_zero() {
+    let mut content = world();
+    oracle_gear(&mut content);
+    let mut talisman = gear(608, "smoky black talisman", 8, 0, 0);
+    talisman.abilities = vec![(Ability::AC, -20)];
+    content.add_item(talisman);
+    let mut core = Core::new(content, config());
+    let s = create_dwarf_warrior(&mut core, "Oracle Delver");
+    wear_all(
+        &mut core,
+        s,
+        &[
+            (364, "robes"),
+            (23, "coif"),
+            (1386, "cloak"),
+            (1126, "belt"),
+            (1919, "orchid"),
+            (608, "talisman"),
+        ],
+    );
+
+    core.input(s, "stat");
+    let shown = text_to(&core.drain_events(), s);
+    assert!(
+        shown.contains("Armour Class:   0/0"),
+        "clamped, not -8: {shown:?}"
+    );
 }
