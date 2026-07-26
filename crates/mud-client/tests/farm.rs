@@ -6,7 +6,8 @@
 use std::time::{Duration, Instant};
 
 use mud_client::events::Event;
-use mud_client::farm::{ACK_TIMEOUT, FarmConfig, FarmPlan, Gate, parse_room_id};
+use mud_client::bot::BotConfig;
+use mud_client::farm::{ACK_TIMEOUT, FarmConfig, FarmPlan, Gate, HealWatch, parse_room_id};
 use mud_client::graph::{ExitEdge, GraphRoom, RoomGraph};
 use mud_core::content::{Direction, RoomId};
 
@@ -282,4 +283,125 @@ fn next_deadline_is_when_the_backoff_ends() {
 
     g.on_event(&Event::SlowDown, t0);
     assert_eq!(g.next_deadline(), Some(t0 + BACKOFF));
+}
+
+// ---------------------------------------------------------------------
+// HealWatch: the trigger for Bot::rearm.
+//
+// The bot's heal latch clears only when HP climbs back over the
+// threshold. A heal that never lands therefore latches it forever — the
+// character sits at 30% and never rests again. bot.rs documents that
+// "the runner calls rearm() when it sees the heal was refused", but no
+// detector existed. No refusal wording appears anywhere in the 51
+// captured transcripts and the Rust server has no rest command at all,
+// so there is no line to match; inventing one would be a fixture tidier
+// than the board. This watches for *progress* instead, on the board's
+// own clock: prompts.
+// ---------------------------------------------------------------------
+
+fn heal_watch(refused: &[&str]) -> HealWatch {
+    let bot = BotConfig {
+        heal_command: "rest".into(),
+        ..BotConfig::default()
+    };
+    let farm = FarmConfig {
+        heal_retry_prompts: 3,
+        heal_refused: refused.iter().map(|s| (*s).to_string()).collect(),
+        ..FarmConfig::default()
+    };
+    HealWatch::new(&bot, &farm)
+}
+
+#[test]
+fn a_heal_that_never_moves_hp_gives_up_and_rearms() {
+    let mut w = heal_watch(&[]);
+    w.on_sent("rest");
+
+    assert!(!w.on_event(&prompt(12)), "first prompt sets the baseline");
+    assert!(!w.on_event(&prompt(12)));
+    assert!(w.on_event(&prompt(12)), "three flat prompts means it never landed");
+}
+
+/// Once it has given up it must go quiet, or every later prompt rearms
+/// the bot and the heal floods right back.
+#[test]
+fn it_rearms_only_once_per_heal() {
+    let mut w = heal_watch(&[]);
+    w.on_sent("rest");
+    for _ in 0..2 {
+        w.on_event(&prompt(12));
+    }
+    assert!(w.on_event(&prompt(12)));
+    assert!(!w.on_event(&prompt(12)), "kept rearming after giving up");
+    assert!(!w.on_event(&prompt(12)));
+}
+
+#[test]
+fn a_heal_that_is_working_never_rearms() {
+    let mut w = heal_watch(&[]);
+    w.on_sent("rest");
+    assert!(!w.on_event(&prompt(12)));
+    // Any climb at all is the heal doing its job.
+    assert!(!w.on_event(&prompt(13)));
+    assert!(!w.on_event(&prompt(14)));
+    assert!(!w.on_event(&prompt(14)), "stopped watching once HP moved");
+}
+
+/// Losing HP is not progress either — resting through a beating heals
+/// nothing, and the bot needs to be free to act again.
+#[test]
+fn a_heal_that_is_losing_ground_rearms() {
+    let mut w = heal_watch(&[]);
+    w.on_sent("rest");
+    assert!(!w.on_event(&prompt(12)));
+    assert!(!w.on_event(&prompt(10)));
+    assert!(w.on_event(&prompt(8)));
+}
+
+#[test]
+fn prompts_do_nothing_when_no_heal_is_outstanding() {
+    let mut w = heal_watch(&[]);
+    for _ in 0..10 {
+        assert!(!w.on_event(&prompt(12)));
+    }
+}
+
+#[test]
+fn only_the_heal_command_arms_it() {
+    let mut w = heal_watch(&[]);
+    w.on_sent("a rat");
+    for _ in 0..5 {
+        assert!(!w.on_event(&prompt(12)));
+    }
+}
+
+/// The escape hatch for when a real refusal line is finally captured off
+/// the live board: no waiting three prompts, rearm on the spot.
+#[test]
+fn a_configured_refusal_line_rearms_immediately() {
+    let mut w = heal_watch(&["You can't rest"]);
+    w.on_sent("rest");
+    assert!(w.on_event(&Event::Line(
+        "You can't rest while enemies are near!".into()
+    )));
+}
+
+#[test]
+fn a_refusal_line_is_ignored_when_no_heal_is_outstanding() {
+    let mut w = heal_watch(&["You can't rest"]);
+    assert!(!w.on_event(&Event::Line("You can't rest here.".into())));
+}
+
+/// A fresh heal restarts the watch: new baseline, new patience.
+#[test]
+fn resending_the_heal_restarts_the_watch() {
+    let mut w = heal_watch(&[]);
+    w.on_sent("rest");
+    w.on_event(&prompt(12));
+    w.on_event(&prompt(12));
+
+    w.on_sent("rest");
+    assert!(!w.on_event(&prompt(12)), "baseline should have reset");
+    assert!(!w.on_event(&prompt(12)));
+    assert!(w.on_event(&prompt(12)));
 }

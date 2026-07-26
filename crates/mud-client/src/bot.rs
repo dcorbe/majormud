@@ -120,6 +120,12 @@ impl Bot {
         self.fled = false;
     }
 
+    /// The name currently under attack. The runner reads this to tell a
+    /// quiet room from an unfinished fight.
+    pub fn engaged(&self) -> Option<&str> {
+        self.engaged.as_deref()
+    }
+
     /// Feed one parsed event; returns the commands to send now.
     pub fn on_event(&mut self, ev: &Event) -> Vec<BotAction> {
         match ev {

@@ -227,3 +227,100 @@ impl Gate {
         }
     }
 }
+
+/// Decides when a heal has plainly failed, so the runner can call
+/// [`crate::bot::Bot::rearm`].
+///
+/// The bot's heal latch clears only when HP climbs back over the
+/// threshold, so a heal that never lands latches it forever: the
+/// character sits wounded and never rests again. `bot.rs` documents that
+/// the runner rearms it "when it sees the heal was refused" — but there
+/// is nothing to see. No refusal wording survives in any of the 51
+/// captured transcripts, and the Rust server has no rest command at all,
+/// so a string predicate would be a fixture tidier than the board.
+///
+/// This watches for *progress* instead, clocked by the board's own
+/// prompts: a heal that has not moved HP after `heal_retry_prompts`
+/// prompts never landed, whatever the reason. `[farm].heal_refused`
+/// remains as the escape hatch for the day a real refusal line is
+/// finally captured off the live board.
+///
+/// Note that [`crate::bot::Bot::rearm`] releases the flee latch along
+/// with the heal, so a rearm may also let a wounded character run again.
+/// That is the right outcome: if resting is not working, leaving is the
+/// other option.
+pub struct HealWatch {
+    heal_command: String,
+    retry_prompts: u32,
+    refused: Vec<String>,
+    /// HP at the first prompt after the heal went out; `None` until then.
+    baseline: Option<i32>,
+    /// Prompts seen since the heal went out. `None` = not watching.
+    prompts: Option<u32>,
+}
+
+impl HealWatch {
+    pub fn new(bot: &crate::bot::BotConfig, farm: &FarmConfig) -> Self {
+        HealWatch {
+            heal_command: bot.heal_command.clone(),
+            retry_prompts: farm.heal_retry_prompts,
+            refused: farm.heal_refused.clone(),
+            baseline: None,
+            prompts: None,
+        }
+    }
+
+    /// Called for every command the gate actually releases. A fresh heal
+    /// restarts the watch: new baseline, new patience.
+    pub fn on_sent(&mut self, line: &str) {
+        if line == self.heal_command {
+            self.baseline = None;
+            self.prompts = Some(0);
+        }
+    }
+
+    /// Returns true exactly once per heal, when it is time to rearm.
+    pub fn on_event(&mut self, ev: &Event) -> bool {
+        if self.prompts.is_none() {
+            return false;
+        }
+        match ev {
+            Event::Line(line) => {
+                if self.refused.iter().any(|r| line.contains(r.as_str())) {
+                    self.stop();
+                    return true;
+                }
+                false
+            }
+            Event::Prompt { hp, .. } => {
+                let seen = self.prompts.unwrap_or(0) + 1;
+                self.prompts = Some(seen);
+                match self.baseline {
+                    // First prompt after the heal: this is the mark to beat.
+                    None => {
+                        self.baseline = Some(*hp);
+                        false
+                    }
+                    // Any climb at all is the heal doing its job.
+                    Some(base) if *hp > base => {
+                        self.stop();
+                        false
+                    }
+                    Some(_) => {
+                        if seen >= self.retry_prompts {
+                            self.stop();
+                            return true;
+                        }
+                        false
+                    }
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn stop(&mut self) {
+        self.baseline = None;
+        self.prompts = None;
+    }
+}

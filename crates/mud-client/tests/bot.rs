@@ -362,3 +362,31 @@ fn stays_quiet_while_downed() {
         .is_empty()
     );
 }
+
+/// The runner needs to know whether a fight is still on: a stop is only
+/// "idle" — and therefore finished — when nothing is engaged.
+#[test]
+fn engaged_reports_the_current_target() {
+    let mut bot = combat_bot();
+    assert_eq!(bot.engaged(), None);
+
+    bot.on_event(&room(&["kobold thief"]));
+    assert_eq!(bot.engaged(), Some("kobold thief"));
+
+    // Death lines name the template, and end the fight.
+    bot.on_event(&Event::Line(
+        "The kobold thief falls to the ground with a shrill cry.".into(),
+    ));
+    assert_eq!(bot.engaged(), None);
+}
+
+#[test]
+fn engaged_clears_when_the_target_walks_off() {
+    let mut bot = combat_bot();
+    bot.on_event(&room(&["kobold thief"]));
+    bot.on_event(&Event::ActorLeft {
+        name: "kobold thief".into(),
+        to: Some("west".into()),
+    });
+    assert_eq!(bot.engaged(), None);
+}
