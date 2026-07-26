@@ -238,12 +238,15 @@ async fn the_fixture_world_spawns_a_rat_that_can_be_killed() {
         .expect("the rat should die and print its death line");
 }
 
-/// The in-process server answers input and then goes quiet: it does not
-/// reprint the prompt on a regen tick the way the live board does. A
-/// dwell rule that only counted prompts would therefore wait forever
-/// here — which is why the runner pokes with a `look` when it has been
-/// idle, and counts the prompts that come back. The poke doubles as a
-/// respawn check, so it earns its keep against the real board too.
+/// The server answers input and then goes quiet — and so does the real
+/// board, for minutes at a time (`tests/board_cadence.rs`). Neither
+/// sends a prompt to an idle session, so a dwell rule that only counted
+/// prompts would wait forever on both. That is why the runner pokes an
+/// idle stop with a `look` and counts the answers.
+///
+/// The poke interval here is far below the shipped default: these tests
+/// want the dwell to expire in milliseconds, not the fifteen seconds
+/// that is right for a live board.
 fn farm_config(circuit: &[&str], loops: u32) -> FarmConfig {
     FarmConfig {
         start: "1/1".into(),

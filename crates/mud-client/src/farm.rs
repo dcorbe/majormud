@@ -60,10 +60,19 @@ pub struct FarmConfig {
     /// input ("Why don't you slow down for a few seconds?").
     pub slowdown_backoff_ms: u64,
     /// How long a stop may go quiet before the runner pokes it with a
-    /// `look`. The live board reprints the prompt on every regen tick, so
-    /// the poke rarely fires there; the in-process server answers input
-    /// and then goes silent, where without it a dwell rule that counts
-    /// prompts would wait forever. The poke doubles as a respawn check.
+    /// `look`.
+    ///
+    /// An idle board sends **nothing** — not a prompt, not a tick, for
+    /// minutes at a stretch (`tests/board_cadence.rs` measures silences
+    /// past an hour, one of them while the character sat wounded at
+    /// 15/51). So the poke is not a fallback for a quiet test server: it
+    /// is the only thing that produces prompts at an empty stop on any
+    /// board, and a dwell rule that waited for them unaided would wait
+    /// forever everywhere. The poke doubles as a respawn check.
+    ///
+    /// Keep it slow. Flood control is measured at eight sends 1.3s
+    /// apart, barely under the MbbsEmu pacer's 1500ms floor, and the
+    /// poke is pure overhead on top of everything else the runner sends.
     pub idle_poke_ms: u64,
     /// Prompts to wait for a heal to show progress before concluding it
     /// never landed and re-arming the policy.
@@ -86,7 +95,10 @@ impl Default for FarmConfig {
             dwell_idle_prompts: 3,
             depart_at_percent: 80,
             slowdown_backoff_ms: 5000,
-            idle_poke_ms: 2000,
+            // 5s x the 3-prompt dwell leaves an empty stop after about
+            // fifteen seconds, while keeping idle traffic well clear of
+            // the flood-control rate.
+            idle_poke_ms: 5000,
             heal_retry_prompts: 3,
             heal_refused: Vec::new(),
         }

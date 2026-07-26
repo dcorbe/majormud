@@ -142,9 +142,10 @@ fn does_not_repeat_heal_while_still_hurt() {
         bot.on_event(&Event::Prompt { hp: 19, mana: None }),
         vec![BotAction::Send("rest".into())]
     );
-    // The board reprints the prompt on every regen tick, and these are
-    // all still inside the heal band. One "rest" covers them; re-sending
-    // on each prompt trips flood control.
+    // Prompts arrive in bursts — async output disturbs the dangling
+    // prompt and the board re-prompts — and these are all still inside
+    // the heal band. One "rest" covers them; re-sending on each prompt
+    // trips flood control.
     assert!(
         bot.on_event(&Event::Prompt { hp: 18, mana: None })
             .is_empty()
@@ -303,8 +304,8 @@ fn flees_once_per_room_not_once_per_prompt() {
     });
     bot.on_event(&room(&[]));
     assert_eq!(bot.on_event(&Event::Prompt { hp: 8, mana: None }).len(), 1);
-    // Prompts arrive per regen tick and can even double up on one
-    // physical line; flooding movement while dying is the worst case.
+    // Prompts arrive in bursts and can even double up on one physical
+    // line; flooding movement while dying is the worst case.
     assert!(
         bot.on_event(&Event::Prompt { hp: 7, mana: None })
             .is_empty()

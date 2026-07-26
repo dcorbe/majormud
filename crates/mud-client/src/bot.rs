@@ -93,9 +93,9 @@ pub struct Bot {
     engaged: Option<String>,
     /// Exits from the most recent room block — the flee routes.
     exits: Vec<String>,
-    /// A heal is already in flight; suppresses one per regen tick.
+    /// A heal is already in flight; suppresses one per prompt.
     healing: bool,
-    /// Already fled this room; suppresses one per regen tick.
+    /// Already fled this room; suppresses one per prompt.
     fled: bool,
 }
 
@@ -175,8 +175,16 @@ impl Bot {
 
     /// Percent-of-max policies. Flee outranks heal: staying to heal is
     /// what gets a character killed. Both fire once and re-arm on a
-    /// change of situation — prompts reprint on every regen tick (and
-    /// can double up on one line), so an undebounced policy floods.
+    /// change of situation, because prompts arrive in bursts: async
+    /// output disturbs the dangling prompt and the board re-prompts, so
+    /// several can land in a row — `[HP=31]:[HP=32]:` on one physical
+    /// line — while the situation has not changed at all. Deciding per
+    /// prompt would send a command per burst and trip flood control,
+    /// which is measured at eight sends 1.3s apart (see
+    /// `tests/board_cadence.rs`).
+    ///
+    /// Note the bursts come from output, not from a timer: an idle board
+    /// sends nothing whatsoever, for minutes at a stretch.
     fn on_hp(&mut self, hp: i32) -> Vec<BotAction> {
         // Downed: commands do not land, and HP reads negative.
         if self.config.max_hp <= 0 || hp <= 0 {
