@@ -125,6 +125,8 @@ async fn logged_in_session(addr: std::net::SocketAddr) -> Arc<Session> {
         username: "Nav".into(),
         password: "pw".into(),
         pace_ms: Some(0),
+        bot: None,
+        farm: None,
     };
     let session = Arc::new(Session::connect(&profile, None).await.unwrap());
     let outcome = dialect::login(&session, &profile).await.unwrap();

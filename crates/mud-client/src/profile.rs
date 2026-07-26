@@ -4,7 +4,9 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::bot::BotConfig;
 use crate::dialect::Target;
+use crate::farm::FarmConfig;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Profile {
@@ -17,6 +19,14 @@ pub struct Profile {
     /// the live board (flood control), 0 for the Rust server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pace_ms: Option<u64>,
+    /// Bot policy toggles. Absent means every toggle off — a patrol that
+    /// walks its circuit and fights nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot: Option<BotConfig>,
+    /// Patrol circuit for `mmc farm`. Absent means the character has no
+    /// farming route configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub farm: Option<FarmConfig>,
 }
 
 impl Profile {

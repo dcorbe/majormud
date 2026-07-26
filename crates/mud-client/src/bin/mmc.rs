@@ -134,14 +134,8 @@ fn run_command(
 }
 
 fn path_command(from: &str, to: &str, content: &std::path::Path) -> ExitCode {
-    fn parse_room(s: &str) -> Option<mud_core::content::RoomId> {
-        let (map, room) = s.split_once('/')?;
-        Some(mud_core::content::RoomId {
-            map: map.parse().ok()?,
-            room: room.parse().ok()?,
-        })
-    }
-    let (Some(from), Some(to)) = (parse_room(from), parse_room(to)) else {
+    use mud_client::farm::parse_room_id;
+    let (Some(from), Some(to)) = (parse_room_id(from), parse_room_id(to)) else {
         eprintln!("rooms must be map/room, e.g. 1/1");
         return ExitCode::FAILURE;
     };

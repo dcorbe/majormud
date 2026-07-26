@@ -57,6 +57,62 @@ fn explicit_pace_overrides_target_default() {
     assert_eq!(p.pace(), Duration::from_millis(200));
 }
 
+/// Every profile written before C8 has neither table; both must stay
+/// optional or `mmc play` breaks for existing characters.
+#[test]
+fn profile_without_bot_or_farm_tables_still_parses() {
+    let p: Profile = toml::from_str(
+        r#"
+        target = "rust"
+        host = "127.0.0.1"
+        port = 2325
+        username = "Alice"
+        password = "pw"
+        "#,
+    )
+    .unwrap();
+    assert_eq!(p.bot, None);
+    assert_eq!(p.farm, None);
+}
+
+#[test]
+fn bot_and_farm_tables_parse_and_round_trip() {
+    let p: Profile = toml::from_str(
+        r#"
+        target = "rust"
+        host = "127.0.0.1"
+        port = 2325
+        username = "Alice"
+        password = "pw"
+
+        [bot]
+        auto_combat = true
+        auto_heal = true
+        max_hp = 35
+
+        [farm]
+        start = "1/1"
+        circuit = ["1/2", "1/3"]
+        loops = 2
+        "#,
+    )
+    .unwrap();
+
+    let bot = p.bot.clone().expect("[bot] table");
+    assert!(bot.auto_combat);
+    assert_eq!(bot.max_hp, 35);
+    // Unlisted toggles keep BotConfig's defaults rather than erroring.
+    assert!(!bot.auto_get);
+
+    let farm = p.farm.clone().expect("[farm] table");
+    assert_eq!(farm.start, "1/1");
+    assert_eq!(farm.circuit, vec!["1/2".to_string(), "1/3".to_string()]);
+    assert_eq!(farm.loops, 2);
+
+    let back: Profile = toml::from_str(&toml::to_string(&p).unwrap()).unwrap();
+    assert_eq!(p, back);
+}
+
 #[test]
 fn profile_round_trips() {
     let p: Profile = toml::from_str(

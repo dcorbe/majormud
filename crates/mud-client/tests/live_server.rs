@@ -103,6 +103,8 @@ fn rust_profile(addr: std::net::SocketAddr) -> Profile {
         username: "Alice".into(),
         password: "hunter2".into(),
         pace_ms: None,
+        bot: None,
+        farm: None,
     }
 }
 
@@ -234,6 +236,8 @@ async fn mbbs_dialect_login_flow() {
         username: "Oracle".into(),
         password: "test123".into(),
         pace_ms: Some(0), // no flood pacing against the fake
+        bot: None,
+        farm: None,
     };
     let session = Session::connect(&profile, None).await.expect("connect");
     let outcome = dialect::login(&session, &profile).await.expect("login");
