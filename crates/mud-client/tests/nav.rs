@@ -209,3 +209,50 @@ async fn goto_without_route_fails_fast() {
         .expect_err("no route");
     assert!(matches!(err, NavError::NoRoute));
 }
+
+// ---------------------------------------------------------------------
+// localize: which room is this, given where we were?
+//
+// goto has always needed this to recover from a step that landed
+// somewhere unexpected. The farm runner needs the same answer for a
+// different reason: AutoFlee moves the character with no navigator
+// involved, so before it can walk back it has to work out where "back"
+// is from. Same question, same one-hop assumption, one implementation.
+// ---------------------------------------------------------------------
+
+#[test]
+fn localize_finds_a_neighbor_by_name() {
+    let nav = Navigator::new(Arc::new(client_graph("Market Street")));
+    // From Town Square, east leads to Market Street.
+    assert_eq!(
+        nav.localize(RoomId { map: 1, room: 2 }, "Market Street"),
+        Some(RoomId { map: 1, room: 3 })
+    );
+}
+
+/// A step that did not take: the room name is still the one we were in.
+/// That is a legitimate answer, not a desync.
+#[test]
+fn localize_accepts_not_having_moved() {
+    let nav = Navigator::new(Arc::new(client_graph("Market Street")));
+    assert_eq!(
+        nav.localize(RoomId { map: 1, room: 2 }, "Town Square"),
+        Some(RoomId { map: 1, room: 2 })
+    );
+}
+
+/// More than one hop away, or not in the graph at all. The caller must
+/// stop rather than guess — walking blind is what verified navigation
+/// exists to prevent.
+#[test]
+fn localize_gives_up_on_a_room_that_is_not_adjacent() {
+    let nav = Navigator::new(Arc::new(client_graph("Market Street")));
+    assert_eq!(nav.localize(RoomId { map: 1, room: 1 }, "Market Street"), None);
+    assert_eq!(nav.localize(RoomId { map: 1, room: 1 }, "Nowhere At All"), None);
+}
+
+#[test]
+fn localize_gives_up_when_the_starting_room_is_unknown() {
+    let nav = Navigator::new(Arc::new(client_graph("Market Street")));
+    assert_eq!(nav.localize(RoomId { map: 9, room: 9 }, "Town Square"), None);
+}

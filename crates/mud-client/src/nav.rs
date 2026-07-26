@@ -110,22 +110,7 @@ impl Navigator {
                         saw: Some(seen),
                     });
                 }
-                // Re-localize: did we land in a known neighbor (or not
-                // move at all)?
-                let neighbors = self
-                    .graph
-                    .room(current)
-                    .into_iter()
-                    .flat_map(|r| r.exits.iter().flatten().map(|e| e.dest))
-                    .chain([current]);
-                let mut found = None;
-                for id in neighbors {
-                    if self.graph.room(id).is_some_and(|r| r.name == seen) {
-                        found = Some(id);
-                        break;
-                    }
-                }
-                match found {
+                match self.localize(current, &seen) {
                     Some(id) => {
                         current = id;
                         continue 'replan;
@@ -140,6 +125,27 @@ impl Navigator {
             }
             return Ok(());
         }
+    }
+
+    /// Work out which room `seen` names, given that we were just in
+    /// `at`. Only `at` itself and its immediate neighbors are considered:
+    /// one unexpected step is recoverable, an arbitrary jump is not, and
+    /// room names repeat across the ~26k-room world so a global search
+    /// would confidently return the wrong room.
+    ///
+    /// `Some(at)` means the move never took — a legitimate answer, not a
+    /// desync. `None` means stop and say so rather than guess.
+    ///
+    /// [`Navigator::goto`] uses this to recover a mis-stepped route; the
+    /// farm runner uses it to find out where an AutoFlee left the
+    /// character, since fleeing moves it with no navigator involved.
+    pub fn localize(&self, at: RoomId, seen: &str) -> Option<RoomId> {
+        self.graph
+            .room(at)
+            .into_iter()
+            .flat_map(|r| r.exits.iter().flatten().map(|e| e.dest))
+            .chain([at])
+            .find(|&id| self.graph.room(id).is_some_and(|r| r.name == seen))
     }
 
     /// Next RoomSeen name within the step timeout.
