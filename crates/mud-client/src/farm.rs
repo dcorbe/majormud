@@ -575,10 +575,10 @@ async fn travel(
     _stats: &mut FarmStats,
 ) -> Result<(), FarmError> {
     wait_for_departure_health(session, cfg, bot_config).await;
-    nav.goto(session, *current, stop)
+    *current = nav
+        .goto(session, *current, stop)
         .await
         .map_err(FarmError::Nav)?;
-    *current = stop;
     Ok(())
 }
 
@@ -782,5 +782,8 @@ async fn recover(
     let at = nav
         .localize(stop, saw)
         .ok_or_else(|| FarmError::Lost { saw: saw.into() })?;
-    nav.goto(session, at, stop).await.map_err(FarmError::Nav)
+    nav.goto(session, at, stop)
+        .await
+        .map(|_| ())
+        .map_err(FarmError::Nav)
 }

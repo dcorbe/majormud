@@ -9,26 +9,38 @@ use crate::graph::RoomGraph;
 use crate::session::{ExpectError, Session};
 use mud_core::content::{Direction, RoomId};
 
+/// A walk that did not finish, and — always — where it left the
+/// character standing.
+///
+/// `at` is the last room the walk actually *verified* by name, which is
+/// the only position a caller can act on: recovery has to start from
+/// somewhere true, and neither the room the walk set off from nor the
+/// one it was aiming at is that.
 #[derive(Debug)]
-pub enum NavError {
+pub struct NavError {
+    pub at: RoomId,
+    pub kind: NavErrorKind,
+}
+
+#[derive(Debug)]
+pub enum NavErrorKind {
     NoRoute,
     /// The room we arrived in does not match the graph's expectation
     /// and could not be re-localized among neighbors.
-    Desync {
-        expected: String,
-        saw: Option<String>,
-    },
+    Desync { expected: String, saw: String },
     Expect(ExpectError),
 }
 
 impl std::fmt::Display for NavError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            NavError::NoRoute => write!(f, "no route to target"),
-            NavError::Desync { expected, saw } => {
+        let RoomId { map, room } = self.at;
+        write!(f, "at {map}/{room}: ")?;
+        match &self.kind {
+            NavErrorKind::NoRoute => write!(f, "no route to target"),
+            NavErrorKind::Desync { expected, saw } => {
                 write!(f, "desync: expected {expected:?}, saw {saw:?}")
             }
-            NavError::Expect(e) => write!(f, "{e}"),
+            NavErrorKind::Expect(e) => write!(f, "{e}"),
         }
     }
 }
@@ -72,58 +84,78 @@ impl Navigator {
     /// destination room name. On mismatch, re-localize among the
     /// previous room's neighbors and re-route; abort after repeated
     /// failures.
-    pub async fn goto(&self, session: &Session, from: RoomId, to: RoomId) -> Result<(), NavError> {
+    ///
+    /// Returns the room the walk ended in — `to` on success, and on
+    /// failure [`NavError::at`] carries the last room it verified.
+    pub async fn goto(
+        &self,
+        session: &Session,
+        from: RoomId,
+        to: RoomId,
+    ) -> Result<RoomId, NavError> {
         let mut current = from;
         let mut failures = 0u32;
         let mut events = session.events();
         'replan: loop {
             if current == to {
-                return Ok(());
+                return Ok(current);
             }
-            let route = self.graph.route(current, to).ok_or(NavError::NoRoute)?;
+            let route = self
+                .graph
+                .route(current, to)
+                .ok_or(NavErrorKind::NoRoute)
+                .map_err(|kind| NavError { at: current, kind })?;
             for step in route {
                 let expected_id = self
                     .graph
                     .room(current)
                     .and_then(|r| r.exits[step as usize].as_ref())
                     .map(|e| e.dest)
-                    .ok_or(NavError::NoRoute)?;
+                    .ok_or(NavError {
+                        at: current,
+                        kind: NavErrorKind::NoRoute,
+                    })?;
                 let expected_name = self
                     .graph
                     .room(expected_id)
                     .map(|r| r.name.clone())
-                    .ok_or(NavError::NoRoute)?;
+                    .ok_or(NavError {
+                        at: current,
+                        kind: NavErrorKind::NoRoute,
+                    })?;
 
                 // Stale room blocks (a prior look, an earlier step's
                 // echo) must not satisfy this step's verification.
                 crate::session::drain(&mut events);
                 session.send(dir_word(step));
-                let seen = self.wait_room(&mut events).await?;
+                let seen = self
+                    .wait_room(&mut events)
+                    .await
+                    .map_err(|kind| NavError { at: current, kind })?;
                 if seen == expected_name {
                     current = expected_id;
                     continue;
                 }
                 failures += 1;
+                let desync = |at| NavError {
+                    at,
+                    kind: NavErrorKind::Desync {
+                        expected: expected_name.clone(),
+                        saw: seen.clone(),
+                    },
+                };
                 if failures > self.max_failures {
-                    return Err(NavError::Desync {
-                        expected: expected_name,
-                        saw: Some(seen),
-                    });
+                    return Err(desync(current));
                 }
                 match self.localize(current, &seen) {
                     Some(id) => {
                         current = id;
                         continue 'replan;
                     }
-                    None => {
-                        return Err(NavError::Desync {
-                            expected: expected_name,
-                            saw: Some(seen),
-                        });
-                    }
+                    None => return Err(desync(current)),
                 }
             }
-            return Ok(());
+            return Ok(current);
         }
     }
 
@@ -152,20 +184,20 @@ impl Navigator {
     async fn wait_room(
         &self,
         events: &mut tokio::sync::broadcast::Receiver<crate::events::Event>,
-    ) -> Result<String, NavError> {
+    ) -> Result<String, NavErrorKind> {
         let deadline = tokio::time::Instant::now() + self.step_timeout;
         loop {
             let ev = tokio::time::timeout_at(deadline, events.recv()).await;
             match ev {
                 Err(_) => {
-                    return Err(NavError::Expect(ExpectError::Timeout {
+                    return Err(NavErrorKind::Expect(ExpectError::Timeout {
                         needle: "room block after movement".into(),
                         tail: String::new(),
                     }));
                 }
                 Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
                 Ok(Err(_)) => {
-                    return Err(NavError::Expect(ExpectError::Closed {
+                    return Err(NavErrorKind::Expect(ExpectError::Closed {
                         tail: String::new(),
                     }));
                 }

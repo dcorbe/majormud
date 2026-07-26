@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use mud_client::dialect::{self, Target};
 use mud_client::graph::{ExitEdge, GraphRoom, RoomGraph};
-use mud_client::nav::{NavError, Navigator};
+use mud_client::nav::{NavErrorKind, Navigator};
 use mud_client::profile::Profile;
 use mud_client::session::Session;
 use mud_core::content::{
@@ -153,14 +153,16 @@ async fn goto_walks_verified_route() {
     let session = logged_in_session(server.local_addr()).await;
     let nav = Navigator::new(Arc::new(client_graph("Market Street")));
 
-    nav.goto(
-        &session,
-        RoomId { map: 1, room: 1 },
-        RoomId { map: 1, room: 3 },
-    )
-    .await
-    .expect("navigate gates -> market");
+    let at = nav
+        .goto(
+            &session,
+            RoomId { map: 1, room: 1 },
+            RoomId { map: 1, room: 3 },
+        )
+        .await
+        .expect("navigate gates -> market");
 
+    assert_eq!(at, RoomId { map: 1, room: 3 });
     // The session's parsed state confirms where we ended up.
     let state = session.state().borrow().clone();
     assert_eq!(
@@ -185,13 +187,18 @@ async fn goto_detects_desync_on_name_mismatch() {
         )
         .await
         .expect_err("must detect desync");
-    match err {
-        NavError::Desync { expected, saw } => {
+    match &err.kind {
+        NavErrorKind::Desync { expected, saw } => {
             assert_eq!(expected, "Crystal Cavern");
-            assert_eq!(saw.as_deref(), Some("Market Street"));
+            assert_eq!(saw, "Market Street");
         }
         other => panic!("expected Desync, got {other:?}"),
     }
+    // The whole point of reporting a position: the caller has to know
+    // where the character is standing to recover. Town Square is the
+    // last room the walk actually confirmed — not the room it set off
+    // from, and not the one it was aiming at.
+    assert_eq!(err.at, RoomId { map: 1, room: 2 });
 }
 
 #[tokio::test]
@@ -207,7 +214,9 @@ async fn goto_without_route_fails_fast() {
         )
         .await
         .expect_err("no route");
-    assert!(matches!(err, NavError::NoRoute));
+    assert!(matches!(err.kind, NavErrorKind::NoRoute));
+    // Nothing was walked, so the character is still at the start.
+    assert_eq!(err.at, RoomId { map: 1, room: 1 });
 }
 
 // ---------------------------------------------------------------------
