@@ -4,7 +4,6 @@
 //! movement; desyncs must surface immediately).
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use mud_client::dialect::{self, Target};
 use mud_client::graph::{ExitEdge, GraphRoom, RoomGraph};
@@ -130,16 +129,7 @@ async fn logged_in_session(addr: std::net::SocketAddr) -> Arc<Session> {
     let session = Arc::new(Session::connect(&profile, None).await.unwrap());
     let outcome = dialect::login(&session, &profile).await.unwrap();
     assert_eq!(outcome, mud_client::dialect::LoginOutcome::CharacterCreation);
-    let t = Duration::from_secs(5);
-    session.send("1");
-    session
-        .expect("Please choose a class from the following list:", t)
-        .await
-        .unwrap();
-    session.send("1");
-    session.expect("Do you want to be Lawful?", t).await.unwrap();
-    session.send("No");
-    session.expect("[HP=", t).await.unwrap();
+    dialect::finish_creation(&session).await.unwrap();
     session
 }
 

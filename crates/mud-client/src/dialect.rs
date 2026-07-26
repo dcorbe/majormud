@@ -30,6 +30,27 @@ pub enum LoginOutcome {
     CharacterCreation,
 }
 
+/// Drive the race/class/alignment dialogue that [`login`] stops in front
+/// of when it returns [`LoginOutcome::CharacterCreation`], leaving the
+/// character standing at the game prompt.
+///
+/// Takes the first race and the first class, and declines Lawful — the
+/// choices are irrelevant to every caller so far, and a caller that cares
+/// should drive the dialogue itself rather than grow options here.
+pub async fn finish_creation(session: &Session) -> Result<(), ExpectError> {
+    use std::time::Duration;
+    let t = Duration::from_secs(30);
+    session.send("1");
+    session
+        .expect("Please choose a class from the following list:", t)
+        .await?;
+    session.send("1");
+    session.expect("Do you want to be Lawful?", t).await?;
+    session.send("No");
+    session.expect("[HP=", t).await?;
+    Ok(())
+}
+
 pub async fn login(session: &Session, profile: &Profile) -> Result<LoginOutcome, ExpectError> {
     use std::time::Duration;
     let t = Duration::from_secs(30);

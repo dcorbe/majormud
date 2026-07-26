@@ -152,6 +152,31 @@ async fn rust_server_login_create_look() {
     assert!(state.hp > 0, "prompt HP tracked, got {}", state.hp);
 }
 
+/// `finish_creation` drives the race/class/alignment dialogue that
+/// `login` stops in front of, and lands on the game prompt. The runner
+/// (and the nav tests) rely on it instead of re-inlining the sequence.
+#[tokio::test]
+async fn finish_creation_reaches_the_game_prompt() {
+    let server = start_server().await;
+    let session = Session::connect(&rust_profile(server.local_addr()), None)
+        .await
+        .expect("connect");
+
+    let outcome = dialect::login(&session, &rust_profile(server.local_addr()))
+        .await
+        .expect("login");
+    assert_eq!(outcome, LoginOutcome::CharacterCreation);
+
+    dialect::finish_creation(&session).await.expect("finish creation");
+
+    // In game: the prompt has been seen, so the state watch carries HP.
+    assert!(
+        session.state().borrow().hp > 0,
+        "expected the game prompt to have been parsed, state was {:?}",
+        session.state().borrow().clone()
+    );
+}
+
 #[tokio::test]
 async fn expect_times_out_with_tail() {
     let server = start_server().await;
