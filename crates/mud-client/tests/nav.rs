@@ -7,7 +7,8 @@ use std::sync::Arc;
 
 use mud_client::dialect::{self, Target};
 use mud_client::graph::{ExitEdge, GraphRoom, RoomGraph};
-use mud_client::nav::{NavConfig, NavErrorKind, Navigator};
+use mud_client::events::Event;
+use mud_client::nav::{Interrupt, NavConfig, NavErrorKind, Navigator, NoGuard, TravelGuard};
 use mud_client::profile::Profile;
 use mud_client::session::Session;
 use mud_core::content::{
@@ -158,6 +159,7 @@ async fn goto_walks_verified_route() {
             &session,
             RoomId { map: 1, room: 1 },
             RoomId { map: 1, room: 3 },
+            &mut NoGuard,
         )
         .await
         .expect("navigate gates -> market");
@@ -184,6 +186,7 @@ async fn goto_detects_desync_on_name_mismatch() {
             &session,
             RoomId { map: 1, room: 1 },
             RoomId { map: 1, room: 3 },
+            &mut NoGuard,
         )
         .await
         .expect_err("must detect desync");
@@ -211,6 +214,7 @@ async fn goto_without_route_fails_fast() {
             &session,
             RoomId { map: 1, room: 1 },
             RoomId { map: 9, room: 9 },
+            &mut NoGuard,
         )
         .await
         .expect_err("no route");
@@ -264,6 +268,7 @@ async fn a_step_that_never_lands_times_out_on_the_configured_deadline() {
             &session,
             RoomId { map: 1, room: 1 },
             RoomId { map: 1, room: 3 },
+            &mut NoGuard,
         )
         .await
         .expect_err("the board has no east exit here");
@@ -277,6 +282,153 @@ async fn a_step_that_never_lands_times_out_on_the_configured_deadline() {
         started.elapsed() < std::time::Duration::from_secs(5),
         "gave up on the hardcoded 15s deadline, not the configured 200ms"
     );
+}
+
+// ---------------------------------------------------------------------
+// Travel guards: goto watches the events it would otherwise throw away,
+// and hands the connection back when the walk has become the wrong thing
+// to be doing. The guard only ever observes — nav keeps sole ownership
+// of the socket, so the one-sender invariant survives.
+// ---------------------------------------------------------------------
+
+/// Trips when a named room block goes past.
+struct TripsOnRoom(&'static str);
+
+impl TravelGuard for TripsOnRoom {
+    fn on_event(&mut self, ev: &Event) -> Option<Interrupt> {
+        match ev {
+            Event::RoomSeen(r) if r.name == self.0 => Some(Interrupt::Hurt { hp: 7 }),
+            _ => None,
+        }
+    }
+}
+
+/// Trips on any line the board prints.
+struct TripsOnLine;
+
+impl TravelGuard for TripsOnLine {
+    fn on_event(&mut self, ev: &Event) -> Option<Interrupt> {
+        matches!(ev, Event::Line(_)).then_some(Interrupt::Died)
+    }
+}
+
+/// Hurt arms the walk; it does not abandon it mid-step. The direction
+/// word for this step is already down the wire when the guard trips, so
+/// returning here and now would name a room the character is in the act
+/// of leaving. Finish the step, verify it, *then* hand back — `at` is
+/// worth having only if it is true.
+#[tokio::test]
+async fn a_hurt_guard_finishes_the_step_before_handing_back() {
+    let server = start().await;
+    let session = logged_in_session(server.local_addr()).await;
+    let nav = Navigator::new(Arc::new(client_graph("Market Street")), NavConfig::default());
+
+    let err = nav
+        .goto(
+            &session,
+            RoomId { map: 1, room: 1 },
+            RoomId { map: 1, room: 3 },
+            &mut TripsOnRoom("Town Square"),
+        )
+        .await
+        .expect_err("the guard tripped");
+
+    assert!(matches!(
+        err.kind,
+        NavErrorKind::Interrupted(Interrupt::Hurt { hp: 7 })
+    ));
+    // Town Square is where the tripping step landed, and it is verified.
+    assert_eq!(err.at, RoomId { map: 1, room: 2 });
+    let state = session.state().borrow().clone();
+    assert_eq!(
+        state.room.as_ref().map(|r| r.name.as_str()),
+        Some("Town Square"),
+        "the walk must stop, not carry on to the target"
+    );
+}
+
+/// Arming on the *last* step of a route is the case with nowhere left to
+/// notice it: there is no next step whose drain would catch the arming,
+/// so a walk that only checked between steps would arrive, report
+/// success, and lose the interrupt entirely.
+#[tokio::test]
+async fn a_hurt_guard_arming_on_the_last_step_still_hands_back() {
+    let server = start().await;
+    let session = logged_in_session(server.local_addr()).await;
+    let nav = Navigator::new(Arc::new(client_graph("Market Street")), NavConfig::default());
+
+    let err = nav
+        .goto(
+            &session,
+            RoomId { map: 1, room: 1 },
+            RoomId { map: 1, room: 3 },
+            &mut TripsOnRoom("Market Street"),
+        )
+        .await
+        .expect_err("arriving is not the same as being fit to carry on");
+
+    assert!(matches!(
+        err.kind,
+        NavErrorKind::Interrupted(Interrupt::Hurt { hp: 7 })
+    ));
+    // It did arrive — the step was finished and verified before the
+    // walk handed back.
+    assert_eq!(err.at, RoomId { map: 1, room: 3 });
+}
+
+/// Death is the exception: a downed character is not going to complete
+/// the step, so waiting for a room block that will never come would cost
+/// the whole step deadline on every death. Hand back immediately.
+#[tokio::test]
+async fn a_death_guard_does_not_wait_out_the_step() {
+    let server = start().await;
+    let session = logged_in_session(server.local_addr()).await;
+    let nav = Navigator::new(
+        Arc::new(graph_with_a_phantom_exit()),
+        NavConfig {
+            step_timeout_ms: 10_000,
+        },
+    );
+
+    let started = std::time::Instant::now();
+    let err = nav
+        .goto(
+            &session,
+            RoomId { map: 1, room: 1 },
+            RoomId { map: 1, room: 3 },
+            &mut TripsOnLine,
+        )
+        .await
+        .expect_err("the guard tripped");
+
+    assert!(matches!(
+        err.kind,
+        NavErrorKind::Interrupted(Interrupt::Died)
+    ));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "waited out the step deadline instead of handing back at once"
+    );
+}
+
+/// A guard that never trips leaves the walk exactly as it was.
+#[tokio::test]
+async fn an_unarmed_guard_changes_nothing() {
+    let server = start().await;
+    let session = logged_in_session(server.local_addr()).await;
+    let nav = Navigator::new(Arc::new(client_graph("Market Street")), NavConfig::default());
+
+    let at = nav
+        .goto(
+            &session,
+            RoomId { map: 1, room: 1 },
+            RoomId { map: 1, room: 3 },
+            &mut NoGuard,
+        )
+        .await
+        .expect("navigate gates -> market");
+
+    assert_eq!(at, RoomId { map: 1, room: 3 });
 }
 
 // ---------------------------------------------------------------------

@@ -544,7 +544,7 @@ async fn verify_start(
         .map(|r| r.name.clone())
         .unwrap_or_default();
     let mut events = session.events();
-    crate::session::drain(&mut events);
+    crate::session::drain(&mut events, |_| {});
     session.send("look");
     let saw = next_room(session, &mut events, Duration::from_secs(15)).await;
     match saw {
@@ -583,7 +583,7 @@ async fn travel(
 ) -> Result<(), FarmError> {
     wait_for_departure_health(session, cfg, bot_config).await;
     *current = nav
-        .goto(session, *current, stop)
+        .goto(session, *current, stop, &mut crate::nav::NoGuard)
         .await
         .map_err(FarmError::Nav)?;
     Ok(())
@@ -649,7 +649,7 @@ async fn farm_stop(
     let mut recoveries_left = 3u32;
 
     let mut events = session.events();
-    crate::session::drain(&mut events);
+    crate::session::drain(&mut events, |_| {});
 
     let mut bot = crate::bot::Bot::new(bot_config.clone());
     let mut gate = Gate::new(backoff);
@@ -789,7 +789,7 @@ async fn recover(
     let at = nav
         .localize(stop, saw)
         .ok_or_else(|| FarmError::Lost { saw: saw.into() })?;
-    nav.goto(session, at, stop)
+    nav.goto(session, at, stop, &mut crate::nav::NoGuard)
         .await
         .map(|_| ())
         .map_err(FarmError::Nav)

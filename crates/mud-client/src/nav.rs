@@ -31,6 +31,34 @@ pub enum NavErrorKind {
     /// and could not be re-localized among neighbors.
     Desync { expected: String, saw: String },
     Expect(ExpectError),
+    /// A [`TravelGuard`] decided that walking had become the wrong thing
+    /// to be doing.
+    Interrupted(Interrupt),
+}
+
+/// Why a guard took the walk back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Interrupt {
+    Died,
+    Hurt { hp: i32 },
+}
+
+/// Watches the events a walk goes past and says when to stop walking.
+///
+/// The guard only ever observes. It sends nothing, which is what lets
+/// travel stay a single-sender phase: the navigator keeps the connection
+/// for the whole walk and merely learns when to hand it back.
+pub trait TravelGuard {
+    fn on_event(&mut self, ev: &crate::events::Event) -> Option<Interrupt>;
+}
+
+/// Walk unprotected.
+pub struct NoGuard;
+
+impl TravelGuard for NoGuard {
+    fn on_event(&mut self, _ev: &crate::events::Event) -> Option<Interrupt> {
+        None
+    }
 }
 
 impl std::fmt::Display for NavError {
@@ -43,6 +71,7 @@ impl std::fmt::Display for NavError {
                 write!(f, "desync: expected {expected:?}, saw {saw:?}")
             }
             NavErrorKind::Expect(e) => write!(f, "{e}"),
+            NavErrorKind::Interrupted(i) => write!(f, "travel interrupted: {i:?}"),
         }
     }
 }
@@ -110,14 +139,32 @@ impl Navigator {
     ///
     /// Returns the room the walk ended in — `to` on success, and on
     /// failure [`NavError::at`] carries the last room it verified.
+    ///
+    /// `guard` sees every event the walk goes past, including the ones
+    /// the between-step drain throws away, and can end the walk early.
+    /// A trip is honoured differently by kind, because the direction
+    /// word for the current step is already on the wire by the time the
+    /// board's answer arrives:
+    ///
+    /// - [`Interrupt::Hurt`] arms the walk and lets the step finish, so
+    ///   the room it reports is one it actually verified rather than one
+    ///   the character is in the act of leaving.
+    /// - [`Interrupt::Died`] hands back at once. A downed character is
+    ///   not going to complete the step, and waiting for a room block
+    ///   that will never come would cost the whole deadline on every
+    ///   death. `at` is then the last room verified before the fatal
+    ///   step, which is as true as anything can be — and the run is
+    ///   over regardless.
     pub async fn goto(
         &self,
         session: &Session,
         from: RoomId,
         to: RoomId,
+        guard: &mut impl TravelGuard,
     ) -> Result<RoomId, NavError> {
         let mut current = from;
         let mut failures = 0u32;
+        let mut armed: Option<Interrupt> = None;
         let mut events = session.events();
         'replan: loop {
             if current == to {
@@ -148,15 +195,40 @@ impl Navigator {
                     })?;
 
                 // Stale room blocks (a prior look, an earlier step's
-                // echo) must not satisfy this step's verification.
-                crate::session::drain(&mut events);
+                // echo) must not satisfy this step's verification. The
+                // guard still sees them: nothing is in flight yet, so a
+                // trip here is honoured before the step goes out at all.
+                crate::session::drain(&mut events, |ev| {
+                    armed = armed.take().or_else(|| guard.on_event(ev));
+                });
+                if let Some(interrupt) = armed.take() {
+                    return Err(NavError {
+                        at: current,
+                        kind: NavErrorKind::Interrupted(interrupt),
+                    });
+                }
+
                 session.send(dir_word(step));
-                let seen = self
-                    .wait_room(&mut events)
-                    .await
-                    .map_err(|kind| NavError { at: current, kind })?;
+                let seen = match self.wait_room(&mut events, guard, &mut armed).await {
+                    Ok(seen) => seen,
+                    // A step that never lands while the guard is armed
+                    // is the interrupt's story, not the deadline's.
+                    Err(kind) => {
+                        let kind = match armed.take() {
+                            Some(interrupt) => NavErrorKind::Interrupted(interrupt),
+                            None => kind,
+                        };
+                        return Err(NavError { at: current, kind });
+                    }
+                };
                 if seen == expected_name {
                     current = expected_id;
+                    if let Some(interrupt) = armed.take() {
+                        return Err(NavError {
+                            at: current,
+                            kind: NavErrorKind::Interrupted(interrupt),
+                        });
+                    }
                     continue;
                 }
                 failures += 1;
@@ -173,8 +245,18 @@ impl Navigator {
                 match self.localize(current, &seen) {
                     Some(id) => {
                         current = id;
+                        // Same rule as a clean step: the walk is now
+                        // localized, so hand back from somewhere true.
+                        if let Some(interrupt) = armed.take() {
+                            return Err(NavError {
+                                at: current,
+                                kind: NavErrorKind::Interrupted(interrupt),
+                            });
+                        }
                         continue 'replan;
                     }
+                    // A desync outranks being hurt: the caller cannot
+                    // act on a position nobody can work out.
                     None => return Err(desync(current)),
                 }
             }
@@ -203,14 +285,28 @@ impl Navigator {
             .find(|&id| self.graph.room(id).is_some_and(|r| r.name == seen))
     }
 
-    /// Next RoomSeen name within the step timeout.
+    /// Next RoomSeen name within the step timeout, showing everything
+    /// that goes past to the guard on the way.
     async fn wait_room(
         &self,
         events: &mut tokio::sync::broadcast::Receiver<crate::events::Event>,
+        guard: &mut impl TravelGuard,
+        armed: &mut Option<Interrupt>,
     ) -> Result<String, NavErrorKind> {
         let deadline = tokio::time::Instant::now() + self.step_timeout;
         loop {
             let ev = tokio::time::timeout_at(deadline, events.recv()).await;
+            if let Ok(Ok(ev)) = &ev {
+                match guard.on_event(ev) {
+                    // Nothing more is going to land. Say so now rather
+                    // than sit out the deadline.
+                    Some(Interrupt::Died) => {
+                        return Err(NavErrorKind::Interrupted(Interrupt::Died));
+                    }
+                    Some(hurt) => *armed = armed.take().or(Some(hurt)),
+                    None => {}
+                }
+            }
             match ev {
                 Err(_) => {
                     return Err(NavErrorKind::Expect(ExpectError::Timeout {

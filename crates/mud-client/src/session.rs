@@ -397,11 +397,15 @@ impl Session {
 /// stale events still queued — and a stale room block is exactly what
 /// [`crate::nav::Navigator::goto`] drains to prevent, since one can
 /// satisfy the next step's arrival check and drift the position silently.
-pub fn drain(events: &mut broadcast::Receiver<Event>) {
+/// Every event is shown to `seen` on its way out. Discarded is not the
+/// same as unseen: [`crate::nav::Navigator::goto`] drains between steps,
+/// and a death landing in that window is still a death.
+pub fn drain(events: &mut broadcast::Receiver<Event>, mut seen: impl FnMut(&Event)) {
     use broadcast::error::TryRecvError;
     loop {
         match events.try_recv() {
-            Ok(_) | Err(TryRecvError::Lagged(_)) => continue,
+            Ok(ev) => seen(&ev),
+            Err(TryRecvError::Lagged(_)) => continue,
             Err(TryRecvError::Empty | TryRecvError::Closed) => return,
         }
     }
