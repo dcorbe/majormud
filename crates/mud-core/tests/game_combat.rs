@@ -1166,14 +1166,16 @@ fn rob_form_without_a_melee_slot_zero_never_swings() {
     );
 }
 
-/// A defenceless sandbag: AC 0, DR 0, and a form that cannot hurt back.
-/// The Dwarf L1 attacker (accuracy 43, damage 1-4) therefore lands a
-/// damaging hit on every swing the parry roll does not cancel.
-fn sandbag(dodge: i16) -> Monster {
+/// A sandbag carrying `dodge` and `ac`, with DR 0 and a form that cannot
+/// hurt back. At AC 0 the to-hit threshold clamps to 99, so the Dwarf L1
+/// attacker (accuracy 43, damage 1-4) lands a damaging hit on every swing
+/// the parry roll does not cancel -- which is why every parry pin below
+/// passes AC 0. Pass a real AC to exercise the to-hit term instead.
+fn sandbag(dodge: i16, ac: i16) -> Monster {
     let mut m = kobold();
     m.id = MonsterId(11);
     m.name = "sandbag".into();
-    m.armour_class = 0;
+    m.armour_class = ac;
     m.damage_resist = 0;
     m.abilities = if dodge == 0 {
         vec![]
@@ -1194,12 +1196,12 @@ fn sandbag(dodge: i16) -> Monster {
     m
 }
 
-/// Runs `rounds` player swings against a sandbag carrying `dodge` and
-/// returns (landed hits, HP taken off the sandbag).
-fn sandbag_run(dodge: i16, rounds: u64) -> (usize, i32) {
+/// Runs `rounds` player swings against a sandbag carrying `dodge` and `ac`,
+/// and returns (landed hits, HP taken off the sandbag).
+fn sandbag_run(dodge: i16, ac: i16, rounds: u64) -> (usize, i32) {
     let mut content = world();
     content.monsters.clear();
-    content.add_monster(sandbag(dodge));
+    content.add_monster(sandbag(dodge, ac));
     let mut core = Core::new(content, config());
     let s = create(&mut core, "Dain");
     let m = core
@@ -1239,17 +1241,63 @@ fn monster_dodge_ability_parries_player_swings() {
     // its `genrdn(1,100)` now precedes the round's damage rolls instead
     // of trailing them. Swing COUNTS are unchanged — this is stream
     // position, not a behaviour change.)
-    let (control_hits, control_damage) = sandbag_run(0, 40);
+    let (control_hits, control_damage) = sandbag_run(0, 0, 40);
     assert_eq!(control_hits, 49, "a 99%-to-hit swing lands on every swing");
     assert_eq!(control_damage, 119, "49 swings of 1-4 damage");
 
-    let (dodge_hits, dodge_damage) = sandbag_run(20, 40);
+    let (dodge_hits, dodge_damage) = sandbag_run(20, 0, 40);
     assert_eq!(dodge_hits, 29, "Dodge 20 parries ~40% of the swings");
     assert_eq!(dodge_damage, 70, "only the unparried swings do damage");
 
-    let (capped_hits, capped_damage) = sandbag_run(50, 40);
+    let (capped_hits, capped_damage) = sandbag_run(50, 0, 40);
     assert_eq!(capped_hits, 4, "Dodge 50 pins the parry chance at its 95 cap");
     assert_eq!(capped_damage, 10, "almost nothing gets through");
+}
+
+#[test]
+fn a_monsters_armour_class_is_a_whole_unit_not_a_tenths_scale() {
+    // MEASURED (`re/oracle/oracle_dodge_parry_control.raw`, 2026-07-26):
+    // `build_monster_defender` feeds the RAW template `ac` column into the
+    // evasion word, while the PLAYER's own side of the same word divides its
+    // item column by ten (24866). The shipped `ac` column runs 0..9999 with a
+    // mean of 101 against a geared player's ~12, which is enough of a mismatch
+    // to be worth a capture: if monster `ac` were also in tenths, every
+    // monster in the game would be far easier to hit than we model.
+    //
+    // Oracle Delver (accuracy 23) swung a wooden hammer at grey spiders
+    // (#30, AC 20, DR 2, and -- unlike the giant bat -- NO Dodge(0x22), so
+    // every connect is a glance and the parry channel cannot confound the
+    // count):
+    //
+    //     swings 21: glance 2, miss 19  ->  connect 2/21 = 0.0952
+    //                                       95% CI [0.0117, 0.3038]
+    //
+    // `threshold = 100 - defense^2/(accuracy^2/14/10)` clamped [10, 99] reads
+    // the raw column as 400/3 = 133 over 100, i.e. the clamp FLOOR of 0.10 --
+    // which is what the board did. A column needing its own /10 predicts
+    // defense 2 and a threshold of 0.99, which the interval EXCLUDES outright.
+    // So the port is right as written, and this is also the first live
+    // measurement of the clamp floor itself.
+    //
+    // Every other pin in this file fights an AC 0 sandbag, where the
+    // threshold clamps to 99 and the to-hit term never bites -- the same
+    // blindness that let the player armour columns sit swapped since M4. This
+    // one carries a real AC so the term is exercised.
+    //
+    // Dain is accuracy 43, so den = 43^2/14/10 = 13 and AC 20 predicts
+    // 100 - 400/13 = 70% of 49 swings ~= 34 landing. Reading the column in
+    // tenths instead gives defense 2, a threshold clamped to 99, and ~48.
+    // The band below is +-3 binomial sd around 34 and excludes that.
+    let (hits, _damage) = sandbag_run(0, 20, 40);
+    assert!(
+        (25..=43).contains(&hits),
+        "AC 20 against accuracy 43 predicts ~34 of 49 swings landing, got {hits}"
+    );
+    assert!(
+        hits < 47,
+        "a tenths-scale reading of the ac column would clamp to 99% and land \
+         ~48 of 49; got {hits}, which would mean the column was divided twice"
+    );
 }
 
 #[test]
@@ -1269,7 +1317,7 @@ fn a_parried_swing_renders_the_dodge_wording_not_a_plain_miss() {
     // cap, so a 40-round run is essentially all parries.
     let mut content = world();
     content.monsters.clear();
-    content.add_monster(sandbag(50));
+    content.add_monster(sandbag(50, 0));
     let mut core = Core::new(content, config());
     let s = create(&mut core, "Dain");
     core.spawn_monster(MonsterId(11), RoomId { map: 1, room: 1 })
