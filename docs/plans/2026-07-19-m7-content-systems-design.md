@@ -461,6 +461,35 @@ boundary, the signed-`charmlvl` compare, and the monster trail's
 ten-entry bound. Each new pin was verified by applying its mutation and
 watching it fail.
 
+**Landed off the back of the parry expedition (2026-07-26, branch
+`armour-columns`): the player armour column swap.** The expedition's second
+anomaly — worn AC soaking far less than the port modelled — was filed in
+charm.md §8.3 as an open "our soak may be 10x too strong". It was not a
+scaling error. `move_player_to_fighter` (24788-24789) accumulates `+0x342`
+(DB `ac`) into fighter `[1]` ÷10, the TO-HIT term, and `+0x39c` (DB `dr`)
+into `[3]` raw, the damage soak; `build_player_defender` had them crossed
+since M4. Both columns ship ×10 and are independent — **319 of the 565**
+AC-bearing shipped items carry no DR at all — so the bug invented resistance
+from the AC of essentially every piece of armour in the game, and denied
+every geared character the evasion they should have had.
+
+The transcripts settle it without a new capture, because the status line
+prints both numbers: the acc-high set (Σac 125, Σdr 8) read
+`Armour Class:  12/0`, and Σdr/10 = 0 is exactly the soak the giant bats
+demonstrated. Two claims in §8.3 were corrected on the way through — no
+transcript ever showed `Armour Class: 13`, and the smoky black talisman's
+-20 is an AC(2) ability, not accuracy, so the acc-mid block varied AC too.
+Also landed: `get_armour_rating` (the `st` line had shown a hardcoded `0/0`
+since M4) and the AC(2)/DR(7) dynamic accumulators, which were applied for
+monsters and nobody else. Left explicitly unported and cited at the call
+site: the `×(+0x7b8+100)/100` DR percent, whose writing ability the
+decompile does not readably identify.
+
+The general lesson is slice 5's, again: the whole suite ran fixtures that
+fought naked, so 950 tests could not see it. `crates/mud-server/tests/
+armour_real_content.rs` is the answer, and reproduces the measured `12/0`
+from the shipped columns.
+
 **Carries to slice 8**, largest first:
 
 1. **The monster Dodge(0x22) parry on the player-attacks-monster path** —
@@ -485,6 +514,14 @@ watching it fail.
    as the owner, let a second charm expire — pin every string and retag
    text.rs ORACLE → MEASURED).
 4. The `EvilInCombat(52)` charge above.
+4b. **The to-hit model**, which the parry expedition put in question
+   (31/37 = 0.838 connecting against a predicted 0.67) and which the armour
+   fix above did NOT settle — it has a different cause. It does now have a
+   fair test for the first time: until the column swap was fixed, every
+   geared player's evasion word was 0, so any earlier comparison ran against
+   a defence the port was not applying. Re-measure before concluding
+   anything. The monster half — whether template AC at `game.rs:12219` needs
+   its own scale check — is untouched.
 5. **The pet lifetime that `give_up` never resets.** `give_up` is zeroed
    only in `monster_attack`'s engage block (`game.rs:9773`, decompile
    26768-26777) — a path a pet essentially never takes, since a pet

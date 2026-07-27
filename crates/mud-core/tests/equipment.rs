@@ -20,6 +20,9 @@ fn quarterstaff() -> Item {
         gettable: 1,
         speed: 1200,
         accuracy: 4,
+        // A wielded weapon's `+0x342` counts toward the evasion word too —
+        // see `wielded_weapon_evasion_counts_toward_the_fighter`.
+        evasion: 30,
         ..Item::default()
     }
 }
@@ -31,11 +34,31 @@ fn helmet() -> Item {
         weight: 60,
         item_type: 0,
         uses: -1,
-        ac: 20,
+        // Deliberately unequal, and neither a multiple of the other, so a
+        // transposition of the two fighter words cannot pass silently.
+        evasion: 20,
+        damage_resist: 7,
         worn_on: 2,
         gettable: 1,
         // +5 accuracy while worn, to prove abilities flow to the bag.
         abilities: vec![(Ability::from_id(22).unwrap(), 5)],
+        ..Item::default()
+    }
+}
+
+/// Carries the two dynamic-accumulator abilities and no armour columns, so
+/// each term is attributable: AC(2) -> `+0x70c` -> fighter `[1]`, and
+/// DR(7) -> `+0x7b6` -> fighter `[3]`.
+fn warded_amulet() -> Item {
+    Item {
+        id: ItemId(300),
+        name: "warded amulet".into(),
+        weight: 5,
+        item_type: 0,
+        uses: -1,
+        worn_on: 8,
+        gettable: 1,
+        abilities: vec![(Ability::AC, 5), (Ability::DR, 30)],
         ..Item::default()
     }
 }
@@ -55,6 +78,7 @@ fn world() -> Content {
     });
     content.add_item(quarterstaff());
     content.add_item(helmet());
+    content.add_item(warded_amulet());
     content.add_race(Race {
         id: RaceId(2),
         name: "Dwarf".into(),
@@ -243,9 +267,42 @@ fn worn_item_abilities_feed_derived_stats() {
         core.combat_debug(s2).0
     };
     assert_eq!(fighter.accuracy, naked.accuracy + 5);
-    // And the worn AC contributes to the defender's armor.
+
+    // The two worn armour columns feed DIFFERENT fighter words
+    // (`move_player_to_fighter` 24788-24789): `+0x342` (`ac`) accumulates
+    // into [1] and is divided by 10 at 24866, driving the quadratic to-hit
+    // term; `+0x39c` (`dr`) accumulates into [3] raw, and it is
+    // `calculate_attack` that divides by 10 when it subtracts the soak
+    // (25335). The helmet is evasion 20 / DR 7.
     let defender = core.defender_debug(s);
-    assert_eq!(defender.armor, 20);
+    assert_eq!(defender.evasion_a, 2, "Σ worn +0x342 ÷ 10");
+    assert_eq!(defender.armor, 7, "Σ worn +0x39c, raw");
+}
+
+/// The evasion accumulator is seeded by the WIELDED weapon and only then
+/// summed over the worn slots. `move_player_to_fighter`: `local_c = 0`
+/// (24466), `local_c = weapon+0x342` (24683, a plain assignment), then
+/// `local_c += item+0x342` per worn slot (24797), and `[1] = local_c/10`
+/// (24866). The soak word `[3]` gets no such seed — the weapon never
+/// touches it, only the worn loop at 24789 does.
+///
+/// Pinned because the worn loop reads as the only contributor if you stop
+/// at 24797, and a reviewer working from that alone would delete the
+/// weapon term as a divergence. It is not one.
+#[test]
+fn wielded_weapon_evasion_counts_toward_the_fighter() {
+    let mut core = Core::new(world(), config());
+    let s = create(&mut core, "Dain");
+    let bare = core.defender_debug(s).evasion_a;
+    assert_eq!(bare, 0, "naked: no weapon, no worn armour");
+
+    core.give_item(s, ItemId(100));
+    core.input(s, "arm quarterstaff");
+    core.drain_events();
+    // Staff evasion 30 -> (30 + 0)/10.
+    assert_eq!(core.defender_debug(s).evasion_a, 3);
+    // ...and contributes nothing to the soak.
+    assert_eq!(core.defender_debug(s).armor, 0);
 }
 
 #[test]
@@ -313,4 +370,30 @@ fn carrying_line_suffixes_and_grouping_match_the_oracle() {
         shown.contains("3 sickle"),
         "unarmed sickles regroup: {shown:?}"
     );
+}
+
+/// The two dynamic accumulators reach the fighter words on the DEFENDER
+/// side, exactly as the accuracy accumulator (`+0x70a`) already reaches the
+/// attacker's. `move_player_to_fighter`: `[1] += player+0x70c` (24885) and
+/// `[3] += player+0x7b6` (24888), both raw. `update_dynamic_with_ability`
+/// (0x3dba6, 37455) is what fills them — case 2 -> `+0x70c`, case 7 ->
+/// `+0x7b6`.
+///
+/// Both are added in the SAME units as the item sums they join, which is
+/// why AC(2) is not scaled here while `get_armour_rating` multiplies it by
+/// 10: the fighter's `[1]` is already the ÷10 quantity, the rating's
+/// accumulator is not. The two agree in display units, and the measured
+/// talisman capture pins that agreement.
+#[test]
+fn ac_and_dr_abilities_reach_the_defender_words() {
+    let mut core = Core::new(world(), config());
+    let s = create(&mut core, "Dain");
+    core.give_item(s, ItemId(300));
+    core.input(s, "wear amulet");
+    core.drain_events();
+
+    let d = core.defender_debug(s);
+    // No armour columns on the amulet, so each word is the ability alone.
+    assert_eq!(d.evasion_a, 5, "AC(2) joins [1] raw (+0x70c, 24885)");
+    assert_eq!(d.armor, 30, "DR(7) joins [3] raw (+0x7b6, 24888)");
 }

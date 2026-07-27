@@ -3523,6 +3523,7 @@ impl Core {
         // bag, see effective_stats).
         let bag = self.ability_bag(player);
         let stats = self.effective_stats(player, &bag);
+        let (armour_ac, armour_dr) = self.get_armour_rating(session);
         let sheet = text::stat_sheet(&text::SheetData {
             name: &player.name,
             race,
@@ -3533,8 +3534,10 @@ impl Core {
             experience: player.experience,
             hp_current: player.current_hp,
             hp_max: derived.max_hp,
-            armour_class: 0, // get_armour_rating: no equipment until M4
-            armour_max: 0,
+            // `get_armour_rating` returns tenths; the status line divides
+            // both by 10 (31553-31556).
+            armour_class: armour_ac / 10,
+            armour_max: armour_dr / 10,
             stats,
             derived,
             active_lines: &active_lines,
@@ -12100,9 +12103,74 @@ impl Core {
         }
     }
 
+    /// `get_armour_rating` (`0x1f1eb`, decompiled.c 16956) — the pair the
+    /// status line prints as `Armour Class: A/B`, each ÷10 at the call
+    /// site (31553-31556). Returns `(ac, dr)`, both in tenths.
+    ///
+    /// AC accumulates the WIELDED weapon's `+0x342` (16983-16987) plus
+    /// every worn slot's; DR accumulates the same slots' `+0x39c`. Worn
+    /// items whose `+0x2f4` (type) is non-zero are skipped (16995-16996) —
+    /// the weapon is not, it is read before the loop. The AC(Blur)
+    /// ability (10) is then divided by the heaviest worn armour code
+    /// (`+0x396`: 9 → /4, 7 or 8 → /3, 3..=6 → /2), scaled ×10, and added
+    /// to BOTH sides (17023-17044); being encumbrance-derived is exactly
+    /// what separates it from AC(2). Finally AC(2) × 10 joins the AC side
+    /// only, and AC — not DR — is clamped at 0 (17045-17048).
+    ///
+    /// Both ability reads come from ONE call each, via a convention that
+    /// is easy to misread: `get_user_ability_value` totals `param_1` into
+    /// its return AND `param_4` into the out-param (36832-36864). So
+    /// `(7, -1, player, 2, &local_c)` yields DR(7) in the discarded return
+    /// and **AC(2)** in `local_c` — DR(7) does not reach this display at
+    /// all. Ours reads the accumulated [`Core::ability_bag`], the same
+    /// analogue [`Core::build_player_defender`] uses for Dodge.
+    ///
+    /// MEASURED (`re/oracle/oracle_dodge_parry_acc-{high,mid}.raw`,
+    /// charm.md §8.3): Σac 125 / Σdr 8 printed `12/0`; adding an AC(2)
+    /// -20 item took it to `0/0`, not `-8/0`, which is what pins the
+    /// clamp and the ×10.
+    fn get_armour_rating(&self, session: SessionId) -> (i32, i32) {
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+            unreachable!("caller checked the session");
+        };
+        let mut ac: i32 = player
+            .weapon
+            .and_then(|(id, _)| self.content.items.get(&id))
+            .map_or(0, |w| i32::from(w.evasion));
+        let mut dr: i32 = 0;
+        // The heaviest worn armour code seen, as the three flag bytes
+        // (local_5..local_8) collapse at 17023-17037: 9 beats 7/8 beats
+        // 3..=6.
+        let mut blur_divisor = 1;
+        for item in player
+            .worn
+            .iter()
+            .filter_map(|(id, _)| self.content.items.get(id))
+            .filter(|i| i.item_type == 0)
+        {
+            ac += i32::from(item.evasion);
+            dr += i32::from(item.damage_resist);
+            let divisor = match item.armour_req {
+                9 => 4,
+                7 | 8 => 3,
+                3..=6 => 2,
+                _ => 1,
+            };
+            blur_divisor = blur_divisor.max(divisor);
+        }
+        let bag = self.ability_bag(player);
+        let blur = bag.value(Ability::ACBlur);
+        let scaled = if blur == 0 { 0 } else { (blur / blur_divisor) * 10 };
+        ac += scaled;
+        dr += scaled;
+        ac += bag.value(Ability::AC) * 10;
+        (ac.max(0), dr)
+    }
+
     /// EXACT (decompile): defender view of a player. Naked: evasion 0
-    /// (item ratings/10; the dynamic AC accumulator +0x70c joins when
-    /// content carries AC(2) buffs), armor 0; parry is the word[10]
+    /// (Σ worn `+0x342` ÷ 10; the dynamic AC accumulator +0x70c joins when
+    /// content carries AC(2) buffs), armor 0 (Σ worn `+0x39c`, raw — the
+    /// ÷10 happens in `calculate_attack`); parry is the word[10]
     /// formula — `dodgeAbil(0x22) + (Chm-50)/5 + level/5 + (Agl-50)/3`
     /// (combat.md "Parry") — plus the low-encumbrance bonus
     /// (10 - enc/10), forced -1 when helpless. The Dodge term reads the
@@ -12124,24 +12192,51 @@ impl Core {
             }
             p
         };
-        let armor: i32 = player
-            .worn
-            .iter()
-            .filter_map(|(id, _)| self.content.items.get(id))
-            .map(|i| i32::from(i.ac))
-            .sum();
+        let worn = || {
+            player
+                .worn
+                .iter()
+                .filter_map(|(id, _)| self.content.items.get(id))
+        };
+        // `[3]` — Σ worn `+0x39c` (24789), RAW. The word is a tenths-scale
+        // quantity: `calculate_attack` subtracts `[3]/10` from damage
+        // (25335), and `move_monster_to_fighter` reaches the same scale from
+        // the other side by multiplying the whole-unit monster `dr` by 10
+        // (25180). Shipped item `dr` is already pre-multiplied.
+        let bag = self.ability_bag(player);
+        // `[3] += player+0x7b6` (24888), raw and in the same tenths as the
+        // item sum. `update_dynamic_with_ability` case 7 fills it (37475).
+        //
+        // PENDING: the DLL then scales `[3]` by `(player+0x7b8 + 100)/100`
+        // (24889) — a DR PERCENT we do not apply, because the ability that
+        // writes `+0x7b8` is not readable here. Ghidra reaches that store
+        // via `if (param_2 != 0xe)`, i.e. ability 14, but its own brace
+        // nesting in that region is provably wrong (it emits `case 0x4b/
+        // 0x4c/0x57` *after* the inner switch closes), and ability 14 is
+        // `RoomIllu` — its shipped carriers hold 9999 on a portal and 100
+        // on two rings, which is light, not a doubling of damage
+        // resistance. `AlterDRpercent`(99) is what the id table describes
+        // for this, and it has two shipped spell carriers, but no visible
+        // writer in `update_dynamic_with_ability`. Wiring either one on
+        // this evidence would be a guess with live consequences, so the
+        // term is left unapplied and named. Settle it from the 16-bit
+        // disassembly or a capture before porting.
+        let armor: i32 =
+            worn().map(|i| i32::from(i.damage_resist)).sum::<i32>() + bag.value(Ability::DR);
+        // `[1]` — Σ `+0x342` (24788), ÷10 at 24866, then `+= player+0x70c`
+        // (24885, `update_dynamic_with_ability` case 2 at 37469). Drives
+        // the quadratic to-hit term at 25311, never the soak. The AC term
+        // is added AFTER the ÷10, which is why it is unscaled here while
+        // `get_armour_rating` multiplies it by 10 — that accumulator has
+        // not been divided yet. Both agree in display units.
         let defense: i32 = (i32::from(
             player
                 .weapon
                 .and_then(|(id, _)| self.content.items.get(&id))
-                .map_or(0, |w| w.defense),
-        ) + player
-            .worn
-            .iter()
-            .filter_map(|(id, _)| self.content.items.get(id))
-            .map(|i| i32::from(i.defense))
-            .sum::<i32>())
-            / 10;
+                .map_or(0, |w| w.evasion),
+        ) + worn().map(|i| i32::from(i.evasion)).sum::<i32>())
+            / 10
+            + bag.value(Ability::AC);
         crate::combat::Fighter {
             accuracy: 0,
             evasion_a: defense,

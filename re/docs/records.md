@@ -46,7 +46,7 @@ Bard, Gypsy, Warlock, Mage, Druid, Ranger (+ more).
 |--------|-------|
 | `+0x33e` | weapon **min damage** |
 | `+0x340` | weapon **max damage** |
-| `+0x39b` | **armor** value (summed into fighter AC when worn) |
+| `+0x39b` | **damage resistance** — summed into fighter `[3]`, the SOAK word (dmg −= `[3]`/10). NOT the AC/to-hit stat: that is a separate column (WG3-NT `+0x342`, DB `ac`) which feeds fighter `[1]` ÷10. Both are called "armour" in the data and both ship ×10; see the warning in `combat.md`'s WG3-NT fighter section. |
 
 Player worn-equipment slots reference items by (id-lo, id-hi) pairs, e.g.
 `player[+0x617]/[+0x619]` (weapon), `player[+0x61f]/[+0x621]` (a worn slot).

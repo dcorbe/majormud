@@ -42,7 +42,7 @@ Fighter struct (16-bit **word** indices; byte offset = index×2). Origins from
 | `[0]`     | 0    | **overall accuracy** (used as `att[0]`; parry denom `att[0]/8`) | `ability(0x74)/2 + hit-bonuses` |
 | `[1]`     | 2    | backstab compare value (`def+2`) | (context-dependent) |
 | `[2]`     | 4    | **weapon to-hit** rating | `ability(0x18 main / 0x19 off)`, `+10` if `ability(9)` |
-| `[3]`     | 6    | **armor / AC** (`def+6`, dmg −= armor/10) | Σ worn-item armor `item[+0x39b]` |
+| `[3]`     | 6    | **armor** = DAMAGE RESISTANCE (`def+6`, dmg −= armor/10) — **not** the AC/to-hit stat, which is `[1]`; see the warning under the WG3-NT build below | Σ worn-item DR `item[+0x39b]` |
 | `[4]`     | 8    | attack **message id** (`def+8`) | weapon/verb |
 | `[5]`     | 10   | attack **message id 2** (`def+10`) | weapon/verb |
 | `[6]/[7]` | 0xc  | weapon ref / passthrough (`att[6]`→`DAT_1140_0010`) | `_GET_ITEM_DATA` (32-bit) |
@@ -204,6 +204,28 @@ type 7 = **−75**, all others = **0** (special attacks are harder to land).
 - **Player defense** `[1]` = `(Σ item+0x342)/10 + dyn(+0x70c)`, `[2]` = weapon
   to-hit ability (naked: both 0). Armor `[3]` = Σ worn `+0x39c` + dyn(+0x7b6),
   ×(+0x7b8+100)/100.
+
+  > **⚠ THE TWO ITEM ARMOUR COLUMNS ARE DIFFERENT STATS, AND BOTH ARE
+  > CALLED "ARMOUR".** `+0x342` (DB column `ac`) is the TO-HIT stat and
+  > reaches `[1]` **÷10**; `+0x39c` (DB column `dr`) is the DAMAGE SOAK and
+  > reaches `[3]` **raw**, the ÷10 happening later inside
+  > `calculate_attack`. Both ship pre-multiplied by 10 (rigid leather tunic
+  > ac 130 / dr 13), and 319 of the 565 AC-bearing shipped items carry no
+  > DR at all — so reading one for the other is not a scaling error, it
+  > invents resistance for most of the gear in the game.
+  >
+  > The `st` line prints BOTH as `Armour Class: A/B` = `Σ+0x342/10` and
+  > `Σ+0x39c/10` (`get_armour_rating` 16956 → 31553-31556). MEASURED
+  > 2026-07-26: Σac 125 / Σdr 8 → `12/0`, with giant bats (2..5) biting for
+  > the full undiminished band.
+  >
+  > **As built:** the port had these transposed from M4 until 2026-07-26
+  > (`build_player_defender`); see `re/docs/charm.md` §8.3 and
+  > `crates/mud-server/tests/armour_real_content.rs`. The evasion
+  > accumulator is seeded by the WIELDED weapon (24683) before the worn
+  > loop adds to it (24797) — the soak word gets no such seed. Not ported:
+  > the `×(+0x7b8+100)/100` DR percent, whose writing ability is not
+  > readable from the decompile (see the call site in `game.rs`).
 - **Monster fighter**: `[0]` = per-form accuracy (knmsr+0x12e) + Accuracy
   abilities; `[1]` evasion = instance AC (+0x10c) + AC ability; `[3]` armor =
   **DR(+0x10a) × 10** + DR ability; `[4]` kill exp = worth × multiplier;

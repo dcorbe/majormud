@@ -567,6 +567,65 @@ fn monster_hit_renders_the_form_hit_message() {
     );
 }
 
+/// A worn armour fixture with the two armour columns set independently.
+fn worn_armour(evasion: i16, damage_resist: i16) -> Item {
+    Item {
+        id: ItemId(700),
+        name: "test corselet".into(),
+        weight: 10,
+        item_type: 0,
+        uses: -1,
+        evasion,
+        damage_resist,
+        worn_on: 11,
+        gettable: 1,
+        ..Item::default()
+    }
+}
+
+/// Wear the fixture corselet and take four rounds of a fixed 3-damage bite.
+fn bitten_wearing(evasion: i16, damage_resist: i16) -> String {
+    let mut content = arena(rat(200, 3, 3), 30, 30);
+    add_rat_messages(&mut content);
+    content.add_item(worn_armour(evasion, damage_resist));
+    let mut core = Core::new(content, config());
+    core.spawn_monster(MonsterId(1), RoomId { map: 1, room: 1 });
+    let s = create(&mut core, "Dain");
+    core.give_item(s, ItemId(700));
+    core.input(s, "wear corselet");
+    core.input(s, "attack rat");
+    core.drain_events();
+    text_to(&run_rounds(&mut core, 4), s)
+}
+
+/// The two armour columns are NOT interchangeable: `+0x39c` (`dr`) is the
+/// damage soak, `+0x342` (`ac`) is the to-hit term. Until 2026-07-26 the
+/// port had them transposed, and nothing caught it because every fixture
+/// in the suite fought naked — the whole point of this pair.
+///
+/// Measured corroboration (charm.md §8.3): Oracle Delver wore Σac 125 /
+/// Σdr 8, the board printed `Armour Class:  12/0`, and giant bats (2..5)
+/// bit for the full undiminished 2..5. A soak of Σac/10 = 12 would have
+/// made that character immune.
+#[test]
+fn worn_dr_soaks_damage_but_worn_ac_does_not() {
+    // DR 20 -> soak 20/10 = 2, so the fixed 3-damage bite lands 1.
+    let soaked = bitten_wearing(0, 20);
+    assert!(
+        soaked.contains("bites you for 1 damage!") && !soaked.contains("bites you for 3 damage!"),
+        "Σ worn +0x39c is the soak (calculate_attack 25335): {soaked:?}"
+    );
+
+    // The same magnitude in the OTHER column soaks nothing. Evasion 20
+    // reaches [1] as 2, which against accuracy 200 leaves the to-hit
+    // clamp untouched, so the bite still connects for its full 3.
+    let unsoaked = bitten_wearing(20, 0);
+    assert!(
+        unsoaked.contains("bites you for 3 damage!"),
+        "Σ worn +0x342 drives to-hit only (25311), never the soak: {unsoaked:?}"
+    );
+}
+
 #[test]
 fn monster_plain_miss_renders_the_miss_line() {
     // Accuracy 5 -> to-hit threshold 5 (sub-formula), so ~95% of swings
