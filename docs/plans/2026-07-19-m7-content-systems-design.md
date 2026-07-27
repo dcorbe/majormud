@@ -519,9 +519,29 @@ from the shipped columns.
    fix above did NOT settle — it has a different cause. It does now have a
    fair test for the first time: until the column swap was fixed, every
    geared player's evasion word was 0, so any earlier comparison ran against
-   a defence the port was not applying. Re-measure before concluding
-   anything. The monster half — whether template AC at `game.rs:12219` needs
-   its own scale check — is untouched.
+   a defence the port was not applying.
+   **The monster half is CLOSED (2026-07-26, charm.md §8.4):** template `ac`
+   is whole units and `build_monster_defender` is right as written. Grey
+   spiders (AC 20, no Dodge, so no parry channel) connected 2/21 = 0.0952
+   against the port's 0.10 and a tenths reading's excluded 0.99 — which also
+   put the first measurement on the `[10, 99]` clamp's FLOOR, a region no
+   test had ever entered because every combat fixture fights an AC 0
+   sandbag. Pinned, mutation-verified, in `game_combat.rs`.
+   **The accuracy half is still open.** With the monster scale settled, the
+   acc-mid residue wants a cause in `move_player_to_fighter`'s accuracy
+   derivation, and the two measurable channels of that block disagree about
+   it: the parry rate wants accuracy ≤23, to-hit wants ≥25. A joint fit
+   across the three blocks leans ~25-27 against our 23. Next measurement: a
+   high-AC target at an accuracy well clear of the clamp, where the
+   threshold is steep in accuracy rather than pinned to the floor. Budget
+   more survivability than the control run had — it died at 21 swings,
+   because a 10%-connect grind against a target you cannot kill is a long
+   time under return fire.
+4c. **The `Encumbrance: x/2880` denominator** (charm.md §8.3 tail): the board
+   reports 2880 for a Str-50 character where `stats.rs` computes
+   `str * 48` = 2400. Encumbrance feeds `skill` and hence accuracy, so it
+   belongs with 4b — though it does NOT explain 4b's residue, since at the
+   captured weight both denominators floor to the same `enc/10`.
 5. **The pet lifetime that `give_up` never resets.** `give_up` is zeroed
    only in `monster_attack`'s engage block (`game.rs:9773`, decompile
    26768-26777) — a path a pet essentially never takes, since a pet

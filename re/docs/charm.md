@@ -787,16 +787,89 @@ Fixed on branch `armour-columns`; pinned by
 from the shipped columns with no board. The AC(2)/DR(7) dynamic
 accumulators (`+0x70c`/`+0x7b6`) were unported for players and now land too.
 
-**Still open: the to-hit model.** The same transcripts give 31/37 = 0.838
-connecting against a predicted 0.67, with the prediction just outside the
-95% interval [0.680, 0.938]. Borderline at n=37, and no longer supported by
-the armour anomaly, which has a different cause. It now has a fair test it
-did not have before — the player's evasion word was 0 for every geared
-character until this fix, so any earlier to-hit comparison was made against
-a defence the port was not applying. Re-measure before drawing anything from
-it. The monster side of the same question (whether template AC at
-`game.rs:12219` needs its own scale check) is untouched by this fix.
+**The to-hit model — half settled, see §8.4.** The same transcripts give
+31/37 = 0.838 connecting against a predicted 0.67, with the prediction just
+outside the 95% interval [0.680, 0.938]. Borderline at n=37, and no longer
+supported by the armour anomaly, which has a different cause. It now has a
+fair test it did not have before — the player's evasion word was 0 for every
+geared character until this fix, so any earlier to-hit comparison was made
+against a defence the port was not applying. The monster side of the
+question (whether the template AC term needs its own scale check) was
+measured the same day and is CLOSED; the accuracy side is not.
 
 Also unresolved: the board reports `Encumbrance: x/2880` for a Str-50
 character where `stats.rs` computes `str * 48` = 2400. Encumbrance feeds
-`skill` and hence accuracy, so this is not cosmetic.
+`skill` and hence accuracy, so this is not cosmetic. (It does not explain
+§8.4's residue: at the captured 711 units both denominators floor to the
+same `enc/10 = 2`, so the two agree on accuracy for these particular runs.)
+
+### 8.4 MEASURED (2026-07-26) — the monster AC scale, and the miss colour
+
+Transcript `re/oracle/oracle_dodge_parry_control.raw` (+ timing log), harness
+config `control` in `tools/oracle/oracle_dodge_parry.py`.
+
+**The question.** `build_monster_defender` feeds the RAW template `ac` column
+into the evasion word, while the player's own side of that word divides its
+item column by ten (24866). Shipped monster `ac` runs 0..9999 with a mean of
+**101** against a geared player's ~12, and defense enters the threshold
+SQUARED, so if the monster column were also in tenths every monster in the
+game would be far easier to hit than we model.
+
+**Method.** The same Oracle Delver, kit and rooms as §8.3, with one change:
+the target. Grey spider #30 is AC 20, DR 2 and carries **no** Dodge(0x22), so
+the parry channel is absent and every connect is a glance — the run measures
+to-hit alone. Swapping AC 10 for AC 20 at accuracy 23 separates the two
+readings by nearly the whole range, because `100 - defense²/(accuracy²/14/10)`
+truncates at every divide: the raw column gives 400/3 = 133 over 100, i.e. the
+clamp FLOOR of 10, where a tenths reading gives defense 2 and a threshold of
+99.
+
+    swings 21:  glance 2   miss 19   dodge 0   hit 0
+    connect = 2/21 = 0.0952,  95% CI [0.0117, 0.3038]
+
+**Result: the column is whole units and the port is right as written.** 0.10
+is essentially the point estimate; 0.99 is excluded outright. This is also the
+first live measurement of the **clamp floor** itself, which no test had ever
+exercised — every combat fixture fights an AC 0 sandbag, where the threshold
+clamps to 99 at the other end and the to-hit term never bites. Pinned by
+`game_combat.rs::a_monsters_armour_class_is_a_whole_unit_not_a_tenths_scale`,
+verified by applying the /10 mutation and watching it fail.
+
+The run ended early — the character was killed at HP −18. At a 10% connect
+rate against a spider that bites for 9-12, a sandbag target the player cannot
+kill takes a very long time to hit back at, and the healer cycle could not
+keep up. Not a problem for this measurement, which needed ~20 swings, but any
+future high-AC block wants a bigger HP buffer or a lower-damage target.
+
+**Correction to §8.3, found on the way through: the raws are NOT
+ANSI-stripped.** §8.3 filed the parry line's colour as unmeasurable on that
+premise. The raws carry ANSI throughout, and reading the attribute byte ahead
+of each line — counting only segments whose entire content is the line in
+question, so the code cannot belong to a neighbour — gives, with no
+exceptions across all three captures:
+
+| line | wording | colour | count |
+|---|---|---|---|
+| plain miss | `You swing at giant bat!` | `0;36` | 24 |
+| parry | `You swing at ... who dodges your attack!` | `0;36` | 46 |
+| glance | `Your ... glances off ...` | `0;31` | 36 |
+
+So §8.3's guess that the parry inherits the plain miss's colour was right, but
+the plain miss itself was painted with the glance's red: our one
+"miss/glance family" constant was two thirds wrong. A swing that never
+connected is cyan, like the incoming monster lines; only the
+connected-but-soaked glance is red. Fixed, with `text::color::YOUR_GLANCE`
+carrying the red.
+
+**What remains open (carry 4b's residue): the accuracy derivation.** With the
+monster scale settled, the acc-mid block's 0.838-against-0.670 still wants an
+explanation, and the two channels of that same block disagree about the
+cause: the parry rate wants accuracy ≤23 (denominator 2), while to-hit wants
+≥25. This control run bounds it from the other side — at AC 20 the threshold
+sits on the clamp floor for any accuracy in 13..25 and rises to 0.34 by
+accuracy 29, which the interval excludes. A joint fit across all three blocks
+favours accuracy ~25-27 where we compute 23, i.e. our derivation reading a
+couple of points LOW. That is a two-point discrepancy inferred from three
+small blocks, not a finding. The clean next measurement is a high-AC target
+at an accuracy well clear of the clamp, where the threshold is steep in
+accuracy rather than pinned.

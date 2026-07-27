@@ -175,6 +175,32 @@ Sanity check: acc 200 vs defense 100 → `100 - 140·10000/40000 = 65%`; defense
 `typeAccMod` (`[BP-2]`, from the attack-type switch): type 4 = **−15**, type 6 = **−25**,
 type 7 = **−75**, all others = **0** (special attacks are harder to land).
 
+> **MEASURED 2026-07-26** (`re/oracle/oracle_dodge_parry_control.raw`,
+> `charm.md` §8.4). Two parts of this formula now have live confirmation.
+>
+> **The defender's `word[1]` is in WHOLE UNITS on the monster side** — the
+> template `ac` column reaches it RAW, where the player's item column reaches
+> it ÷10 (24866). The two look inconsistent and are not: shipped monster `ac`
+> runs 0..9999 (mean 101) against a geared player's ~12, and reading the
+> monster column in tenths as well is excluded by capture. A level-2 character
+> at accuracy 23 swinging at grey spiders (AC 20, no Dodge, so no parry
+> channel) connected **2/21 = 0.0952**, CI [0.0117, 0.3038]: the raw column
+> predicts 400/3 = 133 over 100 → the clamp floor of 0.10, and a tenths
+> reading predicts 0.99.
+>
+> **The [10, 99] clamp's floor is real**, and that run is the first thing to
+> exercise it — the quadratic goes sharply negative once defense approaches
+> accuracy, and a level-2 character against a common low-level monster is
+> already deep in that region. Note every divide TRUNCATES (`den` first, then
+> `defense²/den`), which is what puts accuracy 13..25 all on the same floor
+> against AC 20.
+>
+> Still ORACLE-VERIFY: the ACCURACY side (`word[0]`, the
+> `move_player_to_fighter` derivation below). Three small blocks jointly
+> favour accuracy ~25-27 where we compute 23 — a couple of points low — but
+> the two measurable channels disagree about it and none of the blocks is
+> large. See `charm.md` §8.4.
+
 ---
 
 ## Recovered in full (WG3-NT decompile pass, 2026-07-16)
