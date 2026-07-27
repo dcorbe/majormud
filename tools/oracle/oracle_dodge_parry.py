@@ -105,13 +105,29 @@ ROOMS = [
 ]
 HEALER = 2190                     # Newhaven healer, map 1
 
-# Targets.  The spider is the CONTROL that fixes what the board's
-# "... who dodges your attack!" line actually means: it carries no Dodge(0x22)
+# Targets.  The spider is the CONTROL.  It was introduced to fix what the
+# board's "... who dodges your attack!" line means -- it carries no Dodge(0x22)
 # at all, so if that line is result 3 (the parry) it must never appear against
 # one, whereas if it is really the to-hit miss it should appear at ~30% (AC 20
-# against accuracy 43).  Nothing else in the transcript separates those two
-# readings.  The hammer floors to 0 damage through the spider's DR 2 as well,
-# so it is just as immortal a punching bag as the bat.
+# against accuracy 43).  The 2026-07-26 expedition settled that from the DLL's
+# own string table instead (0xca40d, one slot after the plain miss), so the
+# spider now earns its keep on a SECOND question -- see "The to-hit scale test"
+# below.  The hammer floors to 0 damage through the spider's DR 2 as well, so it
+# is just as immortal a punching bag as the bat.
+#
+# THE TO-HIT SCALE TEST (2026-07-26, M7 carry 4b).  Both bat blocks connected
+# more often than `threshold = 100 - defense^2/(accuracy^2/14/10)` predicts
+# (0.967 observed against 0.930, and 0.838 against 0.670), and two causes fit:
+# our player accuracy reads low, or the monster defense term reads high.  The
+# second is the live suspicion, because `build_monster_defender` feeds the raw
+# template `ac` column -- which ships 0..9999, mean 101 -- into the same word
+# the PLAYER's side reaches only after a divide by ten.
+#
+# Swapping the bat (AC 10) for the spider (AC 20) at fixed accuracy separates
+# them, because defense enters squared.  At accuracy 23 the port as written
+# predicts 400/3 = 133 over 100, i.e. the clamp FLOOR of 0.10, where a monster
+# `ac` needing its own /10 predicts 0.99.  Twenty swings decide it.  Run
+# `control` before `control-high`: the low-accuracy row is the sharp one.
 #
 # The accuracy lever is worn NEGATIVE-accuracy gear, not level: `ratings` is
 # the summed accuracy of the weapon and everything worn, `skill = ratings`
@@ -126,13 +142,16 @@ HEALER = 2190                     # Newhaven healer, map 1
 # That decouples the accuracy the experiment needs from the level the
 # character needs to survive, which level 1 could not supply.
 CONFIGS = {
-    # name        target         Dodge  extra negative-accuracy gear
-    "acc-high":  ("giant bat",   20,    []),
-    "acc-mid":   ("giant bat",   20,    ["smoky black talisman"]),
-    "acc-low":   ("giant bat",   20,    ["smoky black talisman",
-                                         "malachite ring"]),
-    "control":   ("grey spider",  0,    ["smoky black talisman"]),
+    # name           target        Dodge  extra negative-accuracy gear
+    "acc-high":     ("giant bat",   20,    []),
+    "acc-mid":      ("giant bat",   20,    ["smoky black talisman"]),
+    "acc-low":      ("giant bat",   20,    ["smoky black talisman",
+                                            "malachite ring"]),
+    "control":      ("grey spider",  0,    ["smoky black talisman"]),
+    "control-high": ("grey spider",  0,    []),
 }
+# Template AC, for the to-hit prediction.  Both are the shipped `ac` column.
+TARGET_AC = {"giant bat": 10, "grey spider": 20}
 # accuracy contributions of the extra gear, for the prediction arithmetic
 GEAR_ACCURACY = {"smoky black talisman": -20, "malachite ring": -12,
                  "tower shield": -6}
@@ -372,6 +391,25 @@ else:
     predicted = min(95, TARGET_DODGE * 10 // den) / 100
 note(f"level {LEVEL}, ratings {RATINGS}, skill {skill}, accuracy {accuracy}, "
      f"floor(acc/8) = {den}, predicted parry {predicted}")
+
+
+def to_hit(acc, defense):
+    """`calculate_attack` 25311: threshold = 100 - defense^2/(acc^2/14/10),
+    clamped [10, 99], with a flat 5 when the denominator truncates to zero.
+    Every divide truncates, which is what puts the low-accuracy row on the
+    clamp floor."""
+    d = tdiv(tdiv(acc * acc, 14), 10)
+    if d == 0:
+        return 0.05
+    return min(99, max(10, 100 - tdiv(defense * defense, d))) / 100
+
+
+# The two readings of the template `ac` column, printed side by side so the
+# operator can see which way the run is going without waiting for the analyzer.
+AC = TARGET_AC[TARGET]
+note(f"predicted to-hit vs {TARGET} (AC {AC}): "
+     f"port as written = {to_hit(accuracy, AC)}, "
+     f"if template ac needs /10 = {to_hit(accuracy, AC // 10)}")
 if REQUIRE_LIGHT_ENC and enc >= 33:
     sys.exit(f"{CONFIG} needs enc < 33, got {enc}% -- drop weight")
 if not REQUIRE_LIGHT_ENC and enc < 33:
