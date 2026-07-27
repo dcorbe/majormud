@@ -99,15 +99,19 @@ def to_hit(accuracy, defense):
 
 
 ap = argparse.ArgumentParser()
-ap.add_argument("raw")
+# Several raws POOL into one estimate, which is not a convenience: a block run
+# at one accuracy is often split across raws by a death or an abort (acc-mid is
+# 25 swings and acc-mid2 is 12, and only the pooled 37 says anything), and
+# summing them by hand is how the design doc came to quote a connect rate no
+# single file supports.  Pool only raws that share a configuration.
+ap.add_argument("raw", nargs="+")
 ap.add_argument("--noun", default="bat", help="target noun in the swing lines")
 ap.add_argument("--accuracy", type=int, default=41)
 ap.add_argument("--dodge", type=int, default=20)
 ap.add_argument("--ac", type=int, default=10, help="target armour class")
 args = ap.parse_args()
 
-with open(args.raw, "rb") as fh:
-    text = clean(fh.read())
+text = "\n".join(clean(open(p, "rb").read()) for p in args.raw)
 
 RE_HIT = re.compile(r"^You (?:critically )?(\w+) (.*?) for (-?\d+) damage!$")
 RE_GLANCE = re.compile(r"^Your (.*?) glances off(.*)$")
@@ -156,7 +160,7 @@ n = sum(counts.values())
 # A swing that connected: it either landed, glanced off armour, or was
 # parried.  Only the plain miss is a to-hit failure.
 connect = counts["hit"] + counts["glance"] + counts["dodge"]
-print(f"raw          : {args.raw}")
+print(f"raw          : {', '.join(args.raw)}")
 print(f"swings       : {n}")
 for k in ("hit", "glance", "dodge", "miss", "novel"):
     share = f"{counts[k]/n:6.3f}" if n else "   n/a"
@@ -175,6 +179,27 @@ print(f"\nto-hit, predicted h (accuracy {args.accuracy} vs AC {args.ac}) = {h:.4
 print(f"to-hit, observed        = {connect}/{n} = {connect/n:.4f}"
       f"  95% CI [{lo:.4f}, {hi:.4f}]")
 
+# M7 carry 4b.  `build_monster_defender` feeds the RAW template `ac` column
+# into the fighter word the player's own side reaches only after a divide by
+# ten.  Defense enters the threshold squared, so a high-AC target at low
+# accuracy separates the two readings by most of the range -- which is what
+# the grey-spider control run is for.  Printed as candidates against the
+# interval, in the same shape as the parry steps below.
+print("\nreadings of the target's `ac` column (defense enters squared):")
+for label, defense in (("port as written", args.ac),
+                       ("template ac / 10", args.ac // 10)):
+    cand = to_hit(args.accuracy, defense)
+    inside = "  <== consistent" if lo <= cand <= hi else "  excluded"
+    print(f"  {label:18s} defense {defense:4d} -> {cand:6.3f}{inside}")
+# An accuracy error moves the same prediction, so the two are only separable
+# when one reading sits outside the interval and the other inside.
+print("  (an accuracy error shifts these too -- see the accuracy sweep)")
+for acc in range(max(9, args.accuracy - 16), args.accuracy + 17, 4):
+    cand = to_hit(acc, args.ac)
+    inside = "  <== consistent" if lo <= cand <= hi else ""
+    star = " *ours*" if acc == args.accuracy else ""
+    print(f"    accuracy {acc:3d} -> {cand:6.3f}{star}{inside}")
+
 # The board words result 3 distinctly, so the parry rate is measured directly
 # among connecting swings -- no reliance on the to-hit model at all.
 if connect:
@@ -186,6 +211,14 @@ if connect:
 else:
     p_hat, p_lo, p_hi = 0.0, 0.0, 1.0
     print("\nno connecting swings; parry undetermined")
+
+if args.dodge == 0:
+    # The control targets carry no Dodge(0x22), so every candidate step is 0
+    # and the table below says nothing.  Such a run measures to-hit alone --
+    # that is the whole point of picking a target without the parry channel.
+    print("\ntarget carries no Dodge(0x22); parry table omitted "
+          "(this run measures to-hit only)")
+    sys.exit(0)
 
 print(f"\ncandidate steps for Dodge {args.dodge} (parry = min(95, dodge*10/d)):")
 for d in range(1, 16):
