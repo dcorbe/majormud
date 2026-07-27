@@ -12,6 +12,7 @@ use mud_core::content::{
     RoomId, StatBlock,
 };
 use mud_core::game::{Core, CoreConfig, Event, Gender, Player, SessionId};
+use mud_core::text;
 
 const HALL: RoomId = RoomId { map: 1, room: 1 };
 const YARD: RoomId = RoomId { map: 1, room: 2 };
@@ -193,8 +194,40 @@ fn combat_lines_use_the_red_and_cyan_families() {
         "incoming hit bright red: {shown:?}"
     );
     assert!(
-        shown.contains("\x1b[0;31mYou swing at giant rat!"),
-        "your miss dark red: {shown:?}"
+        shown.contains("\x1b[0;36mYou swing at giant rat!"),
+        "your plain miss is CYAN, not the red the glance family uses: {shown:?}"
+    );
+}
+
+#[test]
+fn the_players_miss_and_parry_lines_are_cyan_but_the_glance_is_red() {
+    // MEASURED (`re/oracle/oracle_dodge_parry_{control,acc-mid,acc-high}.raw`,
+    // 2026-07-26). The raws are NOT ANSI-stripped -- `charm.md` §8.3 said they
+    // were, which is why the parry line's colour was filed as unmeasurable --
+    // so the attribute byte ahead of each line is readable directly. Counting
+    // only segments whose ENTIRE content is the line in question, so the code
+    // belongs to that line and not to a neighbour sharing the physical line:
+    //
+    //     plain miss  "You swing at giant bat!"                    0;36  x24
+    //     parry       "You swing at ... who dodges your attack!"   0;36  x46
+    //     glance      "Your ... glances off ..."                   0;31  x36
+    //
+    // Zero exceptions in any of the three captures. So §8.3's guess that the
+    // parry line INHERITS the plain miss's colour was right, but the plain
+    // miss itself was painted with the glance's red. The two are different
+    // families on the board: a swing that never connected is cyan, like the
+    // incoming monster lines, and only the connected-but-soaked glance is red.
+    assert!(
+        text::player_miss("swing at", "giant bat").starts_with("\x1b[0;36m"),
+        "the plain miss is cyan"
+    );
+    assert!(
+        text::player_dodge("swing at", "giant bat").starts_with("\x1b[0;36m"),
+        "the parry line inherits the plain miss's cyan"
+    );
+    assert!(
+        text::player_glance("swing at", "giant bat").starts_with("\x1b[0;31m"),
+        "the glance stays red"
     );
 }
 

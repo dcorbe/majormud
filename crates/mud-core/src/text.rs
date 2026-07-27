@@ -57,8 +57,16 @@ pub mod color {
     /// Damage lines, both directions, and the low-HP prompt number
     /// (`1;31` bright red).
     pub const DAMAGE: &str = "\x1b[1;31m";
-    /// Your miss/glance family (`0;31` red).
-    pub const YOUR_MISS: &str = "\x1b[0;31m";
+    /// Your swings that never CONNECTED — the plain miss and the defender's
+    /// parry (`0;36` cyan, the same family as the incoming monster lines).
+    ///
+    /// MEASURED (`oracle_dodge_parry_{control,acc-mid,acc-high}.raw`): 24
+    /// plain misses and 46 parries, all `0;36`, against 36 glances all
+    /// `0;31`. This constant used to be one "miss/glance family" at `0;31`,
+    /// which painted two thirds of it the wrong colour.
+    pub const YOUR_MISS: &str = "\x1b[0;36m";
+    /// Your swing that connected and was soaked by armour (`0;31` red).
+    pub const YOUR_GLANCE: &str = "\x1b[0;31m";
     /// *Combat Engaged*/*Combat Off* (`0;33` yellow).
     pub const COMBAT_MARK: &str = "\x1b[0;33m";
     /// A mover's name in movement/arrival lines (`1;33` bright yellow).
@@ -934,9 +942,12 @@ pub fn player_miss(verb: &str, target: &str) -> String {
 /// after the plain miss `You %s %s!` (0xca3ea) and one before the
 /// monster-side result-3 pair (0xca430 victim view, 0xca464 room view).
 ///
-/// ORACLE-VERIFY: the COLOUR is assumed to match the plain miss; the
-/// capture that pinned the wording was ANSI-stripped, so the attribute
-/// bytes ahead of this line are still unmeasured.
+/// MEASURED (2026-07-26, the same raws): the colour DOES match the plain
+/// miss — 46 parry lines and 24 plain misses all carry `0;36`. The earlier
+/// note here said the capture was ANSI-stripped and the attribute bytes
+/// unmeasurable; that was wrong, the raws carry ANSI throughout, and
+/// reading them showed the plain miss had itself been painted with the
+/// glance's red.
 pub fn player_dodge(verb: &str, target: &str) -> String {
     format!(
         "{}You {verb} {target} who dodges your attack!{}",
@@ -949,7 +960,7 @@ pub fn player_dodge(verb: &str, target: &str) -> String {
 pub fn player_glance(verb: &str, target: &str) -> String {
     format!(
         "{}Your {verb} {target} hits, but glances off its armour.{}",
-        color::YOUR_MISS,
+        color::YOUR_GLANCE,
         color::RESET
     )
 }

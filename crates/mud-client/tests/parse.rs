@@ -252,6 +252,51 @@ fn player_miss_and_glance_lines() {
 }
 
 #[test]
+fn a_cyan_line_that_is_not_a_swing_is_not_a_combat_miss() {
+    // MEASURED 2026-07-26: the board paints the player's plain miss and the
+    // defender's parry `0;36`, NOT the `0;31` this parser assumed — the red
+    // family is only the glance. (The old colour-only rule therefore never
+    // matched a real plain miss; it matched the glance, which also starts
+    // with "You" and which the `glances off` clause catches anyway.)
+    //
+    // Cyan is a crowded colour: `You notice ... here.` outside a room block
+    // and `You attempt to cast ..., but fail.` share it, and 40 distinct such
+    // lines appear across the corpus. What separates a swing from all of them
+    // is the terminal `!` — across all 57 transcripts, every cyan line that
+    // starts with "You" and ends with "!" is a miss or a parry (84 of them,
+    // no exceptions), so the shape carries the rule and the colour alone
+    // does not.
+    for line in [
+        "You notice pewter tankard here.",
+        "You attempt to cast magic missile, but fail.",
+    ] {
+        let painted = format!("{}{line}{}", text::color::YOUR_MISS, text::color::RESET);
+        let ev = parse_all(&format!("{painted}\r\n"));
+        assert!(
+            !matches!(ev.as_slice(), [Event::CombatMiss { .. }]),
+            "{line:?} is not a swing, got {ev:?}"
+        );
+    }
+    // The real thing still classifies.
+    let miss = text::player_miss("swing at", "giant bat");
+    assert!(
+        matches!(
+            parse_all(&format!("{miss}\r\n")).as_slice(),
+            [Event::CombatMiss { .. }]
+        ),
+        "a plain miss is still a miss"
+    );
+    let parry = text::player_dodge("swing at", "giant bat");
+    assert!(
+        matches!(
+            parse_all(&format!("{parry}\r\n")).as_slice(),
+            [Event::CombatMiss { .. }]
+        ),
+        "a parry reads as a non-damaging swing to the bot"
+    );
+}
+
+#[test]
 fn monster_hit_and_dodge_lines() {
     let hit = text::fill_message(text::MONSTER_HIT_TPL, &["The zombie", "smashes", "9"]);
     assert_eq!(
@@ -372,7 +417,7 @@ fn corpus_all_files_parse_and_prompt_totals_match() {
     // every oracle expedition adds transcripts. Both numbers below therefore
     // move by design — when they do, recompute the ground truth rather than
     // taking the Rust parser's word for it (see below) and update them.
-    assert_eq!(files.len(), 56, "corpus size changed");
+    assert_eq!(files.len(), 57, "corpus size changed");
     let mut prompts = 0;
     for f in &files {
         let ev = corpus_events(f);
@@ -387,8 +432,15 @@ fn corpus_all_files_parse_and_prompt_totals_match() {
     // 5347 over the 51 files that predate the 2026-07-26 dodge-parry
     // expedition; that expedition's five captures contribute 598 more
     // (death_revive 46, training 111, parry acc-mid 141, acc-mid2 47,
-    // acc-high 253).
-    assert_eq!(prompts, 5945);
+    // acc-high 253), and the to-hit scale run that followed it the same day
+    // (`oracle_dodge_parry_control.raw`, grey spider) adds 182.
+    //
+    // Recomputed with the reference pipeline, which reproduced the previous
+    // 5945 over the previous 56 files before the new one was added — note
+    // that the count needs the FULL prompt shape including the `/MA=` and
+    // `/KAI=` variants; an HP-only regex undercounts these transcripts
+    // roughly threefold.
+    assert_eq!(prompts, 6127);
 }
 
 #[test]

@@ -217,9 +217,14 @@ fn classify_line(t: &str, opening: Option<&str>) -> Option<Event> {
             damage: c[2].parse().unwrap(),
         });
     }
-    // Misses: your swings paint 0;31; monster whiffs are recognized by
-    // their fixed tails (mud_core::text MONSTER_*_TPL family).
-    if (opening == Some(color::YOUR_MISS) && t.starts_with("You"))
+    // Misses: your swings that never connected paint 0;36 (MEASURED
+    // 2026-07-26 -- the 0;31 this once assumed is the GLANCE, caught by its
+    // own clause below). Cyan is shared with notices and failed casts, so the
+    // rule needs the swing's shape too: a terminal `!`. Across the 57 corpus
+    // transcripts every cyan "You ...!" line is a miss or a parry (84, no
+    // exceptions). Monster whiffs are recognized by their fixed tails
+    // (mud_core::text MONSTER_*_TPL family).
+    if (opening == Some(color::YOUR_MISS) && t.starts_with("You") && t.ends_with('!'))
         || t.ends_with("but you dodge!")
         || t.contains("your armour deflects.")
         || t.contains("glances off")
