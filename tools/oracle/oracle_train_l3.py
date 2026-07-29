@@ -18,7 +18,11 @@ Field notes encoded here (tools/oracle/README.md):
     first, train in short bursts, leave immediately.
   * Training costs copper (50 cp for L2), so the purse is topped first.
 
-Usage: python3 oracle_train_l3.py
+Usage: python3 oracle_train_l3.py [account] [target_level]
+
+The default is Oracle to level 3 (the Delver's accuracy-invariant
+ceiling). The Bard trains to 12 (kobold charmlvl) — its accuracy is
+not an experimental lever, so the L4 warning does not apply to it.
 """
 import re
 import sys
@@ -26,8 +30,10 @@ import time
 
 from mudlib import Session
 
-RAW = "../../re/oracle/oracle_train_l3.raw"
-LOG = "../../re/oracle/oracle_train_l3_timing.log"
+ACCOUNT = sys.argv[1] if len(sys.argv) > 1 else "Oracle"
+TARGET_LEVEL = int(sys.argv[2]) if len(sys.argv) > 2 else 3
+RAW = f"../../re/oracle/oracle_train_{ACCOUNT.lower()}_l{TARGET_LEVEL}.raw"
+LOG = f"../../re/oracle/oracle_train_{ACCOUNT.lower()}_l{TARGET_LEVEL}_timing.log"
 HEALER = 2190
 TRAINER = 289
 
@@ -90,7 +96,7 @@ def die_and_revive():
     sess.dump(2.0)
 
 
-sess.login("Oracle")
+sess.login(ACCOUNT)
 sess.send("E")
 sess.dump(5.0)
 
@@ -101,8 +107,8 @@ lv = level()
 note(f"entry level {lv}")
 if lv is None:
     sys.exit("could not read the level; refusing to train blind")
-if lv >= 3:
-    note("already level 3+; nothing to do")
+if lv >= TARGET_LEVEL:
+    note(f"already level {TARGET_LEVEL}+; nothing to do")
     cmd("x", tag="logout", drain=3.0)
     sys.exit(0)
 
@@ -110,10 +116,10 @@ if lv >= 3:
 # already banked ("You have progressed too far without training!"), so
 # grant once and rely on train to say if it is short.
 cmd("/xcash 5000 copper", tag="purse for training")
-cmd("/xexp 2500", tag="grant exp (no-op if capped)")
+cmd("/xexp 25000", tag="grant exp (no-op if capped)")
 
 deadline = time.time() + 420
-while lv < 3 and time.time() < deadline:
+while lv < TARGET_LEVEL and time.time() < deadline:
     if (hp() or 0) < 0:
         die_and_revive()
     cmd(f"/xgoto {HEALER} 1", tag="to healer")
@@ -145,14 +151,14 @@ while lv < 3 and time.time() < deadline:
     note(f"level now {lv}")
     if lv is None:
         sys.exit("lost the level readout mid-training")
-    if lv >= 3:
+    if lv >= TARGET_LEVEL:
         break
     if "enough experience" in out or "need" in out.lower():
-        cmd("/xexp 2500", tag="top up exp")
+        cmd("/xexp 25000", tag="top up exp")
 
-if lv == 3:
-    note("=== level 3 reached; CP left unspent by design ===")
-elif lv is not None and lv > 3:
+if lv == TARGET_LEVEL:
+    note(f"=== level {TARGET_LEVEL} reached; CP left unspent by design ===")
+elif lv is not None and lv > TARGET_LEVEL:
     sys.exit(f"OVERSHOT to level {lv} — the expedition configs are void; "
              f"do not run them until this is understood")
 else:
