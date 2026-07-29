@@ -39,11 +39,24 @@ from mudlib import Session
 RAW = "../../re/oracle/oracle_engage_lock.raw"
 LOG = "../../re/oracle/oracle_engage_lock_timing.log"
 HEALER = 2190
-# Giant rat (#1, group 6 index 1) spawn band, map 1.
-# The group-6 spawn region spans 429 rooms; sweeping only 20 of them
-# found nothing in 50 minutes (the region's rats sit anywhere in it).
-# 547-699 is the contiguous sewer run — a ~12-minute lap.
-RAT_ROOMS = [r for r in range(547, 700) if r != 592]
+# TARGET REWORK 2026-07-29: the giant-rat region proved structurally
+# empty — three full 152-room laps found zero rats while bats and
+# kobolds spawned readily. The giant bat serves identically: DR 1 (the
+# 1..1 hammer glances for 0, so P2's zero-damage premise holds), bite
+# 2..5 (gentler than the rat), and hundreds of a1/a2 sweep entries
+# never drew an unprovoked attack (P0 verifies that live).
+TARGET, NOUN = "giant bat", "bat"
+RAT_ROOMS = [
+    1451, 1452, 1453, 1454, 1455, 1456, 1457, 1458, 1459, 1460, 1461, 1462,
+    1463, 1464, 1465, 1466, 1467, 1468, 1469, 1470, 1471, 1472, 1473, 1474,
+    1475, 1476, 1477, 1478, 1480, 1481, 1482, 1483, 1484, 1485, 1486, 1487,
+    1488, 1489, 1490, 1491, 1492, 1493, 1494, 1495, 1496, 1497, 1498, 1499,
+    1500, 1501, 1502, 1503, 1504, 1505, 1506, 1507, 1508, 1509, 1510, 1511,
+    1512, 1514, 1515, 1516, 1517, 1518, 1519, 1520, 1521, 1522, 1523, 1524,
+    1525, 1526, 1527, 1528, 1529, 1530, 1539, 1540, 1560, 1561, 1562, 1563,
+    1564, 1565, 1566, 1567, 1568, 1569, 1570, 1571, 1572, 1595, 1596, 1597,
+    1598, 1600, 1601, 1602, 1603, 1604,
+]
 
 import os
 sfx = 2
@@ -85,7 +98,7 @@ def hp():
 # A rat line aimed at me: "The giant rat bites you for N damage!",
 # "The giant rat swings at you, but misses!" and kin. Anything rat-ward
 # that names "you".
-RAT_AT_ME = re.compile(r"giant rat .*\byou\b", re.IGNORECASE)
+RAT_AT_ME = re.compile(rf"{TARGET} .*\byou\b", re.IGNORECASE)
 EXITS = re.compile(r"Obvious exits:\s*([a-z, ]+)", re.IGNORECASE)
 DIR_WORD = {"north": "n", "south": "s", "east": "e", "west": "w",
             "northeast": "ne", "northwest": "nw", "southeast": "se",
@@ -113,7 +126,7 @@ def find_rat(start_ix):
         sess.send(f"/xgoto {room} 1", pause=1.6)
         sess.dump(1.0)
         out = cmd("look", tag=f"room {room}", drain=1.8, echo=False)
-        if "giant rat" not in out:
+        if TARGET not in out:
             continue
         m = EXITS.search(out)
         if not m:
@@ -169,7 +182,7 @@ for trial in range(10):
     room, d, _ = hit
     ix += 1
     mk = sess.mark()
-    sess.send("a rat", pause=1.6)
+    sess.send(f"a {NOUN}", pause=1.6)
     # three combat rounds is ~15 s; timestamp the first retaliation
     first_at = None
     t_attack = time.time()
@@ -198,7 +211,7 @@ for trial in range(15):
         continue
     room, d, _ = hit
     ix += 1
-    sess.send("a rat", pause=1.6)
+    sess.send(f"a {NOUN}", pause=1.6)
     mk = sess.mark()
     sess.send(d, pause=1.6)      # next flood-control slot, ~1.6s later
     sess.dump(2.5)
@@ -218,7 +231,7 @@ for trial in range(5):
         continue
     room, d, _ = hit
     ix += 1
-    sess.send("a rat", pause=1.6)
+    sess.send(f"a {NOUN}", pause=1.6)
     sess.dump(6.0)               # let a round land
     mk = sess.mark()
     sess.send(d, pause=1.6)
