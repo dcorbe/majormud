@@ -63,6 +63,37 @@ fn warded_amulet() -> Item {
     }
 }
 
+/// A second Accuracy(22) carrier in a different slot, so the shared
+/// dynamic-accuracy word's MAX-vs-SUM semantics are observable.
+fn steel_bracer() -> Item {
+    Item {
+        id: ItemId(400),
+        name: "steel bracer".into(),
+        weight: 10,
+        item_type: 0,
+        uses: -1,
+        worn_on: 10,
+        gettable: 1,
+        abilities: vec![(Ability::from_id(22).unwrap(), 3)],
+        ..Item::default()
+    }
+}
+
+/// Rides Accuracy(2) (105/0x69) — the same +0x70a word as ability 22.
+fn opal_ring() -> Item {
+    Item {
+        id: ItemId(500),
+        name: "opal ring".into(),
+        weight: 4,
+        item_type: 0,
+        uses: -1,
+        worn_on: 4,
+        gettable: 1,
+        abilities: vec![(Ability::from_id(105).unwrap(), 8)],
+        ..Item::default()
+    }
+}
+
 fn world() -> Content {
     let mut content = Content::default();
     content.add_room(Room {
@@ -79,6 +110,8 @@ fn world() -> Content {
     content.add_item(quarterstaff());
     content.add_item(helmet());
     content.add_item(warded_amulet());
+    content.add_item(steel_bracer());
+    content.add_item(opal_ring());
     content.add_race(Race {
         id: RaceId(2),
         name: "Dwarf".into(),
@@ -277,6 +310,39 @@ fn worn_item_abilities_feed_derived_stats() {
     let defender = core.defender_debug(s);
     assert_eq!(defender.evasion_a, 2, "Σ worn +0x342 ÷ 10");
     assert_eq!(defender.armor, 7, "Σ worn +0x39c, raw");
+}
+
+#[test]
+fn dynamic_accuracy_takes_the_max_contribution() {
+    // The three accuracy abilities (22/0x16, 105/0x69, 106/0x6a) all land
+    // on the ONE +0x70a word, and `update_dynamic_with_ability`
+    // (37549-37559) writes it only when the new value EXCEEDS the stored
+    // one — a joint MAX (seeded -32000, reset to 0 if untouched), not a
+    // sum. Two 0x16 carriers therefore contribute their larger value, and
+    // a bigger 0x69 value displaces both.
+    let mut core = Core::new(world(), config());
+    let s = create(&mut core, "Dain");
+    let naked = core.combat_debug(s).0.accuracy;
+
+    core.give_item(s, ItemId(200)); // helmet: Accuracy(22) +5
+    core.give_item(s, ItemId(400)); // steel bracer: Accuracy(22) +3
+    core.input(s, "wear helmet");
+    core.input(s, "wear bracer");
+    core.drain_events();
+    assert_eq!(
+        core.combat_debug(s).0.accuracy,
+        naked + 5,
+        "two 0x16 carriers keep the max, not the sum"
+    );
+
+    core.give_item(s, ItemId(500)); // opal ring: Accuracy(2)/0x69 +8
+    core.input(s, "wear ring");
+    core.drain_events();
+    assert_eq!(
+        core.combat_debug(s).0.accuracy,
+        naked + 8,
+        "0x69's 8 displaces 0x16's 5 on the shared word"
+    );
 }
 
 /// The evasion accumulator is seeded by the WIELDED weapon and only then

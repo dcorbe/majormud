@@ -20,15 +20,29 @@ use crate::content::StatBlock;
 #[derive(Debug, Clone, Default)]
 pub struct AbilityBag {
     values: BTreeMap<Ability, i32>,
+    maxima: BTreeMap<Ability, i32>,
 }
 
 impl AbilityBag {
     pub fn add(&mut self, ability: Ability, value: i32) {
         *self.values.entry(ability).or_insert(0) += value;
+        self.maxima
+            .entry(ability)
+            .and_modify(|m| *m = (*m).max(value))
+            .or_insert(value);
     }
 
     pub fn value(&self, ability: Ability) -> i32 {
         self.values.get(&ability).copied().unwrap_or(0)
+    }
+
+    /// The largest single contribution seen for `ability`, or `None` if no
+    /// source carries it. The DLL's dynamic accumulators
+    /// (`update_dynamic_with_ability`, e.g. the +0x70a accuracy word) keep
+    /// the MAX contribution, not the sum — seeded -32000 and reset to 0 if
+    /// untouched, which `None` models.
+    pub fn max_value(&self, ability: Ability) -> Option<i32> {
+        self.maxima.get(&ability).copied()
     }
 
     pub fn has(&self, ability: Ability) -> bool {

@@ -12006,9 +12006,15 @@ impl Core {
         //          + 2*((combat-1)*isqrt(level) + 2*combat + level/2 + skill/2 - 2)
         //          + (Agl-50)/6  + the dynamic accuracy accumulators
         let bag = self.ability_bag(player);
-        let dyn_accuracy = bag.value(accuracy_ability(0x16))
-            + bag.value(accuracy_ability(0x69))
-            + bag.value(accuracy_ability(0x6a));
+        // +0x70a is ONE shared accumulator over abilities 0x16/0x69/0x6a,
+        // and `update_dynamic_with_ability` (37549-37559) keeps the MAX
+        // contribution, not the sum (seeded -32000, reset 0 if untouched) —
+        // so a lone negative value survives as negative.
+        let dyn_accuracy = [0x16, 0x69, 0x6a]
+            .iter()
+            .filter_map(|&id| bag.max_value(accuracy_ability(id)))
+            .max()
+            .unwrap_or(0);
         // Unarmed MA modes (combat.md "Unarmed attack modes",
         // move_player_to_fighter 24520-24660 + add-ons 24890-24916):
         // the stored attack mode (autocombat +8) picks the style —
