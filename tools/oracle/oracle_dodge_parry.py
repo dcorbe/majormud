@@ -369,6 +369,13 @@ if (hp() or 0) < 0:
     note(f"=== recovered at HP {hp()} ===")
     sess.dump(2.0)
 
+# Stage in a SAFE room: the character logs in wherever the last run left
+# it — after a3 that was kobold country, and 40s of staging commands
+# there got it mauled to mortally wounded before the hunt loop started.
+sess.send(f"/xgoto {HEALER} 1", pause=1.6)
+sess.dump(1.5)
+cmd("buy healing", tag="staging heal", drain=2.5)
+
 inv = flat(cmd("i", tag="inventory (pre-staging)"))
 
 # Gear PERSISTS between runs, so a previous config's accuracy item is still
