@@ -94,6 +94,26 @@ fn opal_ring() -> Item {
     }
 }
 
+/// A worn item with `item_type != 0` — the DLL's fighter loop skips these
+/// (`+0x2f4 != 0` guard at 24788-24790) for ALL three accumulations:
+/// accuracy ratings, evasion, and DR. Carries all three columns so each
+/// gate is observable.
+fn glowing_idol() -> Item {
+    Item {
+        id: ItemId(600),
+        name: "glowing idol".into(),
+        weight: 10,
+        item_type: 7,
+        uses: -1,
+        worn_on: 6,
+        gettable: 1,
+        accuracy: 5,
+        evasion: 20,
+        damage_resist: 10,
+        ..Item::default()
+    }
+}
+
 fn world() -> Content {
     let mut content = Content::default();
     content.add_room(Room {
@@ -112,6 +132,7 @@ fn world() -> Content {
     content.add_item(warded_amulet());
     content.add_item(steel_bracer());
     content.add_item(opal_ring());
+    content.add_item(glowing_idol());
     content.add_race(Race {
         id: RaceId(2),
         name: "Dwarf".into(),
@@ -310,6 +331,34 @@ fn worn_item_abilities_feed_derived_stats() {
     let defender = core.defender_debug(s);
     assert_eq!(defender.evasion_a, 2, "Σ worn +0x342 ÷ 10");
     assert_eq!(defender.armor, 7, "Σ worn +0x39c, raw");
+}
+
+#[test]
+fn type_gated_worn_item_feeds_no_fighter_word() {
+    // The worn loop's `+0x2f4 != 0` skip (24788-24790) wraps the WHOLE
+    // accumulation block — accuracy ratings (+0x39a), evasion (+0x342),
+    // and DR (+0x39c) alike. Shipped data has 33 type!=0 worn ac-carriers
+    // (e.g. glowing red amulet #494), so the defender half is live; no
+    // shipped type!=0 worn item carries accuracy, so that half is
+    // fidelity-only. The WEAPON's seed contributions stay ungated —
+    // `wielded_weapon_evasion_counts_toward_the_fighter` and
+    // `armed_weapon_feeds_the_fighter` (staff type 1) pin that side.
+    let mut core = Core::new(world(), config());
+    let s = create(&mut core, "Dain");
+    let naked_acc = core.combat_debug(s).0.accuracy;
+
+    core.give_item(s, ItemId(600));
+    core.input(s, "wear idol");
+    core.drain_events();
+
+    assert_eq!(
+        core.combat_debug(s).0.accuracy,
+        naked_acc,
+        "type-7 accuracy 5 must not reach the ratings sum"
+    );
+    let defender = core.defender_debug(s);
+    assert_eq!(defender.evasion_a, 0, "type-7 evasion 20 skipped");
+    assert_eq!(defender.armor, 0, "type-7 DR 10 skipped");
 }
 
 #[test]

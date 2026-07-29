@@ -11999,11 +11999,14 @@ impl Core {
         let weapon = player
             .weapon
             .and_then(|(id, _)| self.content.items.get(&id));
+        // Worn loop skips `+0x2f4 != 0` items (24788-24790); the weapon
+        // term is a seed outside the loop and stays ungated.
         let ratings: i32 = i32::from(weapon.map_or(0, |w| w.accuracy))
             + player
                 .worn
                 .iter()
                 .filter_map(|(id, _)| self.content.items.get(id))
+                .filter(|i| i.item_type == 0)
                 .map(|i| i32::from(i.accuracy))
                 .sum::<i32>();
         let mut skill = if ratings == 0 { 1 } else { ratings };
@@ -12206,11 +12209,15 @@ impl Core {
             }
             p
         };
+        // The worn loop skips `+0x2f4 != 0` items (24788-24790) — the
+        // type gate wraps the WHOLE accumulation block (evasion, DR, and
+        // the attacker's ratings alike). The weapon seed is ungated.
         let worn = || {
             player
                 .worn
                 .iter()
                 .filter_map(|(id, _)| self.content.items.get(id))
+                .filter(|i| i.item_type == 0)
         };
         // `[3]` — Σ worn `+0x39c` (24789), RAW. The word is a tenths-scale
         // quantity: `calculate_attack` subtracts `[3]/10` from damage
