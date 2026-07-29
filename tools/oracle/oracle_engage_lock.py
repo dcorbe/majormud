@@ -39,25 +39,17 @@ from mudlib import Session
 RAW = "../../re/oracle/oracle_engage_lock.raw"
 LOG = "../../re/oracle/oracle_engage_lock_timing.log"
 HEALER = 2190
-# TARGET REWORK 2026-07-29: the giant-rat region proved structurally
-# empty — three full 152-room laps found zero rats while bats and
-# kobolds spawned readily. The giant bat serves identically: DR 1 (the
-# 1..1 hammer glances for 0, so P2's zero-damage premise holds), bite
-# 2..5 (gentler than the rat), and hundreds of a1/a2 sweep entries
-# never drew an unprovoked attack (P0 verifies that live).
-TARGET, NOUN = "giant bat", "bat"
+# TARGET REWORK #2 2026-07-29: rats are structurally absent, and BATS
+# ARE NOCTURNAL — every bat success in this campaign landed 02:00-08:00
+# and every 09:00+ sweep found none, fresh restart included. The kobold
+# is up in daylight: DR 2 keeps P2's zero-damage premise, the 2..9 bite
+# is survivable, and P0 measures its passivity before P2 leans on it.
+TARGET, NOUN = "kobold", "kobold"
+MAP = 6
 RAT_ROOMS = [
-    1451, 1452, 1453, 1454, 1455, 1456, 1457, 1458, 1459, 1460, 1461, 1462,
-    1463, 1464, 1465, 1466, 1467, 1468, 1469, 1470, 1471, 1472, 1473, 1474,
-    1475, 1476, 1477, 1478, 1480, 1481, 1482, 1483, 1484, 1485, 1486, 1487,
-    1488, 1489, 1490, 1491, 1492, 1493, 1494, 1495, 1496, 1497, 1498, 1499,
-    1500, 1501, 1502, 1503, 1504, 1505, 1506, 1507, 1508, 1509, 1510, 1511,
-    1512, 1514, 1515, 1516, 1517, 1518, 1519, 1520, 1521, 1522, 1523, 1524,
-    1525, 1526, 1527, 1528, 1529, 1530, 1539, 1540, 1595, 1596, 1597,
-    1598, 1600, 1601, 1602, 1603, 1604,
+    722, 723, 724, 725, 726, 727, 728, 729, 730, 731, 732, 733, 734,
+    745, 746, 747, 748, 749, 750, 751,
 ]
-# 1560-1572 are the SPIDER DENS — the first bat-target run swept through
-# them and spent an hour mortally wounded, teleporting blind.
 
 import os
 sfx = 2
@@ -146,7 +138,7 @@ def find_rat(start_ix):
     """Sweep the rat rooms from start_ix; return (room, exit_dir, look) or None."""
     for k in range(len(RAT_ROOMS)):
         room = RAT_ROOMS[(start_ix + k) % len(RAT_ROOMS)]
-        sess.send(f"/xgoto {room} 1", pause=1.6)
+        sess.send(f"/xgoto {room} {MAP}", pause=1.6)
         sess.dump(1.0)
         out = cmd("look", tag=f"room {room}", drain=1.8, echo=False)
         if TARGET not in out:
