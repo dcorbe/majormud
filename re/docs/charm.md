@@ -648,17 +648,32 @@ deliberate divergence from a bug.
   RNG stream and moved a golden in `spell_scenario.rs`. Decompile-justified but
   unmeasured — a capture of "attack, then let the round run" will confirm both
   the lock's timing and the draw order around it.
-* **Instant-Enslave messaging** (§7): the `spell+0xce == 0` apply path prints nothing
-  in the case body. No shipped Enslave spell has duration 0, so the arm is
-  fixture-only and its text — if any — is unmeasured.
-* **`is_valid_monster_target`'s fall-through** (38510-38560): the roam-5 / fame /
-  behaviour-4 sparing arms are implemented exhaustively from the decompile and pinned
-  by fixtures, but no *measured* surface exists for any of them. They are
-  decompile-faithful, not oracle-confirmed.
-* **The match-10/0xd pet-command band** (38502-38509): "valid only for your own
-  charmed pet" is decompiled and implemented, but unreachable — those match types
-  iterate players only, and with players excluded from the sweep they collect nothing
-  and hit the no-effect refusal first.
+* **Instant-Enslave messaging** (§7) — **DECOMPILE-CLOSED (argument, 2026-07-28).**
+  Closure standard, applied to this and the two items below: (a) a decompile
+  citation, (b) a reproducible unreachability proof, (c) a fixture pinning
+  current behaviour, (d) an explicit re-open condition.
+  (a) `cast_spell_on_monster` 43806/43820: the `spell+0xce == 0` apply path
+  prints nothing in the case body. (b) Exactly four shipped spells carry
+  Enslave(6) — #49 song of charming (dur 100), #55 enslave (60), #88 control
+  undead (80), #92 charm animal (60) — and
+  `SELECT count(*) FROM spell WHERE 6 IN (abilitya_1..10) AND duration = 0`
+  is **0**, so the instant arm has no shipped surface. (c) The fixture-only
+  tests stay. (d) Re-open if any content update ships a duration-0 Enslave.
+* **`is_valid_monster_target`'s fall-through** (38510-38560) — **DECOMPILE-CLOSED
+  (argument, 2026-07-28).** (a) The roam-5 / fame / behaviour-4 sparing arms are
+  implemented exhaustively from the decompile. (b) No shipped monster/room
+  combination reaches them through the live sweep (zero measured surface after
+  two expeditions' worth of transcripts; the arms gate on template fields whose
+  shipped values bypass them). (c) Pinned by fixtures. (d) Re-open if content
+  ever reaches a roam-5/fame/behaviour-4 arm live — the fixtures then need a
+  capture behind them.
+* **The match-10/0xd pet-command band** (38502-38509) — **DECOMPILE-CLOSED
+  (argument, 2026-07-28).** (a) Decompiled and implemented as "valid only for
+  your own charmed pet". (b) STRUCTURALLY unreachable: match types 10/0xd
+  iterate players only, and with players excluded from the sweep they collect
+  nothing and hit the no-effect refusal first — no input reaches the band.
+  (c) The implementation and its fixtures stay as dead-faithful code.
+  (d) Re-open only if the sweep is ever taught to include monsters.
 * **The whole live lifecycle**: charm a low monster, walk it, watch one assist round,
   attack it as the owner, let a second charm expire — every string in the tests above
   is decompile- or inference-derived, and wants retagging ORACLE → MEASURED.
@@ -797,11 +812,17 @@ against a defence the port was not applying. The monster side of the
 question (whether the template AC term needs its own scale check) was
 measured the same day and is CLOSED; the accuracy side is not.
 
-Also unresolved: the board reports `Encumbrance: x/2880` for a Str-50
-character where `stats.rs` computes `str * 48` = 2400. Encumbrance feeds
-`skill` and hence accuracy, so this is not cosmetic. (It does not explain
-§8.4's residue: at the captured 711 units both denominators floor to the
-same `enc/10 = 2`, so the two agree on accuracy for these particular runs.)
+~~Also unresolved: the board reports `Encumbrance: x/2880` for a Str-50
+character where `stats.rs` computes `str * 48` = 2400.~~ **RESOLVED
+(2026-07-28, carry 4c):** the denominator was already right in code —
+`Core::carry_capacity` (game.rs) applies `get_max_weight`'s Encum(96)
+percent, `(100 + encum)/100`, over `calculate_secondary_stats`' `str*48`
+(stats.rs): `2400 × 1.2 = 2880`, pinned by `tests/inventory.rs` (the
+`Encumbrance: 0/2880` goldens). The only unmodeled scrap of the chain is
+the DLL's key-array weight (`+0x334[50]`, decompile 67745-67775) — inert
+unless keys are carried, and the oracle character carries none. (Still
+true that it does not explain §8.4's residue: at the captured 711 units
+both denominators floor to the same `enc/10 = 2`.)
 
 ### 8.4 MEASURED (2026-07-26) — the monster AC scale, and the miss colour
 

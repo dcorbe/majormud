@@ -542,11 +542,14 @@ from the shipped columns.
    survivability than the control run had — it died at 21 swings,
    because a 10%-connect grind against a target you cannot kill is a long
    time under return fire.
-4c. **The `Encumbrance: x/2880` denominator** (charm.md §8.3 tail): the board
-   reports 2880 for a Str-50 character where `stats.rs` computes
-   `str * 48` = 2400. Encumbrance feeds `skill` and hence accuracy, so it
-   belongs with 4b — though it does NOT explain 4b's residue, since at the
-   captured weight both denominators floor to the same `enc/10`.
+4c. **The `Encumbrance: x/2880` denominator — CLOSED (2026-07-28, charm.md
+   §8.3 tail).** The code was already right: `Core::carry_capacity` applies
+   Encum(96)'s `(100+encum)/100` over `stats.rs`' `str*48` — 2400 × 1.2 =
+   2880, pinned by the `Encumbrance: 0/2880` goldens in `tests/inventory.rs`.
+   The doc trail, not the port, was behind. Remaining unmodeled scrap: the
+   DLL's key-array weight (+0x334[50], decompile 67745-67775), inert unless
+   keys are carried. (Still does NOT explain 4b's residue, since at the
+   captured weight both denominators floor to the same `enc/10`.)
 5. **The pet lifetime that `give_up` never resets.** `give_up` is zeroed
    only in `monster_attack`'s engage block (`game.rs:9773`, decompile
    26768-26777) — a path a pet essentially never takes, since a pet

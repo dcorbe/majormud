@@ -91,14 +91,26 @@ types 6/7 in both.)
 
 ## To-hit
 
-1. Roll `attackRoll = genrnd(1,100)`.
+> **genrdn's bounds (CORRECTED 2026-07-28):** `genrdn(lo,hi)` spans
+> `[lo, hi)` — the upper bound is EXCLUSIVE (see theft.md's RNG note for
+> the three-way proof: MBBSEmu's `_random.Next`, the DLL's own
+> `(max-min)+1` damage idiom, the Nekojin Mystic 2..6 capture). So the
+> attack roll spans [1, 99] and every `genrdn(0,100)` gate is
+> chance-in-100 exactly.
+
+1. Roll `attackRoll = genrnd(1,100)` — spans **[1, 99]**.
 2. Determine **hit threshold** `local_a` (with sign word `local_8`):
    - If `def[+0x14] < 0` and `genrnd(0,100) > def[+0x14]+100`: threshold = 99 (near-auto-hit path).
    - Else if type == 4 (backstab): threshold = `att[0] - def[+2]` (signed 32-bit).
    - Else (normal): **recovered formula** (see below):
      `threshold = 100 - 140 * defense² / accuracy²`.
-3. **Clamp** threshold to `[10, 99]`.
-4. **Hit if** `attackRoll <= threshold`.
+   - The `den == 0` arm yields a raw 5 — which the clamp below lifts to 10.
+3. **Clamp** threshold to `[10, 99]` — the clamp sits OUTSIDE the whole
+   if/else (decompile 25315; 16-bit `1f5b` falls through to `1f60`), so it
+   covers the den==0 arm and the backstab difference alike.
+4. **Hit if** `attackRoll < threshold` — STRICT (decompile 25324
+   `iVar3 < iVar2`): **P(hit) = (threshold−1)/99**. A threshold-99 swing
+   misses only on a rolled 99 (~1%); the clamp floor connects 9/99 ≈ 0.0909.
 
 ## On a hit
 
@@ -107,7 +119,9 @@ types 6/7 in both.)
    `min = 2·max_old, max = 4·max_old` (higher floor). Crit rating is diminishing-returns
    capped in both: if `rating > 40`, `rating = 40 + (rating−40)/3`.
 2. Ensure `max >= min`.
-3. **Damage:** `dmg = genrnd(0, max-min+1) + min - def[+6]/10`  (rand in `[min,max]` minus armor/10).
+3. **Damage:** `dmg = genrnd(0, max-min+1) + min - def[+6]/10` — rand in
+   `[min, max]` exactly: genrdn's exclusive top is WHY the idiom carries
+   the `+1`. A fixed-magnitude row (12..12) always deals 12.
 4. Type multipliers: type 6 → `dmg *= 3`; type 7 → `dmg *= 5`.
 5. **Parry/riposte:** parry chance `p = (def[+0x14] * 10) / (att[0] >> 3)`, capped at `0x5f`
    (95). The guard is on the **accuracy**, not on the shifted denominator: `att[0] < 9` →
@@ -144,11 +158,11 @@ defense  = defender.word[1] + defender.word[2]
 
 den = accuracy² / 14 / 10                       # = accuracy² / 140
 if den == 0:                                    # accuracy ≲ 11
-    threshold = 5
+    threshold = 5                               # ...then clamps up to 10
 else:
     threshold = 100 - (defense² / den)          # = 100 - 140 * defense² / accuracy²
-threshold = clamp(threshold, 10, 99)
-hit if roll(1..100) <= threshold
+threshold = clamp(threshold, 10, 99)            # OUTSIDE the if/else: every arm
+hit if roll < threshold                         # roll = genrdn(1,100) in [1,99], STRICT
 ```
 
 Disassembly evidence (segment `0x1040`):
@@ -185,8 +199,8 @@ type 7 = **−75**, all others = **0** (special attacks are harder to land).
 > monster column in tenths as well is excluded by capture. A level-2 character
 > at accuracy 23 swinging at grey spiders (AC 20, no Dodge, so no parry
 > channel) connected **2/21 = 0.0952**, CI [0.0117, 0.3038]: the raw column
-> predicts 400/3 = 133 over 100 → the clamp floor of 0.10, and a tenths
-> reading predicts 0.99.
+> predicts 400/3 = 133 over 100 → the clamp floor (0.0909 under the
+> corrected strict-roll model), and a tenths reading predicts 0.99.
 >
 > **The [10, 99] clamp's floor is real**, and that run is the first thing to
 > exercise it — the quadratic goes sharply negative once defense approaches
@@ -196,10 +210,12 @@ type 7 = **−75**, all others = **0** (special attacks are harder to land).
 > against AC 20.
 >
 > Still ORACLE-VERIFY: the ACCURACY side (`word[0]`, the
-> `move_player_to_fighter` derivation below). Three small blocks jointly
-> favour accuracy ~25-27 where we compute 23 — a couple of points low — but
-> the two measurable channels disagree about it and none of the blocks is
-> large. See `charm.md` §8.4.
+> `move_player_to_fighter` derivation below). The 2026-07-28 re-fit under
+> the corrected model SHARPENED the conflict: on the acc-mid block's own
+> 37 swings, to-hit excludes accuracy 23 (wants ≥24) while the parry
+> channel excludes ≥24 (wants ≤23) — at least one formula shape is off,
+> not only the constant. See `charm.md` §8.4 tail; the slice-8 expedition
+> (parry-cliff pair + fixed-defense ratio pair) discriminates the two.
 
 ---
 
