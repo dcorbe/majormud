@@ -628,7 +628,7 @@ fn worn_dr_soaks_damage_but_worn_ac_does_not() {
 
 #[test]
 fn monster_plain_miss_renders_the_miss_line() {
-    // Accuracy 5 -> to-hit threshold 5 (sub-formula), so ~95% of swings
+    // Accuracy 5 -> den==0 arm's 5 clamps up to 10, so ~90% of swings
     // leave result 0: the PLAIN miss line, no dodge framing.
     let mut content = arena(rat(5, 1, 1), 30, 30);
     add_rat_messages(&mut content);
@@ -1233,25 +1233,25 @@ fn monster_dodge_ability_parries_player_swings() {
     // error in it across a sixth of the bestiary, so a slice-8 expedition
     // should capture a player grinding a Dodge-carrying template (e.g.
     // giant bat, Dodge 20) and compare the observed miss rate.
-    // 40 rounds is 49 swings (the energy pool buys a second swing in
-    // some rounds); with no Dodge every one of them lands.
-    // (The damage totals below moved by a couple of points in M7 slice 5
-    // when the engage-time retaliation lock was pulled out of the swing
-    // loop and back onto the ATTACK command, where 26230 actually lives:
-    // its `genrdn(1,100)` now precedes the round's damage rolls instead
-    // of trailing them. Swing COUNTS are unchanged — this is stream
-    // position, not a behaviour change.)
+    // 40 rounds is 51 swings (the energy pool buys a second swing in
+    // some rounds), and at threshold 99 a rolled 100 still misses, so
+    // even the no-Dodge control can see a stray miss.
+    // (Goldens re-derived when the den==0 clamp fall-through was fixed:
+    // the sandbag's OWN accuracy-0 return swings moved from threshold 5
+    // to 10, its connect/miss draw counts changed, and the shared RNG
+    // stream repositioned every draw after the first return swing.
+    // Player swing count stays 51 in all three arms.)
     let (control_hits, control_damage) = sandbag_run(0, 0, 40);
-    assert_eq!(control_hits, 49, "a 99%-to-hit swing lands on every swing");
-    assert_eq!(control_damage, 119, "49 swings of 1-4 damage");
+    assert_eq!(control_hits, 50, "51 swings at threshold 99, one rolled 100");
+    assert_eq!(control_damage, 128, "50 swings of 1-4 damage");
 
     let (dodge_hits, dodge_damage) = sandbag_run(20, 0, 40);
     assert_eq!(dodge_hits, 29, "Dodge 20 parries ~40% of the swings");
     assert_eq!(dodge_damage, 70, "only the unparried swings do damage");
 
     let (capped_hits, capped_damage) = sandbag_run(50, 0, 40);
-    assert_eq!(capped_hits, 4, "Dodge 50 pins the parry chance at its 95 cap");
-    assert_eq!(capped_damage, 10, "almost nothing gets through");
+    assert_eq!(capped_hits, 5, "Dodge 50 pins the parry chance at its 95 cap");
+    assert_eq!(capped_damage, 14, "almost nothing gets through");
 }
 
 #[test]

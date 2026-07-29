@@ -52,13 +52,34 @@ fn evenly_matched_clamps_to_ten_percent() {
 }
 
 #[test]
-fn tiny_accuracy_threshold_is_five() {
-    // accuracy 11: den = 11*11/14/10 = 121/14=8, 8/10=0 -> threshold 5 exactly.
+fn tiny_accuracy_threshold_clamps_up_to_ten() {
+    // accuracy 11: den = 11*11/14/10 = 121/14=8, 8/10=0 -> raw threshold 5,
+    // but the [10,99] clamp sits OUTSIDE the den==0 arm (decompile 25315;
+    // 16-bit _CALCULATE_ATTACK.asm 1f5b falls through to 1f60), so 5 -> 10.
     let att = fighter(11, (0, 0), 0);
     let def = fighter(0, (10, 10), 0);
-    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[5, 100, 5]));
+    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[10, 100, 5]));
     assert_eq!(r.outcome, Outcome::Hit);
-    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[6]));
+    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[11]));
+    assert_eq!(r.outcome, Outcome::Dodged);
+}
+
+#[test]
+fn backstab_threshold_is_clamped() {
+    // The [10,99] clamp covers the backstab arm too (decompile 25315 is
+    // outside the whole if/else).
+    // Raw 80 - 75 = 5 -> clamps up to 10: roll 10 hits.
+    let att = fighter(80, (0, 0), 0);
+    let def = fighter(0, (75, 0), 0);
+    let r = calculate_attack(&att, &def, AttackType::Backstab, &mut rolls(&[10, 11]));
+    assert_eq!(r.outcome, Outcome::Hit);
+    let r = calculate_attack(&att, &def, AttackType::Backstab, &mut rolls(&[11]));
+    assert_eq!(r.outcome, Outcome::Dodged);
+
+    // Raw 200 - 0 = 200 -> clamps down to 99: roll 100 misses.
+    let att = fighter(200, (0, 0), 0);
+    let def = fighter(0, (0, 0), 0);
+    let r = calculate_attack(&att, &def, AttackType::Backstab, &mut rolls(&[100]));
     assert_eq!(r.outcome, Outcome::Dodged);
 }
 
@@ -195,7 +216,8 @@ fn a_parrying_defender_always_costs_a_draw() {
     let mut def = fighter(0, (10, 10), 0);
     def.parry = 30;
     let mut taken = 0;
-    // to-hit 5 (the sub-formula threshold), crit 100 (none), damage 10,
+    // to-hit 5 (under the den==0 threshold, clamped up to 10), crit 100
+    // (none), damage 10,
     // parry draw 0 (0 < 0 is false, so the hit stands).
     let r = calculate_attack(
         &att,

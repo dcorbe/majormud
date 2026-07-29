@@ -97,6 +97,10 @@ pub fn calculate_attack(
     }
 
     // --- to-hit ---
+    // The [10,99] clamp sits OUTSIDE the whole if/else (decompile 25315;
+    // 16-bit _CALCULATE_ATTACK.asm 1f5b falls through to the clamp at
+    // 1f60/1f6c), so the den==0 arm's 5 clamps up to 10 and the backstab
+    // difference clamps both ways. The helpless 99 passes through unchanged.
     let threshold = if defender.parry < 0 && roll(0, 100) > defender.parry + 100 {
         99
     } else if attack_type == AttackType::Backstab {
@@ -106,12 +110,12 @@ pub fn calculate_attack(
         let defense = defender.evasion_a + defender.evasion_b;
         let den = accuracy * accuracy / 14 / 10;
         if den == 0 {
-            // Sub-formula accuracy: flat 5% (not clamped up to 10).
             5
         } else {
-            (100 - defense * defense / den).clamp(10, 99)
+            100 - defense * defense / den
         }
-    };
+    }
+    .clamp(10, 99);
     if roll(1, 100) > threshold {
         return AttackResult {
             outcome: Outcome::Dodged,
