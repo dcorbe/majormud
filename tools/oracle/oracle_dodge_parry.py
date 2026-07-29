@@ -169,35 +169,40 @@ KOBOLD_ROOMS = [
 # name: (target, dodge, extra gear, map, rooms, copper, expected accuracy)
 CONFIGS = {
     # -- the 2026-07-26 originals (map 1, purse 600), kept for provenance --
-    "acc-high":     ("giant bat",   20, [],                       1, ROOMS, 600, 43),
-    "acc-mid":      ("giant bat",   20, ["smoky black talisman"], 1, ROOMS, 600, 23),
+    "acc-high":     ("giant bat",   20, [],                       1, ROOMS, 600, 43, True),
+    "acc-mid":      ("giant bat",   20, ["smoky black talisman"], 1, ROOMS, 600, 23, True),
     "acc-low":      ("giant bat",   20, ["smoky black talisman",
-                                         "malachite ring"],       1, ROOMS, 600, None),
-    "control":      ("grey spider",  0, ["smoky black talisman"], 1, ROOMS, 600, 23),
-    "control-high": ("grey spider",  0, [],                       1, ROOMS, 600, 43),
+                                         "malachite ring"],       1, ROOMS, 600, None, True),
+    "control":      ("grey spider",  0, ["smoky black talisman"], 1, ROOMS, 600, 23, True),
+    "control-high": ("grey spider",  0, [],                       1, ROOMS, 600, 43, True),
     # -- Phase A: no cursed gear ------------------------------------------
     # a1: E2 anchor — parry step d=5 (0.40), delta-robust for acc 40..47.
-    "a1":           ("giant bat",   20, [],                       1, ROOMS, 1100, 43),
+    "a1":           ("giant bat",   20, [],                       1, ROOMS, 1100, 43, True),
     # a2: E2 second point — d=4 (0.50).  black -5 + darkwood -3 = ratings
     # -8 -> skill 4 or 5 either side of the enc-30 edge -> accuracy 33.
     "a2":           ("giant bat",   20, ["black shield",
-                                         "darkwood ring"],        1, ROOMS, 350, 33),
+                                         "darkwood ring"],        1, ROOMS, 350, 33, True),
     # a3: E1 steep probe — kobold AC 30 at accuracy 39: the den 10->11
     # boundary sits at 39/40, so the connect rate DOUBLES at delta=1.
-    "a3":           ("kobold",       0, ["darkwood ring"],        6, KOBOLD_ROOMS, 1100, 39),
+    "a3":           ("kobold",       0, ["darkwood ring"],        6, KOBOLD_ROOMS, 1100, 39, True),
     # a4: E1 ratio anchor — same kobold defense at accuracy 43; the a3/a4
     # RATIO cancels any constant defense offset.
-    "a4":           ("kobold",       0, [],                       6, KOBOLD_ROOMS, 1100, 43),
-    # -- Phase B: malachite on (CURSED — stays on until a death) ----------
-    # b1: parry cliff at true-accuracy 24 (floor(acc/8): 2 vs 3).  mal
-    # -12 + kite -4 + darkwood -3 = -19 -> skill -7/-6 either side of the
-    # enc-30 edge -> accuracy 23.
-    "b1":           ("giant bat",   20, ["malachite ring", "kite shield",
-                                         "darkwood ring"],        1, ROOMS, 120, 23),
-    # b2: the same cliff slid two points (accuracy 21): mal + black +
-    # darkwood = -20 -> skill -8 -> acc 21 (needs the enc 30..32 band).
-    "b2":           ("giant bat",   20, ["malachite ring", "black shield",
-                                         "darkwood ring"],        1, ROOMS, 270, 21),
+    "a4":           ("kobold",       0, [],                       6, KOBOLD_ROOMS, 1100, 43, True),
+    # -- Phase B: the HEAVY band (enc >= 33 kills the skill bonus, so
+    # skill = ratings exactly) — reworked 2026-07-29 after the field
+    # taught two things at once: the two rings share ONE Finger slot
+    # (darkwood cannot stack on malachite; the wear silently fails), and
+    # the malachite is cursed the moment it is worn.  In the heavy band
+    # the tower shield ALONE reaches accuracy 23 with no cursed gear —
+    # which also removes the cursed items as confounders entirely.  A
+    # deliberate death sheds any stuck curse before these run.
+    # b1: parry cliff at true-accuracy 24 (floor(acc/8): 2 vs 3): tower
+    # -6 -> skill -6 -> acc 23.  Weight 961+200 = 40% (>= 33 by a mile).
+    "b1":           ("giant bat",   20, ["tower shield"],         1, ROOMS, 600, 23, False),
+    # b2: the cliff slid two points: tower + darkwood = -9 -> skill -9
+    # -> tdiv(-9,2) = -4 -> acc 21.
+    "b2":           ("giant bat",   20, ["tower shield",
+                                         "darkwood ring"],        1, ROOMS, 600, 21, False),
 }
 # Template AC, for the to-hit prediction.  All are the shipped `ac` column.
 TARGET_AC = {"giant bat": 10, "grey spider": 20, "kobold": 30}
@@ -214,10 +219,10 @@ HOSTILES = ("grey spider", "dark cultist", "dark cleric", "dark priest",
 if len(sys.argv) < 2 or sys.argv[1] not in CONFIGS:
     sys.exit(f"usage: {sys.argv[0]} <{'|'.join(CONFIGS)}> [swings] [minutes]")
 CONFIG = sys.argv[1]
-TARGET, TARGET_DODGE, EXTRA, MAP, SWEEP_ROOMS, COPPER, EXPECT_ACC = CONFIGS[CONFIG]
+(TARGET, TARGET_DODGE, EXTRA, MAP, SWEEP_ROOMS, COPPER, EXPECT_ACC,
+ REQUIRE_LIGHT_ENC) = CONFIGS[CONFIG]
 NOUN = TARGET.split()[-1]
 RATINGS = sum(GEAR_ACCURACY[i] for i in EXTRA)   # every KIT piece is 0
-REQUIRE_LIGHT_ENC = True
 # Never avoid the thing we came to fight.  ("kobold warrior" stays in AVOID
 # when the target is the plain kobold — substring order matters to nobody
 # here because AVOID is only ever tested against room text.)
