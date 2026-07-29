@@ -119,8 +119,13 @@ while lv < 3 and time.time() < deadline:
     cmd(f"/xgoto {HEALER} 1", tag="to healer")
     out = cmd("buy healing", tag="heal to full", drain=2.5)
     h = hp()
-    if h is None or h < 40:  # max is 44 at L2; the hazard hits 10-18/4s
-        note(f"HP {h} too low to brave the trainer; retrying the heal")
+    stats_out = cmd("st", tag="max-hp check", drain=2.0)
+    mx = re.search(r"Hits:\s*(-?\d+)/(\d+)", stats_out)
+    maxhp = int(mx.group(2)) if mx else 35
+    # gate on a FULL heal, not an absolute number — a fresh L1 caps at
+    # 35 and an absolute 40 gate can never pass (learned the slow way)
+    if h is None or h < maxhp - 2:
+        note(f"HP {h}/{maxhp} not full; retrying the heal")
         continue
     # THE BURST: the trainer room pulses 10-18 damage on a ~4 s cadence
     # (it killed this character once already), so goto/train/goto-out go
