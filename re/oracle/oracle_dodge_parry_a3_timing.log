@@ -1,0 +1,574 @@
+    6.628 === config a3: target 'kobold' ===
+   10.238 --- inventory (pre-staging) ---
+   10.238     | i
+   10.238     | You are carrying 350 copper farthings, gilded robes (Torso), chain coif (Head),
+   10.238     | displacer fur cloak (Back), beaded belt (Waist), violet orchid (Worn), black
+   10.238     | shield (Off-Hand), darkwood ring (Finger), wooden hammer (Weapon Hand)
+   10.238     | You have no keys.
+   10.238     | Wealth: 350 copper farthings
+   10.238     | Encumbrance: 937/2880 - Light [32%]
+   10.238     | [HP=55]:
+   13.490 --- remove black shield ---
+   13.490     | remove black shield
+   13.490     | You have removed black shield.
+   13.490     | [HP=55]:
+   20.368 --- drop black shield ---
+   20.368     | drop black shield
+   20.369     | You dropped black shield.
+   20.369     | [HP=55]:
+   23.171 --- zero runic ---
+   23.171     | /xcash 0 runic
+   23.171     | [xcash] runic: 0 -> 0; type 'i' to confirm.
+   25.974 --- zero platinum ---
+   25.974     | The giant bat snaps at you with its teeth!
+   25.974     | [HP=55]:The giant bat snaps at you with its teeth!
+   25.974     | [HP=55]:[HP=56]:/xcash 0 platinum
+   25.974     | [xcash] platinum: 0 -> 0; type 'i' to confirm.
+   28.776 --- zero gold ---
+   28.777     | /xcash 0 gold
+   28.777     | [xcash] gold: 0 -> 0; type 'i' to confirm.
+   31.580 --- zero silver ---
+   31.580     | /xcash 0 silver
+   31.580     | [xcash] silver: 0 -> 0; type 'i' to confirm.
+   34.388 --- purse ---
+   34.388     | /xcash 1100 copper
+   34.388     | [xcash] copper: 350 -> 1100; type 'i' to confirm.
+   37.993 --- STATS (accuracy inputs) ---
+   37.993     | st
+   37.993     | Name: Oracle Delver                    Lives/CP:      9/120
+   37.993     | Race: Dwarf       Exp: 9700            Perception:     35
+   37.993     | Class: Warrior    Level: 3             Stealth:         0
+   37.993     | Hits:    56/72    Armour Class:  13/0  Thievery:        0
+   37.993     |                                        Traps:           0
+   37.993     |                                        Picklocks:       0
+   37.993     | Strength:  50     Agility: 30          Tracking:        0
+   37.993     | Intellect: 30     Health:  50          Martial Arts:   15
+   37.993     | Willpower: 50     Charm:   30          MagicRes:       55
+   37.993     | [HP=56]:
+   41.598 --- INVENTORY (encumbrance) ---
+   41.598     | The giant bat bites you for 4 damage!
+   41.598     | [HP=52]:i
+   41.598     | You are carrying 1100 copper farthings, gilded robes (Torso), chain coif (Head),
+   41.598     | displacer fur cloak (Back), beaded belt (Waist), violet orchid (Worn), darkwood
+   41.598     | ring (Finger), wooden hammer (Weapon Hand)
+   41.598     | You have no keys.
+   41.598     | Wealth: 1100 copper farthings
+   41.598     | Encumbrance: 837/2880 - Light [29%]
+   41.598     | [HP=52]:
+   41.599 ENCUMBRANCE 837/2880 = 29%
+   41.599 level 3, ratings -3, skill 10, accuracy 39, floor(acc/8) = 4, predicted parry 0.0
+   41.599 predicted to-hit vs kobold (AC 30): port as written = 0.09090909090909091, if template ac needs /10 = 0.98989898989899
+   41.599 max HP 72; fight floor 21, sweep floor 50
+  189.139 === engaging kobold in room 724 ===
+  193.458   miss  | You swing at kobold!
+  193.458 PROGRESS 1/150 {'hit': 0, 'glance': 0, 'dodge': 0, 'miss': 1, 'novel': 0} connect=0.000
+  198.182   glance| Your swing at kobold hits, but glances off its armour.
+  204.131   miss  | You swing at kobold!
+  208.849   glance| Your swing at kobold hits, but glances off its armour.
+  213.579   miss  | You swing at kobold!
+  214.786 === heal cycle ===
+  222.394 --- buy healing ---
+  222.394     | *Combat Off*
+  222.394     | [HP=20]:buy healing
+  222.394     | You hand over 104 copper farthings and all your wounds are healed.
+  222.394     | [HP=72]:
+  222.394 HP after healing = 72
+  225.198 --- refill purse ---
+  225.198     | /xcash 1100 copper
+  225.198     | [xcash] copper: 996 -> 1100; type 'i' to confirm.
+  225.198 returning to the kobold in room 724
+  239.636   miss  | You swing at kobold!
+  244.359   miss  | You swing at kobold!
+  250.295   miss  | You swing at kobold!
+  253.902 PROGRESS 8/150 {'hit': 0, 'glance': 2, 'dodge': 0, 'miss': 6, 'novel': 0} connect=0.250
+  255.019   miss  | You swing at kobold!
+  260.950   miss  | You swing at kobold!
+  265.678   miss  | You swing at kobold!
+  270.412   miss  | You swing at kobold!
+  270.412 === heal cycle ===
+  278.019 --- buy healing ---
+  278.020     | *Combat Off*
+  278.020     | [HP=14]:buy healing
+  278.020     | You hand over 116 copper farthings and all your wounds are healed.
+  278.020     | [HP=72]:
+  278.020 HP after healing = 72
+  280.831 --- refill purse ---
+  280.831     | /xcash 1100 copper
+  280.831     | [xcash] copper: 984 -> 1100; type 'i' to confirm.
+  280.831 returning to the kobold in room 724
+  296.462   miss  | You swing at kobold!
+  301.201   miss  | You swing at kobold!
+  306.006   miss  | You swing at kobold!
+  311.935   miss  | You swing at kobold!
+  314.340 PROGRESS 16/150 {'hit': 0, 'glance': 2, 'dodge': 0, 'miss': 14, 'novel': 0} connect=0.125
+  316.645   miss  | You swing at kobold!
+  321.333   glance| Your swing at kobold hits, but glances off its armour.
+  322.540 === heal cycle ===
+  330.148 --- buy healing ---
+  330.148     | *Combat Off*
+  330.148     | [HP=16]:buy healing
+  330.148     | You hand over 112 copper farthings and all your wounds are healed.
+  330.148     | [HP=72]:
+  330.148 HP after healing = 72
+  332.952 --- refill purse ---
+  332.952     | /xcash 1100 copper
+  332.952     | [xcash] copper: 988 -> 1100; type 'i' to confirm.
+  332.952 returning to the kobold in room 724
+  347.398   miss  | You swing at kobold!
+  352.113   miss  | You swing at kobold!
+  358.055   miss  | You swing at kobold!
+  362.790   glance| Your swing at kobold hits, but glances off its armour.
+  362.790 === heal cycle ===
+  370.398 --- buy healing ---
+  370.398     | *Combat Off*
+  370.398     | [HP=15]:buy healing
+  370.398     | You hand over 114 copper farthings and all your wounds are healed.
+  370.398     | [HP=72]:
+  370.398 HP after healing = 72
+  373.201 --- refill purse ---
+  373.201     | /xcash 1100 copper
+  373.201     | [xcash] copper: 986 -> 1100; type 'i' to confirm.
+  373.201 returning to the kobold in room 724
+  384.097   miss  | You swing at kobold!
+  384.097 PROGRESS 23/150 {'hit': 0, 'glance': 4, 'dodge': 0, 'miss': 19, 'novel': 0} connect=0.174
+  388.835   glance| Your swing at kobold hits, but glances off its armour.
+  393.565   glance| Your swing at kobold hits, but glances off its armour.
+  399.490   miss  | You swing at kobold!
+  404.231   glance| Your swing at kobold hits, but glances off its armour.
+  408.949   miss  | You swing at kobold!
+  408.949 === heal cycle ===
+  416.557 --- buy healing ---
+  416.557     | *Combat Off*
+  416.557     | [HP=17]:buy healing
+  416.557     | You hand over 110 copper farthings and all your wounds are healed.
+  416.557     | [HP=72]:
+  416.557 HP after healing = 72
+  419.360 --- refill purse ---
+  419.360     | /xcash 1100 copper
+  419.360     | [xcash] copper: 990 -> 1100; type 'i' to confirm.
+  419.360 returning to the kobold in room 724
+  434.919   miss  | You swing at kobold!
+  439.649   miss  | You swing at kobold!
+  444.374 PROGRESS 30/150 {'hit': 0, 'glance': 7, 'dodge': 0, 'miss': 23, 'novel': 0} connect=0.233
+  445.579   miss  | You swing at kobold!
+  450.309   miss  | You swing at kobold!
+  455.040   miss  | You swing at kobold!
+  459.764 === heal cycle ===
+  467.294 --- buy healing ---
+  467.294     | buy healing
+  467.294     | You hand over 112 copper farthings and all your wounds are healed.
+  467.294     | [HP=72]:*Combat Off*
+  467.294     | [HP=72]:
+  467.294 HP after healing = 72
+  470.097 --- refill purse ---
+  470.097     | /xcash 1100 copper
+  470.097     | [xcash] copper: 988 -> 1100; type 'i' to confirm.
+  470.097 returning to the kobold in room 724
+  480.689   miss  | You swing at kobold!
+  485.414   miss  | You swing at kobold!
+  491.346   miss  | You swing at kobold!
+  496.078   miss  | You swing at kobold!
+  500.803   miss  | You swing at kobold!
+  504.415 PROGRESS 38/150 {'hit': 0, 'glance': 7, 'dodge': 0, 'miss': 31, 'novel': 0} connect=0.184
+  506.740   miss  | You swing at kobold!
+  506.741 === heal cycle ===
+  514.349 --- buy healing ---
+  514.349     | *Combat Off*
+  514.349     | [HP=12]:buy healing
+  514.349     | You hand over 120 copper farthings and all your wounds are healed.
+  514.349     | [HP=72]:
+  514.350 HP after healing = 72
+  517.153 --- refill purse ---
+  517.153     | /xcash 1100 copper
+  517.153     | [xcash] copper: 980 -> 1100; type 'i' to confirm.
+  517.153 returning to the kobold in room 724
+  532.789   miss  | You swing at kobold!
+  537.518   glance| Your swing at kobold hits, but glances off its armour.
+  542.245   miss  | You swing at kobold!
+  546.974   miss  | You swing at kobold!
+  548.182 === heal cycle ===
+  555.790 --- buy healing ---
+  555.790     | *Combat Off*
+  555.790     | [HP=18]:buy healing
+  555.790     | You hand over 108 copper farthings and all your wounds are healed.
+  555.790     | [HP=72]:
+  555.791 HP after healing = 72
+  558.594 --- refill purse ---
+  558.594     | /xcash 1100 copper
+  558.594     | [xcash] copper: 992 -> 1100; type 'i' to confirm.
+  558.594 returning to the kobold in room 724
+  569.446 PROGRESS 43/150 {'hit': 0, 'glance': 8, 'dodge': 0, 'miss': 35, 'novel': 0} connect=0.186
+  572.973   miss  | You swing at kobold!
+  578.907   miss  | You swing at kobold!
+  583.634   miss  | You swing at kobold!
+  588.364   miss  | You swing at kobold!
+  593.090 === heal cycle ===
+  600.619 --- buy healing ---
+  600.619     | buy healing
+  600.619     | You hand over 118 copper farthings and all your wounds are healed.
+  600.619     | [HP=72]:*Combat Off*
+  600.619     | [HP=72]:
+  600.620 HP after healing = 72
+  603.423 --- refill purse ---
+  603.423     | /xcash 1100 copper
+  603.423     | [xcash] copper: 982 -> 1100; type 'i' to confirm.
+  603.423 returning to the kobold in room 724
+  614.023   miss  | You swing at kobold!
+  618.739   miss  | You swing at kobold!
+  624.654   miss  | You swing at kobold!
+  629.351   miss  | You swing at kobold!
+  629.352 === heal cycle ===
+  636.960 --- buy healing ---
+  636.960     | *Combat Off*
+  636.960     | [HP=18]:buy healing
+  636.960     | You hand over 108 copper farthings and all your wounds are healed.
+  636.960     | [HP=72]:
+  636.960 HP after healing = 72
+  639.764 --- refill purse ---
+  639.764     | /xcash 1100 copper
+  639.764     | [xcash] copper: 992 -> 1100; type 'i' to confirm.
+  639.764 returning to the kobold in room 724
+  650.642   miss  | You swing at kobold!
+  650.642 PROGRESS 52/150 {'hit': 0, 'glance': 8, 'dodge': 0, 'miss': 44, 'novel': 0} connect=0.154
+  655.379   miss  | You swing at kobold!
+  660.102   miss  | You swing at kobold!
+  664.827   miss  | You swing at kobold!
+  670.764   glance| Your swing at kobold hits, but glances off its armour.
+  670.765 === heal cycle ===
+  678.373 --- buy healing ---
+  678.373     | *Combat Off*
+  678.373     | [HP=17]:buy healing
+  678.373     | You hand over 110 copper farthings and all your wounds are healed.
+  678.373     | [HP=72]:
+  678.374 HP after healing = 72
+  681.177 --- refill purse ---
+  681.177     | /xcash 1100 copper
+  681.177     | [xcash] copper: 990 -> 1100; type 'i' to confirm.
+  681.177 returning to the kobold in room 724
+  696.784   miss  | You swing at kobold!
+  701.517   miss  | You swing at kobold!
+  706.245   miss  | You swing at kobold!
+  706.246 === heal cycle ===
+  713.853 --- buy healing ---
+  713.854     | *Combat Off*
+  713.854     | [HP=15]:buy healing
+  713.854     | You hand over 114 copper farthings and all your wounds are healed.
+  713.854     | [HP=72]:
+  713.854 HP after healing = 72
+  716.658 --- refill purse ---
+  716.658     | /xcash 1100 copper
+  716.658     | [xcash] copper: 986 -> 1100; type 'i' to confirm.
+  716.658 returning to the kobold in room 724
+  727.565   miss  | You swing at kobold!
+  727.565 PROGRESS 60/150 {'hit': 0, 'glance': 9, 'dodge': 0, 'miss': 51, 'novel': 0} connect=0.150
+  732.297   miss  | You swing at kobold!
+  737.025   miss  | You swing at kobold!
+  741.749   miss  | You swing at kobold!
+  742.956 === heal cycle ===
+  750.564 --- buy healing ---
+  750.564     | *Combat Off*
+  750.564     | [HP=11]:buy healing
+  750.564     | You hand over 122 copper farthings and all your wounds are healed.
+  750.564     | [HP=72]:
+  750.565 HP after healing = 72
+  753.368 --- refill purse ---
+  753.368     | /xcash 1100 copper
+  753.368     | [xcash] copper: 978 -> 1100; type 'i' to confirm.
+  753.368 returning to the kobold in room 724
+  767.804   miss  | You swing at kobold!
+  772.530   miss  | You swing at kobold!
+  778.466   glance| Your swing at kobold hits, but glances off its armour.
+  783.197   miss  | You swing at kobold!
+  783.197 === heal cycle ===
+  790.806 --- buy healing ---
+  790.806     | *Combat Off*
+  790.806     | [HP=20]:buy healing
+  790.806     | You hand over 104 copper farthings and all your wounds are healed.
+  790.806     | [HP=72]:
+  790.807 HP after healing = 72
+  793.610 --- refill purse ---
+  793.611     | /xcash 1100 copper
+  793.611     | [xcash] copper: 996 -> 1100; type 'i' to confirm.
+  793.611 returning to the kobold in room 724
+  804.490   miss  | You swing at kobold!
+  804.490 PROGRESS 68/150 {'hit': 0, 'glance': 10, 'dodge': 0, 'miss': 58, 'novel': 0} connect=0.147
+  809.218   miss  | You swing at kobold!
+  813.948   miss  | You swing at kobold!
+  818.672   miss  | You swing at kobold!
+  824.609   miss  | You swing at kobold!
+  829.338   miss  | You swing at kobold!
+  829.339 === heal cycle ===
+  836.948 --- buy healing ---
+  836.948     | *Combat Off*
+  836.948     | [HP=17]:buy healing
+  836.948     | You hand over 110 copper farthings and all your wounds are healed.
+  836.948     | [HP=72]:
+  836.948 HP after healing = 72
+  839.752 --- refill purse ---
+  839.752     | /xcash 1100 copper
+  839.752     | [xcash] copper: 990 -> 1100; type 'i' to confirm.
+  839.752 returning to the kobold in room 724
+  850.679   miss  | You swing at kobold!
+  855.417   miss  | You swing at kobold!
+  860.165   miss  | You swing at kobold!
+  864.883 PROGRESS 76/150 {'hit': 0, 'glance': 10, 'dodge': 0, 'miss': 66, 'novel': 0} connect=0.132
+  866.087   miss  | You swing at kobold!
+  870.781   miss  | You swing at kobold!
+  875.518   miss  | You swing at kobold!
+  880.207 === heal cycle ===
+  887.737 --- buy healing ---
+  887.737     | buy healing
+  887.737     | You hand over 122 copper farthings and all your wounds are healed.
+  887.737     | [HP=72]:*Combat Off*
+  887.737     | [HP=72]:
+  887.737 HP after healing = 72
+  890.541 --- refill purse ---
+  890.541     | /xcash 1100 copper
+  890.541     | [xcash] copper: 978 -> 1100; type 'i' to confirm.
+  890.541 returning to the kobold in room 724
+  901.116   miss  | You swing at kobold!
+  907.037   miss  | You swing at kobold!
+  911.775   glance| Your swing at kobold hits, but glances off its armour.
+  916.506   miss  | You swing at kobold!
+  916.507 === heal cycle ===
+  924.115 --- buy healing ---
+  924.115     | *Combat Off*
+  924.115     | [HP=19]:buy healing
+  924.115     | You hand over 106 copper farthings and all your wounds are healed.
+  924.115     | [HP=72]:
+  924.116 HP after healing = 72
+  926.920 --- refill purse ---
+  926.920     | /xcash 1100 copper
+  926.920     | [xcash] copper: 994 -> 1100; type 'i' to confirm.
+  926.920 returning to the kobold in room 724
+  937.817   miss  | You swing at kobold!
+  937.817 PROGRESS 84/150 {'hit': 0, 'glance': 11, 'dodge': 0, 'miss': 73, 'novel': 0} connect=0.131
+  942.546   miss  | You swing at kobold!
+  947.278   miss  | You swing at kobold!
+  953.180   miss  | You swing at kobold!
+  957.910   miss  | You swing at kobold!
+  962.639   miss  | You swing at kobold!
+  967.365   miss  | You swing at kobold!
+  968.577 === heal cycle ===
+  976.186 --- buy healing ---
+  976.186     | *Combat Off*
+  976.186     | [HP=18]:buy healing
+  976.186     | You hand over 108 copper farthings and all your wounds are healed.
+  976.186     | [HP=72]:
+  976.187 HP after healing = 72
+  978.991 --- refill purse ---
+  978.991     | /xcash 1100 copper
+  978.991     | [xcash] copper: 992 -> 1100; type 'i' to confirm.
+  978.991 returning to the kobold in room 724
+  993.364   miss  | You swing at kobold!
+  998.090   glance| Your swing at kobold hits, but glances off its armour.
+  998.090 PROGRESS 92/150 {'hit': 0, 'glance': 12, 'dodge': 0, 'miss': 80, 'novel': 0} connect=0.130
+ 1004.026   miss  | You swing at kobold!
+ 1008.729   miss  | You swing at kobold!
+ 1013.427 === heal cycle ===
+ 1020.956 --- buy healing ---
+ 1020.956     | buy healing
+ 1020.956     | You hand over 106 copper farthings and all your wounds are healed.
+ 1020.956     | [HP=72]:*Combat Off*
+ 1020.956     | [HP=72]:
+ 1020.957 HP after healing = 72
+ 1023.762 --- refill purse ---
+ 1023.762     | /xcash 1100 copper
+ 1023.762     | [xcash] copper: 994 -> 1100; type 'i' to confirm.
+ 1023.762 returning to the kobold in room 724
+ 1034.297   miss  | You swing at kobold!
+ 1039.023   miss  | You swing at kobold!
+ 1044.955   miss  | You swing at kobold!
+ 1049.686   miss  | You swing at kobold!
+ 1055.588   miss  | You swing at kobold!
+ 1059.200 PROGRESS 99/150 {'hit': 0, 'glance': 12, 'dodge': 0, 'miss': 87, 'novel': 0} connect=0.121
+ 1060.319   miss  | You swing at kobold!
+ 1060.320 === heal cycle ===
+ 1067.929 --- buy healing ---
+ 1067.929     | *Combat Off*
+ 1067.929     | [HP=16]:buy healing
+ 1067.929     | You hand over 112 copper farthings and all your wounds are healed.
+ 1067.929     | [HP=72]:
+ 1067.930 HP after healing = 72
+ 1070.739 --- refill purse ---
+ 1070.739     | /xcash 1100 copper
+ 1070.739     | [xcash] copper: 988 -> 1100; type 'i' to confirm.
+ 1070.739 returning to the kobold in room 724
+ 1086.376   miss  | You swing at kobold!
+ 1091.107   miss  | You swing at kobold!
+ 1095.829   miss  | You swing at kobold!
+ 1101.763   miss  | You swing at kobold!
+ 1101.764 === heal cycle ===
+ 1109.374 --- buy healing ---
+ 1109.374     | *Combat Off*
+ 1109.374     | [HP=19]:buy healing
+ 1109.374     | You hand over 106 copper farthings and all your wounds are healed.
+ 1109.374     | [HP=72]:
+ 1109.375 HP after healing = 72
+ 1112.179 --- refill purse ---
+ 1112.179     | /xcash 1100 copper
+ 1112.179     | [xcash] copper: 994 -> 1100; type 'i' to confirm.
+ 1112.179 returning to the kobold in room 724
+ 1123.083 PROGRESS 104/150 {'hit': 0, 'glance': 12, 'dodge': 0, 'miss': 92, 'novel': 0} connect=0.115
+ 1126.608   miss  | You swing at kobold!
+ 1131.333   miss  | You swing at kobold!
+ 1137.270   miss  | You swing at kobold!
+ 1142.000   miss  | You swing at kobold!
+ 1146.725   miss  | You swing at kobold!
+ 1147.934 === heal cycle ===
+ 1155.542 --- buy healing ---
+ 1155.543     | *Combat Off*
+ 1155.543     | [HP=14]:buy healing
+ 1155.543     | You hand over 116 copper farthings and all your wounds are healed.
+ 1155.543     | [HP=72]:
+ 1155.543 HP after healing = 72
+ 1158.348 --- refill purse ---
+ 1158.348     | /xcash 1100 copper
+ 1158.348     | [xcash] copper: 984 -> 1100; type 'i' to confirm.
+ 1158.348 returning to the kobold in room 724
+ 1172.786   miss  | You swing at kobold!
+ 1178.718   miss  | You swing at kobold!
+ 1183.449   miss  | You swing at kobold!
+ 1183.450 PROGRESS 112/150 {'hit': 0, 'glance': 12, 'dodge': 0, 'miss': 100, 'novel': 0} connect=0.107
+ 1183.451 === heal cycle ===
+ 1191.060 --- buy healing ---
+ 1191.060     | *Combat Off*
+ 1191.060     | [HP=18]:buy healing
+ 1191.060     | You hand over 108 copper farthings and all your wounds are healed.
+ 1191.060     | [HP=72]:
+ 1191.061 HP after healing = 72
+ 1193.866 --- refill purse ---
+ 1193.866     | /xcash 1100 copper
+ 1193.866     | [xcash] copper: 992 -> 1100; type 'i' to confirm.
+ 1193.866 returning to the kobold in room 724
+ 1209.493   miss  | You swing at kobold!
+ 1214.218   miss  | You swing at kobold!
+ 1218.953   miss  | You swing at kobold!
+ 1224.882   miss  | You swing at kobold!
+ 1229.585   miss  | You swing at kobold!
+ 1234.319   miss  | You swing at kobold!
+ 1234.320 === heal cycle ===
+ 1241.929 --- buy healing ---
+ 1241.929     | *Combat Off*
+ 1241.929     | [HP=19]:buy healing
+ 1241.929     | You hand over 106 copper farthings and all your wounds are healed.
+ 1241.929     | [HP=72]:
+ 1241.930 HP after healing = 72
+ 1244.735 --- refill purse ---
+ 1244.735     | /xcash 1100 copper
+ 1244.735     | [xcash] copper: 994 -> 1100; type 'i' to confirm.
+ 1244.735 returning to the kobold in room 724
+ 1255.634   miss  | You swing at kobold!
+ 1255.634 PROGRESS 119/150 {'hit': 0, 'glance': 12, 'dodge': 0, 'miss': 107, 'novel': 0} connect=0.101
+ 1260.370   miss  | You swing at kobold!
+ 1265.100   miss  | You swing at kobold!
+ 1269.799   miss  | You swing at kobold!
+ 1275.735   miss  | You swing at kobold!
+ 1280.456   miss  | You swing at kobold!
+ 1280.457 === heal cycle ===
+ 1288.076 --- buy healing ---
+ 1288.077     | *Combat Off*
+ 1288.077     | [HP=4]:[HP=5]:buy healing
+ 1288.077     | You hand over 134 copper farthings and all your wounds are healed.
+ 1288.077     | [HP=72]:
+ 1288.078 HP after healing = 72
+ 1290.882 --- refill purse ---
+ 1290.882     | /xcash 1100 copper
+ 1290.882     | [xcash] copper: 966 -> 1100; type 'i' to confirm.
+ 1290.882 returning to the kobold in room 724
+ 1306.479   miss  | You swing at kobold!
+ 1311.211   miss  | You swing at kobold!
+ 1315.934 PROGRESS 126/150 {'hit': 0, 'glance': 12, 'dodge': 0, 'miss': 114, 'novel': 0} connect=0.095
+ 1317.143   miss  | You swing at kobold!
+ 1321.873   miss  | You swing at kobold!
+ 1326.599   miss  | You swing at kobold!
+ 1326.600 === heal cycle ===
+ 1334.211 --- buy healing ---
+ 1334.211     | *Combat Off*
+ 1334.211     | [HP=20]:buy healing
+ 1334.211     | You hand over 104 copper farthings and all your wounds are healed.
+ 1334.211     | [HP=72]:
+ 1334.212 HP after healing = 72
+ 1337.016 --- refill purse ---
+ 1337.016     | /xcash 1100 copper
+ 1337.016     | [xcash] copper: 996 -> 1100; type 'i' to confirm.
+ 1337.016 returning to the kobold in room 724
+ 1347.869   miss  | You swing at kobold!
+ 1352.594   miss  | You swing at kobold!
+ 1357.324   miss  | You swing at kobold!
+ 1363.256   miss  | You swing at kobold!
+ 1367.987   miss  | You swing at kobold!
+ 1367.988 === heal cycle ===
+ 1375.597 --- buy healing ---
+ 1375.597     | *Combat Off*
+ 1375.597     | [HP=15]:buy healing
+ 1375.597     | You hand over 114 copper farthings and all your wounds are healed.
+ 1375.597     | [HP=72]:
+ 1375.599 HP after healing = 72
+ 1378.404 --- refill purse ---
+ 1378.406     | /xcash 1100 copper
+ 1378.406     | [xcash] copper: 986 -> 1100; type 'i' to confirm.
+ 1378.406 returning to the kobold in room 724
+ 1389.308 PROGRESS 134/150 {'hit': 0, 'glance': 12, 'dodge': 0, 'miss': 122, 'novel': 0} connect=0.090
+ 1394.036   miss  | You swing at kobold!
+ 1398.767   miss  | You swing at kobold!
+ 1403.495   miss  | You swing at kobold!
+ 1408.221   miss  | You swing at kobold!
+ 1409.431 === heal cycle ===
+ 1417.041 --- buy healing ---
+ 1417.041     | *Combat Off*
+ 1417.041     | [HP=18]:buy healing
+ 1417.041     | You hand over 108 copper farthings and all your wounds are healed.
+ 1417.041     | [HP=72]:
+ 1417.042 HP after healing = 72
+ 1419.850 --- refill purse ---
+ 1419.850     | /xcash 1100 copper
+ 1419.850     | [xcash] copper: 992 -> 1100; type 'i' to confirm.
+ 1419.850 returning to the kobold in room 724
+ 1434.111   miss  | You swing at kobold!
+ 1438.837   miss  | You swing at kobold!
+ 1444.781   miss  | You swing at kobold!
+ 1449.508   miss  | You swing at kobold!
+ 1449.508 PROGRESS 142/150 {'hit': 0, 'glance': 12, 'dodge': 0, 'miss': 130, 'novel': 0} connect=0.085
+ 1454.226   miss  | You swing at kobold!
+ 1460.163   miss  | You swing at kobold!
+ 1460.165 === heal cycle ===
+ 1467.773 --- buy healing ---
+ 1467.774     | *Combat Off*
+ 1467.774     | [HP=11]:buy healing
+ 1467.774     | You hand over 122 copper farthings and all your wounds are healed.
+ 1467.774     | [HP=72]:
+ 1467.775 HP after healing = 72
+ 1470.579 --- refill purse ---
+ 1470.579     | /xcash 1100 copper
+ 1470.579     | [xcash] copper: 978 -> 1100; type 'i' to confirm.
+ 1470.579 returning to the kobold in room 724
+ 1486.212   miss  | You swing at kobold!
+ 1490.943   glance| Your swing at kobold hits, but glances off its armour.
+ 1495.673   miss  | You swing at kobold!
+ 1501.607   miss  | You swing at kobold!
+ 1506.338   miss  | You swing at kobold!
+ 1506.339 === heal cycle ===
+ 1513.949 --- buy healing ---
+ 1513.949     | *Combat Off*
+ 1513.949     | [HP=16]:buy healing
+ 1513.949     | You hand over 112 copper farthings and all your wounds are healed.
+ 1513.949     | [HP=72]:
+ 1513.950 HP after healing = 72
+ 1516.755 --- refill purse ---
+ 1516.755     | /xcash 1100 copper
+ 1516.755     | [xcash] copper: 988 -> 1100; type 'i' to confirm.
+ 1516.755 returning to the kobold in room 724
+ 1527.635 PROGRESS 149/150 {'hit': 0, 'glance': 13, 'dodge': 0, 'miss': 136, 'novel': 0} connect=0.087
+ 1532.333   miss  | You swing at kobold!
+ 1532.333 === DONE: 150 swings {'hit': 0, 'glance': 13, 'dodge': 0, 'miss': 137, 'novel': 0} ===
+ 1532.333 connect (glance+hit) = 13/150 = 0.0867
+ 1538.265 --- logout ---
+ 1538.265     | x
+ 1538.265     | *Combat Off*
+ 1538.265     | [HP=43]:You will exit after a period of silent meditation.
+ 1538.265     | .......Your meditation has been interrupted - you may not exit now!
+ 1538.265     | [HP=43]:The kobold stabs you for 9 damage!
+ 1538.265     | [HP=34]:The kobold stabs you for 4 damage!
+ 1538.265     | [HP=30]:
+ 1538.265 done
