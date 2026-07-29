@@ -58,7 +58,7 @@ pub async fn finish_creation(session: &Session) -> Result<(), ExpectError> {
 /// mutates persistent state on the board.
 async fn apply_evil_preference(session: &Session, profile: &Profile) -> Result<(), ExpectError> {
     if profile.disable_evil_warnings {
-        ensure_evil_warnings_off(session).await?;
+        ensure_evil_warnings_off(session, profile.target).await?;
     }
     Ok(())
 }
@@ -66,26 +66,48 @@ async fn apply_evil_preference(session: &Session, profile: &Profile) -> Result<(
 /// Leave the character with Warn on Evil OFF, so the board stops refusing
 /// attacks on unprovoked (behaviour 0/4) monsters.
 ///
-/// `set evil` is a TOGGLE that reports the state it landed in, not a
-/// setter (`mud_core::game`'s `cmd_set`). So this reads the confirmation
-/// instead of assuming: if the first toggle turned the warning ON, the
-/// character already had it off and a second toggle puts it back.
-/// Converges in at most two commands either way.
+/// The two targets do not spell this the same way, and the difference is
+/// not cosmetic:
+///
+/// - **The live board** takes `SET WARNING OFF` — an explicit setter with
+///   a required argument ("Valid warning options: ON, OFF", DLL 0xd7d68;
+///   `WARNING` is in the SET list at 0xd8027). One command, no guessing,
+///   and idempotent.
+/// - **`mud-server`** implements it as a bare `set evil` TOGGLE that
+///   reports the state it landed in. A toggle has to be read back: if the
+///   first one turned the warning ON, the character already had it off
+///   and a second puts it back. That is a DIVERGENCE from the board, not
+///   a design choice — the reimplementation should grow `SET WARNING
+///   ON|OFF` and this branch should then collapse.
+///
+/// Sending the wrong one is silent: the board does not error, it SAYS the
+/// command out loud and leaves the setting alone.
 ///
 /// This is a real change to the character: with warnings off, evil acts
 /// go through and accrue fame, which moves the legal level toward
 /// Criminal. That is why nothing calls this unless the profile says so.
-pub async fn ensure_evil_warnings_off(session: &Session) -> Result<(), ExpectError> {
+pub async fn ensure_evil_warnings_off(
+    session: &Session,
+    target: Target,
+) -> Result<(), ExpectError> {
     use std::time::Duration;
     let t = Duration::from_secs(30);
-    session.send("set evil");
-    let landed_on = session
-        .expect_any(&[text::SET_EVIL_WARN_OFF, text::SET_EVIL_WARN_ON], t)
-        .await?
-        == 1;
-    if landed_on {
-        session.send("set evil");
-        session.expect(text::SET_EVIL_WARN_OFF, t).await?;
+    match target {
+        Target::MbbsEmu => {
+            session.send("set warning off");
+            session.expect(text::SET_EVIL_WARN_OFF, t).await?;
+        }
+        Target::RustServer => {
+            session.send("set evil");
+            let landed_on = session
+                .expect_any(&[text::SET_EVIL_WARN_OFF, text::SET_EVIL_WARN_ON], t)
+                .await?
+                == 1;
+            if landed_on {
+                session.send("set evil");
+                session.expect(text::SET_EVIL_WARN_OFF, t).await?;
+            }
+        }
     }
     Ok(())
 }

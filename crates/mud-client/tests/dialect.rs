@@ -65,19 +65,31 @@ async fn read_until(sock: &mut tokio::net::TcpStream, needle: &str) -> String {
 /// A fake MBBSEmu board that will only serve the realm to a client that
 /// asks to enter it.
 async fn fake_board() -> std::net::SocketAddr {
-    fake_board_with_evil(true).await.0
+    fake_board_with_evil().await.0
 }
 
-/// As [`fake_board`], but it also models `set evil` the way the real one
-/// does: a TOGGLE that reports the state it landed in, not a setter. The
-/// returned counter is how many `set evil` commands the client sent.
-async fn fake_board_with_evil(
-    mut warn_on_evil: bool,
-) -> (std::net::SocketAddr, Arc<AtomicUsize>) {
+/// What the fake board made of the commands it was sent after login.
+#[derive(Default)]
+struct BoardLog {
+    /// Recognised `SET WARNING <on|off>` commands.
+    set_warning: AtomicUsize,
+    /// Commands the board did not recognise, which it says out loud.
+    /// Any of these is a client speaking the wrong dialect.
+    unrecognised: AtomicUsize,
+}
+
+/// As [`fake_board`], but it also serves the real board's Warn-on-Evil
+/// setting: `SET WARNING ON|OFF` — an explicit setter, not a toggle
+/// (DLL: subcommand keyword at 0xd76e9, "Valid warning options: ON, OFF"
+/// at 0xd7d68, and the master list at 0xd8027). Crucially it also does
+/// what the live board does with anything else, which is say it out
+/// loud; that is how a wrong verb shows up as a test failure instead of
+/// a silent no-op.
+async fn fake_board_with_evil() -> (std::net::SocketAddr, Arc<BoardLog>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let sets = Arc::new(AtomicUsize::new(0));
-    let counter = Arc::clone(&sets);
+    let log = Arc::new(BoardLog::default());
+    let counter = Arc::clone(&log);
     tokio::spawn(async move {
         let (mut sock, _) = listener.accept().await.unwrap();
         sock.write_all(b"Enter Username or enter \"NEW\" to create a new Account\r\nUsername: ")
@@ -105,28 +117,31 @@ async fn fake_board_with_evil(
         // exists to pin.
         read_until(&mut sock, "E").await;
         sock.write_all(REALM).await.unwrap();
-        // Serve `set evil` for as long as the client stays connected.
+        // Serve settings commands for as long as the client stays on.
         let mut buf = [0u8; 512];
         while let Ok(n) = sock.read(&mut buf).await {
             if n == 0 {
                 break;
             }
-            let line = String::from_utf8_lossy(&buf[..n]).to_lowercase();
-            if line.contains("set evil") {
-                counter.fetch_add(1, Ordering::SeqCst);
-                warn_on_evil = !warn_on_evil;
-                let confirm = if warn_on_evil {
-                    mud_core::text::SET_EVIL_WARN_ON
-                } else {
-                    mud_core::text::SET_EVIL_WARN_OFF
-                };
-                sock.write_all(format!("\r\n{confirm}\r\n[HP=33/MA=8]:").as_bytes())
-                    .await
-                    .unwrap();
-            }
+            let line = String::from_utf8_lossy(&buf[..n]).trim().to_lowercase();
+            let reply = if line == "set warning off" {
+                counter.set_warning.fetch_add(1, Ordering::SeqCst);
+                mud_core::text::SET_EVIL_WARN_OFF.to_string()
+            } else if line == "set warning on" {
+                counter.set_warning.fetch_add(1, Ordering::SeqCst);
+                mud_core::text::SET_EVIL_WARN_ON.to_string()
+            } else {
+                // Verbatim from the live board when it was sent the Rust
+                // server's "set evil": unknown input is spoken aloud.
+                counter.unrecognised.fetch_add(1, Ordering::SeqCst);
+                format!("You say \"{line}\"")
+            };
+            sock.write_all(format!("\r\n{reply}\r\n[HP=33/MA=8]:").as_bytes())
+                .await
+                .unwrap();
         }
     });
-    (addr, sets)
+    (addr, log)
 }
 
 /// Logging in to the live board must leave the character standing in the
@@ -158,40 +173,31 @@ async fn mbbs_login_enters_the_realm() {
 
 // --- the evil-warning preference -------------------------------------
 //
-// `set evil` is a TOGGLE that reports the state it landed in, not a
-// setter (mud_core::game::set_command). Sending it blindly is therefore
-// wrong in exactly the case the operator cares about: a character whose
-// warnings are ALREADY off would have them switched back ON, and the
-// next unprovoked swing would be refused again.
+// The live board takes `SET WARNING ON|OFF` -- an explicit setter with a
+// required argument, per the DLL's "Valid warning options: ON, OFF".
+// An earlier pass here sent the Rust server's `set evil` toggle at the
+// MBBSEmu target and the board simply SAID it out loud, which is why the
+// fake board above answers unknown input the same way.
 
-/// Warnings on: one `set evil` is enough, and the client must not send a
-/// second one that would switch them straight back on.
+/// The MBBSEmu dialect must name the setting the board actually has, and
+/// say which way to set it -- once, with no guessing.
 #[tokio::test]
-async fn evil_warnings_on_are_switched_off_with_one_command() {
-    let (addr, sets) = fake_board_with_evil(true).await;
-    let profile = profile_with(addr, true);
-    let session = Session::connect(&profile, None).await.unwrap();
-
-    dialect::login(&session, &profile).await.unwrap();
-
-    assert_eq!(sets.load(Ordering::SeqCst), 1, "should settle in one toggle");
-}
-
-/// Warnings already off: the first `set evil` turns them ON, so the
-/// client has to notice and send a second. This is the case a naive
-/// fire-and-forget implementation gets backwards.
-#[tokio::test]
-async fn evil_warnings_already_off_are_left_off() {
-    let (addr, sets) = fake_board_with_evil(false).await;
+async fn evil_warnings_are_turned_off_on_the_live_board_dialect() {
+    let (addr, log) = fake_board_with_evil().await;
     let profile = profile_with(addr, true);
     let session = Session::connect(&profile, None).await.unwrap();
 
     dialect::login(&session, &profile).await.unwrap();
 
     assert_eq!(
-        sets.load(Ordering::SeqCst),
-        2,
-        "first toggle turned warnings ON; a second is required to land OFF"
+        log.set_warning.load(Ordering::SeqCst),
+        1,
+        "an explicit setter needs exactly one command"
+    );
+    assert_eq!(
+        log.unrecognised.load(Ordering::SeqCst),
+        0,
+        "the board did not recognise what was sent -- wrong verb for this target"
     );
 }
 
@@ -199,11 +205,12 @@ async fn evil_warnings_already_off_are_left_off() {
 /// persistent state at all.
 #[tokio::test]
 async fn evil_warnings_are_untouched_when_the_profile_says_nothing() {
-    let (addr, sets) = fake_board_with_evil(true).await;
+    let (addr, log) = fake_board_with_evil().await;
     let profile = profile_with(addr, false);
     let session = Session::connect(&profile, None).await.unwrap();
 
     dialect::login(&session, &profile).await.unwrap();
 
-    assert_eq!(sets.load(Ordering::SeqCst), 0, "must not touch the character");
+    assert_eq!(log.set_warning.load(Ordering::SeqCst), 0, "must not touch the character");
+    assert_eq!(log.unrecognised.load(Ordering::SeqCst), 0);
 }
