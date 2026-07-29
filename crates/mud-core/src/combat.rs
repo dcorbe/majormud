@@ -148,7 +148,10 @@ pub fn calculate_attack(
     }
 
     // --- damage ---
-    let mut damage = roll(min, max) - defender.armor / 10;
+    // 25334: `genrdn(0,(max-min)+1) + min`, genrdn inclusive — the range
+    // runs one past max. (Same single draw either way; the port targets
+    // distributions, not the DLL's literal call shape.)
+    let mut damage = roll(min, max + 1) - defender.armor / 10;
     damage *= multiplier;
 
     // --- parry/riposte (cancels even a crit) ---

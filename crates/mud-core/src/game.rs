@@ -459,7 +459,15 @@ impl Default for CoreConfig {
     }
 }
 
-/// `genrdn(lo, hi)`-style PRNG: xorshift64*, uniform in `[lo, hi]`.
+/// `genrdn(lo, hi)`-style PRNG: xorshift64*, uniform in `[lo, hi)` —
+/// EXCLUSIVE upper bound, `lo` when the span is empty. That is genrdn's
+/// real contract, not the "inclusive on both bounds" the RE docs long
+/// claimed: MBBSEmu (the oracle board) implements it as .NET
+/// `_random.Next(min, max)`, the DLL's own damage idiom
+/// `genrdn(0,(max-min)+1)+min` only makes design sense with an exclusive
+/// top, and the Nekojin Mystic capture measured punch damage 2..6 where
+/// the formula max is exactly 6. Call sites transcribe the decompile's
+/// genrdn arguments verbatim and rely on this contract.
 /// Deterministic given the seed; exactness targets distributions, not the
 /// original's roll stream (design decision).
 ///
@@ -487,7 +495,7 @@ impl Rng {
         self.state ^= self.state << 25;
         self.state ^= self.state >> 27;
         let x = self.state.wrapping_mul(0x2545F4914F6CDD1D);
-        let span = (hi - lo + 1) as u64;
+        let span = (hi - lo).max(1) as u64;
         lo + (x % span) as i32
     }
 }

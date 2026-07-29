@@ -390,16 +390,17 @@ fn rolled_coins_drop_with_the_ground_lines() {
             break;
         }
     }
-    // Under SEED the silver roll lands 14: the killer sees the drop line
-    // at kill time and the pile renders on the next look.
+    // Under SEED the silver roll lands 9 (re-derived for the genrdn
+    // exclusive-upper correction): the killer sees the drop line at kill
+    // time and the pile renders on the next look.
     assert!(
-        seen.contains("14 silver drop to the ground."),
+        seen.contains("9 silver drop to the ground."),
         "killer-visible drop line: {seen:?}"
     );
     core.input(s, "look");
     let look = text_to(&core.drain_events(), s);
     assert!(
-        look.contains("You notice 14 silver"),
+        look.contains("You notice 9 silver"),
         "the rolled pile is on the floor: {look:?}"
     );
 }

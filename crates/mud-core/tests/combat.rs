@@ -16,11 +16,13 @@ fn fighter(accuracy: i32, evasion: (i32, i32), armor: i32) -> Fighter {
 }
 
 /// Scripted roll source: pops from the front; panics if exhausted.
+/// Bounds match genrdn's real contract — EXCLUSIVE upper (`[lo, hi)`),
+/// so a script cannot pin a value the engine can never draw.
 fn rolls(values: &[i32]) -> impl FnMut(i32, i32) -> i32 + '_ {
     let mut it = values.iter().copied();
     move |lo, hi| {
         let v = it.next().expect("script exhausted");
-        assert!(v >= lo && v <= hi, "scripted roll {v} outside [{lo},{hi}]");
+        assert!(v >= lo && v < hi, "scripted roll {v} outside [{lo},{hi})");
         v
     }
 }
@@ -28,13 +30,13 @@ fn rolls(values: &[i32]) -> impl FnMut(i32, i32) -> i32 + '_ {
 #[test]
 fn to_hit_threshold_is_quadratic() {
     // acc 200 vs defense 100: 100 - 140*10000/40000 = 65 (spec sanity check).
-    // Hit iff roll < threshold (decompile 25324 `iVar3 < iVar2`, both
-    // genrdn bounds inclusive): roll 64 hits; roll 65 misses.
+    // Hit iff roll < threshold (decompile 25324 `iVar3 < iVar2`;
+    // genrdn(1,100) spans [1, 99]): roll 64 hits; roll 65 misses.
     let att = fighter(200, (0, 0), 0);
     let def = fighter(0, (50, 50), 0);
 
     // hit path: to-hit 64, crit roll 100 (no crit), damage roll, parry skipped (parry 0)
-    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[64, 100, 5]));
+    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[64, 99, 5]));
     assert_eq!(r.outcome, Outcome::Hit);
 
     let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[65]));
@@ -46,7 +48,7 @@ fn evenly_matched_clamps_to_ten_percent() {
     // acc == defense -> 100-140 = -40 -> clamp 10.
     let att = fighter(100, (0, 0), 0);
     let def = fighter(0, (50, 50), 0);
-    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[9, 100, 5]));
+    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[9, 99, 5]));
     assert_eq!(r.outcome, Outcome::Hit, "roll 9 < clamped threshold 10");
     let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[10]));
     assert_eq!(r.outcome, Outcome::Dodged, "roll 10 is not < 10");
@@ -59,7 +61,7 @@ fn tiny_accuracy_threshold_clamps_up_to_ten() {
     // 16-bit _CALCULATE_ATTACK.asm 1f5b falls through to 1f60), so 5 -> 10.
     let att = fighter(11, (0, 0), 0);
     let def = fighter(0, (10, 10), 0);
-    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[9, 100, 5]));
+    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[9, 99, 5]));
     assert_eq!(r.outcome, Outcome::Hit);
     let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[10]));
     assert_eq!(r.outcome, Outcome::Dodged);
@@ -89,11 +91,14 @@ fn backstab_threshold_is_clamped() {
 #[test]
 fn helpless_defender_is_nearly_auto_hit() {
     // Defender parry < 0 (HP<1): roll(0,100) > parry+100 -> threshold 99.
+    // The gate draw spans [0, 99] (genrdn exclusive top), so parry -1
+    // (gate 99) can never trigger — a genuinely helpless defender carries
+    // a large negative parry and the gate all but always fires.
     let att = fighter(50, (0, 0), 0);
     let mut def = fighter(0, (200, 200), 0);
-    def.parry = -1;
-    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[100, 42, 100, 5]));
-    assert_eq!(r.outcome, Outcome::Hit, "roll 100 > 99 gate, then 42 <= 99 hits");
+    def.parry = -150;
+    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[0, 42, 99, 5]));
+    assert_eq!(r.outcome, Outcome::Hit, "gate 0 > -50, then 42 < 99 hits");
 }
 
 #[test]
@@ -102,9 +107,24 @@ fn damage_is_range_roll_minus_tenth_armor() {
     let mut def = fighter(0, (10, 10), 0);
     def.armor = 30; // -3
     // to-hit 10 (hits), crit roll 100 (no), damage roll 10 -> 10 - 3 = 7.
-    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[10, 100, 10]));
+    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[10, 99, 10]));
     assert_eq!(r.outcome, Outcome::Hit);
     assert_eq!(r.damage, 7);
+}
+
+#[test]
+fn damage_roll_spans_min_to_max_exactly() {
+    // Decompile 25334: `genrdn(0,(max-min)+1) + min`. genrdn's top is
+    // EXCLUSIVE (MBBSEmu `_random.Next(min, max)`; the Nekojin Mystic
+    // capture measured punch 2..6 with formula max exactly 6), so the
+    // idiom's +1 exists to reach max, not to overshoot it: damage spans
+    // [min, max]. The call site transcribes the +1 verbatim; the rolls()
+    // helper's exclusive bound rejects any script that pins max+1.
+    let att = fighter(200, (0, 0), 0); // min 2, max 10 -> roll(2, 11) -> [2, 10]
+    let def = fighter(0, (10, 10), 0);
+    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[10, 99, 10]));
+    assert_eq!(r.outcome, Outcome::Hit);
+    assert_eq!(r.damage, 10);
 }
 
 #[test]
@@ -112,7 +132,7 @@ fn absorbed_hit_is_no_damage() {
     let att = fighter(200, (0, 0), 0);
     let mut def = fighter(0, (10, 10), 0);
     def.armor = 200; // -20 swallows the 2-10 roll
-    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[10, 100, 10]));
+    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[10, 99, 10]));
     assert_eq!(r.outcome, Outcome::NoDamage);
     assert_eq!(r.damage, 0);
 }
@@ -144,11 +164,11 @@ fn parry_cancels_the_hit() {
     let mut def = fighter(0, (10, 10), 0);
     def.parry = 100; // p = 100*10/20 = 50
     // to-hit 10, crit 100, damage 10, parry roll 49 < 50 -> parried.
-    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[10, 100, 10, 49]));
+    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[10, 99, 10, 49]));
     assert_eq!(r.outcome, Outcome::Parried);
     assert_eq!(r.damage, 0);
 
-    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[10, 100, 10, 50]));
+    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[10, 99, 10, 50]));
     assert_eq!(r.outcome, Outcome::Hit, "roll 50 is not < 50");
 }
 
@@ -200,7 +220,7 @@ fn counted<'a>(
     let mut it = values.iter().copied();
     move |lo, hi| {
         let v = it.next().expect("script exhausted");
-        assert!(v >= lo && v <= hi, "scripted roll {v} outside [{lo},{hi}]");
+        assert!(v >= lo && v < hi, "scripted roll {v} outside [{lo},{hi})");
         *taken += 1;
         v
     }
@@ -226,7 +246,7 @@ fn a_parrying_defender_always_costs_a_draw() {
         &att,
         &def,
         AttackType::Normal,
-        &mut counted(&[5, 100, 10, 0], &mut taken),
+        &mut counted(&[5, 99, 10, 0], &mut taken),
     );
     assert_eq!(r.outcome, Outcome::Hit);
     assert_eq!(taken, 4, "the parry draw is taken even at chance 0");
@@ -240,15 +260,15 @@ fn accuracy_eight_forces_the_parry_chance_to_zero() {
     let att = fighter(8, (0, 0), 0);
     let mut def = fighter(0, (10, 10), 0);
     def.parry = 30;
-    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[5, 100, 10, 0]));
+    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[5, 99, 10, 0]));
     assert_eq!(r.outcome, Outcome::Hit, "accuracy 8 cannot be parried");
     assert_eq!(r.damage, 10);
 
     // Accuracy 9 is the first that can: denominator 9>>3 = 1, so the
     // chance is `30*10` clamped to the 0x5f cap.
     let att = fighter(9, (0, 0), 0);
-    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[5, 100, 10, 94]));
+    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[5, 99, 10, 94]));
     assert_eq!(r.outcome, Outcome::Parried, "94 < the 95 cap");
-    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[5, 100, 10, 95]));
+    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[5, 99, 10, 95]));
     assert_eq!(r.outcome, Outcome::Hit, "95 is not < 95");
 }

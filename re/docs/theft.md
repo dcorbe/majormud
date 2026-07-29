@@ -34,7 +34,16 @@ Nightmare-Redux `modFieldmaps.bas` (`ItemRecType.Robable`).
 | `calculate_secondary_stats` | `0x41a424` | 13356 | derives all seven thief skills |
 | `FUN_0046cc43` | `0x46cc43` | 66203 | shared sneak/hide success-chance helper |
 
-RNG: `genrdn(lo,hi)` is the imported Galacticomm RNG, **inclusive** on both bounds.
+RNG: `genrdn(lo,hi)` is the imported Galacticomm RNG — **EXCLUSIVE on the
+upper bound**: `[lo, hi)`, `lo` when the span is empty. (CORRECTED
+2026-07-28; this line long claimed "inclusive on both bounds", wrongly.
+Three independent proofs: MBBSEmu — the oracle board — implements the
+ordinal as .NET `_random.Next(min, max)`; WCCMMUD's own damage idiom
+`genrdn(0,(max-min)+1)+min` only reaches the item column's max under an
+exclusive top; and the Nekojin Mystic capture measured punch damage 2..6
+where the formula max is exactly 6.) So `genrdn(1,100) < threshold` hits
+with probability `(threshold-1)/99`, and every `genrdn(0,100) < chance`
+gate is `chance` in 100.
 Every roll below is listed in draw order — a reimplementation must match.
 
 Message prefixes: nearly every line is preceded by the standard prompt-clear

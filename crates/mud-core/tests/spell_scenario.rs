@@ -745,7 +745,7 @@ fn mage_learns_scroll_casts_and_kills() {
         );
         transcript.push_str(&combat_round(&mut core, s));
     }
-    assert_eq!(rounds, 2, "the SEED transcript kills on round 2: {transcript:?}");
+    assert_eq!(rounds, 6, "the SEED transcript kills on round 6: {transcript:?}");
 
     // Key lines, verbatim (oracle-pinned) and in order.
     assert_in_order(&transcript, &[
@@ -773,26 +773,25 @@ fn mage_learns_scroll_casts_and_kills() {
         ("lair", "Dusty Cellar\nAlso here: nasty filthbug.\nObvious exits: south\n"),
         // §8.6: the opening cast engages without firing.
         ("engaged", "*Combat Engaged*"),
-        // Round 1 under SEED: raw magnitude 10 (of 4..=13), Damage(-MR)
-        // amplified against mr 30: 10 + 10*20/100 = 12.
-        // Slice-3 stream re-pin: the free-attack roll on each walk and
-        // the retaliation-gate draws shifted the magnitudes (14 then 12).
-        ("first fire", "You fire a magic missile at nasty filthbug for 14 damage!\n"),
-        // Round 2 under SEED: raw 12 -> 12 + 12*20/100 = 14, the kill.
-        ("killing fire", "You fire a magic missile at nasty filthbug for 12 damage!\n"),
+        // Under SEED (re-pinned for the genrdn exclusive-upper
+        // correction) the kill takes four fires (4, 7, 8, 8) across six
+        // rounds, with two fizzles between them.
+        ("first fire", "You fire a magic missile at nasty filthbug for 4 damage!\n"),
+        ("killing fire", "You fire a magic missile at nasty filthbug for 8 damage!\n"),
         // M3 death path: death line, exp split, disengage — in order.
         ("death", "The nasty filthbug is dead.\n"),
         ("exp", "You gain 12 experience.\n"),
         ("combat off", "*Combat Off*"),
     ]);
 
-    // Session end state: book learned, scroll consumed, exp banked, mana
-    // charged only for the two successful fires (10 - 2).
+    // Session end state: book learned, scroll consumed, exp banked. Mana:
+    // four successful fires charged 1 each, and the longer six-round
+    // fight let regen ticks claw some back — the closing prompt's MA=9.
     let after = core.player_snapshot(s);
     assert_eq!(after.spellbook.get(&MAGIC_MISSILE), Some(&false));
     assert!(after.inventory.is_empty(), "scroll consumed");
     assert_eq!(after.experience, 12);
-    assert_eq!(core.current_mana(s), 8, "1 mana per successful fire");
+    assert_eq!(core.current_mana(s), 9, "four fires minus regen ticks");
     assert_eq!(core.monster_hp(m), None, "instance gone");
 }
 
@@ -819,12 +818,13 @@ fn mage_learns_blur_and_outlives_it() {
     drive(&mut core, s, &mut transcript, "use scroll of blur");
     drive(&mut core, s, &mut transcript, "c blur");
 
-    // Slot entry: the rolled magnitude (bounds 5..5 -> genrdn 5..=6; 6
-    // under SEED) is stored and feeds the defender through the recompute.
+    // Slot entry: the magnitude (bounds 5..5 -> genrdn(5, 6), exclusive
+    // top: always exactly 5) is stored and feeds the defender through
+    // the recompute.
     let p = core.player_snapshot(s);
     let idx = p.find_active(BLUR).expect("blur entered a slot");
     let v = i32::from(p.active_spells[idx].value);
-    assert_eq!(v, 6, "the SEED magnitude roll");
+    assert_eq!(v, 5, "5..5 rolls exactly 5 — no fuzz");
     assert_eq!(p.active_spells[idx].remaining, 70, "flat duration");
     assert_eq!(
         core.defender_debug(s).parry,
@@ -919,13 +919,13 @@ fn mage_blurs_a_second_player_who_outlives_it() {
     drive_all(&mut core, vex, &mut views, "use scroll of blur");
     drive_all(&mut core, vex, &mut views, "c blur oracle");
 
-    // The slot enters on the TARGET: the rolled magnitude (bounds 5..5 ->
-    // genrdn 5..=6; 6 under SEED) lands in Oracle's slot and Oracle's
-    // defender; the caster keeps neither.
+    // The slot enters on the TARGET: the magnitude (bounds 5..5 ->
+    // genrdn(5, 6), exclusive top: always exactly 5) lands in Oracle's
+    // slot and Oracle's defender; the caster keeps neither.
     let target = core.player_snapshot(ora);
     let idx = target.find_active(BLUR).expect("blur entered the TARGET's slot");
     let v = i32::from(target.active_spells[idx].value);
-    assert_eq!(v, 6, "the SEED magnitude roll");
+    assert_eq!(v, 5, "5..5 rolls exactly 5 — no fuzz");
     assert_eq!(target.active_spells[idx].remaining, 70, "flat duration");
     assert!(
         core.player_snapshot(vex).active_spells.iter().all(|slot| slot.spell.is_none()),
@@ -1074,10 +1074,11 @@ fn area_cast_sweeps_monsters_and_spares_the_bystander() {
     assert!(!room_view.contains("damage"), "no damage numbers: {room_view:?}");
     assert!(!room_view.contains("experience"), "no exp for the bystander: {room_view:?}");
 
-    // Per-monster damage: one shared roll (12..12 -> genrdn 12..=13; 13
-    // under SEED — match 12 does not split), Magic unresistable, so the
-    // filthbug's mr 30 does not shield plain Damage.
-    assert_eq!(core.monster_hp(bug), Some(7), "20 - the SEED roll 13");
+    // Per-monster damage: one shared roll (12..12 -> genrdn(12, 13),
+    // exclusive top: always exactly 12 — a fixed-magnitude spell has no
+    // fuzz), Magic unresistable, so the filthbug's mr 30 does not shield
+    // plain Damage.
+    assert_eq!(core.monster_hp(bug), Some(8), "20 - the fixed 12");
     assert_eq!(core.monster_hp(wisp), None, "instance gone through the kill route");
     assert_eq!(core.current_mana(vex), 4, "full mana 6 charged");
     assert_eq!(core.player_snapshot(vex).experience, 9, "kill exp banked");
@@ -1139,14 +1140,15 @@ fn caster_monster_fight_and_the_live_poison_lifecycle() {
     assert_eq!(landed, 5, "SEED landed casts: {vex_p1:?}");
     assert_eq!(fizzled, 2, "SEED fizzles: {vex_p1:?}");
     // HP accounting: every landed drain shows the exact amount it dealt
-    // (SEED rolls 13, 5, 11, 9, 11 — all inside the record band 4..13;
+    // (SEED rolls 5, 4, 12, 11, 4 — all inside the record band 4..13;
     // stream re-pinned for the slice-3 draws: retaliation-gate and
     // post-swing lock rolls now sit in every monster attack sequence.
     // Re-pinned again in slice 5: the ENGAGE-time lock roll moved off
     // the tail of the player swing loop and onto the ATTACK command,
     // where 26230 lives — one draw earlier in the stream, one fizzle
     // fewer in this window).
-    assert_eq!(core.current_hp(vex), 200 - 49, "SEED drain total: {vex_p1:?}");
+    // Re-pinned for the genrdn exclusive-upper correction.
+    assert_eq!(core.current_hp(vex), 200 - 36, "SEED drain total: {vex_p1:?}");
     // Victim view, in order: the engagement, a landed line (WITH the
     // damage number), and a fizzle line.
     assert_in_order(
@@ -1155,7 +1157,7 @@ fn caster_monster_fight_and_the_live_poison_lifecycle() {
             ("engaged", "*Combat Engaged*"),
             (
                 "landed cast",
-                "Moaning spirit draws the breath from your body for 13 damage!\n",
+                "Moaning spirit draws the breath from your body for 5 damage!\n",
             ),
             (
                 "fizzle",
