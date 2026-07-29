@@ -40,8 +40,10 @@ RAW = "../../re/oracle/oracle_engage_lock.raw"
 LOG = "../../re/oracle/oracle_engage_lock_timing.log"
 HEALER = 2190
 # Giant rat (#1, group 6 index 1) spawn band, map 1.
-RAT_ROOMS = [547, 548, 549, 550, 551, 552, 553, 554, 555, 556, 557, 558,
-             559, 560, 561, 562, 563, 564, 565, 566]
+# The group-6 spawn region spans 429 rooms; sweeping only 20 of them
+# found nothing in 50 minutes (the region's rats sit anywhere in it).
+# 547-699 is the contiguous sewer run — a ~12-minute lap.
+RAT_ROOMS = [r for r in range(547, 700) if r != 592]
 
 import os
 sfx = 2

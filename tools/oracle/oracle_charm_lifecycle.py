@@ -55,8 +55,10 @@ while os.path.exists(RAW):
     sfx += 1
 
 HEALER = 2190
-RAT_ROOMS = [547, 548, 549, 550, 551, 552, 553, 554, 555, 556, 557, 558,
-             559, 560, 561, 562, 563, 564, 565, 566]
+# The group-6 spawn region spans 429 rooms; sweeping only 20 of them
+# found nothing in 50 minutes (the region's rats sit anywhere in it).
+# 547-699 is the contiguous sewer run — a ~12-minute lap.
+RAT_ROOMS = [r for r in range(547, 700) if r != 592]
 SPIDER_ROOMS = [1567, 1570, 1572, 1563, 1560, 1561]
 DIRS = ["n", "s", "e", "w", "ne", "nw", "se", "sw", "u", "d"]
 DB = "../../re/mmud_wgnt.sqlite"
