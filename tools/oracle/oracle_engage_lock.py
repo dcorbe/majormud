@@ -53,10 +53,11 @@ RAT_ROOMS = [
     1488, 1489, 1490, 1491, 1492, 1493, 1494, 1495, 1496, 1497, 1498, 1499,
     1500, 1501, 1502, 1503, 1504, 1505, 1506, 1507, 1508, 1509, 1510, 1511,
     1512, 1514, 1515, 1516, 1517, 1518, 1519, 1520, 1521, 1522, 1523, 1524,
-    1525, 1526, 1527, 1528, 1529, 1530, 1539, 1540, 1560, 1561, 1562, 1563,
-    1564, 1565, 1566, 1567, 1568, 1569, 1570, 1571, 1572, 1595, 1596, 1597,
+    1525, 1526, 1527, 1528, 1529, 1530, 1539, 1540, 1595, 1596, 1597,
     1598, 1600, 1601, 1602, 1603, 1604,
 ]
+# 1560-1572 are the SPIDER DENS — the first bat-target run swept through
+# them and spent an hour mortally wounded, teleporting blind.
 
 import os
 sfx = 2
@@ -111,11 +112,33 @@ def rat_attacks_in(text):
             and not ln.strip().startswith("You")]
 
 
+def die_and_revive():
+    """Mortally wounded refuses every verb; the only exit is death (one
+    life, revives at FULL HP) — walk into the spider dens deliberately."""
+    note("=== mortally wounded; dying deliberately to revive ===")
+    deadline_r = time.time() + 900
+    ix_r = 0
+    while (hp() or 0) < 0 and time.time() < deadline_r:
+        sess.send(f"/xgoto {[1567, 1570, 1572, 1563][ix_r % 4]} 1", pause=1.6)
+        ix_r += 1
+        sess.dump(1.2)
+        for _ in range(40):
+            sess.dump(2.0)
+            if (hp() or 0) > 0:
+                break
+    note(f"=== recovered at HP {hp()} ===")
+
+
 def heal_if_needed(floor=35):
     h = hp()
+    if h is not None and h < 0:
+        die_and_revive()
+        h = hp()
     if h is not None and h < floor:
         cmd(f"/xgoto {HEALER} 1", tag="to healer", echo=False)
-        cmd("buy healing", tag="heal", drain=2.5, echo=False)
+        out = cmd("buy healing", tag="heal", drain=2.5, echo=False)
+        if "mortally" in out:
+            die_and_revive()
         note(f"healed to {hp()}")
 
 
@@ -142,8 +165,7 @@ sess.login("Oracle")
 sess.send("E")
 sess.dump(5.0)
 if (hp() or 0) < 0:
-    sys.exit("character is down; run recovery (oracle_train_l3 or a config "
-             "run) before this expedition")
+    die_and_revive()
 cmd("/xcash 2000 copper", tag="heal purse")
 heal_if_needed(floor=999)   # start full
 
