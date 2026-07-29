@@ -85,7 +85,9 @@ WEAPON = "wooden hammer"          # 1..1 damage, accuracy 0, wt 50
 # healing money silently pushed a "light" run to 65% encumbrance, i.e. into the
 # heavy configuration.)  Copper also pays the healer at 2cp/HP.
 # ~600 copper weighs ~200 and funds many full heals at 2cp/HP.
-COPPER = 600
+# Since the 2026-07-28 ladder rework the purse is PER-CONFIG: the heavy-shield
+# configurations sit deliberately just under the enc-33 cliff and cannot carry
+# the default 600.
 
 # Every map-1 room whose group-8 spawn band admits an index-1 template, i.e.
 # everywhere a giant bat can appear.  The 13 webbed rooms alone are far too
@@ -103,7 +105,18 @@ ROOMS = [
     1613, 1614, 1615, 1616, 1617, 1618, 1619, 1620, 1621, 1622, 1623, 1624,
     1625, 1626, 1627, 1628, 1629, 1630, 1631, 1632, 1633, 2311,
 ]
-HEALER = 2190                     # Newhaven healer, map 1
+HEALER = 2190                     # Newhaven healer, map 1 (cross-map /xgoto)
+
+# Every map-6 room whose group-24 band admits ONLY index 19 — the kobold
+# (#404, AC 30, DR 2, hp 30, one 2..9 attack at attack-accuracy 40, no
+# abilities at all, so no Dodge channel and no word[2] surprises).  The
+# 18..20 rooms nearby also admit the kobold warrior (#405, AC 35) and are
+# deliberately excluded: a warrior in the census would mix a second AC
+# into the to-hit block.
+KOBOLD_ROOMS = [
+    722, 723, 724, 725, 726, 727, 728, 729, 730, 731, 732, 733, 734,
+    745, 746, 747, 748, 749, 750, 751,
+]
 
 # Targets.  The spider is the CONTROL.  It was introduced to fix what the
 # board's "... who dodges your attack!" line means -- it carries no Dodge(0x22)
@@ -141,37 +154,88 @@ HEALER = 2190                     # Newhaven healer, map 1
 #
 # That decouples the accuracy the experiment needs from the level the
 # character needs to survive, which level 1 could not supply.
+# 2026-07-28 ladder rework (slice-8 close-out).  Two hard-won constraints:
+#
+#   * The tower shield (wt 500) CANNOT keep the base kit under the enc-33
+#     cliff at the 2880 cap — the original B2 spec (mal+tower+darkwood) was
+#     arithmetically impossible.  The heavy configs use the black shield
+#     (350) instead and park just under the cliff on a measured purse.
+#   * The enc band moves `skill` by one at enc 30 (bonus 13 -> 12), so each
+#     config is chosen to give the SAME accuracy on either side of its
+#     nearest band edge (truncation: tdiv(-7,2) = tdiv(-6,2) = -3, and
+#     tdiv(5,2) = tdiv(4,2) = 2).  EXPECT_ACC pins it; staging aborts on
+#     any drift.
+#
+# name: (target, dodge, extra gear, map, rooms, copper, expected accuracy)
 CONFIGS = {
-    # name           target        Dodge  extra negative-accuracy gear
-    "acc-high":     ("giant bat",   20,    []),
-    "acc-mid":      ("giant bat",   20,    ["smoky black talisman"]),
-    "acc-low":      ("giant bat",   20,    ["smoky black talisman",
-                                            "malachite ring"]),
-    "control":      ("grey spider",  0,    ["smoky black talisman"]),
-    "control-high": ("grey spider",  0,    []),
+    # -- the 2026-07-26 originals (map 1, purse 600), kept for provenance --
+    "acc-high":     ("giant bat",   20, [],                       1, ROOMS, 600, 43),
+    "acc-mid":      ("giant bat",   20, ["smoky black talisman"], 1, ROOMS, 600, 23),
+    "acc-low":      ("giant bat",   20, ["smoky black talisman",
+                                         "malachite ring"],       1, ROOMS, 600, None),
+    "control":      ("grey spider",  0, ["smoky black talisman"], 1, ROOMS, 600, 23),
+    "control-high": ("grey spider",  0, [],                       1, ROOMS, 600, 43),
+    # -- Phase A: no cursed gear ------------------------------------------
+    # a1: E2 anchor — parry step d=5 (0.40), delta-robust for acc 40..47.
+    "a1":           ("giant bat",   20, [],                       1, ROOMS, 600, 43),
+    # a2: E2 second point — d=4 (0.50).  black -5 + darkwood -3 = ratings
+    # -8 -> skill 4 or 5 either side of the enc-30 edge -> accuracy 33.
+    "a2":           ("giant bat",   20, ["black shield",
+                                         "darkwood ring"],        1, ROOMS, 200, 33),
+    # a3: E1 steep probe — kobold AC 30 at accuracy 39: the den 10->11
+    # boundary sits at 39/40, so the connect rate DOUBLES at delta=1.
+    "a3":           ("kobold",       0, ["darkwood ring"],        6, KOBOLD_ROOMS, 600, 39),
+    # a4: E1 ratio anchor — same kobold defense at accuracy 43; the a3/a4
+    # RATIO cancels any constant defense offset.
+    "a4":           ("kobold",       0, [],                       6, KOBOLD_ROOMS, 600, 43),
+    # -- Phase B: malachite on (CURSED — stays on until a death) ----------
+    # b1: parry cliff at true-accuracy 24 (floor(acc/8): 2 vs 3).  mal
+    # -12 + kite -4 + darkwood -3 = -19 -> skill -7/-6 either side of the
+    # enc-30 edge -> accuracy 23.
+    "b1":           ("giant bat",   20, ["malachite ring", "kite shield",
+                                         "darkwood ring"],        1, ROOMS, 120, 23),
+    # b2: the same cliff slid two points (accuracy 21): mal + black +
+    # darkwood = -20 -> skill -8 -> acc 21 (needs the enc 30..32 band).
+    "b2":           ("giant bat",   20, ["malachite ring", "black shield",
+                                         "darkwood ring"],        1, ROOMS, 270, 21),
 }
-# Template AC, for the to-hit prediction.  Both are the shipped `ac` column.
-TARGET_AC = {"giant bat": 10, "grey spider": 20}
+# Template AC, for the to-hit prediction.  All are the shipped `ac` column.
+TARGET_AC = {"giant bat": 10, "grey spider": 20, "kobold": 30}
 # accuracy contributions of the extra gear, for the prediction arithmetic
 GEAR_ACCURACY = {"smoky black talisman": -20, "malachite ring": -12,
-                 "tower shield": -6}
+                 "tower shield": -6, "black shield": -5, "kite shield": -4,
+                 "darkwood ring": -3}
 HOSTILES = ("grey spider", "dark cultist", "dark cleric", "dark priest",
-            "dark paladin", "hellhound", "cave worm", "tentacled abomination")
+            "dark paladin", "hellhound", "cave worm", "tentacled abomination",
+            # map-6 kobold country: the group-24 wanderers that outclass us
+            "kobold warrior", "bandit leader", "warlock bandit", "bandit",
+            "shard creature", "wild dog", "centipede")
 
 if len(sys.argv) < 2 or sys.argv[1] not in CONFIGS:
     sys.exit(f"usage: {sys.argv[0]} <{'|'.join(CONFIGS)}> [swings] [minutes]")
 CONFIG = sys.argv[1]
-TARGET, TARGET_DODGE, EXTRA = CONFIGS[CONFIG]
+TARGET, TARGET_DODGE, EXTRA, MAP, SWEEP_ROOMS, COPPER, EXPECT_ACC = CONFIGS[CONFIG]
 NOUN = TARGET.split()[-1]
 RATINGS = sum(GEAR_ACCURACY[i] for i in EXTRA)   # every KIT piece is 0
 REQUIRE_LIGHT_ENC = True
-# Never avoid the thing we came to fight.
+# Never avoid the thing we came to fight.  ("kobold warrior" stays in AVOID
+# when the target is the plain kobold — substring order matters to nobody
+# here because AVOID is only ever tested against room text.)
 AVOID = tuple(h for h in HOSTILES if h != TARGET)
 SWING_TARGET = int(sys.argv[2]) if len(sys.argv) > 2 else 400
 MINUTES = float(sys.argv[3]) if len(sys.argv) > 3 else 30.0
 
+# A raw is opened 'wb' — it TRUNCATES.  A block split by a death must land
+# in a fresh file (the acc-mid/acc-mid2 lesson), so suffix instead of
+# overwriting; the analyzer pools same-config raws.
+import os
 RAW = f"../../re/oracle/oracle_dodge_parry_{CONFIG}.raw"
 LOG = f"../../re/oracle/oracle_dodge_parry_{CONFIG}_timing.log"
+sfx = 2
+while os.path.exists(RAW):
+    RAW = f"../../re/oracle/oracle_dodge_parry_{CONFIG}{sfx}.raw"
+    LOG = f"../../re/oracle/oracle_dodge_parry_{CONFIG}{sfx}_timing.log"
+    sfx += 1
 
 sess = Session(rawfile=RAW)
 log = open(LOG, "w")
@@ -231,7 +295,9 @@ RE_MISS = re.compile(r"^You \w+(?: at)? [^!]*!$")
 # split on it; and match the noun on a word boundary, or room prose steals
 # swings ("prepa*rat*ions").
 PROMPT = re.compile(r"\[HP=-?\d+\]:")
-NOUN_RE = re.compile(rf"\b{NOUN}\b")
+# Negative lookahead: "kobold" must not match "kobold warrior" lines, or a
+# wandering warrior (AC 35) mixes a second defense into the block.
+NOUN_RE = re.compile(rf"\b{NOUN}\b(?! warrior)")
 counts = {"hit": 0, "glance": 0, "dodge": 0, "miss": 0, "novel": 0}
 
 
@@ -391,17 +457,22 @@ else:
     predicted = min(95, TARGET_DODGE * 10 // den) / 100
 note(f"level {LEVEL}, ratings {RATINGS}, skill {skill}, accuracy {accuracy}, "
      f"floor(acc/8) = {den}, predicted parry {predicted}")
+if EXPECT_ACC is not None and accuracy != EXPECT_ACC:
+    sys.exit(f"{CONFIG} is designed for accuracy {EXPECT_ACC} but the live "
+             f"derivation gives {accuracy} (enc {enc}%) — the whole point of "
+             f"this configuration is that accuracy; fix the staging")
 
 
 def to_hit(acc, defense):
-    """`calculate_attack` 25311: threshold = 100 - defense^2/(acc^2/14/10),
-    clamped [10, 99], with a flat 5 when the denominator truncates to zero.
-    Every divide truncates, which is what puts the low-accuracy row on the
-    clamp floor."""
+    """P(connect) under the corrected engine model (2026-07-28): the
+    [10,99] clamp covers the den==0 arm, the comparison is STRICT, and
+    genrdn(1,100) spans [1,99] — so P = (threshold - 1)/99.  Every divide
+    truncates, which is what puts the low-accuracy row on the clamp
+    floor (9/99 = 0.0909)."""
     d = tdiv(tdiv(acc * acc, 14), 10)
-    if d == 0:
-        return 0.05
-    return min(99, max(10, 100 - tdiv(defense * defense, d))) / 100
+    t = 5 if d == 0 else 100 - tdiv(defense * defense, d)
+    t = min(99, max(10, t))
+    return (t - 1) / 99
 
 
 # The two readings of the template `ac` column, printed side by side so the
@@ -460,7 +531,7 @@ while swings() < SWING_TARGET and time.time() < deadline:
         # (and heal cycles) in hostile rooms than the fights themselves do.
         if target_room is not None:
             note(f"returning to the {NOUN} in room {target_room}")
-            sess.send(f"/xgoto {target_room} 1", pause=1.6)
+            sess.send(f"/xgoto {target_room} {MAP}", pause=1.6)
             sess.dump(1.0)
             back = cmd("look", tag=f"back to {target_room}", drain=1.8, echo=False)
             if TARGET in back and not any(a in back for a in AVOID):
@@ -474,9 +545,9 @@ while swings() < SWING_TARGET and time.time() < deadline:
         continue
 
     if not engaged:
-        room = ROOMS[room_ix % len(ROOMS)]
+        room = SWEEP_ROOMS[room_ix % len(SWEEP_ROOMS)]
         room_ix += 1
-        sess.send(f"/xgoto {room} 1", pause=1.6)
+        sess.send(f"/xgoto {room} {MAP}", pause=1.6)
         sess.dump(1.0)
         out = cmd("look", tag=f"room {room}", drain=1.8, echo=False)
         hostile = next((a for a in AVOID if a in out), None)
