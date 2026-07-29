@@ -177,17 +177,17 @@ CONFIGS = {
     "control-high": ("grey spider",  0, [],                       1, ROOMS, 600, 43),
     # -- Phase A: no cursed gear ------------------------------------------
     # a1: E2 anchor — parry step d=5 (0.40), delta-robust for acc 40..47.
-    "a1":           ("giant bat",   20, [],                       1, ROOMS, 600, 43),
+    "a1":           ("giant bat",   20, [],                       1, ROOMS, 1100, 43),
     # a2: E2 second point — d=4 (0.50).  black -5 + darkwood -3 = ratings
     # -8 -> skill 4 or 5 either side of the enc-30 edge -> accuracy 33.
     "a2":           ("giant bat",   20, ["black shield",
-                                         "darkwood ring"],        1, ROOMS, 200, 33),
+                                         "darkwood ring"],        1, ROOMS, 350, 33),
     # a3: E1 steep probe — kobold AC 30 at accuracy 39: the den 10->11
     # boundary sits at 39/40, so the connect rate DOUBLES at delta=1.
-    "a3":           ("kobold",       0, ["darkwood ring"],        6, KOBOLD_ROOMS, 600, 39),
+    "a3":           ("kobold",       0, ["darkwood ring"],        6, KOBOLD_ROOMS, 1100, 39),
     # a4: E1 ratio anchor — same kobold defense at accuracy 43; the a3/a4
     # RATIO cancels any constant defense offset.
-    "a4":           ("kobold",       0, [],                       6, KOBOLD_ROOMS, 600, 43),
+    "a4":           ("kobold",       0, [],                       6, KOBOLD_ROOMS, 1100, 43),
     # -- Phase B: malachite on (CURSED — stays on until a death) ----------
     # b1: parry cliff at true-accuracy 24 (floor(acc/8): 2 vs 3).  mal
     # -12 + kite -4 + darkwood -3 = -19 -> skill -7/-6 either side of the
@@ -503,6 +503,9 @@ def heal_cycle():
     out = cmd("buy healing", tag="buy healing", drain=2.5)
     h = hp()
     note(f"HP after healing = {h}")
+    if "sufficient funds" in out:
+        note("PURSE EMPTY - the run cannot heal; aborting rather than spin")
+        return None
     if "mortally" in out or (h is not None and h <= 0):
         # Nothing recovers a downed character; looping here just burns the
         # clock while the character bleeds toward the -200 threshold.

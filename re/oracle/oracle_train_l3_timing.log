@@ -1,0 +1,60 @@
+    6.871 === mortally wounded; dying deliberately to revive ===
+   68.893 === recovered at HP 44 ===
+   74.507 --- stats ---
+   74.507     | st
+   74.507     | Name: Oracle Delver                    Lives/CP:      4/110
+   74.507     | Race: Dwarf       Exp: 9700            Perception:     35
+   74.507     | Class: Warrior    Level: 2             Stealth:         0
+   74.507     | Hits:    44/44    Armour Class:   0/0  Thievery:        0
+   74.507     |                                        Traps:           0
+   74.507     |                                        Picklocks:       0
+   74.507     | Strength:  50     Agility: 30          Tracking:        0
+   74.507     | Intellect: 30     Health:  50          Martial Arts:   10
+   74.507     | Willpower: 50     Charm:   30          MagicRes:       55
+   74.507     | [HP=44]:
+   74.508 entry level 2
+   78.191 --- purse for training ---
+   78.191     | /xcash 5000 copper
+   78.191     | [xcash] copper: 0 -> 5000; type 'i' to confirm.
+   81.828 --- grant exp (no-op if capped) ---
+   81.828     | The angelic sound of a choir floats down through the air.
+   81.828     | /xexp 2500
+   81.828     | You have progressed too far without training to acquire anymore experience!
+   81.828     | [HP=44]:
+   81.828     | [xexp] granted 2500 experience via _ADD_EXPERIENCE.
+   85.485 --- to healer ---
+   85.485     | /xgoto 2190 1
+   85.485     | [xgoto] 1/2189 -> 1/2190; type 'look'.
+   89.944 --- heal to full ---
+   89.945     | buy healing
+   89.945     | You hand over nothing and all your wounds are healed.
+   89.945     | [HP=44]:
+   97.624 --- train burst ---
+   97.624     | /xgoto 289 1
+   97.624     | [xgoto] 1/2190 -> 1/289; type 'look'.
+   97.624     | train
+   97.624     | You hand over 100 copper farthings and you receive training to attain level 3.
+   97.624     | You receive the following:
+   97.624     | 10 additional character points
+   97.624     | 5 additional lives
+   97.624     | [HP=44]:[HP=45]:/xgoto 2190 1
+   97.624     | [xgoto] 1/289 -> 1/2190; type 'look'.
+  101.238 --- stats ---
+  101.238     | st
+  101.238     | Name: Oracle Delver                    Lives/CP:      9/120
+  101.238     | Race: Dwarf       Exp: 9700            Perception:     35
+  101.238     | Class: Warrior    Level: 3             Stealth:         0
+  101.238     | Hits:    45/52    Armour Class:   0/0  Thievery:        0
+  101.238     |                                        Traps:           0
+  101.238     |                                        Picklocks:       0
+  101.238     | Strength:  50     Agility: 30          Tracking:        0
+  101.238     | Intellect: 30     Health:  50          Martial Arts:   10
+  101.238     | Willpower: 50     Charm:   30          MagicRes:       55
+  101.238     | [HP=45]:
+  101.238 level now 3
+  101.238 === level 3 reached; CP left unspent by design ===
+  106.192 --- logout ---
+  106.192     | x
+  106.192     | You will exit after a period of silent meditation.
+  106.192     | ..........
+  106.192 done
