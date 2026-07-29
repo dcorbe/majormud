@@ -355,6 +355,14 @@ def drain_and_count(seconds=1.0):
 sess.login("Oracle")
 sess.send("E")
 sess.dump(5.0)
+# PERMADEATH GUARD (2026-07-29): running out of lives deletes the
+# character and parks the account at the creation screen — where every
+# /xgoto is a no-op and every look answers "You must choose a valid
+# race", which reads exactly like an empty world. One script swept
+# blind for two hours that way and burned the character entirely.
+if "valid race" in sess.clean()[-400:]:
+    sys.exit("the account is at the CHARACTER CREATION screen — the "
+             "character is gone (permadeath?). Recreate it before running.")
 note(f"=== config {CONFIG}: target {TARGET!r} ===")
 
 # Self-recovery.  A mortally wounded character cannot be healed by ANY verb,
@@ -362,6 +370,11 @@ note(f"=== config {CONFIG}: target {TARGET!r} ===")
 # hour, so if a previous run left the character down, walk it into a spider and
 # let it die: revival is instant, at full HP, and costs one life (of nine).
 if (hp() or 0) < 0:
+    global DEATHS_THIS_RUN
+    DEATHS_THIS_RUN = globals().get("DEATHS_THIS_RUN", 0) + 1
+    if DEATHS_THIS_RUN > 2:
+        sys.exit("third death this run — a life budget exists so a death "
+                 "spiral cannot permadeath the character again; stop and look")
     note("=== character is down; dying deliberately to revive ===")
     deadline_r = time.time() + 900
     ix = 0
