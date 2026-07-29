@@ -499,7 +499,11 @@ MAXHP = int(maxhp.group(2)) if maxhp else 35
 # SWEEPING is what actually kills this character: every hostile room lands a
 # free attack on entry, and a dark cultist hits for 2..10.  Two runs died in
 # the sweep, not the fight, so rooms are only entered near full health.
-FLOOR = max(16, int(MAXHP * 0.45))
+# 0.30, not 0.45: with the purse refill the heal trip costs only TIME,
+# and the dominant throughput drag is losing the bat (it wanders) on
+# every trip.  The bat bites 2..5; the margin covers a wandering
+# cultist round on top.
+FLOOR = max(16, int(MAXHP * 0.30))
 SWEEP_FLOOR = int(MAXHP * 0.70)
 note(f"max HP {MAXHP}; fight floor {FLOOR}, sweep floor {SWEEP_FLOOR}")
 
@@ -514,6 +518,12 @@ def heal_cycle():
     if "sufficient funds" in out:
         note("PURSE EMPTY - the run cannot heal; aborting rather than spin")
         return None
+    # /xcash is a host-side SET, so refilling to the staged amount right
+    # after paying keeps every fight segment at EXACTLY the staged purse
+    # weight (constant encumbrance) while making the heal budget
+    # bottomless.  1100 copper went to heal cycles in 15 minutes without
+    # this; the abort above then killed the block at 58 swings.
+    cmd(f"/xcash {COPPER} copper", tag="refill purse", drain=1.0)
     if "mortally" in out or (h is not None and h <= 0):
         # Nothing recovers a downed character; looping here just burns the
         # clock while the character bleeds toward the -200 threshold.
