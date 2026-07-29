@@ -34,6 +34,7 @@ const CELLAR: RoomId = RoomId { map: 1, room: 3 };
 const ALLEY: RoomId = RoomId { map: 1, room: 4 };
 
 const RAT: MonsterId = MonsterId(50);
+const BEETLE: MonsterId = MonsterId(51);
 
 /// The rat's death line. Index 2 is the line the server prints
 /// (`game.rs` reads `lines.get(2)`), and "falls to the ground" is the
@@ -151,6 +152,40 @@ fn world() -> Content {
     content
 }
 
+/// The fixture world plus a monster the board will not let a fresh
+/// character attack: behaviour 0 is "unprovoked", M7's crime system
+/// charges evil for swinging at it, and a new character ships with evil
+/// warnings ON — so the attack is refused rather than started. This is
+/// the shape most of the shipped bestiary has, which is why the runner
+/// must survive it.
+fn world_with_refused_monster() -> Content {
+    let mut content = world();
+    let mut cellar = room(CELLAR, "Rat Cellar", &[(Direction::West, YARD)]);
+    cellar.room_type = 3;
+    cellar.spawn_zone = 8;
+    cellar.spawn_cap = 1;
+    cellar.min_level = 1;
+    cellar.max_level = 5;
+    cellar.forced_monster = Some(BEETLE);
+    cellar.respawn_delay = 9999;
+    content.add_room(cellar);
+    content.add_monster(Monster {
+        id: BEETLE,
+        name: "giant beetle".into(),
+        // Deliberately NOT one-punchable: if the crime gate ever stops
+        // refusing, the bot kills it and the kill count gives the game
+        // away instead of the test quietly still passing.
+        hitpoints: 500,
+        energy: 1000,
+        roam_class: 8,
+        level: 1,
+        behaviour: 0,
+        herd_mode: 0,
+        ..Default::default()
+    });
+    content
+}
+
 /// The client-side graph mirroring the server world.
 fn client_graph() -> RoomGraph {
     let mk = |id: RoomId, name: &str, exits: &[(Direction, RoomId)]| {
@@ -183,6 +218,10 @@ fn client_graph() -> RoomGraph {
 }
 
 async fn start() -> Server {
+    start_with(world()).await
+}
+
+async fn start_with(content: Content) -> Server {
     let config = CoreConfig {
         start_location: GATES,
         exit_meditation_seconds: 1,
@@ -191,7 +230,7 @@ async fn start() -> Server {
         ..CoreConfig::default()
     };
     Server::start(
-        world(),
+        content,
         config,
         StateDb::open_in_memory().unwrap(),
         "127.0.0.1:0",
@@ -445,4 +484,59 @@ async fn the_interrupt_budget_ends_the_run() {
     assert_eq!(end, FarmEnd::TooHurt);
     assert_eq!(stats.interrupts, 1);
     assert_eq!(stats.loops, 0, "it never finished a lap");
+}
+
+/// Before relying on the refusal, prove the world produces it: a fresh
+/// character swinging at the behaviour-0 beetle is turned down, and the
+/// wording is the one `bot.rs` matches on.
+#[tokio::test]
+async fn the_fixture_world_has_a_monster_the_board_refuses_to_attack() {
+    let server = start_with(world_with_refused_monster()).await;
+    let session = logged_in(server.local_addr(), "Beetler").await;
+    let t = Duration::from_secs(10);
+
+    session.send("n");
+    session.expect("Training Yard", t).await.expect("walked north");
+    session.send("e");
+    session.expect("Rat Cellar", t).await.expect("walked east");
+    session
+        .expect("giant beetle", t)
+        .await
+        .expect("a beetle should be standing here at boot");
+
+    session.send("a beetle");
+    session
+        .expect(mud_core::crime::WARN_ON_EVIL_REFUSAL, t)
+        .await
+        .expect("the board should refuse the swing, not start a fight");
+}
+
+/// The regression this whole change exists for. A refused attack yields
+/// no death line, no ActorLeft and no room block without the target, so
+/// the engaged latch used to stay set forever -- which made `farm_stop`
+/// suppress its idle poke and reset its dwell counter on every prompt.
+/// The run did not fail; it HUNG. The timeout is what turns a
+/// regression back into a test failure instead of a wedged suite.
+#[tokio::test]
+async fn a_refused_monster_does_not_hang_the_stop() {
+    let server = start_with(world_with_refused_monster()).await;
+    let session = logged_in(server.local_addr(), "Persist").await;
+
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 0,
+        ..BotConfig::default()
+    };
+    let run = farm(&session, bot, farm_config(&["1/3"], 1));
+    let (end, stats) = tokio::time::timeout(Duration::from_secs(30), run)
+        .await
+        .expect("the stop hung on a refused attack")
+        .expect("farm run");
+
+    assert_eq!(end, FarmEnd::LoopsDone);
+    assert_eq!(stats.loops, 1);
+    assert_eq!(
+        stats.kills, 0,
+        "nothing was killable here; a kill means the crime gate stopped refusing: {stats:?}"
+    );
 }

@@ -391,3 +391,50 @@ fn engaged_clears_when_the_target_walks_off() {
     });
     assert_eq!(bot.engaged(), None);
 }
+
+// --- refused attacks -------------------------------------------------
+//
+// The board can refuse an attack outright instead of starting a fight.
+// All three refusals below are real DLL strings (crime.md §3, verified
+// present in re/WCCMMUD.DLL) and all three abort the swing, so none of
+// them ever produces a death line, an ActorLeft, or a room block without
+// the target. The engaged latch is set optimistically when the attack is
+// sent, so a refusal that goes unnoticed latches it forever -- and
+// `farm_stop` reads `engaged().is_some()` as "fight in progress", which
+// both suppresses its idle poke and resets its dwell counter. The stop
+// then never ends.
+
+/// A refused attack is not an attack in progress. The latch must clear,
+/// or the farm runner dwells at the stop forever.
+#[test]
+fn a_refused_attack_clears_the_engaged_latch() {
+    let mut bot = combat_bot();
+    assert_eq!(
+        bot.on_event(&room(&["kobold thief"])),
+        vec![BotAction::Send("a thief".into())]
+    );
+    assert_eq!(bot.engaged(), Some("kobold thief"));
+
+    bot.on_event(&Event::Line(
+        mud_core::crime::WARN_ON_EVIL_REFUSAL.to_string(),
+    ));
+
+    assert_eq!(bot.engaged(), None, "refusal left the bot latched on a fight that never started");
+}
+
+/// Clearing the latch is only half the fix. The monster is still stood
+/// there, so the very next room block -- the runner's own idle `look` --
+/// would re-attack it, be refused again, and spin at the pacer's floor
+/// forever. A refusal must be remembered.
+#[test]
+fn a_refused_target_is_not_attacked_again() {
+    let mut bot = combat_bot();
+    bot.on_event(&room(&["kobold thief"]));
+    bot.on_event(&Event::Line(
+        mud_core::crime::WARN_ON_EVIL_REFUSAL.to_string(),
+    ));
+
+    let actions = bot.on_event(&room(&["kobold thief"]));
+
+    assert!(actions.is_empty(), "re-attacked a target the board already refused: {actions:?}");
+}

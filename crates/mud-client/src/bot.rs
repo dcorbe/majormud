@@ -2,6 +2,7 @@
 //! AutoGet, AutoFlee) as a pure decision core: events in, commands out.
 //! The async runner glues it to a [`crate::session::Session`].
 
+use std::collections::HashSet;
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -20,6 +21,17 @@ static COIN_DROP_RE: LazyLock<Regex> =
 /// A player's death reads "<name> is dead." and is deliberately not
 /// matched — it does not end our fight.
 const DEATH_MARK: &str = "falls to the ground";
+
+/// The board's three ways of refusing an attack outright (crime.md §3,
+/// all present verbatim in the shipped DLL). A refusal aborts the swing,
+/// so unlike a real fight it is never followed by a death line, an
+/// `ActorLeft`, or a room block without the target — nothing that would
+/// otherwise clear the engaged latch.
+const ATTACK_REFUSALS: [&str; 3] = [
+    mud_core::crime::WARN_ON_EVIL_REFUSAL,
+    mud_core::crime::TOO_EVIL_REFUSAL,
+    mud_core::crime::LAWFUL_REFUSAL,
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -97,6 +109,12 @@ pub struct Bot {
     healing: bool,
     /// Already fled this room; suppresses one per prompt.
     fled: bool,
+    /// Targets the board refused to let us attack, keyed by the same
+    /// trailing noun the attack command uses — the refusal applies to the
+    /// template, so every rolled variant ("fat kobold thief") is covered
+    /// by the one entry. Without this the cleared latch would simply
+    /// re-engage on the next room block and be refused again forever.
+    refused: HashSet<String>,
 }
 
 impl Bot {
@@ -107,6 +125,7 @@ impl Bot {
             exits: Vec::new(),
             healing: false,
             fled: false,
+            refused: HashSet::new(),
         }
     }
 
@@ -165,6 +184,7 @@ impl Bot {
         if !self.config.auto_combat
             || self.engaged.is_some()
             || !is_attackable(name)
+            || self.refused.contains(target_word(name))
             || self.config.ignore.iter().any(|i| name.contains(i.as_str()))
         {
             return None;
@@ -215,6 +235,13 @@ impl Bot {
         // on a corpse is not.
         if line.contains(DEATH_MARK) {
             self.engaged = None;
+        }
+        // The refusal names no monster, so the target is whichever one we
+        // just swung at.
+        if ATTACK_REFUSALS.iter().any(|r| line.contains(r))
+            && let Some(name) = self.engaged.take()
+        {
+            self.refused.insert(target_word(&name).to_string());
         }
         if !self.config.auto_get {
             return Vec::new();
