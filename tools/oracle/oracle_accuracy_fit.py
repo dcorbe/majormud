@@ -118,6 +118,7 @@ BLOCKS = {
     "a4":       ("oracle_dodge_parry_a4*.raw",    "kobold", 43,  0, 30),
     "b1":       ("oracle_dodge_parry_b1*.raw",       "bat", 23, 20, 10),
     "b2":       ("oracle_dodge_parry_b2*.raw",       "bat", 21, 20, 10),
+    "b3":       ("oracle_dodge_parry_b3*.raw",       "bat", 29, 20, 10),
 }
 ORACLE_DIR = "../../re/oracle"
 

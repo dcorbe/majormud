@@ -203,6 +203,11 @@ CONFIGS = {
     # -> tdiv(-9,2) = -4 -> acc 21.
     "b2":           ("giant bat",   20, ["tower shield",
                                          "darkwood ring"],        1, ROOMS, 600, 21, False),
+    # b3: the d=3 point that completes the parry step function (cap and
+    # d in {2,4,5} are measured; 0.66 is the one untouched step).
+    # Malachite alone, LIGHT band: -12 + 13 = skill 1 -> acc 29 ->
+    # floor(29/8) = 3.  Cursed — a deliberate death sheds it after.
+    "b3":           ("giant bat",   20, ["malachite ring"],       1, ROOMS, 400, 29, True),
 }
 # Template AC, for the to-hit prediction.  All are the shipped `ac` column.
 TARGET_AC = {"giant bat": 10, "grey spider": 20, "kobold": 30}
