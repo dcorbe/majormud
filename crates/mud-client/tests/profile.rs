@@ -177,3 +177,41 @@ fn profile_round_trips() {
     let back: Profile = toml::from_str(&s).unwrap();
     assert_eq!(p, back);
 }
+
+/// Evil warnings are a CHARACTER setting, not a bot policy, so the
+/// toggle sits at the profile's top level next to `pace_ms` rather than
+/// in `[bot]`: it changes persistent state on the board whether or not
+/// the bot ever swings at anything.
+#[test]
+fn evil_warning_toggle_defaults_off_and_parses() {
+    let bare: Profile = toml::from_str(
+        r#"
+        target = "mbbs"
+        host = "127.0.0.1"
+        port = 2327
+        username = "u"
+        password = "p"
+        "#,
+    )
+    .unwrap();
+    assert!(
+        !bare.disable_evil_warnings,
+        "must be opt-in: it accrues real fame on the character"
+    );
+
+    let opted_in: Profile = toml::from_str(
+        r#"
+        target = "mbbs"
+        host = "127.0.0.1"
+        port = 2327
+        username = "u"
+        password = "p"
+        disable_evil_warnings = true
+        "#,
+    )
+    .unwrap();
+    assert!(opted_in.disable_evil_warnings);
+
+    let back: Profile = toml::from_str(&toml::to_string(&opted_in).unwrap()).unwrap();
+    assert_eq!(opted_in, back);
+}

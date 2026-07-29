@@ -7,12 +7,19 @@
 //! menu, the `[MAJORMUD]:` menu, and the room block that only arrives
 //! once `E` has been sent. Credentials in the fixture are dummies.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use mud_client::dialect::{self, LoginOutcome, Target};
 use mud_client::profile::Profile;
 use mud_client::session::Session;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn profile_for(addr: std::net::SocketAddr) -> Profile {
+    profile_with(addr, false)
+}
+
+fn profile_with(addr: std::net::SocketAddr, disable_evil_warnings: bool) -> Profile {
     Profile {
         target: Target::MbbsEmu,
         host: addr.ip().to_string(),
@@ -22,6 +29,7 @@ fn profile_for(addr: std::net::SocketAddr) -> Profile {
         username: "testuser".into(),
         password: "testpass".into(),
         pace_ms: Some(0),
+        disable_evil_warnings,
         bot: None,
         farm: None,
     }
@@ -57,8 +65,19 @@ async fn read_until(sock: &mut tokio::net::TcpStream, needle: &str) -> String {
 /// A fake MBBSEmu board that will only serve the realm to a client that
 /// asks to enter it.
 async fn fake_board() -> std::net::SocketAddr {
+    fake_board_with_evil(true).await.0
+}
+
+/// As [`fake_board`], but it also models `set evil` the way the real one
+/// does: a TOGGLE that reports the state it landed in, not a setter. The
+/// returned counter is how many `set evil` commands the client sent.
+async fn fake_board_with_evil(
+    mut warn_on_evil: bool,
+) -> (std::net::SocketAddr, Arc<AtomicUsize>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    let sets = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&sets);
     tokio::spawn(async move {
         let (mut sock, _) = listener.accept().await.unwrap();
         sock.write_all(b"Enter Username or enter \"NEW\" to create a new Account\r\nUsername: ")
@@ -86,15 +105,28 @@ async fn fake_board() -> std::net::SocketAddr {
         // exists to pin.
         read_until(&mut sock, "E").await;
         sock.write_all(REALM).await.unwrap();
-        // Hold the socket open so the client sees no EOF.
-        let mut sink = [0u8; 512];
-        while let Ok(n) = sock.read(&mut sink).await {
+        // Serve `set evil` for as long as the client stays connected.
+        let mut buf = [0u8; 512];
+        while let Ok(n) = sock.read(&mut buf).await {
             if n == 0 {
                 break;
             }
+            let line = String::from_utf8_lossy(&buf[..n]).to_lowercase();
+            if line.contains("set evil") {
+                counter.fetch_add(1, Ordering::SeqCst);
+                warn_on_evil = !warn_on_evil;
+                let confirm = if warn_on_evil {
+                    mud_core::text::SET_EVIL_WARN_ON
+                } else {
+                    mud_core::text::SET_EVIL_WARN_OFF
+                };
+                sock.write_all(format!("\r\n{confirm}\r\n[HP=33/MA=8]:").as_bytes())
+                    .await
+                    .unwrap();
+            }
         }
     });
-    addr
+    (addr, sets)
 }
 
 /// Logging in to the live board must leave the character standing in the
@@ -122,4 +154,56 @@ async fn mbbs_login_enters_the_realm() {
             .name,
         "Newhaven, Narrow Road"
     );
+}
+
+// --- the evil-warning preference -------------------------------------
+//
+// `set evil` is a TOGGLE that reports the state it landed in, not a
+// setter (mud_core::game::set_command). Sending it blindly is therefore
+// wrong in exactly the case the operator cares about: a character whose
+// warnings are ALREADY off would have them switched back ON, and the
+// next unprovoked swing would be refused again.
+
+/// Warnings on: one `set evil` is enough, and the client must not send a
+/// second one that would switch them straight back on.
+#[tokio::test]
+async fn evil_warnings_on_are_switched_off_with_one_command() {
+    let (addr, sets) = fake_board_with_evil(true).await;
+    let profile = profile_with(addr, true);
+    let session = Session::connect(&profile, None).await.unwrap();
+
+    dialect::login(&session, &profile).await.unwrap();
+
+    assert_eq!(sets.load(Ordering::SeqCst), 1, "should settle in one toggle");
+}
+
+/// Warnings already off: the first `set evil` turns them ON, so the
+/// client has to notice and send a second. This is the case a naive
+/// fire-and-forget implementation gets backwards.
+#[tokio::test]
+async fn evil_warnings_already_off_are_left_off() {
+    let (addr, sets) = fake_board_with_evil(false).await;
+    let profile = profile_with(addr, true);
+    let session = Session::connect(&profile, None).await.unwrap();
+
+    dialect::login(&session, &profile).await.unwrap();
+
+    assert_eq!(
+        sets.load(Ordering::SeqCst),
+        2,
+        "first toggle turned warnings ON; a second is required to land OFF"
+    );
+}
+
+/// Opt-in means opt-in: an unset profile must not touch the character's
+/// persistent state at all.
+#[tokio::test]
+async fn evil_warnings_are_untouched_when_the_profile_says_nothing() {
+    let (addr, sets) = fake_board_with_evil(true).await;
+    let profile = profile_with(addr, false);
+    let session = Session::connect(&profile, None).await.unwrap();
+
+    dialect::login(&session, &profile).await.unwrap();
+
+    assert_eq!(sets.load(Ordering::SeqCst), 0, "must not touch the character");
 }

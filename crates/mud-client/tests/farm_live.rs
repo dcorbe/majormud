@@ -169,13 +169,27 @@ fn world_with_refused_monster() -> Content {
     cellar.forced_monster = Some(BEETLE);
     cellar.respawn_delay = 9999;
     content.add_room(cellar);
+    // Without a death record the server falls back to "<name> is dead."
+    // — the PLAYER form, which the bot deliberately does not match — so
+    // the fixture would latch on its own kill. 1087 of the 1101 shipped
+    // monsters carry a record, so having one is the realistic case.
+    content.add_message(Message {
+        id: MessageId(2),
+        lines: vec![
+            String::new(),
+            String::new(),
+            "The giant beetle falls to the ground with a wet crunch.".into(),
+        ],
+    });
     content.add_monster(Monster {
         id: BEETLE,
         name: "giant beetle".into(),
-        // Deliberately NOT one-punchable: if the crime gate ever stops
-        // refusing, the bot kills it and the kill count gives the game
-        // away instead of the test quietly still passing.
-        hitpoints: 500,
+        death_msg: Some(MessageId(2)),
+        // One punch, like the rat. A beefier beetle would out-live the
+        // toggle test's timeout once the swing actually lands; the
+        // refusal test's `kills == 0` is what catches a crime gate that
+        // stops refusing, so the padding bought nothing.
+        hitpoints: 1,
         energy: 1000,
         roam_class: 8,
         level: 1,
@@ -240,6 +254,14 @@ async fn start_with(content: Content) -> Server {
 }
 
 async fn logged_in(addr: std::net::SocketAddr, name: &str) -> Arc<Session> {
+    logged_in_with(addr, name, false).await
+}
+
+async fn logged_in_with(
+    addr: std::net::SocketAddr,
+    name: &str,
+    disable_evil_warnings: bool,
+) -> Arc<Session> {
     let profile = Profile {
         target: Target::RustServer,
         host: addr.ip().to_string(),
@@ -247,6 +269,7 @@ async fn logged_in(addr: std::net::SocketAddr, name: &str) -> Arc<Session> {
         username: name.into(),
         password: "pw".into(),
         pace_ms: Some(0),
+        disable_evil_warnings,
         bot: None,
         farm: None,
     };
@@ -538,5 +561,32 @@ async fn a_refused_monster_does_not_hang_the_stop() {
     assert_eq!(
         stats.kills, 0,
         "nothing was killable here; a kill means the crime gate stopped refusing: {stats:?}"
+    );
+}
+
+/// The point of the profile toggle: with warnings off, the very monster
+/// the crime gate refused above becomes farmable. Same world, same
+/// circuit, one profile flag different from
+/// `a_refused_monster_does_not_hang_the_stop`.
+#[tokio::test]
+async fn the_evil_warning_toggle_makes_a_refused_monster_farmable() {
+    let server = start_with(world_with_refused_monster()).await;
+    let session = logged_in_with(server.local_addr(), "Unwarned", true).await;
+
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 0,
+        ..BotConfig::default()
+    };
+    let run = farm(&session, bot, farm_config(&["1/3"], 1));
+    let (end, stats) = tokio::time::timeout(Duration::from_secs(30), run)
+        .await
+        .expect("run should finish")
+        .expect("farm run");
+
+    assert_eq!(end, FarmEnd::LoopsDone);
+    assert!(
+        stats.kills >= 1,
+        "warnings are off, so the swing should have landed: {stats:?}"
     );
 }

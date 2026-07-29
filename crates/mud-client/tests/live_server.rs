@@ -103,6 +103,7 @@ fn rust_profile(addr: std::net::SocketAddr) -> Profile {
         username: "Alice".into(),
         password: "hunter2".into(),
         pace_ms: None,
+        disable_evil_warnings: false,
         bot: None,
         farm: None,
     }

@@ -269,23 +269,24 @@ fn set_evil_toggles_the_warning() {
     let s = core.attach_player(citizen("Learner", true));
     core.spawn_monster(MonsterId(1), SQUARE).unwrap();
     core.drain_events();
-    // Toggle warnings OFF (the DLL confirm for ON is measured; the OFF
-    // wording is ORACLE-VERIFY).
+    // Both confirms are now read straight out of the DLL: the OFF string
+    // at 0xd76f1 and the ON string at 0xd772e, adjacent in the binary.
+    // Neither matches what was guessed here before.
     core.input(s, "set evil");
     let out = texts(&core.drain_events(), s);
     assert!(
-        out.contains("You will no longer be warned before performing evil actions."),
+        out.contains("You will no longer be stopped from performing evil actions."),
         "{out:?}"
     );
     core.input(s, "attack crier");
     let out = texts(&core.drain_events(), s);
     assert!(out.contains("A dark cloud passes over you"), "{out:?}");
     assert_eq!(core.player_fame(s), 10);
-    // And back ON (the measured DLL string).
+    // And back ON.
     core.input(s, "set evil");
     let out = texts(&core.drain_events(), s);
     assert!(
-        out.contains("You will now be warned and stopped from performing evil actions"),
+        out.contains("You will now be warned and stopped from doing most evil actions."),
         "{out:?}"
     );
 }

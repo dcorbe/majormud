@@ -17,6 +17,7 @@ fn profile_for(addr: std::net::SocketAddr, target: Target) -> Profile {
         username: "Oracle".into(),
         password: "test123".into(),
         pace_ms: Some(0),
+        disable_evil_warnings: false,
         bot: None,
         farm: None,
     }

@@ -8,6 +8,7 @@
 //! `Password: `, or the create flow (`Create new account? (y/n)` ->
 //! `Password:` -> `Gender (M/F):`) which lands in character creation.
 
+use mud_core::text;
 use serde::{Deserialize, Serialize};
 
 use crate::profile::Profile;
@@ -48,6 +49,44 @@ pub async fn finish_creation(session: &Session) -> Result<(), ExpectError> {
     session.expect("Do you want to be Lawful?", t).await?;
     session.send("No");
     session.expect("[HP=", t).await?;
+    apply_evil_preference(session, session.profile()).await?;
+    Ok(())
+}
+
+/// Put the character's Warn-on-Evil flag into the state the profile asks
+/// for. Opt-in only: an unset profile sends nothing at all, because this
+/// mutates persistent state on the board.
+async fn apply_evil_preference(session: &Session, profile: &Profile) -> Result<(), ExpectError> {
+    if profile.disable_evil_warnings {
+        ensure_evil_warnings_off(session).await?;
+    }
+    Ok(())
+}
+
+/// Leave the character with Warn on Evil OFF, so the board stops refusing
+/// attacks on unprovoked (behaviour 0/4) monsters.
+///
+/// `set evil` is a TOGGLE that reports the state it landed in, not a
+/// setter (`mud_core::game`'s `cmd_set`). So this reads the confirmation
+/// instead of assuming: if the first toggle turned the warning ON, the
+/// character already had it off and a second toggle puts it back.
+/// Converges in at most two commands either way.
+///
+/// This is a real change to the character: with warnings off, evil acts
+/// go through and accrue fame, which moves the legal level toward
+/// Criminal. That is why nothing calls this unless the profile says so.
+pub async fn ensure_evil_warnings_off(session: &Session) -> Result<(), ExpectError> {
+    use std::time::Duration;
+    let t = Duration::from_secs(30);
+    session.send("set evil");
+    let landed_on = session
+        .expect_any(&[text::SET_EVIL_WARN_OFF, text::SET_EVIL_WARN_ON], t)
+        .await?
+        == 1;
+    if landed_on {
+        session.send("set evil");
+        session.expect(text::SET_EVIL_WARN_OFF, t).await?;
+    }
     Ok(())
 }
 
@@ -69,6 +108,7 @@ pub async fn login(session: &Session, profile: &Profile) -> Result<LoginOutcome,
             // as a menu key instead.
             session.send("E");
             session.expect("[HP=", t).await?;
+            apply_evil_preference(session, profile).await?;
             Ok(LoginOutcome::InGame)
         }
         Target::RustServer => {
@@ -88,6 +128,7 @@ pub async fn login(session: &Session, profile: &Profile) -> Result<LoginOutcome,
             } else {
                 session.send(&profile.password);
                 session.expect("[HP=", t).await?;
+                apply_evil_preference(session, profile).await?;
                 Ok(LoginOutcome::InGame)
             }
         }

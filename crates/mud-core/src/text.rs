@@ -168,12 +168,17 @@ pub fn sneak_in_from(name: &str, from: Direction) -> String {
 pub const EXIT_TOO_GOOD: &str = "You are too good to go through this exit!";
 pub const EXIT_TOO_EVIL: &str = "You are too evil to go through this exit!";
 
-/// SET EVIL (cmd_set 54203-54212): the warn-ON confirm is the DLL's
-/// string; the warn-OFF wording is ORACLE-VERIFY (unread).
+/// SET EVIL (cmd_set 54203-54212). Both confirms read verbatim out of
+/// the shipped DLL — they sit adjacent in the string table, OFF at
+/// 0xd76f1 and ON at 0xd772e. An earlier pass had ON as "...stopped from
+/// performing evil actions" and OFF as "You will no longer be warned
+/// before...", neither of which the board ever prints; anything matching
+/// on this wording (the client's evil-warning toggle does) would have
+/// missed.
 pub const SET_EVIL_WARN_ON: &str =
-    "You will now be warned and stopped from performing evil actions.";
+    "You will now be warned and stopped from doing most evil actions.";
 pub const SET_EVIL_WARN_OFF: &str =
-    "You will no longer be warned before performing evil actions.";
+    "You will no longer be stopped from performing evil actions.";
 
 /// OURS (divergence — the real board keys ANSI on the MBBS account):
 /// the `ansi` toggle's confirmations.
