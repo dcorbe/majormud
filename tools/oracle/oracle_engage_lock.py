@@ -44,12 +44,29 @@ HEALER = 2190
 # and every 09:00+ sweep found none, fresh restart included. The kobold
 # is up in daylight: DR 2 keeps P2's zero-damage premise, the 2..9 bite
 # is survivable, and P0 measures its passivity before P2 leans on it.
-TARGET, NOUN = "kobold", "kobold"
-MAP = 6
-RAT_ROOMS = [
-    722, 723, 724, 725, 726, 727, 728, 729, 730, 731, 732, 733, 734,
-    745, 746, 747, 748, 749, 750, 751,
-]
+# Switchable subject: the bat window is 02:00-08:00 (proven passive,
+# gentle cave); evening map 6 killed a fresh character twice in 13
+# minutes with zero trials to show for it.
+import os as _os
+if _os.environ.get("E3_TARGET", "bat") == "kobold":
+    TARGET, NOUN, MAP = "kobold", "kobold", 6
+    RAT_ROOMS = [
+        722, 723, 724, 725, 726, 727, 728, 729, 730, 731, 732, 733, 734,
+        745, 746, 747, 748, 749, 750, 751,
+    ]
+else:
+    TARGET, NOUN, MAP = "giant bat", "bat", 1
+    RAT_ROOMS = [
+        1451, 1452, 1453, 1454, 1455, 1456, 1457, 1458, 1459, 1460, 1461,
+        1462, 1463, 1464, 1465, 1466, 1467, 1468, 1469, 1470, 1471, 1472,
+        1473, 1474, 1475, 1476, 1477, 1478, 1480, 1481, 1482, 1483, 1484,
+        1485, 1486, 1487, 1488, 1489, 1490, 1491, 1492, 1493, 1494, 1495,
+        1496, 1497, 1498, 1499, 1500, 1501, 1502, 1503, 1504, 1505, 1506,
+        1507, 1508, 1509, 1510, 1511, 1512, 1514, 1515, 1516, 1517, 1518,
+        1519, 1520, 1521, 1522, 1523, 1524, 1525, 1526, 1527, 1528, 1529,
+        1530, 1539, 1540, 1595, 1596, 1597, 1598, 1600, 1601, 1602, 1603,
+        1604,
+    ]
 
 import os
 sfx = 2
