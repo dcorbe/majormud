@@ -55,24 +55,31 @@ while os.path.exists(RAW):
     sfx += 1
 
 HEALER = 2190
-# The group-6 spawn region spans 429 rooms; sweeping only 20 of them
-# found nothing in 50 minutes (the region's rats sit anywhere in it).
-# 547-699 is the contiguous sewer run — a ~12-minute lap.
-RAT_ROOMS = [r for r in range(547, 700) if r != 592]
-SPIDER_ROOMS = [1567, 1570, 1572, 1563, 1560, 1561]
+# RETARGET 2026-07-29: giant rats are structurally absent from this
+# board's world, so the pet is the KOBOLD (#404, charmlvl 12 — hence
+# the L12 Bard; charmres 60 → ~30% resist/cast; DR 2, bite 2..9).
+# Map-6 rooms 722-751 spawn ONLY the kobold; 752+ adds centipedes,
+# which serve as the assist-round target (attacking 'a kobold' with a
+# kobold pet in the room would hit the pet).
+PET, PET_NOUN, PET_MAP = "kobold", "kobold", 6
+RAT_ROOMS = [722, 723, 724, 725, 726, 727, 728, 729, 730, 731, 732,
+             733, 734, 745, 746, 747, 748, 749, 750, 751]
+ASSIST_ROOMS = [752, 753, 754, 755, 756, 757, 758, 759, 760, 761]
+ASSIST_TARGET, ASSIST_NOUN = "centipede", "centipede"
 DIRS = ["n", "s", "e", "w", "ne", "nw", "se", "sw", "u", "d"]
 DB = "../../re/mmud_wgnt.sqlite"
 
 
-def walk_circuit(start_room, steps):
-    """A walked loop of plain (type-0) exits on map 1 from start_room:
+def walk_circuit(start_room, steps, mapnumber=6):
+    """A walked loop of plain (type-0) exits on one map from start_room:
     BFS out ~steps/2 and walk back the same way. Returns direction list."""
     db = sqlite3.connect(DB)
     ex_cols = ",".join(f"roomexit_{i}" for i in range(1, 11))
     ty_cols = ",".join(f"roomtype_{i}" for i in range(1, 11))
     rooms = {}
     for row in db.execute(
-            f"SELECT roomnumber,{ex_cols},{ty_cols} FROM room WHERE mapnumber=1"):
+            f"SELECT roomnumber,{ex_cols},{ty_cols} FROM room "
+            f"WHERE mapnumber={mapnumber}"):
         rm, ex, ty = row[0], row[1:11], row[11:21]
         rooms[rm] = [(d, ex[d]) for d in range(10)
                      if ex[d] and ex[d] > 0 and ty[d] == 0]
@@ -149,12 +156,12 @@ def heal_full():
 def find_rat(start_ix=0, alone=True):
     for k in range(len(RAT_ROOMS)):
         room = RAT_ROOMS[(start_ix + k) % len(RAT_ROOMS)]
-        sess.send(f"/xgoto {room} 1", pause=1.6)
+        sess.send(f"/xgoto {room} {PET_MAP}", pause=1.6)
         sess.dump(1.0)
         out = cmd("look", tag=f"room {room}", drain=1.8, echo=False)
-        if "giant rat" not in out:
+        if PET not in out:
             continue
-        others = [h for h in ("spider", "cultist", "slime", "snake")
+        others = [h for h in ("warrior", "bandit", "centipede", "dog")
                   if h in out]
         if alone and others:
             continue
@@ -169,7 +176,7 @@ def pet_follows(direction):
     sess.dump(4.0)
     out = sess.since(mk)
     arrived = [ln.strip() for ln in out.splitlines()
-               if "giant rat" in ln and not ln.strip().startswith("You")]
+               if PET in ln and not ln.strip().startswith("You")]
     for ln in arrived:
         note(f"  FOLLOW| {ln[:150]}")
     return bool(arrived), out
@@ -186,7 +193,7 @@ def charm_rat(max_casts=12):
             note("mana regen stalled")
             return None
         t_cast = time.time()
-        out = cmd("c char rat", tag=f"cast char (attempt {attempt})", drain=2.5)
+        out = cmd(f"c char {PET_NOUN}", tag=f"cast char (attempt {attempt})", drain=2.5)
         if "resist" in out.lower():
             note("  RESIST captured")
             continue
@@ -233,18 +240,18 @@ for i, d in enumerate(walk_circuit(room, 10)):
     note(f"walk {i} {d}: follow={'yes' if ok else 'NO'}")
 
 note("=== E4: assist round vs a grey spider ===")
-for sp in SPIDER_ROOMS:
-    sess.send(f"/xgoto {sp} 1", pause=1.6)
+for sp in ASSIST_ROOMS:
+    sess.send(f"/xgoto {sp} {PET_MAP}", pause=1.6)
     sess.dump(1.0)
     out = cmd("look", tag=f"spider room {sp}", drain=1.8, echo=False)
-    if "grey spider" in out:
+    if ASSIST_TARGET in out:
         # NB: the pet does NOT teleport with /xgoto — but a stranded pet
         # is E6's business; for the assist round we need the pet HERE, so
         # only use this arm if the walk brought it. Check first.
-        if "giant rat" not in out:
+        if PET not in out:
             note("pet did not arrive (teleport strands it) — walking back")
             continue
-        cmd("a spider", tag="owner engages; watching for the assist",
+        cmd(f"a {ASSIST_NOUN}", tag="owner engages; watching for the assist",
             drain=8.0)
         cmd("look", tag="post-round", drain=2.0, echo=False)
         sess.send(f"/xgoto {HEALER} 1", pause=1.6)
@@ -259,7 +266,7 @@ note("=== E4: attack own pet ===")
 got = charm_rat()
 if got:
     room, t_charm = got
-    cmd("a rat", tag="attack own pet", drain=3.0)
+    cmd(f"a {PET_NOUN}", tag="attack own pet", drain=3.0)
     cmd("look", tag="after attacking own pet", drain=2.0)
 
 note("=== E4: timed expiry x2 (duration 100 ticks ~ 303s) ===")
@@ -277,7 +284,7 @@ for expiry in range(2):
         new = sess.since(mk)
         mk = sess.mark()
         for ln in new.splitlines():
-            if "giant rat" in ln and any(w in ln.lower() for w in
+            if PET in ln and any(w in ln.lower() for w in
                     ("no longer", "wears off", "shakes", "growls", "turns on",
                      "spell", "free")):
                 released = time.time() - t_charm
@@ -302,7 +309,7 @@ cmd("st", tag="st BEFORE passive-target cast")
 room, _ = find_rat()
 if room:
     if wait_mana(6):
-        cmd("c fool rat", tag="fool at a PASSIVE rat", drain=4.0)
+        cmd(f"c fool {PET_NOUN}", tag="fool at a PASSIVE rat", drain=4.0)
         cmd("look", tag="grudge check (does it come for us?)", drain=4.0)
     cmd("st", tag="st AFTER passive-target cast")
     # contrast: engaged target
@@ -311,9 +318,9 @@ if room:
     heal_full()
     room, _ = find_rat(start_ix=7)
     if room and wait_mana(6):
-        cmd("a rat", tag="engage first", drain=3.0)
+        cmd(f"a {PET_NOUN}", tag="engage first", drain=3.0)
         cmd("st", tag="st BEFORE engaged-target cast")
-        cmd("c fool rat", tag="fool at the ENGAGED rat", drain=4.0)
+        cmd(f"c fool {PET_NOUN}", tag="fool at the ENGAGED rat", drain=4.0)
         cmd("st", tag="st AFTER engaged-target cast")
         sess.send(f"/xgoto {HEALER} 1", pause=1.6)
         sess.dump(1.5)
@@ -348,12 +355,12 @@ if got:
     while strands < 20:
         sess.send(f"/xgoto {HEALER} 1", pause=1.6)   # 10+ rooms away
         sess.dump(60.0)                              # ~20 ticks stranded
-        sess.send(f"/xgoto {room} 1", pause=1.6)
+        sess.send(f"/xgoto {room} {PET_MAP}", pause=1.6)
         sess.dump(1.5)
         out = cmd("look", tag=f"strand {strands}: is the pet still ours?",
                   drain=2.0)
         strands += 1
-        if "giant rat" not in out:
+        if PET not in out:
             note(f"pet GONE after {strands} strand cycles (wandered or "
                  f"released — the raw's last lines say which)")
             break
