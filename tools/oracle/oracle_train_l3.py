@@ -61,9 +61,41 @@ def level():
     return int(m.group(1)) if m else None
 
 
+def hp():
+    m = re.findall(r"\[HP=(-?\d+)", sess.clean()[-600:])
+    return int(m[-1]) if m else None
+
+
+def die_and_revive():
+    """Mortally wounded refuses every verb; the only exit is death (one
+    life, revives at FULL HP).  Walk into the spider caves and let one
+    finish the job — the oracle_dodge_parry recovery, verbatim."""
+    note("=== mortally wounded; dying deliberately to revive ===")
+    deadline_r = time.time() + 900
+    ix = 0
+    while (hp() or 0) < 0 and time.time() < deadline_r:
+        sess.send(f"/xgoto {[1567, 1570, 1572, 1563][ix % 4]} 1", pause=1.6)
+        ix += 1
+        sess.dump(1.2)
+        mk = sess.mark()
+        sess.send("look", pause=1.6)
+        sess.dump(1.8)
+        if "grey spider" not in sess.since(mk):
+            continue
+        for _ in range(40):
+            sess.dump(2.0)
+            if (hp() or 0) > 0:
+                break
+    note(f"=== recovered at HP {hp()} ===")
+    sess.dump(2.0)
+
+
 sess.login("Oracle")
 sess.send("E")
 sess.dump(5.0)
+
+if (hp() or 0) < 0:
+    die_and_revive()
 
 lv = level()
 note(f"entry level {lv}")
@@ -74,27 +106,44 @@ if lv >= 3:
     cmd("x", tag="logout", drain=3.0)
     sys.exit(0)
 
-# Fund the trip: healing at 2cp/HP plus training fees.
+# Fund the trip: healing at 2cp/HP plus training fees.  Exp is usually
+# already banked ("You have progressed too far without training!"), so
+# grant once and rely on train to say if it is short.
 cmd("/xcash 5000 copper", tag="purse for training")
-cmd(f"/xgoto {HEALER} 1", tag="to healer")
-cmd("buy healing", tag="heal up", drain=2.5)
+cmd("/xexp 2500", tag="grant exp (no-op if capped)")
 
-deadline = time.time() + 300
+deadline = time.time() + 420
 while lv < 3 and time.time() < deadline:
-    # Grant exp OUTSIDE the hazard room, then dash in, train, dash out.
-    cmd("/xexp 2500", tag="grant exp")
-    cmd(f"/xgoto {TRAINER} 1", tag="to trainer")
-    out = cmd("train", tag="train", drain=2.5)
-    cmd(f"/xgoto {HEALER} 1", tag="back to healer")
-    cmd("buy healing", tag="re-heal", drain=2.5)
+    if (hp() or 0) < 0:
+        die_and_revive()
+    cmd(f"/xgoto {HEALER} 1", tag="to healer")
+    out = cmd("buy healing", tag="heal to full", drain=2.5)
+    h = hp()
+    if h is None or h < 40:  # max is 44 at L2; the hazard hits 10-18/4s
+        note(f"HP {h} too low to brave the trainer; retrying the heal")
+        continue
+    # THE BURST: the trainer room pulses 10-18 damage on a ~4 s cadence
+    # (it killed this character once already), so goto/train/goto-out go
+    # back-to-back at flood-control spacing with no reads in between —
+    # about 3 s in the room, one pulse at most from full HP.
+    mk = sess.mark()
+    sess.send(f"/xgoto {TRAINER} 1", pause=1.6)
+    sess.send("train", pause=1.6)
+    sess.send(f"/xgoto {HEALER} 1", pause=1.6)
+    sess.dump(2.5)
+    out = sess.since(mk)
+    note("--- train burst ---")
+    for line in out.splitlines():
+        if line.strip():
+            note(f"    | {line.rstrip()[:160]}")
     lv = level()
     note(f"level now {lv}")
     if lv is None:
         sys.exit("lost the level readout mid-training")
     if lv >= 3:
         break
-    if "hand over" not in out and "attain" not in out:
-        note("train did not take (probably short on exp); granting more")
+    if "enough experience" in out or "need" in out.lower():
+        cmd("/xexp 2500", tag="top up exp")
 
 if lv == 3:
     note("=== level 3 reached; CP left unspent by design ===")
