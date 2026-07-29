@@ -28,15 +28,16 @@ fn rolls(values: &[i32]) -> impl FnMut(i32, i32) -> i32 + '_ {
 #[test]
 fn to_hit_threshold_is_quadratic() {
     // acc 200 vs defense 100: 100 - 140*10000/40000 = 65 (spec sanity check).
-    // Roll 65 hits; roll 66 misses.
+    // Hit iff roll < threshold (decompile 25324 `iVar3 < iVar2`, both
+    // genrdn bounds inclusive): roll 64 hits; roll 65 misses.
     let att = fighter(200, (0, 0), 0);
     let def = fighter(0, (50, 50), 0);
 
-    // hit path: to-hit 65, crit roll 100 (no crit), damage roll, parry skipped (parry 0)
-    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[65, 100, 5]));
+    // hit path: to-hit 64, crit roll 100 (no crit), damage roll, parry skipped (parry 0)
+    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[64, 100, 5]));
     assert_eq!(r.outcome, Outcome::Hit);
 
-    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[66]));
+    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[65]));
     assert_eq!(r.outcome, Outcome::Dodged);
 }
 
@@ -45,10 +46,10 @@ fn evenly_matched_clamps_to_ten_percent() {
     // acc == defense -> 100-140 = -40 -> clamp 10.
     let att = fighter(100, (0, 0), 0);
     let def = fighter(0, (50, 50), 0);
-    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[10, 100, 5]));
-    assert_eq!(r.outcome, Outcome::Hit, "roll 10 <= clamped threshold 10");
-    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[11]));
-    assert_eq!(r.outcome, Outcome::Dodged);
+    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[9, 100, 5]));
+    assert_eq!(r.outcome, Outcome::Hit, "roll 9 < clamped threshold 10");
+    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[10]));
+    assert_eq!(r.outcome, Outcome::Dodged, "roll 10 is not < 10");
 }
 
 #[test]
@@ -58,9 +59,9 @@ fn tiny_accuracy_threshold_clamps_up_to_ten() {
     // 16-bit _CALCULATE_ATTACK.asm 1f5b falls through to 1f60), so 5 -> 10.
     let att = fighter(11, (0, 0), 0);
     let def = fighter(0, (10, 10), 0);
-    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[10, 100, 5]));
+    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[9, 100, 5]));
     assert_eq!(r.outcome, Outcome::Hit);
-    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[11]));
+    let r = calculate_attack(&att, &def, AttackType::Normal, &mut rolls(&[10]));
     assert_eq!(r.outcome, Outcome::Dodged);
 }
 
@@ -68,18 +69,20 @@ fn tiny_accuracy_threshold_clamps_up_to_ten() {
 fn backstab_threshold_is_clamped() {
     // The [10,99] clamp covers the backstab arm too (decompile 25315 is
     // outside the whole if/else).
-    // Raw 80 - 75 = 5 -> clamps up to 10: roll 10 hits.
+    // Raw 80 - 75 = 5 -> clamps up to 10: roll 9 hits, roll 10 misses.
     let att = fighter(80, (0, 0), 0);
     let def = fighter(0, (75, 0), 0);
-    let r = calculate_attack(&att, &def, AttackType::Backstab, &mut rolls(&[10, 11]));
+    let r = calculate_attack(&att, &def, AttackType::Backstab, &mut rolls(&[9, 11]));
     assert_eq!(r.outcome, Outcome::Hit);
-    let r = calculate_attack(&att, &def, AttackType::Backstab, &mut rolls(&[11]));
+    let r = calculate_attack(&att, &def, AttackType::Backstab, &mut rolls(&[10]));
     assert_eq!(r.outcome, Outcome::Dodged);
 
-    // Raw 200 - 0 = 200 -> clamps down to 99: roll 100 misses.
+    // Raw 200 - 0 = 200 -> clamps down to 99: roll 98 hits, roll 99 misses.
     let att = fighter(200, (0, 0), 0);
     let def = fighter(0, (0, 0), 0);
-    let r = calculate_attack(&att, &def, AttackType::Backstab, &mut rolls(&[100]));
+    let r = calculate_attack(&att, &def, AttackType::Backstab, &mut rolls(&[98, 11]));
+    assert_eq!(r.outcome, Outcome::Hit);
+    let r = calculate_attack(&att, &def, AttackType::Backstab, &mut rolls(&[99]));
     assert_eq!(r.outcome, Outcome::Dodged);
 }
 
@@ -178,13 +181,13 @@ fn backstab_uses_direct_threshold_and_weak_parry() {
     let att = fighter(80, (0, 0), 0);
     let mut def = fighter(0, (30, 0), 0);
     def.parry = 100; // p = 100*10/(80/8) = 100 -> clamp 95 -> /5 = 19
-    // threshold = 80 - 30 = 50. Roll 50 hits; dmg roll 11 (max 10*110/100=11);
-    // parry roll 19 not < 19 -> hit stands.
-    let r = calculate_attack(&att, &def, AttackType::Backstab, &mut rolls(&[50, 11, 19]));
+    // threshold = 80 - 30 = 50. Roll 49 hits (50 is not < 50); dmg roll 11
+    // (max 10*110/100=11); parry roll 19 not < 19 -> hit stands.
+    let r = calculate_attack(&att, &def, AttackType::Backstab, &mut rolls(&[49, 11, 19]));
     assert_eq!(r.outcome, Outcome::Hit);
     assert_eq!(r.damage, 11);
 
-    let r = calculate_attack(&att, &def, AttackType::Backstab, &mut rolls(&[50, 11, 18]));
+    let r = calculate_attack(&att, &def, AttackType::Backstab, &mut rolls(&[49, 11, 18]));
     assert_eq!(r.outcome, Outcome::Parried);
 }
 

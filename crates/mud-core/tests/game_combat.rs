@@ -1234,24 +1234,25 @@ fn monster_dodge_ability_parries_player_swings() {
     // should capture a player grinding a Dodge-carrying template (e.g.
     // giant bat, Dodge 20) and compare the observed miss rate.
     // 40 rounds is 51 swings (the energy pool buys a second swing in
-    // some rounds), and at threshold 99 a rolled 100 still misses, so
-    // even the no-Dodge control can see a stray miss.
-    // (Goldens re-derived when the den==0 clamp fall-through was fixed:
-    // the sandbag's OWN accuracy-0 return swings moved from threshold 5
-    // to 10, its connect/miss draw counts changed, and the shared RNG
-    // stream repositioned every draw after the first return swing.
-    // Player swing count stays 51 in all three arms.)
+    // some rounds). To-hit is strict (`roll < threshold`), so at
+    // threshold 99 a rolled 99 or 100 misses — the no-Dodge control
+    // sees a couple of stray misses by design.
+    // (Goldens re-derived twice in the slice-8 fidelity fixes: first
+    // when the den==0 clamp fall-through moved the sandbag's accuracy-0
+    // return swings from threshold 5 to 10, then when the comparison
+    // went strict — both reposition the shared RNG stream. Player swing
+    // count stays 51 in all three arms throughout.)
     let (control_hits, control_damage) = sandbag_run(0, 0, 40);
-    assert_eq!(control_hits, 50, "51 swings at threshold 99, one rolled 100");
-    assert_eq!(control_damage, 128, "50 swings of 1-4 damage");
+    assert_eq!(control_hits, 49, "51 swings at threshold 99, two rolled 99+");
+    assert_eq!(control_damage, 141, "49 swings of 1-4 damage");
 
     let (dodge_hits, dodge_damage) = sandbag_run(20, 0, 40);
-    assert_eq!(dodge_hits, 29, "Dodge 20 parries ~40% of the swings");
-    assert_eq!(dodge_damage, 70, "only the unparried swings do damage");
+    assert_eq!(dodge_hits, 28, "Dodge 20 parries ~40% of the swings");
+    assert_eq!(dodge_damage, 66, "only the unparried swings do damage");
 
     let (capped_hits, capped_damage) = sandbag_run(50, 0, 40);
-    assert_eq!(capped_hits, 5, "Dodge 50 pins the parry chance at its 95 cap");
-    assert_eq!(capped_damage, 14, "almost nothing gets through");
+    assert_eq!(capped_hits, 3, "Dodge 50 pins the parry chance at its 95 cap");
+    assert_eq!(capped_damage, 9, "almost nothing gets through");
 }
 
 #[test]

@@ -116,7 +116,13 @@ pub fn calculate_attack(
         }
     }
     .clamp(10, 99);
-    if roll(1, 100) > threshold {
+    // Hit iff roll < threshold — STRICT (decompile 25324 `iVar3 < iVar2`,
+    // genrdn inclusive on both bounds), so a threshold of 99 connects 98%
+    // of the time, and the clamp floor 9%. Draw-order note: the DLL draws
+    // this roll BEFORE the helpless gate's genrdn(0,100) (25297 vs 25298);
+    // we draw the gate first. Same draw count, identical distribution, and
+    // the port deliberately does not promise DLL stream parity.
+    if roll(1, 100) >= threshold {
         return AttackResult {
             outcome: Outcome::Dodged,
             damage: 0,
