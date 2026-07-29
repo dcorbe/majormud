@@ -63,6 +63,12 @@ pub async fn login(session: &Session, profile: &Profile) -> Result<LoginOutcome,
             session.expect("Make your selection", t).await?;
             session.send("A");
             session.expect("[MAJORMUD]:", t).await?;
+            // `[MAJORMUD]:` is the module's MENU, not a game prompt. The
+            // realm is behind "[E] . Enter the Realm", and a caller left
+            // at the menu would have every game command it sent parsed
+            // as a menu key instead.
+            session.send("E");
+            session.expect("[HP=", t).await?;
             Ok(LoginOutcome::InGame)
         }
         Target::RustServer => {

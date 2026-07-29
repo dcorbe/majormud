@@ -1,6 +1,7 @@
-//! Session-engine integration tests: a real socket against (a) the
-//! in-process mud-server reimplementation and (b) a fake MBBSEmu login
-//! dialogue. No external network dependency.
+//! Session-engine integration tests: a real socket against the
+//! in-process mud-server reimplementation. No external network
+//! dependency. The MBBSEmu login dialogue is covered by
+//! `tests/dialect.rs`, which replays a real board capture.
 
 use std::time::Duration;
 
@@ -12,7 +13,6 @@ use mud_core::content::{Class, ClassId, Content, Direction, Exit, Race, RaceId, 
 use mud_core::game::CoreConfig;
 use mud_server::server::Server;
 use mud_server::state_db::StateDb;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn world() -> Content {
     let mut content = Content::default();
@@ -208,40 +208,6 @@ async fn expect_cursor_advances_past_matches() {
         .await
         .expect_err("cursor advanced; no second occurrence yet");
     drop(err);
-}
-
-/// Fake MBBSEmu login dialogue: Username/Password/menu/A/[MAJORMUD]:.
-#[tokio::test]
-async fn mbbs_dialect_login_flow() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        let (mut sock, _) = listener.accept().await.unwrap();
-        let mut buf = [0u8; 512];
-        sock.write_all(b"Enter Username or enter 'NEW'\r\nUsername: ").await.unwrap();
-        let _ = sock.read(&mut buf).await.unwrap(); // username
-        sock.write_all(b"Password: ").await.unwrap();
-        let _ = sock.read(&mut buf).await.unwrap(); // password
-        sock.write_all(b"Main Menu. Make your selection: ").await.unwrap();
-        let _ = sock.read(&mut buf).await.unwrap(); // "A"
-        sock.write_all(b"Entering... [MAJORMUD]:").await.unwrap();
-        // Hold the socket open until the client is done.
-        let _ = sock.read(&mut buf).await;
-    });
-
-    let profile = Profile {
-        target: Target::MbbsEmu,
-        host: addr.ip().to_string(),
-        port: addr.port(),
-        username: "Oracle".into(),
-        password: "test123".into(),
-        pace_ms: Some(0), // no flood pacing against the fake
-        bot: None,
-        farm: None,
-    };
-    let session = Session::connect(&profile, None).await.expect("connect");
-    let outcome = dialect::login(&session, &profile).await.expect("login");
-    assert_eq!(outcome, LoginOutcome::InGame);
 }
 
 /// Capture files: .raw gets the raw socket bytes; the timing log gets
