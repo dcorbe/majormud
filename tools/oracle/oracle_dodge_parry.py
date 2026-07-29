@@ -378,6 +378,14 @@ inv = flat(cmd("i", tag="inventory (pre-staging)"))
 for item in GEAR_ACCURACY:
     if item not in EXTRA and f"{item} (" in inv:
         cmd(f"remove {item}", tag=f"remove {item}", drain=1.4)
+# ...and DROP any ladder item still in the backpack: a carried talisman
+# weighs 50 and pushed one a1 staging from enc 28 to 30, which moved the
+# skill bonus and failed the EXPECT_ACC gate. Carried items are invisible
+# to the worn-ratings guard, so weight is the only way they bite.
+inv = flat(cmd("i", tag="inventory (post-remove)", echo=False))
+for item in GEAR_ACCURACY:
+    if item not in EXTRA and item in inv:
+        cmd(f"drop {item}", tag=f"drop {item}", drain=1.4)
 
 for item in KIT + EXTRA + [WEAPON]:
     if item not in inv:
