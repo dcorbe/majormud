@@ -527,14 +527,19 @@ from the shipped columns.
    put the first measurement on the `[10, 99]` clamp's FLOOR, a region no
    test had ever entered because every combat fixture fights an AC 0
    sandbag. Pinned, mutation-verified, in `game_combat.rs`.
-   **The accuracy half is still open.** With the monster scale settled, the
-   acc-mid residue wants a cause in `move_player_to_fighter`'s accuracy
-   derivation, and the two measurable channels of that block disagree about
-   it: the parry rate wants accuracy ≤23, to-hit wants ≥25. A joint fit
-   across the three blocks leans ~25-27 against our 23. Next measurement: a
-   high-AC target at an accuracy well clear of the clamp, where the
-   threshold is steep in accuracy rather than pinned to the floor. Budget
-   more survivability than the control run had — it died at 21 swings,
+   **The accuracy half is still open — and sharper (2026-07-28 re-fit,
+   charm.md §8.4 tail).** The slice-8 fidelity fixes (clamp fall-through,
+   strict comparison, genrdn's EXCLUSIVE upper bound) landed and the raws
+   were re-fit under the corrected `P(connect) = (threshold-1)/99`. The
+   acc-mid conflict survives on the same 37 swings: to-hit excludes
+   accuracy 23 (wants ≥24), the parry channel excludes ≥24 (wants ≤23) —
+   so at least one formula SHAPE is off, not (only) the accuracy constant.
+   Candidate: the bat's effective defense word ≤ 8 rather than the raw
+   `ac` 10. Next measurement: the two-front expedition — a parry-cliff
+   pair (accuracy 23/21 vs the bat, cliffs at floor(acc/8)) that moves
+   with accuracy alone, plus a kobold AC-30 pair at two accuracies whose
+   connect RATIO cancels any constant defense offset. Budget more
+   survivability than the control run had — it died at 21 swings,
    because a 10%-connect grind against a target you cannot kill is a long
    time under return fire.
 4c. **The `Encumbrance: x/2880` denominator** (charm.md §8.3 tail): the board

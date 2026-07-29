@@ -873,3 +873,31 @@ couple of points LOW. That is a two-point discrepancy inferred from three
 small blocks, not a finding. The clean next measurement is a high-AC target
 at an accuracy well clear of the clamp, where the threshold is steep in
 accuracy rather than pinned.
+
+**Re-fit under the corrected engine model (2026-07-28).** Before spending
+board time on that measurement, the slice-8 fidelity fixes landed and the
+existing raws were re-fit under the corrected to-hit: the [10,99] clamp
+falls through to the den==0 arm, the comparison is STRICT, and genrdn's
+upper bound is EXCLUSIVE (theft.md:37 was wrong; MBBSEmu implements the
+ordinal as `_random.Next(min, max)`), so `P(connect) = (threshold-1)/99`
+and the AC-20 clamp floor is 9/99 = 0.0909 — tighter against the control's
+0.0952 than the old model was. The gate was: 4b closes iff one accuracy
+sits inside all five intervals. It does not — the conflict SHARPENS:
+
+- acc-high (60 swings): to-hit 0.929 in [0.885, 0.996], parry step d=5
+  0.40 in [0.317, 0.585] — consistent, and insensitive to ±1 accuracy.
+- control (21 swings): floor 0.0909 vs 2/21 = 0.0952 — consistent for any
+  accuracy ≤ 28 at this config.
+- acc-mid (37 swings, both channels on the SAME swings): to-hit 0.667 at
+  accuracy 23 is EXCLUDED by [0.680, 0.938] — wants true accuracy ≥ 24;
+  the parry step d=3 (0.66) is EXCLUDED by [0.743, 0.980] — wants true
+  accuracy ≤ 23. No single accuracy satisfies both.
+
+So the residue is not (only) a constant offset in the derivation; at least
+one formula SHAPE is off. One candidate that fits the acc-mid to-hit at
+accuracy 23: the bat's effective defense word is ≤ 8, not the raw `ac` 10
+(a negative `word[2]`, or an AC-adjacent term we have not traced). The
+expedition design discriminates this from an accuracy offset: the B1/B2
+parry-cliff pair moves with accuracy alone, while the A3/A4 kobold pair
+varies accuracy against a FIXED defense so the ratio cancels any constant
+defense offset. Carry 4b stays open; the expedition is gated IN.

@@ -91,11 +91,19 @@ def clopper_pearson(k, n, alpha=0.05):
 
 
 def to_hit(accuracy, defense):
-    """The port's to-hit threshold, integer arithmetic throughout."""
+    """P(connect) under the corrected engine model (2026-07-28).
+
+    Two fixes over the old port model this script used to mirror:
+    - the [10, 99] clamp sits OUTSIDE the whole if/else (decompile 25315),
+      so the den==0 arm's 5 clamps up to 10;
+    - the hit test is STRICT over genrdn(1,100), and genrdn's upper bound
+      is EXCLUSIVE (MBBSEmu _random.Next), so the roll spans [1, 99] and
+      P(connect) = (threshold - 1) / 99.
+    """
     den = accuracy * accuracy // 14 // 10
-    if den == 0:
-        return 5 / 100
-    return min(max(100 - defense * defense // den, 10), 99) / 100
+    t = 5 if den == 0 else 100 - defense * defense // den
+    t = min(max(t, 10), 99)
+    return (t - 1) / 99
 
 
 ap = argparse.ArgumentParser()
