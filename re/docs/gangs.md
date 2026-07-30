@@ -74,11 +74,30 @@ functions:
 | `0x0400` (`+0x7d5 & 0x04`) | pending **demote** (applied at login) |
 | `0x0800` (`+0x7d5 & 0x08`) | pending "your **ganghouse has been closed**" notice |
 | `0x1000` (`+0x7d5 & 0x10`) | pending "gang-house **items have disappeared**" notice |
-| `0x2000` (`+0x7d5 & 0x20`) | (non-gang) exp/character flag — unrelated |
+| `0x2000` (`+0x7d5 & 0x20`) | (non-gang) exp/character flag — unrelated (`restructure_experience` gate at login) |
+| `0x4000` (`+0x7d5 & 0x40`) | **outstanding gang-shop paperwork** — blocks deed purchase (`buy_item` refusal 7, checked at 14463); **set by selling to a type-`0xc` deed shop** (14740) |
+| `0x0008` (`+0x7d4 & 0x08`) | **roster view: online-only** — clear ⇒ `display_gang_members` (all), set ⇒ `display_online_gang_members` (`cmd_broadgang` 53865). Toggled by the **SET command** (54136-54143: set → "You will now only see online gang members.", clear → "You will now see all gang members."; bad arg → "Valid gang options: Online, All") |
 
-The login/refresh handler (line ~10200) is the deferred-action processor: it reads
-these pending bits, mutates the Lieutenant bit `0x0100`, prints the matching
-message, and self-clears the pending bit.
+The login/refresh handler (line ~10200) is the deferred-action processor. Full
+confirmed order (decompile 10220-10285), each arm printing its notice and
+self-clearing:
+
+1. `0x0200` pending promote → set `0x0100`, clear `0x0200`,
+   "You have been promoted to the rank of lieutenant."
+2. `0x0400` pending demote → clear `0x0100` AND `0x0400`,
+   "You have been demoted from the rank of lieutenant."
+3. `0x0800` → clear, "Your ganghouse has been closed down!!"
+4. `0x1000` → clear, "Gang house items have dissappeared from your inventory!" (sic)
+5. **Membership validation** (`player+0x6c8` non-empty):
+   - gang record **missing** → if Lieutenant, clear `0x0100` +
+     "You have been stripped of your rank as lieutenant!"; then
+     "You are no longer in the gang %s." (player's stored copy of the name)
+     and clear `+0x6c8`.
+   - gang **disbanded** (`+0x50 & 1`) → clear Lieutenant bit **silently**
+     (no strip notice), decrement `gang+0x4e`, mark gang dirty,
+     "Your gang, %s, has been disbanded!" (gang **display** name `+0x14`),
+     clear `+0x6c8`. Offline members therefore drain the member count one by
+     one at their next login.
 
 ### ROOM record — WCCMP001, gang-house fields (in-memory struct from `get_room_data`)
 
@@ -162,8 +181,10 @@ been invited…". `cmd_join` refuses if the player is already in a gang
   by `UNINVITE MEMBER <name>` against offline members.
 - `cmd_uninvite` role rules: leader **or** Lieutenant may remove ordinary members;
   a **Lieutenant cannot remove another Lieutenant or the leader** (only the leader
-  can — "You must be the gang leader to…"). Ejected member gets "%s has exiled you
-  from %s".
+  can — "You must be the gang leader to…"). Ejected member gets
+  `"%s has exiled you from %s."` — **string confirmed in the DLL** (decompile
+  52952: `prf(fmt, remover+0x1e, remover+0x6c8)`, i.e. args = remover's
+  character name, gang display name).
 
 ### 1.5 Ranks / roles
 
@@ -212,26 +233,37 @@ members "fund" the gang by adventuring.
 ### 2.2 The gang gold account — `deposit_gangleaders_account`
 
 `deposit_gangleaders_account(shopPtr, amount)` is called from `buy_item` only for a
-**GHouse shop** (`shop+0xcc == 0xb`) after a successful purchase. It looks up a
-**bankbook** via `get_bankbook_data(shop+0x128, 8)` — i.e. **bank id 8** (the gang
-bank), keyed by a **name string stored in the shop record at `shop+0x128`** (for a
-GHouse shop this slot is repurposed from the normal max-stock array to hold the
-account-holder name — written by `cmd_stock` with the stocker's BBS account
-user-id; see §7). It adds `amount` copper to `bankbook+0x24` (with a
-`balance+amount > balance` overflow guard), marks the bankbook dirty, prints
-`GANGSHOP DEPOSIT: <name> -> <n> copper`, and flushes all bankbooks. So the **gold
-price** a member pays for a gang-house item is deposited into the gang's bank-8
-account; the deed's **experience price** is charged against the pool in §2.1.
+**gang stock shop** (`shop+0xcc == 0xb`; polarity corrected 2026-07-30, see §3.1)
+after a successful purchase. It looks up a **bankbook** via
+`get_bankbook_data(shop+0x128, 8)` — keyed by a **name string stored in the shop
+record at `shop+0x128`** (for a gang shop this slot is repurposed from the normal
+max-stock array to hold the account-holder name — written by `cmd_stock` with the
+stocker's BBS account user-id; see §7). **Bank id 8 = the bank's shop number**
+(2026-07-30): `get_bankbook_data` (0x33190) matches bankbook records on
+`(name @ +0x00, bank id u32 @ +0x20)`, and `deposit_gold` passes the bank shop's
+number as that id — shipped shop **8 = "Bank of Godfrey"** (shoptype 7, the
+Silvermere bank; consistent with the tax lifecycle's "OLD SILVERMERE BALANCE"
+log line, §8). It adds `amount` copper to `bankbook+0x24` — with an overflow
+guard `balance+amount > balance` under which **the deposit is skipped entirely**
+(not clamped) — marks the bankbook dirty, logs
+`"GANGSHOP DEPOSIT : %s : %s copper farthings."` (exact literal), and flushes
+all bankbooks. So the **gold price** a member pays for a gang-shop item is
+deposited into the gang's bank-8 account; the deed's **experience price** is
+charged against the pool in §2.1.
 
 ### 2.3 Gang-house tax — `GHouseTax` (182 / 0xb5-adjacent abilities)
 
-`GHouseDeed` (181), `GHouseTax` (182) and `GHouseItem` (183) are **item abilities**
-carried by the special gang-house merchandise (per `abilities.md`; all flagged
-engine-referenced). They are the data that marks a shop item as a *deed*, a *taxed
-item*, or a *house furnishing*, consumed by the GHouse (`0xb`) branch of `buy_item`
-rather than applied to the player. `BadAttk` (185 / 0xb5) is the "already owns a gang
-item" sentinel `buy_item` scans the buyer's inventory for. (The precise per-item tax
-arithmetic lives in the GHouse pricing block of `buy_item`; the deposit half is §2.2.)
+`GHouseDeed` (181 / 0xb5), `GHouseTax` (182) and `GHouseItem` (183) are **item
+abilities** carried by the special gang-house merchandise (per `abilities.md`; all
+flagged engine-referenced). They are the data that marks a shop item as a *deed*, a
+*taxed item*, or a *house furnishing*, consumed by the gang-shop branches of
+`buy_item` rather than applied to the player. The "already owns a gang item"
+sentinel `buy_item` scans the buyer's inventory for is **`GHouseDeed` (0xb5 = 181)**
+— an earlier revision of this doc mislabeled it `BadAttk 185`, conflating the hex
+value with the wrong decimal id (corrected 2026-07-30). The three shipped deed
+items **1008/1009/1010** (red/orange/yellow parchment deed) carry GHouseDeed with
+**values 1/2/3** — deed tiers. (The precise per-item tax arithmetic lives in the
+gang-shop pricing block of `buy_item`; the deposit half is §2.2.)
 
 ---
 
@@ -239,29 +271,61 @@ arithmetic lives in the GHouse pricing block of `buy_item`; the deposit half is 
 
 ### 3.1 Buying a deed / house item — `buy_item`, shop types `0xb`/`0xc`
 
-Per `economy.md`, gang-house commerce uses two shop types that reprice from the shop
-record (restocking disabled, pricing fields overloaded):
+> **POLARITY CORRECTED 2026-07-30.** Earlier revisions of this section had the
+> two types swapped. Direct read of `buy_item`'s branches (decompiled.c
+> ~14394-14660) plus the shipped data (21 type-11 shops all named
+> "Gang Shop #NNN"; one type-12 shop, #124 "Realm Deed Shop", stocked with the
+> parchment deeds 1008-1010) settles it as below.
 
-- **GHouse (`shop+0xcc == 0xb`)** — deed/furnishing shop. To buy, the player must be
-  a **gang leader** (`gang+0x2c == player+0x1e`), the **gang experience pool**
-  `gang+0x28` (or the saturated path via `+0x50 & 8`) must reach
-  `DAT_00482d10 * 10000` (= the **GANGEXP** MSG option × 10000, default
-  1000 → **10,000,000 exp**; see §7), and the buyer must not already own a gang item (no carried
-  item with ability `BadAttk` 0xb5). Price = `shop+0x178[i]` in denomination
-  `shop+0x1a0[i]`, then run through the standard Charm/markup buy formula. On success
-  the stock slot is retired and the paid gold is routed to the gang's bank-8 account
-  (`deposit_gangleaders_account`, §2.2). Refusal codes: `4`=already a gang owner,
-  `5`=gang exp insufficient, `6`=must be gang leader, `7`=outstanding paperwork.
-- **GShop (`shop+0xcc == 0xc`)** — gang shop; same leader gating, sets a
-  pending-paperwork flag (`player+0x7d5 & 0x40` blocks further purchase). Gang shops
-  **buy nothing** (`sell_item`: "You may not sell items to a gang shop").
+Gang-house commerce uses two shop types that reprice from the shop record
+(restocking disabled — the restock walker skips them — pricing fields overloaded):
+
+- **DEED shop (`shop+0xcc == 0xc`, shipped shop 124 "Realm Deed Shop")** —
+  `buy_item` branch ~14394-14466. Gate order as compiled:
+  1. resolve the buyer's gang (`get_gang_data(player+0x6c8)`) and require
+     **leadership** (`sameas(gang+0x2c, player+0x1e)`) → refusal **6**
+     "You must be a gang leader to purchase a gang house deed.";
+  2. 100-slot inventory scan for any item with **GHouseDeed (0xb5)** → refusal
+     **4** "You are already the owner of a gang house.";
+  3. **gang experience pool** `gang+0x28 >= DAT_00482d10 * 10000` (= **GANGEXP**
+     MSG option × 10000, default 1000 → **10,000,000 exp**; see §7) → refusal
+     **5** "Your gang does not have enough experience for you to purchase a gang
+     house now." **Saturated nuance:** if `gang+0x50 & 8` is set the pool is
+     treated as exactly GANGEXP×10000 — automatically sufficient;
+  4. **paperwork** `(player+0x7d5) & 0x40` is checked **last and overrides** →
+     refusal **7** "Due to outstanding paper-work we are unable to provide you
+     with another / property today. Please call back tomorrow!" (two lines).
+  The paperwork bit's **setter** is the *sell* path: selling to a type-`0xc`
+  shop sets word bit `0x4000` (14740) — i.e. selling a deed back files the
+  paperwork that blocks another purchase until cleared (by the tax/cleanup
+  lifecycle, §8 — not ported in M7).
+- **Gang STOCK shop (`shop+0xcc == 0xb`, the 21 "Gang Shop #NNN")** — branch
+  ~14520-14650. Player-stocked storefront: per-slot price denomination read from
+  `shop+0x1a0 + slot*2` via `convert_currency`, a `(0x6e - CHA/5)`-style markup
+  applied (~14571), `deposit_gangleaders_account(shop, price)` credited on
+  **every** sale (§2.2), and the slot is **removed from the stock list when its
+  quantity reaches 0** ("REMOVING ITEM FROM STOCK LIST" debug). Gang shops **buy
+  nothing** (`sell_item`: "You may not sell items to a gang shop."). Stocking is
+  `STOCK`/`UNSTOCK`/`MARKUP`, gated on carrying the `GShopItem` (184) controller
+  whose value matches `room+0x46e` (§7).
+
+**Where BUY works at all (2026-07-30):** the DLL's `cmd_buy` (0x539b7) requires
+the room's own shop link (`room+0x43c == 1`) — the same storefront gate for every
+shop type. Shop 124's storefront is **map 15 room 732** (`type` 1 in the shipped
+DB); all 19 rooms holding type-11 gang shops are also `type` 1. The ~190 other
+map-15 rooms that carry `shopnum` 124 in the extract are district metadata — BUY
+there falls through to the cmdtext funnel, with one special arm: **`BUY ROOM` in
+a non-storefront room prints the lease stub** "If you are a gang leader you may
+lease a Gang House." (the same stub the `CREATE <direction>` build path prints).
 
 ### 3.2 Room ↔ gang-house link
 
 A room is a gang house when `room+0x564 & 0x40` (the **Ganghouse** flag, printed as
-"Ganghouse" in the sysop room dump). The house's **controlling room** number is
-`room+0x5c4`. The house's shop (deed/furnishing vendor) is the room's own shop
-(`room+0x43c==1`, id `room+0x440`) configured as type `0xb`. The `CREATE <direction>`
+"Ganghouse" in the sysop room dump; the shipped ganghouse rooms carry attributes
+`0x42` = Ganghouse|patrollable). The house's **controlling room** number is
+`room+0x5c4`. The house's shop is the room's own shop (`room+0x43c==1`, id
+`room+0x440`) — type `0xb` for the gang stock shops; the deed vendor itself is
+the type-`0xc` Realm Deed Shop (§3.1). The `CREATE <direction>`
 build path checks `room+0x564 & 4` (build-permitted) and `room+0x444 == player`
 (owner) — but every arm of that path currently prints the same "If you are a gang
 leader you may…" stub, so in-game room *construction* appears disabled in this build.
@@ -277,22 +341,29 @@ disappeared" (both self-clearing at login).
 **Finding: in this build a gang-house room's player-visible custom description is
 NOT stored as a textblock id in a `.dat`. It is stored in an external DOS text file,
 named by a filename written into the room's own description block.** The linkage is
-the `FILE_DESCRIPTION` sentinel mechanism, and gang houses are its headline user
+the `FILE DESCRIPTION` sentinel mechanism, and gang houses are its headline user
 (the error string is literally `"Can't display gang house file %s"`).
+
+> **Sentinel spelling (corrected 2026-07-30):** the literal is `FILE DESCRIPTION`
+> **with a space**. Earlier revisions wrote `FILE_DESCRIPTION` — an artifact of
+> the Ghidra symbol name `s_FILE_DESCRIPTION_00483ecf`, which substitutes `_` for
+> spaces. Confirmed against both the DLL string table and the shipped content DB
+> (136 rooms with `desc_1 = 'FILE DESCRIPTION'`, e.g. map 15 room 851 →
+> `WCC85115.HSE`).
 
 ### 4.1 The mechanism (`display_room_desc`, `display_LONG_room_desc`, `display_desc_from_file`)
 
 Room description rendering checks:
 
 ```
-if (sameas(room + 0x13a, "FILE_DESCRIPTION") && room[0x181] != '\0')
+if (sameas(room + 0x13a, "FILE DESCRIPTION") && room[0x181] != '\0')
     display_desc_from_file(room + 0x181, room + 0x1c8, ...);   // read external file
 else
     print the inline Desc[] paragraphs;
 ```
 
 - **`room + 0x13a` = Desc[0]** holds the literal sentinel string
-  `"FILE_DESCRIPTION"`.
+  `"FILE DESCRIPTION"`.
 - **`room + 0x181` = Desc[1]** (the second 71-byte paragraph) holds the **filename**
   of the external description text file.
 - **`room + 0x1c8` = Desc[2]** is passed as the section/prefix selector into
@@ -302,19 +373,19 @@ else
 (the BBS text-file service, i.e. an ordinary on-disk text file) and streams its
 lines; on failure it raises `internal_error("Can't display gang house file %s")`.
 The same sentinel+filename convention is reused for item descriptions
-(`display_item_desc`: `item+0xcb`=="FILE_DESCRIPTION", filename at `item+0x108`).
+(`display_item_desc`: `item+0xcb`=="FILE DESCRIPTION", filename at `item+0x108`).
 
 ### 4.2 Exact field that holds the description pointer (for extraction)
 
 **On the ROOM record (WCCMP001), keyed by `(MapNumber, RoomNumber)`:**
 
 - `Desc[0]` at record offset **`0x13a`** — must equal the ASCII string
-  `"FILE_DESCRIPTION"` for the file mechanism to engage.
+  `"FILE DESCRIPTION"` for the file mechanism to engage.
 - `Desc[1]` at record offset **`0x181`** (= `0x13a + 71`) — the **description
   filename** (a DOS text-file name). This is the field to read to recover a gang
   house's custom description.
 
-Extraction recipe: scan WCCMP001 for rooms whose `Desc[0]@0x13a == "FILE_DESCRIPTION"`
+Extraction recipe: scan WCCMP001 for rooms whose `Desc[0]@0x13a == "FILE DESCRIPTION"`
 (optionally filter to rooms flagged Ganghouse), read the filename from
 `Desc[1]@0x181`, and open that text file from the game directory. There is **no
 textblock number** and **no gang-record field** involved in the description linkage.
@@ -346,16 +417,29 @@ as external text files and merely *referenced* from the room record.
 
 ### 5.1 Top-gang ranking — `display_top_gangs` / `display_a_top_gang`
 
-`TOPTEN`-style listing. `display_top_gangs(N)` first flushes all gang buffers, then
-walks WCCGANG2.DAT via `dfaAcqLock(buf, 0, 1, 0xc, 0)` + `dfaQueryNP(0x38)` — i.e.
-in **Btrieve key-1 order** (the ordering index, effectively experience-ranked) — and
-displays up to `N` gangs, **skipping** records whose flag bits `0x1` (disbanded) or
-`0x4` are set. Header columns (`display_top_gang_header`): **Rank, Gangname
-(`+0x14`), Leader (`+0x2c`), Members (`+0x4e`), Created (`+0x4a` via `ncedat`)**, and
-an **Exp** column (`+0x28`) shown only to privileged viewers. When
-`gang+0x50 & 8` (pool saturated) the Exp cell additionally prints the secondary pool
-`+0x58` and "×`+0x5c`+1 times". Empty result ⇒ "There are no gangs currently
-established."
+`TOPTEN`-style listing; the user-facing form is **`TOP <n> GANGS`** (the MAXTOP
+MSG option, default 30, caps `n`). `display_top_gangs(N)` first flushes all gang
+buffers, then walks WCCGANG2.DAT via `dfaAcqLock(buf, 0, 1, 0xc, 0)` +
+`dfaQueryNP(0x38)` — i.e. in **Btrieve key-1 order** (the ordering index,
+effectively experience-ranked) — and displays up to `N` gangs, **skipping**
+records whose flag bits `0x1` (disbanded) or `0x4` (hidden — the sysop
+`DISABLE`/`ENABLE` toggle, §7) are set. Header columns
+(`display_top_gang_header`): **Rank, Gangname (`+0x14`), Leader (`+0x2c`),
+Members (`+0x4e`), Created (`+0x4a` via `ncedat`)**, and an **Exp** column
+(`+0x28`) shown only to privileged viewers (`EXP_IN_TOPGANG` config key). When
+`gang+0x50 & 8` (pool saturated) the Exp cell additionally prints the secondary
+pool `+0x58` and "×`+0x5c`+1 times". Empty result ⇒
+`"There are no gangs currently established!"` (exact literal, with the bang).
+
+> **Key-1 order, header evidence (2026-07-30):** the template's FCR key-spec
+> region (`WCCGANG2.VIR` @0x110) shows a second key of **length 4 with the
+> duplicates flag**, positioned at/near the `+0x28` exp pool — consistent with
+> an experience index — but the spec bytes don't parse cleanly enough to read
+> the descending flag (0x40) with confidence, and the populated mirror
+> (`docs/mirrors/github-lucid2310-ReMUD/DATs/WCCGANG2.dat`) is byte-identical
+> empty. **Port decision: exp-descending, documented divergence** (a "Top"
+> listing ascending would be nonsense; if a live capture ever contradicts,
+> re-pin).
 
 ### 5.2 Gang chat — `tell_gang` / `cmd_broadgang`
 
@@ -364,10 +448,19 @@ established."
   gang channel is defined entirely by shared membership string, with no separate
   subscription list.
 - **Send:** `GANG <text>` / `GUILD <text>` (`cmd_broadgang` with `margc >= 2`)
-  formats "%s gangpaths '%s'" and calls `tell_gang(player+0x6c8)`. Requires the
-  sender to be in a gang. `join_gang` and `remove_from_gang` also use `tell_gang` for
-  join/leave announcements.
-- **Roster:** `GANG`/`GUILD` with no argument shows the member roster (§1.6).
+  formats **`"%s gangpaths: %s%s"`** (exact literal, corrected 2026-07-30 from
+  the DLL string table @VA 0x48a9bb) and calls `tell_gang(player+0x6c8)`.
+  The three varargs are `(sender display name via FUN_00416c89, DAT_0048a9cf,
+  message)`. `DAT_0048a9cf` is a raw ANSI blob:
+  `1b 5b 5b 1b 5b 30 3b 33 33 6d 7c 20 08 20 08 20 08 20 08 5d 00`
+  (≈ `ESC[` + `[` + `ESC[0;33m` + `| \b \b \b \b]` — a bracket/backspace
+  compose; **rendered form ORACLE-VERIFY**, capture live before pinning text).
+  A leading `'` or `-` on the message is stripped (emote-style prefix handling:
+  message = `margv[0]+1` instead of the tail). Requires the sender to be in a
+  gang — else `"You are not in a gang at the present!"`. `join_gang` and
+  `remove_from_gang` also use `tell_gang` for join/leave announcements.
+- **Roster:** `GANG`/`GUILD` with no argument shows the member roster (§1.6);
+  with no argument and no gang, the same "not in a gang at the present!" line.
 
 (`cmd_broadcast`/`cmd_join <channel>` are the generic numbered chat channels — a
 separate system from gangs.)
@@ -388,12 +481,14 @@ separate system from gangs.)
   account** in **bank 8** keyed by the BBS user-id stored at `shop+0x128`
   (written by `cmd_stock`; see §7), credited by
   `deposit_gangleaders_account` from gang-house purchases.
-- **Guild house** = a room with `room+0x564 & 0x40`; its deed/furnishing vendor is a
-  type-`0xb` shop gated to gang leaders with a sufficient exp pool. `GHouseDeed`
-  (181)/`GHouseTax` (182)/`GHouseItem` (183) tag the merchandise.
+- **Guild house** = a room with `room+0x564 & 0x40`; deeds are bought at the
+  type-`0xc` Realm Deed Shop (leader-gated, exp-pool priced), and each house
+  runs a type-`0xb` gang stock shop whose sales deposit to bank 8. `GHouseDeed`
+  (181)/`GHouseTax` (182)/`GHouseItem` (183)/`GShopItem` (184) tag the
+  merchandise.
 - **★ Custom description linkage:** the room's description is redirected to an
   **external text file** when **`Desc[0]` (WCCMP001 offset `0x13a`) == the literal
-  `"FILE_DESCRIPTION"`**, in which case **`Desc[1]` (offset `0x181`) holds the
+  `"FILE DESCRIPTION"`**, in which case **`Desc[1]` (offset `0x181`) holds the
   filename**, read at render time via `display_desc_from_file`/`tfsopn`. This is the
   exact field pair to key on for extraction. It is **not** a textblock number:
   WCCTEXT2.DAT (2024-B records, `get_text_block`) is used only for item/monster/spell
@@ -422,9 +517,27 @@ separate system from gangs.)
   **sysop-configurable**, default `1000 × 10000 = 10,000,000` gang-pool exp
   (`buy_item` debug: "GANG EXP REQ BASE * 10000"). The GHouse per-item tax
   arithmetic remains only structurally read.
-- **Top-gang key-1** is taken to be experience-descending from the "Top Gangs" +
-  Exp-column context; the Btrieve index definition itself was not read from the file
-  header. The `+0x50 & 0x4` skip bit's meaning (beyond "not shown") is unconfirmed.
+- **Top-gang key-1** is taken to be experience-descending; the 2026-07-30 FCR
+  header read (§5.1 note) found a 4-byte duplicates-key consistent with an exp
+  index but could not confirm sort direction — port ships exp-descending as a
+  documented divergence.
+- ~~The `+0x50 & 0x4` skip bit~~ **RESOLVED (2026-07-30):** the sysop command
+  set includes `SYSOP DISABLE <gangname>` → "Gang %s has been disabled and will
+  not appear on the top gangs." and `SYSOP ENABLE <gangname>` → "…will appear on
+  the top gangs listing again." — bit `0x4` = **hidden from the top-gangs
+  listing**. The DLL also ships `SYSOP DISBAND <gangname>` ("…will be deleted at
+  cleanup."), `SYSOP GANGSIZE <n> <gangname>` ("Gang %s has been resized to %d."
+  / "You cannot set the gangsize to 0" — writes `+0x4e` directly, consistent
+  with member count being bookkeeping-only), `LIST GANG <gangname>`, and a gang
+  rename path ("%s's gangname changed from %s to "). Related config keys:
+  `SYS_DISABLE_GANGS`, `EXP_IN_TOPGANG`, `GANGBUF` (gang cache depth, default
+  10), `MAXTOP` (TOP cap, default 30). **M7 port: schema-only** — the flag bit
+  exists and the TOP walker honors it; no sysop command surface ships (USER
+  DECISION 2026-07-30).
+- **Command minimum abbreviations** for the gang verb set are compiled into
+  `parse_command`'s per-character decision tree (0xdd44, see combat_rounds.md)
+  and were not extracted; the port's VERBS entries carry `ORACLE-VERIFY`
+  minimums pending the slice-8 live expedition.
 - ~~**`deposit_gangleaders_account` account name** at `shop+0x128`~~ **CLOSED
   (2026-07-19).** The writer is **`cmd_stock`** (0x52b1e): on every successful
   `STOCK` into a GShop-controlled gang shop it does
@@ -438,5 +551,41 @@ separate system from gangs.)
   ability `GShopItem` (0xb8/184) whose value matches `room+0x46e` — in practice
   the gang leader who bought the shop controller, but mechanically it is the
   **last player to stock an item**, since each stock overwrites `+0x128`.
+
+## 8. Gang-house tax / eviction lifecycle — **PENDING (M8), evidence only, not ported in M7**
+
+Absent from earlier revisions of this spec but clearly implemented in the DLL
+(discovered 2026-07-30 via the string table; the arithmetic has not had a
+decompile pass). There are **ten numbered gang houses** with colour names —
+"Red Gang House", "Orange", "Yellow", "Green", "Violet", "Blue", "Black",
+"Silver", "Gold", "White Gang House" (1..10, matching the `ganghouse#` column in
+`re/exports/gang_house_description_files.txt`; e.g. room 850's .HSE reads
+"Entrance White House Room" → house 10) — plus a "Gang Shop" label. A periodic
+process charges each occupied house's leader a **house tax** against a bankbook
+balance (the Silvermere bank — bank 8, §2.2):
+
+```
+GANGHOUSE : NMBR %d - LEADER %s - GANG %s - HOUSE TAX %s.
+GANGHOUSE : Leader %s paid house tax. OLD SILVERMERE BALANCE %s NEW BALANCE %s.
+GANGHOUSE : Gang leader %s couldn't pay his gang house tax. BALANCE %s.
+Failed update of bankbook during Ganghouse Taxation
+GANGHOUSE : HOUSE %s : House tax paid flag NOT set.
+GANGHOUSE : HOUSE %s : Effective eviction flag set.
+GANGHOUSE : HOUSE %s : Not Occupied.
+GANGHOUSE : Adding gang house deed for gang house %d back into deed shop.
+GANGHOUSE : Removing GANGHOUSE DEED %d from Room %s Map %s floor.
+GANGHOUSE : DELETE_AT_CLEANUP : Skipping room cleanup. Room %s Map %s Gang house Number %s.
+```
+
+On non-payment: an eviction flag is set, the house's deed is re-shelved into the
+deed shop, stray deeds are removed from floors, and the ex-occupants get the
+deferred `player+0x7d4` notice bits — `0x0800` "Your ganghouse has been closed
+down!!" and `0x1000` "Gang house items have dissappeared from your inventory!"
+(§0). The `0x4000` paperwork bit (set by selling a deed back, §3.1) is presumably
+cleared by this same cleanup cycle ("call back tomorrow"). **None of this ships
+in M7** (USER DECISION 2026-07-30): the M7 port models the notice bits and the
+paperwork refusal, and defers the tax scheduler, eviction, and deed re-shelving
+to M8 with this section as the spec seed. Where the house-number lives on the
+room/gang record remains unlocated (§7 first bullet).
 </content>
 </invoke>

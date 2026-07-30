@@ -49,7 +49,7 @@ etc.) are not identical to disk records; keep the two maps distinct.
 | WCCMSG   | 253  | 512  | 2188   | **Game message strings** (combat/verb text, printf-style) |
 | WCCTEXT  | 22   | 2048 | 66775  | Tiny records — link/index table (exits? text refs) |
 | WCCBANKS | 72   | 512  | 1      | Bank config |
-| WCCGANGS | 253  | 512  | 2      | Gang/guild config |
+| WCCGANGS | 253  | 512  | 2      | Gang/guild config (DOS 1.11p; **not** the WG3-NT runtime `WCCGANG2` — see field map below) |
 | WCCITOWN | 65   | 1536 | 2      | Item-town / spawn config |
 | WCCACMSR | 386  | 1536 | 1      | Action-master config |
 | WCCUSERS | 1998 | 2048 | 3      | Player records (name not at fixed low offset) |
@@ -59,6 +59,29 @@ Counts are populated-slot scans; a few include header/placeholder rows
 (e.g. WCCSHOPS row 0 = "Leave this blank", WCCMSG has empty leading slots).
 
 ## Field maps (decoded)
+
+### WCCGANG2 (WG3-NT runtime, 256 B logical / 266 B physical) — code-derived (2026-07-30)
+
+Not part of the DOS 1.11p catalog above. Opened by the WG3-NT DLL as
+`dfaOpen("WCCGANG2.DAT", 0x100, 0)`; the shipped template
+`wg_nt_ref/WCCNT8PJ/out/WCCGANG2.VIR` (28,672 B) parses with `vir_wg.py` as
+record length 0x100, physical 0x10a (10-B usage prefix), **zero used slots** —
+so every offset below is code-derived from `cmd_create` + display/membership
+functions (`gangs.md` §0 is the authority), never disk-verified:
+
+- `+0x00` (20 B) uppercase name **key** (Btrieve key 0)
+- `+0x14` (20 B) display name (≤19 chars)
+- `+0x28` (u32) primary experience pool (saturates 0xFFFFFFFF)
+- `+0x2c` (~20 B) leader character name (leadership = string equality)
+- `+0x4a` (word) creation date (`today()`)
+- `+0x4e` (word) member count (bookkeeping only, no cap)
+- `+0x50` (dword) flags: 0x1 disbanded, 0x4 hidden-from-top, 0x8 pool saturated
+- `+0x54` (byte) dirty flag (runtime only)
+- `+0x58` (u32) secondary (overflow) pool; `+0x5c` (word) wrap counter
+
+Key 1 (the top-gangs walk order): FCR @0x110 shows a 4-byte duplicates-allowed
+key near +0x28 — consistent with an exp index; sort direction unread
+(gangs.md §5.1 note; port ships exp-descending as documented divergence).
 
 ### WCCRACE (126 B) — CORRECTED via Nightmare + page+6 frame (validated)
 - `+0x00` word = race **Number** (1..13).
