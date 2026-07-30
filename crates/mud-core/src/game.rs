@@ -8511,8 +8511,77 @@ impl Core {
         Resolution::FallThrough
     }
 
-    fn invite_command(&mut self, _session: SessionId, _name: &str) -> Resolution {
-        Resolution::FallThrough // membership task
+    /// `invite` (cmd_invite 0x56420). Only the gang arm is ported:
+    /// `INVITE MEMBER <name>` when the inviter is in a live gang. Plain
+    /// `INVITE <name>` is the party-follow invite — M8 PENDING (parties)
+    /// — and falls through like the rest of that system.
+    fn invite_command(&mut self, session: SessionId, args: &str) -> Resolution {
+        if args.trim().is_empty() {
+            self.output_line(session, text::SYNTAX_INVITE);
+            return Resolution::Handled;
+        }
+        let (subword, name) = split_word(args);
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+            return Resolution::Handled;
+        };
+        let gang_key = player.gang.to_uppercase();
+        if !subword.eq_ignore_ascii_case("member")
+            || name.is_empty()
+            || player.gang.is_empty()
+            || !self.gangs.contains_key(&gang_key)
+        {
+            return Resolution::FallThrough;
+        }
+        let inviter_name = player.name.clone();
+        let inviter_flags = player.gang_flags;
+        let room = player.location;
+        let gang = &self.gangs[&gang_key];
+        let is_leader = gang.is_leader(&inviter_name);
+        let gang_display = gang.display.clone();
+        if !is_leader && inviter_flags & crate::gang::GF_LIEUTENANT == 0 {
+            self.output_line(session, text::GANG_INVITE_RANK);
+            return Resolution::Handled;
+        }
+        // find_action_target in the room, then find_any_action_target
+        // anywhere online (52745-52749).
+        let want = name.to_ascii_lowercase();
+        let target = self
+            .in_game_sessions()
+            .filter(|(_, p)| p.location == room)
+            .chain(self.in_game_sessions())
+            .find(|(_, p)| word_prefix_match(&p.name, &want))
+            .map(|(id, p)| (id, p.name.clone(), p.hidden));
+        let subword = subword.to_string();
+        let Some((target_id, target_name, target_hidden)) = target else {
+            let line = text::dont_see_here_bang(&subword);
+            self.output_line(session, &line);
+            return Resolution::Handled;
+        };
+        if target_id == session {
+            self.output_line(session, text::WHY_INVITE_YOURSELF);
+            return Resolution::Handled;
+        }
+        let sees_hidden = self
+            .ability_bag(self.player(session))
+            .value(Ability::from_id(57).expect("SeeHidden in the enum"))
+            > 0;
+        if target_hidden && !sees_hidden {
+            let line = text::dont_see_here_bang(&subword);
+            self.output_line(session, &line);
+            return Resolution::Handled;
+        }
+        // invite_to_gang dedupes (user, gang) pairs silently; the
+        // inviter confirmation prints either way (52770-52785).
+        let fresh = self
+            .gang_invites
+            .insert((target_name.to_uppercase(), gang_key));
+        if fresh {
+            let line = text::gang_invite_target(is_leader, &inviter_name, &gang_display);
+            self.output_line(target_id, &line);
+        }
+        let line = text::gang_invite_confirm(&target_name);
+        self.output_line(session, &line);
+        Resolution::Handled
     }
 
     fn uninvite_command(&mut self, _session: SessionId, _name: &str) -> Resolution {

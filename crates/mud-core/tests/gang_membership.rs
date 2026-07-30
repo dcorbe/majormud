@@ -74,6 +74,35 @@ fn core_with(players: &[&Player]) -> (Core, Vec<SessionId>) {
     (core, ids)
 }
 
+/// A core with "Iron Fist" (leader Salad) restored, plus the named
+/// members attached: (name, gang?, flags). Returns sessions in order.
+fn gang_world(members: &[(&str, bool, u16)]) -> (Core, Vec<SessionId>) {
+    use mud_core::gang::Gang;
+    let config = CoreConfig {
+        restored_gangs: vec![Gang::new("Iron Fist", "Salad", 0)],
+        restored_gang_members: members
+            .iter()
+            .filter(|(_, in_gang, _)| *in_gang)
+            .map(|(n, _, f)| (n.to_string(), "Iron Fist".to_string(), *f))
+            .collect(),
+        ..CoreConfig::default()
+    };
+    let mut core = Core::new(world(), config);
+    let ids = members
+        .iter()
+        .map(|(name, in_gang, flags)| {
+            let mut p = person(name);
+            if *in_gang {
+                p.gang = "Iron Fist".into();
+                p.gang_flags = *flags;
+            }
+            core.attach_player(p)
+        })
+        .collect();
+    core.drain_events();
+    (core, ids)
+}
+
 // --- §1.1 CREATE ---
 
 #[test]
@@ -184,8 +213,6 @@ fn create_room_prints_the_lease_stub_and_others_consume_silently() {
         out.contains("If you are a gang leader you may lease a Gang House."),
         "{out:?}"
     );
-    // Non-keyword forms with args are consumed with no output (the
-    // decompile's silent fall-off arm).
     // Non-keyword forms with args are consumed with no message (the
     // decompile's silent fall-off arm) — only the prompt comes back:
     // neither the say fall-through nor the lease stub fires.
@@ -193,4 +220,100 @@ fn create_room_prints_the_lease_stub_and_others_consume_silently() {
     let out = texts(&core.drain_events(), s[0]);
     assert!(!out.contains("You say"), "not say: {out:?}");
     assert!(!out.contains("gang leader"), "not the lease stub: {out:?}");
+}
+
+// --- §1.2 INVITE MEMBER ---
+
+#[test]
+fn invite_member_notifies_both_sides() {
+    let (mut core, s) = gang_world(&[("Salad", true, 0), ("Torgo", false, 0)]);
+    core.input(s[0], "invite member Torgo");
+    let events = core.drain_events();
+    let inviter = texts(&events, s[0]);
+    let target = texts(&events, s[1]);
+    assert!(
+        inviter.contains("You have invited Torgo to join your gang."),
+        "{inviter:?}"
+    );
+    assert!(
+        target.contains("Gang leader Salad has invited you to join Iron Fist."),
+        "{target:?}"
+    );
+}
+
+#[test]
+fn lieutenant_invites_with_the_lieutenant_prefix() {
+    use mud_core::gang::GF_LIEUTENANT;
+    let (mut core, s) = gang_world(&[
+        ("Vex", true, GF_LIEUTENANT),
+        ("Torgo", false, 0),
+    ]);
+    core.input(s[0], "invite member Torgo");
+    let target = texts(&core.drain_events(), s[1]);
+    assert!(
+        target.contains("Lieutenant Vex has invited you to join Iron Fist."),
+        "{target:?}"
+    );
+}
+
+#[test]
+fn plain_member_may_not_invite() {
+    let (mut core, s) = gang_world(&[
+        ("Salad", true, 0),
+        ("Grunt", true, 0),
+        ("Torgo", false, 0),
+    ]);
+    core.input(s[1], "invite member Torgo");
+    let out = texts(&core.drain_events(), s[1]);
+    assert!(
+        out.contains("You must be the leader or a lieutenant of your gang to invite new members!"),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn invite_edge_cases() {
+    let (mut core, s) = gang_world(&[("Salad", true, 0), ("Torgo", false, 0)]);
+
+    // Unknown target: the DLL prints margv[1] — the subword as typed —
+    // so the line really reads "You don't see member here!" (cmd_invite
+    // 52753, a faithful oddity).
+    core.input(s[0], "invite member Nobody");
+    let out = texts(&core.drain_events(), s[0]);
+    assert!(out.contains("You don't see member here!"), "{out:?}");
+
+    // Self-invite.
+    core.input(s[0], "invite member Salad");
+    let out = texts(&core.drain_events(), s[0]);
+    assert!(out.contains("Why would you invite yourself?"), "{out:?}");
+
+    // Bare invite: the syntax line.
+    core.input(s[0], "invite");
+    let out = texts(&core.drain_events(), s[0]);
+    assert!(out.contains("Syntax: INVITE {user name}"), "{out:?}");
+
+    // Duplicate invite: consumed, inviter confirmation repeats, target
+    // is NOT re-notified (invite_to_gang dedupes silently).
+    core.input(s[0], "invite member Torgo");
+    core.drain_events();
+    core.input(s[0], "invite member Torgo");
+    let events = core.drain_events();
+    assert!(
+        texts(&events, s[0]).contains("You have invited Torgo to join your gang."),
+        "inviter line repeats"
+    );
+    assert!(
+        !texts(&events, s[1]).contains("has invited you"),
+        "no duplicate notification"
+    );
+}
+
+#[test]
+fn invite_without_member_subword_is_the_unported_party_arm() {
+    // Plain `INVITE <name>` is the party-follow invite (M8) — it falls
+    // through to say like every unported system.
+    let (mut core, s) = gang_world(&[("Salad", true, 0), ("Torgo", false, 0)]);
+    core.input(s[0], "invite Torgo");
+    let out = texts(&core.drain_events(), s[0]);
+    assert!(out.contains("You say"), "{out:?}");
 }

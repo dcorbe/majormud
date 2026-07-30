@@ -744,6 +744,30 @@ pub fn gang_leader_of(leader: &str, gang: &str) -> String {
 }
 pub const GANG_CREATED: &str = "Gang created.";
 
+// cmd_invite (0x56420) — the §1.2 gang arm (`INVITE MEMBER <name>`;
+// plain INVITE is the unported party-follow invite).
+pub const SYNTAX_INVITE: &str = "Syntax: INVITE {user name}";
+pub const GANG_INVITE_RANK: &str =
+    "You must be the leader or a lieutenant of your gang to invite new members!";
+pub const WHY_INVITE_YOURSELF: &str = "Why would you invite yourself?";
+/// The bang form (0x489eb1) — distinct from the item verbs'
+/// period-form `dont_see_here`. cmd_invite passes margv[1] — the
+/// subword as typed — so the gang arm really prints
+/// "You don't see member here!" (52753, faithful oddity).
+pub fn dont_see_here_bang(name: &str) -> String {
+    format!("You don't see {name} here!")
+}
+/// The target-side notice; `leader` picks the DLL's rank prefix by the
+/// INVITER's rank. ORACLE-VERIFY: the 0x48950c bright-blue lead-in is
+/// not reproduced.
+pub fn gang_invite_target(leader: bool, inviter: &str, gang: &str) -> String {
+    let rank = if leader { "Gang leader " } else { "Lieutenant " };
+    format!("{rank}{inviter} has invited you to join {gang}.")
+}
+pub fn gang_invite_confirm(target: &str) -> String {
+    format!("You have invited {target} to join your gang.")
+}
+
 // --- inventory strings (VERIFIED oracle_m4_items.raw / round2) ---
 pub const CARRYING_NOTHING: &str = "You are carrying Nothing!";
 pub const NO_KEYS: &str = "You have no keys.";
