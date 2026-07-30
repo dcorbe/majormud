@@ -7250,9 +7250,10 @@ impl Core {
             // the costs stay paid (the roll already succeeded).
             return;
         }
-        // Summon(12) rows collected in the instant loop; spawned after
-        // the session borrow drops.
+        // Summon(12) and TextBlock(148) rows collected in the instant
+        // loop; executed after the session borrow drops.
         let mut summons: Vec<i32> = Vec::new();
+        let mut blocks: Vec<i32> = Vec::new();
         if spell.duration == 0 {
             // Instant apply loop (spec §4 table, on the resolved target):
             // iterate the ability slots; a non-zero slot value is a FIXED
@@ -7315,6 +7316,15 @@ impl Core {
                     // the loop (the borrow); the caster-name/pet tag is
                     // M6 (see summon_spawn).
                     Ability::Summon => summons.push(amount),
+                    // TextBlock (148): the quest VM hook — run the
+                    // block on the TARGET (cast_no_target case 0x94
+                    // 41113-41114 = the caster on a self-cast;
+                    // cast_user_target 42843 = the target player). The
+                    // 199 shipped carriers are all instant chest/box/
+                    // portal spells fired by item use. (Casting one AT
+                    // a monster is a DLL no-op — cast_monster_target
+                    // groups 0x94 with the silent cases, 44210-44217.)
+                    Ability::TextBlock => blocks.push(amount),
                     // Remaining benign instants land with their systems.
                     _ => {}
                 }
@@ -7418,6 +7428,17 @@ impl Core {
             };
             for value in summons {
                 self.summon_spawn(value, room, link);
+            }
+        }
+        // TextBlock scripts run before the success display (the DLL's
+        // 0x94 arm calls the runner ahead of display_spell_success,
+        // 41113-41117).
+        for block in blocks {
+            if let Ok(block) = u16::try_from(block) {
+                self.perform_text_block_as_special_command(
+                    target_id,
+                    crate::content::TextBlockId(block),
+                );
             }
         }
         self.emit_cast_success_lines(session, target_id, spell, display_damage, everyone_target);
@@ -12145,6 +12166,17 @@ impl Core {
                         self.sessions.get_mut(&victim)
                     {
                         player.thirst = clamp_counter(i32::from(player.thirst) + amount);
+                    }
+                }
+                // TextBlock (148): run the block's script on the VICTIM
+                // (monster_cast case 0x94, 23700-23701) — the M7 slice-6
+                // quest VM; no display of its own.
+                Ability::TextBlock => {
+                    if let Ok(block) = u16::try_from(amount) {
+                        self.perform_text_block_as_special_command(
+                            victim,
+                            crate::content::TextBlockId(block),
+                        );
                     }
                 }
                 // Damage(-MR) (17): the boosted amount scaled by the

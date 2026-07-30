@@ -131,6 +131,11 @@ fn world() -> Content {
     let mut costly = spell(SpellId(301), "greater aura");
     costly.mana_cost = 999;
     content.add_spell(costly);
+    // A chest-style instant spell carrying TextBlock(148) -> block 900,
+    // the item-use quest hook (199 shipped carriers).
+    let mut chest = spell(SpellId(310), "wooden box");
+    chest.abilities = vec![(ab(148), 900)];
+    content.add_spell(chest);
     // The failure block for checkspell/testskill: an observable mutation
     // (flag 7) — `flag` lands with this slice, so the block's effect is
     // visible in the player snapshot.
@@ -764,6 +769,20 @@ fn cast_refusal_fail_stops() {
     let (mut core, s) = boot();
     assert_eq!(core.debug_perform_matched_action(s, "cast 301:flag 3 set"), 2);
     assert_eq!(core.player_snapshot(s).quest_flags, 0, "chain stopped");
+}
+
+#[test]
+fn textblock_ability_runs_the_block_on_cast() {
+    // Ability 148 in the benign instant apply (cast_no_target case 0x94,
+    // 41113-41114): the block's script runs on the target — the wiring
+    // that makes item-use chest/box spells work.
+    let (mut core, s) = boot();
+    assert_eq!(core.debug_perform_matched_action(s, "cast 310"), 1);
+    assert_eq!(
+        core.player_snapshot(s).quest_flags,
+        1 << 6,
+        "block 900 (`flag 7 set`) ran on the caster"
+    );
 }
 
 #[test]
