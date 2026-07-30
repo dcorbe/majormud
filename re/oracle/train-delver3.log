@@ -1,0 +1,117 @@
+   10.530 --- stats ---
+   10.530     | st
+   10.530     | Name: Oracle Delver                    Lives/CP:      9/100
+   10.530     | Race: Dwarf       Exp: 0               Perception:     35
+   10.530     | Class: Warrior    Level: 1             Stealth:         0
+   10.530     | Hits:    35/35    Armour Class:   0/0  Thievery:        0
+   10.530     |                                        Traps:           0
+   10.530     |                                        Picklocks:       0
+   10.530     | Strength:  50     Agility: 30          Tracking:        0
+   10.530     | Intellect: 30     Health:  50          Martial Arts:   10
+   10.530     | Willpower: 50     Charm:   30          MagicRes:       55
+   10.530     | [HP=35]:
+   10.530 entry level 1
+   14.163 --- purse for training ---
+   14.163     | /xcash 500000 copper
+   14.163     | [xcash] copper: 0 -> 500000; type 'i' to confirm.
+   17.790 --- grant exp (no-op if capped) ---
+   17.790     | /xexp 25000
+   17.790     | You gain 25000 experience.
+   17.790     | [HP=35]:
+   17.790     | [xexp] granted 25000 experience via _ADD_EXPERIENCE.
+   21.399 --- to healer ---
+   21.399     | /xgoto 2190 1
+   21.399     | [xgoto] 1/2140 -> 1/2190; type 'look'.
+   25.829 --- heal to full ---
+   25.829     | buy healing
+   25.829     | You hand over nothing and all your wounds are healed.
+   25.829     | [HP=35]:
+   29.440 --- max-hp check ---
+   29.440     | st
+   29.440     | Name: Oracle Delver                    Lives/CP:      9/100
+   29.440     | Race: Dwarf       Exp: 25000           Perception:     35
+   29.440     | Class: Warrior    Level: 1             Stealth:         0
+   29.440     | Hits:    35/35    Armour Class:   0/0  Thievery:        0
+   29.440     |                                        Traps:           0
+   29.440     |                                        Picklocks:       0
+   29.440     | Strength:  50     Agility: 30          Tracking:        0
+   29.440     | Intellect: 30     Health:  50          Martial Arts:   10
+   29.440     | Willpower: 50     Charm:   30          MagicRes:       55
+   29.440     | [HP=35]:
+   37.052 --- train burst ---
+   37.052     | /xgoto 289 1
+   37.052     | [xgoto] 1/2190 -> 1/289; type 'look'.
+   37.052     | train
+   37.052     | You hand over 50 copper farthings and you receive training to attain level 2.
+   37.052     | You receive the following:
+   37.052     | 10 additional character points
+   37.052     | [HP=35]:/xgoto 2190 1
+   37.052     | [xgoto] 1/289 -> 1/2190; type 'look'.
+   40.775 --- stats ---
+   40.775     | st
+   40.775     | Name: Oracle Delver                    Lives/CP:      9/110
+   40.775     | Race: Dwarf       Exp: 25000           Perception:     35
+   40.775     | Class: Warrior    Level: 2             Stealth:         0
+   40.775     | Hits:    35/43    Armour Class:   0/0  Thievery:        0
+   40.775     |                                        Traps:           0
+   40.775     |                                        Picklocks:       0
+   40.775     | Strength:  50     Agility: 30          Tracking:        0
+   40.775     | Intellect: 30     Health:  50          Martial Arts:   10
+   40.775     | Willpower: 50     Charm:   30          MagicRes:       55
+   40.775     | [HP=35]:[HP=36]:
+   40.775 level now 2
+   44.385 --- top up exp (stall-proof) ---
+   44.385     | /xexp 25000
+   44.385     | You have progressed too far without training to acquire anymore experience!
+   44.385     | [HP=36]:
+   44.385     | [xexp] granted 25000 experience via _ADD_EXPERIENCE.
+   47.997 --- refill purse (stall-proof) ---
+   47.997     | /xcash 500000 copper
+   47.997     | [xcash] copper: 499950 -> 500000; type 'i' to confirm.
+   51.607 --- to healer ---
+   51.607     | /xgoto 2190 1
+   51.607     | [xgoto] 1/2190 -> 1/2190; type 'look'.
+   56.020 --- heal to full ---
+   56.020     | buy healing
+   56.020     | You hand over 14 copper farthings and all your wounds are healed.
+   56.020     | [HP=43]:
+   59.629 --- max-hp check ---
+   59.629     | st
+   59.629     | Name: Oracle Delver                    Lives/CP:      9/110
+   59.629     | Race: Dwarf       Exp: 25000           Perception:     35
+   59.629     | Class: Warrior    Level: 2             Stealth:         0
+   59.629     | Hits:    43/43    Armour Class:   0/0  Thievery:        0
+   59.629     |                                        Traps:           0
+   59.629     |                                        Picklocks:       0
+   59.629     | Strength:  50     Agility: 30          Tracking:        0
+   59.629     | Intellect: 30     Health:  50          Martial Arts:   10
+   59.629     | Willpower: 50     Charm:   30          MagicRes:       55
+   59.629     | [HP=43]:
+   67.249 --- train burst ---
+   67.249     | /xgoto 289 1
+   67.249     | [xgoto] 1/2190 -> 1/289; type 'look'.
+   67.249     | train
+   67.249     | You hand over 100 copper farthings and you receive training to attain level 3.
+   67.249     | You receive the following:
+   67.249     | 10 additional character points
+   67.249     | [HP=43]:/xgoto 2190 1
+   67.249     | [xgoto] 1/289 -> 1/2190; type 'look'.
+   71.127 --- stats ---
+   71.127     | st
+   71.127     | Name: Oracle Delver                    Lives/CP:      9/120
+   71.127     | Race: Dwarf       Exp: 25000           Perception:     35
+   71.127     | Class: Warrior    Level: 3             Stealth:         0
+   71.127     | Hits:    43/53    Armour Class:   0/0  Thievery:        0
+   71.127     |                                        Traps:           0
+   71.127     |                                        Picklocks:       0
+   71.127     | Strength:  50     Agility: 30          Tracking:        0
+   71.127     | Intellect: 30     Health:  50          Martial Arts:   10
+   71.127     | Willpower: 50     Charm:   30          MagicRes:       55
+   71.127     | [HP=43]:[HP=44]:
+   71.127 level now 3
+   71.127 === level 3 reached; CP left unspent by design ===
+   76.024 --- logout ---
+   76.024     | x
+   76.024     | You will exit after a period of silent meditation.
+   76.024     | ..........
+   76.024 done

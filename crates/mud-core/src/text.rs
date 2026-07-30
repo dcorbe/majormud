@@ -1139,6 +1139,11 @@ pub struct CastMsgArgs<'a> {
 /// - room line: caster, spell, target, damage.
 ///
 /// ODD (~441 shipped spells, incl. fireball 120 / deathtouch 58; decompile
+/// MEASURED 2026-07-30 (charm.md §8.6): the caster line renders the
+/// spell-record message with the target exactly as modeled — "You sing
+/// the song of charming to kobold!" live — and casting at your own
+/// engaged target prints *Combat Off* first (the cast disengages
+/// autocombat before the success line).
 /// display_spell_success else-branch 38040-38124: caster prf(line, target,
 /// damage), target prf(line, damage), room prf(line, target, damage) — NO
 /// spell-name slot and NO caster name anywhere; shape: message 8524).

@@ -1,0 +1,27 @@
+    6.851 === mortally wounded; dying deliberately to revive ===
+  285.778 === recovered at HP 78 ===
+  289.388 --- STATS on entry ---
+  289.388     | st
+  289.388     | Name: Bard Minstrel                    Lives/CP:      3/220
+  289.388     | Race: Human       Exp: 400000          Perception:     40
+  289.388     | Class: Bard       Level: 12            Stealth:        65
+  289.388     | Hits:    78/78    Armour Class:   0/0  Thievery:       68
+  289.388     | Mana:    54/54    Spellcasting: 60     Traps:          70
+  289.388     |                                        Picklocks:      57
+  289.388     | Strength:  40     Agility: 40          Tracking:        0
+  289.388     | Intellect: 40     Health:  40          Martial Arts:   15
+  289.388     | Willpower: 40     Charm:   40          MagicRes:       40
+  289.388     | [HP=78/MA=54]:
+  292.998 --- spellbook ---
+  292.998     | spells
+  292.998     | You have the following spells:
+  292.998     | Level Mana Short Spell Name
+  292.998     |   4   4    char  song of charming
+  292.998     |   5   6    fool  song of foolishness
+  292.998     | [HP=78/MA=54]:
+  296.614 --- purse ---
+  296.614     | /xcash 3000 copper
+  296.614     | [xcash] copper: 0 -> 3000; type 'i' to confirm.
+  304.644 HP 78 MA 54
+  304.644 === E4: charm lifecycle ===
+  443.206 no lone rat found

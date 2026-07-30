@@ -67,6 +67,7 @@ if _os.environ.get("E3_TARGET", "bat") == "slave":
 elif _os.environ.get("E3_TARGET", "bat") == "kobold":
     TARGET, NOUN, MAP = "kobold", "kobold", 6
     WEAPON = "wooden hammer"
+    DWELL = 10.0    # type-0 rooms spawn near a LINGERING player only
     RAT_ROOMS = [
         722, 723, 724, 725, 726, 727, 728, 729, 730, 731, 732, 733, 734,
         745, 746, 747, 748, 749, 750, 751,

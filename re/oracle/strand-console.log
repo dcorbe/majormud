@@ -1,0 +1,190 @@
+   10.381 --- STATS on entry ---
+   10.381     | st
+   10.381     | Name: Bard Minstrel                    Lives/CP:      9/250
+   10.381     | Race: Human       Exp: 875000          Perception:     40
+   10.381     | Class: Bard       Level: 14            Stealth:        69
+   10.381     | Hits:    41/93    Armour Class:   0/0  Thievery:       76
+   10.381     | Mana:    41/62    Spellcasting: 64     Traps:          78
+   10.381     |                                        Picklocks:      62
+   10.381     | Strength:  40     Agility: 40          Tracking:        0
+   10.381     | Intellect: 40     Health:  40          Martial Arts:   15
+   10.381     | Willpower: 40     Charm:   40          MagicRes:       40
+   10.381     | [HP=41/MA=41]:[HP=42/MA=44]:
+   13.993 --- purse ---
+   13.993     | /xcash 3000 copper
+   13.993     | [xcash] copper: 2728 -> 3000; type 'i' to confirm.
+   22.012 HP 93 MA 44
+   22.012 === strand-only run ===
+   22.012 no charm for the expiry block
+   22.012 === E5 skipped (already captured) ===
+   30.038 HP 93 MA 44
+   33.649 --- st BEFORE passive cast ---
+   33.649     | st
+   33.649     | Name: Bard Minstrel                    Lives/CP:      9/250
+   33.649     | Race: Human       Exp: 875000          Perception:     40
+   33.649     | Class: Bard       Level: 14            Stealth:        69
+   33.649     | Hits:    93/93    Armour Class:   0/0  Thievery:       76
+   33.649     | Mana:    44/62    Spellcasting: 64     Traps:          78
+   33.649     |                                        Picklocks:      62
+   33.649     | Strength:  40     Agility: 40          Tracking:        0
+   33.649     | Intellect: 40     Health:  40          Martial Arts:   15
+   33.649     | Willpower: 40     Charm:   40          MagicRes:       40
+   33.649     | [HP=93/MA=44]:
+   41.502 HP 93 MA 47
+   41.502 === E6: strand test (teleport-only; no walking) ===
+   49.524 HP 93 MA 47
+   63.310 --- cast char 0 ---
+   63.310     | The nasty kobold stabs you for 6 damage!
+   63.311     | [HP=80/MA=47]:The nasty kobold stabs you for 6 damage!
+   63.311     | [HP=74/MA=47]:c char kobold
+   63.311     | You attempt to cast song of charming at nasty kobold, but the spell is resisted.
+   63.311     | [HP=74/MA=47]:[HP=74/MA=45]:
+   63.311   RESIST
+   67.543 --- cast char 1 ---
+   67.543     | c char kobold
+   67.543     | You have already cast a spell this round!
+   67.543     | [HP=74/MA=45]:The nasty kobold stabs you for 4 damage!
+   67.543     | [HP=70/MA=45]:The nasty kobold stabs you for 2 damage!
+   67.543     | [HP=68/MA=45]:You hear movement to the nNorthwest.
+   67.543     | [HP=68/MA=45]:
+   86.465 --- cast char 2 ---
+   86.465     | c char kobold
+   86.465     | You attempt to cast song of charming at nasty kobold, but the spell is resisted.
+   86.465     | [HP=40/MA=48]:[HP=40/MA=46]:The nasty kobold stabs you for 5 damage!
+   86.465     | [HP=35/MA=46]:The nasty kobold stabs you for 3 damage!
+   86.465     | [HP=32/MA=46]:
+   86.465   RESIST
+   90.879 --- cast char 3 ---
+   90.879     | c char kobold
+   90.879     | You sing the song of charming to nasty kobold!
+   90.879     | [HP=32/MA=42]:[HP=32/MA=42]:
+  109.269 --- cast char 4 ---
+  109.269     | c char kobold
+  109.269     | You attempt to cast song of charming at nasty kobold, but the spell is resisted.
+  109.269     | [HP=33/MA=45]:[HP=33/MA=43]:You hear movement to the sSoutheast.
+  109.269     | [HP=33/MA=43]:
+  109.269   RESIST
+  113.686 --- cast char 5 ---
+  113.686     | c char kobold
+  113.686     | You have already cast a spell this round!
+  113.686     | [HP=33/MA=43]:
+  131.832 --- cast char 6 ---
+  131.832     | c char kobold
+  131.832     | You attempt to cast song of charming, but fail.
+  131.832     | [HP=33/MA=41]:[HP=33/MA=41]:[HP=34/MA=44]:
+  136.246 --- cast char 7 ---
+  136.246     | c char kobold
+  136.246     | You sing the song of charming to nasty kobold!
+  136.246     | [HP=34/MA=40]:[HP=34/MA=40]:
+  154.706 --- cast char 8 ---
+  154.706     | c char kobold
+  154.706     | You attempt to cast song of charming, but fail.
+  154.706     | [HP=34/MA=38]:[HP=34/MA=38]:
+  159.122 --- cast char 9 ---
+  159.122     | c char kobold
+  159.122     | You sing the song of charming to nasty kobold!
+  159.122     | [HP=34/MA=34]:[HP=34/MA=34]:
+  177.844 --- cast char 10 ---
+  177.844     | c kobold moves into the room from the nSorthwest.
+  177.844     | [HP=35/MA=37]:char kobold
+  177.844     | You attempt to cast song of charming, but fail.
+  177.844     | [HP=35/MA=35]:[HP=35/MA=35]:
+  182.260 --- cast char 11 ---
+  182.261     | The kobold stabs you for 4 damage!
+  182.261     | [HP=31/MA=35]:The kobold stabs you for 2 damage!
+  182.261     | [HP=29/MA=35]:c char kobold
+  182.261     | You attempt to cast song of charming, but fail.
+  182.261     | [HP=29/MA=33]:[HP=29/MA=33]:
+  186.675 --- cast char 12 ---
+  186.675     | The kobold stabs you for 8 damage!
+  186.675     | [HP=21/MA=33]:The kobold stabs you for 6 damage!
+  186.675     | [HP=15/MA=33]:c char kobold
+  186.675     | You attempt to cast song of charming at kobold, but the spell is resisted.
+  186.675     | [HP=15/MA=33]:[HP=15/MA=31]:
+  186.675   RESIST
+  191.092 --- cast char 13 ---
+  191.092     | The kobold stabs you for 4 damage!
+  191.092     | [HP=11/MA=31]:The kobold stabs you for 6 damage!
+  191.092     | [HP=5/MA=31]:c char kobold
+  191.092     | You sing the song of charming to kobold!
+  191.092     | [HP=5/MA=27]:[HP=5/MA=27]:
+  209.877 --- cast char 14 ---
+  209.877     | c char kobold
+  209.877     | You sing the song of charming to kobold!
+  209.877     | [HP=6/MA=26]:[HP=6/MA=26]:
+  228.425 --- cast char 15 ---
+  228.425     | [HP=7/MA=29]:c char kobold
+  228.425     | You sing the song of charming to kobold!
+  228.425     | [HP=7/MA=25]:[HP=7/MA=25]:You hear movement to the sXoutheast.
+  228.425     | [HP=7/MA=25]:
+  246.881 --- cast char 16 ---
+  246.881     | c char kobold
+  246.881     | You attempt to cast song of charming, but fail.
+  246.881     | [HP=7/MA=23]:[HP=7/MA=23]:
+  251.298 --- cast char 17 ---
+  251.298     | c char kobold
+  251.298     | You attempt to cast song of charming at kobold, but the spell is resisted.
+  251.298     | [HP=7/MA=23]:[HP=7/MA=21]:
+  251.298   RESIST
+  255.701 --- cast char 18 ---
+  255.701     | c char kobold
+  255.701     | You attempt to cast song of charming, but fail.
+  255.701     | [HP=7/MA=19]:[HP=7/MA=19]:[HP=8/MA=22]:
+  260.117 --- cast char 19 ---
+  260.117     | c char kobold
+  260.117     | You sing the song of charming to kobold!
+  260.117     | [HP=8/MA=18]:[HP=8/MA=18]:
+  278.577 --- cast char 20 ---
+  278.577     | c char kobold
+  278.577     | You attempt to cast song of charming at kobold, but the spell is resisted.
+  278.577     | [HP=8/MA=18]:[HP=8/MA=16]:
+  278.577   RESIST
+  282.992 --- cast char 21 ---
+  282.992     | c char kobold
+  282.992     | You have already cast a spell this round!
+  282.992     | [HP=8/MA=16]:
+  301.705 --- cast char 22 ---
+  301.705     | c char kobold
+  301.705     | You sing the song of charming to kobold!
+  301.705     | [HP=9/MA=15]:[HP=9/MA=15]:
+  320.164 --- cast char 23 ---
+  320.164     | [HP=10/MA=18]:c char kobold
+  320.164     | You sing the song of charming to kobold!
+  320.164     | [HP=10/MA=14]:[HP=10/MA=14]:
+  338.631 --- cast char 24 ---
+  338.631     | c char kobold
+  338.631     | You sing the song of charming to kobold!
+  338.631     | [HP=10/MA=10]:[HP=10/MA=10]:
+  357.139 --- cast char 25 ---
+  357.139     | c char kobold
+  357.139     | You may not do that while you are mortally wounded!
+  357.139     | [HP=-6/MA=13]:
+  375.636 --- cast char 26 ---
+  375.636     | short kobold just left to the nCorthwest.
+  375.636     | [HP=-46/MA=13]:c char kobold
+  375.636     | You may not do that while you are mortally wounded!
+  375.636     | [HP=-46/MA=13]:short kobold moves into the room from the nCorthwest.
+  375.636     | [HP=-46/MA=13]:
+  394.539 --- cast char 27 ---
+  394.539     | c char kobold
+  394.539     | You may not do that while you are mortally wounded!
+  394.539     | [HP=-78/MA=16]:The short kobold stabs you for 6 damage!
+  394.539     | [HP=-84/MA=16]:The short kobold stabs you for 7 damage!
+  394.540     | [HP=-91/MA=16]:
+  412.975 --- cast char 28 ---
+  412.975     | The short kobold stabs you for 6 damage!
+  412.975     | [HP=-118/MA=16]:[HP=-119/MA=19]:c char kobold
+  412.975     | You may not do that while you are mortally wounded!
+  412.975     | [HP=-119/MA=19]:short kobold just left to the sRoutheast.
+  412.975     | [HP=-119/MA=19]:
+  431.427 --- cast char 29 ---
+  431.427     | c char kobold
+  431.427     | You may not do that while you are mortally wounded!
+  431.427     | [HP=-119/MA=19]:
+  445.512 no charm for the strand test
+  445.512 === finish capture complete ===
+  454.339 --- logout ---
+  454.339     | x
+  454.339     | You may not exit MajorMud while you are mortally wounded!
+  454.339     | [HP=-120/MA=22]:
+  454.339 done

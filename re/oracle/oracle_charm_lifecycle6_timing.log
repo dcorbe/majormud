@@ -1,0 +1,266 @@
+   10.266 --- STATS on entry ---
+   10.266     | st
+   10.266     | Name: Bard Minstrel                    Lives/CP:      6/220
+   10.266     | Race: Human       Exp: 400000          Perception:     40
+   10.266     | Class: Bard       Level: 12            Stealth:        65
+   10.266     | Hits:    83/83    Armour Class:   0/0  Thievery:       68
+   10.266     | Mana:    54/54    Spellcasting: 60     Traps:          70
+   10.266     |                                        Picklocks:      57
+   10.266     | Strength:  40     Agility: 40          Tracking:        0
+   10.266     | Intellect: 40     Health:  40          Martial Arts:   15
+   10.266     | Willpower: 40     Charm:   40          MagicRes:       40
+   10.266     | [HP=83/MA=54]:
+   13.876 --- spellbook ---
+   13.876     | spells
+   13.876     | You have the following spells:
+   13.876     | Level Mana Short Spell Name
+   13.876     |   4   4    char  song of charming
+   13.876     |   5   6    fool  song of foolishness
+   13.876     | [HP=83/MA=54]:
+   17.489 --- purse ---
+   17.489     | /xcash 3000 copper
+   17.489     | [xcash] copper: 0 -> 3000; type 'i' to confirm.
+   25.525 HP 83 MA 54
+   25.525 === E4: charm lifecycle ===
+   57.765 --- cast char (attempt 0) ---
+   57.765     | c char kobold
+   57.765     | You do not see kobold here!
+   57.765     | [HP=71/MA=54]:
+   67.236   no follower yet (failed or silent); recasting
+   75.294 --- cast char (attempt 1) ---
+   75.294     | [HP=72/MA=54]:c char kobold
+   75.294     | You do not see kobold here!
+   75.294     | [HP=72/MA=54]:
+   84.776   no follower yet (failed or silent); recasting
+   93.119 --- cast char (attempt 2) ---
+   93.119     | c char kobold
+   93.119     | You do not see kobold here!
+   93.119     | [HP=65/MA=54]:
+  102.469   no follower yet (failed or silent); recasting
+  110.543 --- cast char (attempt 3) ---
+  110.544     | The short kobold stabs you for 3 damage!
+  110.544     | [HP=63/MA=54]:The short kobold stabs you for 2 damage!
+  110.544     | [HP=61/MA=54]:You hear movement to the ePast.
+  110.544     | [HP=61/MA=54]:c char kobold
+  110.544     | You sing the song of charming to short kobold!
+  110.544     | [HP=61/MA=50]:[HP=61/MA=50]:
+  120.098   FOLLOW| short kobold moves into the room from the wUest.
+  120.098 CHARMED at +13.97s from cast
+  128.383 --- E4 'Also here' rendering with a pet present ---
+  128.383     | look
+  128.383     | Rocky Path
+  128.383     |     The titanic walls of mount Khazarad rise imperiously to the east, the path
+  128.383     | winding its way along their edge. Stones litter the path, with the occasional
+  128.383     | boulder forcing the trail to detour around it.
+  128.383     | Also here: short kobold (Charmed).
+  128.383     | Obvious exits: ePast, nCorthwest
+  128.383     | [HP=48/MA=50]:
+  128.383 === E4: 10-room follow walk ===
+  134.253   FOLLOW| [HP=35/MA=50]:[HP=36/MA=53]:short kobold moves into the room from the wHest.
+  134.253 walk 0 e: follow=yes
+  140.185   FOLLOW| kobold moves into the room from below.
+  140.185   FOLLOW| [HP=36/MA=53]:short kobold moves into the room from below.
+  140.185 walk 1 u: follow=yes
+  146.166   FOLLOW| [HP=1/MA=53]:kobold moves into the room from the nQorthwest.
+  146.166   FOLLOW| [HP=-27/MA=53]:short kobold moves into the room from the nQorthwest.
+  146.166   FOLLOW| [HP=-27/MA=53]:kobold moves into the room from the nQorthwest.
+  146.166 walk 2 se: follow=yes
+  152.069 walk 3 se: follow=NO
+  157.688 walk 4 e: follow=NO
+  163.566   FOLLOW| [HP=-106/MA=53]:kobold moves into the room from the nQorthwest.
+  163.566 walk 5 w: follow=yes
+  169.351 walk 6 nw: follow=NO
+  175.273 walk 7 nw: follow=NO
+  181.228 walk 8 d: follow=NO
+  187.172 walk 9 w: follow=NO
+  187.172 === E4: assist round vs a grey spider ===
+  225.820 (assist round is best-effort scripted; the raw holds whatever happened — walked approach beats teleport next iteration)
+  225.820 === E4: attack own pet ===
+  239.458 --- cast char (attempt 0) ---
+  239.458     | The tall kobold stabs you for 5 damage!
+  239.458     | [HP=24/MA=54]:The tall kobold lunges at you with their shortsword, but you dodge!
+  239.458     | [HP=24/MA=54]:The kobold lunges at you with their shortsword, but you dodge!
+  239.458     | [HP=24/MA=54]:The kobold stabs you for 5 damage!
+  239.458     | [HP=19/MA=54]:The short kobold stabs you for 3 damage!
+  239.458     | [HP=16/MA=54]:The short kobold lunges at you with their shortsword, but you dodge!
+  239.458     | [HP=16/MA=54]:The kobold stabs you for 8 damage!
+  239.458     | [HP=8/MA=54]:The kobold stabs you for 6 damage!
+  239.458     | [HP=2/MA=54]:c char kobold
+  239.458     | You attempt to cast song of charming, but fail.
+  239.458     | [HP=2/MA=52]:[HP=2/MA=52]:
+  248.785   no follower yet (failed or silent); recasting
+  257.037 --- cast char (attempt 1) ---
+  257.037     | c char kobold
+  257.037     | You may not do that while you are mortally wounded!
+  257.037     | [HP=-98/MA=52]:The tall kobold stabs you for 3 damage!
+  257.037     | [HP=-101/MA=52]:The tall kobold stabs you for 8 damage!
+  257.037     | [HP=-109/MA=52]:The short kobold stabs you for 6 damage!
+  257.037     | [HP=-115/MA=52]:The short kobold stabs you for 5 damage!
+  257.037     | [HP=-120/MA=52]:The kobold stabs you for 3 damage!
+  257.038     | [HP=-123/MA=52]:The kobold stabs you for 3 damage!
+  257.038     | [HP=-126/MA=52]:[HP=-127/MA=54]:
+  266.462   no follower yet (failed or silent); recasting
+  274.497 --- cast char (attempt 2) ---
+  274.497     | The short kobold stabs you for 9 damage!
+  274.497     | [HP=-181/MA=54]:The short kobold stabs you for 9 damage!
+  274.497     | [HP=-190/MA=54]:The kobold stabs you for 2 damage!
+  274.497     | [HP=-192/MA=54]:The kobold stabs you for 9 damage!
+  274.497     | [HP=-201/MA=54]:You have been killed!
+  274.497     | But, due to a miracle, you have been saved.
+  274.497     | You have 4 lives left.
+  274.497     | [HP=83/MA=54]:c char kobold
+  274.497     | You do not see kobold here!
+  274.497     | [HP=83/MA=54]:
+  283.819   no follower yet (failed or silent); recasting
+  291.948 --- cast char (attempt 3) ---
+  291.948     | c char kobold
+  291.948     | You do not see kobold here!
+  291.948     | [HP=83/MA=54]:
+  301.230   no follower yet (failed or silent); recasting
+  309.391 --- cast char (attempt 4) ---
+  309.391     | c char kobold
+  309.391     | You do not see kobold here!
+  309.391     | [HP=83/MA=54]:
+  318.836   no follower yet (failed or silent); recasting
+  327.176 --- cast char (attempt 5) ---
+  327.176     | c char kobold
+  327.176     | You do not see kobold here!
+  327.176     | [HP=83/MA=54]:
+  336.688   no follower yet (failed or silent); recasting
+  344.815 --- cast char (attempt 6) ---
+  344.815     | c char kobold
+  344.815     | You do not see kobold here!
+  344.815     | [HP=83/MA=54]:
+  354.093   no follower yet (failed or silent); recasting
+  362.256 --- cast char (attempt 7) ---
+  362.257     | c char kobold
+  362.257     | You do not see kobold here!
+  362.257     | [HP=83/MA=54]:
+  371.538   no follower yet (failed or silent); recasting
+  379.698 --- cast char (attempt 8) ---
+  379.698     | c char kobold
+  379.698     | You do not see kobold here!
+  379.698     | [HP=83/MA=54]:
+  388.978   no follower yet (failed or silent); recasting
+  397.143 --- cast char (attempt 9) ---
+  397.143     | c char kobold
+  397.143     | You do not see kobold here!
+  397.143     | [HP=83/MA=54]:
+  406.419   no follower yet (failed or silent); recasting
+  414.583 --- cast char (attempt 10) ---
+  414.583     | c char kobold
+  414.583     | You do not see kobold here!
+  414.583     | [HP=83/MA=54]:
+  423.865   no follower yet (failed or silent); recasting
+  432.023 --- cast char (attempt 11) ---
+  432.023     | c char kobold
+  432.023     | You do not see kobold here!
+  432.023     | [HP=83/MA=54]:
+  441.305   no follower yet (failed or silent); recasting
+  445.051 === E4: timed expiry x2 (duration 100 ticks ~ 303s) ===
+  458.570 --- cast char (attempt 0) ---
+  458.570     | c char kobold
+  458.570     | You sing the song of charming to kobold!
+  458.570     | [HP=77/MA=50]:[HP=77/MA=50]:The kobold stabs you for 8 damage!
+  458.570     | [HP=69/MA=50]:The kobold stabs you for 8 damage!
+  458.570     | [HP=61/MA=50]:
+  468.401   no follower yet (failed or silent); recasting
+  476.653 --- cast char (attempt 1) ---
+  476.653     | c char kobold
+  476.653     | You attempt to cast song of charming, but fail.
+  476.653     | [HP=27/MA=51]:[HP=27/MA=51]:The kobold stabs you for 3 damage!
+  476.653     | [HP=24/MA=51]:The kobold stabs you for 2 damage!
+  476.653     | [HP=22/MA=51]:
+  485.882   no follower yet (failed or silent); recasting
+  493.761 --- cast char (attempt 2) ---
+  493.761     | c char kobold
+  493.761     | You may not do that while you are mortally wounded!
+  493.761     | [HP=-5/MA=51]:The kobold stabs you for 5 damage!
+  493.761     | [HP=-10/MA=51]:The kobold stabs you for 9 damage!
+  493.761     | [HP=-19/MA=51]:
+  503.621   no follower yet (failed or silent); recasting
+  511.648 --- cast char (attempt 3) ---
+  511.648     | The kobold stabs you for 9 damage!
+  511.648     | [HP=-47/MA=54]:The kobold lunges at you with their shortsword!
+  511.648     | [HP=-47/MA=54]:c char kobold
+  511.648     | You may not do that while you are mortally wounded!
+  511.648     | [HP=-47/MA=54]:
+  520.960   no follower yet (failed or silent); recasting
+  528.985 --- cast char (attempt 4) ---
+  528.985     | c char kobold
+  528.985     | You may not do that while you are mortally wounded!
+  528.985     | [HP=-67/MA=54]:
+  538.217   no follower yet (failed or silent); recasting
+  546.240 --- cast char (attempt 5) ---
+  546.240     | c char kobold
+  546.240     | You may not do that while you are mortally wounded!
+  546.240     | [HP=-68/MA=54]:
+  555.733   no follower yet (failed or silent); recasting
+  563.761 --- cast char (attempt 6) ---
+  563.761     | c char kobold
+  563.761     | You may not do that while you are mortally wounded!
+  563.761     | [HP=-68/MA=54]:
+  572.993   no follower yet (failed or silent); recasting
+  581.020 --- cast char (attempt 7) ---
+  581.020     | c char kobold
+  581.020     | You may not do that while you are mortally wounded!
+  581.020     | [HP=-69/MA=54]:
+  590.418   no follower yet (failed or silent); recasting
+  598.444 --- cast char (attempt 8) ---
+  598.444     | [HP=-70/MA=54]:c char kobold
+  598.444     | You may not do that while you are mortally wounded!
+  598.444     | [HP=-70/MA=54]:
+  607.673   no follower yet (failed or silent); recasting
+  615.697 --- cast char (attempt 9) ---
+  615.697     | c char kobold
+  615.697     | You may not do that while you are mortally wounded!
+  615.697     | [HP=-70/MA=54]:
+  624.927   no follower yet (failed or silent); recasting
+  632.948 --- cast char (attempt 10) ---
+  632.948     | You hear movement to the sCoutheast.
+  632.948     | [HP=-71/MA=54]:c char kobold
+  632.948     | You may not do that while you are mortally wounded!
+  632.948     | [HP=-71/MA=54]:
+  642.179   no follower yet (failed or silent); recasting
+  650.203 --- cast char (attempt 11) ---
+  650.204     | c char kobYou hear movement to the sCoutheast.
+  650.204     | [HP=-71/MA=54]:old
+  650.204     | You may not do that while you are mortally wounded!
+  650.204     | [HP=-71/MA=54]:
+  659.714   FOLLOW| [HP=-71/MA=54]:[HP=-72/MA=54]:kobold moves into the room from the sGoutheast.
+  659.714 CHARMED at +13.92s from cast
+ 1075.685 expiry 0: no release line matched by +420s; still-following probe = False (wording heuristic may have missed it — read the raw)
+ 1089.243 --- cast char (attempt 0) ---
+ 1089.243     | c char kobold
+ 1089.243     | You attempt to cast song of charming, but fail.
+ 1089.243     | [HP=57/MA=52]:[HP=57/MA=52]:The kobold stabs you for 8 damage!
+ 1089.243     | [HP=49/MA=52]:The kobold stabs you for 8 damage!
+ 1089.243     | [HP=41/MA=52]:The tall kobold stabs you for 3 damage!
+ 1089.243     | [HP=38/MA=52]:The tall kobold stabs you for 8 damage!
+ 1089.244     | [HP=30/MA=52]:The short kobold stabs you for 3 damage!
+ 1089.244     | [HP=27/MA=52]:The short kobold stabs you for 3 damage!
+ 1089.244     | [HP=24/MA=52]:[HP=25/MA=54]:
+ 1098.704   no follower yet (failed or silent); recasting
+ 1107.040 --- cast char (attempt 1) ---
+ 1107.040     | c char kobold
+ 1107.040     | You may not do that while you are mortally wounded!
+ 1107.040     | [HP=-69/MA=54]:
+ 1116.497   no follower yet (failed or silent); recasting
+ 1124.752 --- cast char (attempt 2) ---
+ 1124.752     | c char kobold
+ 1124.752     | You may not do that while you are mortally wounded!
+ 1124.752     | [HP=-167/MA=54]:The kobold stabs you for 3 damage!
+ 1124.752     | [HP=-170/MA=54]:The kobold stabs you for 5 damage!
+ 1124.752     | [HP=-175/MA=54]:The tall kobold stabs you for 5 damage!
+ 1124.752     | [HP=-180/MA=54]:The tall kobold stabs you for 9 damage!
+ 1124.752     | [HP=-189/MA=54]:The short kobold stabs you for 6 damage!
+ 1124.752     | [HP=-195/MA=54]:The short kobold stabs you for 5 damage!
+ 1124.752     | [HP=-200/MA=54]:You have been killed!
+ 1124.752     | But, due to a miracle, you have been saved.
+ 1124.752     | You have 2 lives left.
+ 1124.752     | [HP=83/MA=54]:
+ 1134.162   no follower yet (failed or silent); recasting
+ 1142.474 --- cast char (attempt 3) ---
+ 1142.474     | c char kobold
+ 1142.474     | You do not see kobold here!
+ 1142.474     | [HP=83/MA=54]:

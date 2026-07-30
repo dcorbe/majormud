@@ -1,0 +1,14 @@
+   14.076 --- heal purse ---
+   14.076     | /xcash 2000 copper
+   14.076     | [xcash] copper: 499886 -> 2000; type 'i' to confirm.
+   21.523 --- summon wooden hammer ---
+   21.523     | sysop summon wooden hammer
+   21.523     | wooden hammer conjured.
+   21.523     | [HP=45]:
+   25.140 --- wield wooden hammer ---
+   25.140     | wield wooden hammer
+   25.140     | You are now holding wooden hammer.
+   25.140     | This weapon feels heavy in your hands.
+   25.140     | [HP=45]:
+   33.167 healed to 53
+  604.035 P0: no rat found this sweep; continuing

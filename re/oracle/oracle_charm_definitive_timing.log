@@ -1,0 +1,56 @@
+   10.479 --- STATS on entry ---
+   10.479     | st
+   10.479     | Name: Bard Minstrel                    Lives/CP:      8/250
+   10.479     | Race: Human       Exp: 875000          Perception:     40
+   10.479     | Class: Bard       Level: 14            Stealth:        69
+   10.479     | Hits:    93/93    Armour Class:   0/0  Thievery:       76
+   10.479     | Mana:    62/62    Spellcasting: 64     Traps:          78
+   10.479     |                                        Picklocks:      62
+   10.479     | Strength:  40     Agility: 40          Tracking:        0
+   10.479     | Intellect: 40     Health:  40          Martial Arts:   15
+   10.479     | Willpower: 40     Charm:   40          MagicRes:       40
+   10.479     | [HP=93/MA=62]:
+   14.089 --- purse ---
+   14.089     | /xcash 3000 copper
+   14.089     | [xcash] copper: 0 -> 3000; type 'i' to confirm.
+   22.124 HP 93 MA 62
+   37.381 === single kobold in room 722; waiting for it to prove hostility ===
+   66.368 === hostility established; singing until its attacks CEASE ===
+   69.989 --- sing 0 ---
+   69.989     | c char kobold
+   69.989     | You attempt to cast song of charming at kobold, but the spell is resisted.
+   69.989     | [HP=70/MA=62]:[HP=70/MA=60]:
+   69.989   RESIST
+   73.609 --- sing 1 ---
+   73.609     | The kobold stabs you for 6 damage!
+   73.609     | [HP=64/MA=60]:The kobold stabs you for 3 damage!
+   73.609     | [HP=61/MA=60]:c char kobold
+   73.609     | You attempt to cast song of charming, but fail.
+   73.609     | [HP=61/MA=58]:[HP=61/MA=58]:
+  100.974   post-sing ATTACK| The kobold stabs you for 4 damage!
+  100.974   post-sing ATTACK| [HP=57/MA=58]:The kobold stabs you for 2 damage!
+  100.974   still attacking — charm did not land
+  104.585 --- sing 2 ---
+  104.586     | The kobold stabs you for 2 damage!
+  104.586     | [HP=45/MA=61]:The kobold stabs you for 7 damage!
+  104.586     | [HP=38/MA=61]:c char kobold
+  104.586     | You sing the song of charming to kobold!
+  104.586     | [HP=38/MA=57]:[HP=38/MA=57]:
+  129.792 === CHARM CONFIRMED BY SUPPRESSION (sing 2) ===
+  157.484 === expiry watch: suppression probes every ~25s ===
+  182.856   still suppressed at +53s
+  207.989   still suppressed at +78s
+  233.294   still suppressed at +104s
+  258.391   still suppressed at +129s
+  283.553   still suppressed at +154s
+  311.192   still suppressed at +181s
+  336.271   still suppressed at +206s
+  363.746   ATTACK| [HP=46/MA=62]:The nasty kobold stabs you for 3 damage!
+  363.746   ATTACK| [HP=43/MA=62]:The nasty kobold stabs you for 2 damage!
+  363.746 EXPIRY: attacks resumed at +234s from the confirmed charm
+  363.746 === definitive capture complete ===
+  372.576 --- logout ---
+  372.576     | x
+  372.576     | You will exit after a period of silent meditation.
+  372.576     | .............
+  372.576 done
