@@ -780,6 +780,51 @@ pub fn gang_join_broadcast(name: &str) -> String {
     format!("{name} just joined your gang.")
 }
 
+// The roster (§1.6): display_online_gang_members (0x3bf6f) and
+// display_gang_members (0x3c145). Exact column formats from the DLL
+// string table ("%-29.29s" name field; the DLL fills it with "first
+// surname" — our players carry a single name).
+pub fn gang_roster_online_header(gang: &str) -> String {
+    format!("{gang} members (online)")
+}
+pub fn gang_roster_all_header(gang: &str, count: u16) -> String {
+    format!("{gang} members ({count})")
+}
+pub const GANG_DISBANDED_BANNER: &str = "This gang has been disbanded.";
+/// Online-view rows.
+pub fn gang_row_leader(name: &str, online: bool) -> String {
+    if online {
+        format!("{name:<29.29}  [Leader]")
+    } else {
+        format!("{name:<29.29}  [Leader - Offline]")
+    }
+}
+pub fn gang_row_lieutenant(name: &str) -> String {
+    format!("{name:<29.29}  [Lieutenant]")
+}
+pub fn gang_row_member(name: &str) -> String {
+    format!("{name:<29.29}")
+}
+/// All-view rows (the WCCUSERS scan formats).
+pub fn gang_all_row_leader(name: &str, online: bool) -> String {
+    if online {
+        format!("{name:<29.29} - Online [Leader]")
+    } else {
+        format!("{name:<29.29}          [Leader]")
+    }
+}
+pub fn gang_all_row(name: &str, online: bool, lieutenant: bool) -> String {
+    let mark = if online { " - Online " } else { " " };
+    let rank = if lieutenant { "[Lieutenant]" } else { "" };
+    format!("{name:<29.29}{mark}{rank}")
+}
+
+// The SET GANG view toggle (cmd_set 54136/54556): bare = toggle,
+// ONLINE/ALL = explicit, anything else = the options line.
+pub const SET_GANG_ONLINE: &str = "You will now only see online gang members.";
+pub const SET_GANG_ALL: &str = "You will now see all gang members.";
+pub const SET_GANG_VALID: &str = "Valid gang options: Online, All";
+
 // --- inventory strings (VERIFIED oracle_m4_items.raw / round2) ---
 pub const CARRYING_NOTHING: &str = "You are carrying Nothing!";
 pub const NO_KEYS: &str = "You have no keys.";

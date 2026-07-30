@@ -8361,11 +8361,15 @@ impl Core {
             .map_or_else(String::new, |m| m.name.clone())
     }
 
-    /// `cmd_set` (0x458b60) — only the EVIL subcommand ships in slice 3;
-    /// the other seventeen (keep/style/gossip/...) fall through to say
+    /// `cmd_set` (0x458b60) — EVIL (slice 3) and GANG (slice 7) ship;
+    /// the other sixteen (keep/style/gossip/...) fall through to say
     /// until their systems exist. Subcommand matching is exact-word
     /// (ORACLE-VERIFY: DLL abbreviation behavior unmeasured).
     fn set_command(&mut self, session: SessionId, args: &str) -> Resolution {
+        let (subword, rest) = split_word(args);
+        if subword.eq_ignore_ascii_case("gang") {
+            return self.set_gang_command(session, rest);
+        }
         if !args.trim().eq_ignore_ascii_case("evil") {
             return Resolution::FallThrough;
         }
@@ -8378,6 +8382,39 @@ impl Core {
             player.clone(),
         );
         self.output_line(session, line);
+        self.events.push(Event::Persist(snapshot));
+        Resolution::Handled
+    }
+
+    /// The roster-view toggle (cmd_set 54136 bare / 54556 explicit):
+    /// bare SET GANG flips bit 0x8; ONLINE/ALL set it; anything else
+    /// prints the options line.
+    fn set_gang_command(&mut self, session: SessionId, arg: &str) -> Resolution {
+        let arg = arg.trim();
+        let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+            return Resolution::Handled;
+        };
+        let online_only = player.gang_flags & crate::gang::GF_ROSTER_ONLINE_ONLY != 0;
+        let set_to = if arg.is_empty() {
+            !online_only
+        } else if arg.eq_ignore_ascii_case("online") {
+            true
+        } else if arg.eq_ignore_ascii_case("all") {
+            false
+        } else {
+            self.output_line(session, text::SET_GANG_VALID);
+            return Resolution::Handled;
+        };
+        if set_to {
+            player.gang_flags |= crate::gang::GF_ROSTER_ONLINE_ONLY;
+        } else {
+            player.gang_flags &= !crate::gang::GF_ROSTER_ONLINE_ONLY;
+        }
+        let snapshot = player.clone();
+        self.output_line(
+            session,
+            if set_to { text::SET_GANG_ONLINE } else { text::SET_GANG_ALL },
+        );
         self.events.push(Event::Persist(snapshot));
         Resolution::Handled
     }
@@ -8408,8 +8445,7 @@ impl Core {
 
     /// `gang`/`guild` (cmd_broadgang 0x585cc): bare = roster, args =
     /// gangpath broadcast — both refuse without a gang (§1.6/§5.2).
-    /// Roster and broadcast land with the membership task.
-    fn gang_command(&mut self, session: SessionId, _message: &str) -> Resolution {
+    fn gang_command(&mut self, session: SessionId, message: &str) -> Resolution {
         let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
             return Resolution::Handled;
         };
@@ -8417,7 +8453,77 @@ impl Core {
             self.output_line(session, text::NOT_IN_A_GANG);
             return Resolution::Handled;
         }
+        if message.trim().is_empty() {
+            self.gang_roster(session);
+            return Resolution::Handled;
+        }
         Resolution::FallThrough
+    }
+
+    /// The roster (§1.6). View picked by `GF_ROSTER_ONLINE_ONLY`:
+    /// display_online_gang_members runs rank-ordered passes over the
+    /// live terminals; display_gang_members prints the leader then
+    /// scans the user db — our analog walks the offline-roster mirror,
+    /// whose order is boot-scan (alphabetical) + join order rather than
+    /// WCCUSERS record order (documented divergence).
+    fn gang_roster(&mut self, session: SessionId) {
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+            return;
+        };
+        let online_only = player.gang_flags & crate::gang::GF_ROSTER_ONLINE_ONLY != 0;
+        let gang_key = player.gang.to_uppercase();
+        // The DLL display fns return silently when the gang is gone.
+        let Some(gang) = self.gangs.get(&gang_key) else { return };
+        let display = gang.display.clone();
+        let leader = gang.leader.clone();
+        let count = gang.member_count;
+        let disbanded = gang.is_disbanded();
+        let leader_online = self
+            .in_game_sessions()
+            .any(|(_, p)| p.name.eq_ignore_ascii_case(&leader));
+        let mut lines: Vec<String> = Vec::new();
+        if online_only {
+            lines.push(text::gang_roster_online_header(&display));
+            lines.push(text::gang_row_leader(&leader, leader_online));
+            // Two rank passes over the live sessions (0x3bf6f).
+            for want_lieutenant in [true, false] {
+                for (_, p) in self.in_game_sessions() {
+                    if !p.gang.eq_ignore_ascii_case(&display)
+                        || p.name.eq_ignore_ascii_case(&leader)
+                    {
+                        continue;
+                    }
+                    let is_lt = p.gang_flags & crate::gang::GF_LIEUTENANT != 0;
+                    if is_lt == want_lieutenant {
+                        lines.push(if is_lt {
+                            text::gang_row_lieutenant(&p.name)
+                        } else {
+                            text::gang_row_member(&p.name)
+                        });
+                    }
+                }
+            }
+        } else {
+            lines.push(text::gang_roster_all_header(&display, count));
+            if disbanded {
+                lines.push(text::GANG_DISBANDED_BANNER.to_string());
+            }
+            lines.push(text::gang_all_row_leader(&leader, leader_online));
+            let members = self.gang_members.get(&gang_key).cloned().unwrap_or_default();
+            for (name, flags) in members {
+                if name.eq_ignore_ascii_case(&leader) {
+                    continue;
+                }
+                let online = self
+                    .in_game_sessions()
+                    .any(|(_, p)| p.name.eq_ignore_ascii_case(&name));
+                let lieutenant = flags & crate::gang::GF_LIEUTENANT != 0;
+                lines.push(text::gang_all_row(&name, online, lieutenant));
+            }
+        }
+        for line in lines {
+            self.output_line(session, &line);
+        }
     }
 
     /// `create` (cmd_create 0x57d4a). Structure per the decompile:
