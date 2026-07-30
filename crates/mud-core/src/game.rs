@@ -4939,7 +4939,8 @@ impl Core {
         // completion detector (FUN_00414d23, called at 10632) — both
         // BEFORE the stat derivation so grants feed the bag.
         self.quest_login_strip(&mut player);
-        let penalty_lines = self.run_quest_completion(&mut player);
+        let mut penalty_lines = self.run_quest_completion(&mut player);
+        penalty_lines.extend(self.gang_login_sweep(&mut player));
         let id = self.next_session_id();
         self.broadcast_to_others(id, &text::entered_realm(&player.name));
         let derived = self.derive_for(&player);
@@ -4968,6 +4969,79 @@ impl Core {
         self.show_prompt(id);
         self.reprompt_disturbed();
         id
+    }
+
+    /// The gang deferred-action handler (gangs.md §0, decompile
+    /// 10220-10285), in the compiled order: pending promote, pending
+    /// demote, the two house notices, then membership validation —
+    /// missing gang strips with notices, a disbanded gang drains the
+    /// count and strips SILENTLY. Returns the notice lines; emits the
+    /// persist events for anything that changed.
+    fn gang_login_sweep(&mut self, player: &mut Player) -> Vec<String> {
+        use crate::gang::{
+            GF_LIEUTENANT, GF_NOTICE_HOUSE_CLOSED, GF_NOTICE_ITEMS_GONE, GF_PENDING_DEMOTE,
+            GF_PENDING_PROMOTE,
+        };
+        let mut lines = Vec::new();
+        let before_flags = player.gang_flags;
+        let before_gang = player.gang.clone();
+        if player.gang_flags & GF_PENDING_PROMOTE != 0 {
+            player.gang_flags |= GF_LIEUTENANT;
+            player.gang_flags &= !GF_PENDING_PROMOTE;
+            lines.push(text::GANG_LOGIN_PROMOTED.to_string());
+        }
+        if player.gang_flags & GF_PENDING_DEMOTE != 0 {
+            player.gang_flags &= !(GF_LIEUTENANT | GF_PENDING_DEMOTE);
+            lines.push(text::GANG_LOGIN_DEMOTED.to_string());
+        }
+        if player.gang_flags & GF_NOTICE_HOUSE_CLOSED != 0 {
+            player.gang_flags &= !GF_NOTICE_HOUSE_CLOSED;
+            lines.push(text::GANG_LOGIN_HOUSE_CLOSED.to_string());
+        }
+        if player.gang_flags & GF_NOTICE_ITEMS_GONE != 0 {
+            player.gang_flags &= !GF_NOTICE_ITEMS_GONE;
+            lines.push(text::GANG_LOGIN_ITEMS_GONE.to_string());
+        }
+        if !player.gang.is_empty() {
+            let key = player.gang.to_uppercase();
+            match self.gangs.get_mut(&key) {
+                None => {
+                    if player.gang_flags & GF_LIEUTENANT != 0 {
+                        player.gang_flags &= !GF_LIEUTENANT;
+                        lines.push(text::GANG_LOGIN_RANK_STRIPPED.to_string());
+                    }
+                    lines.push(text::gang_no_longer_in(&player.gang));
+                    player.gang.clear();
+                }
+                Some(gang) if gang.is_disbanded() => {
+                    player.gang_flags &= !GF_LIEUTENANT;
+                    gang.member_count = gang.member_count.saturating_sub(1);
+                    let display = gang.display.clone();
+                    let gang_row = gang.clone();
+                    lines.push(text::gang_was_disbanded(&display));
+                    player.gang.clear();
+                    if let Some(members) = self.gang_members.get_mut(&key) {
+                        members.retain(|(n, _)| !n.eq_ignore_ascii_case(&player.name));
+                    }
+                    self.events.push(Event::PersistGang(Box::new(gang_row)));
+                }
+                Some(_) => {
+                    // Live gang: keep the mirror's flags in lockstep
+                    // with whatever the pending bits resolved to.
+                    if let Some(members) = self.gang_members.get_mut(&key) {
+                        for (n, f) in members.iter_mut() {
+                            if n.eq_ignore_ascii_case(&player.name) {
+                                *f = player.gang_flags;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if player.gang_flags != before_flags || player.gang != before_gang {
+            self.events.push(Event::Persist(Box::new(player.clone())));
+        }
+        lines
     }
 
     /// load_player's quest-earned class-skill strip (0x15084, decompile

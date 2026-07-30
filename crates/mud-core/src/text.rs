@@ -830,6 +830,25 @@ pub fn gang_left_room(name: &str, gang: &str) -> String {
     format!("{name} has left {gang}.")
 }
 
+// The login deferred-action handler (gangs.md §0, decompile
+// 10220-10285) — notices printed in the compiled order.
+pub const GANG_LOGIN_PROMOTED: &str = "You have been promoted to the rank of lieutenant.";
+pub const GANG_LOGIN_DEMOTED: &str = "You have been demoted from the rank of lieutenant.";
+pub const GANG_LOGIN_HOUSE_CLOSED: &str = "Your ganghouse has been closed down!!";
+/// The double-s misspelling is the DLL's.
+pub const GANG_LOGIN_ITEMS_GONE: &str =
+    "Gang house items have dissappeared from your inventory!";
+pub const GANG_LOGIN_RANK_STRIPPED: &str =
+    "You have been stripped of your rank as lieutenant!";
+/// Missing-gang arm: the player's own stored copy of the name.
+pub fn gang_no_longer_in(gang: &str) -> String {
+    format!("You are no longer in the gang {gang}.")
+}
+/// Disbanded arm: the gang record's display name.
+pub fn gang_was_disbanded(gang: &str) -> String {
+    format!("Your gang, {gang}, has been disbanded!")
+}
+
 // cmd_uninvite (0x5699f) — §1.4 (the MEMBER arm).
 pub const SYNTAX_UNINVITE: &str = "Syntax: UNINVITE {user name}";
 pub const GANG_UNINVITE_RANK: &str =

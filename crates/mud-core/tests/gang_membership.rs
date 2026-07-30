@@ -487,27 +487,10 @@ fn roster_leader_offline_forms() {
     assert!(out.contains(&leader), "online view offline leader: {out:?}");
 }
 
-#[test]
-fn all_roster_shows_the_disbanded_banner() {
-    use mud_core::gang::GANG_DISBANDED;
-    let config = CoreConfig {
-        restored_gangs: {
-            let mut g = mud_core::gang::Gang::new("Iron Fist", "Salad", 0);
-            g.flags |= GANG_DISBANDED;
-            vec![g]
-        },
-        restored_gang_members: vec![("Grunt".into(), "Iron Fist".into(), 0)],
-        ..CoreConfig::default()
-    };
-    let mut core = Core::new(world(), config);
-    let mut p = person("Grunt");
-    p.gang = "Iron Fist".into();
-    let s = core.attach_player(p);
-    core.drain_events();
-    core.input(s, "gang");
-    let out = texts(&core.drain_events(), s);
-    assert!(out.contains("This gang has been disbanded."), "{out:?}");
-}
+// NOTE: display_gang_members' "This gang has been disbanded." banner is
+// ported but unreachable through play — the online disband sweep and
+// the login sweep both clear membership before anyone can view a
+// disbanded roster. It stays as the DLL's defensive arm.
 
 #[test]
 fn set_gang_toggles_and_sets_the_roster_view() {
@@ -935,4 +918,112 @@ fn promote_demote_gates() {
     core.input(s[0], "promote Iron Fist");
     let out = texts(&core.drain_events(), s[0]);
     assert!(!out.contains("Syntax") && !out.contains("You say"), "{out:?}");
+}
+
+// --- §0 login processing (the deferred-action handler, 10220-10285) ---
+
+#[test]
+fn login_applies_pending_promote_and_demote() {
+    use mud_core::gang::{GF_LIEUTENANT, GF_PENDING_DEMOTE, GF_PENDING_PROMOTE};
+    let (mut core, _s) = gang_world(&[("Salad", true, 0)]);
+    let mut p = person("Ghost");
+    p.gang = "Iron Fist".into();
+    p.gang_flags = GF_PENDING_PROMOTE;
+    let s = core.attach_player(p);
+    let events = core.drain_events();
+    let out = texts(&events, s);
+    assert!(out.contains("You have been promoted to the rank of lieutenant."), "{out:?}");
+    assert!(
+        events.iter().any(|e| matches!(e, Event::Persist(p) if p.name == "Ghost"
+            && p.gang_flags & GF_LIEUTENANT != 0
+            && p.gang_flags & GF_PENDING_PROMOTE == 0)),
+    );
+
+    let mut p = person("Wisp");
+    p.gang = "Iron Fist".into();
+    p.gang_flags = GF_LIEUTENANT | GF_PENDING_DEMOTE;
+    let s = core.attach_player(p);
+    let events = core.drain_events();
+    assert!(
+        texts(&events, s).contains("You have been demoted from the rank of lieutenant."),
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, Event::Persist(p) if p.name == "Wisp"
+            && p.gang_flags & (GF_LIEUTENANT | GF_PENDING_DEMOTE) == 0)),
+    );
+}
+
+#[test]
+fn login_delivers_house_notices() {
+    use mud_core::gang::{GF_NOTICE_HOUSE_CLOSED, GF_NOTICE_ITEMS_GONE};
+    let (mut core, _s) = gang_world(&[("Salad", true, 0)]);
+    let mut p = person("Ghost");
+    p.gang = "Iron Fist".into();
+    p.gang_flags = GF_NOTICE_HOUSE_CLOSED | GF_NOTICE_ITEMS_GONE;
+    let s = core.attach_player(p);
+    let events = core.drain_events();
+    let out = texts(&events, s);
+    assert!(out.contains("Your ganghouse has been closed down!!"), "{out:?}");
+    // The double-s misspelling is the DLL's.
+    assert!(
+        out.contains("Gang house items have dissappeared from your inventory!"),
+        "{out:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, Event::Persist(p) if p.name == "Ghost"
+            && p.gang_flags & (GF_NOTICE_HOUSE_CLOSED | GF_NOTICE_ITEMS_GONE) == 0)),
+    );
+}
+
+#[test]
+fn login_sweeps_a_missing_gang() {
+    use mud_core::gang::GF_LIEUTENANT;
+    // No restored gangs at all: the record is simply gone.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let mut p = person("Ghost");
+    p.gang = "Lost Cause".into();
+    p.gang_flags = GF_LIEUTENANT;
+    let s = core.attach_player(p);
+    let events = core.drain_events();
+    let out = texts(&events, s);
+    assert!(out.contains("You have been stripped of your rank as lieutenant!"), "{out:?}");
+    assert!(out.contains("You are no longer in the gang Lost Cause."), "{out:?}");
+    assert!(
+        events.iter().any(|e| matches!(e, Event::Persist(p) if p.name == "Ghost"
+            && p.gang.is_empty() && p.gang_flags & GF_LIEUTENANT == 0)),
+    );
+}
+
+#[test]
+fn login_drains_a_disbanded_gang() {
+    use mud_core::gang::{Gang, GANG_DISBANDED, GF_LIEUTENANT};
+    let config = CoreConfig {
+        restored_gangs: {
+            let mut g = Gang::new("Old Guard", "Gone", 0);
+            g.flags |= GANG_DISBANDED;
+            g.member_count = 2;
+            vec![g]
+        },
+        restored_gang_members: vec![("Ghost".into(), "Old Guard".into(), GF_LIEUTENANT)],
+        ..CoreConfig::default()
+    };
+    let mut core = Core::new(world(), config);
+    let mut p = person("Ghost");
+    p.gang = "Old Guard".into();
+    p.gang_flags = GF_LIEUTENANT;
+    let s = core.attach_player(p);
+    let events = core.drain_events();
+    let out = texts(&events, s);
+    // The disbanded arm strips rank SILENTLY (no strip notice) and
+    // names the gang by its record display name.
+    assert!(out.contains("Your gang, Old Guard, has been disbanded!"), "{out:?}");
+    assert!(!out.contains("stripped of your rank"), "{out:?}");
+    assert_eq!(core.gang("Old Guard").unwrap().member_count, 1, "count drained");
+    assert!(
+        events.iter().any(|e| matches!(e, Event::PersistGang(g) if g.member_count == 1)),
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, Event::Persist(p) if p.name == "Ghost"
+            && p.gang.is_empty() && p.gang_flags & GF_LIEUTENANT == 0)),
+    );
 }
