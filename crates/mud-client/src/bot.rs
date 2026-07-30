@@ -142,13 +142,21 @@ fn is_attackable(name: &str) -> bool {
         .is_some_and(char::is_lowercase)
 }
 
-/// Drop a leading "(Resting) " style status prefix.
+/// Drop a leading "(Resting) " style status marker.
 ///
-/// The board decorates busy actors that way, and the case rule is the
-/// ONLY player/monster discriminator available — so a prefix hid every
-/// decorated monster from the bot, which then stood in a full room and
-/// attacked nothing. Stripping it must not smuggle a player through:
-/// the case test still runs, just on the name rather than the bracket.
+/// DEFENCE IN DEPTH, not a diagnosis. ` (Resting) ` is a decoration the
+/// board splices into a line (DLL 0xe06f6, spaces included) and it was
+/// seen attached to a monster's name in an `ActorEntered` — "+  (Resting)
+/// fierce filthbug", with the tell-tale doubled space. Monsters do not
+/// rest, so that marker was almost certainly the PLAYER's own status
+/// bleeding into the actor name upstream, in the parser.
+///
+/// Fixing it here is still worth doing, because the case rule is the only
+/// player/monster discriminator there is and a leading "(" defeats it
+/// entirely — but the real bug is wherever the marker got glued on, and
+/// this does not address that. Stripping must not smuggle a player
+/// through, so the case test still runs, on the name rather than the
+/// bracket.
 fn strip_status(name: &str) -> &str {
     name.strip_prefix('(')
         .and_then(|rest| rest.split_once(')'))
