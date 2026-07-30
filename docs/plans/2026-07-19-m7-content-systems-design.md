@@ -506,16 +506,25 @@ from the shipped columns.
    been checked against a capture. **Capture a grind against a
    Dodge-carrying template first** — everything else on this list is
    smaller. (charm.md §8.2; ORACLE-VERIFY at `build_monster_defender`.)
-2. **The engage retaliation lock's relocation** (`12e6178`) from the
+2. **DECOMPILE-JUSTIFIED, field protocol shelved (2026-07-30, charm.md
+   §8.6 tail — every launch window found the subject rooms empty or
+   lethal; `tools/oracle/oracle_engage_lock.py` holds the finished
+   P0-P3 design).** The engage retaliation lock's relocation (`12e6178`) from the
    combat round to the ATTACK command — a change to all player melee that
    moved a `genrdn` draw earlier in the stream and moved a golden in
    `spell_scenario.rs`. Decompile-justified (26230 is in the other arm of
    the 26112 split), unmeasured. Confirm the timing and the draw order.
-3. The live charm oracle expedition (charm a low monster with charm
+3. **CLOSED (2026-07-30, charm.md §8.6): the lifecycle measured by
+   suppression — sing/resist wording, confirmed charms, follow lines,
+   attack-own-pet, duration bracketed [209, 261] s.**
+   The live charm oracle expedition (charm a low monster with charm
    animal / song of charming, walk it, watch one assist round, attack it
    as the owner, let a second charm expire — pin every string and retag
    text.rs ORACLE → MEASURED).
-4. The `EvilInCombat(52)` charge above.
+4. **CLOSED (2026-07-30, charm.md §8.6): the behavioral shell measured
+   (both casts, the benign-cast grudge, the *Combat Off* disengage);
+   the charge bookkeeping has no live observable and closes on the
+   decompile.** The `EvilInCombat(52)` charge above.
 4b. **The to-hit model**, which the parry expedition put in question
    (31/37 = 0.838 connecting against a predicted 0.67) and which the armour
    fix above did NOT settle — it has a different cause. It does now have a
@@ -554,7 +563,10 @@ from the shipped columns.
    DLL's key-array weight (+0x334[50], decompile 67745-67775), inert unless
    keys are carried. (Still does NOT explain 4b's residue, since at the
    captured weight both denominators floor to the same `enc/10`.)
-5. **The pet lifetime that `give_up` never resets.** `give_up` is zeroed
+5. **CLOSED (2026-07-30, charm.md §8.6): walked following never
+   releases (13 rooms measured); a stranded pet released within one
+   40 s exile — the cumulative give_up model stands as faithful.**
+   The pet lifetime that `give_up` never resets: `give_up` is zeroed
    only in `monster_attack`'s engage block (`game.rs:9773`, decompile
    26768-26777) — a path a pet essentially never takes, since a pet
    swings through `attack_monster_monster` (`pet_assist`) instead. (The
