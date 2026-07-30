@@ -177,6 +177,11 @@ fn player(name: &str) -> Player {
 
 #[test]
 fn innate_accuracy_feeds_the_derived_fighter() {
+    // Uses Accuracy(2) (105/0x69, the same +0x70a word) rather than
+    // Accuracy(22): 0x16 is one of the completion detector's ten
+    // reward ids, which the attach-time pre-zero pass wipes
+    // (FUN_00414d23 LAB_00414dd0) — a bare 0x16 slot never survives a
+    // login. Non-reward innates flow through untouched.
     let config = CoreConfig {
         start_location: RoomId { map: 1, room: 1 },
         ..CoreConfig::default()
@@ -186,12 +191,12 @@ fn innate_accuracy_feeds_the_derived_fighter() {
     let base = core.combat_debug(naked).0.accuracy;
 
     let mut gifted = player("Gifted");
-    assert!(gifted.raise_innate_ability(ab(ACCURACY), 5));
+    assert!(gifted.raise_innate_ability(ab(105), 5));
     let mut core = Core::new(world(), config);
     let s = core.attach_player(gifted);
     assert_eq!(
         core.combat_debug(s).0.accuracy,
         base + 5,
-        "an innate Accuracy(22) slot must reach the dynamic accumulator"
+        "an innate Accuracy(2) slot must reach the dynamic accumulator"
     );
 }

@@ -4854,6 +4854,13 @@ impl Core {
     /// the entry to everyone else in the game, and shows the player their
     /// room (returning-character entry; ORACLE-VERIFY the exact ordering).
     pub fn attach_player(&mut self, player: Player) -> SessionId {
+        let mut player = player;
+        // load_player's quest passes (M7 slice 6), in the DLL's order:
+        // the class-skill strip (0x15084, 10164-10201) then the
+        // completion detector (FUN_00414d23, called at 10632) — both
+        // BEFORE the stat derivation so grants feed the bag.
+        self.quest_login_strip(&mut player);
+        let penalty_lines = self.run_quest_completion(&mut player);
         let id = self.next_session_id();
         self.broadcast_to_others(id, &text::entered_realm(&player.name));
         let derived = self.derive_for(&player);
@@ -4875,10 +4882,173 @@ impl Core {
                 attack_mode: crate::combat::AttackType::Normal,
                 delay: 0,
             });
+        for line in penalty_lines {
+            self.output_line(id, &line);
+        }
         self.show_room(id);
         self.show_prompt(id);
         self.reprompt_disturbed();
         id
+    }
+
+    /// load_player's quest-earned class-skill strip (0x15084, decompile
+    /// 10164-10201; quests.md §4.4): Smash (0x20), Perfect Stealth
+    /// (0xba) and Meditate (0xbb) survive only for the listed class at
+    /// or above its level gate — change class or fall below and the
+    /// skill is gone at next login. Tables verbatim from the decompile.
+    fn quest_login_strip(&self, player: &mut Player) {
+        const SMASH: &[(u16, u16)] =
+            &[(1, 22), (2, 20), (3, 25), (4, 27), (0xb, 27), (0xe, 22)];
+        const PERFECT_STEALTH: &[(u16, u16)] = &[
+            (6, 25),
+            (7, 20),
+            (8, 20),
+            (9, 25),
+            (10, 25),
+            (0xe, 20),
+            (0xf, 27),
+        ];
+        const MEDITATE: &[(u16, u16)] = &[
+            (3, 27),
+            (4, 23),
+            (5, 20),
+            (6, 23),
+            (9, 27),
+            (10, 23),
+            (0xb, 23),
+            (0xc, 20),
+            (0xd, 20),
+            (0xe, 27),
+        ];
+        let class = player.class.0;
+        let level = player.level;
+        let keeps = |table: &[(u16, u16)]| {
+            table
+                .iter()
+                .any(|(c, l)| *c == class && level >= *l)
+        };
+        for slot in &mut player.innate {
+            let stripped = match slot.0.map(|a| a.id()) {
+                Some(0x20) => !keeps(SMASH),
+                Some(0xba) => !keeps(PERFECT_STEALTH),
+                Some(0xbb) => !keeps(MEDITATE),
+                _ => false,
+            };
+            if stripped {
+                *slot = (None, 0);
+            }
+        }
+    }
+
+    /// The quest completion detector (`FUN_00414d23`, asm export;
+    /// quests.md §4.3): one pass captures the quest counters
+    /// (0x7d-0x84, LAST matching slot wins) and zeroes every reward-id
+    /// slot (LAB_00414dd0 — the idempotence pre-pass), then the
+    /// threshold table re-grants fresh. Returns the SheDragon penalty
+    /// lines to print once the session exists.
+    fn run_quest_completion(&self, player: &mut Player) -> Vec<String> {
+        const REWARD_IDS: [u16; 10] =
+            [0x2, 0x4, 0x16, 0x1b, 0x22, 0x3a, 0x45, 0x46, 0x75, 0x76];
+        let (mut ice, mut good, mut neutral, mut evil) = (0i32, 0i32, 0i32, 0i32);
+        let (mut druid, mut champ, mut dragon, mut rat) = (0i32, 0i32, 0i32, 0i32);
+        for slot in &mut player.innate {
+            let Some(id) = slot.0.map(|a| a.id()) else { continue };
+            match id {
+                0x7d => ice = i32::from(slot.1),
+                0x7e => good = i32::from(slot.1),
+                0x7f => neutral = i32::from(slot.1),
+                0x80 => evil = i32::from(slot.1),
+                0x81 => druid = i32::from(slot.1),
+                0x82 => champ = i32::from(slot.1),
+                0x83 => dragon = i32::from(slot.1),
+                0x84 => rat = i32::from(slot.1),
+                _ if REWARD_IDS.contains(&id) => *slot = (None, 0),
+                _ => {}
+            }
+        }
+        let give = |player: &mut Player, id: u16, v: i16| {
+            player.give_innate_ability(Ability::from_id(id).expect("reward id"), v);
+        };
+        // IceSorc == 2 -> AC +1 (asm 00414e4d).
+        if ice == 2 {
+            give(player, 0x2, 1);
+        }
+        // The alignment paths (00414e5f): Good >= 8, Neutral >= 8, or
+        // Evil >= 4 -> the CURRENT class's package (jump table 0x414ea1).
+        if good >= 8 || neutral >= 8 || evil >= 4 {
+            match player.class.0 {
+                1 | 2 | 3 | 0xf => give(player, 0x4, 1),
+                4 | 0xb => {
+                    give(player, 0x2, 1);
+                    give(player, 0x45, 6);
+                }
+                5 | 0xc | 0xd => {
+                    give(player, 0x46, 1);
+                    give(player, 0x45, 10);
+                }
+                6 | 9 | 10 => {
+                    give(player, 0x75, 6);
+                    give(player, 0x76, 6);
+                    give(player, 0x1b, 1);
+                    give(player, 0x45, 4);
+                }
+                7 | 8 | 0xe => {
+                    give(player, 0x75, 10);
+                    give(player, 0x76, 10);
+                    give(player, 0x1b, 2);
+                }
+                _ => {}
+            }
+        }
+        // DarkDruid == 2 -> S.C. +1 (00414f60).
+        if druid == 2 {
+            give(player, 0x46, 1);
+        }
+        // BloodChamp == 2 -> Accuracy +3 (00414f73).
+        if champ == 2 {
+            give(player, 0x16, 3);
+        }
+        // SheDragon == 3 -> Crits +1, S.C. +2 (00414f86).
+        if dragon == 3 {
+            give(player, 0x3a, 1);
+            give(player, 0x46, 2);
+        }
+        let mut lines = Vec::new();
+        // SheDragon == 2 -> the cheater penalty (00414fa5-00415068):
+        // above 35,000,000 exp the strip and de-level fire with the two
+        // stripped lines; at or below, silence — but the 0x83 counter
+        // slots clear either way.
+        if dragon == 2 {
+            if player.experience > 35_000_000 {
+                player.experience -= 35_000_000;
+                self.quest_delevel(player);
+                lines.push(text::SHEDRAGON_STRIPPED.to_string());
+                lines.push(text::SHEDRAGON_RETRAIN.to_string());
+            }
+            for slot in &mut player.innate {
+                if slot.0.map(|a| a.id()) == Some(0x83) {
+                    *slot = (None, 0);
+                }
+            }
+        }
+        // Wererat == 2 -> Dodge +1 (0041506a).
+        if rat == 2 {
+            give(player, 0x22, 1);
+        }
+        lines
+    }
+
+    /// `FUN_00414c39` (9905-9944): walk the level down while the exp
+    /// counter sits below the curve for the current level. (The DLL
+    /// also resets the CP sentinel and HP base per step — recompute
+    /// machinery our model derives elsewhere; unported.)
+    fn quest_delevel(&self, player: &mut Player) {
+        let base = self.exp_base(player);
+        while player.level > 1
+            && player.experience < crate::stats::exp_needed(player.level - 1, base)
+        {
+            player.level -= 1;
+        }
     }
 
     /// The player's accumulated ability modifiers: race + class permanents,

@@ -530,6 +530,14 @@ pub fn doesnt_understand(name: &str) -> String {
     format!("{name} doesn't understand you.")
 }
 
+/// VERIFIED (DLL strings dump 412/413): the SheDragon==2 cheater
+/// penalty pair (FUN_00414d23 asm 00414fc8-00414fd8). The trailing
+/// double period is the original's.
+pub const SHEDRAGON_STRIPPED: &str =
+    "You have been stripped of 35,000,000 exp, and need to recomplete the red dragon ruby quest.";
+pub const SHEDRAGON_RETRAIN: &str =
+    "You will need to exit and re-enter the realm to be retrained so your stats can be verified..";
+
 /// VERIFIED (DLL strings dump 3147): the `learnspell` success line
 /// (68477; `%s` = the spell's long name).
 pub fn learn_spell(name: &str) -> String {

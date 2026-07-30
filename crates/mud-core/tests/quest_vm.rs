@@ -603,9 +603,11 @@ fn addability_raises_and_creates() {
     assert_eq!(core.debug_perform_matched_action(s, "addability 129 1"), 1);
     assert_eq!(core.player_snapshot(s).innate[0].1, 2, "at-least, not add");
 
+    // Filler id 13 (Illu) — NOT one of the completion detector's reward
+    // ids, which the attach pre-zero would wipe (freeing the table).
     let mut full = player("Full");
     for i in 0..30 {
-        full.innate[i] = (Some(ab(22)), 1);
+        full.innate[i] = (Some(ab(13)), 1);
     }
     let (mut core, s) = boot_with(full);
     assert_eq!(
