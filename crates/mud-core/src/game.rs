@@ -2859,19 +2859,124 @@ impl Core {
                 }
                 CONTINUE
             }
-            // M7 PENDING(slice-6): the output/world and peripheral arms
-            // land with tasks 7-8 of the slice-6 plan
+            QuestVerb::Message => {
+                // 69426-69435 → FUN_0046f360 (the workhorse — 515
+                // shipped uses): line 1 to the actor, line 2 to the room
+                // with the actor's name substituted.
+                let Some(msg) = w.next() else { return CONTINUE };
+                self.quest_fail_message(session, crate::questvm::atol(msg));
+                CONTINUE
+            }
+            QuestVerb::Text => {
+                // 69046-69056 → display_LONG_text(block, 0): the
+                // assembled body prints raw to the actor (36055-36056).
+                let Some(block) = w.next() else { return CONTINUE };
+                if let Ok(block) = u16::try_from(crate::questvm::atol(block)) {
+                    self.display_long_text(session, crate::content::TextBlockId(block), None);
+                }
+                CONTINUE
+            }
+            QuestVerb::RoomText => {
+                // 69033-69044 → display_LONG_text_to_room: tell_room
+                // with NO exclusion (36128) — the actor sees it too.
+                // Zero shipped uses; decompile-literal.
+                let Some(block) = w.next() else { return CONTINUE };
+                let block = match u16::try_from(crate::questvm::atol(block)) {
+                    Ok(b) => crate::content::TextBlockId(b),
+                    Err(_) => return CONTINUE,
+                };
+                let Some(block) = self.content.textblocks.get(&block) else {
+                    return CONTINUE;
+                };
+                let body = block.body.clone();
+                let room = self.player(session).location;
+                for line in body.lines() {
+                    self.broadcast_to_room(room, None, line);
+                }
+                CONTINUE
+            }
+            QuestVerb::Summon => {
+                // 69437-69456: generate_monster(player room, template,
+                // …) — an ORDINARY spawn, no owner link (this is NOT the
+                // spell Summon(12) path and writes none of the slice-5
+                // tags); a failed spawn fail-stops.
+                let Some(template) = w.next() else { return CONTINUE };
+                let Ok(template) = u16::try_from(crate::questvm::atol(template)) else {
+                    return FAIL;
+                };
+                let room = self.player(session).location;
+                if self
+                    .spawn_monster(crate::content::MonsterId(template), room)
+                    .is_none()
+                {
+                    return FAIL;
+                }
+                CONTINUE
+            }
+            QuestVerb::Teleport => {
+                // FUN_0046f887: numeric `teleport <room> <map>` (room
+                // FIRST, 68159-68168 — all 240 shipped uses). A real
+                // move relocates (FUN_00416ae6 writes location only; the
+                // room-history trails and entry-cast hook there are
+                // unmodeled engine-wide), shows the room (ORACLE-VERIFY:
+                // the DLL leaves the display to the caller), and returns
+                // code 2 — the script stops, you left (68299-68310).
+                // The 12 named destinations (silvermere/sewers/… random
+                // ranges, 68135-68297) have ZERO shipped uses — their
+                // words atol to room 0, a no-op, and stay unported.
+                let (Some(room), Some(map)) = (w.next(), w.next()) else {
+                    return CONTINUE;
+                };
+                let (Ok(room), Ok(map)) = (
+                    u16::try_from(crate::questvm::atol(room)),
+                    u16::try_from(crate::questvm::atol(map)),
+                ) else {
+                    return CONTINUE;
+                };
+                let dest = RoomId { map, room };
+                if !self.content.rooms.contains_key(&dest) || self.player(session).location == dest
+                {
+                    return CONTINUE;
+                }
+                if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+                    player.location = dest;
+                }
+                self.show_room(session);
+                let snapshot = Box::new(self.player(session).clone());
+                self.events.push(Event::Persist(snapshot));
+                FAIL
+            }
+            // M7 PENDING(slice-6): the peripheral arms land with task 8
+            // of the slice-6 plan
             // (docs/plans/2026-07-19-m7-content-systems-design.md §Slice 6).
             QuestVerb::Price
-            | QuestVerb::Teleport
-            | QuestVerb::Summon
-            | QuestVerb::Message
-            | QuestVerb::Text
-            | QuestVerb::RoomText
             | QuestVerb::RemoteAction
             | QuestVerb::Random
             | QuestVerb::AddDelay => ActionCode::NoOp,
         }
+    }
+
+    /// `display_LONG_text` (0x3bcca, 36021-36078): print the block's
+    /// assembled body to the actor — raw with no speaker, or as a
+    /// format string with the speaker name substituted for `%s`
+    /// (36055-36059) — and return the block's `next` link (word +10),
+    /// which `ask` feeds to the unconditional runner.
+    pub(crate) fn display_long_text(
+        &mut self,
+        session: SessionId,
+        block: crate::content::TextBlockId,
+        speaker: Option<&str>,
+    ) -> Option<crate::content::TextBlockId> {
+        let block = self.content.textblocks.get(&block)?;
+        let next = block.next;
+        let body = match speaker {
+            Some(name) => block.body.replacen("%s", name, 1),
+            None => block.body.clone(),
+        };
+        for line in body.lines() {
+            self.output_line(session, line);
+        }
+        next
     }
 
     /// The gates' optional trailing message arg: present → show it.

@@ -139,6 +139,17 @@ fn world() -> Content {
         next: None,
         body: "flag 7 set".into(),
     });
+    // Plain prose block for the text/roomtext display verbs.
+    content.add_text_block(TextBlock {
+        id: TextBlockId(950),
+        next: None,
+        body: "The walls shimmer with old magic.".into(),
+    });
+    content.add_room(Room {
+        id: RoomId { map: 1, room: 2 },
+        name: "Sanctum".into(),
+        ..Default::default()
+    });
     content
 }
 
@@ -781,6 +792,83 @@ fn clearitem_removes_every_copy_or_fails() {
     core.debug_perform_matched_action(s, "hideitem 400");
     assert_eq!(core.debug_perform_matched_action(s, "clearitem 0"), 1);
     assert_eq!(core.debug_perform_matched_action(s, "roomitem 400"), 2, "floor cleared");
+}
+
+// --- output & world verbs (Task 7) ---
+
+#[test]
+fn message_shows_user_and_room_lines_and_continues() {
+    // 69426-69435 → FUN_0046f360: line 1 to the actor, line 2 to the
+    // room, name-substituted; the chain keeps going.
+    let (mut core, s) = boot();
+    let witness = core.attach_player(player("Witness"));
+    core.drain_events();
+    assert_eq!(core.debug_perform_matched_action(s, "message 801:flag 3 set"), 1);
+    let events = core.drain_events();
+    assert!(text_to(&events, s).contains("You are judged unworthy."));
+    assert!(text_to(&events, witness).contains("Quester is judged unworthy."));
+    assert_eq!(core.player_snapshot(s).quest_flags, 1 << 2);
+}
+
+#[test]
+fn text_displays_the_block_to_the_user() {
+    // 69046-69056 → display_LONG_text(block, 0): the body prints raw to
+    // the actor only (36055-36056); the chain continues.
+    let (mut core, s) = boot();
+    let witness = core.attach_player(player("Witness"));
+    core.drain_events();
+    assert_eq!(core.debug_perform_matched_action(s, "text 950:flag 3 set"), 1);
+    let events = core.drain_events();
+    assert!(text_to(&events, s).contains("The walls shimmer with old magic."));
+    assert!(!text_to(&events, witness).contains("shimmer"), "user-only");
+    assert_eq!(core.player_snapshot(s).quest_flags, 1 << 2);
+}
+
+#[test]
+fn roomtext_broadcasts_to_everyone() {
+    // 69033-69044 → display_LONG_text_to_room: tell_room with no
+    // exclusion (36128, third arg -1) — the actor sees it too. Zero
+    // shipped uses; decompile-literal.
+    let (mut core, s) = boot();
+    let witness = core.attach_player(player("Witness"));
+    core.drain_events();
+    assert_eq!(core.debug_perform_matched_action(s, "roomtext 950"), 1);
+    let events = core.drain_events();
+    assert!(text_to(&events, s).contains("The walls shimmer with old magic."));
+    assert!(text_to(&events, witness).contains("The walls shimmer with old magic."));
+}
+
+#[test]
+fn summon_spawns_an_ordinary_monster_or_fails() {
+    // 69437-69456: generate_monster straight into the player's room —
+    // NO owner link, NOT the slice-5 summon_spawn tags; a failed spawn
+    // fail-stops.
+    let (mut core, s) = boot();
+    assert_eq!(core.debug_perform_matched_action(s, "summon 7"), 1);
+    assert_eq!(core.debug_perform_matched_action(s, "needmonster 7"), 1);
+    assert_eq!(core.debug_perform_matched_action(s, "summon 999:flag 3 set"), 2);
+    assert_eq!(core.player_snapshot(s).quest_flags, 0, "chain stopped");
+}
+
+#[test]
+fn teleport_moves_shows_the_room_and_stops_the_chain() {
+    // FUN_0046f887: numeric form is `teleport <room> <map>` (68159-68168
+    // — room FIRST; all 240 shipped uses are numeric). A real move
+    // returns code 2 and stops the script (68299-68310) — you left the
+    // room. Same-destination or an unknown room is a no-op Continue.
+    let (mut core, s) = boot();
+    assert_eq!(core.debug_perform_matched_action(s, "teleport 2 1:flag 3 set"), 2);
+    let p = core.player_snapshot(s);
+    assert_eq!(p.location, RoomId { map: 1, room: 2 });
+    assert_eq!(p.quest_flags, 0, "chain stopped");
+    let shown = text_to(&core.drain_events(), s);
+    assert!(shown.contains("Sanctum"), "new room shown: got {shown:?}");
+    // Already there: no move, chain continues.
+    assert_eq!(core.debug_perform_matched_action(s, "teleport 2 1:flag 3 set"), 1);
+    assert_eq!(core.player_snapshot(s).quest_flags, 1 << 2);
+    // Unknown destination: no move, Continue.
+    assert_eq!(core.debug_perform_matched_action(s, "teleport 999 9"), 1);
+    assert_eq!(core.player_snapshot(s).location, RoomId { map: 1, room: 2 });
 }
 
 // --- failure-message plumbing (FUN_0046f360, 67820-67844) ---
