@@ -8496,19 +8496,74 @@ impl Core {
         Resolution::Handled
     }
 
-    /// `join` (cmd_join 0x541fb): bare prints the syntax line; the GANG
-    /// subword joins (§1.3 — membership task); group/user joins are
-    /// unported (M8) and fall through.
+    /// `join` (cmd_join 0x541fb): bare prints the syntax line; `JOIN
+    /// GANG <name>` runs join_gang (§1.3). Everything else — channel
+    /// numbers, cmd_follow (including `JOIN GANG` with no name), and
+    /// note there is NO GUILD alias here — is the unported party/channel
+    /// system (M8 PENDING) and falls through.
     fn join_command(&mut self, session: SessionId, args: &str) -> Resolution {
         if args.trim().is_empty() {
             self.output_line(session, text::SYNTAX_JOIN);
             return Resolution::Handled;
         }
-        let (subword, _name) = split_word(args);
-        if subword.eq_ignore_ascii_case("gang") || subword.eq_ignore_ascii_case("guild") {
-            return Resolution::FallThrough; // membership task
+        let (subword, name) = split_word(args);
+        if !subword.eq_ignore_ascii_case("gang") || name.is_empty() {
+            return Resolution::FallThrough;
         }
-        Resolution::FallThrough
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+            return Resolution::Handled;
+        };
+        if !player.gang.is_empty() {
+            self.output_line(session, text::GANG_JOIN_ALREADY);
+            return Resolution::Handled;
+        }
+        let joiner_name = player.name.clone();
+        let joiner_flags = player.gang_flags;
+        let key = name.to_uppercase();
+        if !self.gangs.contains_key(&key) {
+            self.output_line(session, text::GANG_DOESNT_EXIST);
+            return Resolution::Handled;
+        }
+        let joiner_upper = joiner_name.to_uppercase();
+        let invited = self.gang_invites.contains(&(joiner_upper.clone(), key.clone()));
+        if invited {
+            let gang = self.gangs.get_mut(&key).expect("checked above");
+            gang.member_count += 1;
+            let display = gang.display.clone();
+            let snapshot_gang = gang.clone();
+            self.gang_members
+                .entry(key.clone())
+                .or_default()
+                .push((joiner_name.clone(), joiner_flags));
+            let snapshot = {
+                let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+                    return Resolution::Handled;
+                };
+                player.gang = display.clone();
+                player.clone()
+            };
+            let joined_line = text::gang_joined(&display);
+            self.output_line(session, &joined_line);
+            // tell_gang (0x6ae71) has no sender exclusion — the joiner
+            // hears the broadcast too.
+            let broadcast = text::gang_join_broadcast(&joiner_name);
+            let members: Vec<SessionId> = self
+                .in_game_sessions()
+                .filter(|(_, p)| p.gang.eq_ignore_ascii_case(&display))
+                .map(|(id, _)| id)
+                .collect();
+            for id in members {
+                self.output_line(id, &broadcast);
+            }
+            self.events.push(Event::PersistGang(Box::new(snapshot_gang)));
+            self.events.push(Event::Persist(snapshot));
+        } else {
+            self.output_line(session, text::GANG_NOT_INVITED);
+        }
+        // clear_gang_invitations(user, NULL): any join attempt against
+        // an EXISTING gang wipes every pending invite for the user.
+        self.gang_invites.retain(|(user, _)| *user != joiner_upper);
+        Resolution::Handled
     }
 
     /// `invite` (cmd_invite 0x56420). Only the gang arm is ported:

@@ -1201,6 +1201,9 @@ async fn farm_stop(
     // One attempt per stop: if lighting did not take, saying it twice
     // will not help and the second is just noise at the board.
     let mut lit = false;
+    // A look has been asked for and its room block has not arrived yet.
+    // Until it does there is no basis for calling the room empty.
+    let mut awaiting_look = false;
     let username = session.profile().username.clone();
     let backoff = Duration::from_millis(cfg.slowdown_backoff_ms);
     let poke_after = Duration::from_millis(cfg.idle_poke_ms);
@@ -1284,6 +1287,13 @@ async fn farm_stop(
                 && gate.in_flight().is_none()
             {
                 gate.push("look".into());
+                // The stop must not end before that answer arrives. A
+                // kill is followed immediately by a prompt, and with a
+                // tight dwell that prompt alone would end the stop --
+                // walking out of a room with three more things in it,
+                // every single time something died.
+                awaiting_look = true;
+                idle_prompts = 0;
             }
             // A dark stop shows no room block, so the bot cannot see what
             // is in it. Light it and look again rather than dwelling
@@ -1384,8 +1394,11 @@ async fn farm_stop(
         // bot's own decisions count as activity: the idle `look` is the
         // runner asking whether anything is happening, and counting it
         // would answer its own question and dwell forever.
+        if let Event::RoomSeen(_) = &ev {
+            awaiting_look = false;
+        }
         if let Event::Prompt { .. } = ev {
-            if acted_since_prompt || bot.engaged().is_some() {
+            if acted_since_prompt || bot.engaged().is_some() || awaiting_look {
                 idle_prompts = 0;
             } else {
                 idle_prompts += 1;

@@ -317,3 +317,92 @@ fn invite_without_member_subword_is_the_unported_party_arm() {
     let out = texts(&core.drain_events(), s[0]);
     assert!(out.contains("You say"), "{out:?}");
 }
+
+// --- §1.3 JOIN GANG ---
+
+#[test]
+fn join_with_invite_announces_to_the_gang() {
+    let (mut core, s) = gang_world(&[("Salad", true, 0), ("Torgo", false, 0)]);
+    core.input(s[0], "invite member Torgo");
+    core.drain_events();
+    core.input(s[1], "join gang iron fist");
+    let events = core.drain_events();
+    let joiner = texts(&events, s[1]);
+    assert!(joiner.contains("You have joined the gang Iron Fist."), "{joiner:?}");
+    // tell_gang has no sender exclusion — the joiner hears the
+    // broadcast too, as does the leader.
+    assert!(joiner.contains("Torgo just joined your gang."), "{joiner:?}");
+    assert!(
+        texts(&events, s[0]).contains("Torgo just joined your gang."),
+        "leader hears it"
+    );
+    assert_eq!(core.gang("Iron Fist").unwrap().member_count, 2);
+    assert!(
+        events.iter().any(|e| matches!(e, Event::Persist(p) if p.name == "Torgo" && p.gang == "Iron Fist")),
+        "joiner persisted"
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, Event::PersistGang(g) if g.member_count == 2)),
+        "count persisted"
+    );
+}
+
+#[test]
+fn join_gates_and_the_clear_all_invites_rule() {
+    use mud_core::gang::Gang;
+    // Two gangs: invited to Iron Fist, but tries Rivals first.
+    let config = CoreConfig {
+        restored_gangs: vec![
+            Gang::new("Iron Fist", "Salad", 0),
+            Gang::new("Rivals", "Ghost", 0),
+        ],
+        restored_gang_members: vec![("Salad".into(), "Iron Fist".into(), 0)],
+        ..CoreConfig::default()
+    };
+    let mut core = Core::new(world(), config);
+    let mut salad = person("Salad");
+    salad.gang = "Iron Fist".into();
+    let s0 = core.attach_player(salad);
+    let s1 = core.attach_player(person("Torgo"));
+    core.drain_events();
+    core.input(s0, "invite member Torgo");
+    core.drain_events();
+
+    // Nonexistent gang: refused, invites untouched.
+    core.input(s1, "join gang Nobodies");
+    let out = texts(&core.drain_events(), s1);
+    assert!(out.contains("That gang doesn't exist!"), "{out:?}");
+
+    // Existing-but-uninvited gang: refused — and clear_gang_invitations
+    // (user, NULL) wipes EVERY pending invite for the user.
+    core.input(s1, "join gang Rivals");
+    let out = texts(&core.drain_events(), s1);
+    assert!(out.contains("You have not been invited to join that gang!"), "{out:?}");
+    core.input(s1, "join gang Iron Fist");
+    let out = texts(&core.drain_events(), s1);
+    assert!(
+        out.contains("You have not been invited to join that gang!"),
+        "the failed Rivals attempt cleared the Iron Fist invite: {out:?}"
+    );
+
+    // Already in a gang.
+    core.input(s0, "join gang Rivals");
+    let out = texts(&core.drain_events(), s0);
+    assert!(
+        out.contains("You may not join another gang!  You are already a member of one."),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn join_malformed_forms_fall_through() {
+    // JOIN GANG with no name is cmd_follow (margc < 3), JOIN 3 is the
+    // channel system, JOIN GUILD is NOT an alias (cmd_join matches only
+    // "gang") — all unported (M8), all say.
+    let (mut core, s) = gang_world(&[("Salad", true, 0), ("Torgo", false, 0)]);
+    for form in ["join gang", "join 3", "join guild Iron Fist"] {
+        core.input(s[1], form);
+        let out = texts(&core.drain_events(), s[1]);
+        assert!(out.contains("You say"), "{form}: {out:?}");
+    }
+}

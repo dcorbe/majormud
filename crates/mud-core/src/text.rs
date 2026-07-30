@@ -768,6 +768,18 @@ pub fn gang_invite_confirm(target: &str) -> String {
     format!("You have invited {target} to join your gang.")
 }
 
+// cmd_join (0x541fb) / join_gang (0x4fef8) — §1.3.
+pub const GANG_JOIN_ALREADY: &str =
+    "You may not join another gang!  You are already a member of one.";
+pub const GANG_DOESNT_EXIST: &str = "That gang doesn't exist!";
+pub const GANG_NOT_INVITED: &str = "You have not been invited to join that gang!";
+pub fn gang_joined(gang: &str) -> String {
+    format!("You have joined the gang {gang}.")
+}
+pub fn gang_join_broadcast(name: &str) -> String {
+    format!("{name} just joined your gang.")
+}
+
 // --- inventory strings (VERIFIED oracle_m4_items.raw / round2) ---
 pub const CARRYING_NOTHING: &str = "You are carrying Nothing!";
 pub const NO_KEYS: &str = "You have no keys.";
