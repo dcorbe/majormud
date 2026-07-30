@@ -134,6 +134,12 @@ pub struct FarmConfig {
     /// A character that keeps being stopped is not going to walk this
     /// leg, and walking it anyway is how a run ends in a corpse.
     pub travel_interrupts: u32,
+    /// Cap on resting at the departure gate, in seconds.
+    ///
+    /// Bounded because a character that cannot reach the threshold —
+    /// poisoned, no heal configured, out of mana — must not wedge the
+    /// patrol forever.
+    pub max_rest_seconds: u64,
     /// Cap on defending one interruption, in seconds.
     ///
     /// Not optional polish: a stop only ends on its dwell rule or the
@@ -176,6 +182,7 @@ impl Default for FarmConfig {
             interrupt_at_percent: 50,
             travel_interrupts: 3,
             defend_seconds: 60,
+            max_rest_seconds: 120,
             nav: crate::nav::NavConfig::default(),
         }
     }
@@ -1134,15 +1141,29 @@ async fn wait_for_departure_health(
     }
     let target = bot_config.max_hp * cfg.depart_at_percent as i32 / 100;
     let mut state = session.state();
-    // Bounded: a character that cannot reach the threshold (poisoned, no
-    // heal configured) must not wedge the patrol forever.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    if state.borrow().hp >= target {
+        return;
+    }
+    // Actually REST, and actually look.
+    //
+    // This used to watch `hp` and wait. Two things made that useless on a
+    // live board: nothing asked the character to heal, and an idle board
+    // sends no prompts at all — so GameState never changed and the watch
+    // could not observe recovery even if it happened. It was a 120-second
+    // sleep that then departed at whatever HP it started with.
+    session.send(&bot_config.heal_command);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(cfg.max_rest_seconds);
+    let poke = Duration::from_millis(cfg.idle_poke_ms.max(1000));
     while state.borrow().hp < target {
-        if tokio::time::timeout_at(deadline, state.changed())
-            .await
-            .is_err()
-        {
+        if tokio::time::Instant::now() >= deadline {
             return;
+        }
+        // A poke is what produces the prompt that carries HP; without one
+        // there is nothing to observe.
+        match tokio::time::timeout(poke, state.changed()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => return,
+            Err(_) => session.send("look"),
         }
     }
 }
