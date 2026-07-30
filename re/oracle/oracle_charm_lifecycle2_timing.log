@@ -1,0 +1,24 @@
+   10.445 --- STATS on entry ---
+   10.445     | st
+   10.445     | Name: Bard Minstrel                    Lives/CP:      7/220
+   10.445     | Race: Human       Exp: 400000          Perception:     40
+   10.445     | Class: Bard       Level: 12            Stealth:        65
+   10.445     | Hits:    47/78    Armour Class:   0/0  Thievery:       68
+   10.445     | Mana:    54/54    Spellcasting: 60     Traps:          70
+   10.445     |                                        Picklocks:      57
+   10.445     | Strength:  40     Agility: 40          Tracking:        0
+   10.445     | Intellect: 40     Health:  40          Martial Arts:   15
+   10.445     | Willpower: 40     Charm:   40          MagicRes:       40
+   10.445     | [HP=47/MA=54]:
+   14.054 --- spellbook ---
+   14.054     | spells
+   14.054     | You have the following spells:
+   14.054     | Level Mana Short Spell Name
+   14.054     |   4   4    char  song of charming
+   14.054     |   5   6    fool  song of foolishness
+   14.054     | [HP=47/MA=54]:
+   17.667 --- purse ---
+   17.667     | /xcash 3000 copper
+   17.667     | [xcash] copper: 0 -> 3000; type 'i' to confirm.
+   25.687 HP 78 MA 54
+   25.688 === E4: charm lifecycle ===

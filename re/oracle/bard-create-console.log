@@ -1,0 +1,19 @@
+14:45:43 in module: race from the following list: [1] Human [2] Dwarf [3] Gnome [4] Halfling [5] Elf [6] Half-Elf [7] Dark-Elf [8] Half-Orc [9] Goblin [10] Half-Ogre [11] Kang [12] Nekojin [13] Gaunt One Please choose your race [ ? for help ] :
+14:45:47 race menu: [1] Human [2] Dwarf [3] Gnome [4] Halfling [5] Elf [6] Half-Elf [7] Dark-Elf [8] Half-Orc [9] Goblin [10] Half-Ogre [11] Kang [12] Nekojin [13] Gaunt One Please choose your race [ ? for help ] : ? [1] Human [2] Dwarf [3] Gnome [4] Halfling [5] Elf [6] Half-Elf [7] Dark-Elf [8] Half-Orc [9] Goblin [10] Half-Ogre [11] Kang [12] Nekojin [13] Gaunt One
+14:45:47 race pick: 1
+14:45:51 class menu: One 1 Please choose a class from the following list: [1] Warrior [2] Witchunter [3] Paladin [4] Cleric [5] Priest [6] Missionary [7] Ninja [8] Thief [9] Bard [10] Gypsy [11] Warlock [12] Mage [13] Druid [14] Ranger [15] Mystic Please choose your class [ ? for help ] : ? [1] Warrior [2] Witchunter [3] Paladin [4] Cleric [5] Priest [6] Missionary [7] Ninja [8] Thief [9] Bard [10] Gypsy [11] Warlock [12] Mage [13] Druid [14] Ranger [15] Mystic
+14:45:51 Bard is class 9
+14:45:57 waiting out name validation (up to 20 min)...
+14:46:28 validation complete!
+st
+Name: Bard Minstrel                    Lives/CP:      9/100  
+Race: Human       Exp: 0               Perception:     40
+Class: Bard       Level: 1             Stealth:        43
+Hits:    27/27    Armour Class:   0/0  Thievery:       24
+Mana:    10/10    Spellcasting: 38     Traps:          26
+                                       Picklocks:      25
+Strength:  40     Agility: 40          Tracking:        0
+Intellect: 40     Health:  40          Martial Arts:   13
+Willpower: 40     Charm:   40          MagicRes:       40
+[HP=27/MA=10]:
+14:46:35 BARD CREATED
