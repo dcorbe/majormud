@@ -508,6 +508,16 @@ pub fn power_row(level: i16, kai: i16, short: &str, name: &str) -> String {
 /// temp spells.
 pub const SPELL_TOO_POWERFUL: &str = "This spell is too powerful for you.";
 
+/// VERIFIED (DLL strings dump 3146): the quest VM `learnspell` verb's
+/// class-gate refusal (FUN_0046fff6 68459/68469).
+pub const LEARNSPELL_CANT: &str = "You don't know what to do with this!";
+
+/// VERIFIED (DLL strings dump 3147): the `learnspell` success line
+/// (68477; `%s` = the spell's long name).
+pub fn learn_spell(name: &str) -> String {
+    format!("You learn the spell {name}.")
+}
+
 /// VERIFIED (oracle §8.6/§8.9): the caster's failed success-roll line.
 pub fn cast_fail(spell: &str) -> String {
     format!("You attempt to cast {spell}, but fail.")

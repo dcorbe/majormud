@@ -64,15 +64,18 @@ fn world() -> Content {
         hp_per_level: 0,
         exp_chart: 30,
     });
-    for (id, name) in [(1, "Warrior"), (2, "Witchunter")] {
+    // Class 1 is a group-1 caster so learnspell/cast fixtures are
+    // learnable (spell_gate 17811-17846); class 2 is a non-caster, the
+    // wrong-class refusal fixture.
+    for (id, name, group) in [(1, "Warrior", 1), (2, "Witchunter", 0)] {
         content.add_class(Class {
             id: ClassId(id),
             name: name.into(),
             abilities: vec![],
             hp_per_level: 6,
             hp_seed: 4,
-            caster_group: 0,
-            casting_factor: 0,
+            caster_group: group,
+            casting_factor: group,
             exp_base: 0,
             combat_factor: 6,
             weapon_code: 8,
@@ -118,7 +121,16 @@ fn world() -> Content {
         hitpoints: 10,
         ..Monster::default()
     });
-    content.add_spell(spell(SpellId(300), "aura"));
+    let mut aura = spell(SpellId(300), "aura");
+    aura.duration = 40;
+    aura.abilities = vec![(ab(2), 5)]; // AC +5 while active
+    content.add_spell(aura);
+    let mut trap = spell(SpellId(625), "spear trap");
+    trap.target_mode = mud_core::content::TargetMode::Offensive0;
+    content.add_spell(trap);
+    let mut costly = spell(SpellId(301), "greater aura");
+    costly.mana_cost = 999;
+    content.add_spell(costly);
     // The failure block for checkspell/testskill: an observable mutation
     // (flag 7) — `flag` lands with this slice, so the block's effect is
     // visible in the player snapshot.
@@ -481,6 +493,197 @@ fn flag_set_check_fail_clear_round_trip() {
     // Out-of-range bit numbers fail-stop (68339-68345).
     assert_eq!(core.debug_perform_matched_action(s, "flag 65 set"), 2);
     assert_eq!(core.debug_perform_matched_action(s, "flag 0 set"), 2);
+}
+
+// --- mutation verbs (Task 5) ---
+
+#[test]
+fn addability_raises_and_creates() {
+    // The addability arm (69590-69637): at-least semantics via
+    // raise_innate_ability; a full table fail-stops the chain.
+    let (mut core, s) = boot();
+    assert_eq!(core.debug_perform_matched_action(s, "addability 129 2"), 1);
+    assert_eq!(core.player_snapshot(s).innate[0], (Some(ab(DARK_DRUID)), 2));
+    assert_eq!(core.debug_perform_matched_action(s, "addability 129 1"), 1);
+    assert_eq!(core.player_snapshot(s).innate[0].1, 2, "at-least, not add");
+
+    let mut full = player("Full");
+    for i in 0..30 {
+        full.innate[i] = (Some(ab(22)), 1);
+    }
+    let (mut core, s) = boot_with(full);
+    assert_eq!(
+        core.debug_perform_matched_action(s, "addability 129 2:flag 3 set"),
+        2
+    );
+    assert_eq!(core.player_snapshot(s).quest_flags, 0, "chain stopped");
+}
+
+#[test]
+fn addability_temp_spell_grants_the_spell() {
+    // 69619-69624: creating a fresh 0xa0 slot also adds the spell whose
+    // id is the VALUE to the spellbook.
+    let (mut core, s) = boot();
+    assert_eq!(core.debug_perform_matched_action(s, "addability 160 300"), 1);
+    let p = core.player_snapshot(s);
+    assert_eq!(p.innate[0], (Some(ab(160)), 300));
+    assert!(p.spellbook.contains_key(&SpellId(300)), "spell granted");
+}
+
+#[test]
+fn giveability_accumulates_and_refuses_temp_spell() {
+    // 69565-69588 → FUN_0046c507: accumulate; 0xa0 returns failure →
+    // the verb fail-stops.
+    let (mut core, s) = boot();
+    assert_eq!(core.debug_perform_matched_action(s, "giveability 129 2"), 1);
+    assert_eq!(core.debug_perform_matched_action(s, "giveability 129 3"), 1);
+    assert_eq!(core.player_snapshot(s).innate[0].1, 5);
+    assert_eq!(core.debug_perform_matched_action(s, "giveability 160 300"), 2);
+}
+
+#[test]
+fn removeability_zeroes_and_purges_the_temp_spell() {
+    // 69523-69558: zero every matching slot (0xa0 purges the spell whose
+    // id is the slot VALUE first); an absent id fail-stops.
+    let mut p = player("Marked");
+    p.raise_innate_ability(ab(DARK_DRUID), 2);
+    p.raise_innate_ability(ab(160), 300);
+    p.spellbook.insert(SpellId(300), false);
+    let (mut core, s) = boot_with(p);
+    assert_eq!(core.debug_perform_matched_action(s, "removeability 129"), 1);
+    assert_eq!(core.player_snapshot(s).innate[0], (None, 0));
+    assert_eq!(core.debug_perform_matched_action(s, "removeability 129"), 2);
+    assert_eq!(core.debug_perform_matched_action(s, "removeability 160"), 1);
+    let p = core.player_snapshot(s);
+    assert_eq!(p.innate[1], (None, 0));
+    assert!(!p.spellbook.contains_key(&SpellId(300)), "spell purged");
+}
+
+#[test]
+fn addexp_is_uncapped_and_exact() {
+    // add_quest_exp (0x6f291, 67785-67815; quests.md §4.1): a raw
+    // experience add — no over-level cap, no party split, silent from
+    // the verb (tell=0). The restructured-flag gate (`+0x7d5 & 0x20`)
+    // is always-passing for our characters (documented divergence).
+    let mut p = player("Grinder");
+    p.experience = 1_000_000; // far over-level for level 5
+    let (mut core, s) = boot_with(p);
+    assert_eq!(core.debug_perform_matched_action(s, "addexp 150000"), 1);
+    assert_eq!(core.player_snapshot(s).experience, 1_150_000);
+    let shown = text_to(&core.drain_events(), s);
+    assert!(!shown.contains("experience"), "silent: got {shown:?}");
+}
+
+#[test]
+fn givecoins_by_denomination_letter_continues_the_chain() {
+    // 68723-68748: `givecoins <n> [letter]` — the letter jump table
+    // (0x47183d) adds to that denomination; no letter adds to `+0x620`
+    // (copper, the last field of the runic..copper block). Every
+    // shipped use carries a letter (almost always G) with tokens after
+    // it, so the chain continues.
+    let (mut core, s) = boot();
+    assert_eq!(
+        core.debug_perform_matched_action(s, "givecoins 100 G:flag 3 set"),
+        1
+    );
+    let p = core.player_snapshot(s);
+    assert_eq!(p.coins.gold, 100);
+    assert_eq!(p.quest_flags, 1 << 2, "chain continued past the letter");
+    core.debug_perform_matched_action(s, "givecoins 7 c");
+    core.debug_perform_matched_action(s, "givecoins 3 S");
+    core.debug_perform_matched_action(s, "givecoins 2 P");
+    core.debug_perform_matched_action(s, "givecoins 1 R");
+    core.debug_perform_matched_action(s, "givecoins 50");
+    let coins = core.player_snapshot(s).coins;
+    assert_eq!(
+        (coins.runic, coins.platinum, coins.gold, coins.silver, coins.copper),
+        (1, 2, 100, 3, 57)
+    );
+}
+
+#[test]
+fn addevil_is_a_raw_signed_add() {
+    // 68896-68908: `+0x542 += n` — NOT the crime.rs funnel: no Warn on
+    // Evil refusal, no minimum-10 bump, no 30000 cap, and negative
+    // amounts subtract (the good-path quests pay evil down).
+    let mut p = player("Penitent");
+    p.fame = 40;
+    p.warn_on_evil = true;
+    let (mut core, s) = boot_with(p);
+    assert_eq!(core.debug_perform_matched_action(s, "addevil 24"), 1);
+    assert_eq!(core.player_snapshot(s).fame, 64, "warn-on-evil ignored");
+    assert_eq!(core.debug_perform_matched_action(s, "addevil -60"), 1);
+    assert_eq!(core.player_snapshot(s).fame, 4);
+}
+
+#[test]
+fn learnspell_gates_and_learns() {
+    // FUN_0046fff6 (68418-68486): unknown spell fail-stops; already
+    // known is a silent no-op; an unlearnable class prints the refusal
+    // and fail-stops; success prints "You learn the spell %s."
+    let (mut core, s) = boot();
+    assert_eq!(core.debug_perform_matched_action(s, "learnspell 9999"), 2);
+    assert_eq!(core.debug_perform_matched_action(s, "learnspell 300"), 1);
+    let shown = text_to(&core.drain_events(), s);
+    assert!(shown.contains("You learn the spell aura."), "got: {shown:?}");
+    assert!(core.player_snapshot(s).spellbook.contains_key(&SpellId(300)));
+    // Already known: silent no-op, still Continue.
+    assert_eq!(core.debug_perform_matched_action(s, "learnspell 300"), 1);
+    let shown = text_to(&core.drain_events(), s);
+    assert!(!shown.contains("learn"), "got: {shown:?}");
+}
+
+#[test]
+fn learnspell_refuses_the_wrong_class() {
+    // The user_can_use_spell gate (68457-68465) → spell_gate: the
+    // non-caster class prints the refusal and fail-stops.
+    let mut p = player("Mundane");
+    p.class = ClassId(2);
+    let (mut core, s) = boot_with(p);
+    assert_eq!(core.debug_perform_matched_action(s, "learnspell 300"), 2);
+    let shown = text_to(&core.drain_events(), s);
+    assert!(
+        shown.contains("You don't know what to do with this!"),
+        "got: {shown:?}"
+    );
+    assert!(!core.player_snapshot(s).spellbook.contains_key(&SpellId(300)));
+}
+
+#[test]
+fn cast_applies_the_benign_spell_as_a_forced_effect() {
+    // 69639-69658: alloc → cast_no_target(spell, user, forced=1) —
+    // no confusion gate, no success roll; failure fail-stops. Reuses
+    // the EndCast forced_cast path.
+    let (mut core, s) = boot();
+    assert_eq!(core.debug_perform_matched_action(s, "cast 300"), 1);
+    let p = core.player_snapshot(s);
+    assert!(
+        p.active_spells.iter().any(|sl| sl.spell == Some(SpellId(300))),
+        "aura active: {:?}",
+        p.active_spells
+    );
+    // Unknown spell id: alloc fails, code stays 1 (decompile-literal).
+    assert_eq!(core.debug_perform_matched_action(s, "cast 9999"), 1);
+}
+
+#[test]
+fn cast_refusal_fail_stops() {
+    // The forced path still charges gates (mana here): failure returns
+    // 0 → the verb fail-stops (69650-69656).
+    let (mut core, s) = boot();
+    assert_eq!(core.debug_perform_matched_action(s, "cast 301:flag 3 set"), 2);
+    assert_eq!(core.player_snapshot(s).quest_flags, 0, "chain stopped");
+}
+
+#[test]
+fn cast_offensive_trap_arm_is_pending() {
+    // M7 PENDING(slice-6): the 17 shipped trap spells (spelltype 0,
+    // e.g. 625 spear trap) reach cast_no_target's offensive machinery
+    // (39200-39500) — unported; currently a silent no-op that keeps the
+    // chain alive. This test pins the placeholder behavior.
+    let (mut core, s) = boot();
+    assert_eq!(core.debug_perform_matched_action(s, "cast 625:flag 3 set"), 1);
+    assert_eq!(core.player_snapshot(s).quest_flags, 1 << 2);
 }
 
 // --- failure-message plumbing (FUN_0046f360, 67820-67844) ---

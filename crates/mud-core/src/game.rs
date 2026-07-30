@@ -2518,30 +2518,233 @@ impl Core {
                     _ => CONTINUE,
                 }
             }
-            // M7 PENDING(slice-6): the mutation, item, output/world, and
-            // peripheral arms land with tasks 5-8 of the slice-6 plan
+            QuestVerb::AddAbility => {
+                // 69590-69637: raise-to-at-least; creating a fresh 0xa0
+                // slot also grants the spell whose id is the VALUE
+                // (69619-69624); no slot found → fail-stop.
+                let (Some(id), Some(val)) = (w.next(), w.next()) else {
+                    return CONTINUE;
+                };
+                let Some(ability) = u16::try_from(crate::questvm::atol(id))
+                    .ok()
+                    .and_then(Ability::from_id)
+                else {
+                    return FAIL;
+                };
+                let val = crate::questvm::atol(val);
+                let Ok(val16) = i16::try_from(val) else {
+                    return FAIL;
+                };
+                let (ok, fresh) = {
+                    let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session)
+                    else {
+                        return FAIL;
+                    };
+                    let had = player.innate.iter().any(|(a, _)| *a == Some(ability));
+                    (player.raise_innate_ability(ability, val16), !had)
+                };
+                if !ok {
+                    return FAIL;
+                }
+                if fresh
+                    && ability.id() == 0xa0
+                    && let Ok(spell) = u16::try_from(val)
+                    && self.content.spells.contains_key(&SpellId(spell))
+                    && let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session)
+                {
+                    player.spellbook.entry(SpellId(spell)).or_insert(false);
+                }
+                let snapshot = Box::new(self.player(session).clone());
+                self.events.push(Event::Persist(snapshot));
+                CONTINUE
+            }
+            QuestVerb::GiveAbility => {
+                // 69565-69588 → FUN_0046c507 (accumulate); a 0 return
+                // (0xa0, or a full table with no match) fail-stops.
+                let (Some(id), Some(val)) = (w.next(), w.next()) else {
+                    return CONTINUE;
+                };
+                let Some(ability) = u16::try_from(crate::questvm::atol(id))
+                    .ok()
+                    .and_then(Ability::from_id)
+                else {
+                    return FAIL;
+                };
+                let Ok(val) = i16::try_from(crate::questvm::atol(val)) else {
+                    return FAIL;
+                };
+                let ok = match self.sessions.get_mut(&session) {
+                    Some(Session::InGame { player, .. }) => {
+                        player.give_innate_ability(ability, val)
+                    }
+                    _ => false,
+                };
+                if !ok {
+                    return FAIL;
+                }
+                let snapshot = Box::new(self.player(session).clone());
+                self.events.push(Event::Persist(snapshot));
+                CONTINUE
+            }
+            QuestVerb::RemoveAbility => {
+                // 69523-69558: zero every matching slot — a 0xa0 slot
+                // purges the spell whose id is the slot VALUE first
+                // (69536-69540); an absent id fail-stops.
+                let Some(id) = w.next() else { return CONTINUE };
+                let Some(ability) = u16::try_from(crate::questvm::atol(id))
+                    .ok()
+                    .and_then(Ability::from_id)
+                else {
+                    return FAIL;
+                };
+                let found = {
+                    let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session)
+                    else {
+                        return FAIL;
+                    };
+                    if ability.id() == 0xa0 {
+                        let spells: Vec<u16> = player
+                            .innate
+                            .iter()
+                            .filter(|(a, _)| *a == Some(ability))
+                            .filter_map(|(_, v)| u16::try_from(*v).ok())
+                            .collect();
+                        for spell in spells {
+                            player.spellbook.remove(&SpellId(spell));
+                        }
+                    }
+                    player.remove_innate_ability(ability)
+                };
+                if !found {
+                    return FAIL;
+                }
+                let snapshot = Box::new(self.player(session).clone());
+                self.events.push(Event::Persist(snapshot));
+                CONTINUE
+            }
+            QuestVerb::AddExp => {
+                // 69372-69381 → add_quest_exp (0x6f291, 67785-67815;
+                // quests.md §4.1): a raw experience add — no over-level
+                // cap, no party split, silent (tell=0). The restructured
+                // gate (`+0x7d5 & 0x20`) is always-passing for our
+                // characters (documented divergence).
+                let Some(n) = w.next() else { return CONTINUE };
+                let n = crate::questvm::atol(n);
+                if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+                    player.experience = player.experience.saturating_add_signed(n);
+                }
+                let snapshot = Box::new(self.player(session).clone());
+                self.events.push(Event::Persist(snapshot));
+                CONTINUE
+            }
+            QuestVerb::GiveCoins => {
+                // 68723-68748: `givecoins <n> [letter]` — the letter
+                // dispatch (toupper, jump table 0x47183d) adds to that
+                // denomination; the bare form adds to `+0x620`, the
+                // LAST field of the runic..copper block = copper. Every
+                // shipped use carries a letter (almost always G) with
+                // tokens after it — Ghidra's `return` at 68742 is a
+                // mangled indirect JUMP; the chain continues.
+                let Some(n) = w.next() else { return CONTINUE };
+                let n = crate::questvm::atol(n);
+                let add = |field: &mut u32| {
+                    *field = field.saturating_add_signed(i32::try_from(n).unwrap_or(0));
+                };
+                let letter = w
+                    .next()
+                    .and_then(|l| l.chars().next())
+                    .map(|c| c.to_ascii_uppercase());
+                if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+                    match letter {
+                        Some('C') => add(&mut player.coins.copper),
+                        Some('S') => add(&mut player.coins.silver),
+                        Some('G') => add(&mut player.coins.gold),
+                        Some('P') => add(&mut player.coins.platinum),
+                        Some('R') => add(&mut player.coins.runic),
+                        _ => add(&mut player.coins.copper),
+                    }
+                }
+                let snapshot = Box::new(self.player(session).clone());
+                self.events.push(Event::Persist(snapshot));
+                CONTINUE
+            }
+            QuestVerb::AddEvil => {
+                // 68896-68908: `+0x542 += n`, raw — NOT the crime.rs
+                // funnel: no Warn-on-Evil refusal, no minimum-10 bump,
+                // no 30000 cap; negative amounts pay evil down (the
+                // good-path quests do exactly that).
+                let Some(n) = w.next() else { return CONTINUE };
+                let n = crate::questvm::atol(n);
+                if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+                    player.fame = player.fame.saturating_add(i16::try_from(n).unwrap_or(0));
+                }
+                let snapshot = Box::new(self.player(session).clone());
+                self.events.push(Event::Persist(snapshot));
+                CONTINUE
+            }
+            QuestVerb::LearnSpell => {
+                // FUN_0046fff6 (68418-68486): unknown spell fail-stops;
+                // already in the book is a silent no-op; the
+                // user_can_use_spell gate (→ spell_gate) refuses with
+                // "You don't know what to do with this!"; success prints
+                // "You learn the spell %s." and adds it permanently.
+                let Some(id) = w.next() else { return CONTINUE };
+                let Some(spell_id) = u16::try_from(crate::questvm::atol(id))
+                    .ok()
+                    .map(SpellId)
+                    .filter(|id| self.content.spells.contains_key(id))
+                else {
+                    return FAIL;
+                };
+                if self.player(session).spellbook.contains_key(&spell_id) {
+                    return CONTINUE;
+                }
+                let spell = self.content.spells[&spell_id].clone();
+                if self.spell_gate(self.player(session), &spell) != SpellGate::Ok {
+                    self.output_line(session, text::LEARNSPELL_CANT);
+                    return FAIL;
+                }
+                if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+                    player.spellbook.insert(spell_id, false);
+                }
+                self.output_line(session, &text::learn_spell(&spell.name));
+                let snapshot = Box::new(self.player(session).clone());
+                self.events.push(Event::Persist(snapshot));
+                CONTINUE
+            }
+            QuestVerb::Cast => {
+                // 69639-69658: alloc → cast_no_target(spell, user,
+                // forced) — failure fail-stops; an unresolvable spell id
+                // leaves the code at 1 (decompile-literal).
+                let Some(id) = w.next() else { return CONTINUE };
+                let Some(spell_id) = u16::try_from(crate::questvm::atol(id))
+                    .ok()
+                    .map(SpellId)
+                    .filter(|id| self.content.spells.contains_key(id))
+                else {
+                    return CONTINUE;
+                };
+                if !self.forced_cast(session, spell_id) {
+                    return FAIL;
+                }
+                CONTINUE
+            }
+            // M7 PENDING(slice-6): the item, output/world, and
+            // peripheral arms land with tasks 6-8 of the slice-6 plan
             // (docs/plans/2026-07-19-m7-content-systems-design.md §Slice 6).
             QuestVerb::Price
-            | QuestVerb::Cast
-            | QuestVerb::GiveAbility
-            | QuestVerb::AddAbility
             | QuestVerb::Teleport
-            | QuestVerb::RemoveAbility
             | QuestVerb::Summon
             | QuestVerb::Message
             | QuestVerb::TakeItem
-            | QuestVerb::AddExp
             | QuestVerb::GiveItem
             | QuestVerb::HideItem
             | QuestVerb::Text
             | QuestVerb::RoomText
             | QuestVerb::ClearItem
-            | QuestVerb::AddEvil
             | QuestVerb::RemoteAction
             | QuestVerb::Random
-            | QuestVerb::AddDelay
-            | QuestVerb::GiveCoins
-            | QuestVerb::LearnSpell => ActionCode::NoOp,
+            | QuestVerb::AddDelay => ActionCode::NoOp,
         }
     }
 
@@ -7068,29 +7271,33 @@ impl Core {
     ///   pathological negative mana_cost the DLL would grant mana, we
     ///   refuse; unreachable with shipped data).
     ///
-    /// Slice-4 scope: benign self-cast only — no shipped EndCast chain is
+    /// Scope: benign self-cast only — no shipped EndCast chain is
     /// reachable by a player cast (48 duration spells carry EndCast 151;
-    /// none is named by any LearnSp scroll). Monster slots exist since
-    /// slice 6, but the offensive arm stays M6-pending for lack of any
-    /// reachable trigger (the gate below).
-    fn forced_cast(&mut self, session: SessionId, spell_id: SpellId) {
+    /// none is named by any LearnSp scroll). The offensive arm gained a
+    /// reachable trigger with M7 slice 6 (the quest VM's `cast` verb
+    /// names 17 trap spells) and carries the PENDING marker below.
+    /// Returns whether the cast landed — the quest VM's `cast` verb
+    /// fail-stops on a 0 return from cast_no_target (69650-69656).
+    fn forced_cast(&mut self, session: SessionId, spell_id: SpellId) -> bool {
         let Some(spell) = self.content.spells.get(&spell_id).cloned() else {
-            return;
+            return false;
         };
         if spell.target_mode.is_offensive() {
-            // DATA-GATED DEAD ARM (M6 close-out verdict): the offensive
-            // forced-cast (an EndCast chain firing at a monster) has no
-            // shipped trigger — all 48 EndCast carriers are unlearnable
-            // (see the doc above) — so the arm stays a silent refusal
-            // until content that can reach it exists.
-            return;
+            // M7 PENDING(slice-6): the offensive forced-cast now HAS
+            // shipped triggers — the quest VM's `cast` verb names 17
+            // trap spells (spelltype 0: spear/venom/fire traps etc.,
+            // fired by chest/search blocks) into cast_no_target's
+            // offensive machinery (39200-39500). Unported; a silent
+            // no-op that keeps the block chain alive. The EndCast-chain
+            // trigger remains dead (all 48 carriers unlearnable).
+            return true;
         }
         let Some(Session::InGame { player, energy, .. }) = self.sessions.get(&session) else {
-            return;
+            return false;
         };
         // Class-school gate (39235-39239): silent refusal.
         if self.spell_gate(player, &spell) == SpellGate::WrongClass {
-            return;
+            return false;
         }
         let round_cost = i32::from(spell.round_cost);
         let mana_cost = i32::from(spell.mana_cost);
@@ -7099,15 +7306,15 @@ impl Core {
         // already-cast line, then mana, then level-vs-required-power.
         if *energy < round_cost {
             self.output_line(session, self.already_cast_line(session));
-            return;
+            return false;
         }
         if player.current_mana < mana_cost {
             self.output_line(session, self.not_enough_mana_line(session));
-            return;
+            return false;
         }
         if i32::from(player.level) < i32::from(spell.required_power) {
             self.output_line(session, text::SPELL_TOO_POWERFUL);
-            return;
+            return false;
         }
         let level = player.level;
         let alter_sp_length = if spell.duration == 0 {
@@ -7130,6 +7337,7 @@ impl Core {
             player.current_mana -= mana_cost.max(0);
         }
         self.benign_success_effects(session, session, &spell, magnitude, duration);
+        true
     }
 
     /// One Summon(12) row: the fixed-or-rolled value IS the template id,
