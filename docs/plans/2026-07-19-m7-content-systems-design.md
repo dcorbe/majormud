@@ -492,7 +492,9 @@ from the shipped columns.
 
 **Carries to slice 8**, largest first:
 
-1. **The monster Dodge(0x22) parry on the player-attacks-monster path** —
+1. **CLOSED (2026-07-30, charm.md §8.5) — the parry step function is
+   measured at d=2/3/4/5 and stands as written.** The monster
+   Dodge(0x22) parry on the player-attacks-monster path —
    the biggest live gameplay change in the slice, and the one most easily
    missed because it arrived as a side effect of Task 2. Adding the parry
    word to the shared `build_monster_defender` also armed it for the
@@ -527,8 +529,10 @@ from the shipped columns.
    put the first measurement on the `[10, 99]` clamp's FLOOR, a region no
    test had ever entered because every combat fixture fights an AC 0
    sandbag. Pinned, mutation-verified, in `game_combat.rs`.
-   **The accuracy half is still open — and sharper (2026-07-28 re-fit,
-   charm.md §8.4 tail).** The slice-8 fidelity fixes (clamp fall-through,
+   **The accuracy half CLOSED (2026-07-30, charm.md §8.5): delta = 0 —
+   the derivation is right as written, and the 2026-07-26 acc-mid block
+   is retired as contaminated (its 0.838 is the accuracy-29 rate
+   exactly).** Historical framing below kept for the trail: The slice-8 fidelity fixes (clamp fall-through,
    strict comparison, genrdn's EXCLUSIVE upper bound) landed and the raws
    were re-fit under the corrected `P(connect) = (threshold-1)/99`. The
    acc-mid conflict survives on the same 37 swings: to-hit excludes
