@@ -720,10 +720,29 @@ pub const NOT_IN_A_GANG: &str = "You are not in a gang at the present!";
 /// unported (M8) — the line still names them, as the DLL's does.
 pub const SYNTAX_JOIN: &str = "Syntax: JOIN {group number} or {user name} or GANG {gangname}";
 
-/// DLL 0x489467 — every arm of the stubbed house-build path AND
-/// `BUY ROOM` outside a storefront (gangs.md §3.1-§3.2). ORACLE-VERIFY:
-/// whether bare CREATE prints this same stub is unmeasured.
+/// DLL 0x489467 — every arm of the stubbed `CREATE ROOM <dir>` build
+/// path AND `BUY ROOM` outside a storefront (gangs.md §3.1-§3.2).
 pub const GANG_HOUSE_LEASE_STUB: &str = "If you are a gang leader you may lease a Gang House.";
+
+// cmd_create (0x57d4a) — the §1.1 gate strings, in fire order.
+pub const GANG_NOT_EXPERIENCED: &str = "You are not experienced enough to start your own gang!";
+pub const GANG_ALREADY_IN_ONE: &str =
+    "You are already in one gang.  You cannot create another one.";
+/// DLL 0x48a7a9 (a gate gangs.md originally missed — distinct from the
+/// invalid-character line).
+pub fn gang_name_too_long(name: &str) -> String {
+    format!("The name you have chosen is too LONG: {name}")
+}
+pub const GANG_NAME_NONE: &str = "You may not use 'None' as a gang name.";
+pub const GANG_NAME_INVALID_CHAR: &str =
+    "You have specified an invalid character in your gang name.";
+pub const GANG_NAME_IN_USE: &str = "The name you have chosen is already being used!";
+/// DLL 0x48a86d — printed under the in-use refusal unless the holder is
+/// disbanded.
+pub fn gang_leader_of(leader: &str, gang: &str) -> String {
+    format!("{leader} is the leader of {gang}.")
+}
+pub const GANG_CREATED: &str = "Gang created.";
 
 // --- inventory strings (VERIFIED oracle_m4_items.raw / round2) ---
 pub const CARRYING_NOTHING: &str = "You are carrying Nothing!";

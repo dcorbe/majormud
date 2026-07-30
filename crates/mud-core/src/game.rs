@@ -8420,15 +8420,79 @@ impl Core {
         Resolution::FallThrough
     }
 
-    /// `create` (cmd_create 0x57d4a): the GANG/GUILD subwords form a
-    /// gang (§1.1 — membership task); every other form is the DLL's
-    /// stubbed house-build path, which prints the lease line (§3.2).
+    /// `create` (cmd_create 0x57d4a). Structure per the decompile:
+    /// fewer than two argument words → the SAY fall-through (margc < 3);
+    /// `ROOM <arg>` → the stubbed house-build path, every arm of which
+    /// prints the lease line (§3.2); GANG/GUILD → the §1.1 creation
+    /// gate chain; any other keyword pair is consumed silently (the
+    /// decompile's no-output fall-off arm).
     fn create_command(&mut self, session: SessionId, args: &str) -> Resolution {
-        let (subword, _name) = split_word(args);
-        if subword.eq_ignore_ascii_case("gang") || subword.eq_ignore_ascii_case("guild") {
-            return Resolution::FallThrough; // membership task
+        let (subword, name) = split_word(args);
+        if name.is_empty() {
+            return Resolution::FallThrough;
         }
-        self.output_line(session, text::GANG_HOUSE_LEASE_STUB);
+        if subword.eq_ignore_ascii_case("room") {
+            self.output_line(session, text::GANG_HOUSE_LEASE_STUB);
+            return Resolution::Handled;
+        }
+        if !subword.eq_ignore_ascii_case("gang") && !subword.eq_ignore_ascii_case("guild") {
+            return Resolution::Handled;
+        }
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+            return Resolution::Handled;
+        };
+        // Gate order is the compiled order (53520-53601): experience,
+        // membership, length, 'None', character set, uniqueness.
+        if player.experience < 100_000 {
+            self.output_line(session, text::GANG_NOT_EXPERIENCED);
+            return Resolution::Handled;
+        }
+        if !player.gang.is_empty() {
+            self.output_line(session, text::GANG_ALREADY_IN_ONE);
+            return Resolution::Handled;
+        }
+        if name.len() >= 20 {
+            let line = text::gang_name_too_long(name);
+            self.output_line(session, &line);
+            return Resolution::Handled;
+        }
+        if name.eq_ignore_ascii_case("None") {
+            self.output_line(session, text::GANG_NAME_NONE);
+            return Resolution::Handled;
+        }
+        if name.bytes().any(|b| !(0x20..=0x7e).contains(&b)) {
+            self.output_line(session, text::GANG_NAME_INVALID_CHAR);
+            return Resolution::Handled;
+        }
+        if let Some(existing) = self.gangs.get(&name.to_uppercase()) {
+            let leader_line = (!existing.is_disbanded())
+                .then(|| text::gang_leader_of(&existing.leader, &existing.display));
+            self.output_line(session, text::GANG_NAME_IN_USE);
+            if let Some(line) = leader_line {
+                self.output_line(session, &line);
+            }
+            return Resolution::Handled;
+        }
+        // The DLL's insert-collision arm ("Gang already exists?  Not
+        // created.") is a Btrieve check-vs-insert race with no analog
+        // under the single-threaded map — not ported.
+        let created = self.config.wall_base + self.scheduler.now() as i64;
+        let name = name.to_string();
+        let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+            return Resolution::Handled;
+        };
+        player.gang = name.clone();
+        let member = (player.name.clone(), player.gang_flags);
+        let gang = crate::gang::Gang::new(&name, &member.0, created);
+        let snapshot = player.clone();
+        self.gangs.insert(gang.name_key.clone(), gang.clone());
+        self.gang_members
+            .entry(gang.name_key.clone())
+            .or_default()
+            .push(member);
+        self.events.push(Event::PersistGang(Box::new(gang)));
+        self.events.push(Event::Persist(snapshot));
+        self.output_line(session, text::GANG_CREATED);
         Resolution::Handled
     }
 
