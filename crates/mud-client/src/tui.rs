@@ -274,3 +274,93 @@ pub fn render_status(state: &GameState, target: &str, width: usize) -> String {
     }
     out.into_iter().collect()
 }
+
+/// A one-line status bar with a scrolling region above it.
+///
+/// The same DECSTBM trick `play` uses, minus the input line: the terminal
+/// is told to scroll only the rows above the last one, so ordinary
+/// `println!`-style output flows past while the bottom row stays put.
+///
+/// This exists because a long unattended run is unreadable otherwise. The
+/// feed alone cannot answer "what is it doing *now*" — waiting to depart,
+/// travelling and wedged all look like silence.
+pub struct StatusBar {
+    rows: u16,
+    cols: u16,
+    out: std::io::Stdout,
+    /// Suppresses redraws that would paint the identical line.
+    last: String,
+}
+
+impl StatusBar {
+    /// Reserve the bottom row. Returns `None` when stdout is not a
+    /// terminal (piped to a file, or a CI run), where the escapes would
+    /// be noise rather than a bar.
+    pub fn enter() -> Option<StatusBar> {
+        use std::io::IsTerminal;
+        let out = std::io::stdout();
+        if !out.is_terminal() {
+            return None;
+        }
+        let (cols, rows) = crossterm::terminal::size().ok()?;
+        let mut bar = StatusBar {
+            rows,
+            cols,
+            out,
+            last: String::new(),
+        };
+        let region_bottom = rows.saturating_sub(1).max(1);
+        bar.write(&format!(
+            "\x1b[1;{region_bottom}r\x1b[{region_bottom};1H"
+        ));
+        Some(bar)
+    }
+
+    fn write(&mut self, s: &str) {
+        use std::io::Write;
+        let _ = self.out.write_all(s.as_bytes());
+        let _ = self.out.flush();
+    }
+
+    /// Print one feed line into the scrolling region.
+    pub fn line(&mut self, text: &str) {
+        let region_bottom = self.rows.saturating_sub(1).max(1);
+        // Park the cursor in the region before writing, or the line lands
+        // on the bar; repaint the bar afterwards because a scroll can
+        // shift it.
+        self.write(&format!("\x1b[{region_bottom};1H\r\n{text}"));
+        let last = self.last.clone();
+        self.paint(&last);
+    }
+
+    /// Update the bar. Cheap to call on every event: identical text is
+    /// dropped rather than repainted.
+    pub fn status(&mut self, text: &str) {
+        if text == self.last {
+            return;
+        }
+        self.last = text.to_string();
+        let last = self.last.clone();
+        self.paint(&last);
+    }
+
+    fn paint(&mut self, text: &str) {
+        let row = self.rows.max(1);
+        let width = self.cols as usize;
+        let mut line: String = text.chars().take(width).collect();
+        while line.chars().count() < width {
+            line.push(' ');
+        }
+        // Save/restore around the bar so the scrolling region's own
+        // cursor is left where the feed expects it.
+        self.write(&format!("\x1b7\x1b[{row};1H\x1b[2K\x1b[7m{line}\x1b[0m\x1b8"));
+    }
+}
+
+impl Drop for StatusBar {
+    fn drop(&mut self) {
+        // Give the terminal back: full scroll region, cursor below.
+        let rows = self.rows.max(1);
+        self.write(&format!("\x1b[r\x1b[{rows};1H\r\n"));
+    }
+}

@@ -44,6 +44,21 @@ pub struct Profile {
 }
 
 impl Profile {
+    /// The same profile with send pacing off, for interactive use.
+    ///
+    /// Pacing is flood control, and flood control is for automation: the
+    /// measured limit is eight sends 1.3s apart, which a bot walking a
+    /// circuit will hit and a person typing will not. Applying a
+    /// farm-tuned `pace_ms` to `mmc play` delays every command after the
+    /// first in a burst by the full interval — 2.5s per step when
+    /// walking — for a risk the operator can see and react to anyway.
+    pub fn interactive(&self) -> Profile {
+        Profile {
+            pace_ms: Some(0),
+            ..self.clone()
+        }
+    }
+
     pub fn pace(&self) -> Duration {
         match self.pace_ms {
             Some(ms) => Duration::from_millis(ms),

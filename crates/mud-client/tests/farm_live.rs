@@ -378,7 +378,7 @@ async fn farm(
     let plan = FarmPlan::build(&cfg, &graph).expect("plan");
     tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(session, graph.clone(), &plan, &bot, &cfg),
+        run_farm(session, graph.clone(), &plan, &bot, &cfg, None),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -652,7 +652,7 @@ async fn the_run_walks_home_when_it_finishes() {
     let plan = FarmPlan::build(&cfg, &graph).expect("plan");
     let (end, _stats) = tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, &bot, &cfg),
+        run_farm(&session, graph.clone(), &plan, &bot, &cfg, None),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -697,7 +697,7 @@ async fn a_prose_death_line_does_not_wedge_the_stop() {
 
     let (end, _stats) = tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, &bot, &cfg),
+        run_farm(&session, graph.clone(), &plan, &bot, &cfg, None),
     )
     .await
     .expect("the stop wedged on a kill it did not recognise")

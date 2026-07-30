@@ -9,7 +9,8 @@ The automated MajorMUD client. One engine, four uses:
 | `mmc path FROM TO` | Print a route between two rooms, e.g. `mmc path 1/2146 1/2156` |
 | `mmc farm --profile P` | Walk a patrol circuit, farming each stop |
 
-`mmc farm` prints a live feed by default — where the character is, what
+`mmc play` is **never paced** — see [`pace_ms`](#pace_ms). `mmc farm`
+prints a live feed by default — where the character is, what
 it is fighting, what it killed, and HP whenever it changes. `--watch`
 turns it into the firehose (every line the board sends); `--quiet`
 restores the old behaviour of printing nothing until the run ends. For a
@@ -72,6 +73,13 @@ Flood control is measured: **eight sends 1.3s apart** earns *"Why don't
 you slow down for a few seconds?"*. The MbbsEmu default of 1500 is only
 just outside that — fine for a burst, too fast to sustain. 2500 buys
 margin for a long unattended run. The Rust server needs no pacing.
+
+**`mmc play` ignores this entirely.** Pacing is flood control and flood
+control is for automation; a person typing is their own rate limiter, and
+applying a farm-tuned 2500ms to a human delays every command after the
+first in a burst by the full interval — 2.5 seconds per step when
+walking. If interactive play ever does trip the board's limit, the board
+says so and you can slow down.
 
 ### `disable_evil_warnings`
 
@@ -141,6 +149,28 @@ whole run.
   not shift. Bashing costs HP (*"You take %d damage for bashing the
   door!"*) and needs a weapon, so it is a switch; turning it off makes a
   locked door a hard stop.
+
+## The status bar
+
+`mmc farm` reserves the bottom terminal row and scrolls the feed above it
+(DECSTBM, the same mechanism `mmc play` uses):
+
+```
+ attacking cave bear  |  HP 23  MA 8  |  Small Cavern [1/2156]
+```
+
+The activity is **published by the runner**, not guessed from board
+output. That distinction matters: a watcher can infer "attacking" from
+combat lines, but waiting-to-depart, travelling and wedged all look
+identical from outside — and telling those apart is the entire point. See
+`farm::Phase`.
+
+The room *number* comes from the graph, since the board only ever prints
+the name. The runner's own position is preferred; failing that the name
+is resolved, which is only possible when it is unambiguous.
+
+The bar is skipped when stdout is not a terminal, so piping the feed to a
+file gives lines rather than escape sequences.
 
 ## Doors
 

@@ -38,6 +38,11 @@ fn play_command(profile_path: &std::path::Path, capture: Option<&std::path::Path
             return ExitCode::FAILURE;
         }
     };
+    // Interactive play is not paced. `pace_ms` is flood control, which is
+    // for automation; applied to a person it delays every command after
+    // the first in a burst by the full interval, so a farm-tuned profile
+    // makes walking cost 2.5s a step.
+    let profile = profile.interactive();
     let capture = capture.map(|base| Capture {
         raw: base.with_extension("raw"),
         timing: Some(append_to_stem(base, "_timing.log")),
@@ -181,7 +186,7 @@ fn farm_command(
     watch: bool,
     quiet: bool,
 ) -> ExitCode {
-    use mud_client::farm::{FarmEnd, FarmPlan, go_to_finish, run_farm};
+    use mud_client::farm::{FarmEnd, FarmPlan, Phase as FarmPhase, go_to_finish, run_farm};
 
     let profile: Profile = match std::fs::read_to_string(profile_path)
         .map_err(|e| e.to_string())
@@ -241,24 +246,49 @@ fn farm_command(
         };
         // Started before the login dance, so a run that stalls on the
         // way in is visible too rather than looking like a silent hang.
+        let (phase_tx, phase_rx) = tokio::sync::watch::channel(FarmPhase::default());
         if !quiet {
             let mut events = session.events();
             let mut view = mud_client::progress::ProgressView::new(watch);
+            let mut phase_rx = phase_rx.clone();
+            let mut state_rx = session.state();
+            let graph = graph.clone();
             tokio::spawn(async move {
+                // No bar when stdout is not a terminal: piping the feed to
+                // a file should give lines, not escape sequences.
+                let mut bar = mud_client::tui::StatusBar::enter();
+                let emit = move |line: String, bar: &mut Option<mud_client::tui::StatusBar>| {
+                    match bar {
+                        Some(b) => b.line(&line),
+                        None => println!("{line}"),
+                    }
+                };
                 loop {
-                    match events.recv().await {
-                        Ok(ev) => {
-                            if let Some(line) = view.on_event(&ev) {
-                                println!("{line}");
+                    let status = {
+                        let phase = phase_rx.borrow().clone();
+                        let state = state_rx.borrow().clone();
+                        farm_status(&phase, &state, &graph)
+                    };
+                    if let Some(b) = bar.as_mut() {
+                        b.status(&status);
+                    }
+                    tokio::select! {
+                        ev = events.recv() => match ev {
+                            Ok(ev) => {
+                                if let Some(line) = view.on_event(&ev) {
+                                    emit(line, &mut bar);
+                                }
                             }
-                        }
-                        // A lagged feed has missed lines, but the run is
-                        // fine; say so and carry on rather than going
-                        // quiet for the rest of the session.
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            println!("!! progress feed dropped {n} events");
-                        }
-                        Err(_) => break,
+                            // A lagged feed has missed lines, but the run
+                            // is fine; say so and carry on rather than
+                            // going quiet for the rest of the session.
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                emit(format!("!! progress feed dropped {n} events"), &mut bar);
+                            }
+                            Err(_) => break,
+                        },
+                        _ = phase_rx.changed() => {}
+                        _ = state_rx.changed() => {}
                     }
                 }
             });
@@ -283,7 +313,7 @@ fn farm_command(
         // operator has already asked to stop — but the character is not
         // simply abandoned where it stands any more; see below.
         let outcome = tokio::select! {
-            r = run_farm(&session, graph.clone(), &plan, &bot_config, &farm_config) => Some(r),
+            r = run_farm(&session, graph.clone(), &plan, &bot_config, &farm_config, Some(&phase_tx)) => Some(r),
             _ = stop_signal() => None,
         };
 
@@ -368,4 +398,32 @@ fn append_to_stem(base: &std::path::Path, suffix: &str) -> std::path::PathBuf {
     let mut s = base.as_os_str().to_os_string();
     s.push(suffix);
     std::path::PathBuf::from(s)
+}
+
+/// The farm's status line: what it is doing, how it is holding up, and
+/// where it is standing — including the room NUMBER, which the board
+/// never prints but the graph knows.
+fn farm_status(
+    phase: &mud_client::farm::Phase,
+    state: &mud_client::session::GameState,
+    graph: &mud_client::graph::RoomGraph,
+) -> String {
+    let mut s = format!(" {}", phase.label());
+    s.push_str(&format!("  |  HP {}", state.hp));
+    if let Some(ma) = state.mana {
+        s.push_str(&format!("  MA {ma}"));
+    }
+    if let Some(room) = &state.room {
+        s.push_str(&format!("  |  {}", room.name));
+        // Prefer the runner's own idea of where it is; fall back to
+        // resolving the name, which is ambiguous for repeated names.
+        let id = phase.room().or_else(|| {
+            let named = graph.rooms_named(&room.name);
+            (named.len() == 1).then(|| named[0])
+        });
+        if let Some(id) = id {
+            s.push_str(&format!(" [{}/{}]", id.map, id.room));
+        }
+    }
+    s
 }

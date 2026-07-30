@@ -246,6 +246,76 @@ impl FarmPlan {
     }
 }
 
+/// What the runner is doing right now.
+///
+/// Published by [`run_farm`] rather than inferred from board output. A
+/// watcher can see combat lines and guess "attacking", but it cannot tell
+/// waiting-to-depart from wedged, or travelling from standing still,
+/// because both look like silence — and telling those apart is the whole
+/// point of showing it.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum Phase {
+    #[default]
+    Starting,
+    /// Holding at the start room until fit enough to set off.
+    WaitingToDepart,
+    Travelling {
+        to: RoomId,
+    },
+    /// At a stop with nothing to do; waiting for a respawn.
+    Waiting {
+        at: RoomId,
+    },
+    Fighting {
+        at: RoomId,
+        target: String,
+    },
+    Resting {
+        at: RoomId,
+    },
+    /// Walking back to a stop after being moved off it.
+    Recovering {
+        to: RoomId,
+    },
+    WalkingHome,
+    Done,
+}
+
+impl Phase {
+    /// Short label for a status bar.
+    pub fn label(&self) -> String {
+        match self {
+            Phase::Starting => "starting".into(),
+            Phase::WaitingToDepart => "waiting to depart".into(),
+            Phase::Travelling { to } => format!("travelling to {}/{}", to.map, to.room),
+            Phase::Waiting { .. } => "waiting".into(),
+            Phase::Fighting { target, .. } => format!("attacking {target}"),
+            Phase::Resting { .. } => "resting".into(),
+            Phase::Recovering { to } => format!("recovering to {}/{}", to.map, to.room),
+            Phase::WalkingHome => "walking home".into(),
+            Phase::Done => "done".into(),
+        }
+    }
+
+    /// The room the runner believes it is in, when it knows.
+    pub fn room(&self) -> Option<RoomId> {
+        match self {
+            Phase::Waiting { at } | Phase::Fighting { at, .. } | Phase::Resting { at } => Some(*at),
+            _ => None,
+        }
+    }
+}
+
+/// Where the runner publishes its [`Phase`]. `None` discards.
+pub type PhaseSink<'a> = Option<&'a tokio::sync::watch::Sender<Phase>>;
+
+fn set_phase(sink: PhaseSink<'_>, phase: Phase) {
+    if let Some(tx) = sink {
+        // A dropped receiver is not an error: nobody is watching.
+        let _ = tx.send(phase);
+    }
+}
+
 /// The runner's only outbound path.
 ///
 /// [`crate::session::Session::send`] is an unbounded, unacknowledged
@@ -625,6 +695,7 @@ pub async fn run_farm(
     plan: &FarmPlan,
     bot_config: &crate::bot::BotConfig,
     cfg: &FarmConfig,
+    phase: PhaseSink<'_>,
 ) -> Result<(FarmEnd, FarmStats), FarmError> {
     let started = Instant::now();
     let mut stats = FarmStats::default();
@@ -668,6 +739,7 @@ pub async fn run_farm(
                     &threat,
                     started,
                     &mut stats,
+                    phase,
                 )
                 .await?
                 {
@@ -688,6 +760,7 @@ pub async fn run_farm(
                 started,
                 None,
                 &mut stats,
+                phase,
             )
             .await?
             {
@@ -840,8 +913,10 @@ async fn travel(
     threat: &std::sync::Arc<crate::bot::ThreatTable>,
     started: Instant,
     stats: &mut FarmStats,
+    phase: PhaseSink<'_>,
 ) -> Result<LegEnd, FarmError> {
     use crate::nav::{Interrupt, NavErrorKind};
+    set_phase(phase, Phase::WaitingToDepart);
 
     let mut guard = FarmGuard::new(
         bot_config.max_hp,
@@ -855,6 +930,7 @@ async fn travel(
             return Ok(LegEnd::TimeUp);
         }
         wait_for_departure_health(session, cfg, bot_config).await;
+    set_phase(phase, Phase::Travelling { to: stop });
 
         let err = match nav.goto(session, *current, stop, &mut guard).await {
             Ok(at) => {
@@ -894,6 +970,7 @@ async fn travel(
                     started,
                     Some(until),
                     stats,
+                    phase,
                 )
                 .await?
                 {
@@ -958,8 +1035,10 @@ async fn farm_stop(
     // Hard cap on this stop, or None to stay until it goes quiet.
     until: Option<Instant>,
     stats: &mut FarmStats,
+    phase: PhaseSink<'_>,
 ) -> Result<StopEnd, FarmError> {
     let stop_name = graph.room(stop).map(|r| r.name.clone()).unwrap_or_default();
+    let mut resting = false;
     let username = session.profile().username.clone();
     let backoff = Duration::from_millis(cfg.slowdown_backoff_ms);
     let poke_after = Duration::from_millis(cfg.idle_poke_ms);
@@ -1086,8 +1165,27 @@ async fn farm_stop(
             acted_since_prompt = true;
         }
         for crate::bot::BotAction::Send(cmd) in actions {
+            // The heal command is the only way to tell resting from
+            // simply standing about; the bot's own debounce is private.
+            if cmd == bot_config.heal_command {
+                resting = true;
+            }
             gate.push(cmd);
         }
+        set_phase(
+            phase,
+            match bot.engaged() {
+                Some(target) => {
+                    resting = false;
+                    Phase::Fighting {
+                        at: stop,
+                        target: target.to_string(),
+                    }
+                }
+                None if resting => Phase::Resting { at: stop },
+                None => Phase::Waiting { at: stop },
+            },
+        );
 
         // The stop is done when the board has answered repeatedly with
         // nothing for the bot to do and no fight outstanding. Only the
