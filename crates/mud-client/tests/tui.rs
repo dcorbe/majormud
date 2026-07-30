@@ -201,3 +201,26 @@ fn the_bar_shows_the_experience_rate_when_there_is_one() {
     let without = render_status(&state, "mbbs", None, None, None, 120);
     assert!(!without.contains("xp/min"), "{without}");
 }
+
+/// The bar is ONE row. An error carried into it brings a NavError's
+/// multi-line `tail:` with it, and a newline written into a fixed row
+/// scrolls the terminal — which reads as the whole screen flashing.
+/// Observed live with `Phase::Failed`.
+#[test]
+fn the_bar_never_contains_a_control_character() {
+    let state = GameState {
+        hp: 1,
+        mana: None,
+        room: Some(a_room("Somewhere")),
+    };
+    let phase = mud_client::farm::Phase::Failed {
+        why: "at 1/2152: timed out waiting for \"room block after movement\"; tail:\n\n  look\n"
+            .into(),
+    };
+    let s = render_status(&state, "mbbs", Some(&phase), None, None, 120);
+    assert!(
+        !s.chars().any(|c| c.is_control()),
+        "a control character in a fixed-row bar wrecks the display: {s:?}"
+    );
+    assert_eq!(s.chars().count(), 120);
+}

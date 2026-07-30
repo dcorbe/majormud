@@ -465,7 +465,10 @@ pub fn render_status(
         s.push_str(&format!(" | {rate} xp/min"));
     }
     s.push_str(&format!(" | {target}"));
-    let mut out: Vec<char> = s.chars().collect();
+    // Defence in depth: nothing painted into a fixed row may contain a
+    // control character, whatever built the string. A newline here
+    // scrolls the terminal and the whole display appears to flash.
+    let mut out: Vec<char> = s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
     out.truncate(width);
     while out.len() < width {
         out.push(' ');

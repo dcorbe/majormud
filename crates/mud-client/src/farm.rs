@@ -316,7 +316,12 @@ impl Phase {
             Phase::Recovering { to } => format!("recovering to {}/{}", to.map, to.room),
             Phase::WalkingHome => "walking home".into(),
             Phase::Done => "done".into(),
-            Phase::Failed { why } => format!("stopped: {why}"),
+            // First line only. A NavError's Display carries a multi-line
+            // `tail:` of raw board output, and the bar is one row.
+            Phase::Failed { why } => {
+                let head = why.lines().next().unwrap_or("").trim();
+                format!("stopped: {head}")
+            }
         }
     }
 
