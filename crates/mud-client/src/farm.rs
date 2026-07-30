@@ -629,6 +629,15 @@ pub async fn run_farm(
     let started = Instant::now();
     let mut stats = FarmStats::default();
     let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone());
+    // Danger ranking from the shipped data. A missing or unreadable
+    // database is not fatal: an empty table simply means "no opinion",
+    // and the bot falls back to the board's own listing order.
+    let threat = std::sync::Arc::new(
+        RoomGraph::load_threat(&cfg.content).unwrap_or_else(|e| {
+            eprintln!("threat ranking unavailable ({e}); using board order");
+            crate::bot::ThreatTable::new()
+        }),
+    );
 
     // Every percent policy divides by this, and a wrong value mis-scales
     // heal and flee silently. 0 means the profile did not say, so ask.
@@ -656,6 +665,7 @@ pub async fn run_farm(
                     stop,
                     cfg,
                     &bot_config,
+                    &threat,
                     started,
                     &mut stats,
                 )
@@ -673,6 +683,7 @@ pub async fn run_farm(
                 &graph,
                 stop,
                 &bot_config,
+                &threat,
                 cfg,
                 started,
                 None,
@@ -826,6 +837,7 @@ async fn travel(
     stop: RoomId,
     cfg: &FarmConfig,
     bot_config: &crate::bot::BotConfig,
+    threat: &std::sync::Arc<crate::bot::ThreatTable>,
     started: Instant,
     stats: &mut FarmStats,
 ) -> Result<LegEnd, FarmError> {
@@ -877,6 +889,7 @@ async fn travel(
                     graph,
                     err.at,
                     bot_config,
+                    threat,
                     cfg,
                     started,
                     Some(until),
@@ -939,6 +952,7 @@ async fn farm_stop(
     graph: &RoomGraph,
     stop: RoomId,
     bot_config: &crate::bot::BotConfig,
+    threat: &std::sync::Arc<crate::bot::ThreatTable>,
     cfg: &FarmConfig,
     started: Instant,
     // Hard cap on this stop, or None to stay until it goes quiet.
@@ -958,7 +972,7 @@ async fn farm_stop(
     let mut events = session.events();
     crate::session::drain(&mut events, |_| {});
 
-    let mut bot = crate::bot::Bot::new(bot_config.clone());
+    let mut bot = crate::bot::Bot::with_threat(bot_config.clone(), threat.clone());
     let mut gate = Gate::new(backoff);
     let mut heal = HealWatch::new(bot_config, cfg);
     let mut idle_prompts = 0u32;
@@ -998,7 +1012,7 @@ async fn farm_stop(
             // that ends a fight and sit latched on a corpse. Start over
             // rather than carry on with a bot that quietly lost track.
             Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {
-                bot = crate::bot::Bot::new(bot_config.clone());
+                bot = crate::bot::Bot::with_threat(bot_config.clone(), threat.clone());
                 gate = Gate::new(backoff);
                 gate.push("look".into());
                 continue;
@@ -1053,7 +1067,7 @@ async fn farm_stop(
             }
             // Back at the stop with a clean slate.
             events = session.events();
-            bot = crate::bot::Bot::new(bot_config.clone());
+            bot = crate::bot::Bot::with_threat(bot_config.clone(), threat.clone());
             gate = Gate::new(backoff);
             heal = HealWatch::new(bot_config, cfg);
             gate.push("look".into());

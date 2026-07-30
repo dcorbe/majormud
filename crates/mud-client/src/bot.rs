@@ -125,8 +125,16 @@ fn is_attackable(name: &str) -> bool {
     name.chars().next().is_some_and(char::is_lowercase)
 }
 
+/// Monster name (as the shipped data spells it, lowercase) -> how
+/// dangerous it is. Built from the content database; see
+/// [`crate::graph::RoomGraph::load_threat`].
+pub type ThreatTable = std::collections::HashMap<String, i64>;
+
 pub struct Bot {
     config: BotConfig,
+    /// How dangerous each template is. Empty means "no opinion", and the
+    /// bot then keeps the board's own listing order.
+    threat: std::sync::Arc<ThreatTable>,
     /// Name currently under attack; cleared once it is gone.
     engaged: Option<String>,
     /// Exits from the most recent room block — the flee routes.
@@ -147,8 +155,14 @@ pub struct Bot {
 
 impl Bot {
     pub fn new(config: BotConfig) -> Self {
+        Bot::with_threat(config, std::sync::Arc::new(ThreatTable::new()))
+    }
+
+    /// As [`Bot::new`], but able to tell a cave bear from a giant rat.
+    pub fn with_threat(config: BotConfig, threat: std::sync::Arc<ThreatTable>) -> Self {
         Bot {
             config,
+            threat,
             engaged: None,
             exits: Vec::new(),
             healing: false,
@@ -188,9 +202,23 @@ impl Bot {
                 {
                     self.engaged = None;
                 }
-                room.also_here
+                // Biggest threat first. "Also here:" is in the board's
+                // own order, which is not danger order -- taking the
+                // first attackable name meant punching a giant rat while
+                // a cave bear hit for 17.
+                //
+                // Ties keep the board's order, which `max_by_key` alone
+                // would invert: it yields the LAST maximum, so equal
+                // scores would pick the last name listed.
+                let target = room
+                    .also_here
                     .iter()
-                    .find_map(|name| self.engage(name))
+                    .enumerate()
+                    .filter(|(_, name)| self.attackable(name))
+                    .max_by_key(|(i, name)| (self.threat_of(name), std::cmp::Reverse(*i)))
+                    .map(|(_, name)| name.clone());
+                target
+                    .and_then(|name| self.engage(&name))
                     .into_iter()
                     .collect()
             }
@@ -236,15 +264,38 @@ impl Bot {
         }
     }
 
+    /// Is this something we would swing at at all? Split out of
+    /// [`Bot::engage`] so candidates can be ranked before one is chosen,
+    /// rather than the first acceptable name winning by position.
+    fn attackable(&self, name: &str) -> bool {
+        self.config.auto_combat
+            && self.engaged.is_none()
+            && is_attackable(name)
+            && !self.refused.contains(target_word(name))
+            && !self.config.ignore.iter().any(|i| name.contains(i.as_str()))
+    }
+
+    /// How dangerous `name` is.
+    ///
+    /// Instances carry a rolled adjective ("fierce filthbug") while the
+    /// table is keyed by template ("filthbug"), so the longest table entry
+    /// that the display name ENDS WITH wins — longest because "cave bear"
+    /// must beat a hypothetical "bear". Unknown names score 0 and so keep
+    /// the board's order among themselves.
+    fn threat_of(&self, name: &str) -> i64 {
+        let lower = name.to_lowercase();
+        self.threat
+            .iter()
+            .filter(|(template, _)| lower.ends_with(template.as_str()))
+            .max_by_key(|(template, _)| template.len())
+            .map(|(_, score)| *score)
+            .unwrap_or(0)
+    }
+
     /// Attack `name`, unless combat is off, a target is already engaged,
     /// the name is not a monster, or it is on the ignore list.
     fn engage(&mut self, name: &str) -> Option<BotAction> {
-        if !self.config.auto_combat
-            || self.engaged.is_some()
-            || !is_attackable(name)
-            || self.refused.contains(target_word(name))
-            || self.config.ignore.iter().any(|i| name.contains(i.as_str()))
-        {
+        if !self.attackable(name) {
             return None;
         }
         self.engaged = Some(name.to_string());

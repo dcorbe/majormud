@@ -516,3 +516,70 @@ fn a_missed_swing_counts_as_the_fight_continuing() {
 
     assert_eq!(bot.engaged(), Some("kobold thief"));
 }
+
+// --- threat-ordered targeting ----------------------------------------
+//
+// "Also here:" is listed in the board's own order, which has nothing to
+// do with danger. Taking the first attackable name meant punching a
+// giant rat while a cave bear hit for 17 -- observed live on 2026-07-30.
+
+fn threat() -> std::collections::HashMap<String, i64> {
+    // Scores as the shipped data ranks them: experience, which is the
+    // board's own valuation of how hard a thing is.
+    [("cave bear", 100i64), ("filthbug", 12), ("giant rat", 9)]
+        .into_iter()
+        .map(|(n, s)| (n.to_string(), s))
+        .collect()
+}
+
+fn threat_bot() -> Bot {
+    Bot::with_threat(
+        BotConfig {
+            auto_combat: true,
+            ..BotConfig::default()
+        },
+        std::sync::Arc::new(threat()),
+    )
+}
+
+#[test]
+fn the_most_dangerous_thing_in_the_room_is_attacked_first() {
+    let mut bot = threat_bot();
+    // Board order puts the rat first; the bear is what matters.
+    let actions = bot.on_event(&room(&["giant rat", "cave bear", "filthbug"]));
+    assert_eq!(actions, vec![BotAction::Send("a bear".into())]);
+}
+
+/// Instances carry a rolled adjective but the threat table is keyed by
+/// template, so "fierce filthbug" has to score as a filthbug.
+#[test]
+fn a_rolled_adjective_still_scores_as_its_template() {
+    let mut bot = threat_bot();
+    let actions = bot.on_event(&room(&["giant rat", "fierce filthbug"]));
+    assert_eq!(actions, vec![BotAction::Send("a filthbug".into())]);
+}
+
+/// Nothing known about any of them: fall back to the board's order
+/// rather than inventing a ranking.
+#[test]
+fn unknown_monsters_keep_the_boards_order() {
+    let mut bot = threat_bot();
+    let actions = bot.on_event(&room(&["grue", "wumpus"]));
+    assert_eq!(actions, vec![BotAction::Send("a grue".into())]);
+}
+
+/// Ranking must not override the ignore list -- a high-threat town
+/// guard is exactly the thing never to swing at.
+#[test]
+fn the_ignore_list_still_wins_over_threat() {
+    let mut bot = Bot::with_threat(
+        BotConfig {
+            auto_combat: true,
+            ignore: vec!["bear".into()],
+            ..BotConfig::default()
+        },
+        std::sync::Arc::new(threat()),
+    );
+    let actions = bot.on_event(&room(&["giant rat", "cave bear"]));
+    assert_eq!(actions, vec![BotAction::Send("a rat".into())]);
+}

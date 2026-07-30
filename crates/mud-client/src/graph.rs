@@ -113,6 +113,50 @@ impl RoomGraph {
         self.len() == 0
     }
 
+    /// How dangerous each monster template is, keyed by lowercase name.
+    ///
+    /// Scored on `experience` — the board's own valuation of how hard a
+    /// thing is — with `hitpoints` breaking ties, which ranks the shipped
+    /// Newhaven dungeon the way a player would: cave bear 100 above acid
+    /// slime 16, kobold thief 13, filthbug 12, giant rat 9.
+    ///
+    /// Deliberately not the client's own damage model. The exp figure is
+    /// data rather than a guess, and it is the one number the board
+    /// already publishes about difficulty.
+    ///
+    /// Duplicate names exist (there are eight "giant rat" rows); the
+    /// highest-scoring row wins, so a shared name is never ranked below
+    /// its most dangerous variant.
+    pub fn load_threat(db: &Path) -> Result<crate::bot::ThreatTable, String> {
+        let conn = rusqlite::Connection::open_with_flags(
+            db,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .map_err(|e| format!("open {}: {e}", db.display()))?;
+        let mut stmt = conn
+            .prepare("select lower(name), experience, hitpoints from monster where name != ''")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut table = crate::bot::ThreatTable::new();
+        for row in rows {
+            let (name, exp, hp) = row.map_err(|e| e.to_string())?;
+            let score = exp * 1000 + hp;
+            let slot = table.entry(name).or_insert(score);
+            if score > *slot {
+                *slot = score;
+            }
+        }
+        Ok(table)
+    }
+
     pub fn room(&self, id: RoomId) -> Option<&GraphRoom> {
         self.rooms.get(&id)
     }

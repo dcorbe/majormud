@@ -82,3 +82,22 @@ fn route_to_unknown_room_is_none() {
             .is_none()
     );
 }
+
+/// Threat ranking comes from the shipped data, not from a guess, and it
+/// has to rank the Newhaven dungeon the way a player would: the cave bear
+/// above the wanderers that drift into its lair.
+#[test]
+fn threat_ranks_the_dungeon_the_way_a_player_would() {
+    let db = std::path::Path::new("../../re/mmud_wgnt.sqlite");
+    if !db.exists() {
+        eprintln!("skipping: {} not present", db.display());
+        return;
+    }
+    let threat = RoomGraph::load_threat(db).expect("threat table");
+    let get = |n: &str| *threat.get(n).unwrap_or_else(|| panic!("missing {n}"));
+
+    assert!(get("cave bear") > get("acid slime"), "the bear is the boss here");
+    assert!(get("acid slime") > get("kobold thief"));
+    assert!(get("kobold thief") > get("filthbug"));
+    assert!(get("filthbug") > get("giant rat"));
+}

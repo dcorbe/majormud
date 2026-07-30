@@ -284,7 +284,7 @@ fn farm_command(
         // simply abandoned where it stands any more; see below.
         let outcome = tokio::select! {
             r = run_farm(&session, graph.clone(), &plan, &bot_config, &farm_config) => Some(r),
-            _ = tokio::signal::ctrl_c() => None,
+            _ = stop_signal() => None,
         };
 
         // Say why the run stopped BEFORE walking home, so the two read
@@ -320,6 +320,47 @@ fn farm_command(
             Some(Ok(_)) => ExitCode::SUCCESS,
         }
     })
+}
+
+/// Wait for any signal that means "stop the patrol now".
+///
+/// Not just Ctrl-C. A long farm lives in tmux or under a supervisor, and
+/// those stop it with SIGTERM (`tmux kill-session`, `systemctl stop`,
+/// `timeout`) or SIGHUP (the terminal going away). All three have to take
+/// the same exit route, because that route is what walks the character
+/// out of the lair — a run killed by a signal the process ignores leaves
+/// it standing among the monsters, linkdead.
+///
+/// SIGKILL cannot be caught, so `kill -9` still strands the character;
+/// and a supervisor that allows only a short grace period may cut the
+/// walk home short.
+#[cfg(unix)]
+async fn stop_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut term = match signal(SignalKind::terminate()) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("SIGTERM handler: {e}");
+            return;
+        }
+    };
+    let mut hup = match signal(SignalKind::hangup()) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("SIGHUP handler: {e}");
+            return;
+        }
+    };
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = term.recv() => {}
+        _ = hup.recv() => {}
+    }
+}
+
+#[cfg(not(unix))]
+async fn stop_signal() {
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 /// "out/run1" + "_timing.log" -> "out/run1_timing.log"
