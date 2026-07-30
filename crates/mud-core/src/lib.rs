@@ -10,6 +10,7 @@ pub mod command;
 pub mod content;
 pub mod crime;
 pub mod game;
+pub mod questvm;
 pub mod stats;
 pub mod text;
 pub mod tick;

@@ -247,6 +247,11 @@ pub struct Player {
     /// slot exhaustion is observable (`addability` on a full table
     /// fail-stops, decompile 69628-69634). Reads sum matching slots.
     pub innate: [(Option<Ability>, i16); 30],
+    /// The 64 script flag bits driven by the quest VM's `flag` verb
+    /// (`FUN_0046fdda` 68319-68413 — a verb quests.md missed; zero
+    /// shipped uses). Bits 1-32 live at `+0x71c`, 33-64 at `+0x460`;
+    /// modeled as one u64 with flag `n` at bit `n-1`.
+    pub quest_flags: u64,
 }
 
 /// One player active-spell slot (`spellcasting.md` §1). `spell` is `None`
@@ -2121,6 +2126,645 @@ impl Core {
             self.build_player_attacker(session),
             self.player_energy_used(session),
         )
+    }
+
+    // --- M7 slice 6: the quest text-block VM (quests.md §2;
+    // `perform_matched_action` 0x70209, decompile 68548-69689) ---
+
+    /// Test hook: run one `:`-chain through the VM, returning the raw
+    /// control code (0 nothing dispatched / 1 continue / 2 fail-stop).
+    pub fn debug_perform_matched_action(&mut self, session: SessionId, line: &str) -> u8 {
+        self.perform_matched_action(session, line) as u8
+    }
+
+    /// `perform_matched_action` (68548-69689): split the line on `:`,
+    /// dispatch each token's first word, and return the LAST dispatched
+    /// verb's control code (0 when nothing matched — unknown tokens are
+    /// silently skipped). A FailStop ends the chain; the DLL also
+    /// restores the un-run tail into the caller's buffer, which we don't
+    /// need — callers get the code, not a mutated string.
+    pub(crate) fn perform_matched_action(
+        &mut self,
+        session: SessionId,
+        line: &str,
+    ) -> crate::questvm::ActionCode {
+        use crate::questvm::{parse_action_token, ActionCode};
+        // The takeitem rollback buffer (`auStack_1b4[100]`, 68570):
+        // items taken by THIS chain, restored when a later `takeitem` or
+        // `price` fail-stops (69397-69404, 69666-69673) — gated on the
+        // KID_GLOVES config (`DAT_004906dc`), modeled always-on.
+        let mut taken: Vec<crate::content::ItemId> = Vec::new();
+        let mut code = ActionCode::NoOp;
+        for token in line.split(':') {
+            let Some((verb, args)) = parse_action_token(token) else {
+                continue;
+            };
+            let result = self.quest_verb(session, verb, args, &mut taken);
+            if result != ActionCode::NoOp {
+                code = result;
+            }
+            if result == ActionCode::FailStop {
+                break;
+            }
+        }
+        code
+    }
+
+    /// `perform_text_block_as_special_command` (0x71d55, 69889-69958):
+    /// run the block's lines through the VM in order. Stops on the first
+    /// line whose chain returns Continue(1); after a 0/2 line it keeps
+    /// going only while a `:` remains anywhere in the text ahead
+    /// (69944-69948). Returns the last control code. (The DLL's 50-record
+    /// walk and id-mismatch stop are loader-time concerns for us — the
+    /// loader pre-assembled continuation records into one body.)
+    pub(crate) fn perform_text_block_as_special_command(
+        &mut self,
+        session: SessionId,
+        block: crate::content::TextBlockId,
+    ) -> u8 {
+        let Some(block) = self.content.textblocks.get(&block) else {
+            return 0;
+        };
+        let body = block.body.clone();
+        let lines: Vec<&str> = body.lines().collect();
+        let mut last = 0u8;
+        for (i, l) in lines.iter().enumerate() {
+            let code = self.perform_matched_action(session, l) as u8;
+            last = code;
+            if code == 1 {
+                break;
+            }
+            if !lines[i + 1..].iter().any(|rest| rest.contains(':')) {
+                break;
+            }
+        }
+        last
+    }
+
+    /// One dispatched verb (the arm bodies of 68600-69689). Recognized
+    /// verbs return Continue/FailStop; verbs whose arms land later in
+    /// the slice return NoOp so the chain code is untouched.
+    fn quest_verb(
+        &mut self,
+        session: SessionId,
+        verb: crate::questvm::QuestVerb,
+        args: &str,
+        _taken: &mut Vec<crate::content::ItemId>,
+    ) -> crate::questvm::ActionCode {
+        use crate::questvm::{ActionCode, QuestVerb, SkillName};
+        const CONTINUE: crate::questvm::ActionCode = ActionCode::Continue;
+        const FAIL: crate::questvm::ActionCode = ActionCode::FailStop;
+        let mut w = args.split_whitespace();
+        match verb {
+            QuestVerb::CheckAbility => {
+                // 69280-69316: presence first (no message), then the
+                // optional second arg as a minimum value.
+                let Some(id) = w.next() else { return CONTINUE };
+                let ability = u16::try_from(crate::questvm::atol(id))
+                    .ok()
+                    .and_then(Ability::from_id);
+                let Some(ability) = ability.filter(|a| self.player_has_quest_ability(session, *a))
+                else {
+                    return FAIL;
+                };
+                if let Some(val) = w.next()
+                    && i64::from(self.quest_ability_value(session, ability))
+                        < crate::questvm::atol(val)
+                {
+                    return FAIL;
+                }
+                CONTINUE
+            }
+            QuestVerb::TestAbility => {
+                // 68855-68894: the UPPER gate. Requires both args; absent
+                // ability fails for val >= 0; present fails when the
+                // value exceeds val. Shipped `testability X v:
+                // checkability X v` pairs pin exact-step progression.
+                let (Some(id), Some(val)) = (w.next(), w.next()) else {
+                    return CONTINUE;
+                };
+                let val = crate::questvm::atol(val);
+                let ability = u16::try_from(crate::questvm::atol(id))
+                    .ok()
+                    .and_then(Ability::from_id)
+                    .filter(|a| self.player_has_quest_ability(session, *a));
+                match ability {
+                    None if val >= 0 => FAIL,
+                    None => CONTINUE,
+                    Some(a) if val < i64::from(self.quest_ability_value(session, a)) => FAIL,
+                    Some(_) => CONTINUE,
+                }
+            }
+            QuestVerb::FailAbility => {
+                // 68828-68853: the whole check nests inside the SECOND
+                // arg's parse — bare `failability <id>` does nothing.
+                let (Some(id), Some(msg)) = (w.next(), w.next()) else {
+                    return CONTINUE;
+                };
+                let has = u16::try_from(crate::questvm::atol(id))
+                    .ok()
+                    .and_then(Ability::from_id)
+                    .is_some_and(|a| self.player_has_quest_ability(session, a));
+                if has {
+                    self.quest_fail_message(session, crate::questvm::atol(msg));
+                    return FAIL;
+                }
+                CONTINUE
+            }
+            QuestVerb::Class => {
+                // 69263-69277: exact match, no message arg.
+                let Some(id) = w.next() else { return CONTINUE };
+                if i64::from(self.player(session).class.0) != crate::questvm::atol(id) {
+                    return FAIL;
+                }
+                CONTINUE
+            }
+            QuestVerb::Race => {
+                // 69245-69261: exact match, no message arg.
+                let Some(id) = w.next() else { return CONTINUE };
+                if i64::from(self.player(session).race.0) != crate::questvm::atol(id) {
+                    return FAIL;
+                }
+                CONTINUE
+            }
+            QuestVerb::MinLevel => {
+                // 69173-69196: fail when level < n.
+                let Some(n) = w.next() else { return CONTINUE };
+                if i64::from(self.player(session).level) < crate::questvm::atol(n) {
+                    self.quest_gate_message(session, w.next());
+                    return FAIL;
+                }
+                CONTINUE
+            }
+            QuestVerb::MaxLevel => {
+                // 69148-69171: fail when n < level.
+                let Some(n) = w.next() else { return CONTINUE };
+                if crate::questvm::atol(n) < i64::from(self.player(session).level) {
+                    self.quest_gate_message(session, w.next());
+                    return FAIL;
+                }
+                CONTINUE
+            }
+            QuestVerb::EvilAligned => {
+                // 69198-69220: fail when the evil word (`+0x542`) is
+                // BELOW n — requires at least n evil.
+                let Some(n) = w.next() else { return CONTINUE };
+                if i64::from(self.player(session).fame) < crate::questvm::atol(n) {
+                    self.quest_gate_message(session, w.next());
+                    return FAIL;
+                }
+                CONTINUE
+            }
+            QuestVerb::GoodAligned => {
+                // 69222-69243: fail when n < the evil word — requires at
+                // most n (the shipped committed-good gate is -51).
+                let Some(n) = w.next() else { return CONTINUE };
+                if crate::questvm::atol(n) < i64::from(self.player(session).fame) {
+                    self.quest_gate_message(session, w.next());
+                    return FAIL;
+                }
+                CONTINUE
+            }
+            QuestVerb::CheckItem => {
+                // 69103-69146: scans the carried array (`+0xd8`) only —
+                // never worn or wielded. (The DLL also scans `+0x334`,
+                // the hangup-cleared secondary list, which has no model
+                // here and no shipped writer in our engine.)
+                let Some(id) = w.next() else { return CONTINUE };
+                if !self.quest_carries_item(session, crate::questvm::atol(id)) {
+                    self.quest_gate_message(session, w.next());
+                    return FAIL;
+                }
+                CONTINUE
+            }
+            QuestVerb::FailItem => {
+                // 69058-69101: fail when carried.
+                let Some(id) = w.next() else { return CONTINUE };
+                if self.quest_carries_item(session, crate::questvm::atol(id)) {
+                    self.quest_gate_message(session, w.next());
+                    return FAIL;
+                }
+                CONTINUE
+            }
+            QuestVerb::RoomItem => {
+                // 68985-69029: a GATE (require the item on the floor),
+                // not a spawn — quests.md §2 had this row wrong.
+                let Some(id) = w.next() else { return CONTINUE };
+                if !self.quest_room_has_item(session, crate::questvm::atol(id)) {
+                    self.quest_gate_message(session, w.next());
+                    return FAIL;
+                }
+                CONTINUE
+            }
+            QuestVerb::FailRoomItem => {
+                // 68937-68981: fail when the item is on the floor
+                // (visible `+0x470` or hidden `+0x4d8`).
+                let Some(id) = w.next() else { return CONTINUE };
+                if self.quest_room_has_item(session, crate::questvm::atol(id)) {
+                    self.quest_gate_message(session, w.next());
+                    return FAIL;
+                }
+                CONTINUE
+            }
+            QuestVerb::CheckSpell => {
+                // FUN_0046f4a5 (67891-67936): scans the ACTIVE effect
+                // slots (`+0x40`), not the spellbook; the optional
+                // failure arg is a fail-BLOCK, not a message.
+                let Some(id) = w.next() else { return CONTINUE };
+                let id = crate::questvm::atol(id);
+                let active = self.player(session).active_spells.iter().any(|s| {
+                    s.spell
+                        .is_some_and(|sp| i64::from(sp.0) == id)
+                });
+                if !active {
+                    if let Some(block) = w.next()
+                        && let Ok(block) = u16::try_from(crate::questvm::atol(block))
+                    {
+                        self.perform_text_block_as_special_command(
+                            session,
+                            crate::content::TextBlockId(block),
+                        );
+                    }
+                    return FAIL;
+                }
+                CONTINUE
+            }
+            QuestVerb::NeedMonster => {
+                // FUN_00470116 (68491-68542): fail unless a monster of
+                // the TEMPLATE is in the room.
+                let Some(id) = w.next() else { return CONTINUE };
+                let id = crate::questvm::atol(id);
+                let room = self.player(session).location;
+                let present = self
+                    .monsters
+                    .values()
+                    .any(|m| m.location == room && i64::from(m.template.0) == id);
+                if !present {
+                    self.quest_gate_message(session, w.next());
+                    return FAIL;
+                }
+                CONTINUE
+            }
+            QuestVerb::Monsters => {
+                // 69463-69493: fail when the room has no monster at all.
+                let room = self.player(session).location;
+                if !self.monsters.values().any(|m| m.location == room) {
+                    self.quest_gate_message(session, w.next());
+                    return FAIL;
+                }
+                CONTINUE
+            }
+            QuestVerb::NoMonsters => {
+                // 69495-69521: fail when ANY monster is present.
+                let room = self.player(session).location;
+                if self.monsters.values().any(|m| m.location == room) {
+                    self.quest_gate_message(session, w.next());
+                    return FAIL;
+                }
+                CONTINUE
+            }
+            QuestVerb::TestSkill => {
+                // FUN_0046f53a, roll variant (68078-68095): one
+                // genrdn(0, range) draw; fail when skill < roll +
+                // modifier, running the fail-BLOCK. One arg = the block
+                // (modifier 0); two args = modifier then block.
+                let Some(skill) = w.next() else { return CONTINUE };
+                let skill = SkillName::parse(skill);
+                let (modifier, block) = match (w.next(), w.next()) {
+                    (Some(a), Some(b)) => (crate::questvm::atol(a), crate::questvm::atol(b)),
+                    (Some(a), None) => (0, crate::questvm::atol(a)),
+                    _ => return CONTINUE,
+                };
+                let range = skill.map_or(100, SkillName::roll_range);
+                let value = self.quest_skill_value(session, skill);
+                let roll = self.rng.roll(0, range);
+                if i64::from(value) < i64::from(roll) + modifier {
+                    if let Ok(block) = u16::try_from(block) {
+                        self.perform_text_block_as_special_command(
+                            session,
+                            crate::content::TextBlockId(block),
+                        );
+                    }
+                    return FAIL;
+                }
+                CONTINUE
+            }
+            QuestVerb::CheckSkill => {
+                // FUN_0046f53a, threshold variant (68097-68107): no
+                // roll; value < threshold → message + fail. The check
+                // only runs when the message arg is present
+                // (decompile-literal quirk).
+                let Some(skill) = w.next() else { return CONTINUE };
+                let skill = SkillName::parse(skill);
+                let (Some(threshold), Some(msg)) = (w.next(), w.next()) else {
+                    return CONTINUE;
+                };
+                let value = self.quest_skill_value(session, skill);
+                if i64::from(value) < crate::questvm::atol(threshold) {
+                    self.quest_fail_message(session, crate::questvm::atol(msg));
+                    return FAIL;
+                }
+                CONTINUE
+            }
+            QuestVerb::TestTournament => {
+                // 68710-68720: passes only when the tournament config
+                // byte (`DAT_004906c9`) is 2 — this board never is.
+                FAIL
+            }
+            QuestVerb::Flag => {
+                // FUN_0046fdda (68319-68413): 64 player flag bits with
+                // set/check/fail/clear sub-ops; out-of-range fails.
+                let Some(n) = w.next() else { return CONTINUE };
+                let n = crate::questvm::atol(n);
+                if !(1..=64).contains(&n) {
+                    return FAIL;
+                }
+                let bit = 1u64 << (n - 1);
+                match w.next().map(str::to_ascii_lowercase).as_deref() {
+                    Some("set") => {
+                        if let Some(Session::InGame { player, .. }) =
+                            self.sessions.get_mut(&session)
+                        {
+                            player.quest_flags |= bit;
+                        }
+                        let snapshot = Box::new(self.player(session).clone());
+                        self.events.push(Event::Persist(snapshot));
+                        CONTINUE
+                    }
+                    Some("clear") => {
+                        if let Some(Session::InGame { player, .. }) =
+                            self.sessions.get_mut(&session)
+                        {
+                            player.quest_flags &= !bit;
+                        }
+                        let snapshot = Box::new(self.player(session).clone());
+                        self.events.push(Event::Persist(snapshot));
+                        CONTINUE
+                    }
+                    Some("check") => {
+                        if self.player(session).quest_flags & bit == 0 {
+                            self.quest_gate_message(session, w.next());
+                            return FAIL;
+                        }
+                        CONTINUE
+                    }
+                    Some("fail") => {
+                        if self.player(session).quest_flags & bit != 0 {
+                            self.quest_gate_message(session, w.next());
+                            return FAIL;
+                        }
+                        CONTINUE
+                    }
+                    _ => CONTINUE,
+                }
+            }
+            // M7 PENDING(slice-6): the mutation, item, output/world, and
+            // peripheral arms land with tasks 5-8 of the slice-6 plan
+            // (docs/plans/2026-07-19-m7-content-systems-design.md §Slice 6).
+            QuestVerb::Price
+            | QuestVerb::Cast
+            | QuestVerb::GiveAbility
+            | QuestVerb::AddAbility
+            | QuestVerb::Teleport
+            | QuestVerb::RemoveAbility
+            | QuestVerb::Summon
+            | QuestVerb::Message
+            | QuestVerb::TakeItem
+            | QuestVerb::AddExp
+            | QuestVerb::GiveItem
+            | QuestVerb::HideItem
+            | QuestVerb::Text
+            | QuestVerb::RoomText
+            | QuestVerb::ClearItem
+            | QuestVerb::AddEvil
+            | QuestVerb::RemoteAction
+            | QuestVerb::Random
+            | QuestVerb::AddDelay
+            | QuestVerb::GiveCoins
+            | QuestVerb::LearnSpell => ActionCode::NoOp,
+        }
+    }
+
+    /// The gates' optional trailing message arg: present → show it.
+    fn quest_gate_message(&mut self, session: SessionId, msg: Option<&str>) {
+        if let Some(msg) = msg {
+            self.quest_fail_message(session, crate::questvm::atol(msg));
+        }
+    }
+
+    /// `FUN_0046f360` (67820-67844): message line 1 to the actor, line 2
+    /// to the room with the actor's name substituted. (The `DAT_0048fcf4`
+    /// prefix byte is ORACLE-VERIFY — pinned with the slice-8 strings.)
+    fn quest_fail_message(&mut self, session: SessionId, msg: i64) {
+        let Some(msg) = u16::try_from(msg)
+            .ok()
+            .and_then(|id| self.content.messages.get(&crate::content::MessageId(id)))
+        else {
+            return;
+        };
+        let user_line = msg.lines.first().cloned().unwrap_or_default();
+        let name = self.player(session).name.clone();
+        let room_line = msg
+            .lines
+            .get(1)
+            .map(|l| l.replacen("%s", &name, 1))
+            .unwrap_or_default();
+        let room = self.player(session).location;
+        if !user_line.is_empty() {
+            self.output_line(session, &user_line);
+        }
+        if !room_line.is_empty() {
+            self.broadcast_to_room(room, Some(session), &room_line);
+        }
+    }
+
+    /// `user_has_ability` (0x3d570, 37059-37145): presence across ALL
+    /// sources — active-effect spell rows, race, class, the innate
+    /// table, worn items, the wielded weapon, and carried inventory
+    /// (skipping weapons `+0x2f4 == 1` and wearable items
+    /// `+0x398 != 0` — those only count when worn).
+    fn player_has_quest_ability(&self, session: SessionId, ability: Ability) -> bool {
+        let player = self.player(session);
+        if player.innate.iter().any(|(id, _)| *id == Some(ability)) {
+            return true;
+        }
+        for slot in &player.active_spells {
+            if let Some(spell) = slot.spell.and_then(|id| self.content.spells.get(&id))
+                && spell.abilities.iter().any(|(a, _)| *a == ability)
+            {
+                return true;
+            }
+        }
+        if let Some(race) = self.content.races.get(&player.race)
+            && race.abilities.iter().any(|(a, _)| *a == ability)
+        {
+            return true;
+        }
+        if let Some(class) = self.content.classes.get(&player.class)
+            && class.abilities.iter().any(|(a, _)| *a == ability)
+        {
+            return true;
+        }
+        let worn_or_wielded = player.worn.iter().chain(player.weapon.iter());
+        for (id, _) in worn_or_wielded {
+            if let Some(item) = self.content.items.get(id)
+                && item.abilities.iter().any(|(a, _)| *a == ability)
+            {
+                return true;
+            }
+        }
+        for (id, _) in &player.inventory {
+            if let Some(item) = self.content.items.get(id)
+                && item.item_type != 1
+                && item.worn_on == 0
+                && item.abilities.iter().any(|(a, _)| *a == ability)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// `get_user_ability_value` (0x3d038, 36795-37052): the same source
+    /// set as the presence scan, folded with SUM semantics — except ids
+    /// {0x16, 0x47, 0x48, 0x57, 0x65, 0x69, 0x6a}, which keep the MAX
+    /// single contribution (36818-36832). An active spell carrying a
+    /// NegateAbility (0x7c) row naming this id zeroes the result
+    /// (36892-36898, 37038-37041).
+    fn quest_ability_value(&self, session: SessionId, ability: Ability) -> i32 {
+        let max_mode = matches!(
+            ability.id(),
+            0x16 | 0x47 | 0x48 | 0x57 | 0x65 | 0x69 | 0x6a
+        );
+        let player = self.player(session);
+        let mut contributions: Vec<i32> = Vec::new();
+        for (id, v) in &player.innate {
+            if *id == Some(ability) {
+                contributions.push(i32::from(*v));
+            }
+        }
+        let mut negated = false;
+        for slot in &player.active_spells {
+            let Some(spell) = slot.spell.and_then(|id| self.content.spells.get(&id)) else {
+                continue;
+            };
+            for (row_ability, row_value) in &spell.abilities {
+                if *row_ability == ability {
+                    // A value-0 row means "the stored magnitude" — the
+                    // slot's `+0x54` value (36877-36883).
+                    contributions.push(match *row_value {
+                        0 => i32::from(slot.value),
+                        v => i32::from(v),
+                    });
+                }
+                if row_ability.id() == 0x7c && i64::from(*row_value) == i64::from(ability.id()) {
+                    negated = true;
+                }
+            }
+        }
+        if let Some(race) = self.content.races.get(&player.race) {
+            for (a, v) in &race.abilities {
+                if *a == ability {
+                    contributions.push(i32::from(*v));
+                }
+            }
+        }
+        if let Some(class) = self.content.classes.get(&player.class) {
+            for (a, v) in &class.abilities {
+                if *a == ability {
+                    contributions.push(i32::from(*v));
+                }
+            }
+        }
+        let worn_or_wielded = player.worn.iter().chain(player.weapon.iter());
+        for (id, _) in worn_or_wielded {
+            if let Some(item) = self.content.items.get(id) {
+                let sum: i32 = item
+                    .abilities
+                    .iter()
+                    .filter(|(a, _)| *a == ability)
+                    .map(|(_, v)| i32::from(*v))
+                    .sum();
+                if sum != 0 {
+                    contributions.push(sum);
+                }
+            }
+        }
+        for (id, _) in &player.inventory {
+            if let Some(item) = self.content.items.get(id)
+                && item.item_type != 1
+                && item.worn_on == 0
+            {
+                let sum: i32 = item
+                    .abilities
+                    .iter()
+                    .filter(|(a, _)| *a == ability)
+                    .map(|(_, v)| i32::from(*v))
+                    .sum();
+                if sum != 0 {
+                    contributions.push(sum);
+                }
+            }
+        }
+        if negated {
+            return 0;
+        }
+        if max_mode {
+            contributions.into_iter().max().unwrap_or(0)
+        } else {
+            contributions.into_iter().sum()
+        }
+    }
+
+    /// The carried-inventory scan shared by checkitem/failitem
+    /// (69066-69073): the `+0xd8` array only.
+    fn quest_carries_item(&self, session: SessionId, item: i64) -> bool {
+        self.player(session)
+            .inventory
+            .iter()
+            .any(|(id, _)| i64::from(id.0) == item)
+    }
+
+    /// The floor scan shared by roomitem/failroomitem (68945-69013):
+    /// visible (`+0x470`) and hidden (`+0x4d8`) slots.
+    fn quest_room_has_item(&self, session: SessionId, item: i64) -> bool {
+        let room = self.player(session).location;
+        let in_list = |list: Option<&Vec<(crate::content::ItemId, i16)>>| {
+            list.is_some_and(|items| items.iter().any(|(id, _)| i64::from(id.0) == item))
+        };
+        in_list(self.room_items.get(&room)) || in_list(self.room_hidden_items.get(&room))
+    }
+
+    /// The named-skill source table for testskill/checkskill
+    /// (`FUN_0046f53a` 67995-68070): effective stats, the derived skill
+    /// words, MR, and current HP. Unknown names read 0.
+    fn quest_skill_value(&self, session: SessionId, skill: Option<crate::questvm::SkillName>) -> i32 {
+        use crate::questvm::SkillName::*;
+        let player = self.player(session);
+        let Some(skill) = skill else { return 0 };
+        match skill {
+            Agility => i32::from(player.stats.agility),
+            Strength => i32::from(player.stats.strength),
+            Intellect => i32::from(player.stats.intellect),
+            Wisdom => i32::from(player.stats.wisdom),
+            Health => i32::from(player.stats.health),
+            Charm => i32::from(player.stats.charm),
+            CurrentHp => player.current_hp,
+            _ => {
+                let derived = self.derive_for(player);
+                match skill {
+                    Spellcasting => derived.spellcasting,
+                    Perception => derived.perception,
+                    Stealth => derived.stealth,
+                    Thievery => derived.thievery,
+                    Traps => derived.find_traps,
+                    Picklocks => derived.picklocks,
+                    Tracking => derived.tracking,
+                    MagicResistance => derived.magic_resist,
+                    _ => unreachable!("stat arms handled above"),
+                }
+            }
+        }
     }
 
     /// Test hook: set lives.
@@ -12681,6 +13325,7 @@ impl Core {
             hidden: false,
             sneak_armed: false,
             innate: [(None, 0); 30],
+            quest_flags: 0,
         };
         let derived = self.derive_for(&player);
         player.current_hp = derived.max_hp;

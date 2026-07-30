@@ -154,6 +154,18 @@ fn innate_abilities_roundtrip() {
 }
 
 #[test]
+fn quest_flags_roundtrip() {
+    // The `flag`-verb bits (M7 slice 6, `+0x71c`/`+0x460`): one u64
+    // column, including a high-word bit (>32).
+    let db = db();
+    let mut p = player("Vexil");
+    p.quest_flags = (1 << 2) | (1 << 39);
+    db.save_player(&p).expect("save");
+    let loaded = db.load_player("Vexil").expect("query").expect("found");
+    assert_eq!(loaded.quest_flags, (1 << 2) | (1 << 39));
+}
+
+#[test]
 fn delete_player_purges_innate_abilities() {
     use mud_core::ability::Ability;
     let db = db();

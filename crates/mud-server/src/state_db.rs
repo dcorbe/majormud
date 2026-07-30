@@ -127,6 +127,9 @@ const TABLES: &[TableDef] = &[
             // (+0x700 & 0x10, backfilled ON — the DLL's creation default).
             ("fame", "INTEGER NOT NULL"),
             ("warn_on_evil", "INTEGER NOT NULL CHECK (warn_on_evil IN (0, 1))"),
+            // Quest VM script flags (M7 slice 6): the 64 `flag`-verb bits
+            // (`+0x71c`/`+0x460`); pre-slice-6 rows backfill 0.
+            ("quest_flags", "INTEGER NOT NULL"),
         ],
         constraint: "",
     },
@@ -541,11 +544,11 @@ impl StateDb {
                  b_charm, hp_base, current_hp, current_mana, hunger, thirst,
                  runic, platinum, gold, silver, copper, lawful,
                  cp_unspent, cp_lifetime, lives, experience, map, room,
-                 poison, ansi, fame, warn_on_evil)
+                 poison, ansi, fame, warn_on_evil, quest_flags)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
                  ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
                  ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37,
-                 ?38)",
+                 ?38, ?39)",
             params![
                 player.name,
                 gender_str(player.gender),
@@ -585,6 +588,7 @@ impl StateDb {
                 player.ansi,
                 player.fame,
                 player.warn_on_evil,
+                player.quest_flags as i64,
             ],
         )?;
         tx.commit()?;
@@ -775,7 +779,7 @@ impl StateDb {
                      b_charm, hp_base, current_hp, current_mana, hunger, thirst,
                      runic, platinum, gold, silver, copper, lawful,
                      cp_unspent, cp_lifetime, lives, experience, map, room,
-                     poison, ansi, fame, warn_on_evil
+                     poison, ansi, fame, warn_on_evil, quest_flags
                  FROM player WHERE name = ?1",
                 params![name],
                 |r| {
@@ -832,6 +836,7 @@ impl StateDb {
                         ansi: r.get(35)?,
                         fame: r.get(36)?,
                         warn_on_evil: r.get(37)?,
+                        quest_flags: r.get::<_, i64>(38)? as u64,
                         // Runtime stealth flags — never persisted.
                         hidden: false,
                         sneak_armed: false,
