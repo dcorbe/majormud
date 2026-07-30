@@ -15835,14 +15835,53 @@ impl Core {
         out.push_str(text::color::RESET);
         out.push('\n');
         if full {
-            for (i, line) in room.description.iter().enumerate() {
-                out.push_str(text::color::PLAIN);
-                if i == 0 {
-                    out.push_str("    ");
+            // The FILE DESCRIPTION redirect (gangs.md §4;
+            // display_room_desc → display_desc_from_file 0x39598):
+            // Desc[0] holds the sentinel, Desc[1] the external file,
+            // Desc[2] an optional line-prefix selector — print the
+            // contiguous matching block with the prefix stripped. A
+            // missing file is a SYSOP-side internal_error in the DLL
+            // ("Can't display gang house file %s"); the player just
+            // gets no paragraphs.
+            let house_redirect = room
+                .description
+                .first()
+                .is_some_and(|d| d.eq_ignore_ascii_case("FILE DESCRIPTION"))
+                && room.description.get(1).is_some_and(|f| !f.is_empty());
+            if house_redirect {
+                let filename = room.description[1].to_uppercase();
+                let selector = room.description.get(2).cloned().unwrap_or_default();
+                if let Some(lines) = self.content.house_texts.get(&filename) {
+                    let mut matched = false;
+                    for line in lines {
+                        let shown = if selector.is_empty() {
+                            Some(line.as_str())
+                        } else if let Some(rest) = line.strip_prefix(&selector) {
+                            matched = true;
+                            Some(rest)
+                        } else if matched {
+                            break; // the contiguous block ended
+                        } else {
+                            None
+                        };
+                        if let Some(shown) = shown {
+                            out.push_str(text::color::PLAIN);
+                            out.push_str(shown);
+                            out.push_str(text::color::RESET);
+                            out.push('\n');
+                        }
+                    }
                 }
-                out.push_str(line);
-                out.push_str(text::color::RESET);
-                out.push('\n');
+            } else {
+                for (i, line) in room.description.iter().enumerate() {
+                    out.push_str(text::color::PLAIN);
+                    if i == 0 {
+                        out.push_str("    ");
+                    }
+                    out.push_str(line);
+                    out.push_str(text::color::RESET);
+                    out.push('\n');
+                }
             }
         }
 

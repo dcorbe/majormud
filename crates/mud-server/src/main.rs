@@ -12,6 +12,9 @@ struct Args {
     content: PathBuf,
     state: PathBuf,
     listen: String,
+    /// Guild-house description files (gangs.md §4) — every file in the
+    /// directory is preloaded, keyed by uppercase filename.
+    houses: PathBuf,
     /// Dev fixture spawns: "id@map,room", repeatable (the M6 spawner runs
     /// regardless; fixtures are the test/staging placement path).
     spawns: Vec<(u16, u16, u16)>,
@@ -22,6 +25,7 @@ fn parse_args() -> Result<Args, String> {
         content: "re/mmud_wgnt.sqlite".into(),
         state: "state.sqlite".into(),
         listen: "0.0.0.0:2325".into(),
+        houses: "re/hse_files".into(),
         spawns: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
@@ -34,6 +38,7 @@ fn parse_args() -> Result<Args, String> {
             "--content" => args.content = value("--content")?.into(),
             "--state" => args.state = value("--state")?.into(),
             "--listen" => args.listen = value("--listen")?,
+            "--houses" => args.houses = value("--houses")?.into(),
             "--spawn" => {
                 let v = value("--spawn")?;
                 let (id, loc) = v
@@ -63,13 +68,28 @@ fn main() -> ExitCode {
         }
     };
 
-    let content = match content_db::load(&args.content) {
+    let mut content = match content_db::load(&args.content) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("failed to load {}: {e}", args.content.display());
             return ExitCode::FAILURE;
         }
     };
+    // Guild-house files are optional world data: a missing directory
+    // just means FILE DESCRIPTION rooms render without paragraphs (the
+    // DLL's sysop-error case).
+    match content_db::load_house_dir(&args.houses) {
+        Ok(houses) => {
+            let n = houses.len();
+            for (name, lines) in houses {
+                content.add_house_text(&name, lines);
+            }
+            if n > 0 {
+                println!("loaded {n} guild-house files from {}", args.houses.display());
+            }
+        }
+        Err(e) => eprintln!("--houses {}: {e} (continuing without)", args.houses.display()),
+    }
     let errors = content.validate();
     if !errors.is_empty() {
         for e in &errors {

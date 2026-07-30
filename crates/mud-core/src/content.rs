@@ -1012,6 +1012,12 @@ pub struct Content {
     pub races: BTreeMap<RaceId, Race>,
     pub classes: BTreeMap<ClassId, Class>,
     pub textblocks: BTreeMap<TextBlockId, TextBlock>,
+    /// Guild-house description files (gangs.md §4): UPPERCASE filename →
+    /// lines. Referenced from room `Desc[1]` under the
+    /// `"FILE DESCRIPTION"` sentinel; preloaded at the server edge from
+    /// `--houses` (the core stays I/O-free). Keys carry no extension
+    /// assumption — one board-custom reference is an .ANS.
+    pub house_texts: BTreeMap<String, Vec<String>>,
 }
 
 impl Content {
@@ -1037,6 +1043,10 @@ impl Content {
 
     pub fn add_text_block(&mut self, block: TextBlock) {
         self.textblocks.insert(block.id, block);
+    }
+
+    pub fn add_house_text(&mut self, filename: &str, lines: Vec<String>) {
+        self.house_texts.insert(filename.to_uppercase(), lines);
     }
 
     pub fn add_shop(&mut self, shop: Shop) {

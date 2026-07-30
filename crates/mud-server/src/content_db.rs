@@ -685,3 +685,30 @@ fn load_classes(db: &Connection, content: &mut Content) -> Result<(), LoadError>
     }
     Ok(())
 }
+
+/// Loads every file in a guild-house directory (gangs.md §4) as
+/// (uppercase filename, lines). DOS CRLF terminators are stripped; no
+/// extension is assumed (a board-custom reference is an .ANS). A
+/// missing directory is an error the caller may treat as optional.
+pub fn load_house_dir(
+    dir: &std::path::Path,
+) -> Result<Vec<(String, Vec<String>)>, std::io::Error> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_uppercase();
+        let bytes = std::fs::read(entry.path())?;
+        // DOS text, tolerate any byte values (cp437 art): lossy is fine
+        // for display purposes.
+        let text = String::from_utf8_lossy(&bytes);
+        let lines: Vec<String> = text
+            .split('\n')
+            .map(|l| l.trim_end_matches('\r').to_string())
+            .collect();
+        out.push((name, lines));
+    }
+    Ok(out)
+}
