@@ -177,7 +177,7 @@ fn farm_command(
     capture: Option<&std::path::Path>,
     content: Option<&std::path::Path>,
 ) -> ExitCode {
-    use mud_client::farm::{FarmEnd, FarmPlan, run_farm};
+    use mud_client::farm::{FarmEnd, FarmPlan, go_to_finish, run_farm};
 
     let profile: Profile = match std::fs::read_to_string(profile_path)
         .map_err(|e| e.to_string())
@@ -249,13 +249,28 @@ fn farm_command(
             }
         }
 
-        // Ctrl-C hangs up where it stands. There is no session close
-        // API, and sending "x" would mean waiting out exit meditation
-        // while the operator has already asked to stop.
+        // Ctrl-C stops the patrol. There is no session close API, and
+        // sending "x" would mean waiting out exit meditation while the
+        // operator has already asked to stop — but the character is not
+        // simply abandoned where it stands any more; see below.
         let outcome = tokio::select! {
             r = run_farm(&session, graph.clone(), &plan, &bot_config, &farm_config) => Some(r),
             _ = tokio::signal::ctrl_c() => None,
         };
+
+        // Walk home on every route out of the run, interrupted included.
+        // Ctrl-C is the commonest way a farm ends, so a finish walk that
+        // only ran on a clean finish would miss the case that matters.
+        // Skipped only for a death, which cannot walk anywhere.
+        let died = matches!(outcome, Some(Ok((FarmEnd::Died, _))));
+        if !died && plan.finish.is_some() {
+            match go_to_finish(&session, graph.clone(), &plan, &farm_config).await {
+                Ok(()) => println!("walked to the finish room"),
+                // Worth saying loudly: the character is still out there.
+                Err(e) => eprintln!("could not walk to the finish room: {e}"),
+            }
+        }
+
         match outcome {
             None => {
                 eprintln!("interrupted");

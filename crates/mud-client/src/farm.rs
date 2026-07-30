@@ -44,6 +44,14 @@ pub struct FarmConfig {
     /// Rooms to farm, in patrol order. The lap wraps from the last back
     /// to the first.
     pub circuit: Vec<String>,
+    /// Where to leave the character when the run ends, as `map/room`.
+    ///
+    /// Without this the runner stops wherever it happens to be — which
+    /// for a lair circuit means standing among the monsters, linkdead,
+    /// until somebody walks it out. Somewhere safe (a town room) is the
+    /// point. Absent means stay put, which is the old behaviour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish_at: Option<String>,
     /// Laps to walk; 0 = until stopped.
     pub loops: u32,
     /// Wall-clock cap; 0 = unlimited.
@@ -120,6 +128,7 @@ impl Default for FarmConfig {
             content: PathBuf::from("re/mmud_wgnt.sqlite"),
             start: String::new(),
             circuit: Vec::new(),
+            finish_at: None,
             loops: 0,
             max_seconds: 0,
             dwell_idle_prompts: 3,
@@ -146,6 +155,10 @@ impl Default for FarmConfig {
 pub struct FarmPlan {
     pub start: RoomId,
     pub circuit: Vec<RoomId>,
+    /// Validated `finish_at`. Checked at build time with everything else,
+    /// because finding out the way home is unwalkable at the moment the
+    /// run ends is exactly too late to do anything about it.
+    pub finish: Option<RoomId>,
 }
 
 impl FarmPlan {
@@ -193,7 +206,27 @@ impl FarmPlan {
             }
         }
 
-        Ok(FarmPlan { start, circuit })
+        // The way home is validated from every stop the run can end at,
+        // not just from the circuit's start: a run stops wherever it
+        // stopped, and a finish room reachable from only one of them
+        // would strand the character from all the others.
+        let finish = cfg.finish_at.as_ref().map(&resolve).transpose()?;
+        if let Some(finish) = finish {
+            for &from in std::iter::once(&start).chain(circuit.iter()) {
+                if graph.route(from, finish).is_none() {
+                    return Err(format!(
+                        "no route home from {}/{} to finish_at {}/{}",
+                        from.map, from.room, finish.map, finish.room
+                    ));
+                }
+            }
+        }
+
+        Ok(FarmPlan {
+            start,
+            circuit,
+            finish,
+        })
     }
 }
 
@@ -649,6 +682,72 @@ fn time_up(started: Instant, cfg: &FarmConfig) -> Option<FarmEnd> {
 }
 
 /// Confirm by room name that the character is where the profile claims.
+/// Walk the character to the plan's finish room, if it has one.
+///
+/// Deliberately NOT part of [`run_farm`]. The commonest way a farm ends
+/// is Ctrl-C, which cancels `run_farm` outright — anything inside it
+/// would never run on the path that matters most. So this is a separate
+/// step the caller takes on every exit route, normal or interrupted.
+///
+/// It asks the board where the character is rather than trusting a
+/// position carried out of the run: an interrupted run may have stopped
+/// anywhere, including mid-leg. That answer goes through
+/// [`crate::nav::Navigator::localize_view`], so being several rooms from
+/// the circuit is recoverable rather than fatal.
+///
+/// A dead character cannot walk, so callers should skip this on
+/// [`FarmEnd::Died`].
+pub async fn go_to_finish(
+    session: &crate::session::Session,
+    graph: std::sync::Arc<RoomGraph>,
+    plan: &FarmPlan,
+    cfg: &FarmConfig,
+) -> Result<(), FarmError> {
+    let Some(finish) = plan.finish else {
+        return Ok(());
+    };
+    let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone());
+    let mut events = session.events();
+    crate::session::drain(&mut events, |_| {});
+    session.send("look");
+    let seen = next_room_view(&mut events, Duration::from_secs(15))
+        .await
+        .ok_or(FarmError::NotAtStart {
+            expected: "a room block answering the finish walk's look".into(),
+            saw: None,
+        })?;
+    if let Some(here) = graph.room(finish)
+        && here.name == seen.name
+    {
+        return Ok(());
+    }
+    let hint = plan.circuit.last().copied().unwrap_or(plan.start);
+    let at = nav
+        .localize_view(hint, &seen)
+        .ok_or(FarmError::Lost { saw: seen.name })?;
+    let mut guard = FarmGuard::death_only(&session.profile().username);
+    nav.goto(session, at, finish, &mut guard)
+        .await
+        .map(|_| ())
+        .map_err(FarmError::Nav)
+}
+
+/// The next room block in full, not just its name.
+async fn next_room_view(
+    events: &mut tokio::sync::broadcast::Receiver<Event>,
+    within: Duration,
+) -> Option<crate::events::RoomView> {
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        match tokio::time::timeout_at(deadline, events.recv()).await {
+            Ok(Ok(Event::RoomSeen(room))) => return Some(room),
+            Ok(Ok(_)) => continue,
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+            Ok(Err(_)) | Err(_) => return None,
+        }
+    }
+}
+
 async fn verify_start(
     session: &crate::session::Session,
     graph: &RoomGraph,

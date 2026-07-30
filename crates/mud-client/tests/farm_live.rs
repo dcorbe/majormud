@@ -590,3 +590,47 @@ async fn the_evil_warning_toggle_makes_a_refused_monster_farmable() {
         "warnings are off, so the swing should have landed: {stats:?}"
     );
 }
+
+/// A finished run must not leave the character standing in the lair.
+/// This is the linkdead hazard: nobody is driving once the runner stops,
+/// and a monster room is the worst place to be left.
+#[tokio::test]
+async fn the_run_walks_home_when_it_finishes() {
+    let server = start().await;
+    let session = logged_in(server.local_addr(), "Homer").await;
+
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 0,
+        ..BotConfig::default()
+    };
+    let mut cfg = farm_config(&["1/2"], 1);
+    // The Town Gates: off the circuit, and nothing spawns there.
+    cfg.finish_at = Some("1/1".into());
+
+    let graph = Arc::new(client_graph());
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let (end, _stats) = tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, &bot, &cfg),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    .expect("farm run");
+    assert_eq!(end, FarmEnd::LoopsDone);
+
+    mud_client::farm::go_to_finish(&session, graph, &plan, &cfg)
+        .await
+        .expect("should have walked home");
+
+    assert_eq!(
+        session
+            .state()
+            .borrow()
+            .room
+            .as_ref()
+            .map(|r| r.name.clone()),
+        Some("Town Gates".to_string()),
+        "the character should be standing in the finish room"
+    );
+}

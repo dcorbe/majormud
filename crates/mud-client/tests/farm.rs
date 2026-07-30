@@ -644,3 +644,49 @@ fn a_disabled_departure_gate_constrains_nothing() {
     };
     assert!(FarmPlan::build(&cfg, &graph()).is_ok());
 }
+
+// --- the finish room -------------------------------------------------
+
+/// A run that ends leaves the character standing wherever it stopped --
+/// in a lair, linkdead, which is how a character gets killed with nobody
+/// driving. An optional finish room is the way out, and it has to be
+/// validated up front like every other stop: discovering the route home
+/// is unwalkable at the moment you need it is too late.
+#[test]
+fn a_finish_room_must_be_reachable() {
+    let graph = graph();
+    let unreachable = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/2".into()],
+        finish_at: Some("1/99".into()),
+        ..FarmConfig::default()
+    };
+    let err = FarmPlan::build(&unreachable, &graph).expect_err("1/99 is not in the graph");
+    assert!(err.contains("1/99"), "{err}");
+}
+
+#[test]
+fn a_finish_room_is_resolved_into_the_plan() {
+    let graph = graph();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/2".into()],
+        finish_at: Some("1/1".into()),
+        ..FarmConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    assert_eq!(plan.finish, Some(RoomId { map: 1, room: 1 }));
+}
+
+/// Absent means absent: the runner must not invent a destination.
+#[test]
+fn no_finish_room_configured_means_none_planned() {
+    let graph = graph();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/2".into()],
+        ..FarmConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    assert_eq!(plan.finish, None);
+}
