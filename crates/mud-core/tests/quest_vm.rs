@@ -150,6 +150,63 @@ fn world() -> Content {
         name: "Sanctum".into(),
         ..Default::default()
     });
+    // Random-verb blocks: always-first, never, and failing-tail.
+    content.add_text_block(TextBlock {
+        id: TextBlockId(960),
+        next: None,
+        body: "101:flag 3 set\n101:flag 4 set".into(),
+    });
+    content.add_text_block(TextBlock {
+        id: TextBlockId(961),
+        next: None,
+        body: "0:flag 3 set".into(),
+    });
+    content.add_text_block(TextBlock {
+        id: TextBlockId(962),
+        next: None,
+        body: "101:minlevel 99".into(),
+    });
+    content
+}
+
+/// A separate world for the remoteaction exit tests: room A carries a
+/// hidden type-6 exit east to the Sanctum (concealment bits 0x30 —
+/// a two-lever puzzle when para2 >= 0) and a locked type-7 gate west
+/// to the Vault.
+fn exit_world() -> Content {
+    use mud_core::content::Exit;
+    let mut content = world();
+    content.add_room(Room {
+        id: RoomId { map: 1, room: 3 },
+        name: "Vault".into(),
+        ..Default::default()
+    });
+    let mut a = Room {
+        id: A,
+        name: "Shrine".into(),
+        ..Default::default()
+    };
+    a.exits[2] = Some(Exit {
+        dest: RoomId { map: 1, room: 2 },
+        exit_type: 6,
+        trigger_msg: None,
+        param: 0x30, // two concealment bits: levers 1 (0x10) and 2 (0x20)
+        param2: 0,   // >= 0: the levers must clear in descending order
+        param3: 0,   // no custom reveal message
+        param4: 0,
+        door_closed: false,
+    });
+    a.exits[3] = Some(Exit {
+        dest: RoomId { map: 1, room: 3 },
+        exit_type: 7,
+        trigger_msg: None,
+        param: 2, // locked
+        param2: 0,
+        param3: 0,
+        param4: 0,
+        door_closed: false,
+    });
+    content.add_room(a);
     content
 }
 
@@ -869,6 +926,163 @@ fn teleport_moves_shows_the_room_and_stops_the_chain() {
     // Unknown destination: no move, Continue.
     assert_eq!(core.debug_perform_matched_action(s, "teleport 999 9"), 1);
     assert_eq!(core.player_snapshot(s).location, RoomId { map: 1, room: 2 });
+}
+
+// --- peripheral verbs (Task 8) ---
+
+#[test]
+fn random_draws_once_and_runs_the_first_qualifying_line() {
+    // FUN_00471c02 (69795-69884): ONE genrdn(0,100) at entry; the first
+    // line whose numeric head exceeds the roll runs its whole tail;
+    // later lines never run.
+    let (mut core, s) = boot();
+    let before = core.debug_rng_draws();
+    assert_eq!(core.debug_perform_matched_action(s, "random 960"), 1);
+    assert_eq!(core.debug_rng_draws(), before + 1, "exactly one draw");
+    assert_eq!(core.player_snapshot(s).quest_flags, 1 << 2, "first line only");
+}
+
+#[test]
+fn random_with_no_qualifying_line_returns_zero_and_continues() {
+    // Head 0 can never exceed a 0-100 roll; the runner returns 0 and
+    // the chain keeps its previous code (68780-68789: only a 2 stops).
+    let (mut core, s) = boot();
+    assert_eq!(core.debug_perform_matched_action(s, "random 961:flag 4 set"), 1);
+    let flags = core.player_snapshot(s).quest_flags;
+    assert_eq!(flags, 1 << 3, "chain continued past the dud");
+}
+
+#[test]
+fn random_failing_tail_fail_stops_the_chain() {
+    let (mut core, s) = boot();
+    assert_eq!(core.debug_perform_matched_action(s, "random 962:flag 4 set"), 2);
+    assert_eq!(core.player_snapshot(s).quest_flags, 0, "chain stopped");
+}
+
+#[test]
+fn price_deducts_or_fails_and_rolls_back_takes() {
+    // FUN_0046f3fa (67849-67886): check total wealth against n copper,
+    // deduct on success; on failure show the optional message,
+    // fail-stop, and the CALLER restores this chain's taken items
+    // (69662-69674).
+    let mut p = player("Buyer");
+    p.coins.copper = 100;
+    let (mut core, s) = boot_with(p);
+    assert_eq!(core.debug_perform_matched_action(s, "price 60:flag 3 set"), 1);
+    let snap = core.player_snapshot(s);
+    assert_eq!(snap.coins.copper, 40);
+    assert_eq!(snap.quest_flags, 1 << 2);
+
+    let mut p = player("Pauper");
+    p.coins.copper = 10;
+    let (mut core, s) = boot_with(p);
+    core.give_item(s, ItemId(400));
+    assert_eq!(
+        core.debug_perform_matched_action(s, "takeitem 400:price 60 801:flag 3 set"),
+        2
+    );
+    let snap = core.player_snapshot(s);
+    assert_eq!(snap.coins.copper, 10, "nothing charged");
+    assert_eq!(snap.inventory, vec![(ItemId(400), 0)], "take rolled back");
+    assert_eq!(snap.quest_flags, 0);
+    let shown = text_to(&core.drain_events(), s);
+    assert!(shown.contains("You are judged unworthy."), "got: {shown:?}");
+}
+
+#[test]
+fn adddelay_extends_the_command_delay() {
+    // 68761-68771: `player+0x6bb += n` — the same delay counter the
+    // theft verbs charge; HIDE refuses while units remain.
+    let (mut core, s) = boot();
+    assert_eq!(core.debug_perform_matched_action(s, "adddelay 3:flag 3 set"), 1);
+    assert_eq!(core.player_snapshot(s).quest_flags, 1 << 2, "chain continues");
+    core.input(s, "hide");
+    let shown = text_to(&core.drain_events(), s);
+    assert!(
+        shown.contains("You must wait before you may do that!"),
+        "got: {shown:?}"
+    );
+}
+
+// --- remoteaction (FUN_0046c573, 65933-66161) ---
+
+#[test]
+fn remoteaction_action_zero_reveals_the_secret_exit() {
+    // Case 6, action 0 (65977-65979): clear ALL concealment bits →
+    // "A concealed passage opens to the %s!" to the TARGET room and the
+    // exit becomes passable (state 8, the lever-reveal).
+    let mut core = Core::new(exit_world(), config());
+    let s = core.attach_player(player("Puller"));
+    core.drain_events();
+    core.input(s, "east");
+    assert!(
+        text_to(&core.drain_events(), s).contains("There is no exit"),
+        "hidden before"
+    );
+    // remoteaction <room> <msg> <action> <exit>: exit index 2 = east.
+    assert_eq!(core.debug_perform_matched_action(s, "remoteaction 1 0 0 2"), 1);
+    let shown = text_to(&core.drain_events(), s);
+    assert!(
+        shown.contains("A concealed passage opens to the east!"),
+        "got: {shown:?}"
+    );
+    core.input(s, "east");
+    core.drain_events();
+    assert_eq!(core.player_snapshot(s).location, RoomId { map: 1, room: 2 });
+}
+
+#[test]
+fn remoteaction_levers_must_clear_in_order() {
+    // Case 6 actions 1-9 (65980-66051): action n clears bit n+3 only
+    // while bit n+4 is already clear (para2 >= 0 — the ordered-lever
+    // puzzle); the passage opens when every concealment bit is gone.
+    let mut core = Core::new(exit_world(), config());
+    let s = core.attach_player(player("Puller"));
+    core.drain_events();
+    // Lever 1 first: blocked (0x20 still set) — nothing opens.
+    assert_eq!(core.debug_perform_matched_action(s, "remoteaction 1 0 1 2"), 1);
+    assert!(!text_to(&core.drain_events(), s).contains("concealed passage"));
+    // Lever 2 (0x20), then lever 1 (0x10): open.
+    assert_eq!(core.debug_perform_matched_action(s, "remoteaction 1 0 2 2"), 1);
+    assert!(!text_to(&core.drain_events(), s).contains("concealed passage"));
+    assert_eq!(core.debug_perform_matched_action(s, "remoteaction 1 0 1 2"), 1);
+    assert!(
+        text_to(&core.drain_events(), s).contains("A concealed passage opens to the east!")
+    );
+    core.input(s, "east");
+    core.drain_events();
+    assert_eq!(core.player_snapshot(s).location, RoomId { map: 1, room: 2 });
+}
+
+#[test]
+fn remoteaction_toggles_the_gate_lock() {
+    // Case 7/0xb (66081-66117): toggle the lock state 0 <-> 2.
+    let mut core = Core::new(exit_world(), config());
+    let s = core.attach_player(player("Puller"));
+    core.drain_events();
+    core.input(s, "west");
+    assert!(
+        !text_to(&core.drain_events(), s).contains("Vault"),
+        "locked before"
+    );
+    assert_eq!(core.debug_perform_matched_action(s, "remoteaction 1 0 0 3"), 1);
+    core.input(s, "west");
+    core.drain_events();
+    assert_eq!(core.player_snapshot(s).location, RoomId { map: 1, room: 3 });
+}
+
+#[test]
+fn remoteaction_shows_its_message_pair() {
+    // 65955-65970: the optional message broadcasts line 2 to the room
+    // (name-substituted) THEN line 1 to the actor.
+    let mut core = Core::new(exit_world(), config());
+    let s = core.attach_player(player("Puller"));
+    let witness = core.attach_player(player("Witness"));
+    core.drain_events();
+    assert_eq!(core.debug_perform_matched_action(s, "remoteaction 1 801 0 2"), 1);
+    let events = core.drain_events();
+    assert!(text_to(&events, s).contains("You are judged unworthy."));
+    assert!(text_to(&events, witness).contains("Puller is judged unworthy."));
 }
 
 // --- failure-message plumbing (FUN_0046f360, 67820-67844) ---

@@ -512,6 +512,12 @@ pub const SPELL_TOO_POWERFUL: &str = "This spell is too powerful for you.";
 /// class-gate refusal (FUN_0046fff6 68459/68469).
 pub const LEARNSPELL_CANT: &str = "You don't know what to do with this!";
 
+/// VERIFIED (DLL string `s_A_concealed_passage_opens_to_the`, 66067):
+/// the remoteaction lever-reveal broadcast, `%s` = the direction.
+pub fn concealed_passage_opens(direction: &str) -> String {
+    format!("A concealed passage opens to the {direction}!")
+}
+
 /// VERIFIED (DLL strings dump 3147): the `learnspell` success line
 /// (68477; `%s` = the spell's long name).
 pub fn learn_spell(name: &str) -> String {

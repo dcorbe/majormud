@@ -2946,13 +2946,231 @@ impl Core {
                 self.events.push(Event::Persist(snapshot));
                 FAIL
             }
-            // M7 PENDING(slice-6): the peripheral arms land with task 8
-            // of the slice-6 plan
-            // (docs/plans/2026-07-19-m7-content-systems-design.md §Slice 6).
-            QuestVerb::Price
-            | QuestVerb::RemoteAction
-            | QuestVerb::Random
-            | QuestVerb::AddDelay => ActionCode::NoOp,
+            QuestVerb::Random => {
+                // 68773-68790: the runner's code passes through — only
+                // a 2 restores the tail and stops; 0 leaves the chain
+                // code untouched.
+                let Some(block) = w.next() else { return CONTINUE };
+                let Ok(block) = u16::try_from(crate::questvm::atol(block)) else {
+                    return CONTINUE;
+                };
+                match self.quest_random_block(session, crate::content::TextBlockId(block)) {
+                    2 => FAIL,
+                    1 => CONTINUE,
+                    _ => ActionCode::NoOp,
+                }
+            }
+            QuestVerb::Price => {
+                // FUN_0046f3fa (67849-67886): total wealth vs n copper;
+                // deduct on success. Failure shows the optional message,
+                // fail-stops, and restores this chain's taken items —
+                // the caller's rollback loop (69662-69674).
+                let Some(n) = w.next() else { return CONTINUE };
+                let n = u64::try_from(crate::questvm::atol(n)).unwrap_or(0);
+                let ratios = self.config.coin_ratios;
+                if self.player(session).coins.total_copper(ratios) < n {
+                    self.quest_gate_message(session, w.next());
+                    if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session)
+                    {
+                        for item in taken.drain(..) {
+                            player.inventory.push((item, 0));
+                        }
+                    }
+                    let snapshot = Box::new(self.player(session).clone());
+                    self.events.push(Event::Persist(snapshot));
+                    return FAIL;
+                }
+                if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+                    player.coins.deduct_copper(n, ratios);
+                }
+                let snapshot = Box::new(self.player(session).clone());
+                self.events.push(Event::Persist(snapshot));
+                CONTINUE
+            }
+            QuestVerb::AddDelay => {
+                // 68761-68771: `player+0x6bb += n` — the same command
+                // delay the theft verbs charge (add_delay), consumed by
+                // delay_blocked.
+                let Some(n) = w.next() else { return CONTINUE };
+                let n = u8::try_from(crate::questvm::atol(n)).unwrap_or(u8::MAX);
+                self.add_delay(session, n);
+                CONTINUE
+            }
+            QuestVerb::RemoteAction => {
+                // FUN_0046c573 (65933-66161) via the arm at 68793-68824:
+                // `remoteaction <room> <msg> <action> <exit 0-10>` — the
+                // target room is on the ACTOR's map.
+                let (Some(room), Some(msg), Some(action), Some(exitn)) =
+                    (w.next(), w.next(), w.next(), w.next())
+                else {
+                    return CONTINUE;
+                };
+                let action = crate::questvm::atol(action);
+                let exitn = crate::questvm::atol(exitn);
+                if !(0..=10).contains(&exitn) {
+                    return CONTINUE;
+                }
+                let Ok(room) = u16::try_from(crate::questvm::atol(room)) else {
+                    return CONTINUE;
+                };
+                let target = RoomId {
+                    map: self.player(session).location.map,
+                    room,
+                };
+                // The optional message pair: room line first
+                // (name-substituted), then the actor line (65955-65970).
+                self.quest_remote_message(session, crate::questvm::atol(msg));
+                let Some(exit) = self
+                    .content
+                    .rooms
+                    .get(&target)
+                    .and_then(|r| r.exits.get(exitn as usize).cloned().flatten())
+                else {
+                    return CONTINUE;
+                };
+                let d = exitn as u8;
+                match exit.exit_type {
+                    6 => self.remote_lever(target, d, &exit, action),
+                    7 | 0xb => self.remote_gate_toggle(target, d, &exit),
+                    // M7 PENDING(slice-6): the type-9/0x18 arm
+                    // (66119-66150) force-moves every player and monster
+                    // in the target room through the exit (move_user
+                    // mode 7); at most two ambiguous shipped uses.
+                    _ => {}
+                }
+                CONTINUE
+            }
+        }
+    }
+
+    /// The `random` verb's block runner (`FUN_00471c02`, 69795-69884):
+    /// ONE genrdn(0,100) draw at entry, then the FIRST line whose
+    /// numeric head exceeds the roll runs its whole tail as a chain and
+    /// its code is returned; 0 when no line qualifies. (Malformed
+    /// no-colon lines stop the scan — shipped random blocks are all
+    /// clean `NN:actions` lines.)
+    fn quest_random_block(
+        &mut self,
+        session: SessionId,
+        block: crate::content::TextBlockId,
+    ) -> u8 {
+        let Some(block) = self.content.textblocks.get(&block) else {
+            return 0;
+        };
+        let body = block.body.clone();
+        let roll = self.rng.roll(0, 100);
+        for line in body.lines() {
+            let Some((head, tail)) = line.split_once(':') else {
+                break;
+            };
+            if i64::from(roll) < crate::questvm::atol(head) {
+                return self.perform_matched_action(session, tail) as u8;
+            }
+        }
+        0
+    }
+
+    /// The remoteaction message pair (65955-65970): line 2 to the
+    /// actor's room with the name substituted, THEN line 1 to the actor
+    /// — the reverse of FUN_0046f360's order.
+    fn quest_remote_message(&mut self, session: SessionId, msg: i64) {
+        let Some(msg) = u16::try_from(msg)
+            .ok()
+            .filter(|m| *m != 0)
+            .and_then(|id| self.content.messages.get(&crate::content::MessageId(id)))
+        else {
+            return;
+        };
+        let name = self.player(session).name.clone();
+        let room = self.player(session).location;
+        let room_line = msg
+            .lines
+            .get(1)
+            .map(|l| l.replacen("%s", &name, 1))
+            .unwrap_or_default();
+        let user_line = msg.lines.first().cloned().unwrap_or_default();
+        if !room_line.is_empty() {
+            self.broadcast_to_room(room, Some(session), &room_line);
+        }
+        if !user_line.is_empty() {
+            self.output_line(session, &user_line);
+        }
+    }
+
+    /// remoteaction case 6 (65973-66079): the lever machinery over a
+    /// hidden exit's concealment bit-word (bits 0x10..0x2000, kept in
+    /// the exit_locks overlay; disk para1 seeds it). Action 0 clears
+    /// them all; action n clears bit n+3, gated — unless para2 is
+    /// negative — on bit n+4 being already clear (levers pull in
+    /// descending order). All bits clear → state 8 (lever-revealed),
+    /// the ~5 min re-hide kick, and the reveal line to the TARGET room
+    /// (custom message = para3's line 1 with the direction substituted,
+    /// else the stock concealed-passage line).
+    fn remote_lever(&mut self, target: RoomId, d: u8, exit: &crate::content::Exit, action: i64) {
+        let cur = *self.exit_locks.get(&(target, d)).unwrap_or(&exit.param);
+        if matches!(cur, 4 | 8) {
+            return;
+        }
+        let word = cur as u32;
+        let unconditional = exit.param2 < 0;
+        let new = match action {
+            0 => word & 0xffff_c00f,
+            n @ 1..=9 => {
+                let bit = 1u32 << (n + 3);
+                let gate = 1u32 << (n + 4);
+                if unconditional || word & gate == 0 {
+                    word & !bit
+                } else {
+                    word
+                }
+            }
+            10 => word & !0x2000,
+            _ => word,
+        };
+        if new & 0x3ff0 == 0 {
+            self.exit_locks.insert((target, d), 8);
+            self.scheduler.schedule_in(300, Job::ExitRelock(target, d));
+            let dir = crate::content::Direction::ALL[d as usize];
+            let custom = u16::try_from(exit.param3)
+                .ok()
+                .filter(|m| *m != 0)
+                .and_then(|id| self.content.messages.get(&crate::content::MessageId(id)))
+                .and_then(|m| m.lines.first())
+                .filter(|l| !l.is_empty())
+                .map(|l| l.replacen("%s", text::direction_shown(dir), 1));
+            let line =
+                custom.unwrap_or_else(|| text::concealed_passage_opens(text::direction_shown(dir)));
+            self.broadcast_to_room(target, None, &line);
+        } else {
+            self.exit_locks.insert((target, d), new as i32);
+        }
+    }
+
+    /// remoteaction case 7/0xb (66081-66117): toggle the gate's lock
+    /// state 0 <-> 2, re-lock timer on open (300 s x max(para3, 1) —
+    /// the picklock convention), and the PAIRED reverse exit in the
+    /// destination room toggles on its own timer.
+    fn remote_gate_toggle(&mut self, target: RoomId, d: u8, exit: &crate::content::Exit) {
+        let toggle = |core: &mut Core, room: RoomId, d: u8, exit: &crate::content::Exit| {
+            let cur = core.exit_lock_state(room, d, exit);
+            let new = if cur == 0 { 2 } else { 0 };
+            core.exit_locks.insert((room, d), new);
+            if new == 0 {
+                let secs = 300 * u64::from(u16::try_from(exit.param3.max(1)).unwrap_or(1));
+                core.scheduler.schedule_in(secs, Job::ExitRelock(room, d));
+            }
+        };
+        toggle(self, target, d, exit);
+        let dir = crate::content::Direction::ALL[d as usize];
+        let opposite = dir.opposite();
+        if let Some(back) = self
+            .content
+            .rooms
+            .get(&exit.dest)
+            .and_then(|r| r.exits[opposite as usize].clone())
+            .filter(|b| b.dest == target && matches!(b.exit_type, 7 | 0xb))
+        {
+            toggle(self, exit.dest, opposite as usize as u8, &back);
         }
     }
 
@@ -8056,13 +8274,15 @@ impl Core {
         waiting
     }
 
-    /// Hidden type-6 exit check (theft.md §9/§8.6): found state 4 in
-    /// the overlay (else the disk para1) reveals it; everything else —
-    /// state 2 and the re-hidden ticker codes — stays concealed. Ticker
-    /// semantics UNDETERMINED beyond concealment.
+    /// Hidden type-6 exit check (theft.md §9/§8.6): found state 4
+    /// (search) or 8 (the remoteaction lever-reveal, 66059) in the
+    /// overlay (else the disk para1) reveals it; everything else —
+    /// state 2, partial lever bit-words, and the re-hidden ticker codes
+    /// — stays concealed. Ticker semantics UNDETERMINED beyond
+    /// concealment.
     fn exit_hidden6(&self, room: RoomId, d: u8, exit: &crate::content::Exit) -> bool {
         exit.exit_type == 6
-            && *self.exit_locks.get(&(room, d)).unwrap_or(&exit.param) != 4
+            && !matches!(*self.exit_locks.get(&(room, d)).unwrap_or(&exit.param), 4 | 8)
     }
 
     /// The effective lock state for a pickable exit (theft.md §8.1): the
