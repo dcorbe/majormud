@@ -121,6 +121,7 @@ pub enum BotAction {
 /// too long to match and would be said aloud instead of swung. The
 /// trailing noun always matches, and is what operators type.
 fn target_word(name: &str) -> &str {
+    let name = strip_status(name);
     name.split_whitespace().last().unwrap_or(name)
 }
 
@@ -135,7 +136,24 @@ fn exit_command(exit: &str) -> &str {
 /// nouns. Attacking a player is a PK attempt, so only lowercase names
 /// are candidates.
 fn is_attackable(name: &str) -> bool {
-    name.chars().next().is_some_and(char::is_lowercase)
+    strip_status(name)
+        .chars()
+        .next()
+        .is_some_and(char::is_lowercase)
+}
+
+/// Drop a leading "(Resting) " style status prefix.
+///
+/// The board decorates busy actors that way, and the case rule is the
+/// ONLY player/monster discriminator available — so a prefix hid every
+/// decorated monster from the bot, which then stood in a full room and
+/// attacked nothing. Stripping it must not smuggle a player through:
+/// the case test still runs, just on the name rather than the bracket.
+fn strip_status(name: &str) -> &str {
+    name.strip_prefix('(')
+        .and_then(|rest| rest.split_once(')'))
+        .map(|(_, after)| after.trim_start())
+        .unwrap_or(name)
 }
 
 /// Monster name (as the shipped data spells it, lowercase) -> how

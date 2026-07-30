@@ -248,12 +248,18 @@ fn graph_with_a_phantom_exit() -> RoomGraph {
     ])
 }
 
-/// A step that never lands must give up on the clock, not hang. The
-/// deadline is configuration precisely so this is provable in
-/// milliseconds instead of the fifteen seconds that is right for a
-/// laggy live board.
+/// A phantom exit — the graph believes in one the board does not — is
+/// answered "There is no exit in that direction!", which is INFORMATION,
+/// not silence: the walk is not where it thinks it is. It used to be
+/// treated as a step that never landed, so every one cost a full
+/// deadline and the walk kept trying doors that were not there. Now the
+/// room is asked and the answer re-localizes.
+///
+/// It still fails here, because the graph's room 3 is unreachable on
+/// this board however you localize — but it fails as a DESYNC, naming
+/// what it saw, and without waiting out the clock.
 #[tokio::test]
-async fn a_step_that_never_lands_times_out_on_the_configured_deadline() {
+async fn a_phantom_exit_relocalizes_instead_of_waiting_out_the_clock() {
     let server = start().await;
     let session = logged_in_session(server.local_addr()).await;
     let nav = Navigator::new(
@@ -275,11 +281,19 @@ async fn a_step_that_never_lands_times_out_on_the_configured_deadline() {
         .await
         .expect_err("the board has no east exit here");
 
-    assert!(matches!(
-        err.kind,
-        NavErrorKind::Expect(mud_client::session::ExpectError::Timeout { .. })
-    ));
+    assert!(
+        matches!(err.kind, NavErrorKind::Desync { .. }),
+        "a phantom exit is a disagreement, not a timeout: {:?}",
+        err.kind
+    );
     assert_eq!(err.at, RoomId { map: 1, room: 1 });
+    // The point of reading the board's answer: no deadline was waited
+    // out, and the step timeout here is only 200ms.
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "took {:?}",
+        started.elapsed()
+    );
     assert!(
         started.elapsed() < std::time::Duration::from_secs(5),
         "gave up on the hardcoded 15s deadline, not the configured 200ms"

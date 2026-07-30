@@ -618,3 +618,23 @@ fn a_burst_of_prompts_between_rounds_does_not_abandon_the_fight() {
         "walked away from a fight that was still going"
     );
 }
+
+/// Busy monsters render with a status prefix — "(Resting) fierce
+/// filthbug" is verbatim from the board. `is_attackable` looked at the
+/// FIRST character to tell a lowercase monster from a capitalised
+/// player, so "(" made every one of them invisible to the bot: it stood
+/// in a room full of things and swung at none of them.
+#[test]
+fn a_monster_with_a_status_prefix_is_still_a_monster() {
+    let mut bot = combat_bot();
+    let actions = bot.on_event(&room(&["(Resting) fierce filthbug"]));
+    assert_eq!(actions, vec![BotAction::Send("a filthbug".into())]);
+}
+
+/// The prefix must not become a way to smuggle a PLAYER past the check —
+/// players are capitalised, and attacking one is a PK attempt.
+#[test]
+fn a_prefixed_player_is_still_not_attacked() {
+    let mut bot = combat_bot();
+    assert!(bot.on_event(&room(&["(Resting) Vexil"])).is_empty());
+}

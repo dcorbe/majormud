@@ -161,6 +161,12 @@ const DOOR_YIELDED: [&str; 4] = [
     "unlocked the door",
 ];
 
+/// The board's answer when the exit is not there at all. The graph and
+/// the board disagree, so the walk is somewhere other than it believes —
+/// re-localizing is the only honest response, and waiting out a deadline
+/// first just makes it slow.
+const NO_SUCH_EXIT: &str = "no exit in that direction";
+
 /// The board refuses movement outright while something is fighting you
 /// (DLL 0xbc6a8). Nothing about the step is wrong — the character simply
 /// cannot leave until the fight is dealt with — so a walk that waits out
@@ -206,6 +212,8 @@ enum StepEvent {
     DoorYielded,
     /// Movement refused: we are in combat.
     CombatBlocked,
+    /// There is no such exit; the graph and the board disagree.
+    NoSuchExit,
     /// We moved, but the room is too dark to see: the board sent no room
     /// block at all, only "you can't see anything".
     ArrivedBlind,
@@ -505,6 +513,16 @@ impl Navigator {
             // the step landed. The name comes from the graph edge we
             // chose, not from a guess that movement generally works.
             StepEvent::ArrivedBlind => return Ok(expected.to_string()),
+            // The graph says there is an exit and the board says there is
+            // not, so the walk is not where it believes. Ask the room and
+            // report what it actually is: goto answers a name mismatch by
+            // re-localizing and re-routing, which is precisely the
+            // recovery this needs — and asking costs one command instead
+            // of a whole step deadline.
+            StepEvent::NoSuchExit => {
+                session.send("look");
+                return self.arrival(expected, events, guard, armed).await;
+            }
             // Hand straight back so the caller can fight: no deadline is
             // going to produce a room block while this is true.
             StepEvent::CombatBlocked => {
@@ -533,6 +551,10 @@ impl Navigator {
             // Some boards walk you through on the open itself.
             StepEvent::Arrived(name) => return Ok(name),
             StepEvent::ArrivedBlind => return Ok(expected.to_string()),
+            StepEvent::NoSuchExit => {
+                session.send("look");
+                return self.arrival(expected, events, guard, armed).await;
+            }
             StepEvent::CombatBlocked => {
                 return Err(NavErrorKind::Interrupted(Interrupt::Attacked {
                     by: "combat".into(),
@@ -557,6 +579,10 @@ impl Navigator {
             // The bash carried us through the doorway.
             StepEvent::Arrived(name) => Ok(name),
             StepEvent::ArrivedBlind => Ok(expected.to_string()),
+            StepEvent::NoSuchExit => {
+                session.send("look");
+                self.arrival(expected, events, guard, armed).await
+            }
             // It only opened it; the step is still owed.
             StepEvent::CombatBlocked => Err(NavErrorKind::Interrupted(Interrupt::Attacked {
                 by: "combat".into(),
@@ -580,6 +606,7 @@ impl Navigator {
             match self.wait_room(events, guard, armed).await? {
                 StepEvent::Arrived(name) => return Ok(name),
                 StepEvent::ArrivedBlind => return Ok(expected.to_string()),
+                StepEvent::NoSuchExit => continue,
                 StepEvent::CombatBlocked => {
                     return Err(NavErrorKind::Interrupted(Interrupt::Attacked {
                         by: "combat".into(),
@@ -638,6 +665,9 @@ impl Navigator {
                     }
                     if line.contains(COMBAT_BLOCKED) {
                         return Ok(StepEvent::CombatBlocked);
+                    }
+                    if line.contains(NO_SUCH_EXIT) {
+                        return Ok(StepEvent::NoSuchExit);
                     }
                     if line.contains(crate::sheet::TOO_DARK) {
                         return Ok(StepEvent::ArrivedBlind);
