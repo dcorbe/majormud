@@ -287,3 +287,48 @@ async fn a_step_refused_for_combat_hands_back_at_once() {
         started.elapsed()
     );
 }
+
+/// A dark room sends NO room block — only "The room is very dark - you
+/// can't see anything" (DLL 0xdf37e). Verified navigation confirms every
+/// step by the destination's name, so that used to be a dead end: the
+/// walk waited out its deadline for a name that was never coming.
+///
+/// Dead reckoning is sound HERE specifically, and only here: the board
+/// says this on ENTERING such a room, so it is positive evidence the step
+/// landed. The name then comes from the graph edge we chose — not from
+/// assuming movement generally works, which is what verified navigation
+/// exists to prevent.
+#[tokio::test]
+async fn a_dark_room_is_navigated_by_dead_reckoning() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        sock.write_all(room_block("Guard Post", "north").as_bytes())
+            .await
+            .unwrap();
+        let mut buf = [0u8; 512];
+        while let Ok(n) = sock.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            sock.write_all(
+                b"\r\nThe room is very dark - you can't see anything\r\n[HP=30/MA=0]:",
+            )
+            .await
+            .unwrap();
+        }
+    });
+    let session = session_for(addr).await;
+    let n = nav(graph_with_exit(0));
+
+    let at = tokio::time::timeout(
+        Duration::from_secs(10),
+        n.goto(&session, HERE, THERE, &mut NoGuard),
+    )
+    .await
+    .expect("goto should not hang")
+    .expect("a dark room is still somewhere");
+
+    assert_eq!(at, THERE, "position comes from the graph edge taken");
+}

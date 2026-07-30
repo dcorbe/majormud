@@ -176,3 +176,55 @@ fn the_real_spellbook_parses_and_offers_a_light() {
     // The whole point: this character can light a dark room.
     assert_eq!(book.light_spell(), Some("star".to_string()));
 }
+
+// --- deciding how to light a room --------------------------------------
+//
+// Both verbs are DLL-confirmed: "Syntax: CAST {spell} [{target}]"
+// (0xd984f) and the `light` verb at 0xdb07a, whose success is "You lit
+// the %s." (0xdb52d).
+
+#[test]
+fn a_carried_light_is_preferred_over_a_spell() {
+    // An item costs no mana and, once lit, keeps burning -- mana is
+    // wanted for the fight the dark room is hiding.
+    let inv = Inventory::parse("You are carrying a battered torch\n");
+    let book = Spellbook::parse(
+        "You have the following spells:\nLevel Mana Short Spell Name\n  1   4    star  starlight\n",
+    );
+    assert_eq!(
+        mud_client::sheet::light_plan(&inv, &book),
+        Some("light torch".to_string())
+    );
+}
+
+#[test]
+fn a_caster_with_no_torch_casts() {
+    let inv = Inventory::parse("You are carrying quarterstaff\n");
+    let book = Spellbook::parse(
+        "You have the following spells:\nLevel Mana Short Spell Name\n  1   4    star  starlight\n",
+    );
+    assert_eq!(
+        mud_client::sheet::light_plan(&inv, &book),
+        Some("cast star".to_string())
+    );
+}
+
+/// Neither: say so rather than send something that will be spoken aloud.
+#[test]
+fn with_neither_there_is_no_plan() {
+    let inv = Inventory::parse("You are carrying quarterstaff\n");
+    let book = Spellbook::parse("You have no spells.\n");
+    assert_eq!(mud_client::sheet::light_plan(&inv, &book), None);
+}
+
+/// Salad's real kit: no torch, but starlight in the book.
+#[test]
+fn the_real_character_lights_the_room_by_casting() {
+    assert_eq!(
+        mud_client::sheet::light_plan(
+            &Inventory::parse(REAL_INVENTORY),
+            &Spellbook::parse(REAL_SPELLBOOK)
+        ),
+        Some("cast star".to_string())
+    );
+}

@@ -766,6 +766,14 @@ pub async fn run_farm(
         bot_config.max_hp = max;
     }
 
+    // Ask once what the character is carrying and what it can cast. The
+    // answer decides whether a dark room is a dead end or a command away,
+    // and both listings are cheap.
+    let light = read_light_plan(session).await;
+    if let Some(cmd) = &light {
+        eprintln!("dark rooms will be handled with `{cmd}`");
+    }
+
     verify_start(session, &graph, plan.start).await?;
 
     let mut current = plan.start;
@@ -784,6 +792,7 @@ pub async fn run_farm(
                     cfg,
                     &bot_config,
                     &threat,
+                    light.as_ref(),
                     started,
                     &mut stats,
                     phase,
@@ -803,6 +812,7 @@ pub async fn run_farm(
                 stop,
                 &bot_config,
                 &threat,
+                light.as_ref(),
                 cfg,
                 started,
                 None,
@@ -898,6 +908,45 @@ async fn next_room_view(
     }
 }
 
+/// Ask the board for the inventory and the spellbook, and work out how
+/// this character would light a dark room.
+///
+/// `None` means it cannot, which is worth knowing up front rather than
+/// discovering at the mouth of an unlit room.
+async fn read_light_plan(session: &crate::session::Session) -> Option<String> {
+    let inventory = ask(session, "inventory", "Encumbrance:").await;
+    let spells = ask(session, "spells", "").await;
+    crate::sheet::light_plan(
+        &crate::sheet::Inventory::parse(&inventory),
+        &crate::sheet::Spellbook::parse(&spells),
+    )
+}
+
+/// Send a listing command and collect what comes back.
+async fn ask(session: &crate::session::Session, cmd: &str, until: &str) -> String {
+    let mut events = session.events();
+    crate::session::drain(&mut events, |_| {});
+    session.send(cmd);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut out = String::new();
+    loop {
+        match tokio::time::timeout_at(deadline, events.recv()).await {
+            Ok(Ok(Event::Line(line))) => {
+                let done = !until.is_empty() && line.contains(until);
+                out.push_str(&line);
+                out.push('\n');
+                if done {
+                    break;
+                }
+            }
+            Ok(Ok(_)) => continue,
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+            Ok(Err(_)) | Err(_) => break,
+        }
+    }
+    out
+}
+
 async fn verify_start(
     session: &crate::session::Session,
     graph: &RoomGraph,
@@ -961,6 +1010,7 @@ async fn travel(
     cfg: &FarmConfig,
     bot_config: &crate::bot::BotConfig,
     threat: &std::sync::Arc<crate::bot::ThreatTable>,
+    light: Option<&String>,
     started: Instant,
     stats: &mut FarmStats,
     phase: PhaseSink<'_>,
@@ -1028,6 +1078,7 @@ async fn travel(
                     err.at,
                     bot_config,
                     threat,
+                    light,
                     cfg,
                     started,
                     Some(until),
@@ -1092,6 +1143,7 @@ async fn farm_stop(
     stop: RoomId,
     bot_config: &crate::bot::BotConfig,
     threat: &std::sync::Arc<crate::bot::ThreatTable>,
+    light: Option<&String>,
     cfg: &FarmConfig,
     started: Instant,
     // Hard cap on this stop, or None to stay until it goes quiet.
@@ -1101,6 +1153,9 @@ async fn farm_stop(
 ) -> Result<StopEnd, FarmError> {
     let stop_name = graph.room(stop).map(|r| r.name.clone()).unwrap_or_default();
     let mut resting = false;
+    // One attempt per stop: if lighting did not take, saying it twice
+    // will not help and the second is just noise at the board.
+    let mut lit = false;
     let username = session.profile().username.clone();
     let backoff = Duration::from_millis(cfg.slowdown_backoff_ms);
     let poke_after = Duration::from_millis(cfg.idle_poke_ms);
@@ -1173,6 +1228,24 @@ async fn farm_stop(
             stats.slowdowns += 1;
         }
         if let Event::Line(line) = &ev {
+            // A dark stop shows no room block, so the bot cannot see what
+            // is in it. Light it and look again rather than dwelling
+            // blind -- fighting in the dark is heavily penalised anyway.
+            if line.contains(crate::sheet::TOO_DARK)
+                && let Some(cmd) = light
+                && !lit
+            {
+                lit = true;
+                gate.push(cmd.clone());
+                gate.push("look".into());
+            }
+            // A cast is a roll, not a command that either works or is
+            // wrong ("You attempt to cast starlight, but fail."), so a
+            // failure is worth another go -- bounded by mana, which runs
+            // out on its own.
+            if line.contains("but fail") {
+                lit = false;
+            }
             if is_player_death(line, &username) {
                 return Ok(StopEnd::Died);
             }

@@ -164,3 +164,27 @@ impl Spellbook {
             .map(|s| s.short.clone())
     }
 }
+
+/// The command that would light the current room, or `None` when the
+/// character has no way to.
+///
+/// A carried light wins over a spell: it costs no mana — which is wanted
+/// for whatever the dark room is hiding — and once lit it keeps burning,
+/// where a spell has a duration. Both verbs are the board's own:
+/// `light <item>` (DLL 0xdb07a, "You lit the %s." at 0xdb52d) and
+/// `cast <short>` ("Syntax: CAST {spell} [{target}]", 0xd984f).
+///
+/// `None` is a real answer and must not be papered over with a guess: an
+/// unrecognised command is SAID OUT LOUD by the board, so inventing one
+/// would broadcast it to the room and leave the character still blind.
+pub fn light_plan(inventory: &Inventory, spellbook: &Spellbook) -> Option<String> {
+    if let Some(item) = inventory.light_source() {
+        return Some(format!("light {item}"));
+    }
+    spellbook.light_spell().map(|short| format!("cast {short}"))
+}
+
+/// The board's reply on entering a room too dark to see in — "The room is
+/// %s - you can't see anything" (DLL 0xdf37e). The descriptor varies, so
+/// the tail is what is matched.
+pub const TOO_DARK: &str = "you can't see anything";

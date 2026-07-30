@@ -206,6 +206,9 @@ enum StepEvent {
     DoorYielded,
     /// Movement refused: we are in combat.
     CombatBlocked,
+    /// We moved, but the room is too dark to see: the board sent no room
+    /// block at all, only "you can't see anything".
+    ArrivedBlind,
 }
 
 pub struct Navigator {
@@ -324,7 +327,15 @@ impl Navigator {
 
                 session.send(dir_word(step));
                 let outcome = self
-                    .walk_step(step, exit_type, session, &mut events, guard, &mut armed)
+                    .walk_step(
+                        step,
+                        exit_type,
+                        &expected_name,
+                        session,
+                        &mut events,
+                        guard,
+                        &mut armed,
+                    )
                     .await;
                 let seen = match outcome {
                     Ok(seen) => seen,
@@ -475,10 +486,12 @@ impl Navigator {
     /// board's "the door is closed" alone would mean sending `open` at
     /// exits that have no door — a wasted command against flood control
     /// on every step of every walk.
+    #[allow(clippy::too_many_arguments)]
     async fn walk_step(
         &self,
         step: Direction,
         exit_type: i64,
+        expected: &str,
         session: &Session,
         events: &mut tokio::sync::broadcast::Receiver<crate::events::Event>,
         guard: &mut impl TravelGuard,
@@ -487,6 +500,11 @@ impl Navigator {
         let dir = dir_word(step);
         match self.wait_room(events, guard, armed).await? {
             StepEvent::Arrived(name) => return Ok(name),
+            // Dead reckoning, and sound: the board only says this on
+            // ENTERING a room too dark to see, so it is positive evidence
+            // the step landed. The name comes from the graph edge we
+            // chose, not from a guess that movement generally works.
+            StepEvent::ArrivedBlind => return Ok(expected.to_string()),
             // Hand straight back so the caller can fight: no deadline is
             // going to produce a room block while this is true.
             StepEvent::CombatBlocked => {
@@ -497,7 +515,7 @@ impl Navigator {
             StepEvent::DoorYielded => {
                 // Someone else's door, or one that swung on its own.
                 session.send(dir);
-                return self.arrival(events, guard, armed).await;
+                return self.arrival(expected, events, guard, armed).await;
             }
             StepEvent::DoorBlocked if !is_door(exit_type) => {
                 // The graph says there is no door here, so we have no
@@ -514,6 +532,7 @@ impl Navigator {
         match self.wait_room(events, guard, armed).await? {
             // Some boards walk you through on the open itself.
             StepEvent::Arrived(name) => return Ok(name),
+            StepEvent::ArrivedBlind => return Ok(expected.to_string()),
             StepEvent::CombatBlocked => {
                 return Err(NavErrorKind::Interrupted(Interrupt::Attacked {
                     by: "combat".into(),
@@ -521,7 +540,7 @@ impl Navigator {
             }
             StepEvent::DoorYielded => {
                 session.send(dir);
-                return self.arrival(events, guard, armed).await;
+                return self.arrival(expected, events, guard, armed).await;
             }
             StepEvent::DoorBlocked => {}
         }
@@ -537,13 +556,14 @@ impl Navigator {
         match self.wait_room(events, guard, armed).await? {
             // The bash carried us through the doorway.
             StepEvent::Arrived(name) => Ok(name),
+            StepEvent::ArrivedBlind => Ok(expected.to_string()),
             // It only opened it; the step is still owed.
             StepEvent::CombatBlocked => Err(NavErrorKind::Interrupted(Interrupt::Attacked {
                 by: "combat".into(),
             })),
             StepEvent::DoorYielded | StepEvent::DoorBlocked => {
                 session.send(dir);
-                self.arrival(events, guard, armed).await
+                self.arrival(expected, events, guard, armed).await
             }
         }
     }
@@ -551,6 +571,7 @@ impl Navigator {
     /// Wait specifically for a room block, treating door chatter as noise.
     async fn arrival(
         &self,
+        expected: &str,
         events: &mut tokio::sync::broadcast::Receiver<crate::events::Event>,
         guard: &mut impl TravelGuard,
         armed: &mut Option<Interrupt>,
@@ -558,6 +579,7 @@ impl Navigator {
         loop {
             match self.wait_room(events, guard, armed).await? {
                 StepEvent::Arrived(name) => return Ok(name),
+                StepEvent::ArrivedBlind => return Ok(expected.to_string()),
                 StepEvent::CombatBlocked => {
                     return Err(NavErrorKind::Interrupted(Interrupt::Attacked {
                         by: "combat".into(),
@@ -616,6 +638,9 @@ impl Navigator {
                     }
                     if line.contains(COMBAT_BLOCKED) {
                         return Ok(StepEvent::CombatBlocked);
+                    }
+                    if line.contains(crate::sheet::TOO_DARK) {
+                        return Ok(StepEvent::ArrivedBlind);
                     }
                     if DOOR_BLOCKED.iter().any(|m| line.contains(m)) {
                         return Ok(StepEvent::DoorBlocked);
