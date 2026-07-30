@@ -115,10 +115,10 @@ if lv >= TARGET_LEVEL:
 # Fund the trip: healing at 2cp/HP plus training fees.  Exp is usually
 # already banked ("You have progressed too far without training!"), so
 # grant once and rely on train to say if it is short.
-cmd("/xcash 5000 copper", tag="purse for training")
+cmd("/xcash 500000 copper", tag="purse for training")  # fees DOUBLE per level
 cmd("/xexp 25000", tag="grant exp (no-op if capped)")
 
-deadline = time.time() + 420
+deadline = time.time() + 300 + 90 * TARGET_LEVEL   # ~90s per level
 while lv < TARGET_LEVEL and time.time() < deadline:
     if (hp() or 0) < 0:
         die_and_revive()
@@ -153,8 +153,10 @@ while lv < TARGET_LEVEL and time.time() < deadline:
         sys.exit("lost the level readout mid-training")
     if lv >= TARGET_LEVEL:
         break
-    if "enough experience" in out or "need" in out.lower():
-        cmd("/xexp 25000", tag="top up exp")
+    # Any stall: re-grant exp AND refill the purse — the fee doubles
+    # per level and quietly outruns a static purse (L6 stall, 2026-07-29).
+    cmd("/xexp 25000", tag="top up exp (stall-proof)")
+    cmd("/xcash 500000 copper", tag="refill purse (stall-proof)")
 
 if lv == TARGET_LEVEL:
     note(f"=== level {TARGET_LEVEL} reached; CP left unspent by design ===")

@@ -48,14 +48,29 @@ HEALER = 2190
 # gentle cave); evening map 6 killed a fresh character twice in 13
 # minutes with zero trials to show for it.
 import os as _os
-if _os.environ.get("E3_TARGET", "bat") == "kobold":
+if _os.environ.get("E3_TARGET", "bat") == "slave":
+    # The definitive subject (2026-07-30): kobold slave #54 — aggression
+    # 10 (the cleanest P0 baseline on the board), and with the ZERO-
+    # damage weapon below even its DR 0 keeps P2's no-damage premise:
+    # flurry of blades is 0..0, and genrdn(0, span+1) on a 0-span rolls
+    # exactly 0 every swing.
+    TARGET, NOUN, MAP = "kobold slave", "slave", 1
+    WEAPON = "flurry of blades"
+    RAT_ROOMS = [1752, 1753, 1754, 1755, 1756, 1757, 1758, 1759, 1760,
+                 1761, 1762, 1763, 1764, 1765, 1766, 1767, 1768, 1769,
+                 1770, 1776, 1777, 1778, 1779, 1780, 1781, 1782, 1783,
+                 1784, 1785, 1786, 1787, 1788, 1790, 1791, 1792, 1793,
+                 1794]
+elif _os.environ.get("E3_TARGET", "bat") == "kobold":
     TARGET, NOUN, MAP = "kobold", "kobold", 6
+    WEAPON = "wooden hammer"
     RAT_ROOMS = [
         722, 723, 724, 725, 726, 727, 728, 729, 730, 731, 732, 733, 734,
         745, 746, 747, 748, 749, 750, 751,
     ]
 else:
     TARGET, NOUN, MAP = "giant bat", "bat", 1
+    WEAPON = "wooden hammer"
     RAT_ROOMS = [
         1451, 1452, 1453, 1454, 1455, 1456, 1457, 1458, 1459, 1460, 1461,
         1462, 1463, 1464, 1465, 1466, 1467, 1468, 1469, 1470, 1471, 1472,
@@ -189,6 +204,11 @@ if "valid race" in sess.clean()[-400:]:
 if (hp() or 0) < 0:
     die_and_revive()
 cmd("/xcash 2000 copper", tag="heal purse")
+inv = " ".join(cmd("i", tag="inventory", echo=False).split())
+if WEAPON not in inv:
+    cmd(f"sysop summon {WEAPON}", tag=f"summon {WEAPON}")
+if f"{WEAPON} (" not in inv:
+    cmd(f"wield {WEAPON}", tag=f"wield {WEAPON}")
 heal_if_needed(floor=999)   # start full
 
 results = {"p0": [], "p1": [], "p2": [], "p3": []}

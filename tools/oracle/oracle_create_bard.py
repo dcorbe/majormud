@@ -26,43 +26,8 @@ sess = Session(rawfile=RAW)
 def say(m):
     print(f"{time.strftime('%T')} {m}", flush=True)
 
-# --- signup -----------------------------------------------------------------
-sess.ru("Username:")
-sess.send("NEW")
-sess.dump(3.0)
-tail = sess.clean()[-800:]
-say("after NEW: " + " ".join(tail[-200:].split()))
-
-# The signup flow prompts in order; answer whatever arrives.
-answers = [
-    ("sername", "Bard"),          # desired username
-    ("assword", "test123"),       # password
-    ("assword", "test123"),       # confirm
-    ("mail", "bard@example.com"), # email
-]
-for needle, reply in answers:
-    deadline = time.time() + 20
-    while needle not in sess.clean()[-300:] and time.time() < deadline:
-        sess.dump(1.0)
-    if needle not in sess.clean()[-300:]:
-        say(f"prompt {needle!r} never arrived; tail: "
-            + " ".join(sess.clean()[-200:].split()))
-        break
-    sess.send(reply)
-    sess.dump(2.0)
-
-sess.dump(4.0)
-tail = sess.clean()[-600:]
-say("post-signup tail: " + " ".join(tail[-250:].split()))
-
-# Some flows drop straight to the main menu; others want a fresh login.
-if "Make your selection" not in tail:
-    if "Username" in tail:
-        sess.send("Bard")
-        sess.ru("Password:")
-        sess.send("test123")
-        sess.ru("Make your selection")
-
+# Signup completed 2026-07-29 (accountId 11); log in normally.
+sess.login("Bard", "test123")
 sess.send("E")
 sess.dump(5.0)
 tail = sess.clean()[-800:]
