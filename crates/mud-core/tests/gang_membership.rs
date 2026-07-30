@@ -544,3 +544,36 @@ fn set_gang_toggles_and_sets_the_roster_view() {
         "view choice persists"
     );
 }
+
+// --- §5.2 gangpaths ---
+
+#[test]
+fn gangpath_reaches_the_gang_including_the_sender() {
+    use mud_core::gang::GF_LIEUTENANT;
+    let (mut core, s) = gang_world(&[
+        ("Salad", true, 0),
+        ("Vex", true, GF_LIEUTENANT),
+        ("Torgo", false, 0),
+    ]);
+    core.input(s[0], "gang meet at the well");
+    let events = core.drain_events();
+    for (label, id) in [("sender", s[0]), ("member", s[1])] {
+        let out = texts(&events, id);
+        assert!(
+            out.contains("Salad gangpaths: ") && out.contains("meet at the well"),
+            "{label}: {out:?}"
+        );
+    }
+    assert!(
+        !texts(&events, s[2]).contains("gangpaths"),
+        "non-members hear nothing"
+    );
+}
+
+#[test]
+fn gangpath_without_a_gang_refuses() {
+    let (mut core, s) = gang_world(&[("Torgo", false, 0)]);
+    core.input(s[0], "gang hello?");
+    let out = texts(&core.drain_events(), s[0]);
+    assert!(out.contains("You are not in a gang at the present!"), "{out:?}");
+}

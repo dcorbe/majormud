@@ -819,6 +819,16 @@ pub fn gang_all_row(name: &str, online: bool, lieutenant: bool) -> String {
     format!("{name:<29.29}{mark}{rank}")
 }
 
+/// The gangpath line (cmd_broadgang, exact literal `"%s gangpaths: %s%s"`
+/// @0x48a9bb). The middle arg is a raw blob @0x48a9cf — a bracket/
+/// backspace compose ending in ESC[0;33m — recorded in gangs.md §5.2;
+/// ORACLE-VERIFY: we render its visible intent (dark-yellow message),
+/// not the byte dance. The DLL's leading-'/- strip arm keys off
+/// margv[0][0], unreachable through our verb table.
+pub fn gangpath(sender: &str, message: &str) -> String {
+    format!("{sender} gangpaths: \x1b[0;33m{message}{}", color::RESET)
+}
+
 // The SET GANG view toggle (cmd_set 54136/54556): bare = toggle,
 // ONLINE/ALL = explicit, anything else = the options line.
 pub const SET_GANG_ONLINE: &str = "You will now only see online gang members.";

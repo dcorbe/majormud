@@ -8457,7 +8457,19 @@ impl Core {
             self.gang_roster(session);
             return Resolution::Handled;
         }
-        Resolution::FallThrough
+        // Gangpath broadcast (§5.2) — tell_gang, sender included.
+        let sender = player.name.clone();
+        let gang_display = player.gang.clone();
+        let line = text::gangpath(&sender, message);
+        let members: Vec<SessionId> = self
+            .in_game_sessions()
+            .filter(|(_, p)| p.gang.eq_ignore_ascii_case(&gang_display))
+            .map(|(id, _)| id)
+            .collect();
+        for id in members {
+            self.output_line(id, &line);
+        }
+        Resolution::Handled
     }
 
     /// The roster (§1.6). View picked by `GF_ROSTER_ONLINE_ONLY`:
