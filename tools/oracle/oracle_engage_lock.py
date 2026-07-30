@@ -56,11 +56,14 @@ if _os.environ.get("E3_TARGET", "bat") == "slave":
     # exactly 0 every swing.
     TARGET, NOUN, MAP = "kobold slave", "slave", 1
     WEAPON = "flurry of blades"
-    RAT_ROOMS = [1752, 1753, 1754, 1755, 1756, 1757, 1758, 1759, 1760,
-                 1761, 1762, 1763, 1764, 1765, 1766, 1767, 1768, 1769,
-                 1770, 1776, 1777, 1778, 1779, 1780, 1781, 1782, 1783,
-                 1784, 1785, 1786, 1787, 1788, 1790, 1791, 1792, 1793,
-                 1794]
+    # ONLY the type-3 SWARM rooms: the spawner loops generate_monster
+    # in them while a player is present, so DWELLING there conjures
+    # slaves; the other 29 slave rooms are type-0 (4%/kick) and a sweep
+    # is spawn-proof in them. (This is why every fast sweep of the
+    # campaign found an "empty world" — re/docs/monsters.md §1 had the
+    # answer all along.)
+    RAT_ROOMS = [1753, 1760, 1777, 1780, 1785, 1792, 1793, 1794]
+    DWELL = 12.0
 elif _os.environ.get("E3_TARGET", "bat") == "kobold":
     TARGET, NOUN, MAP = "kobold", "kobold", 6
     WEAPON = "wooden hammer"
@@ -71,6 +74,8 @@ elif _os.environ.get("E3_TARGET", "bat") == "kobold":
 else:
     TARGET, NOUN, MAP = "giant bat", "bat", 1
     WEAPON = "wooden hammer"
+if "DWELL" not in dir():
+    DWELL = 1.0
     RAT_ROOMS = [
         1451, 1452, 1453, 1454, 1455, 1456, 1457, 1458, 1459, 1460, 1461,
         1462, 1463, 1464, 1465, 1466, 1467, 1468, 1469, 1470, 1471, 1472,
@@ -176,7 +181,7 @@ def find_rat(start_ix):
     for k in range(len(RAT_ROOMS)):
         room = RAT_ROOMS[(start_ix + k) % len(RAT_ROOMS)]
         sess.send(f"/xgoto {room} {MAP}", pause=1.6)
-        sess.dump(1.0)
+        sess.dump(DWELL)           # a swarm room fills while we stand in it
         out = cmd("look", tag=f"room {room}", drain=1.8, echo=False)
         if TARGET not in out:
             continue

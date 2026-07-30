@@ -67,10 +67,9 @@ HEALER = 2190
 # KOBOLD SLAVE (#54) is the true pet: charmlvl 1, aggression 10, and the
 # noun "slave" is adjective-proof.  39 map-1 rooms.
 PET, PET_NOUN, PET_MAP = "kobold slave", "slave", 1
-RAT_ROOMS = [1752, 1753, 1754, 1755, 1756, 1757, 1758, 1759, 1760, 1761,
-             1762, 1763, 1764, 1765, 1766, 1767, 1768, 1769, 1770, 1776,
-             1777, 1778, 1779, 1780, 1781, 1782, 1783, 1784, 1785, 1786,
-             1787, 1788, 1790, 1791, 1792, 1793, 1794]
+# Only the type-3 SWARM rooms — they loop-spawn while a player stands
+# in them; the type-0 rest are spawn-proof to a sweep (monsters.md §1).
+RAT_ROOMS = [1753, 1760, 1777, 1780, 1785, 1792, 1793, 1794]
 ASSIST_ROOMS = [722, 723, 724, 725, 726, 727, 728]   # plain kobolds, map 6
 ASSIST_TARGET, ASSIST_NOUN = "kobold", "kobold"
 DIRS = ["n", "s", "e", "w", "ne", "nw", "se", "sw", "u", "d"]
@@ -183,7 +182,7 @@ def find_rat(start_ix=0, alone=True):
     for k in range(len(RAT_ROOMS)):
         room = RAT_ROOMS[(start_ix + k) % len(RAT_ROOMS)]
         sess.send(f"/xgoto {room} {PET_MAP}", pause=1.6)
-        sess.dump(1.0)
+        sess.dump(12.0)            # let the swarm room fill around us
         out = cmd("look", tag=f"room {room}", drain=1.8, echo=False)
         if PET not in out:
             continue
@@ -252,6 +251,11 @@ def charm_rat(max_casts=12):
 sess.login(ACCOUNT, PASSWORD)
 sess.send("E")
 sess.dump(5.0)
+# Recover BEFORE the spellbook gate: a mortally wounded character
+# refuses `spells` too, and take-3 once exited on that refusal
+# thinking the song was missing.
+if (hp() or 0) < 0:
+    die_and_revive()
 st = cmd("st", tag="STATS on entry")
 spl = cmd("spells", tag="spellbook")
 if "char" not in spl:
