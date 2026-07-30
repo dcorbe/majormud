@@ -686,6 +686,103 @@ fn cast_offensive_trap_arm_is_pending() {
     assert_eq!(core.player_snapshot(s).quest_flags, 1 << 2);
 }
 
+// --- item verbs + the takeitem rollback (Task 6) ---
+
+#[test]
+fn giveitem_adds_with_template_uses_and_continues() {
+    // 69342-69351: add_item_to_inventory(user, item, -2, NULL) — the -2
+    // sentinel copies the template's uses (`+0x31e`, 13952-13953).
+    let (mut core, s) = boot();
+    assert_eq!(core.debug_perform_matched_action(s, "giveitem 400:flag 3 set"), 1);
+    let p = core.player_snapshot(s);
+    assert_eq!(p.inventory, vec![(ItemId(400), -1)]);
+    assert_eq!(p.quest_flags, 1 << 2, "chain continued");
+}
+
+#[test]
+fn giveitem_overflow_drops_to_room_and_stops_the_chain() {
+    // 69352-69368: on failure the item lands on the floor VISIBLE and
+    // the chain stops — with code 1, not a fail-stop. (Our overflow
+    // condition is the 100-slot cap; the DLL's weight/logical gates are
+    // unmodeled engine-wide.)
+    let (mut core, s) = boot();
+    for _ in 0..100 {
+        core.give_item(s, ItemId(200));
+    }
+    assert_eq!(core.debug_perform_matched_action(s, "giveitem 400:flag 3 set"), 1);
+    let p = core.player_snapshot(s);
+    assert_eq!(p.inventory.len(), 100, "inventory unchanged");
+    assert_eq!(p.quest_flags, 0, "chain stopped");
+    assert!(core.debug_room_items(A).contains(&ItemId(400)), "dropped");
+}
+
+#[test]
+fn takeitem_removes_and_a_later_failure_rolls_back() {
+    // 69383-69424: taken items buffer in `auStack_1b4`; a FAILED
+    // takeitem re-adds every buffered item — with uses 0, the literal
+    // third arg of the re-add (69399) — then shows the optional message
+    // and fail-stops.
+    let (mut core, s) = boot();
+    core.give_item(s, ItemId(400));
+    assert_eq!(
+        core.debug_perform_matched_action(s, "takeitem 400:takeitem 999 801:flag 3 set"),
+        2
+    );
+    let p = core.player_snapshot(s);
+    assert_eq!(p.inventory, vec![(ItemId(400), 0)], "restored, uses zeroed");
+    assert_eq!(p.quest_flags, 0, "chain stopped");
+    let shown = text_to(&core.drain_events(), s);
+    assert!(shown.contains("You are judged unworthy."), "got: {shown:?}");
+}
+
+#[test]
+fn takeitem_rollback_scope_is_one_chain() {
+    // The buffer is a local of ONE perform_matched_action call — a
+    // failure in a later chain does not resurrect earlier takes.
+    let (mut core, s) = boot();
+    core.give_item(s, ItemId(400));
+    assert_eq!(core.debug_perform_matched_action(s, "takeitem 400"), 1);
+    assert_eq!(core.debug_perform_matched_action(s, "takeitem 999"), 2);
+    assert!(core.player_snapshot(s).inventory.is_empty(), "no resurrection");
+}
+
+#[test]
+fn hideitem_spawns_hidden_and_stops_the_chain() {
+    // 69318-69340: add_item_to_room(..., hidden, template uses), then an
+    // UNCONDITIONAL tail-restore-and-stop with code 1.
+    let (mut core, s) = boot();
+    assert_eq!(core.debug_perform_matched_action(s, "hideitem 400:flag 3 set"), 1);
+    assert_eq!(core.player_snapshot(s).quest_flags, 0, "chain stopped");
+    assert!(
+        !core.debug_room_items(A).contains(&ItemId(400)),
+        "not visible"
+    );
+    // Visible to the roomitem gate, which scans hidden slots too.
+    assert_eq!(core.debug_perform_matched_action(s, "roomitem 400"), 1);
+}
+
+#[test]
+fn clearitem_removes_every_copy_or_fails() {
+    // FUN_0046c241 (65701-65773): removes ALL matching slots, visible
+    // and hidden; not-found → optional message + fail-stop; item 0
+    // clears the entire floor.
+    let (mut core, s) = boot();
+    core.give_item(s, ItemId(400));
+    core.give_item(s, ItemId(400));
+    core.input(s, "drop token");
+    core.input(s, "drop token");
+    core.drain_events();
+    assert_eq!(core.debug_perform_matched_action(s, "clearitem 400"), 1);
+    assert!(core.debug_room_items(A).is_empty());
+    assert_eq!(core.debug_perform_matched_action(s, "clearitem 400 801"), 2);
+    let shown = text_to(&core.drain_events(), s);
+    assert!(shown.contains("You are judged unworthy."), "got: {shown:?}");
+
+    core.debug_perform_matched_action(s, "hideitem 400");
+    assert_eq!(core.debug_perform_matched_action(s, "clearitem 0"), 1);
+    assert_eq!(core.debug_perform_matched_action(s, "roomitem 400"), 2, "floor cleared");
+}
+
 // --- failure-message plumbing (FUN_0046f360, 67820-67844) ---
 
 #[test]

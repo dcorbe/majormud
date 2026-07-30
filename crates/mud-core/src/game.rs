@@ -2155,15 +2155,19 @@ impl Core {
         // KID_GLOVES config (`DAT_004906dc`), modeled always-on.
         let mut taken: Vec<crate::content::ItemId> = Vec::new();
         let mut code = ActionCode::NoOp;
+        // Some arms stop the chain WITHOUT a fail code: giveitem's
+        // overflow drop (69363-69367), hideitem (69334-69338) — the
+        // DLL's tail-restore-and-null pattern with `local_24` still 1.
+        let mut stop = false;
         for token in line.split(':') {
             let Some((verb, args)) = parse_action_token(token) else {
                 continue;
             };
-            let result = self.quest_verb(session, verb, args, &mut taken);
+            let result = self.quest_verb(session, verb, args, &mut taken, &mut stop);
             if result != ActionCode::NoOp {
                 code = result;
             }
-            if result == ActionCode::FailStop {
+            if result == ActionCode::FailStop || stop {
                 break;
             }
         }
@@ -2209,7 +2213,8 @@ impl Core {
         session: SessionId,
         verb: crate::questvm::QuestVerb,
         args: &str,
-        _taken: &mut Vec<crate::content::ItemId>,
+        taken: &mut Vec<crate::content::ItemId>,
+        stop: &mut bool,
     ) -> crate::questvm::ActionCode {
         use crate::questvm::{ActionCode, QuestVerb, SkillName};
         const CONTINUE: crate::questvm::ActionCode = ActionCode::Continue;
@@ -2729,19 +2734,140 @@ impl Core {
                 }
                 CONTINUE
             }
-            // M7 PENDING(slice-6): the item, output/world, and
-            // peripheral arms land with tasks 6-8 of the slice-6 plan
+            QuestVerb::GiveItem => {
+                // 69342-69370: add_item_to_inventory(user, item, -2) —
+                // -2 copies the template's uses (13952-13953). On
+                // failure the item lands on the floor VISIBLE and the
+                // chain stops with code 1 (69352-69368). Our failure
+                // condition is the 100-slot cap; the DLL's weight and
+                // add-logical gates are unmodeled engine-wide.
+                let Some(id) = w.next() else { return CONTINUE };
+                let Some((item, uses)) = u16::try_from(crate::questvm::atol(id))
+                    .ok()
+                    .map(crate::content::ItemId)
+                    .and_then(|id| self.content.items.get(&id).map(|i| (id, i.uses)))
+                else {
+                    // Unknown item: the add fails and nothing can drop
+                    // (69354-69356 gets NULL) — chain still stops.
+                    *stop = true;
+                    return CONTINUE;
+                };
+                let room = self.player(session).location;
+                let full = self.player(session).inventory.len() >= 100;
+                if full {
+                    self.room_items.entry(room).or_default().push((item, uses));
+                    *stop = true;
+                    return CONTINUE;
+                }
+                if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+                    player.inventory.push((item, uses));
+                }
+                let snapshot = Box::new(self.player(session).clone());
+                self.events.push(Event::Persist(snapshot));
+                CONTINUE
+            }
+            QuestVerb::TakeItem => {
+                // 69383-69424: remove from the carried array; success
+                // buffers the id (`auStack_1b4`), failure re-adds every
+                // buffered item — with uses 0, the re-add's literal
+                // third arg (69399) — then the optional message and a
+                // fail-stop. The KID_GLOVES rollback gate is modeled
+                // always-on.
+                let Some(id) = w.next() else { return CONTINUE };
+                let id = crate::questvm::atol(id);
+                let removed = match self.sessions.get_mut(&session) {
+                    Some(Session::InGame { player, .. }) => {
+                        match player
+                            .inventory
+                            .iter()
+                            .position(|(item, _)| i64::from(item.0) == id)
+                        {
+                            Some(pos) => Some(player.inventory.remove(pos).0),
+                            None => None,
+                        }
+                    }
+                    _ => None,
+                };
+                match removed {
+                    Some(item) => {
+                        if taken.len() < 100 {
+                            taken.push(item);
+                        }
+                        let snapshot = Box::new(self.player(session).clone());
+                        self.events.push(Event::Persist(snapshot));
+                        CONTINUE
+                    }
+                    None => {
+                        if let Some(Session::InGame { player, .. }) =
+                            self.sessions.get_mut(&session)
+                        {
+                            for item in taken.drain(..) {
+                                player.inventory.push((item, 0));
+                            }
+                        }
+                        self.quest_gate_message(session, w.next());
+                        let snapshot = Box::new(self.player(session).clone());
+                        self.events.push(Event::Persist(snapshot));
+                        FAIL
+                    }
+                }
+            }
+            QuestVerb::HideItem => {
+                // 69318-69340: spawn the item HIDDEN on the floor with
+                // template uses, then an UNCONDITIONAL
+                // tail-restore-and-stop with code 1. Zero shipped uses;
+                // decompile-literal.
+                let Some(id) = w.next() else { return CONTINUE };
+                if let Some((item, uses)) = u16::try_from(crate::questvm::atol(id))
+                    .ok()
+                    .map(crate::content::ItemId)
+                    .and_then(|id| self.content.items.get(&id).map(|i| (id, i.uses)))
+                {
+                    let room = self.player(session).location;
+                    self.room_hidden_items
+                        .entry(room)
+                        .or_default()
+                        .push((item, uses));
+                }
+                *stop = true;
+                CONTINUE
+            }
+            QuestVerb::ClearItem => {
+                // FUN_0046c241 (65701-65773): remove EVERY matching slot,
+                // visible and hidden; id 0 clears the whole floor; not
+                // found → optional message + fail-stop.
+                let Some(id) = w.next() else { return CONTINUE };
+                let id = crate::questvm::atol(id);
+                let room = self.player(session).location;
+                let mut found = false;
+                for list in [
+                    self.room_items.entry(room).or_default(),
+                    self.room_hidden_items.entry(room).or_default(),
+                ] {
+                    if id == 0 {
+                        found = true;
+                        list.clear();
+                    } else {
+                        let before = list.len();
+                        list.retain(|(item, _)| i64::from(item.0) != id);
+                        found |= list.len() != before;
+                    }
+                }
+                if !found {
+                    self.quest_gate_message(session, w.next());
+                    return FAIL;
+                }
+                CONTINUE
+            }
+            // M7 PENDING(slice-6): the output/world and peripheral arms
+            // land with tasks 7-8 of the slice-6 plan
             // (docs/plans/2026-07-19-m7-content-systems-design.md §Slice 6).
             QuestVerb::Price
             | QuestVerb::Teleport
             | QuestVerb::Summon
             | QuestVerb::Message
-            | QuestVerb::TakeItem
-            | QuestVerb::GiveItem
-            | QuestVerb::HideItem
             | QuestVerb::Text
             | QuestVerb::RoomText
-            | QuestVerb::ClearItem
             | QuestVerb::RemoteAction
             | QuestVerb::Random
             | QuestVerb::AddDelay => ActionCode::NoOp,
