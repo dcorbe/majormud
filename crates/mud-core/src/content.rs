@@ -183,6 +183,13 @@ pub struct Room {
     /// `room+0x5be` (`maxarea`) — the linked-spawn cap other rooms charge
     /// against this room's `+0x5c0` live count.
     pub linked_cap: i16,
+    /// `room+0x5b4` (`cmdtext`) — the room's input-wildcard
+    /// special-command block (quests.md §1.2), run by
+    /// `perform_special_command` from execute_input's fall-through
+    /// (decompile 49143, after action exits, before say) and the
+    /// cmd_look (50208) / cmd_buy (51177, 51204) / cmd_use (58990)
+    /// failure paths. 810 shipped rooms carry one.
+    pub command_block: Option<TextBlockId>,
 }
 
 impl Room {
@@ -977,6 +984,12 @@ pub enum ContentError {
         monster: MonsterId,
         block: TextBlockId,
     },
+    /// A room's `cmdtext` special-command block names a missing block
+    /// (none shipped — no allowlist).
+    DanglingRoomTextBlock {
+        room: RoomId,
+        block: TextBlockId,
+    },
     /// A text block's next-link names a missing block.
     DanglingTextBlockNext {
         block: TextBlockId,
@@ -1067,6 +1080,14 @@ impl Content {
                         monster,
                     });
                 }
+            }
+            if let Some(block) = room.command_block
+                && !self.textblocks.contains_key(&block)
+            {
+                errors.push(ContentError::DanglingRoomTextBlock {
+                    room: room.id,
+                    block,
+                });
             }
         }
 

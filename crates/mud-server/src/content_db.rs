@@ -134,7 +134,8 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
         .join(", ");
     let mut stmt = db.prepare(&format!(
         "SELECT mapnumber, roomnumber, name, shopnum, {descs}, {exits}, {placed}, type, attributes, \
-         monstertype, maxregen, minindex, maxindex, delay, permnpc, bynumber, controlroom, maxarea FROM room"
+         monstertype, maxregen, minindex, maxindex, delay, permnpc, bynumber, controlroom, maxarea, \
+         cmdtext FROM room"
     ))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
@@ -205,6 +206,7 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
                     .transpose()?
             },
             linked_cap: to_i16("room", "maxarea", row.get(115)?)?,
+            command_block: opt_text_block("room", "cmdtext", row.get(116)?)?,
         };
         for d in 0..10 {
             let dest: i64 = row.get(11 + d * 6)?;

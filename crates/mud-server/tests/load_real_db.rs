@@ -401,6 +401,26 @@ fn known_content_spot_checks() {
     assert_eq!(exits, 62352);
 }
 
+// --- M7 slice 6: room cmdtext special-command blocks (quests.md §1.2) ---
+
+#[test]
+fn room_cmdtext_special_command_blocks_load() {
+    use mud_core::content::TextBlockId;
+    let content = content_db::load(&db_path()).expect("load content db");
+    // room+0x5b4 (`cmdtext` column) names the room's input-wildcard
+    // special-command block, dispatched from execute_input's fall-through
+    // (decompile 49143) and the cmd_look/cmd_buy/cmd_use failure paths.
+    // Map 1 room 2 carries block 997; 810 shipped rooms carry one.
+    let r = &content.rooms[&RoomId { map: 1, room: 2 }];
+    assert_eq!(r.command_block, Some(TextBlockId(997)));
+    let count = content
+        .rooms
+        .values()
+        .filter(|r| r.command_block.is_some())
+        .count();
+    assert_eq!(count, 810);
+}
+
 // --- M7 slice 1: text blocks (WCCTEXT2, importer 12c6690) ---
 
 #[test]
