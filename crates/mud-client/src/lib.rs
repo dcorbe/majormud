@@ -17,5 +17,6 @@ pub mod profile;
 pub mod progress;
 pub mod script;
 pub mod session;
+pub mod sheet;
 pub mod tui;
 pub mod wire;
