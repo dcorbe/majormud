@@ -577,3 +577,136 @@ fn gangpath_without_a_gang_refuses() {
     let out = texts(&core.drain_events(), s[0]);
     assert!(out.contains("You are not in a gang at the present!"), "{out:?}");
 }
+
+// --- §1.4 LEAVE GANG ---
+
+#[test]
+fn member_leaves_with_room_broadcast() {
+    let (mut core, s) = gang_world(&[
+        ("Salad", true, 0),
+        ("Grunt", true, 0),
+        ("Torgo", false, 0),
+    ]);
+    core.input(s[1], "leave gang");
+    let events = core.drain_events();
+    let leaver = texts(&events, s[1]);
+    assert!(leaver.contains("You have left Iron Fist."), "{leaver:?}");
+    // tell_room, not tell_gang: bystanders in the room see the line.
+    assert!(
+        texts(&events, s[2]).contains("Grunt has left Iron Fist."),
+        "room broadcast"
+    );
+    assert_eq!(core.gang("Iron Fist").unwrap().member_count, 0, "count--");
+    assert!(
+        events.iter().any(|e| matches!(e, Event::Persist(p) if p.name == "Grunt" && p.gang.is_empty())),
+        "leaver persisted gangless"
+    );
+    // The roster no longer lists them.
+    core.input(s[0], "gang");
+    let out = texts(&core.drain_events(), s[0]);
+    assert!(!out.contains("Grunt"), "{out:?}");
+}
+
+#[test]
+fn leader_may_not_leave() {
+    let (mut core, s) = gang_world(&[("Salad", true, 0)]);
+    core.input(s[0], "leave gang");
+    let out = texts(&core.drain_events(), s[0]);
+    assert!(
+        out.contains("You are the leader - you may not leave your gang. Use DISBAND GANG"),
+        "{out:?}"
+    );
+    assert_eq!(core.gang("Iron Fist").unwrap().member_count, 1);
+}
+
+#[test]
+fn leave_without_a_gang_and_malformed_forms() {
+    let (mut core, s) = gang_world(&[("Torgo", false, 0)]);
+    core.input(s[0], "leave gang");
+    let out = texts(&core.drain_events(), s[0]);
+    assert!(out.contains("You are not currently in a gang."), "{out:?}");
+    // Bare LEAVE is the group system (M8) — falls through.
+    core.input(s[0], "leave");
+    let out = texts(&core.drain_events(), s[0]);
+    assert!(out.contains("You say"), "{out:?}");
+}
+
+// --- §1.4 DISBAND GANG (the 0x88 confirmation) ---
+
+#[test]
+fn disband_confirms_then_sweeps() {
+    use mud_core::gang::GF_LIEUTENANT;
+    let (mut core, s) = gang_world(&[
+        ("Salad", true, 0),
+        ("Vex", true, GF_LIEUTENANT),
+    ]);
+    core.input(s[0], "disband gang");
+    let out = texts(&core.drain_events(), s[0]);
+    assert!(out.contains("Are you sure you want to disband Iron Fist? "), "{out:?}");
+
+    core.input(s[0], "yes");
+    let events = core.drain_events();
+    for id in [s[0], s[1]] {
+        let out = texts(&events, id);
+        assert!(out.contains("The gang Iron Fist has now been disbanded."), "{out:?}");
+        assert!(
+            out.contains("The name may not be used again until all members have entered the game!"),
+            "{out:?}"
+        );
+    }
+    let gang = core.gang("Iron Fist").unwrap();
+    assert!(gang.is_disbanded());
+    assert_eq!(gang.member_count, 0, "both online members drained");
+    assert!(
+        events.iter().any(|e| matches!(e, Event::Persist(p)
+            if p.name == "Vex" && p.gang.is_empty() && p.gang_flags & GF_LIEUTENANT == 0)),
+        "swept member persisted stripped"
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, Event::PersistGang(g) if g.is_disbanded())),
+        "gang row persisted disbanded"
+    );
+}
+
+#[test]
+fn disband_decline_and_gates() {
+    let (mut core, s) = gang_world(&[("Salad", true, 0), ("Grunt", true, 0)]);
+
+    // Non-leader.
+    core.input(s[1], "disband gang");
+    let out = texts(&core.drain_events(), s[1]);
+    assert!(
+        out.contains("You are not the leader of the gang; You may not disband it!"),
+        "{out:?}"
+    );
+
+    // Decline: anything but a single Y-word (the 0x88 arm requires
+    // margc == 1 with a leading Y — two words decline too).
+    core.input(s[0], "disband gang");
+    core.drain_events();
+    core.input(s[0], "y u sure");
+    let out = texts(&core.drain_events(), s[0]);
+    assert!(out.contains("Your gang has not been disbanded."), "{out:?}");
+    assert!(!core.gang("Iron Fist").unwrap().is_disbanded());
+
+    // The declined line is CONSUMED by the continuation, not executed.
+    core.input(s[0], "disband gang");
+    core.drain_events();
+    core.input(s[0], "no");
+    let out = texts(&core.drain_events(), s[0]);
+    assert!(out.contains("Your gang has not been disbanded."), "{out:?}");
+    assert!(!out.contains("You say"), "{out:?}");
+
+    // Syntax forms: DISBAND GUILD is not an alias; bare DISBAND too.
+    for form in ["disband guild", "disband"] {
+        core.input(s[0], form);
+        let out = texts(&core.drain_events(), s[0]);
+        assert!(out.contains("Syntax: DISBAND {Party/Gang}"), "{form}: {out:?}");
+    }
+
+    // Gangless.
+    let (mut core2, t) = gang_world(&[("Torgo", false, 0)]);
+    core2.input(t[0], "disband gang");
+    let out = texts(&core2.drain_events(), t[0]);
+    assert!(out.contains("You are not in a gang!"), "{out:?}");
+}

@@ -1339,6 +1339,9 @@ pub struct Core {
     /// loaded from the player table at boot. Player rows remain the
     /// durable truth (see CoreConfig.restored_gang_members).
     gang_members: BTreeMap<String, Vec<(String, u16)>>,
+    /// Sessions holding the DISBAND yes/no continuation (input state
+    /// 0x88, gangs.md §1.4) — the next line is the answer.
+    pending_disband: BTreeSet<SessionId>,
 }
 
 /// Per-template population state (monsters.md §2 step 3).
@@ -1409,6 +1412,7 @@ impl Core {
             gangs: BTreeMap::new(),
             gang_invites: BTreeSet::new(),
             gang_members: BTreeMap::new(),
+            pending_disband: BTreeSet::new(),
         };
         // First run of the world: every shelf full, and each timed slot's
         // first event lands at genrdn(1, max(2, interval)) minutes so the
@@ -5386,7 +5390,15 @@ impl Core {
             Some(Session::InGame { exiting: Some(_), .. }) => {
                 self.output_line(session, text::MEDITATION_BLOCKED);
             }
-            Some(Session::InGame { .. }) => self.game_command(session, line),
+            Some(Session::InGame { .. }) => {
+                // A pending yes/no continuation consumes the line first
+                // (the DLL's usrptr+0x1c input states; 0x88 = disband).
+                if self.pending_disband.remove(&session) {
+                    self.disband_confirm(session, line);
+                } else {
+                    self.game_command(session, line)
+                }
+            }
         }
         self.reprompt_disturbed();
     }
@@ -8765,12 +8777,172 @@ impl Core {
         Resolution::FallThrough // membership task
     }
 
-    fn disband_command(&mut self, _session: SessionId, _args: &str) -> Resolution {
-        Resolution::FallThrough // membership task
+    /// `remove_from_gang` (0x4fc2f): clears membership + the Lieutenant
+    /// bit, decrements the count, and — when the departer IS the leader
+    /// — marks the gang disbanded and silently sweeps every ONLINE
+    /// member (their notices came from the caller's tell_gang; offline
+    /// members drain at login, §0 step 5). Emits the persist events.
+    fn remove_from_gang(&mut self, session: SessionId) -> bool {
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+            return false;
+        };
+        let name = player.name.clone();
+        let gang_display = player.gang.clone();
+        let key = gang_display.to_uppercase();
+        self.gang_invites
+            .remove(&(name.to_uppercase(), key.clone()));
+        if gang_display.is_empty() || !self.gangs.contains_key(&key) {
+            return false;
+        }
+        let snapshot = {
+            let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+                return false;
+            };
+            player.gang.clear();
+            player.gang_flags &= !crate::gang::GF_LIEUTENANT;
+            player.clone()
+        };
+        let gang = self.gangs.get_mut(&key).expect("checked above");
+        gang.member_count = gang.member_count.saturating_sub(1);
+        let is_leader = gang.is_leader(&name);
+        if is_leader {
+            gang.flags |= crate::gang::GANG_DISBANDED;
+        }
+        if let Some(members) = self.gang_members.get_mut(&key) {
+            members.retain(|(n, _)| !n.eq_ignore_ascii_case(&name));
+        }
+        if is_leader {
+            let swept: Vec<SessionId> = self
+                .in_game_sessions()
+                .filter(|(_, p)| p.gang.eq_ignore_ascii_case(&gang_display))
+                .map(|(id, _)| id)
+                .collect();
+            for id in swept {
+                let member_snapshot = {
+                    let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&id)
+                    else {
+                        continue;
+                    };
+                    player.gang.clear();
+                    player.gang_flags &= !crate::gang::GF_LIEUTENANT;
+                    player.clone()
+                };
+                let gang = self.gangs.get_mut(&key).expect("checked above");
+                gang.member_count = gang.member_count.saturating_sub(1);
+                if let Some(members) = self.gang_members.get_mut(&key) {
+                    members.retain(|(n, _)| !n.eq_ignore_ascii_case(&member_snapshot.name));
+                }
+                self.events.push(Event::Persist(member_snapshot));
+            }
+        }
+        let gang_row = self.gangs[&key].clone();
+        self.events.push(Event::PersistGang(Box::new(gang_row)));
+        self.events.push(Event::Persist(snapshot));
+        true
     }
 
-    fn leave_command(&mut self, _session: SessionId, _args: &str) -> Resolution {
-        Resolution::FallThrough // membership task
+    /// `disband` (cmd_disband 0x58725): `DISBAND GANG` (exact word, no
+    /// GUILD alias) runs the leader gates and arms the 0x88 yes/no
+    /// continuation; `DISBAND PARTY` is the unported group system (M8
+    /// PENDING — the DLL stop_following is consumed silently); anything
+    /// else prints the syntax line.
+    fn disband_command(&mut self, session: SessionId, args: &str) -> Resolution {
+        let args = args.trim();
+        if args.eq_ignore_ascii_case("party") {
+            return Resolution::Handled;
+        }
+        if !args.eq_ignore_ascii_case("gang") {
+            self.output_line(session, text::SYNTAX_DISBAND);
+            return Resolution::Handled;
+        }
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+            return Resolution::Handled;
+        };
+        if player.gang.is_empty() {
+            self.output_line(session, text::GANG_NOT_IN_BANG);
+            return Resolution::Handled;
+        }
+        let name = player.name.clone();
+        let key = player.gang.to_uppercase();
+        let Some(gang) = self.gangs.get(&key) else {
+            // The internal_error arm: clear the dangling membership.
+            if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+                player.gang.clear();
+            }
+            return Resolution::Handled;
+        };
+        if !gang.is_leader(&name) {
+            self.output_line(session, text::GANG_NOT_THE_LEADER_DISBAND);
+            return Resolution::Handled;
+        }
+        let line = text::gang_disband_confirm(&gang.display.clone());
+        self.output_line(session, &line);
+        self.pending_disband.insert(session);
+        Resolution::Handled
+    }
+
+    /// The 0x88 continuation (decompile 3741): one word starting with Y
+    /// disbands — two tell_gang lines to the still-intact membership,
+    /// then the remove_from_gang sweep; anything else declines.
+    fn disband_confirm(&mut self, session: SessionId, line: &str) {
+        let mut words = line.split_whitespace();
+        let yes = matches!(
+            (words.next(), words.next()),
+            (Some(w), None) if w.to_ascii_uppercase().starts_with('Y')
+        );
+        let gang_display = self.player(session).gang.clone();
+        let key = gang_display.to_uppercase();
+        if !yes || gang_display.is_empty() || !self.gangs.contains_key(&key) {
+            self.output_line(session, text::GANG_NOT_DISBANDED);
+            return;
+        }
+        let disbanded_line = text::gang_disbanded(&self.gangs[&key].display.clone());
+        let members: Vec<SessionId> = self
+            .in_game_sessions()
+            .filter(|(_, p)| p.gang.eq_ignore_ascii_case(&gang_display))
+            .map(|(id, _)| id)
+            .collect();
+        for id in members {
+            self.output_line(id, &disbanded_line);
+            self.output_line(id, text::GANG_NAME_LOCKED);
+        }
+        self.remove_from_gang(session);
+    }
+
+    /// `leave` (cmd_leave 0x53cba): only the exact `LEAVE GANG` form is
+    /// the gang system; bare LEAVE and group forms are the unported
+    /// party system (M8) and fall through.
+    fn leave_command(&mut self, session: SessionId, args: &str) -> Resolution {
+        if !args.trim().eq_ignore_ascii_case("gang") {
+            return Resolution::FallThrough;
+        }
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+            return Resolution::Handled;
+        };
+        if player.gang.is_empty() {
+            self.output_line(session, text::GANG_NOT_CURRENTLY_IN);
+            return Resolution::Handled;
+        }
+        let name = player.name.clone();
+        let gang_display = player.gang.clone();
+        let room = player.location;
+        let key = gang_display.to_uppercase();
+        let is_leader = self
+            .gangs
+            .get(&key)
+            .is_none_or(|g| g.is_leader(&name));
+        if is_leader {
+            // A dangling gang record takes this arm too (0x53cba: the
+            // null-gang check shares the leader refusal).
+            self.output_line(session, text::GANG_LEADER_MAY_NOT_LEAVE);
+            return Resolution::Handled;
+        }
+        let room_line = text::gang_left_room(&name, &gang_display);
+        self.broadcast_to_room_except(room, &[session], &room_line);
+        let self_line = text::gang_left(&gang_display);
+        self.output_line(session, &self_line);
+        self.remove_from_gang(session);
+        Resolution::Handled
     }
 
     fn stock_command(&mut self, _session: SessionId, _args: &str) -> Resolution {
@@ -14898,6 +15070,7 @@ impl Core {
     /// Removes a session whose connection dropped: same as quitting (persist
     /// + departure broadcast). Sessions still in creation just vanish.
     pub fn detach(&mut self, session: SessionId) {
+        self.pending_disband.remove(&session);
         match self.sessions.get(&session) {
             Some(Session::InGame { .. }) => self.complete_quit(session),
             Some(_) => {

@@ -819,6 +819,33 @@ pub fn gang_all_row(name: &str, online: bool, lieutenant: bool) -> String {
     format!("{name:<29.29}{mark}{rank}")
 }
 
+// cmd_leave (0x53cba) / remove_from_gang (0x4fc2f) — §1.4.
+pub const GANG_NOT_CURRENTLY_IN: &str = "You are not currently in a gang.";
+pub const GANG_LEADER_MAY_NOT_LEAVE: &str =
+    "You are the leader - you may not leave your gang. Use DISBAND GANG";
+pub fn gang_left(gang: &str) -> String {
+    format!("You have left {gang}.")
+}
+pub fn gang_left_room(name: &str, gang: &str) -> String {
+    format!("{name} has left {gang}.")
+}
+
+// cmd_disband (0x58725) + the 0x88 confirmation arm (3741) — §1.4.
+pub const GANG_NOT_IN_BANG: &str = "You are not in a gang!";
+pub const GANG_NOT_THE_LEADER_DISBAND: &str =
+    "You are not the leader of the gang; You may not disband it!";
+pub const SYNTAX_DISBAND: &str = "Syntax: DISBAND {Party/Gang}";
+/// Note the DLL's trailing space before the newline.
+pub fn gang_disband_confirm(gang: &str) -> String {
+    format!("Are you sure you want to disband {gang}? ")
+}
+pub fn gang_disbanded(gang: &str) -> String {
+    format!("The gang {gang} has now been disbanded.")
+}
+pub const GANG_NAME_LOCKED: &str =
+    "The name may not be used again until all members have entered the game!";
+pub const GANG_NOT_DISBANDED: &str = "Your gang has not been disbanded.";
+
 /// The gangpath line (cmd_broadgang, exact literal `"%s gangpaths: %s%s"`
 /// @0x48a9bb). The middle arg is a raw blob @0x48a9cf — a bracket/
 /// backspace compose ending in ESC[0;33m — recorded in gangs.md §5.2;
