@@ -2252,6 +2252,24 @@ impl Core {
         self.perform_special_command(session, crate::content::TextBlockId(block), input)
     }
 
+    /// execute_input's unconsumed-line funnel (49143-49160): action
+    /// exits, then the room's cmdtext special command, then say — for
+    /// EVERY line no command consumed, not just unknown verbs. The DLL
+    /// runs the same funnel after every failed verb dispatch; ours
+    /// previously funneled only Unknown input through action exits.
+    /// (The DLL's bare-spell-name shorthand sits between cmdtext and
+    /// say; unmodeled engine-wide.)
+    fn fall_through(&mut self, session: SessionId, line: &str) {
+        let line = line.trim();
+        if self.try_action_exit(session, line) == Resolution::Handled {
+            return;
+        }
+        if self.try_room_special(session, line) {
+            return;
+        }
+        self.say(session, line);
+    }
+
     /// The room `cmdtext` hook: run the current room's special-command
     /// block against `line`, reporting whether it consumed the input.
     fn try_room_special(&mut self, session: SessionId, line: &str) -> bool {
@@ -5057,28 +5075,28 @@ impl Core {
                 if target.trim().is_empty() {
                     self.output_line(session, text::SYNTAX_GET);
                 } else if self.get_command(session, &target) == Resolution::FallThrough {
-                    self.say(session, line.trim());
+                    self.fall_through(session, line);
                 }
             }
             Command::Drop(target) => {
                 if self.drop_command(session, &target) == Resolution::FallThrough {
-                    self.say(session, line.trim());
+                    self.fall_through(session, line);
                 }
             }
             Command::Inventory => self.show_inventory(session),
             Command::List => {
                 if self.list_command(session) == Resolution::FallThrough {
-                    self.say(session, line.trim());
+                    self.fall_through(session, line);
                 }
             }
             Command::Buy(target) => {
                 if self.buy_command(session, &target) == Resolution::FallThrough {
-                    self.say(session, line.trim());
+                    self.fall_through(session, line);
                 }
             }
             Command::Sell(target) => {
                 if self.sell_command(session, &target) == Resolution::FallThrough {
-                    self.say(session, line.trim());
+                    self.fall_through(session, line);
                 }
             }
             Command::Deposit(amount) => self.deposit_command(session, &amount),
@@ -5086,27 +5104,27 @@ impl Core {
             Command::Balance => self.balance_command(session),
             Command::Arm(target) => {
                 if self.arm_command(session, &target) == Resolution::FallThrough {
-                    self.say(session, line.trim());
+                    self.fall_through(session, line);
                 }
             }
             Command::Wear(target) => {
                 if self.wear_command(session, &target) == Resolution::FallThrough {
-                    self.say(session, line.trim());
+                    self.fall_through(session, line);
                 }
             }
             Command::Remove(target) => {
                 if self.remove_command(session, &target) == Resolution::FallThrough {
-                    self.say(session, line.trim());
+                    self.fall_through(session, line);
                 }
             }
             Command::Use(target) => {
                 if self.use_command(session, &target, false) == Resolution::FallThrough {
-                    self.say(session, line.trim());
+                    self.fall_through(session, line);
                 }
             }
             Command::Read(target) => {
                 if self.use_command(session, &target, true) == Resolution::FallThrough {
-                    self.say(session, line.trim());
+                    self.fall_through(session, line);
                 }
             }
             Command::Status => self.show_sheet(session),
@@ -5120,7 +5138,7 @@ impl Core {
             // universal fallback — applies to every future argument command).
             Command::Attack(target) => {
                 if self.attack_command(session, &target) == Resolution::FallThrough {
-                    self.say(session, line.trim());
+                    self.fall_through(session, line);
                 }
             }
             Command::Ansi => self.ansi_command(session),
@@ -5139,7 +5157,7 @@ impl Core {
             }
             Command::Set(args) => {
                 if self.set_command(session, &args) == Resolution::FallThrough {
-                    self.say(session, line.trim());
+                    self.fall_through(session, line);
                 }
             }
             Command::Punch(target) => {
@@ -5152,24 +5170,24 @@ impl Core {
                     crate::combat::AttackType::MartialArts1
                 };
                 if self.ma_command(session, &target, 0x1d, mode) == Resolution::FallThrough {
-                    self.say(session, line.trim());
+                    self.fall_through(session, line);
                 }
             }
             Command::Backstab(target) => {
                 if self.backstab_command(session, &target) == Resolution::FallThrough {
-                    self.say(session, line.trim());
+                    self.fall_through(session, line);
                 }
             }
             Command::Kick(target) => {
                 let mode = crate::combat::AttackType::MartialArts2;
                 if self.ma_command(session, &target, 0x1e, mode) == Resolution::FallThrough {
-                    self.say(session, line.trim());
+                    self.fall_through(session, line);
                 }
             }
             Command::JumpKick(target) => {
                 let mode = crate::combat::AttackType::MartialArts3;
                 if self.ma_command(session, &target, 0x23, mode) == Resolution::FallThrough {
-                    self.say(session, line.trim());
+                    self.fall_through(session, line);
                 }
             }
             // Cast never falls through to say: an unresolvable spell prints
@@ -5179,7 +5197,7 @@ impl Core {
             Command::Invoke(args) => self.invoke_command(session, &args),
             Command::Aid(target) => {
                 if self.aid_command(session, &target) == Resolution::FallThrough {
-                    self.say(session, line.trim());
+                    self.fall_through(session, line);
                 }
             }
             Command::Move(direction) => {
@@ -5190,13 +5208,10 @@ impl Core {
                     self.move_player(session, direction);
                 }
             }
-            // Type-10 action exits trigger on their phrases; anything else
-            // is said aloud (oracle) - there is no error reply.
-            Command::Unknown(what) => {
-                if self.try_action_exit(session, &what) == Resolution::FallThrough {
-                    self.say(session, &what);
-                }
-            }
+            // Type-10 action exits trigger on their phrases, then the
+            // room's cmdtext special command; anything else is said
+            // aloud (oracle) - there is no error reply.
+            Command::Unknown(what) => self.fall_through(session, &what),
         }
         self.show_prompt(session);
     }
