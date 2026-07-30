@@ -369,6 +369,13 @@ the room from the …*" to both rooms.
 
 ### The `mon+0x106` behaviour-mode taxonomy (completed)
 
+> **COLUMN-NAME TRAP (2026-07-30, caught live):** in the imported sqlite the
+> behaviour mode is the column named **`alignment`** (rectype naming), NOT the
+> column named `type`. A cave bear is `type 3, alignment 1` — and it initiates
+> on sight exactly as alignment-1 predicts, which a `type`-keyed reading calls
+> a doc bug. Key this table on `alignment`. (What `type` itself encodes is
+> unmapped; slime beast/cave bear 3, kobold/rat/slave 2, spider/bat 0.)
+
 `mon+0x106` (a `short`, copied from the template) decides whether and whom a monster will
 *initiate* against. Reading every branch of the aggression driver `FUN_00423863`
 (`0x423863`) and `give_monsters_a_free_attack` (`0x29692`):
