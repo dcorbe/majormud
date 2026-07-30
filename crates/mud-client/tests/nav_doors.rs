@@ -232,3 +232,58 @@ async fn a_plain_exit_is_never_opened() {
     assert_eq!(log.bashes.load(Ordering::SeqCst), 0, "not a door: must not bash");
 }
 
+
+/// The board refuses movement outright while something is fighting you
+/// (DLL 0xbc6a8, "You may not enter that room while in combat."). No
+/// deadline will produce a room block while that is true, so the walk has
+/// to hand back at once and let the caller fight -- waiting it out cost a
+/// full step timeout per attempt, which is how a patrol crossing the
+/// Newhaven Arena died.
+#[tokio::test]
+async fn a_step_refused_for_combat_hands_back_at_once() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        sock.write_all(room_block("Guard Post", "north").as_bytes())
+            .await
+            .unwrap();
+        let mut buf = [0u8; 512];
+        while let Ok(n) = sock.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            sock.write_all(
+                b"\r\nYou may not enter that room while in combat.\r\n[HP=30/MA=0]:",
+            )
+            .await
+            .unwrap();
+        }
+    });
+    let session = session_for(addr).await;
+    let n = nav(graph_with_exit(0));
+
+    let started = std::time::Instant::now();
+    let err = tokio::time::timeout(
+        Duration::from_secs(10),
+        n.goto(&session, HERE, THERE, &mut NoGuard),
+    )
+    .await
+    .expect("goto should not hang")
+    .expect_err("the step cannot land while in combat");
+
+    assert!(
+        matches!(
+            err.kind,
+            mud_client::nav::NavErrorKind::Interrupted(mud_client::nav::Interrupt::Attacked { .. })
+        ),
+        "should report being attacked, not a timeout: {:?}",
+        err.kind
+    );
+    // The point of recognising the wording: no deadline was waited out.
+    assert!(
+        started.elapsed() < Duration::from_millis(1200),
+        "handed back after {:?}; the step timeout is 1500ms",
+        started.elapsed()
+    );
+}

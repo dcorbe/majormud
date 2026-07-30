@@ -106,6 +106,20 @@ pub struct FarmConfig {
     /// captured off the board yet, and inventing one would be a fixture
     /// that is tidier than reality.
     pub heal_refused: Vec<String>,
+    /// Stop and fight when something attacks the character mid-leg,
+    /// rather than walking on while it swings.
+    ///
+    /// On by default. A leg crossing a hostile room otherwise keeps
+    /// trying to move while its steps are eaten — measured live at
+    /// 1/2150 Newhaven Arena, where a patrol died with `timed out waiting
+    /// for "room block after movement"` because three monsters were
+    /// beating on it. The HP gate below is not a substitute: a healthy
+    /// character can be swarmed a long time without falling past it.
+    ///
+    /// Turn it off for legs whose point is to get somewhere. The
+    /// character then still stops for the HP gate and for dying — it
+    /// simply does not turn and swing at everything on the way.
+    pub fight_while_travelling: bool,
     /// Stop walking a leg when hp drops below this percent, defend where
     /// the character stands, and resume once it is fit to travel again.
     /// 0 disables the hp trip; dying still stops the walk.
@@ -149,6 +163,7 @@ impl Default for FarmConfig {
             max_seconds: 0,
             dwell_idle_prompts: 3,
             depart_at_percent: 80,
+            fight_while_travelling: true,
             slowdown_backoff_ms: 5000,
             // 5s x the 3-prompt dwell leaves an empty stop after about
             // fifteen seconds, while keeping idle traffic well clear of
@@ -628,6 +643,9 @@ pub struct FarmGuard {
     max_hp: i32,
     hurt_at_percent: u32,
     username: String,
+    /// Stop and fight when something swings at us, rather than walking on
+    /// while it does. On unless the caller explicitly wants to run.
+    fight_back: bool,
 }
 
 impl FarmGuard {
@@ -636,6 +654,19 @@ impl FarmGuard {
             max_hp,
             hurt_at_percent,
             username: username.to_string(),
+            fight_back: true,
+        }
+    }
+
+    /// As [`FarmGuard::new`], but walk past a fight instead of taking it.
+    ///
+    /// For legs whose point is to get somewhere: the character still
+    /// stops for the HP gate and for dying, it simply does not turn and
+    /// swing at everything on the way.
+    pub fn running(max_hp: i32, hurt_at_percent: u32, username: &str) -> Self {
+        FarmGuard {
+            fight_back: false,
+            ..FarmGuard::new(max_hp, hurt_at_percent, username)
         }
     }
 
@@ -649,7 +680,7 @@ impl FarmGuard {
     /// has already decided to run and the walk back is one hop; the only
     /// thing left worth stopping for is dying.
     pub fn death_only(username: &str) -> Self {
-        FarmGuard::new(0, 0, username)
+        FarmGuard::running(0, 0, username)
     }
 }
 
@@ -670,6 +701,14 @@ impl crate::nav::TravelGuard for FarmGuard {
             {
                 Some(Interrupt::Hurt { hp: *hp })
             }
+            // A blow landing on US. Our own swings are not an attack on
+            // us, or the guard would trip on the defence it just asked
+            // for and the leg would never advance.
+            Event::CombatHit {
+                attacker: crate::events::Actor::Other(name),
+                target: crate::events::Actor::You,
+                ..
+            } if self.fight_back => Some(Interrupt::Attacked { by: name.clone() }),
             _ => None,
         }
     }
@@ -833,7 +872,10 @@ pub async fn go_to_finish(
     let at = nav
         .localize_view(hint, &seen)
         .ok_or(FarmError::Lost { saw: seen.name })?;
-    let mut guard = FarmGuard::death_only(&session.profile().username);
+    // Fights its way home rather than only stopping for death: the board
+    // refuses movement while in combat, so a running guard would simply
+    // be stuck wherever something picked a fight.
+    let mut guard = FarmGuard::new(0, 0, &session.profile().username);
     nav.goto(session, at, finish, &mut guard)
         .await
         .map(|_| ())
@@ -926,11 +968,19 @@ async fn travel(
     use crate::nav::{Interrupt, NavErrorKind};
     set_phase(phase, Phase::WaitingToDepart);
 
-    let mut guard = FarmGuard::new(
-        bot_config.max_hp,
-        cfg.interrupt_at_percent,
-        &session.profile().username,
-    );
+    let mut guard = if cfg.fight_while_travelling {
+        FarmGuard::new(
+            bot_config.max_hp,
+            cfg.interrupt_at_percent,
+            &session.profile().username,
+        )
+    } else {
+        FarmGuard::running(
+            bot_config.max_hp,
+            cfg.interrupt_at_percent,
+            &session.profile().username,
+        )
+    };
     let mut budget = cfg.travel_interrupts;
 
     loop {
@@ -955,7 +1005,11 @@ async fn travel(
 
         match err.kind {
             NavErrorKind::Interrupted(Interrupt::Died) => return Ok(LegEnd::Died),
-            NavErrorKind::Interrupted(Interrupt::Hurt { .. }) => {
+            // Being swung at is handled exactly like being hurt: stop,
+            // clear the room with the pump that already knows how to
+            // fight, then resume the leg from where we stand.
+            NavErrorKind::Interrupted(Interrupt::Attacked { .. })
+            | NavErrorKind::Interrupted(Interrupt::Hurt { .. }) => {
                 stats.interrupts += 1;
                 if budget == 0 {
                     return Ok(LegEnd::TooHurt);

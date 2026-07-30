@@ -6,7 +6,7 @@
 use std::time::{Duration, Instant};
 
 use mud_client::bot::BotConfig;
-use mud_client::events::Event;
+use mud_client::events::{Actor, Event};
 use mud_client::farm::{
     ACK_TIMEOUT, FarmConfig, FarmGuard, FarmPlan, Gate, HealWatch, is_player_death, parse_health,
     parse_room_id,
@@ -689,4 +689,63 @@ fn no_finish_room_configured_means_none_planned() {
     };
     let plan = FarmPlan::build(&cfg, &graph).expect("plan");
     assert_eq!(plan.finish, None);
+}
+
+// --- fighting on the way ----------------------------------------------
+
+/// A leg that crosses a hostile room has to fight through it. The guard
+/// used to watch only HP, so a character being mauled kept trying to walk
+/// while its steps were eaten -- observed live at 1/2150 Newhaven Arena,
+/// where the run died with `timed out waiting for "room block after
+/// movement"` because three mobs were beating on it.
+///
+/// Waiting for HP to fall past `interrupt_at_percent` is too late and
+/// sometimes never: a healthy character can be swarmed for a long time
+/// without dropping below half, and every one of those rounds is a step
+/// that does not land.
+#[test]
+fn being_attacked_interrupts_the_walk() {
+    let mut guard = FarmGuard::new(42, 50, "Salad");
+    let trip = guard.on_event(&Event::CombatHit {
+        attacker: Actor::Other("The fat kobold thief".into()),
+        target: Actor::You,
+        damage: 3,
+    });
+    assert!(
+        matches!(trip, Some(Interrupt::Attacked { .. })),
+        "a blow landing on us must stop the walk: {trip:?}"
+    );
+}
+
+/// Our own swings are not an attack on us. Without this the guard would
+/// trip on the defence it just asked for and never make progress.
+#[test]
+fn our_own_blows_do_not_interrupt_the_walk() {
+    let mut guard = FarmGuard::new(42, 50, "Salad");
+    assert!(
+        guard
+            .on_event(&Event::CombatHit {
+                attacker: Actor::You,
+                target: Actor::Other("The cave bear".into()),
+                damage: 8,
+            })
+            .is_none()
+    );
+}
+
+/// The recovery walk stops only for death. It runs right after AutoFlee
+/// bolted, so something is by definition still swinging -- tripping on
+/// that would make walking back impossible exactly when it is needed.
+#[test]
+fn the_recovery_walk_still_ignores_being_hit() {
+    let mut guard = FarmGuard::death_only("Salad");
+    assert!(
+        guard
+            .on_event(&Event::CombatHit {
+                attacker: Actor::Other("The cave bear".into()),
+                target: Actor::You,
+                damage: 9,
+            })
+            .is_none()
+    );
 }

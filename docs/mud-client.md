@@ -258,6 +258,28 @@ command per step against flood control.
 
 Both direction forms work (`open n` and `open north`, verified live).
 
+## Fighting on the way
+
+`[farm].fight_while_travelling` (default **on**) stops a leg and clears
+the room when something swings at the character, then resumes the walk.
+
+This is not a nicety. The board **refuses movement outright while you are
+in combat** — *"You may not enter that room while in combat."* (DLL
+0xbc6a8) — so a runner that walked on regardless simply sent directions
+that were rejected, then waited out its 15-second step deadline for a room
+block that was never coming. A patrol crossing Newhaven Arena died exactly
+that way.
+
+The HP gate is not a substitute: a healthy character can be swarmed for a
+long time without falling past `interrupt_at_percent`, and every one of
+those rounds is a step that does not land.
+
+Turn it off for legs whose point is to get somewhere. The character then
+still stops for the HP gate and for dying — but note it can still be
+pinned, because the refusal is the board's, not the client's.
+
+The walk home fights too, for the same reason.
+
 ## Working out where the character is
 
 Two answers, because they have different information:

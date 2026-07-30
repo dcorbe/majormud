@@ -55,6 +55,14 @@ pub enum NavErrorKind {
 pub enum Interrupt {
     Died,
     Hurt { hp: i32 },
+    /// Something is hitting us mid-walk.
+    ///
+    /// Distinct from [`Interrupt::Hurt`], which is a threshold: a healthy
+    /// character can be swarmed for a long time without dropping past
+    /// `interrupt_at_percent`, and every one of those rounds is a step
+    /// that does not land. Waiting for the HP gate is too late, and
+    /// sometimes never.
+    Attacked { by: String },
 }
 
 /// Watches the events a walk goes past and says when to stop walking.
@@ -153,6 +161,12 @@ const DOOR_YIELDED: [&str; 4] = [
     "unlocked the door",
 ];
 
+/// The board refuses movement outright while something is fighting you
+/// (DLL 0xbc6a8). Nothing about the step is wrong — the character simply
+/// cannot leave until the fight is dealt with — so a walk that waits out
+/// its deadline here is waiting for an answer that will never come.
+const COMBAT_BLOCKED: &str = "may not enter that room while in combat";
+
 /// The other bash outcome (0xd538e) carries the character through the
 /// doorway itself, so a room block is already on its way and sending the
 /// direction again would overshoot by a room.
@@ -190,6 +204,8 @@ enum StepEvent {
     DoorBlocked,
     /// The door is open now, but we are still on this side of it.
     DoorYielded,
+    /// Movement refused: we are in combat.
+    CombatBlocked,
 }
 
 pub struct Navigator {
@@ -471,6 +487,13 @@ impl Navigator {
         let dir = dir_word(step);
         match self.wait_room(events, guard, armed).await? {
             StepEvent::Arrived(name) => return Ok(name),
+            // Hand straight back so the caller can fight: no deadline is
+            // going to produce a room block while this is true.
+            StepEvent::CombatBlocked => {
+                return Err(NavErrorKind::Interrupted(Interrupt::Attacked {
+                    by: "combat".into(),
+                }));
+            }
             StepEvent::DoorYielded => {
                 // Someone else's door, or one that swung on its own.
                 session.send(dir);
@@ -491,6 +514,11 @@ impl Navigator {
         match self.wait_room(events, guard, armed).await? {
             // Some boards walk you through on the open itself.
             StepEvent::Arrived(name) => return Ok(name),
+            StepEvent::CombatBlocked => {
+                return Err(NavErrorKind::Interrupted(Interrupt::Attacked {
+                    by: "combat".into(),
+                }));
+            }
             StepEvent::DoorYielded => {
                 session.send(dir);
                 return self.arrival(events, guard, armed).await;
@@ -510,6 +538,9 @@ impl Navigator {
             // The bash carried us through the doorway.
             StepEvent::Arrived(name) => Ok(name),
             // It only opened it; the step is still owed.
+            StepEvent::CombatBlocked => Err(NavErrorKind::Interrupted(Interrupt::Attacked {
+                by: "combat".into(),
+            })),
             StepEvent::DoorYielded | StepEvent::DoorBlocked => {
                 session.send(dir);
                 self.arrival(events, guard, armed).await
@@ -527,6 +558,11 @@ impl Navigator {
         loop {
             match self.wait_room(events, guard, armed).await? {
                 StepEvent::Arrived(name) => return Ok(name),
+                StepEvent::CombatBlocked => {
+                    return Err(NavErrorKind::Interrupted(Interrupt::Attacked {
+                        by: "combat".into(),
+                    }));
+                }
                 StepEvent::DoorYielded | StepEvent::DoorBlocked => continue,
             }
         }
@@ -577,6 +613,9 @@ impl Navigator {
                     // the room block is behind it.
                     if line.contains(BASH_CARRIED_THROUGH) {
                         continue;
+                    }
+                    if line.contains(COMBAT_BLOCKED) {
+                        return Ok(StepEvent::CombatBlocked);
                     }
                     if DOOR_BLOCKED.iter().any(|m| line.contains(m)) {
                         return Ok(StepEvent::DoorBlocked);
