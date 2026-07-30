@@ -58,6 +58,10 @@ pub enum Command {
     Disarm(String),
     /// `forgive <player>` — refund a live pair timer (cmd_forgive).
     Forgive(String),
+    /// `ask <monster> [question]` — the keyword dialogue (cmd_ask
+    /// 0x458306; quests.md §3). Bare `ask` and an unresolved monster
+    /// fall through to say.
+    Ask(String),
     /// `sneak` — arm stealth for the next move (cmd_sneak 0x454641).
     Sneak,
     /// `backstab [target]` — cmd_backstab 0x51573: mode 4 when
@@ -139,7 +143,7 @@ enum Verb {
 /// All direction minimums are ORACLE-verified (oracle_directions.raw):
 /// north/south/west = full word, east = 3 (eat blocks 2), down = 3,
 /// up = 2, diagonals = 6. Hand-authored asymmetry is the original's.
-const VERBS: [(&str, usize, Verb); 54] = [
+const VERBS: [(&str, usize, Verb); 55] = [
     ("north", 5, Verb::Plain(|| Command::Move(Direction::North))),
     ("south", 5, Verb::Plain(|| Command::Move(Direction::South))),
     ("east", 3, Verb::Plain(|| Command::Move(Direction::East))),
@@ -189,6 +193,9 @@ const VERBS: [(&str, usize, Verb); 54] = [
     ("withdraw", 4, Verb::WithArgs(Command::Withdraw)),
     ("balance", 3, Verb::Plain(|| Command::Balance)),
     ("look", 2, Verb::Plain(|| Command::Look)),     // ORACLE: lo
+    // ORACLE-VERIFY min abbrev: unmeasured — full word only, keeping
+    // `as` free (the DLL's cmd table is not letter-pinned here).
+    ("ask", 3, Verb::WithArgs(Command::Ask)),
     ("exits", 3, Verb::Plain(|| Command::Exits)),   // ORACLE: exi (ex says)
     ("experience", 3, Verb::Plain(|| Command::Experience)), // ORACLE: exp
     ("status", 2, Verb::Plain(|| Command::Status)), // ORACLE: st/sta/stat

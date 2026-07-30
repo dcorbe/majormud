@@ -2270,6 +2270,90 @@ impl Core {
         self.say(session, line);
     }
 
+    /// `cmd_ask` (0x458306, 53682-53727): the monster is resolved from
+    /// argv[1] — ONE word — and the question is the raw tail after it.
+    /// Bare `ask` (argc < 2) and an unresolved monster return 0, which
+    /// sends the whole line down the funnel. (The DLL's multi-match
+    /// disambiguation flag is unmodeled — `find_monster` takes the
+    /// first match, a documented divergence.)
+    fn ask_command(&mut self, session: SessionId, args: &str) -> Resolution {
+        let args = args.trim();
+        if args.is_empty() {
+            return Resolution::FallThrough;
+        }
+        let (monster_word, question) = match args.split_once(char::is_whitespace) {
+            Some((m, q)) => (m, Some(q.trim())),
+            None => (args, None),
+        };
+        let room = self.player(session).location;
+        let Some(monster) = self.find_monster(room, monster_word) else {
+            return Resolution::FallThrough;
+        };
+        self.ask_monster_a_question(session, monster, question);
+        Resolution::Handled
+    }
+
+    /// `ask_monster_a_question` (0x20834, 18070-18200; quests.md §3):
+    /// the conversation block's lines are `KEYWORD:spoken-block` pairs.
+    /// No question shows the block's `next` long text; a question is
+    /// substring-matched (case-insensitive, first line wins, an empty
+    /// keyword matches everything); the matched SPOKEN block displays
+    /// with the monster as speaker, and ITS `next` runs as a quest
+    /// script (correction: the script is the spoken block's next link,
+    /// 18185-18187 — not the spoken block itself).
+    fn ask_monster_a_question(
+        &mut self,
+        session: SessionId,
+        monster: MonsterInstanceId,
+        question: Option<&str>,
+    ) {
+        let Some(instance) = self.monsters.get(&monster) else {
+            return;
+        };
+        let name = instance.name.clone();
+        let block = self
+            .content
+            .monsters
+            .get(&instance.template)
+            .and_then(|t| t.greet_block);
+        let Some(block) = block.and_then(|b| self.content.textblocks.get(&b)) else {
+            self.output_line(session, &text::nothing_to_tell(&name));
+            return;
+        };
+        let next = block.next;
+        let body = block.body.clone();
+        let Some(question) = question.filter(|q| !q.is_empty()) else {
+            // Bare ask: the default long text, or the shrug (18131-18142).
+            match next {
+                Some(next) => {
+                    self.display_long_text(session, next, Some(&name));
+                }
+                None => self.output_line(session, &text::doesnt_understand(&name)),
+            }
+            return;
+        };
+        let question = question.to_ascii_uppercase();
+        for line in body.lines() {
+            let Some((keyword, spoken)) = line.split_once(':') else {
+                continue;
+            };
+            // strstr, uppercased both sides; an empty keyword matches
+            // everything (decompile-literal, 18144-18160).
+            if !question.contains(&keyword.to_ascii_uppercase()) {
+                continue;
+            }
+            if let Ok(spoken) = u16::try_from(crate::questvm::atol(spoken)) {
+                let follow =
+                    self.display_long_text(session, crate::content::TextBlockId(spoken), Some(&name));
+                if let Some(follow) = follow {
+                    self.perform_text_block_as_special_command(session, follow);
+                }
+            }
+            return;
+        }
+        self.output_line(session, &text::nothing_to_tell(&name));
+    }
+
     /// The room `cmdtext` hook: run the current room's special-command
     /// block against `line`, reporting whether it consumed the input.
     fn try_room_special(&mut self, session: SessionId, line: &str) -> bool {
@@ -5147,6 +5231,11 @@ impl Core {
             Command::Disarm(args) => self.disarm_command(session, &args),
             Command::Rob(target) => self.rob_command(session, &target),
             Command::Forgive(target) => self.forgive_command(session, &target),
+            Command::Ask(target) => {
+                if self.ask_command(session, &target) == Resolution::FallThrough {
+                    self.fall_through(session, line);
+                }
+            }
             Command::Sneak => self.sneak_command(session),
             Command::Hide(args) => {
                 if args.trim().is_empty() {

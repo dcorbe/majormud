@@ -518,6 +518,18 @@ pub fn concealed_passage_opens(direction: &str) -> String {
     format!("A concealed passage opens to the {direction}!")
 }
 
+/// VERIFIED (DLL strings dump 640): the ask shrug — no conversation
+/// block, or no keyword matched. ORACLE-VERIFY the name form (article/
+/// composed spawn name) and any colour prefix.
+pub fn nothing_to_tell(name: &str) -> String {
+    format!("{name} has nothing to tell you!")
+}
+
+/// VERIFIED (DLL strings dump 641): bare ask with no default long text.
+pub fn doesnt_understand(name: &str) -> String {
+    format!("{name} doesn't understand you.")
+}
+
 /// VERIFIED (DLL strings dump 3147): the `learnspell` success line
 /// (68477; `%s` = the spell's long name).
 pub fn learn_spell(name: &str) -> String {
