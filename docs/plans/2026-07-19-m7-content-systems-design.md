@@ -555,6 +555,14 @@ from the shipped columns.
    survivability than the control run had — it died at 21 swings,
    because a 10%-connect grind against a target you cannot kill is a long
    time under return fire.
+4d. **NEW follow-up probe (2026-07-30, from live player lore): the
+   slime beast's `delay 0`.** Its lair (1/2333, type-3 swarm) respawns
+   it near-instantly per field experience, but the port reads room
+   `delay 0` as "use the 5-minute global default" (content.rs:171 /
+   game.rs:878). Either delay-0 means NO delay, or the swarm loop
+   bypasses the kill stamp. Ten minutes with a stopwatch and a
+   character that can actually kill a slime beast settles it — neither
+   oracle character can tonight. Cheap, sharp, post-dig.
 4c. **The `Encumbrance: x/2880` denominator — CLOSED (2026-07-28, charm.md
    §8.3 tail).** The code was already right: `Core::carry_capacity` applies
    Encum(96)'s `(100+encum)/100` over `stats.rs`' `str*48` — 2400 × 1.2 =
