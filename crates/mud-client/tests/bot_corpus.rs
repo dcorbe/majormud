@@ -72,7 +72,7 @@ fn corpus_is_present() {
     // `re/oracle/` is shared with the server track, so this grows whenever an
     // oracle expedition lands transcripts — the assertion is a tripwire to
     // re-check the goldens in parse.rs, not a claim that the corpus is fixed.
-    assert_eq!(corpus_files().len(), 57, "corpus size changed");
+    assert_eq!(corpus_files().len(), 102, "corpus size changed");
 }
 
 #[test]
