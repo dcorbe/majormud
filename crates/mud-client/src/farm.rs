@@ -279,6 +279,13 @@ pub enum Phase {
     },
     WalkingHome,
     Done,
+    /// The run ended badly. Carried in the phase rather than logged and
+    /// dropped, because the operator watching the status bar is exactly
+    /// the person who needs to know WHY it stopped — "done" for a run
+    /// that refused to start is worse than saying nothing.
+    Failed {
+        why: String,
+    },
 }
 
 impl Phase {
@@ -294,6 +301,7 @@ impl Phase {
             Phase::Recovering { to } => format!("recovering to {}/{}", to.map, to.room),
             Phase::WalkingHome => "walking home".into(),
             Phase::Done => "done".into(),
+            Phase::Failed { why } => format!("stopped: {why}"),
         }
     }
 

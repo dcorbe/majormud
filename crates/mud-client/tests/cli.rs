@@ -104,29 +104,30 @@ fn farm_content_defaults_to_the_profile() {
     }
 }
 
-/// The progress feed defaults ON: a farm that printed nothing between
-/// start and finish was indistinguishable from a wedged one.
+/// The feed defaults ON and defaults to the FULL transcript: a farm that
+/// printed nothing between start and finish was indistinguishable from a
+/// wedged one, and a summary hides the line you actually need.
 #[test]
-fn farm_watch_and_quiet_are_optional_and_exclusive() {
+fn farm_brief_and_quiet_are_optional_and_exclusive() {
     use clap::Parser;
     let cli = Cli::parse_from(["mmc", "farm", "--profile", "chars/salad.toml"]);
     match cli.command {
-        mud_client::cli::Command::Farm { watch, quiet, .. } => {
-            assert!(!watch);
+        mud_client::cli::Command::Farm { brief, quiet, .. } => {
+            assert!(!brief, "the full transcript is the default");
             assert!(!quiet, "the feed is on by default");
         }
         _ => panic!("expected farm"),
     }
 
-    let cli = Cli::parse_from(["mmc", "farm", "--profile", "p.toml", "--watch"]);
+    let cli = Cli::parse_from(["mmc", "farm", "--profile", "p.toml", "--brief"]);
     match cli.command {
-        mud_client::cli::Command::Farm { watch, .. } => assert!(watch),
+        mud_client::cli::Command::Farm { brief, .. } => assert!(brief),
         _ => panic!("expected farm"),
     }
 
     // Asking for the firehose and for silence at once is a contradiction
     // the parser should catch rather than resolve arbitrarily.
     assert!(
-        Cli::try_parse_from(["mmc", "farm", "--profile", "p.toml", "--watch", "--quiet"]).is_err()
+        Cli::try_parse_from(["mmc", "farm", "--profile", "p.toml", "--brief", "--quiet"]).is_err()
     );
 }

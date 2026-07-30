@@ -9,11 +9,13 @@ The automated MajorMUD client. One engine, four uses:
 | `mmc path FROM TO` | Print a route between two rooms, e.g. `mmc path 1/2146 1/2156` |
 | `mmc farm --profile P` | Walk a patrol circuit, farming each stop |
 
-`mmc play` is **never paced** — see [`pace_ms`](#pace_ms). `mmc farm`
+`mmc play` is **never paced** — see [`pace_ms`](#pace_ms). It can also
+start a farm run on the session you are already sitting in: type
+**`/farm`**, and **Ctrl-F** takes the keyboard back. `mmc farm`
 prints a live feed by default — where the character is, what
-it is fighting, what it killed, and HP whenever it changes. `--watch`
-turns it into the firehose (every line the board sends); `--quiet`
-restores the old behaviour of printing nothing until the run ends. For a
+it is fighting, what it killed, and HP whenever it changes. The feed is the **full transcript** — everything the board sends;
+`--brief` cuts it to notable lines only (arrivals, combat, kills, flood
+control, HP changes) and `--quiet` prints nothing until the run ends. For a
 permanent record use `--capture BASE`, which writes `BASE.raw` (the raw
 socket bytes) and `BASE_timing.log`. Keep captures OUT of `re/oracle/` —
 two corpus tests count the files in there.
@@ -177,13 +179,40 @@ If you are ever stuck on one of these screens with no way to drive it,
 `player+0x6e2`/`+0x6fa` before the stat screen ever opens, so abandoning
 it loses nothing and `train stats` can be re-entered later.
 
+## Farming from inside `play`
+
+`/farm` starts the patrol on the session you are already connected to,
+and **Ctrl-F** stops it and hands the keyboard back. That is the reason
+to want it: when a run does something you dislike you take over in one
+keystroke, already connected and already where the character is, instead
+of killing the process and logging in again while it stands in a lair.
+
+While the runner drives, the line editor is **locked** except for Ctrl-F
+and Ctrl-Q. This is not politeness — `Gate` is built on being the only
+sender, one command in flight acknowledged by a prompt, and a line typed
+mid-leg consumes the prompt the navigator was waiting for. Two senders
+desync the walk, which is the exact failure verified navigation exists to
+prevent.
+
+Errors are reported and the connection is kept: being told "no `[farm]`
+table" while still logged in beats being thrown out. A run that stops
+badly shows why in the bar (`stopped: ...`) rather than a bare "done".
+
 ## The status bar
 
-`mmc farm` reserves the bottom terminal row and scrolls the feed above it
-(DECSTBM, the same mechanism `mmc play` uses):
+One renderer for both commands, so a session looks the same whichever
+started it. `mmc farm` reserves the bottom terminal row and scrolls the
+feed above it (DECSTBM, the same mechanism `mmc play` uses):
 
 ```
- attacking cave bear  |  HP 23  MA 8  |  Small Cavern [1/2156]
+ attacking cave bear | HP 23 MA 8 | Small Cavern [1/2156] | mbbs
+```
+
+With no runner attached — ordinary interactive play — the activity and
+the room number are simply absent:
+
+```
+ HP 42 MA 10 | Newhaven, Adventurer's Guild | mbbs
 ```
 
 The activity is **published by the runner**, not guessed from board

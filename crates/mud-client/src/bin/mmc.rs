@@ -21,9 +21,9 @@ fn main() -> ExitCode {
             profile,
             capture,
             content,
-            watch,
+            brief,
             quiet,
-        } => farm_command(&profile, capture.as_deref(), content.as_deref(), watch, quiet),
+        } => farm_command(&profile, capture.as_deref(), content.as_deref(), brief, quiet),
     }
 }
 
@@ -183,7 +183,7 @@ fn farm_command(
     profile_path: &std::path::Path,
     capture: Option<&std::path::Path>,
     content: Option<&std::path::Path>,
-    watch: bool,
+    brief: bool,
     quiet: bool,
 ) -> ExitCode {
     use mud_client::farm::{FarmEnd, FarmPlan, Phase as FarmPhase, go_to_finish, run_farm};
@@ -249,14 +249,22 @@ fn farm_command(
         let (phase_tx, phase_rx) = tokio::sync::watch::channel(FarmPhase::default());
         if !quiet {
             let mut events = session.events();
-            let mut view = mud_client::progress::ProgressView::new(watch);
+            // Full transcript by default: a run you are watching should show
+            // what the board actually said, not a summary of it.
+            let mut view = mud_client::progress::ProgressView::new(!brief);
             let mut phase_rx = phase_rx.clone();
             let mut state_rx = session.state();
             let graph = graph.clone();
+            let profile_target = profile.target;
             tokio::spawn(async move {
                 // No bar when stdout is not a terminal: piping the feed to
                 // a file should give lines, not escape sequences.
                 let mut bar = mud_client::tui::StatusBar::enter();
+                let cols = crossterm::terminal::size().map(|(c, _)| c as usize).unwrap_or(80);
+                let target_label = match profile_target {
+                    mud_client::dialect::Target::MbbsEmu => "mbbs",
+                    mud_client::dialect::Target::RustServer => "rust",
+                };
                 let emit = move |line: String, bar: &mut Option<mud_client::tui::StatusBar>| {
                     match bar {
                         Some(b) => b.line(&line),
@@ -267,7 +275,23 @@ fn farm_command(
                     let status = {
                         let phase = phase_rx.borrow().clone();
                         let state = state_rx.borrow().clone();
-                        farm_status(&phase, &state, &graph)
+                        // Same renderer play uses, so a session looks
+                        // the same whichever command started it.
+                        let room_id = phase.room().or_else(|| {
+                            let named = state
+                                .room
+                                .as_ref()
+                                .map(|r| graph.rooms_named(&r.name))
+                                .unwrap_or_default();
+                            (named.len() == 1).then(|| named[0])
+                        });
+                        mud_client::tui::render_status(
+                            &state,
+                            target_label,
+                            Some(&phase),
+                            room_id,
+                            cols,
+                        )
                     };
                     if let Some(b) = bar.as_mut() {
                         b.status(&status);
@@ -400,30 +424,3 @@ fn append_to_stem(base: &std::path::Path, suffix: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(s)
 }
 
-/// The farm's status line: what it is doing, how it is holding up, and
-/// where it is standing — including the room NUMBER, which the board
-/// never prints but the graph knows.
-fn farm_status(
-    phase: &mud_client::farm::Phase,
-    state: &mud_client::session::GameState,
-    graph: &mud_client::graph::RoomGraph,
-) -> String {
-    let mut s = format!(" {}", phase.label());
-    s.push_str(&format!("  |  HP {}", state.hp));
-    if let Some(ma) = state.mana {
-        s.push_str(&format!("  MA {ma}"));
-    }
-    if let Some(room) = &state.room {
-        s.push_str(&format!("  |  {}", room.name));
-        // Prefer the runner's own idea of where it is; fall back to
-        // resolving the name, which is ambiguous for repeated names.
-        let id = phase.room().or_else(|| {
-            let named = graph.rooms_named(&room.name);
-            (named.len() == 1).then(|| named[0])
-        });
-        if let Some(id) = id {
-            s.push_str(&format!(" [{}/{}]", id.map, id.room));
-        }
-    }
-    s
-}

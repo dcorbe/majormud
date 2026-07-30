@@ -141,6 +141,12 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     let (mut cols, mut rows) = crossterm::terminal::size()?;
     let mut editor = InputEditor::new();
     let mut passthrough = false;
+    // Set while the runner drives this session; carries its phase for the
+    // status bar and the handle needed to call it off.
+    let mut farm: Option<FarmSession> = None;
+    // A clone of the runner's phase channel, kept separate so the select
+    // can await it without borrowing `farm` (which the repaint needs).
+    let mut phase_rx: Option<tokio::sync::watch::Receiver<crate::farm::Phase>> = None;
 
     // Key events come from a blocking reader thread.
     let (key_tx, mut key_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -154,7 +160,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
 
     let mut out = std::io::stdout();
     setup_region(&mut out, rows)?;
-    redraw_bottom(&mut out, &state_rx.borrow().clone(), target, &editor, cols, rows)?;
+    repaint(&mut out, &state_rx, target, farm.as_ref(), &editor, cols, rows)?;
 
     let result = loop {
         tokio::select! {
@@ -165,15 +171,26 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                     out.write_all(b"\x1b8")?;
                     out.write_all(&bytes)?;
                     out.write_all(b"\x1b7")?;
-                    redraw_bottom(&mut out, &state_rx.borrow().clone(), target, &editor, cols, rows)?;
+                    repaint(&mut out, &state_rx, target, farm.as_ref(), &editor, cols, rows)?;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(_) => break Ok(()), // disconnected
             },
             changed = state_rx.changed() => {
                 if changed.is_err() { break Ok(()); }
-                let s = state_rx.borrow().clone();
-                redraw_bottom(&mut out, &s, target, &editor, cols, rows)?;
+                repaint(&mut out, &state_rx, target, farm.as_ref(), &editor, cols, rows)?;
+            }
+            // The bar must follow the runner, not just HP: travelling and
+            // fighting can pass without a single point of damage.
+            _ = async {
+                match phase_rx.as_mut() {
+                    Some(rx) => {
+                        let _ = rx.changed().await;
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
+                repaint(&mut out, &state_rx, target, farm.as_ref(), &editor, cols, rows)?;
             }
             ev = key_rx.recv() => {
                 let Some(ev) = ev else { break Ok(()) };
@@ -182,12 +199,32 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                         cols = w;
                         rows = h;
                         setup_region(&mut out, rows)?;
-                        redraw_bottom(&mut out, &state_rx.borrow().clone(), target, &editor, cols, rows)?;
+                        repaint(&mut out, &state_rx, target, farm.as_ref(), &editor, cols, rows)?;
                     }
                     TermEvent::Key(key) if key.kind != KeyEventKind::Release => {
                         let was = passthrough;
-                        if handle_key(&key, &mut editor, &session, &mut passthrough) {
-                            break Ok(());
+                        let outcome =
+                            handle_key(&key, &mut editor, &session, &mut passthrough, farm.is_some());
+                        match outcome {
+                            KeyOutcome::Quit => break Ok(()),
+                            KeyOutcome::StartFarm => {
+                                match start_farm(session.clone()) {
+                                    Ok(started) => {
+                                        note(&mut out, "-- farm running (Ctrl-F to take over) --")?;
+                                        phase_rx = Some(started.phase.clone());
+                                        farm = Some(started);
+                                    }
+                                    Err(e) => note(&mut out, &format!("-- {e} --"))?,
+                                }
+                            }
+                            KeyOutcome::StopFarm => {
+                                if let Some(f) = farm.take() {
+                                    f.handle.abort();
+                                    phase_rx = None;
+                                    note(&mut out, "-- farm stopped; you have the keyboard --")?;
+                                }
+                            }
+                            KeyOutcome::Continue => {}
                         }
                         if passthrough != was {
                             let note = if passthrough {
@@ -199,7 +236,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                             out.write_all(note.as_bytes())?;
                             out.write_all(b"\x1b7")?;
                         }
-                        redraw_bottom(&mut out, &state_rx.borrow().clone(), target, &editor, cols, rows)?;
+                        repaint(&mut out, &state_rx, target, farm.as_ref(), &editor, cols, rows)?;
                     }
                     _ => {}
                 }
@@ -260,31 +297,59 @@ pub fn key_bytes(key: &KeyEvent) -> Option<Vec<u8>> {
     })
 }
 
+/// What a keystroke asked the client to do. Returned rather than acted
+/// on, because starting a farm needs to spawn a task and own its handle —
+/// which is `play`'s business, not the key handler's.
+#[derive(Debug, PartialEq, Eq)]
+pub enum KeyOutcome {
+    Continue,
+    Quit,
+    StartFarm,
+    StopFarm,
+}
+
 fn handle_key(
     key: &KeyEvent,
     editor: &mut InputEditor,
     session: &Session,
     passthrough: &mut bool,
-) -> bool {
+    farming: bool,
+) -> KeyOutcome {
+    // While the runner drives, the keyboard is a passenger: two senders on
+    // one connection would interleave, and the Gate's one-command-in-flight
+    // contract is what verified navigation rests on. Only stopping and
+    // quitting get through.
+    if farming {
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            return match key.code {
+                KeyCode::Char('f') => KeyOutcome::StopFarm,
+                KeyCode::Char('q') => KeyOutcome::Quit,
+                _ => KeyOutcome::Continue,
+            };
+        }
+        return KeyOutcome::Continue;
+    }
     // Ctrl-P swaps between typing commands and driving a full-screen
     // board screen. Both are needed: the line editor wants the arrows for
     // its cursor and history, an FSD room wants them as cursor keys, and
     // nothing can satisfy both at once.
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('p') {
         *passthrough = !*passthrough;
-        return false;
+        return KeyOutcome::Continue;
     }
     if *passthrough {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
-            return true;
+            return KeyOutcome::Quit;
         }
         if let Some(bytes) = key_bytes(key) {
             session.send_raw(&bytes);
         }
-        return false;
+        return KeyOutcome::Continue;
     }
     match key.code {
-        KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
+        KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            return KeyOutcome::Quit;
+        }
         KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => editor.insert(c),
         KeyCode::Backspace => editor.backspace(),
         KeyCode::Left => editor.left(),
@@ -295,14 +360,15 @@ fn handle_key(
         KeyCode::Down => editor.history_next(),
         KeyCode::Enter => {
             let line = editor.take_line();
-            if line == "/quit" {
-                return true;
+            match line.trim() {
+                "/quit" => return KeyOutcome::Quit,
+                "/farm" => return KeyOutcome::StartFarm,
+                _ => session.send(&line),
             }
-            session.send(&line);
         }
         _ => {}
     }
-    false
+    KeyOutcome::Continue
 }
 
 fn setup_region(out: &mut impl std::io::Write, rows: u16) -> std::io::Result<()> {
@@ -312,17 +378,20 @@ fn setup_region(out: &mut impl std::io::Write, rows: u16) -> std::io::Result<()>
     out.flush()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn redraw_bottom(
     out: &mut impl std::io::Write,
     state: &GameState,
     target: &str,
+    phase: Option<&crate::farm::Phase>,
+    room_id: Option<mud_core::content::RoomId>,
     editor: &InputEditor,
     cols: u16,
     rows: u16,
 ) -> std::io::Result<()> {
     let status_row = rows.saturating_sub(1).max(1);
     let input_row = rows.max(1);
-    let status = render_status(state, target, cols as usize);
+    let status = render_status(state, target, phase, room_id, cols as usize);
     let line = editor.line();
     let cursor_col = 3 + editor.cursor() as u16;
     out.write_all(
@@ -336,13 +405,33 @@ fn redraw_bottom(
 }
 
 /// One status line, exactly `width` characters (padded/truncated).
-pub fn render_status(state: &GameState, target: &str, width: usize) -> String {
-    let mut s = format!("HP {}", state.hp);
+/// One status line for both commands, exactly `width` characters.
+///
+/// `play` and `farm` used to build their own, so the same session looked
+/// different depending on which command started it. The farm-only parts
+/// are optional and simply absent when a person is driving: there is no
+/// activity to report, and no room id, because the board only ever prints
+/// a room's NAME — the number comes from the runner or the graph.
+pub fn render_status(
+    state: &GameState,
+    target: &str,
+    phase: Option<&crate::farm::Phase>,
+    room_id: Option<mud_core::content::RoomId>,
+    width: usize,
+) -> String {
+    let mut s = String::new();
+    if let Some(phase) = phase {
+        s.push_str(&format!("{} | ", phase.label()));
+    }
+    s.push_str(&format!("HP {}", state.hp));
     if let Some(ma) = state.mana {
         s.push_str(&format!(" MA {ma}"));
     }
     if let Some(room) = &state.room {
         s.push_str(&format!(" | {}", room.name));
+        if let Some(id) = room_id {
+            s.push_str(&format!(" [{}/{}]", id.map, id.room));
+        }
     }
     s.push_str(&format!(" | {target}"));
     let mut out: Vec<char> = s.chars().collect();
@@ -441,4 +530,70 @@ impl Drop for StatusBar {
         let rows = self.rows.max(1);
         self.write(&format!("\x1b[r\x1b[{rows};1H\r\n"));
     }
+}
+
+/// A farm run driving this session from inside `play`.
+pub struct FarmSession {
+    handle: tokio::task::JoinHandle<()>,
+    phase: tokio::sync::watch::Receiver<crate::farm::Phase>,
+}
+
+/// Print a one-off notice into the scrolling region without disturbing
+/// the board's cursor.
+fn note(out: &mut impl std::io::Write, text: &str) -> std::io::Result<()> {
+    out.write_all(b"\x1b8")?;
+    out.write_all(format!("\r\n{text}\r\n").as_bytes())?;
+    out.write_all(b"\x1b7")?;
+    Ok(())
+}
+
+/// Redraw the bottom rows, reading the farm's phase when one is running.
+fn repaint(
+    out: &mut impl std::io::Write,
+    state_rx: &tokio::sync::watch::Receiver<GameState>,
+    target: &str,
+    farm: Option<&FarmSession>,
+    editor: &InputEditor,
+    cols: u16,
+    rows: u16,
+) -> std::io::Result<()> {
+    let phase = farm.map(|f| f.phase.borrow().clone());
+    let room_id = phase.as_ref().and_then(|p| p.room());
+    let state = state_rx.borrow().clone();
+    redraw_bottom(
+        out,
+        &state,
+        target,
+        phase.as_ref(),
+        room_id,
+        editor,
+        cols,
+        rows,
+    )
+}
+
+/// Start a farm run on an already-connected session.
+///
+/// Everything it needs comes from the profile the session was opened
+/// with, so `/farm` needs no arguments. Errors are the operator's to read,
+/// not a reason to drop the connection — being told "no [farm] table" and
+/// staying logged in is strictly better than being thrown out.
+fn start_farm(session: Arc<Session>) -> Result<FarmSession, String> {
+    let profile = session.profile().clone();
+    let cfg = profile
+        .farm
+        .clone()
+        .ok_or("no [farm] table in the profile: nothing to patrol")?;
+    let graph = Arc::new(crate::graph::RoomGraph::load(&cfg.content)?);
+    let plan = crate::farm::FarmPlan::build(&cfg, &graph)?;
+    let bot = profile.bot.clone().unwrap_or_default();
+    let (tx, rx) = tokio::sync::watch::channel(crate::farm::Phase::default());
+    let handle = tokio::spawn(async move {
+        let end = match crate::farm::run_farm(&session, graph, &plan, &bot, &cfg, Some(&tx)).await {
+            Ok(_) => crate::farm::Phase::Done,
+            Err(e) => crate::farm::Phase::Failed { why: e.to_string() },
+        };
+        let _ = tx.send(end);
+    });
+    Ok(FarmSession { handle, phase: rx })
 }
