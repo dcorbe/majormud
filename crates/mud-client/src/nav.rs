@@ -90,12 +90,21 @@ impl std::error::Error for NavError {}
 pub struct NavConfig {
     /// Per-step arrival deadline.
     pub step_timeout_ms: u64,
+    /// Fall back to bashing a door that `open` would not shift.
+    ///
+    /// On by default, because a locked door is otherwise a hard stop that
+    /// strands the walk. It is a switch rather than unconditional
+    /// behaviour because bashing is not free: the board charges HP for it
+    /// ("You take %d damage for bashing the door!") and refuses outright
+    /// without a weapon.
+    pub bash_doors: bool,
 }
 
 impl Default for NavConfig {
     fn default() -> Self {
         NavConfig {
             step_timeout_ms: 15_000,
+            bash_doors: true,
         }
     }
 }
@@ -103,9 +112,52 @@ impl Default for NavConfig {
 /// Verification failures tolerated before a walk aborts.
 const MAX_FAILURES: u32 = 3;
 
+/// Exit types that are a door or gate you can open (`theft.md` §8.1:
+/// "pickable types are 2, 7, 0xb"). Deliberately not 6 (hidden), 9/0x18
+/// (traps), 0x10 (timed), 0x14 (alignment) or 0x16/0x17 (spell/ability
+/// gates) — none of those yield to `open`.
+fn is_door(exit_type: i64) -> bool {
+    matches!(exit_type, 2 | 7 | 0xb)
+}
+
+/// Lines that mean a shut door turned the step back. Lowercased before
+/// matching, because the DLL ships both "Closed!" and "closed!".
+const DOOR_BLOCKED: [&str; 5] = [
+    "the door is closed",
+    "the gate is closed",
+    "closed door in that direction",
+    "the door is locked",
+    "the gate is locked",
+];
+
+/// Lines that mean the door gave way but we have NOT moved yet, so the
+/// step still has to be walked ("You bashed the door open.", 0xd54b0).
+const DOOR_YIELDED: [&str; 4] = [
+    "is now open",
+    "was already open",
+    "bashed the",
+    "unlocked the door",
+];
+
+/// The other bash outcome (0xd538e) carries the character through the
+/// doorway itself, so a room block is already on its way and sending the
+/// direction again would overshoot by a room.
+const BASH_CARRIED_THROUGH: &str = "walk through";
+
+/// What one command produced while walking a step.
+enum StepEvent {
+    /// A room block: the name we landed on.
+    Arrived(String),
+    /// A shut door turned us back.
+    DoorBlocked,
+    /// The door is open now, but we are still on this side of it.
+    DoorYielded,
+}
+
 pub struct Navigator {
     graph: Arc<RoomGraph>,
     step_timeout: std::time::Duration,
+    bash_doors: bool,
 }
 
 /// The direction word the board understands for each step.
@@ -129,6 +181,7 @@ impl Navigator {
         Navigator {
             graph,
             step_timeout: std::time::Duration::from_millis(cfg.step_timeout_ms),
+            bash_doors: cfg.bash_doors,
         }
     }
 
@@ -208,8 +261,18 @@ impl Navigator {
                     });
                 }
 
+                let exit_type = self
+                    .graph
+                    .room(current)
+                    .and_then(|r| r.exits[step as usize].as_ref())
+                    .map(|e| e.exit_type)
+                    .unwrap_or(0);
+
                 session.send(dir_word(step));
-                let seen = match self.wait_room(&mut events, guard, &mut armed).await {
+                let outcome = self
+                    .walk_step(step, exit_type, session, &mut events, guard, &mut armed)
+                    .await;
+                let seen = match outcome {
                     Ok(seen) => seen,
                     // A step that never lands while the guard is armed
                     // is the interrupt's story, not the deadline's.
@@ -285,6 +348,92 @@ impl Navigator {
             .find(|&id| self.graph.room(id).is_some_and(|r| r.name == seen))
     }
 
+    /// Resolve one step that has already been sent, opening a door in the
+    /// way if there is one.
+    ///
+    /// `open` is tried before `bash` because it is free: the board answers
+    /// "The door was already open." when there was nothing to do, whereas
+    /// a bash charges HP and needs a weapon. Every branch waits on a
+    /// wording rather than a deadline, so a shut door costs a command
+    /// instead of a step timeout.
+    ///
+    /// Only the graph decides whether an exit is a door. Reacting to the
+    /// board's "the door is closed" alone would mean sending `open` at
+    /// exits that have no door — a wasted command against flood control
+    /// on every step of every walk.
+    async fn walk_step(
+        &self,
+        step: Direction,
+        exit_type: i64,
+        session: &Session,
+        events: &mut tokio::sync::broadcast::Receiver<crate::events::Event>,
+        guard: &mut impl TravelGuard,
+        armed: &mut Option<Interrupt>,
+    ) -> Result<String, NavErrorKind> {
+        let dir = dir_word(step);
+        match self.wait_room(events, guard, armed).await? {
+            StepEvent::Arrived(name) => return Ok(name),
+            StepEvent::DoorYielded => {
+                // Someone else's door, or one that swung on its own.
+                session.send(dir);
+                return self.arrival(events, guard, armed).await;
+            }
+            StepEvent::DoorBlocked if !is_door(exit_type) => {
+                // The graph says there is no door here, so we have no
+                // business opening one. Let the deadline path report it.
+                return Err(NavErrorKind::Expect(ExpectError::Timeout {
+                    needle: "room block after movement".into(),
+                    tail: "blocked by a door the graph does not know about".into(),
+                }));
+            }
+            StepEvent::DoorBlocked => {}
+        }
+
+        session.send(&format!("open {dir}"));
+        match self.wait_room(events, guard, armed).await? {
+            // Some boards walk you through on the open itself.
+            StepEvent::Arrived(name) => return Ok(name),
+            StepEvent::DoorYielded => {
+                session.send(dir);
+                return self.arrival(events, guard, armed).await;
+            }
+            StepEvent::DoorBlocked => {}
+        }
+
+        if !self.bash_doors {
+            return Err(NavErrorKind::Expect(ExpectError::Timeout {
+                needle: "room block after movement".into(),
+                tail: "door is locked and bash_doors is off".into(),
+            }));
+        }
+
+        session.send(&format!("bash {dir}"));
+        match self.wait_room(events, guard, armed).await? {
+            // The bash carried us through the doorway.
+            StepEvent::Arrived(name) => Ok(name),
+            // It only opened it; the step is still owed.
+            StepEvent::DoorYielded | StepEvent::DoorBlocked => {
+                session.send(dir);
+                self.arrival(events, guard, armed).await
+            }
+        }
+    }
+
+    /// Wait specifically for a room block, treating door chatter as noise.
+    async fn arrival(
+        &self,
+        events: &mut tokio::sync::broadcast::Receiver<crate::events::Event>,
+        guard: &mut impl TravelGuard,
+        armed: &mut Option<Interrupt>,
+    ) -> Result<String, NavErrorKind> {
+        loop {
+            match self.wait_room(events, guard, armed).await? {
+                StepEvent::Arrived(name) => return Ok(name),
+                StepEvent::DoorYielded | StepEvent::DoorBlocked => continue,
+            }
+        }
+    }
+
     /// Next RoomSeen name within the step timeout, showing everything
     /// that goes past to the guard on the way.
     async fn wait_room(
@@ -292,7 +441,7 @@ impl Navigator {
         events: &mut tokio::sync::broadcast::Receiver<crate::events::Event>,
         guard: &mut impl TravelGuard,
         armed: &mut Option<Interrupt>,
-    ) -> Result<String, NavErrorKind> {
+    ) -> Result<StepEvent, NavErrorKind> {
         let deadline = tokio::time::Instant::now() + self.step_timeout;
         loop {
             let ev = tokio::time::timeout_at(deadline, events.recv()).await;
@@ -320,7 +469,25 @@ impl Navigator {
                         tail: String::new(),
                     }));
                 }
-                Ok(Ok(crate::events::Event::RoomSeen(room))) => return Ok(room.name),
+                Ok(Ok(crate::events::Event::RoomSeen(room))) => {
+                    return Ok(StepEvent::Arrived(room.name));
+                }
+                Ok(Ok(crate::events::Event::Line(line))) => {
+                    let line = line.to_lowercase();
+                    // Checked before DOOR_YIELDED: this wording contains
+                    // "open" too, but it means we are already through and
+                    // the room block is behind it.
+                    if line.contains(BASH_CARRIED_THROUGH) {
+                        continue;
+                    }
+                    if DOOR_BLOCKED.iter().any(|m| line.contains(m)) {
+                        return Ok(StepEvent::DoorBlocked);
+                    }
+                    if DOOR_YIELDED.iter().any(|m| line.contains(m)) {
+                        return Ok(StepEvent::DoorYielded);
+                    }
+                    continue;
+                }
                 Ok(Ok(_)) => continue,
             }
         }

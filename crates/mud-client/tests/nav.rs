@@ -260,6 +260,7 @@ async fn a_step_that_never_lands_times_out_on_the_configured_deadline() {
         Arc::new(graph_with_a_phantom_exit()),
         NavConfig {
             step_timeout_ms: 200,
+            ..NavConfig::default()
         },
     );
 
@@ -388,6 +389,7 @@ async fn a_death_guard_does_not_wait_out_the_step() {
         Arc::new(graph_with_a_phantom_exit()),
         NavConfig {
             step_timeout_ms: 10_000,
+            ..NavConfig::default()
         },
     );
 
