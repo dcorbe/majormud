@@ -240,6 +240,13 @@ pub struct Player {
     /// `+0x6f4` bit 4 — sneak-armed: the next movement runs as
     /// `sneak()` (theft.md §11.1). Runtime only.
     pub sneak_armed: bool,
+    /// The 30-slot innate/quest ability table (quests.md §1.1 — ids at
+    /// `+0x73a[30]`, values at `+0x776[30]`). Quest-flag counters
+    /// (MageBaneQuest 50, the 125-134 path quests) and the completion
+    /// detector's permanent stat grants live here. An array, not a Vec:
+    /// slot exhaustion is observable (`addability` on a full table
+    /// fail-stops, decompile 69628-69634). Reads sum matching slots.
+    pub innate: [(Option<Ability>, i16); 30],
 }
 
 /// One player active-spell slot (`spellcasting.md` §1). `spell` is `None`
@@ -267,6 +274,85 @@ impl Player {
         self.active_spells
             .iter()
             .position(|s| s.spell == Some(spell))
+    }
+
+    /// Sum of every innate slot holding `ability`
+    /// (`get_user_ability_value` 36850-36869).
+    pub fn innate_value(&self, ability: Ability) -> i32 {
+        self.innate
+            .iter()
+            .filter(|(id, _)| *id == Some(ability))
+            .map(|(_, v)| i32::from(*v))
+            .sum()
+    }
+
+    /// `FUN_0046c507` (65893-65928): accumulate `value` into every slot
+    /// already holding `ability`, else claim the first empty slot.
+    /// Refuses GiveTempSpell (0xa0) outright; returns `false` for it and
+    /// for a full table with no matching slot (the `giveability` verb
+    /// fail-stops on `false`).
+    pub fn give_innate_ability(&mut self, ability: Ability, value: i16) -> bool {
+        if ability.id() == 0xa0 {
+            return false;
+        }
+        let mut found = false;
+        for (id, v) in &mut self.innate {
+            if *id == Some(ability) {
+                found = true;
+                *v += value;
+            }
+        }
+        if !found {
+            for (id, v) in &mut self.innate {
+                if id.is_none() {
+                    *id = Some(ability);
+                    *v = value;
+                    return true;
+                }
+            }
+        }
+        found
+    }
+
+    /// The `addability` arm (69590-69637): raise every matching slot
+    /// below `value` to it (at-least semantics — the raise is skipped
+    /// for 0xa0), else claim the first empty slot. Returns `false` when
+    /// the table is full with no matching slot (the verb fail-stops).
+    /// The 0xa0 spellbook grant on slot creation is the verb layer's job.
+    pub fn raise_innate_ability(&mut self, ability: Ability, value: i16) -> bool {
+        let mut found = false;
+        for (id, v) in &mut self.innate {
+            if *id == Some(ability) {
+                found = true;
+                if ability.id() != 0xa0 && *v < value {
+                    *v = value;
+                }
+            }
+        }
+        if !found {
+            for (id, v) in &mut self.innate {
+                if id.is_none() {
+                    *id = Some(ability);
+                    *v = value;
+                    return true;
+                }
+            }
+        }
+        found
+    }
+
+    /// The `removeability` arm (69523-69558): zero every slot holding
+    /// `ability`. Returns `false` when no slot held it (the verb
+    /// fail-stops). The 0xa0 spellbook purge is the verb layer's job.
+    pub fn remove_innate_ability(&mut self, ability: Ability) -> bool {
+        let mut found = false;
+        for slot in &mut self.innate {
+            if slot.0 == Some(ability) {
+                found = true;
+                *slot = (None, 0);
+            }
+        }
+        found
     }
 }
 
@@ -3348,6 +3434,15 @@ impl Core {
         }
         if let Some(class) = self.content.classes.get(&player.class) {
             for (ability, value) in &class.abilities {
+                abilities.add(*ability, i32::from(*value));
+            }
+        }
+        // The 30-slot innate/quest table (`+0x73a`/`+0x776`) is folded by
+        // the same reads (`get_user_ability_value` 36850-36869) — quest
+        // completion grants (AC/Accuracy/Dodge/…) reach combat through
+        // here.
+        for (ability, value) in &player.innate {
+            if let Some(ability) = ability {
                 abilities.add(*ability, i32::from(*value));
             }
         }
@@ -12585,6 +12680,7 @@ impl Core {
             warn_on_evil: true,
             hidden: false,
             sneak_armed: false,
+            innate: [(None, 0); 30],
         };
         let derived = self.derive_for(&player);
         player.current_hp = derived.max_hp;

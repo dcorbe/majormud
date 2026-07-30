@@ -783,6 +783,8 @@ impl StateDb {
                         // Runtime stealth flags — never persisted.
                         hidden: false,
                         sneak_armed: false,
+                        // Filled by the player_ability side table (slice 6).
+                        innate: [(None, 0); 30],
                     })
                 },
             )
