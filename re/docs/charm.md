@@ -922,3 +922,68 @@ expedition design discriminates this from an accuracy offset: the B1/B2
 parry-cliff pair moves with accuracy alone, while the A3/A4 kobold pair
 varies accuracy against a FIXED defense so the ratio cancels any constant
 defense offset. Carry 4b stays open; the expedition is gated IN.
+
+### 8.5 MEASURED (2026-07-29/30 campaign) — the to-hit model and the Dodge parry step function CLOSE
+
+Transcripts: `re/oracle/oracle_dodge_parry_{a1,a12,a2,a22,a3,a4,a42,b1,b12,b2,b3}.raw`
+(+ timing logs), ~1,300 swings across seven design points, two characters'
+worth of tuition, and one board circadian lesson. Analyzer:
+`tools/oracle/oracle_accuracy_fit.py` (joint binomial log-likelihood over
+`delta` = accuracy-derivation error and `w` = untraced defense offset).
+All predictions use the corrected engine model (§8.4 tail: strict roll
+over genrdn's [1,99], clamp over every arm).
+
+**The design.** Phase A (no cursed gear): a1/a2 put the d=5 and d=4 parry
+steps on the giant bat at accuracies 43/33; a3/a4 probed the to-hit curve
+against the kobold's AC 30 at accuracies 39/43 — a no-Dodge target at
+FIXED defense, so the a3/a4 connect RATIO cancels any constant defense
+offset and separates `delta` from `w`. Phase B (heavy band, `skill =
+ratings`): b1/b2 slid the floor(acc/8) parry cliff across 23/21, and b3
+(malachite alone, light band, accuracy 29) filled the d=3 step.
+
+**The verdict: delta = 0, w = 0.** Every clean block sits on the model in
+both channels:
+
+| block | acc | target | connect obs/model | parry obs/model (d) |
+|---|---|---|---|---|
+| a1 (+acc-high) | 43 | bat 10 | .929 / .929 | .429 / .40 (5) |
+| a2 | 33 | bat 10 | .845 / .859 | .542 / .50 (4) |
+| a3 | 39 | kobold 30 | **.087 / .091** | — |
+| a4 | 43 | kobold 30 | .380 / .303 (CI ok) | — |
+| b1 | 23 | bat 10 | .708 / .667 | .927 / .95 (2) |
+| b2 | 21 | bat 10 | .757 / .667 (CI ok) | .960 / .95 (2) |
+| b3 | 29 | bat 10 | **.841 / .838** | **.653 / .66 (3)** |
+
+The a3/a4 ratio observed .248 against the delta=0 model's .300 — any
+accuracy offset of +1 pushes the ratio past .60. The joint fit puts
+(0,0)/(0,-1) statistically tied at the top (the tie is entirely the
+retired block below) with every other cell 13+ nats behind.
+
+**Carry 4b CLOSES.** `move_player_to_fighter`'s accuracy derivation and
+`calculate_attack`'s threshold are right as written. The 2026-07-26
+acc-mid block (0.838 connect at a computed accuracy 23) is RETIRED as
+contaminated: b1 re-measured the same design point with guard-verified
+staging and landed on the model (.708 vs .667), while b3 showed that
+0.838 is the accuracy-29 rate EXACTLY (.8407 measured at 29, .8384
+modeled) — that block was evidently not at accuracy 23, and its
+smoky-black-talisman staging (whose failure modes §8.3's own field notes
+document) is the likely culprit.
+
+**Carry 1 CLOSES.** The parry step function
+`min(95, dodge*10 / floor(accuracy/8))`, recovered from the 16-bit
+disassembly and never before captured, is measured at four denominators:
+the .95 cap (d=2, pooled 176/187 = .941 across b1/b2/acc-mid) and the
+linear steps .66 (d=3: 162/248 = .653), .50 (d=4: .542), .40 (d=5:
+pooled 115/263 = .437). No rival formula shape fits those four points.
+
+**Field notes** (each encoded as a harness guard): staging must happen at
+the healer (map-6 login mauled a character mid-summon); the enc-33 cliff
+and the enc-30 band edge move `skill`, so every config lands an accuracy
+invariant across its nearest edge and EXPECT_ACC aborts on drift; the
+two rings share ONE Finger slot; `/xcash` after each heal keeps the purse
+weight staged AND the heal budget bottomless; bats are nocturnal
+(02:00-08:00), giant rats never spawned in three 152-room laps, and
+populations diffuse out of their spawn rooms with board uptime, so
+spawn-dependent expeditions restart the board first; running out of
+lives DELETES the character, and a creation-screen `look` reads exactly
+like an empty world to a sweeping script.
