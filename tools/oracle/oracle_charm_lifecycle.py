@@ -61,11 +61,18 @@ HEALER = 2190
 # Map-6 rooms 722-751 spawn ONLY the kobold; 752+ adds centipedes,
 # which serve as the assist-round target (attacking 'a kobold' with a
 # kobold pet in the room would hit the pet).
-PET, PET_NOUN, PET_MAP = "kobold", "kobold", 6
-RAT_ROOMS = [722, 723, 724, 725, 726, 727, 728, 729, 730, 731, 732,
-             733, 734, 745, 746, 747, 748, 749, 750, 751]
-ASSIST_ROOMS = [752, 753, 754, 755, 756, 757, 758, 759, 760, 761]
-ASSIST_TARGET, ASSIST_NOUN = "centipede", "centipede"
+# RETARGET #2 (2026-07-30): the plain kobold runs aggression 30 and its
+# instance names grow disambiguator adjectives ("nasty kobold" IS #404),
+# which false-positived the follower check into a junk capture.  The
+# KOBOLD SLAVE (#54) is the true pet: charmlvl 1, aggression 10, and the
+# noun "slave" is adjective-proof.  39 map-1 rooms.
+PET, PET_NOUN, PET_MAP = "kobold slave", "slave", 1
+RAT_ROOMS = [1752, 1753, 1754, 1755, 1756, 1757, 1758, 1759, 1760, 1761,
+             1762, 1763, 1764, 1765, 1766, 1767, 1768, 1769, 1770, 1776,
+             1777, 1778, 1779, 1780, 1781, 1782, 1783, 1784, 1785, 1786,
+             1787, 1788, 1790, 1791, 1792, 1793, 1794]
+ASSIST_ROOMS = [722, 723, 724, 725, 726, 727, 728]   # plain kobolds, map 6
+ASSIST_TARGET, ASSIST_NOUN = "kobold", "kobold"
 DIRS = ["n", "s", "e", "w", "ne", "nw", "se", "sw", "u", "d"]
 DB = "../../re/mmud_wgnt.sqlite"
 
@@ -147,9 +154,28 @@ def wait_mana(need, cap=240):
     return (mana() or 0) >= need
 
 
+def die_and_revive():
+    note("=== mortally wounded; dying deliberately to revive ===")
+    deadline_r = time.time() + 900
+    ix_r = 0
+    while (hp() or 0) < 0 and time.time() < deadline_r:
+        sess.send(f"/xgoto {[1567, 1570, 1572, 1563][ix_r % 4]} 1", pause=1.6)
+        ix_r += 1
+        sess.dump(1.2)
+        for _ in range(40):
+            sess.dump(2.0)
+            if (hp() or 0) > 0:
+                break
+    note(f"=== recovered at HP {hp()} ===")
+
+
 def heal_full():
+    if (hp() or 0) < 0:
+        die_and_revive()
     cmd(f"/xgoto {HEALER} 1", tag="to healer", echo=False)
-    cmd("buy healing", tag="heal", drain=2.5, echo=False)
+    out = cmd("buy healing", tag="heal", drain=2.5, echo=False)
+    if "mortally" in out:
+        die_and_revive()
     note(f"HP {hp()} MA {mana()}")
 
 
@@ -169,14 +195,22 @@ def find_rat(start_ix=0, alone=True):
     return None, None
 
 
+FOLLOW_RE = re.compile(
+    r"(moves into the room|just arrived|walks into the room|follows you)",
+    re.IGNORECASE)
+
+
 def pet_follows(direction):
-    """Walk one room; True if the rat arrives behind us within ~4s."""
+    """Walk one room; True only on an ARRIVAL line naming the pet —
+    attack lines are aggression, not devotion (the kobold junk capture
+    counted stabs as follows)."""
     mk = sess.mark()
     sess.send(direction, pause=1.6)
     sess.dump(4.0)
     out = sess.since(mk)
     arrived = [ln.strip() for ln in out.splitlines()
-               if PET in ln and not ln.strip().startswith("You")]
+               if PET_NOUN in ln and FOLLOW_RE.search(ln)
+               and not ln.strip().startswith("You")]
     for ln in arrived:
         note(f"  FOLLOW| {ln[:150]}")
     return bool(arrived), out
@@ -241,7 +275,7 @@ for i, d in enumerate(walk_circuit(room, 10)):
 
 note("=== E4: assist round vs a grey spider ===")
 for sp in ASSIST_ROOMS:
-    sess.send(f"/xgoto {sp} {PET_MAP}", pause=1.6)
+    sess.send(f"/xgoto {sp} 6", pause=1.6)
     sess.dump(1.0)
     out = cmd("look", tag=f"spider room {sp}", drain=1.8, echo=False)
     if ASSIST_TARGET in out:
