@@ -9,6 +9,7 @@ pub mod combat;
 pub mod command;
 pub mod content;
 pub mod crime;
+pub mod gang;
 pub mod game;
 pub mod questvm;
 pub mod stats;

@@ -4,7 +4,7 @@
 //! in, and consume `Event`s out. No I/O happens here — the caller owns
 //! networking and persistence.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ability::Ability;
 use crate::command::{parse, Command, Resolution};
@@ -252,6 +252,13 @@ pub struct Player {
     /// shipped uses). Bits 1-32 live at `+0x71c`, 33-64 at `+0x460`;
     /// modeled as one u64 with flag `n` at bit `n-1`.
     pub quest_flags: u64,
+    /// `+0x6c8` — the gang DISPLAY name (gangs.md §0); empty = not in a
+    /// gang. Membership is defined entirely by this string.
+    pub gang: String,
+    /// `+0x7d4` — the gang rank/notice word (`gang::GF_*` bits). Only the
+    /// gang bits are modeled; the DLL's unrelated low-byte settings bits
+    /// keep their distance in other fields.
+    pub gang_flags: u16,
 }
 
 /// One player active-spell slot (`spellcasting.md` §1). `spell` is `None`
@@ -522,6 +529,19 @@ pub struct CoreConfig {
     /// boot). Kills the restart-to-respawn exploit — the original
     /// persists both through the record dirty flags.
     pub restored_room_stamps: Vec<(RoomId, i64)>,
+    /// Restored gang records from the state.sqlite `gang` table
+    /// (gangs.md §0; disbanded rows ride along — their flags matter to
+    /// the login sweep).
+    pub restored_gangs: Vec<crate::gang::Gang>,
+    /// Restored offline-roster mirror rows: (player name, gang display
+    /// name, gang_flags word), scanned from the player table at boot.
+    /// The player row stays the durable truth; Core needs the mirror
+    /// because roster/rank checks must see offline members (gangs.md
+    /// §1.4-§1.6) and the core is I/O-free.
+    pub restored_gang_members: Vec<(String, String, u16)>,
+    /// Wall-clock seconds at boot (server-stamped; tests default 0).
+    /// `wall_base + scheduler.now()` dates gang creation (`+0x4a`).
+    pub wall_base: i64,
     /// ANSI graphics (the MBBS per-user setting; the stock palette is
     /// hardcoded in the DLL strings — there is no palette config). The
     /// core always BUILDS colored text; false strips every escape at the
@@ -545,6 +565,9 @@ impl Default for CoreConfig {
             pvp_level_range: 100,
             restored_population: Vec::new(),
             restored_room_stamps: Vec::new(),
+            restored_gangs: Vec::new(),
+            restored_gang_members: Vec::new(),
+            wall_base: 0,
             ansi: false,
         }
     }
@@ -1280,6 +1303,20 @@ pub struct Core {
     spawn_user_cursor: usize,
     /// Spawner phase-A cache cursor (`DAT_0047fba8`).
     spawn_cache_cursor: usize,
+    /// Live gangs keyed by the uppercase name key (gangs.md §0; the
+    /// WCCGANG2 buffer cache). Disbanded rows stay until every member has
+    /// drained through the login sweep — matching the DLL, which keeps
+    /// the record and lets cleanup delete it out-of-band.
+    gangs: BTreeMap<String, crate::gang::Gang>,
+    /// Pending invitations (§1.2): (invitee name UPPER, gang name key).
+    /// Ephemeral by design — the DLL keeps these in an in-memory linked
+    /// list that a board restart empties.
+    gang_invites: BTreeSet<(String, String)>,
+    /// The offline-roster mirror: gang name key → (member name,
+    /// gang_flags word). Kept in lockstep by every membership mutation;
+    /// loaded from the player table at boot. Player rows remain the
+    /// durable truth (see CoreConfig.restored_gang_members).
+    gang_members: BTreeMap<String, Vec<(String, u16)>>,
 }
 
 /// Per-template population state (monsters.md §2 step 3).
@@ -1347,6 +1384,9 @@ impl Core {
             mongen: Vec::new(),
             spawn_user_cursor: 0,
             spawn_cache_cursor: 0,
+            gangs: BTreeMap::new(),
+            gang_invites: BTreeSet::new(),
+            gang_members: BTreeMap::new(),
         };
         // First run of the world: every shelf full, and each timed slot's
         // first event lands at genrdn(1, max(2, interval)) minutes so the
@@ -1408,6 +1448,19 @@ impl Core {
         let restored_stamps = core.config.restored_room_stamps.clone();
         for (room, elapsed) in restored_stamps {
             core.spawn_state(room).stamp = Some(-elapsed);
+        }
+        // Restored gangs + the offline-roster mirror (gangs.md §0; the
+        // player table is the durable membership truth, re-scanned by the
+        // server at boot).
+        for gang in core.config.restored_gangs.clone() {
+            core.gangs.insert(gang.name_key.clone(), gang);
+        }
+        for (name, gang_display, flags) in core.config.restored_gang_members.clone() {
+            let key = gang_display.to_uppercase();
+            core.gang_members
+                .entry(key)
+                .or_default()
+                .push((name, flags));
         }
         // Boot population (preload_and_generate_buffers 27594-27767):
         // every boss/permnpc room spawns its boss (forced, levels
@@ -14352,6 +14405,8 @@ impl Core {
             sneak_armed: false,
             innate: [(None, 0); 30],
             quest_flags: 0,
+            gang: String::new(),
+            gang_flags: 0,
         };
         let derived = self.derive_for(&player);
         player.current_hp = derived.max_hp;
