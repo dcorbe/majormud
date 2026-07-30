@@ -308,6 +308,16 @@ impl Session {
         let _ = self.cmd_tx.send(Cmd::Line(line.to_string()));
     }
 
+    /// Send bytes verbatim: no CRLF, no pacing, no timing-log line.
+    ///
+    /// For driving the board's full-screen data-entry screens, which are
+    /// keystroke-oriented rather than line-oriented — an FSD room reads
+    /// `\x1b[A` to move a field, and a line send would append CRLF and be
+    /// read as an extra key.
+    pub fn send_raw(&self, bytes: &[u8]) {
+        let _ = self.cmd_tx.send(Cmd::Raw(bytes.to_vec()));
+    }
+
     /// Wait until `needle` appears in the cleaned transcript past the
     /// expect cursor; consumes through the end of the match.
     pub async fn expect(&self, needle: &str, timeout: Duration) -> Result<(), ExpectError> {

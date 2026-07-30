@@ -140,6 +140,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     crossterm::terminal::enable_raw_mode()?;
     let (mut cols, mut rows) = crossterm::terminal::size()?;
     let mut editor = InputEditor::new();
+    let mut passthrough = false;
 
     // Key events come from a blocking reader thread.
     let (key_tx, mut key_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -184,8 +185,19 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                         redraw_bottom(&mut out, &state_rx.borrow().clone(), target, &editor, cols, rows)?;
                     }
                     TermEvent::Key(key) if key.kind != KeyEventKind::Release => {
-                        if handle_key(&key, &mut editor, &session) {
+                        let was = passthrough;
+                        if handle_key(&key, &mut editor, &session, &mut passthrough) {
                             break Ok(());
+                        }
+                        if passthrough != was {
+                            let note = if passthrough {
+                                "\r\n-- keys passed through to the board (Ctrl-P to return) --\r\n"
+                            } else {
+                                "\r\n-- back to the line editor --\r\n"
+                            };
+                            out.write_all(b"\x1b8")?;
+                            out.write_all(note.as_bytes())?;
+                            out.write_all(b"\x1b7")?;
                         }
                         redraw_bottom(&mut out, &state_rx.borrow().clone(), target, &editor, cols, rows)?;
                     }
@@ -204,7 +216,73 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
 }
 
 /// Returns true when the user asked to quit.
-fn handle_key(key: &KeyEvent, editor: &mut InputEditor, session: &Session) -> bool {
+/// The bytes a key sends to the board in passthrough mode, or `None`
+/// when the key is ours rather than the board's.
+///
+/// The board's full-screen screens (`train stats` opens one) are driven
+/// by ANSI cursor sequences, which the line editor otherwise swallows for
+/// its own cursor and history.
+pub fn key_bytes(key: &KeyEvent) -> Option<Vec<u8>> {
+    // The mode toggle is never forwarded, or leaving passthrough would
+    // put a stray byte in whatever field is selected.
+    if key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key.code, KeyCode::Char('p') | KeyCode::Char('q'))
+    {
+        return None;
+    }
+    Some(match key.code {
+        KeyCode::Up => b"\x1b[A".to_vec(),
+        KeyCode::Down => b"\x1b[B".to_vec(),
+        KeyCode::Right => b"\x1b[C".to_vec(),
+        KeyCode::Left => b"\x1b[D".to_vec(),
+        KeyCode::Home => b"\x1b[H".to_vec(),
+        KeyCode::End => b"\x1b[F".to_vec(),
+        // A bare CR: an FSD screen is not line-oriented, and the LF of a
+        // CRLF would be read as a second keystroke.
+        KeyCode::Enter => b"\r".to_vec(),
+        KeyCode::Backspace => b"\x08".to_vec(),
+        KeyCode::Tab => b"\t".to_vec(),
+        KeyCode::Esc => b"\x1b".to_vec(),
+        KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            // Ctrl-A..Ctrl-Z fold to 1..26.
+            let up = c.to_ascii_uppercase();
+            if up.is_ascii_uppercase() {
+                vec![up as u8 - b'A' + 1]
+            } else {
+                return None;
+            }
+        }
+        KeyCode::Char(c) => {
+            let mut buf = [0u8; 4];
+            c.encode_utf8(&mut buf).as_bytes().to_vec()
+        }
+        _ => return None,
+    })
+}
+
+fn handle_key(
+    key: &KeyEvent,
+    editor: &mut InputEditor,
+    session: &Session,
+    passthrough: &mut bool,
+) -> bool {
+    // Ctrl-P swaps between typing commands and driving a full-screen
+    // board screen. Both are needed: the line editor wants the arrows for
+    // its cursor and history, an FSD room wants them as cursor keys, and
+    // nothing can satisfy both at once.
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('p') {
+        *passthrough = !*passthrough;
+        return false;
+    }
+    if *passthrough {
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
+            return true;
+        }
+        if let Some(bytes) = key_bytes(key) {
+            session.send_raw(&bytes);
+        }
+        return false;
+    }
     match key.code {
         KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
         KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => editor.insert(c),

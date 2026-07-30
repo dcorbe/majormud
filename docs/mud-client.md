@@ -150,6 +150,33 @@ whole run.
   door!"*) and needs a weapon, so it is a switch; turning it off makes a
   locked door a hard stop.
 
+## Full-screen board screens (`train stats`)
+
+Some board screens are **keystroke**-driven rather than line-driven —
+`train stats` opens one, via `edit_character_stats` and an FSD room — and
+they are navigated with ANSI cursor keys. MBBSEmu's FSD reads `\x1b[A`
+and friends directly, so nothing else will move between fields.
+
+`mmc play`'s line editor claims the arrow keys for its own cursor and
+history, which is right for typing commands and useless here. **Ctrl-P**
+swaps between the two:
+
+- **line mode** (default) — type commands, arrows move the cursor and walk
+  history, Enter sends a line with CRLF.
+- **passthrough** — every key goes straight to the board as raw bytes:
+  arrows as `\x1b[A`/`[B`/`[C`/`[D`, Enter as a *bare CR* (an FSD screen
+  is not line-oriented, and the LF of a CRLF reads as a second key),
+  Backspace, Tab, Esc, Home/End and Ctrl-letters as their control codes.
+
+Ctrl-Q still quits from either mode, and the toggle itself is never
+forwarded — otherwise leaving passthrough would drop a stray byte into
+whichever field was selected.
+
+If you are ever stuck on one of these screens with no way to drive it,
+**disconnecting is safe**: `train_level` banks the character points into
+`player+0x6e2`/`+0x6fa` before the stat screen ever opens, so abandoning
+it loses nothing and `train stats` can be re-entered later.
+
 ## The status bar
 
 `mmc farm` reserves the bottom terminal row and scrolls the feed above it
