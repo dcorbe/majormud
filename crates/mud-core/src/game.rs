@@ -2205,6 +2205,67 @@ impl Core {
         last
     }
 
+    /// `perform_special_command` (0x71a30, 69691-69789): the
+    /// input-matched interpreter. Each line is `wildcard:action-tail`;
+    /// the head is wildcard-matched against the player's RAW typed
+    /// input, and a matching line's whole tail runs as a chain. A tail
+    /// returning Continue(1) consumes the input and stops; any other
+    /// code keeps scanning later lines. Returns the last executed
+    /// tail's code — the execute_input funnel treats ANY nonzero
+    /// return as consumed (49143-49145), so even a fail-stopped match
+    /// swallows the input.
+    pub(crate) fn perform_special_command(
+        &mut self,
+        session: SessionId,
+        block: crate::content::TextBlockId,
+        raw_input: &str,
+    ) -> u8 {
+        let Some(block) = self.content.textblocks.get(&block) else {
+            return 0;
+        };
+        let body = block.body.clone();
+        let mut last = 0u8;
+        for line in body.lines() {
+            // The DLL's colon-stream scan stops when no ':' remains
+            // (69747-69751); every shipped line carries one.
+            let Some((pattern, tail)) = line.split_once(':') else {
+                break;
+            };
+            if !crate::questvm::wildcard_match(pattern, raw_input) {
+                continue;
+            }
+            let code = self.perform_matched_action(session, tail) as u8;
+            last = code;
+            if code == 1 {
+                break;
+            }
+        }
+        last
+    }
+
+    /// Test hooks for the two interpreters.
+    pub fn debug_run_text_block(&mut self, session: SessionId, block: u16) -> u8 {
+        self.perform_text_block_as_special_command(session, crate::content::TextBlockId(block))
+    }
+
+    pub fn debug_special_command(&mut self, session: SessionId, block: u16, input: &str) -> u8 {
+        self.perform_special_command(session, crate::content::TextBlockId(block), input)
+    }
+
+    /// The room `cmdtext` hook: run the current room's special-command
+    /// block against `line`, reporting whether it consumed the input.
+    fn try_room_special(&mut self, session: SessionId, line: &str) -> bool {
+        let Some(block) = self
+            .content
+            .rooms
+            .get(&self.player(session).location)
+            .and_then(|r| r.command_block)
+        else {
+            return false;
+        };
+        self.perform_special_command(session, block, line) != 0
+    }
+
     /// One dispatched verb (the arm bodies of 68600-69689). Recognized
     /// verbs return Continue/FailStop; verbs whose arms land later in
     /// the slice return NoOp so the chain code is untouched.

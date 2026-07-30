@@ -140,6 +140,63 @@ pub fn parse_action_token(token: &str) -> Option<(QuestVerb, &str)> {
     Some((verb, rest))
 }
 
+/// `wildcard_match` (0x6e861, 67338-67376): split the pattern on `|`
+/// into up to 20 alternates; any alternate matching the raw input wins.
+pub fn wildcard_match(pattern: &str, input: &str) -> bool {
+    pattern
+        .split('|')
+        .take(20)
+        .any(|alt| glob_match(alt.as_bytes(), input.as_bytes()))
+}
+
+/// One alternate (`FUN_0046e7cc`, 67280-67331), transliterated: a
+/// case-insensitive character walk. `*` arms star-mode, which lets an
+/// input SPACE resync the pattern at its own next word; at input end a
+/// star (armed or pending) forgives remaining pattern. NOTE the shipped
+/// data never exercises the star or `|` — all 1,426 cmdtext wildcard
+/// lines are plain text (measured 2026-07-30) — so this port is
+/// control-flow-literal rather than "classic glob": star-mode does NOT
+/// skip arbitrary input characters mid-word.
+fn glob_match(mut pattern: &[u8], mut input: &[u8]) -> bool {
+    let mut star = false;
+    loop {
+        let p = pattern.first().copied().unwrap_or(0);
+        if p == 0 || p == b'|' || input.is_empty() {
+            return if input.is_empty() {
+                star || p == 0 || p == b'|' || p == b'*'
+            } else {
+                false
+            };
+        }
+        if p == b'*' {
+            star = true;
+            pattern = &pattern[1..];
+            continue;
+        }
+        let i = input[0];
+        if !star || i != b' ' {
+            if !p.eq_ignore_ascii_case(&i) {
+                return false;
+            }
+            pattern = &pattern[1..];
+            input = &input[1..];
+        } else {
+            // Star-mode resync (67323-67329): jump the pattern to its
+            // next word, consume the input space.
+            while let Some(&c) = pattern.first() {
+                if c == 0 || c == b'|' || c == b' ' {
+                    break;
+                }
+                pattern = &pattern[1..];
+            }
+            if pattern.first() == Some(&b' ') {
+                pattern = &pattern[1..];
+            }
+            input = &input[1..];
+        }
+    }
+}
+
 /// The C `atol` the arms parse every argument with: optional sign, then
 /// leading digits; anything else (including a missing word) reads 0.
 pub fn atol(word: &str) -> i64 {

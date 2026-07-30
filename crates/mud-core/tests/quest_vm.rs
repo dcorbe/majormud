@@ -166,6 +166,29 @@ fn world() -> Content {
         next: None,
         body: "101:minlevel 99".into(),
     });
+    // Unconditional-runner fixtures.
+    content.add_text_block(TextBlock {
+        id: TextBlockId(970),
+        next: None,
+        body: "minlevel 99:flag 5 set\nflag 3 set:flag 4 set\nflag 6 set:flag 6 set".into(),
+    });
+    content.add_text_block(TextBlock {
+        id: TextBlockId(971),
+        next: None,
+        body: "minlevel 99:flag 5 set\nflag 3 set".into(),
+    });
+    // Input-matched fixtures.
+    content.add_text_block(TextBlock {
+        id: TextBlockId(972),
+        next: None,
+        body: "pull lever:flag 3 set\nrub lamp:minlevel 99:flag 4 set\npush button:flag 5 set"
+            .into(),
+    });
+    content.add_text_block(TextBlock {
+        id: TextBlockId(973),
+        next: None,
+        body: "wave:minlevel 99:flag 6 set\nwave:flag 7 set".into(),
+    });
     content
 }
 
@@ -1083,6 +1106,70 @@ fn remoteaction_shows_its_message_pair() {
     let events = core.drain_events();
     assert!(text_to(&events, s).contains("You are judged unworthy."));
     assert!(text_to(&events, witness).contains("Puller is judged unworthy."));
+}
+
+// --- the interpreters (Task 9; quests.md §1.2) ---
+
+#[test]
+fn unconditional_runner_stops_on_the_first_continue_line() {
+    // 69913-69955: lines run in order; the first line whose chain
+    // returns 1 ends the block — "unconditional" means no wildcard
+    // gate, not "every line runs".
+    let (mut core, s) = boot();
+    assert_eq!(core.debug_run_text_block(s, 970), 1);
+    let flags = core.player_snapshot(s).quest_flags;
+    assert_eq!(flags, (1 << 2) | (1 << 3), "line 2 ran fully, line 3 never");
+}
+
+#[test]
+fn unconditional_runner_needs_a_colon_ahead_to_continue() {
+    // 69944-69948: after a non-1 line the walk continues only while a
+    // ':' remains in the text ahead.
+    let (mut core, s) = boot();
+    assert_eq!(core.debug_run_text_block(s, 971), 2);
+    assert_eq!(core.player_snapshot(s).quest_flags, 0, "colon rule stopped it");
+}
+
+#[test]
+fn special_command_matches_the_raw_input() {
+    // 69691-69789: wildcard head vs the raw input; a matched tail
+    // returning 1 consumes; case-insensitive.
+    let (mut core, s) = boot();
+    assert_eq!(core.debug_special_command(s, 972, "pull lever"), 1);
+    assert_eq!(core.player_snapshot(s).quest_flags, 1 << 2);
+    assert_eq!(core.debug_special_command(s, 972, "PULL LEVER"), 1);
+    assert_eq!(core.debug_special_command(s, 972, "wave hand"), 0, "no match");
+    // A matched-but-failing tail returns its 2 — the funnel still
+    // treats that as consumed (execute_input 49143-49145).
+    assert_eq!(core.debug_special_command(s, 972, "rub lamp"), 2);
+}
+
+#[test]
+fn special_command_keeps_scanning_after_a_failed_match() {
+    // 69771-69773: a tail returning != 1 resumes the line scan; a later
+    // matching line can still consume.
+    let (mut core, s) = boot();
+    assert_eq!(core.debug_special_command(s, 973, "wave"), 1);
+    let flags = core.player_snapshot(s).quest_flags;
+    assert_eq!(flags, 1 << 6, "second wave line ran, first failed");
+}
+
+#[test]
+fn wildcard_match_units() {
+    // wildcard_match (67338-67376) + FUN_0046e7cc (67280-67331):
+    // case-insensitive full-word walk, `|` alternates, and the literal
+    // star behavior — a trailing `*` forgives pattern end at input end
+    // but does NOT skip extra input characters (no shipped pattern uses
+    // either metacharacter; measured 2026-07-30).
+    use mud_core::questvm::wildcard_match;
+    assert!(wildcard_match("pull lever", "pull lever"));
+    assert!(wildcard_match("pull lever", "PULL LEVER"));
+    assert!(!wildcard_match("pull lever", "pull leve"));
+    assert!(!wildcard_match("pull lever", "pull levers"));
+    assert!(wildcard_match("north|south", "south"));
+    assert!(!wildcard_match("north|south", "east"));
+    assert!(wildcard_match("pull*", "pull"));
+    assert!(!wildcard_match("pull*", "pulls"), "literal star: no mid-word skip");
 }
 
 // --- failure-message plumbing (FUN_0046f360, 67820-67844) ---
