@@ -117,6 +117,24 @@ impl RoomGraph {
         self.rooms.get(&id)
     }
 
+    /// Every room carrying this exact name.
+    ///
+    /// Usually one, but not always — "Newhaven, Narrow Road" is two rooms
+    /// (1/2146 and 1/2151), and "Dungeon, Old Mineshaft" is fourteen. A
+    /// caller must therefore treat the result as candidates to narrow,
+    /// never as an answer; see [`crate::nav::Navigator::localize_view`],
+    /// which separates them by their exits.
+    ///
+    /// Linear over ~26k rooms, which is why it sits behind the cheap
+    /// neighbour check rather than in front of it.
+    pub fn rooms_named(&self, name: &str) -> Vec<RoomId> {
+        self.rooms
+            .iter()
+            .filter(|(_, r)| r.name == name)
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
     /// Shortest route as direction steps (BFS over exits into known
     /// rooms). `None` when unreachable; empty when `from == to`.
     pub fn route(&self, from: RoomId, to: RoomId) -> Option<Vec<Direction>> {

@@ -144,6 +144,30 @@ const DOOR_YIELDED: [&str; 4] = [
 /// direction again would overshoot by a room.
 const BASH_CARRIED_THROUGH: &str = "walk through";
 
+/// The direction an "Obvious exits" token points.
+///
+/// Exits render as display strings, not commands — "closed door north",
+/// "open gate west" — so the direction is the trailing word. Trapdoors
+/// are the exception worth knowing about: they render as "closed trap
+/// door above" / "open trap door below" (DLL 0xccd5d, 0xccda4), so the
+/// vertical pair has to accept those words as well as up/down.
+fn direction_of(token: &str) -> Option<Direction> {
+    let word = token.split_whitespace().next_back()?.to_lowercase();
+    Some(match word.as_str() {
+        "north" | "n" => Direction::North,
+        "south" | "s" => Direction::South,
+        "east" | "e" => Direction::East,
+        "west" | "w" => Direction::West,
+        "northeast" | "ne" => Direction::NorthEast,
+        "northwest" | "nw" => Direction::NorthWest,
+        "southeast" | "se" => Direction::SouthEast,
+        "southwest" | "sw" => Direction::SouthWest,
+        "up" | "u" | "above" => Direction::Up,
+        "down" | "d" | "below" => Direction::Down,
+        _ => return None,
+    })
+}
+
 /// What one command produced while walking a step.
 enum StepEvent {
     /// A room block: the name we landed on.
@@ -339,6 +363,66 @@ impl Navigator {
     /// [`Navigator::goto`] uses this to recover a mis-stepped route; the
     /// farm runner uses it to find out where an AutoFlee left the
     /// character, since fleeing moves it with no navigator involved.
+    /// Which room this block describes, given that we were last at `at`.
+    ///
+    /// The whole graph is in scope here, unlike [`Navigator::localize`],
+    /// because a room block carries more than a name. Names repeat —
+    /// Newhaven alone has two "Newhaven, Narrow Road" rooms (1/2146 and
+    /// 1/2151) — but their exits do not: 1/2146 shows north/east/west/down
+    /// where 1/2151 shows only north. So a name match is narrowed by the
+    /// exits before it is believed, and an answer is only returned when
+    /// exactly one room survives.
+    ///
+    /// The observed exits are treated as a SUBSET of the graph's, never an
+    /// equal set: hidden exits (type 6) and text-triggered action exits
+    /// (type 10) are in the graph but deliberately absent from the board's
+    /// "Obvious exits" line, so demanding equality would reject the right
+    /// room. Where several rooms still qualify, an exact match is
+    /// preferred before giving up.
+    ///
+    /// This is what lets a character that was moved further than one step
+    /// — a flee chain, a recall — work out where it is and be walked back,
+    /// which [`Navigator::localize`] cannot do from a name alone.
+    pub fn localize_view(&self, at: RoomId, seen: &crate::events::RoomView) -> Option<RoomId> {
+        // A one-hop answer is still the best answer when it exists: it
+        // needs no disambiguation and cannot be fooled by a twin.
+        if let Some(near) = self.localize(at, &seen.name) {
+            return Some(near);
+        }
+        let observed: Vec<Direction> = seen.exits.iter().filter_map(|e| direction_of(e)).collect();
+        let named: Vec<RoomId> = self
+            .graph
+            .rooms_named(&seen.name)
+            .into_iter()
+            .filter(|id| {
+                self.graph.room(*id).is_some_and(|r| {
+                    observed
+                        .iter()
+                        .all(|d| r.exits[*d as usize].is_some())
+                })
+            })
+            .collect();
+        match named.as_slice() {
+            [only] => return Some(*only),
+            [] => return None,
+            _ => {}
+        }
+        // Several rooms admit the observed exits. Insist on an exact set
+        // before answering, and if that is still not unique, say nothing.
+        let exact: Vec<RoomId> = named
+            .into_iter()
+            .filter(|id| {
+                self.graph.room(*id).is_some_and(|r| {
+                    r.exits.iter().filter(|e| e.is_some()).count() == observed.len()
+                })
+            })
+            .collect();
+        match exact.as_slice() {
+            [only] => Some(*only),
+            _ => None,
+        }
+    }
+
     pub fn localize(&self, at: RoomId, seen: &str) -> Option<RoomId> {
         self.graph
             .room(at)

@@ -925,7 +925,7 @@ async fn farm_stop(
             if recoveries_left == 0 {
                 // Give up on this stop, but walk back to it so the next
                 // leg starts from where the plan believes we are.
-                return recover(session, nav, graph, stop, &room.name)
+                return recover(session, nav, graph, stop, room)
                     .await
                     .map(|end| match end {
                         RecoverEnd::Back => StopEnd::Dwelt,
@@ -933,7 +933,7 @@ async fn farm_stop(
                     });
             }
             recoveries_left -= 1;
-            if let RecoverEnd::Died = recover(session, nav, graph, stop, &room.name).await? {
+            if let RecoverEnd::Died = recover(session, nav, graph, stop, room).await? {
                 return Ok(StopEnd::Died);
             }
             // Back at the stop with a clean slate.
@@ -1004,12 +1004,14 @@ async fn recover(
     nav: &crate::nav::Navigator,
     graph: &RoomGraph,
     stop: RoomId,
-    saw: &str,
+    saw: &crate::events::RoomView,
 ) -> Result<RecoverEnd, FarmError> {
     let _ = graph;
-    let at = nav
-        .localize(stop, saw)
-        .ok_or_else(|| FarmError::Lost { saw: saw.into() })?;
+    // The whole room block, not just its name: a flee can chain further
+    // than one hop, and the exits are what make a wider search safe.
+    let at = nav.localize_view(stop, saw).ok_or_else(|| FarmError::Lost {
+        saw: saw.name.clone(),
+    })?;
     let mut guard = FarmGuard::death_only(&session.profile().username);
     match nav.goto(session, at, stop, &mut guard).await {
         Ok(_) => Ok(RecoverEnd::Back),

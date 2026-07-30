@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use mud_client::dialect::{self, Target};
 use mud_client::graph::{ExitEdge, GraphRoom, RoomGraph};
-use mud_client::events::Event;
+use mud_client::events::{Event, RoomView};
 use mud_client::nav::{Interrupt, NavConfig, NavErrorKind, Navigator, NoGuard, TravelGuard};
 use mud_client::profile::Profile;
 use mud_client::session::Session;
@@ -479,4 +479,125 @@ fn localize_gives_up_on_a_room_that_is_not_adjacent() {
 fn localize_gives_up_when_the_starting_room_is_unknown() {
     let nav = Navigator::new(Arc::new(client_graph("Market Street")), NavConfig::default());
     assert_eq!(nav.localize(RoomId { map: 9, room: 9 }, "Town Square"), None);
+}
+
+// ---------------------------------------------------------------------
+// localize_view: the same question, answered from a whole room block.
+//
+// The one-hop rule above is right when all you have is a name, because
+// names genuinely repeat: Newhaven alone has two rooms called "Newhaven,
+// Narrow Road" (1/2146 and 1/2151). But a room block carries its exits
+// too, and those separate the twins -- 1/2146 shows north/east/west/down
+// where 1/2151 shows only north. With that in hand a global search is
+// safe, which is what lets a character work out where it is after being
+// moved further than one step.
+// ---------------------------------------------------------------------
+
+fn twin_graph() -> RoomGraph {
+    // Two rooms sharing a name, told apart only by their exits, plus a
+    // third far from both so "far away" is a real distance.
+    let mk = |name: &str, exits: &[(Direction, RoomId)]| {
+        let mut r = GraphRoom {
+            name: name.into(),
+            exits: Default::default(),
+        };
+        for (d, dest) in exits {
+            r.exits[*d as usize] = Some(ExitEdge {
+                dest: *dest,
+                exit_type: 0,
+            });
+        }
+        r
+    };
+    let a = RoomId { map: 1, room: 1 };
+    let b = RoomId { map: 1, room: 2 };
+    let twin_wide = RoomId { map: 1, room: 10 };
+    let twin_narrow = RoomId { map: 1, room: 11 };
+    RoomGraph::from_rooms(vec![
+        (a, mk("Town Gates", &[(Direction::North, b)])),
+        (b, mk("Town Square", &[(Direction::South, a)])),
+        (
+            twin_wide,
+            mk(
+                "Narrow Road",
+                &[(Direction::North, b), (Direction::East, a), (Direction::Down, a)],
+            ),
+        ),
+        (twin_narrow, mk("Narrow Road", &[(Direction::North, b)])),
+    ])
+}
+
+fn view(name: &str, exits: &[&str]) -> RoomView {
+    RoomView {
+        name: name.into(),
+        exits: exits.iter().map(|s| (*s).to_string()).collect(),
+        also_here: vec![],
+        items: vec![],
+    }
+}
+
+/// Displaced further than one hop: the name alone is not enough, but the
+/// exits pin it down.
+#[test]
+fn localize_view_finds_a_room_that_is_far_away() {
+    let nav = Navigator::new(Arc::new(twin_graph()), NavConfig::default());
+    assert_eq!(
+        nav.localize_view(
+            RoomId { map: 1, room: 1 },
+            &view("Narrow Road", &["north", "east", "down"])
+        ),
+        Some(RoomId { map: 1, room: 10 })
+    );
+}
+
+/// The twin with the same name and a different exit set is not confused
+/// for it. This is the case the one-hop rule was protecting against.
+#[test]
+fn localize_view_tells_same_named_rooms_apart_by_their_exits() {
+    let nav = Navigator::new(Arc::new(twin_graph()), NavConfig::default());
+    assert_eq!(
+        nav.localize_view(RoomId { map: 1, room: 1 }, &view("Narrow Road", &["north"])),
+        Some(RoomId { map: 1, room: 11 })
+    );
+}
+
+/// Exits render as display tokens, not commands -- "closed door north",
+/// and for trapdoors "above"/"below" rather than up/down. Localization
+/// has to read them the way the board writes them.
+#[test]
+fn localize_view_reads_display_tokens_not_commands() {
+    let nav = Navigator::new(Arc::new(twin_graph()), NavConfig::default());
+    assert_eq!(
+        nav.localize_view(
+            RoomId { map: 1, room: 1 },
+            &view(
+                "Narrow Road",
+                &["closed door north", "open gate east", "trap door below"]
+            )
+        ),
+        Some(RoomId { map: 1, room: 10 })
+    );
+}
+
+/// When the exits cannot separate the candidates, refuse. Guessing is
+/// exactly what verified navigation exists to prevent.
+#[test]
+fn localize_view_refuses_when_still_ambiguous() {
+    let mk = |name: &str| GraphRoom {
+        name: name.into(),
+        exits: Default::default(),
+    };
+    // Start somewhere that is neither twin and adjacent to neither, so
+    // the cheap one-hop answer cannot apply and the exits are genuinely
+    // all there is to go on.
+    let graph = RoomGraph::from_rooms(vec![
+        (RoomId { map: 1, room: 1 }, mk("Somewhere Else")),
+        (RoomId { map: 1, room: 2 }, mk("Twin")),
+        (RoomId { map: 1, room: 3 }, mk("Twin")),
+    ]);
+    let nav = Navigator::new(Arc::new(graph), NavConfig::default());
+    assert_eq!(
+        nav.localize_view(RoomId { map: 1, room: 1 }, &view("Twin", &[])),
+        None
+    );
 }
