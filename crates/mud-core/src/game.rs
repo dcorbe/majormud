@@ -8522,11 +8522,70 @@ impl Core {
 
     // --- gang commands (gangs.md §1, §5; M7 slice 7) ---
 
-    /// `top [n] [gangs]` (gangs.md §5.1). The player-ranking arm is the
-    /// pre-slice-7 stub. M7 PENDING: the gangs arm lands with the
-    /// economy task; the player arm needs board-wide account data (M8).
-    fn top_command(&mut self, session: SessionId, _args: &str) {
-        self.output_line(session, text::TOP_HEADER);
+    /// `top [n] [gangs]` (cmd_topten 0x58891, gangs.md §5.1). The gangs
+    /// arm ships; every player-ranking form stays the pre-slice-7 stub
+    /// (M7 PENDING: needs board-wide account data — M8). Forms: bare
+    /// GANGS = 10; `<n> GANGS` / `GANGS <n>` capped at MAXTOP (30,
+    /// MSG-option default) for unprivileged viewers.
+    fn top_command(&mut self, session: SessionId, args: &str) {
+        const MAXTOP: i64 = 30;
+        let words: Vec<&str> = args.split_whitespace().collect();
+        let gangs_at = |i: usize| {
+            words
+                .get(i)
+                .is_some_and(|w| w.eq_ignore_ascii_case("gangs"))
+        };
+        let n = match words.len() {
+            1 if gangs_at(0) => Some(10),
+            2 if gangs_at(0) => Some(words[1].parse::<i64>().unwrap_or(0)),
+            2 if gangs_at(1) => Some(words[0].parse::<i64>().unwrap_or(0)),
+            _ => None,
+        };
+        let Some(n) = n else {
+            self.output_line(session, text::TOP_HEADER);
+            return;
+        };
+        self.display_top_gangs(session, n.clamp(0, MAXTOP) as usize);
+    }
+
+    /// display_top_gangs (0x339dc): key-1 walk skipping disbanded and
+    /// hidden rows. Order = exp-descending (secondary pool then name as
+    /// tiebreaks) — documented divergence, the Btrieve index direction
+    /// was unreadable (gangs.md §5.1 note).
+    fn display_top_gangs(&mut self, session: SessionId, n: usize) {
+        let mut rows: Vec<(String, String, u16, i64, u32, u32)> = self
+            .gangs
+            .values()
+            .filter(|g| !g.is_disbanded() && !g.is_hidden())
+            .map(|g| {
+                (
+                    g.display.clone(),
+                    g.leader.clone(),
+                    g.member_count,
+                    g.created,
+                    g.exp_pool,
+                    g.secondary_pool,
+                )
+            })
+            .collect();
+        rows.sort_by(|a, b| {
+            b.4.cmp(&a.4)
+                .then(b.5.cmp(&a.5))
+                .then(a.0.cmp(&b.0))
+        });
+        rows.truncate(n);
+        if rows.is_empty() {
+            self.output_line(session, text::NO_GANGS_ESTABLISHED);
+            return;
+        }
+        for line in text::top_gangs_header() {
+            self.output_line(session, &line);
+        }
+        for (rank, (display, leader, members, created, _, _)) in rows.into_iter().enumerate() {
+            let date = text::ncedat(created);
+            let line = text::top_gang_row(rank + 1, &display, &leader, members, &date);
+            self.output_line(session, &line);
+        }
     }
 
     /// `gang`/`guild` (cmd_broadgang 0x585cc): bare = roster, args =
@@ -14643,8 +14702,21 @@ impl Core {
         }
         let share = (exp / recipients.len() as u64).max(1);
         for sid in recipients {
+            let mut gang_key = None;
             if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&sid) {
                 player.experience += share;
+                if !player.gang.is_empty() {
+                    gang_key = Some(player.gang.to_uppercase());
+                }
+            }
+            // The gang pool feed (gangs.md §2.1, award block 11154): the
+            // member's share is ALSO added to their gang's pool.
+            if let Some(key) = gang_key
+                && let Some(gang) = self.gangs.get_mut(&key)
+            {
+                gang.add_exp(u32::try_from(share).unwrap_or(u32::MAX));
+                let row = gang.clone();
+                self.events.push(Event::PersistGang(Box::new(row)));
             }
             self.output_line(sid, &text::gain_experience(share));
             self.break_combat(sid);
