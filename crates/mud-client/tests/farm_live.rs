@@ -35,6 +35,7 @@ const ALLEY: RoomId = RoomId { map: 1, room: 4 };
 
 const RAT: MonsterId = MonsterId(50);
 const BEETLE: MonsterId = MonsterId(51);
+const BUG: MonsterId = MonsterId(52);
 
 /// The rat's death line. Index 2 is the line the server prints
 /// (`game.rs` reads `lines.get(2)`), and "falls to the ground" is the
@@ -194,6 +195,45 @@ fn world_with_refused_monster() -> Content {
         roam_class: 8,
         level: 1,
         behaviour: 0,
+        herd_mode: 0,
+        ..Default::default()
+    });
+    content
+}
+
+/// The fixture world with a monster whose death line does NOT contain
+/// "falls to the ground" — which is the normal case, not the exception:
+/// of the 1085 shipped monsters carrying a death record, 1018 word it
+/// some other way. The wording here is the filthbug's, verbatim from
+/// message 31.
+fn world_with_prose_death() -> Content {
+    let mut content = world();
+    let mut cellar = room(CELLAR, "Rat Cellar", &[(Direction::West, YARD)]);
+    cellar.room_type = 3;
+    cellar.spawn_zone = 9;
+    cellar.spawn_cap = 1;
+    cellar.min_level = 1;
+    cellar.max_level = 5;
+    cellar.forced_monster = Some(BUG);
+    cellar.respawn_delay = 9999;
+    content.add_room(cellar);
+    content.add_message(Message {
+        id: MessageId(3),
+        lines: vec![
+            String::new(),
+            String::new(),
+            "The filthbug collapses, its legs curling tightly around it.".into(),
+        ],
+    });
+    content.add_monster(Monster {
+        id: BUG,
+        name: "filthbug".into(),
+        death_msg: Some(MessageId(3)),
+        hitpoints: 1,
+        energy: 1000,
+        roam_class: 9,
+        level: 1,
+        behaviour: 3,
         herd_mode: 0,
         ..Default::default()
     });
@@ -633,4 +673,35 @@ async fn the_run_walks_home_when_it_finishes() {
         Some("Town Gates".to_string()),
         "the character should be standing in the finish room"
     );
+}
+
+/// The regression for the death-detection hang. Killing a monster whose
+/// death line is ordinary prose used to leave the bot latched on the
+/// corpse, and `farm_stop` reads a latched bot as a fight in progress —
+/// so it stopped poking the room and stopped counting the stop as idle,
+/// and the run never ended. The timeout is what turns that back into a
+/// failure instead of a wedged suite.
+#[tokio::test]
+async fn a_prose_death_line_does_not_wedge_the_stop() {
+    let server = start_with(world_with_prose_death()).await;
+    let session = logged_in(server.local_addr(), "Bugger").await;
+
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 0,
+        ..BotConfig::default()
+    };
+    let cfg = farm_config(&["1/3"], 1);
+    let graph = Arc::new(client_graph());
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+
+    let (end, _stats) = tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, &bot, &cfg),
+    )
+    .await
+    .expect("the stop wedged on a kill it did not recognise")
+    .expect("farm run");
+
+    assert_eq!(end, FarmEnd::LoopsDone);
 }

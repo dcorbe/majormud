@@ -22,6 +22,18 @@ static COIN_DROP_RE: LazyLock<Regex> =
 /// matched — it does not end our fight.
 const DEATH_MARK: &str = "falls to the ground";
 
+/// The line that follows one of our kills ("You gain %s experience.",
+/// DLL 0xbc65f).
+///
+/// This carries the weight [`DEATH_MARK`] cannot. Death lines are
+/// per-template PROSE — of the 1085 monsters shipping a death record,
+/// 67 say "falls to the ground" and 1018 say something else entirely
+/// ("The filthbug collapses, its legs curling tightly around it.", "The
+/// skeleton crumbles into a pile of dust."). Matching them all would mean
+/// carrying a thousand strings; the experience line is one, and the board
+/// prints it every time a kill of ours pays out.
+const EXP_MARK: (&str, &str) = ("you gain ", " experience");
+
 /// The board's three ways of refusing an attack outright (crime.md §3,
 /// all present verbatim in the shipped DLL). A refusal aborts the swing,
 /// so unlike a real fight it is never followed by a death line, an
@@ -53,6 +65,19 @@ pub struct BotConfig {
     pub ignore: Vec<String>,
     /// Character max HP; 0 = unknown, disables percent policies.
     pub max_hp: i32,
+    /// Prompts with no blow struck either way before the fight is
+    /// presumed over and the target released.
+    ///
+    /// The backstop for an ending nothing else recognises: an exp-less
+    /// kill, a monster somebody else finished, or one of the 14 templates
+    /// that ship with no death record at all. Without it the bot can sit
+    /// latched on a corpse forever, and the farm runner reads a latched
+    /// bot as a fight in progress — it stops poking the room and stops
+    /// counting the stop as idle, so the stop never ends.
+    ///
+    /// Too low abandons a slow fight; a real fight refreshes this on
+    /// every swing, hit or miss, so it only counts genuine silence.
+    pub combat_idle_prompts: u32,
 }
 
 impl Default for BotConfig {
@@ -67,6 +92,7 @@ impl Default for BotConfig {
             heal_command: "rest".into(),
             ignore: Vec::new(),
             max_hp: 0,
+            combat_idle_prompts: 3,
         }
     }
 }
@@ -109,6 +135,8 @@ pub struct Bot {
     healing: bool,
     /// Already fled this room; suppresses one per prompt.
     fled: bool,
+    /// Prompts seen since the last blow involving the engaged target.
+    quiet_prompts: u32,
     /// Targets the board refused to let us attack, keyed by the same
     /// trailing noun the attack command uses — the refusal applies to the
     /// template, so every rolled variant ("fat kobold thief") is covered
@@ -125,6 +153,7 @@ impl Bot {
             exits: Vec::new(),
             healing: false,
             fled: false,
+            quiet_prompts: 0,
             refused: HashSet::new(),
         }
     }
@@ -172,7 +201,36 @@ impl Bot {
                 }
                 Vec::new()
             }
-            Event::Prompt { hp, .. } => self.on_hp(*hp),
+            Event::Prompt { hp, .. } => {
+                // A fight that has gone silent is over, whatever the
+                // board called the ending. Counted here rather than on
+                // the death line because the death line is exactly what
+                // cannot be relied on.
+                if self.engaged.is_some() {
+                    self.quiet_prompts += 1;
+                    if self.quiet_prompts >= self.config.combat_idle_prompts {
+                        self.engaged = None;
+                        self.quiet_prompts = 0;
+                    }
+                }
+                self.on_hp(*hp)
+            }
+            Event::CombatHit {
+                attacker, target, ..
+            } => {
+                if self.involves_target(&actor_name(attacker))
+                    || self.involves_target(&actor_name(target))
+                {
+                    self.quiet_prompts = 0;
+                }
+                Vec::new()
+            }
+            Event::CombatMiss { line } => {
+                if self.involves_target(line) {
+                    self.quiet_prompts = 0;
+                }
+                Vec::new()
+            }
             Event::Line(line) => self.on_line(line),
             _ => Vec::new(),
         }
@@ -190,6 +248,7 @@ impl Bot {
             return None;
         }
         self.engaged = Some(name.to_string());
+        self.quiet_prompts = 0;
         Some(BotAction::Send(format!("a {}", target_word(name))))
     }
 
@@ -228,13 +287,27 @@ impl Bot {
         Vec::new()
     }
 
+    /// Does this text name the monster we are fighting? Matched on the
+    /// trailing noun, the same word the attack command uses, so a rolled
+    /// adjective ("fat kobold thief") still counts as our fight.
+    fn involves_target(&self, text: &str) -> bool {
+        self.engaged
+            .as_deref()
+            .map(target_word)
+            .is_some_and(|noun| text.to_lowercase().contains(&noun.to_lowercase()))
+    }
+
     fn on_line(&mut self, line: &str) -> Vec<BotAction> {
         // The fight ended: re-arm so the next arrival is engaged. Death
         // lines name the template, not the rolled instance, so any death
         // clears — a redundant re-attack is harmless, a permanent latch
         // on a corpse is not.
-        if line.contains(DEATH_MARK) {
+        let lower = line.to_lowercase();
+        if line.contains(DEATH_MARK)
+            || (lower.contains(EXP_MARK.0) && lower.contains(EXP_MARK.1))
+        {
             self.engaged = None;
+            self.quiet_prompts = 0;
         }
         // The refusal names no monster, so the target is whichever one we
         // just swung at.
@@ -250,5 +323,14 @@ impl Bot {
             .captures(line)
             .map(|c| vec![BotAction::Send(format!("get {}", &c[1]))])
             .unwrap_or_default()
+    }
+}
+
+/// The name an [`Actor`] prints as; "you" for the player, so it never
+/// matches a monster's trailing noun by accident.
+fn actor_name(a: &crate::events::Actor) -> String {
+    match a {
+        crate::events::Actor::You => "you".to_string(),
+        crate::events::Actor::Other(name) => name.clone(),
     }
 }

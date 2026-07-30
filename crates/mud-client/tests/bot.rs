@@ -3,7 +3,7 @@
 //! sockets, no timing.
 
 use mud_client::bot::{Bot, BotAction, BotConfig};
-use mud_client::events::{Event, RoomView};
+use mud_client::events::{Actor, Event, RoomView};
 
 // The Blood Pit's exits are "closed door north, up" verbatim — see the
 // same room asserted in tests/parse.rs. Do not sanitise them here: the
@@ -439,28 +439,80 @@ fn a_refused_target_is_not_attacked_again() {
     assert!(actions.is_empty(), "re-attacked a target the board already refused: {actions:?}");
 }
 
-/// PROOF of the death-detection gap, not a fix for it.
-///
-/// `DEATH_MARK` is the single phrase "falls to the ground", but death
-/// lines are per-template prose: only 67 of the 1085 monsters carrying a
-/// death record use that wording. The other 1018 -- "The filthbug
-/// collapses, its legs curling tightly around it." and friends -- leave
-/// the bot latched on a corpse forever, which is the same hang the
-/// refusal handling fixed for a different cause.
+/// Death lines are per-template prose and only 67 of the 1085 monsters
+/// carrying a death record use the "falls to the ground" wording. The
+/// other 1018 -- "The filthbug collapses, its legs curling tightly around
+/// it." and friends -- must still end the fight, or the bot sits latched
+/// on a corpse and the stop never ends.
 #[test]
-fn an_unrecognised_death_line_leaves_the_bot_latched() {
+fn an_unrecognised_death_still_ends_the_fight() {
     let mut bot = combat_bot();
     bot.on_event(&room(&["filthbug"]));
     assert_eq!(bot.engaged(), Some("filthbug"));
 
-    // Verbatim from the shipped data: message 31, messageline3.
+    // Verbatim from the shipped data: message 31, messageline3 -- and
+    // then the line that always follows one of our kills.
     bot.on_event(&Event::Line(
         "The filthbug collapses, its legs curling tightly around it.".into(),
     ));
+    bot.on_event(&Event::Line("You gain 12 experience.".into()));
+
+    assert_eq!(bot.engaged(), None, "the kill went unnoticed");
+}
+
+/// The backstop, for a fight that ends with no wording we know at all:
+/// an exp-less kill, a monster somebody else finished, a template whose
+/// death record is missing entirely (14 of them ship that way). Quiet
+/// prompts with no combat in them mean the fight is over.
+#[test]
+fn a_fight_that_goes_quiet_releases_the_latch() {
+    let mut bot = combat_bot();
+    bot.on_event(&room(&["kobold thief"]));
+    assert_eq!(bot.engaged(), Some("kobold thief"));
+
+    for _ in 0..BotConfig::default().combat_idle_prompts {
+        bot.on_event(&Event::Prompt { hp: 30, mana: None });
+    }
+
+    assert_eq!(bot.engaged(), None, "nothing has happened for several prompts");
+}
+
+/// The counterpart, and the one that matters for not breaking real
+/// fights: while blows are still landing the latch must hold, however
+/// many prompts go by. A fight can easily outlast the idle threshold.
+#[test]
+fn an_ongoing_fight_keeps_the_latch() {
+    let mut bot = combat_bot();
+    bot.on_event(&room(&["kobold thief"]));
+
+    for _ in 0..(BotConfig::default().combat_idle_prompts * 3) {
+        bot.on_event(&Event::CombatHit {
+            attacker: Actor::You,
+            target: Actor::Other("The kobold thief".into()),
+            damage: 4,
+        });
+        bot.on_event(&Event::Prompt { hp: 30, mana: None });
+    }
 
     assert_eq!(
         bot.engaged(),
-        Some("filthbug"),
-        "documents the bug: the kill went unnoticed and the latch is stuck"
+        Some("kobold thief"),
+        "a fight in progress was abandoned"
     );
+}
+
+/// A swing that misses is still the fight happening.
+#[test]
+fn a_missed_swing_counts_as_the_fight_continuing() {
+    let mut bot = combat_bot();
+    bot.on_event(&room(&["kobold thief"]));
+
+    for _ in 0..(BotConfig::default().combat_idle_prompts * 2) {
+        bot.on_event(&Event::CombatMiss {
+            line: "You swing at the kobold thief and miss!".into(),
+        });
+        bot.on_event(&Event::Prompt { hp: 30, mana: None });
+    }
+
+    assert_eq!(bot.engaged(), Some("kobold thief"));
 }

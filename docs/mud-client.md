@@ -112,6 +112,28 @@ the reimplementation's, not the board's.
   prompt, for minutes at a stretch. The poke is the only thing that
   produces prompts at an empty stop, and it doubles as a respawn check.
 
+### `combat_idle_prompts`
+
+How the bot decides a fight has ended when nothing recognisable said so.
+
+Death lines are per-template **prose**. Of the 1085 monsters shipping a
+death record, **67** say "falls to the ground" and **1018** say something
+else — *"The filthbug collapses, its legs curling tightly around it."*,
+*"The skeleton crumbles into a pile of dust."* A further 14 have no death
+record at all. Matching them all would mean carrying a thousand strings.
+
+So the bot ends a fight on three signals instead: the classic death
+phrase, the experience line that follows any kill of ours ("You gain %s
+experience.", DLL 0xbc65f), and — as the backstop for an exp-less kill or
+a monster somebody else finished — `combat_idle_prompts` (3) prompts with
+no blow struck either way. A fight in progress refreshes that on every
+swing, hit or miss, so it only counts genuine silence.
+
+This matters more than it sounds: the farm runner reads a latched bot as
+a fight in progress, so it stops poking the room and stops counting the
+stop as idle. A missed kill does not merely lose a target — it wedges the
+whole run.
+
 ### `[farm.nav]`
 
 - **`step_timeout_ms`** (15000) — per-step arrival deadline.
