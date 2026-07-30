@@ -583,3 +583,38 @@ fn the_ignore_list_still_wins_over_threat() {
     let actions = bot.on_event(&room(&["giant rat", "cave bear"]));
     assert_eq!(actions, vec![BotAction::Send("a rat".into())]);
 }
+
+/// Prompts arrive in BURSTS, not one per combat round: async output
+/// disturbs the dangling prompt and the board re-prompts, so
+/// "[HP=31]:[HP=32]:" lands on one physical line. A slow fight — a cave
+/// bear is 50hp against single-digit hits — therefore racks up quiet
+/// prompts between rounds without the fight being over at all.
+///
+/// Abandoning the target there is worse than a wasted swing: `farm_stop`
+/// reads a cleared latch as an idle room, dwells out, and walks off
+/// mid-fight.
+#[test]
+fn a_burst_of_prompts_between_rounds_does_not_abandon_the_fight() {
+    let mut bot = combat_bot();
+    bot.on_event(&room(&["cave bear"]));
+    assert_eq!(bot.engaged(), Some("cave bear"));
+
+    // Three rounds, each followed by a burst of prompts and some
+    // unrelated chatter — the shape of a real fight.
+    for _ in 0..3 {
+        bot.on_event(&Event::CombatHit {
+            attacker: Actor::You,
+            target: Actor::Other("The cave bear".into()),
+            damage: 4,
+        });
+        for _ in 0..5 {
+            bot.on_event(&Event::Prompt { hp: 30, mana: None });
+        }
+    }
+
+    assert_eq!(
+        bot.engaged(),
+        Some("cave bear"),
+        "walked away from a fight that was still going"
+    );
+}

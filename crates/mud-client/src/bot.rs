@@ -75,8 +75,21 @@ pub struct BotConfig {
     /// bot as a fight in progress — it stops poking the room and stops
     /// counting the stop as idle, so the stop never ends.
     ///
-    /// Too low abandons a slow fight; a real fight refreshes this on
-    /// every swing, hit or miss, so it only counts genuine silence.
+    /// Too low abandons a slow fight, which is worse than the hang this
+    /// guards against: `farm_stop` reads a cleared latch as an idle room,
+    /// dwells out, and walks off mid-fight.
+    ///
+    /// It has to be generous because prompts do NOT arrive one per combat
+    /// round. They come in bursts — async output disturbs the dangling
+    /// prompt and the board re-prompts, so "[HP=31]:[HP=32]:" lands on
+    /// one physical line — and a cave bear is 50hp against single-digit
+    /// hits, so rounds are seconds apart. Three was measured leaving a
+    /// fight after a single burst.
+    ///
+    /// Being generous costs almost nothing, because this is a BACKSTOP,
+    /// not the primary mechanism: the room block from the runner's idle
+    /// `look` clears the latch properly by finding the target gone. This
+    /// only has to cover the case where no room block is coming.
     pub combat_idle_prompts: u32,
 }
 
@@ -92,7 +105,7 @@ impl Default for BotConfig {
             heal_command: "rest".into(),
             ignore: Vec::new(),
             max_hp: 0,
-            combat_idle_prompts: 3,
+            combat_idle_prompts: 12,
         }
     }
 }
