@@ -987,3 +987,83 @@ populations diffuse out of their spawn rooms with board uptime, so
 spawn-dependent expeditions restart the board first; running out of
 lives DELETES the character, and a creation-screen `look` reads exactly
 like an empty world to a sweeping script.
+
+### 8.6 MEASURED (2026-07-30) — the charm lifecycle, by suppression
+
+Transcripts: `re/oracle/oracle_charm_lifecycle6.raw` (E4 bulk),
+`oracle_charm_finish.raw` (E5), `oracle_charm_definitive.raw` (the
+confirmed charm + expiry), `oracle_charm_strand.raw` (the strand test),
+plus five earlier takes whose failures taught the method. Character:
+Bard Minstrel (Human Bard L12→L14, songs #49/#96 via sysop summon).
+Pet: the plain kobold #404 (`charmlvl` 12, aggression 30) — map-6 rooms
+722-751 are an exclusive spawn band (zone 24 at level exactly 19).
+
+**The method that finally worked: SUPPRESSION.** Two generations of
+follow-detection false-positived (attack lines counted as follows, then
+pursuit arrivals counted as follows — an aggro'd kobold chases a
+fleeing Bard between rooms and "arrives" exactly like a pet). The
+unambiguous signal is the charm's own state write: `mon+0x116`
+suppresses the pet's attacks on the owner. The definitive driver finds
+a SINGLE-kobold room, lets it prove hostility (it attacks first), sings
+until the attacks cease for a full 25 s probe window in melee range,
+and treats attacks resuming as the expiry stopwatch.
+
+**E4 (carry 3) — measured:**
+- Cast success line, verbatim: `You sing the song of charming to
+  kobold!` — printed on EVERY successful cast roll, including casts
+  whose charm application then fails silently (observed cleanly: a
+  sung-at kobold kept attacking through the full probe window; the
+  §1.1/§1.2 save and gate refuse without a message beyond the resist
+  arm's `resists your spell`).
+- Resist wording captured (charmres 60 ≈ 30% per cast under the
+  corrected genrdn).
+- Charm CONFIRMED by suppression (two independent runs, sings 2 and 0).
+- Follow: walked-room arrival lines captured in the 10-room walk
+  (lifecycle6) and the 3-room walk (definitive).
+- Attack-own-pet exchange captured (lifecycle6; cost a death — the
+  release turns an aggression-30 pet hostile).
+- **Duration**: attacks resumed at +234 s from the confirmed charm;
+  probe granularity brackets the true duration in ≈[209, 261] s. At the
+  blur-measured 3.03 s tick that is ≈69-86 ticks against spell #49's
+  base 100 with level scaling — the bracket is consistent with the
+  `add_cast_spell_to_monster` formula and pins the scale; a tighter
+  stopwatch (10 s probes) would pin the exact tick count.
+
+**E5 (carry 4) — strings measured, charge closes on the decompile:**
+- `You sing the song of foolishness to kobold!` at a PASSIVE target →
+  immediate retaliation (the benign-cast grudge, measured: it stabbed
+  back within the same exchange).
+- Casting at your OWN ENGAGED target first prints `*Combat Off*` (the
+  cast disengages autocombat) — an unlooked-for wording pin.
+- The EvilInCombat(52) charge itself has NO live observable: `st`
+  carries no alignment/evil surface (verified before/after both casts,
+  byte-identical). The charge's bookkeeping closes DECOMPILE-CLOSED
+  under §8.2's argument standard, with the behavioral strings above as
+  the measured shell around it.
+
+**E6 (carry 5) — the give_up model is consistent:**
+- Ordinary walked following does NOT release: 13 followed rooms across
+  two runs without a release.
+- A STRANDED pet (teleport away — no breadcrumbs to prosecute) was
+  gone within ONE 40 s exile (+77 s from charm, far under expiry). A
+  charmed monster never wanders (§2.1), so its absence means give_up
+  released it mid-exile — consistent with the port's cumulative
+  16-failed-fast-tick model (~16 s to release, then aggression-30
+  wandering resumes). The port's model stands as faithful.
+
+**E3 (carry 2) — protocol built, measurement starved:** the engage-lock
+trials (P0 aggression baseline / P1 attack-and-leave / P2 zero-damage
+retaliation with the 0..0 flurry of blades / P3 control) are fully
+scripted in `tools/oracle/oracle_engage_lock.py` with subject switching
+and every survival guard this campaign produced — but every launch
+window found the subject rooms empty or lethal, and the lock's
+relocation stays DECOMPILE-JUSTIFIED (26230 in the other arm of the
+26112 split) with the protocol on the shelf for a future session.
+
+**The tuition ledger** (why five takes): instance-disambiguator
+adjectives ("nasty kobold" IS #404); pursuit arrivals mimic follows;
+dark rooms read as empty worlds without a lantern; `monster.index` is
+LEVEL and `monster.group` is the spawn zone (the "kobold slave" plan
+died on this — it is one rare candidate among the orc gang's band);
+the spawner is player-driven so fast sweeps are spawn-proof; two
+characters permadeathed before the lives floor existed.
