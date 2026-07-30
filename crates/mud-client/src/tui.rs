@@ -147,6 +147,11 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     // A clone of the runner's phase channel, kept separate so the select
     // can await it without borrowing `farm` (which the repaint needs).
     let mut phase_rx: Option<tokio::sync::watch::Receiver<crate::farm::Phase>> = None;
+    // Where the client believes the character is, tracked whoever is
+    // driving. A room block is a room block: it says as much when the
+    // operator typed the move as when the runner did.
+    let mut here: Option<mud_core::content::RoomId> = None;
+    let nav = locator(session.profile());
 
     // Key events come from a blocking reader thread.
     let (key_tx, mut key_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -160,7 +165,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
 
     let mut out = std::io::stdout();
     setup_region(&mut out, rows)?;
-    repaint(&mut out, &state_rx, target, farm.as_ref(), &editor, cols, rows)?;
+    repaint(&mut out, &state_rx, target, farm.as_ref(), here, &editor, cols, rows)?;
 
     let result = loop {
         tokio::select! {
@@ -171,14 +176,17 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                     out.write_all(b"\x1b8")?;
                     out.write_all(&bytes)?;
                     out.write_all(b"\x1b7")?;
-                    repaint(&mut out, &state_rx, target, farm.as_ref(), &editor, cols, rows)?;
+                    repaint(&mut out, &state_rx, target, farm.as_ref(), here, &editor, cols, rows)?;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(_) => break Ok(()), // disconnected
             },
             changed = state_rx.changed() => {
                 if changed.is_err() { break Ok(()); }
-                repaint(&mut out, &state_rx, target, farm.as_ref(), &editor, cols, rows)?;
+                if let (Some(nav), Some(room)) = (nav.as_ref(), state_rx.borrow().room.clone()) {
+                    here = track(nav, here, &room).or(here);
+                }
+                repaint(&mut out, &state_rx, target, farm.as_ref(), here, &editor, cols, rows)?;
             }
             // The bar must follow the runner, not just HP: travelling and
             // fighting can pass without a single point of damage.
@@ -190,7 +198,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                     None => std::future::pending::<()>().await,
                 }
             } => {
-                repaint(&mut out, &state_rx, target, farm.as_ref(), &editor, cols, rows)?;
+                repaint(&mut out, &state_rx, target, farm.as_ref(), here, &editor, cols, rows)?;
             }
             ev = key_rx.recv() => {
                 let Some(ev) = ev else { break Ok(()) };
@@ -199,7 +207,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                         cols = w;
                         rows = h;
                         setup_region(&mut out, rows)?;
-                        repaint(&mut out, &state_rx, target, farm.as_ref(), &editor, cols, rows)?;
+                        repaint(&mut out, &state_rx, target, farm.as_ref(), here, &editor, cols, rows)?;
                     }
                     TermEvent::Key(key) if key.kind != KeyEventKind::Release => {
                         let was = passthrough;
@@ -236,7 +244,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                             out.write_all(note.as_bytes())?;
                             out.write_all(b"\x1b7")?;
                         }
-                        repaint(&mut out, &state_rx, target, farm.as_ref(), &editor, cols, rows)?;
+                        repaint(&mut out, &state_rx, target, farm.as_ref(), here, &editor, cols, rows)?;
                     }
                     _ => {}
                 }
@@ -548,17 +556,22 @@ fn note(out: &mut impl std::io::Write, text: &str) -> std::io::Result<()> {
 }
 
 /// Redraw the bottom rows, reading the farm's phase when one is running.
+#[allow(clippy::too_many_arguments)]
 fn repaint(
     out: &mut impl std::io::Write,
     state_rx: &tokio::sync::watch::Receiver<GameState>,
     target: &str,
     farm: Option<&FarmSession>,
+    here: Option<mud_core::content::RoomId>,
     editor: &InputEditor,
     cols: u16,
     rows: u16,
 ) -> std::io::Result<()> {
     let phase = farm.map(|f| f.phase.borrow().clone());
-    let room_id = phase.as_ref().and_then(|p| p.room());
+    // The runner's own belief wins while it drives -- it knows which of
+    // two same-named rooms it walked to -- and the client's tracking
+    // covers everything else.
+    let room_id = phase.as_ref().and_then(|p| p.room()).or(here);
     let state = state_rx.borrow().clone();
     redraw_bottom(
         out,
@@ -596,4 +609,41 @@ fn start_farm(session: Arc<Session>) -> Result<FarmSession, String> {
         let _ = tx.send(end);
     });
     Ok(FarmSession { handle, phase: rx })
+}
+
+/// A navigator used only to work out where the character is.
+///
+/// Best effort: the room database is how a name becomes a number, and
+/// without it the bar simply shows the name, as it always did. The path
+/// comes from `[farm].content` when the profile has one, else the same
+/// default `mmc path` uses.
+fn locator(profile: &crate::profile::Profile) -> Option<crate::nav::Navigator> {
+    let db = profile
+        .farm
+        .as_ref()
+        .map(|f| f.content.clone())
+        .unwrap_or_else(|| std::path::PathBuf::from("re/mmud_wgnt.sqlite"));
+    let graph = crate::graph::RoomGraph::load(&db).ok()?;
+    Some(crate::nav::Navigator::new(
+        Arc::new(graph),
+        crate::nav::NavConfig::default(),
+    ))
+}
+
+/// Resolve a room block to a room id, given where we thought we were.
+///
+/// `localize_view` tries the cheap one-hop answer first and falls back to
+/// searching the whole graph by name and exits, so this works both for an
+/// ordinary step and for the first block after logging in, when there is
+/// no previous position at all.
+fn track(
+    nav: &crate::nav::Navigator,
+    here: Option<mud_core::content::RoomId>,
+    room: &crate::events::RoomView,
+) -> Option<mud_core::content::RoomId> {
+    // A room that cannot exist, so the neighbour shortcut misses and the
+    // global search runs. Any seed would do; this one cannot be right by
+    // accident.
+    let hint = here.unwrap_or(mud_core::content::RoomId { map: 0, room: 0 });
+    nav.localize_view(hint, room)
 }

@@ -601,3 +601,21 @@ fn localize_view_refuses_when_still_ambiguous() {
         None
     );
 }
+
+/// Position tracking has to work from a cold start, with no previous
+/// room to hop from -- the first block after logging in. localize_view's
+/// global search is what makes that possible, so it must not depend on
+/// the hint being right.
+#[test]
+fn localize_view_works_from_a_meaningless_hint() {
+    let nav = Navigator::new(Arc::new(twin_graph()), NavConfig::default());
+    let nowhere = RoomId { map: 0, room: 0 };
+    assert_eq!(
+        nav.localize_view(nowhere, &view("Narrow Road", &["north", "east", "down"])),
+        Some(RoomId { map: 1, room: 10 })
+    );
+    assert_eq!(
+        nav.localize_view(nowhere, &view("Town Square", &["south"])),
+        Some(RoomId { map: 1, room: 2 })
+    );
+}

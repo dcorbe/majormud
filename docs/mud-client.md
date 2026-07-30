@@ -208,12 +208,27 @@ feed above it (DECSTBM, the same mechanism `mmc play` uses):
  attacking cave bear | HP 23 MA 8 | Small Cavern [1/2156] | mbbs
 ```
 
-With no runner attached — ordinary interactive play — the activity and
-the room number are simply absent:
+With no runner attached — ordinary interactive play — the activity is
+absent, but the **position is still tracked**:
 
 ```
- HP 42 MA 10 | Newhaven, Adventurer's Guild | mbbs
+ HP 38 MA 10 | Newhaven, Narrow Road [1/2146] | mbbs
 ```
+
+A room block is a room block whoever caused it, so the client localizes
+every one through `localize_view` regardless of whether you typed the
+move or the runner did. That handles the cold start too — the first block
+after logging in has no previous room to hop from, so the global
+name-and-exits search is what resolves it, and it resolves ambiguity
+correctly: "Newhaven, Narrow Road" is two rooms, and the exit set picks
+1/2146 over 1/2151.
+
+While a runner is attached its own belief wins, since it knows which of
+two same-named rooms it actually walked to.
+
+Tracking needs the room database. The path comes from `[farm].content`
+when the profile has one, else the same default `mmc path` uses; without
+it the bar shows the name alone, as it always did.
 
 The activity is **published by the runner**, not guessed from board
 output. That distinction matters: a watcher can infer "attacking" from
