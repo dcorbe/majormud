@@ -181,6 +181,94 @@ fn delete_player_purges_innate_abilities() {
     assert_eq!(loaded.innate, [(None, 0); 30]);
 }
 
+// --- M7 slice 7: gangs (gangs.md §0) ---
+
+#[test]
+fn gang_roundtrip() {
+    use mud_core::gang::{Gang, GANG_DISBANDED, GANG_SATURATED};
+    let db = db();
+    assert!(db.load_gangs().expect("load").is_empty(), "fresh db");
+
+    let mut g = Gang::new("Iron Fist", "Salad", 1_753_900_000);
+    g.exp_pool = 123_456;
+    g.secondary_pool = 7;
+    g.wrap = 2;
+    g.member_count = 3;
+    g.flags = GANG_DISBANDED | GANG_SATURATED;
+    db.save_gang(&g).expect("save");
+    let loaded = db.load_gangs().expect("load");
+    assert_eq!(loaded, vec![g.clone()]);
+
+    // Upsert: a resave replaces, never duplicates.
+    g.exp_pool = 200_000;
+    db.save_gang(&g).expect("resave");
+    let loaded = db.load_gangs().expect("load");
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].exp_pool, 200_000);
+}
+
+#[test]
+fn player_gang_fields_roundtrip() {
+    use mud_core::gang::{GF_LIEUTENANT, GF_PENDING_DEMOTE};
+    let db = db();
+    let mut p = player("Torgo");
+    p.gang = "Iron Fist".into();
+    p.gang_flags = GF_LIEUTENANT | GF_PENDING_DEMOTE;
+    db.save_player(&p).expect("save");
+    let loaded = db.load_player("Torgo").expect("query").expect("found");
+    assert_eq!(loaded, p);
+}
+
+#[test]
+fn gang_member_scan_returns_only_members() {
+    let db = db();
+    let mut member = player("Torgo");
+    member.gang = "Iron Fist".into();
+    member.gang_flags = 0x0100;
+    db.save_player(&member).expect("save member");
+    db.save_player(&player("Loner")).expect("save gangless");
+
+    let members = db.load_gang_members().expect("scan");
+    assert_eq!(members, vec![("Torgo".into(), "Iron Fist".into(), 0x0100)]);
+}
+
+/// The offline-target writes (gangs.md §1.4/§1.5): promote/demote pending
+/// bits and the uninvite membership clear, modeled on `bank_evil` —
+/// account-scoped writes against the saved row.
+#[test]
+fn offline_gang_member_writes() {
+    use mud_core::gang::{
+        GF_LIEUTENANT, GF_PAPERWORK, GF_PENDING_PROMOTE, GF_ROSTER_ONLINE_ONLY,
+    };
+    let db = db();
+    let mut p = player("Torgo");
+    p.gang = "Iron Fist".into();
+    p.gang_flags = GF_ROSTER_ONLINE_ONLY | GF_PAPERWORK;
+    db.save_player(&p).expect("save");
+
+    // Pending promote lands on the saved row (or-mask).
+    db.set_player_gang_flags("Torgo", GF_PENDING_PROMOTE, !0)
+        .expect("flag write");
+    let loaded = db.load_player("Torgo").unwrap().unwrap();
+    assert_eq!(
+        loaded.gang_flags,
+        GF_ROSTER_ONLINE_ONLY | GF_PAPERWORK | GF_PENDING_PROMOTE
+    );
+
+    // Offline uninvite: gang cleared, rank/pending bits cleared, the
+    // player's own settings (roster view, paperwork) survive.
+    db.set_player_gang_flags("Torgo", GF_LIEUTENANT, !0).unwrap();
+    db.clear_player_gang("Torgo").expect("clear");
+    let loaded = db.load_player("Torgo").unwrap().unwrap();
+    assert_eq!(loaded.gang, "");
+    assert_eq!(loaded.gang_flags, GF_ROSTER_ONLINE_ONLY | GF_PAPERWORK);
+
+    // Unknown player: a no-op, not an error (bank_evil precedent).
+    db.set_player_gang_flags("Nobody", GF_PENDING_PROMOTE, !0)
+        .expect("no-op");
+    db.clear_player_gang("Nobody").expect("no-op");
+}
+
 #[test]
 fn missing_player_loads_as_none() {
     let db = db();
@@ -369,6 +457,8 @@ fn old_database_is_migrated_on_open() {
     assert!(old.ansi, "pre-M7 rows backfill ansi ON (the always-on server)");
     assert_eq!(old.fame, 0, "pre-M7 rows backfill fame 0");
     assert!(old.warn_on_evil, "pre-M7 rows backfill Warn on Evil ON");
+    assert_eq!(old.gang, "", "pre-slice-7 rows backfill gangless");
+    assert_eq!(old.gang_flags, 0);
     drop(db);
 
     // (c) Reopening is idempotent: same data, still writable.

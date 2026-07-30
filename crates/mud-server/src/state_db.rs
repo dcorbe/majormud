@@ -130,6 +130,31 @@ const TABLES: &[TableDef] = &[
             // Quest VM script flags (M7 slice 6): the 64 `flag`-verb bits
             // (`+0x71c`/`+0x460`); pre-slice-6 rows backfill 0.
             ("quest_flags", "INTEGER NOT NULL"),
+            // Gangs (M7 slice 7, gangs.md §0): the gang display name
+            // (+0x6c8, '' = none) and the rank/notice word (+0x7d4).
+            // Pre-slice-7 rows backfill gangless — correct, gangs did
+            // not exist.
+            ("gang", "TEXT NOT NULL"),
+            ("gang_flags", "INTEGER NOT NULL"),
+        ],
+        constraint: "",
+    },
+    // M7 slice 7: the WCCGANG2 record (gangs.md §0). One row per gang,
+    // keyed by the uppercase name key; membership itself lives on the
+    // player rows (the durable truth the boot scan rebuilds the mirror
+    // from). Disbanded rows persist until the login sweep drains them.
+    TableDef {
+        name: "gang",
+        columns: &[
+            ("name", "TEXT PRIMARY KEY"),
+            ("display", "TEXT NOT NULL"),
+            ("exp_pool", "INTEGER NOT NULL"),
+            ("secondary_pool", "INTEGER NOT NULL"),
+            ("wrap", "INTEGER NOT NULL"),
+            ("leader", "TEXT NOT NULL"),
+            ("created", "INTEGER NOT NULL"),
+            ("member_count", "INTEGER NOT NULL"),
+            ("flags", "INTEGER NOT NULL"),
         ],
         constraint: "",
     },
@@ -544,11 +569,12 @@ impl StateDb {
                  b_charm, hp_base, current_hp, current_mana, hunger, thirst,
                  runic, platinum, gold, silver, copper, lawful,
                  cp_unspent, cp_lifetime, lives, experience, map, room,
-                 poison, ansi, fame, warn_on_evil, quest_flags)
+                 poison, ansi, fame, warn_on_evil, quest_flags, gang,
+                 gang_flags)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
                  ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
                  ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37,
-                 ?38, ?39)",
+                 ?38, ?39, ?40, ?41)",
             params![
                 player.name,
                 gender_str(player.gender),
@@ -589,9 +615,101 @@ impl StateDb {
                 player.fame,
                 player.warn_on_evil,
                 player.quest_flags as i64,
+                player.gang,
+                player.gang_flags,
             ],
         )?;
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Upserts one gang record (the gang dirty-byte save, gangs.md §0).
+    pub fn save_gang(&self, gang: &mud_core::gang::Gang) -> Result<(), StateError> {
+        self.conn.prepare_cached(
+            "INSERT OR REPLACE INTO gang (name, display, exp_pool,
+                 secondary_pool, wrap, leader, created, member_count, flags)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        )?.execute(params![
+            gang.name_key,
+            gang.display,
+            gang.exp_pool,
+            gang.secondary_pool,
+            gang.wrap,
+            gang.leader,
+            gang.created,
+            gang.member_count,
+            gang.flags,
+        ])?;
+        Ok(())
+    }
+
+    /// Every gang row (disbanded included — the login sweep needs them),
+    /// for `CoreConfig.restored_gangs` at boot.
+    pub fn load_gangs(&self) -> Result<Vec<mud_core::gang::Gang>, StateError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT name, display, exp_pool, secondary_pool, wrap, leader,
+                 created, member_count, flags
+             FROM gang ORDER BY name",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(mud_core::gang::Gang {
+                    name_key: r.get(0)?,
+                    display: r.get(1)?,
+                    exp_pool: r.get(2)?,
+                    secondary_pool: r.get(3)?,
+                    wrap: r.get(4)?,
+                    leader: r.get(5)?,
+                    created: r.get(6)?,
+                    member_count: r.get(7)?,
+                    flags: r.get(8)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// The boot membership scan: (name, gang, gang_flags) for every
+    /// player row with a gang — feeds the Core's offline-roster mirror
+    /// (`CoreConfig.restored_gang_members`).
+    pub fn load_gang_members(&self) -> Result<Vec<(String, String, u16)>, StateError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT name, gang, gang_flags FROM player WHERE gang != '' ORDER BY name",
+        )?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Offline-target gang-flag write (gangs.md §1.5: pending
+    /// promote/demote land on the saved record). New word =
+    /// `(old & and_mask) | or_mask`; unknown player = no-op (the
+    /// `bank_evil` tolerance).
+    pub fn set_player_gang_flags(
+        &self,
+        name: &str,
+        or_mask: u16,
+        and_mask: u16,
+    ) -> Result<(), StateError> {
+        self.conn.execute(
+            "UPDATE player SET gang_flags = (gang_flags & ?3) | ?2 WHERE name = ?1",
+            params![name, or_mask, and_mask],
+        )?;
+        Ok(())
+    }
+
+    /// Offline uninvite (`remove_offline_user_from_gang`, gangs.md §1.4):
+    /// clears the membership string and the rank/pending bits. The
+    /// player's own settings bits (roster view 0x8, paperwork 0x4000)
+    /// survive — they are commerce/preference state, not membership.
+    pub fn clear_player_gang(&self, name: &str) -> Result<(), StateError> {
+        use mud_core::gang::{GF_LIEUTENANT, GF_PENDING_DEMOTE, GF_PENDING_PROMOTE};
+        let clear = !(GF_LIEUTENANT | GF_PENDING_PROMOTE | GF_PENDING_DEMOTE);
+        self.conn.execute(
+            "UPDATE player SET gang = '', gang_flags = gang_flags & ?2 WHERE name = ?1",
+            params![name, clear],
+        )?;
         Ok(())
     }
 
@@ -779,7 +897,8 @@ impl StateDb {
                      b_charm, hp_base, current_hp, current_mana, hunger, thirst,
                      runic, platinum, gold, silver, copper, lawful,
                      cp_unspent, cp_lifetime, lives, experience, map, room,
-                     poison, ansi, fame, warn_on_evil, quest_flags
+                     poison, ansi, fame, warn_on_evil, quest_flags, gang,
+                     gang_flags
                  FROM player WHERE name = ?1",
                 params![name],
                 |r| {
@@ -837,6 +956,8 @@ impl StateDb {
                         fame: r.get(36)?,
                         warn_on_evil: r.get(37)?,
                         quest_flags: r.get::<_, i64>(38)? as u64,
+                        gang: r.get(39)?,
+                        gang_flags: r.get(40)?,
                         // Runtime stealth flags — never persisted.
                         hidden: false,
                         sneak_armed: false,

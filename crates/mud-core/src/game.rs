@@ -843,6 +843,19 @@ pub enum Event {
     PersistMonsterKill { template: crate::content::MonsterId },
     /// A room's respawn stamp changed — persist it (the room dirty flag).
     PersistRoomStamp { room: RoomId },
+    /// A gang record changed — upsert its row (the gang dirty byte
+    /// `+0x54` → `save_gang_from_buffer`, gangs.md §0).
+    PersistGang(Box<crate::gang::Gang>),
+    /// An OFFLINE member's saved row needs a gang write (gangs.md
+    /// §1.4-§1.5: offline uninvite / pending promote-demote). The word
+    /// becomes `(old & and_mask) | or_mask`; `clear_gang` also empties
+    /// the membership string (via `clear_player_gang`'s bit policy).
+    PersistOfflineGangMember {
+        name: String,
+        or_mask: u16,
+        and_mask: u16,
+        clear_gang: bool,
+    },
     Disconnect(SessionId),
 }
 
@@ -14412,6 +14425,12 @@ impl Core {
         player.current_hp = derived.max_hp;
         player.current_mana = derived.max_mana;
         player
+    }
+
+    /// The gang record for a display name or key (`get_gang_data`
+    /// uppercases its input, gangs.md §0).
+    pub fn gang(&self, name: &str) -> Option<&crate::gang::Gang> {
+        self.gangs.get(&name.to_uppercase())
     }
 
     /// Takes all events produced since the last drain.

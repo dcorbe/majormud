@@ -159,6 +159,15 @@ fn core_thread(
             }
             Err(e) => eprintln!("failed to load room stamps: {e}"),
         }
+        match db.load_gangs() {
+            Ok(gangs) => config.restored_gangs = gangs,
+            Err(e) => eprintln!("failed to load gangs: {e}"),
+        }
+        match db.load_gang_members() {
+            Ok(members) => config.restored_gang_members = members,
+            Err(e) => eprintln!("failed to load gang members: {e}"),
+        }
+        config.wall_base = now;
     }
     let mut core = Core::new(content, config);
     {
@@ -231,6 +240,23 @@ fn core_thread(
                     let db = state.lock().expect("state db lock");
                     if let Err(e) = db.save_room_stamp(room.map, room.room, wall_now()) {
                         eprintln!("failed to persist stamp {}/{}: {e}", room.map, room.room);
+                    }
+                }
+                Event::PersistGang(gang) => {
+                    let db = state.lock().expect("state db lock");
+                    if let Err(e) = db.save_gang(&gang) {
+                        eprintln!("failed to persist gang {}: {e}", gang.display);
+                    }
+                }
+                Event::PersistOfflineGangMember { name, or_mask, and_mask, clear_gang } => {
+                    let db = state.lock().expect("state db lock");
+                    let result = if clear_gang {
+                        db.clear_player_gang(&name)
+                    } else {
+                        db.set_player_gang_flags(&name, or_mask, and_mask)
+                    };
+                    if let Err(e) = result {
+                        eprintln!("failed offline gang write for {name}: {e}");
                     }
                 }
                 Event::DeleteCharacter { name, fame } => {
