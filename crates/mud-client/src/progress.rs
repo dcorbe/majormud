@@ -107,3 +107,49 @@ fn actor(a: &Actor) -> String {
         Actor::Other(name) => name.clone(),
     }
 }
+
+/// Experience earned since the run began, and the rate it is coming in.
+///
+/// Fed from "You gain %s experience." (DLL 0xbc65f) — the same line the
+/// bot reads to notice a kill whose death wording it does not know. This
+/// is the only honest measure of whether a circuit, or a change to its
+/// tuning, is worth anything.
+#[derive(Debug, Default, Clone)]
+pub struct ExpMeter {
+    total: i64,
+}
+
+impl ExpMeter {
+    /// Note a line; awards are counted, everything else ignored.
+    pub fn observe(&mut self, line: &str) {
+        let lower = line.to_lowercase();
+        let Some(rest) = lower.strip_prefix("you gain ") else {
+            return;
+        };
+        let Some(number) = rest.split_whitespace().next() else {
+            return;
+        };
+        if !rest.contains("experience") {
+            return;
+        }
+        // The board groups thousands once the awards get large.
+        if let Ok(n) = number.replace(',', "").parse::<i64>() {
+            self.total += n;
+        }
+    }
+
+    pub fn total(&self) -> i64 {
+        self.total
+    }
+
+    /// Experience per minute over `elapsed`, or `None` when too little
+    /// time has passed for the figure to mean anything — which is a
+    /// better answer than a number produced by dividing by nearly zero.
+    pub fn per_minute(&self, elapsed: std::time::Duration) -> Option<i64> {
+        let secs = elapsed.as_secs_f64();
+        if secs < 1.0 {
+            return None;
+        }
+        Some((self.total as f64 * 60.0 / secs).round() as i64)
+    }
+}

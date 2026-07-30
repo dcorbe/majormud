@@ -92,16 +92,16 @@ fn status_line_shows_hp_room_and_fits_width() {
             ..Default::default()
         }),
     };
-    let s = render_status(&state, "mbbs", None, None, 80);
+    let s = render_status(&state, "mbbs", None, None, None, 80);
     assert!(s.contains("HP 35"));
     assert!(s.contains("MA 12"));
     assert!(s.contains("Newhaven, Village Entrance"));
     assert!(s.contains("mbbs"));
 
     // Width is respected (padded or truncated to exactly `width`).
-    let narrow = render_status(&state, "mbbs", None, None, 20);
+    let narrow = render_status(&state, "mbbs", None, None, None, 20);
     assert_eq!(narrow.chars().count(), 20);
-    let wide = render_status(&state, "mbbs", None, None, 120);
+    let wide = render_status(&state, "mbbs", None, None, None, 120);
     assert_eq!(wide.chars().count(), 120);
 }
 
@@ -112,7 +112,7 @@ fn status_line_without_room_or_mana() {
         mana: None,
         room: None,
     };
-    let s = render_status(&state, "rust", None, None, 80);
+    let s = render_status(&state, "rust", None, None, None, 80);
     assert!(s.contains("HP 10"));
     assert!(!s.contains("MA "));
     assert_eq!(s.chars().count(), 80);
@@ -142,7 +142,7 @@ fn without_a_runner_the_bar_is_hp_room_and_target() {
         mana: Some(8),
         room: Some(a_room("Newhaven, Narrow Road")),
     };
-    let s = render_status(&state, "mbbs", None, None, 100);
+    let s = render_status(&state, "mbbs", None, None, None, 100);
     assert!(s.contains("HP 33"), "{s}");
     assert!(s.contains("MA 8"), "{s}");
     assert!(s.contains("Newhaven, Narrow Road"), "{s}");
@@ -165,7 +165,7 @@ fn with_a_runner_the_bar_gains_activity_and_room_number() {
         },
         target: "cave bear".into(),
     };
-    let s = render_status(&state, "mbbs", Some(&phase), Some(RoomId { map: 1, room: 2156 }), 120);
+    let s = render_status(&state, "mbbs", Some(&phase), Some(RoomId { map: 1, room: 2156 }), None, 120);
     assert!(s.contains("attacking cave bear"), "{s}");
     assert!(s.contains("HP 23"), "{s}");
     assert!(s.contains("Small Cavern"), "{s}");
@@ -182,6 +182,22 @@ fn the_bar_is_always_exactly_the_width_asked_for() {
         room: Some(a_room("A Room With A Very Long Name Indeed That Runs On")),
     };
     for w in [20usize, 80, 120] {
-        assert_eq!(render_status(&state, "mbbs", None, None, w).chars().count(), w);
+        assert_eq!(render_status(&state, "mbbs", None, None, None, w).chars().count(), w);
     }
+}
+
+/// The number that says whether a circuit is worth running. Absent until
+/// there is enough elapsed time for it to mean anything.
+#[test]
+fn the_bar_shows_the_experience_rate_when_there_is_one() {
+    let state = GameState {
+        hp: 27,
+        mana: Some(8),
+        room: Some(a_room("Small Cavern")),
+    };
+    let with = render_status(&state, "mbbs", None, None, Some(255), 120);
+    assert!(with.contains("255 xp/min"), "{with}");
+
+    let without = render_status(&state, "mbbs", None, None, None, 120);
+    assert!(!without.contains("xp/min"), "{without}");
 }

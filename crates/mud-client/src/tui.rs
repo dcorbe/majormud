@@ -131,6 +131,7 @@ impl Default for InputEditor {
 /// around every passthrough write.
 pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     let mut raw_rx = session.raw();
+    let mut events = session.events();
     let mut state_rx = session.state();
     let target = match session.profile().target {
         crate::dialect::Target::MbbsEmu => "mbbs",
@@ -151,6 +152,11 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     // driving. A room block is a room block: it says as much when the
     // operator typed the move as when the runner did.
     let mut here: Option<mud_core::content::RoomId> = None;
+    // Experience rate, counted from the board's award lines. Runs for the
+    // whole session, not just while a farm is attached: a hand-played
+    // stretch is worth measuring too.
+    let mut exp = crate::progress::ExpMeter::default();
+    let started = std::time::Instant::now();
     let nav = locator(session.profile());
 
     // Key events come from a blocking reader thread.
@@ -165,7 +171,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
 
     let mut out = std::io::stdout();
     setup_region(&mut out, rows)?;
-    repaint(&mut out, &state_rx, target, farm.as_ref(), here, &editor, cols, rows)?;
+    repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), &editor, cols, rows)?;
 
     let result = loop {
         tokio::select! {
@@ -176,17 +182,29 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                     out.write_all(b"\x1b8")?;
                     out.write_all(&bytes)?;
                     out.write_all(b"\x1b7")?;
-                    repaint(&mut out, &state_rx, target, farm.as_ref(), here, &editor, cols, rows)?;
+                    repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), &editor, cols, rows)?;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(_) => break Ok(()), // disconnected
             },
+            ev = events.recv() => {
+                // Only for the counters; the display comes from raw
+                // passthrough, so nothing is rendered here.
+                if let Ok(crate::events::Event::Line(line)) = &ev {
+                    let before = exp.total();
+                    exp.observe(line);
+                    if exp.total() != before {
+                        repaint(&mut out, &state_rx, target, farm.as_ref(), here,
+                                exp.per_minute(started.elapsed()), &editor, cols, rows)?;
+                    }
+                }
+            }
             changed = state_rx.changed() => {
                 if changed.is_err() { break Ok(()); }
                 if let (Some(nav), Some(room)) = (nav.as_ref(), state_rx.borrow().room.clone()) {
                     here = track(nav, here, &room).or(here);
                 }
-                repaint(&mut out, &state_rx, target, farm.as_ref(), here, &editor, cols, rows)?;
+                repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), &editor, cols, rows)?;
             }
             // The bar must follow the runner, not just HP: travelling and
             // fighting can pass without a single point of damage.
@@ -198,7 +216,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                     None => std::future::pending::<()>().await,
                 }
             } => {
-                repaint(&mut out, &state_rx, target, farm.as_ref(), here, &editor, cols, rows)?;
+                repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), &editor, cols, rows)?;
             }
             ev = key_rx.recv() => {
                 let Some(ev) = ev else { break Ok(()) };
@@ -207,7 +225,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                         cols = w;
                         rows = h;
                         setup_region(&mut out, rows)?;
-                        repaint(&mut out, &state_rx, target, farm.as_ref(), here, &editor, cols, rows)?;
+                        repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), &editor, cols, rows)?;
                     }
                     TermEvent::Key(key) if key.kind != KeyEventKind::Release => {
                         let was = passthrough;
@@ -244,7 +262,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                             out.write_all(note.as_bytes())?;
                             out.write_all(b"\x1b7")?;
                         }
-                        repaint(&mut out, &state_rx, target, farm.as_ref(), here, &editor, cols, rows)?;
+                        repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), &editor, cols, rows)?;
                     }
                     _ => {}
                 }
@@ -393,13 +411,14 @@ fn redraw_bottom(
     target: &str,
     phase: Option<&crate::farm::Phase>,
     room_id: Option<mud_core::content::RoomId>,
+    exp_per_min: Option<i64>,
     editor: &InputEditor,
     cols: u16,
     rows: u16,
 ) -> std::io::Result<()> {
     let status_row = rows.saturating_sub(1).max(1);
     let input_row = rows.max(1);
-    let status = render_status(state, target, phase, room_id, cols as usize);
+    let status = render_status(state, target, phase, room_id, exp_per_min, cols as usize);
     let line = editor.line();
     let cursor_col = 3 + editor.cursor() as u16;
     out.write_all(
@@ -425,6 +444,7 @@ pub fn render_status(
     target: &str,
     phase: Option<&crate::farm::Phase>,
     room_id: Option<mud_core::content::RoomId>,
+    exp_per_min: Option<i64>,
     width: usize,
 ) -> String {
     let mut s = String::new();
@@ -440,6 +460,9 @@ pub fn render_status(
         if let Some(id) = room_id {
             s.push_str(&format!(" [{}/{}]", id.map, id.room));
         }
+    }
+    if let Some(rate) = exp_per_min {
+        s.push_str(&format!(" | {rate} xp/min"));
     }
     s.push_str(&format!(" | {target}"));
     let mut out: Vec<char> = s.chars().collect();
@@ -563,6 +586,7 @@ fn repaint(
     target: &str,
     farm: Option<&FarmSession>,
     here: Option<mud_core::content::RoomId>,
+    exp_per_min: Option<i64>,
     editor: &InputEditor,
     cols: u16,
     rows: u16,
@@ -579,6 +603,7 @@ fn repaint(
         target,
         phase.as_ref(),
         room_id,
+        exp_per_min,
         editor,
         cols,
         rows,

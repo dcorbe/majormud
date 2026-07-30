@@ -859,6 +859,7 @@ pub async fn go_to_finish(
     graph: std::sync::Arc<RoomGraph>,
     plan: &FarmPlan,
     cfg: &FarmConfig,
+    light: Option<&String>,
 ) -> Result<(), FarmError> {
     let Some(finish) = plan.finish else {
         return Ok(());
@@ -867,12 +868,30 @@ pub async fn go_to_finish(
     let mut events = session.events();
     crate::session::drain(&mut events, |_| {});
     session.send("look");
-    let seen = next_room_view(&mut events, Duration::from_secs(15))
-        .await
-        .ok_or(FarmError::NotAtStart {
-            expected: "a room block answering the finish walk's look".into(),
-            saw: None,
-        })?;
+    // A dark room answers `look` with "you can't see anything" and no
+    // room block at all, so a walk home that insisted on one could never
+    // start from the very rooms most likely to strand a character. Light
+    // it first if we can, then ask again.
+    let seen = match next_room_view(&mut events, Duration::from_secs(15)).await {
+        Some(room) => room,
+        None => {
+            let Some(cmd) = light else {
+                return Err(FarmError::NotAtStart {
+                    expected: "a room block answering the finish walk's look".into(),
+                    saw: None,
+                });
+            };
+            session.send(cmd);
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            session.send("look");
+            next_room_view(&mut events, Duration::from_secs(15))
+                .await
+                .ok_or(FarmError::NotAtStart {
+                    expected: "a room block answering the finish walk's look".into(),
+                    saw: None,
+                })?
+        }
+    };
     if let Some(here) = graph.room(finish)
         && here.name == seen.name
     {

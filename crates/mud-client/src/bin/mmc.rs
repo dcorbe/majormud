@@ -260,6 +260,8 @@ fn farm_command(
                 // No bar when stdout is not a terminal: piping the feed to
                 // a file should give lines, not escape sequences.
                 let mut bar = mud_client::tui::StatusBar::enter();
+                let mut exp = mud_client::progress::ExpMeter::default();
+                let started = std::time::Instant::now();
                 let cols = crossterm::terminal::size().map(|(c, _)| c as usize).unwrap_or(80);
                 let target_label = match profile_target {
                     mud_client::dialect::Target::MbbsEmu => "mbbs",
@@ -290,6 +292,7 @@ fn farm_command(
                             target_label,
                             Some(&phase),
                             room_id,
+                            exp.per_minute(started.elapsed()),
                             cols,
                         )
                     };
@@ -299,6 +302,9 @@ fn farm_command(
                     tokio::select! {
                         ev = events.recv() => match ev {
                             Ok(ev) => {
+                                if let mud_client::events::Event::Line(line) = &ev {
+                                    exp.observe(line);
+                                }
                                 if let Some(line) = view.on_event(&ev) {
                                     emit(line, &mut bar);
                                 }
@@ -359,7 +365,7 @@ fn farm_command(
         // Skipped only for a death, which cannot walk anywhere.
         let died = matches!(outcome, Some(Ok((FarmEnd::Died, _))));
         if !died && plan.finish.is_some() {
-            match go_to_finish(&session, graph.clone(), &plan, &farm_config).await {
+            match go_to_finish(&session, graph.clone(), &plan, &farm_config, None).await {
                 Ok(()) => println!("walked to the finish room"),
                 // Worth saying loudly: the character is still out there.
                 Err(e) => eprintln!("could not walk to the finish room: {e}"),
