@@ -58,5 +58,11 @@ pub enum Command {
         /// Room database, overriding the profile's `[farm].content`
         #[arg(long)]
         content: Option<PathBuf>,
+        /// Echo every line the board sends, not just notable ones
+        #[arg(long)]
+        watch: bool,
+        /// Print nothing until the run ends
+        #[arg(long, conflicts_with = "watch")]
+        quiet: bool,
     },
 }

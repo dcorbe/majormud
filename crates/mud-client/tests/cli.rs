@@ -82,6 +82,7 @@ fn farm_subcommand_takes_profile_capture_and_content() {
             profile,
             capture,
             content,
+            ..
         } => {
             assert_eq!(profile.to_str(), Some("chars/nav.toml"));
             assert_eq!(capture.as_deref().and_then(|p| p.to_str()), Some("out/farm1"));
@@ -101,4 +102,31 @@ fn farm_content_defaults_to_the_profile() {
         mud_client::cli::Command::Farm { content, .. } => assert_eq!(content, None),
         _ => panic!("expected farm subcommand"),
     }
+}
+
+/// The progress feed defaults ON: a farm that printed nothing between
+/// start and finish was indistinguishable from a wedged one.
+#[test]
+fn farm_watch_and_quiet_are_optional_and_exclusive() {
+    use clap::Parser;
+    let cli = Cli::parse_from(["mmc", "farm", "--profile", "chars/salad.toml"]);
+    match cli.command {
+        mud_client::cli::Command::Farm { watch, quiet, .. } => {
+            assert!(!watch);
+            assert!(!quiet, "the feed is on by default");
+        }
+        _ => panic!("expected farm"),
+    }
+
+    let cli = Cli::parse_from(["mmc", "farm", "--profile", "p.toml", "--watch"]);
+    match cli.command {
+        mud_client::cli::Command::Farm { watch, .. } => assert!(watch),
+        _ => panic!("expected farm"),
+    }
+
+    // Asking for the firehose and for silence at once is a contradiction
+    // the parser should catch rather than resolve arbitrarily.
+    assert!(
+        Cli::try_parse_from(["mmc", "farm", "--profile", "p.toml", "--watch", "--quiet"]).is_err()
+    );
 }

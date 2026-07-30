@@ -21,7 +21,9 @@ fn main() -> ExitCode {
             profile,
             capture,
             content,
-        } => farm_command(&profile, capture.as_deref(), content.as_deref()),
+            watch,
+            quiet,
+        } => farm_command(&profile, capture.as_deref(), content.as_deref(), watch, quiet),
     }
 }
 
@@ -176,6 +178,8 @@ fn farm_command(
     profile_path: &std::path::Path,
     capture: Option<&std::path::Path>,
     content: Option<&std::path::Path>,
+    watch: bool,
+    quiet: bool,
 ) -> ExitCode {
     use mud_client::farm::{FarmEnd, FarmPlan, go_to_finish, run_farm};
 
@@ -235,6 +239,31 @@ fn farm_command(
                 return ExitCode::FAILURE;
             }
         };
+        // Started before the login dance, so a run that stalls on the
+        // way in is visible too rather than looking like a silent hang.
+        if !quiet {
+            let mut events = session.events();
+            let mut view = mud_client::progress::ProgressView::new(watch);
+            tokio::spawn(async move {
+                loop {
+                    match events.recv().await {
+                        Ok(ev) => {
+                            if let Some(line) = view.on_event(&ev) {
+                                println!("{line}");
+                            }
+                        }
+                        // A lagged feed has missed lines, but the run is
+                        // fine; say so and carry on rather than going
+                        // quiet for the rest of the session.
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            println!("!! progress feed dropped {n} events");
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
+
         match mud_client::dialect::login(&session, &profile).await {
             Ok(mud_client::dialect::LoginOutcome::InGame) => {}
             Ok(mud_client::dialect::LoginOutcome::CharacterCreation) => {

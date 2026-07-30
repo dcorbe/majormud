@@ -9,6 +9,14 @@ The automated MajorMUD client. One engine, four uses:
 | `mmc path FROM TO` | Print a route between two rooms, e.g. `mmc path 1/2146 1/2156` |
 | `mmc farm --profile P` | Walk a patrol circuit, farming each stop |
 
+`mmc farm` prints a live feed by default — where the character is, what
+it is fighting, what it killed, and HP whenever it changes. `--watch`
+turns it into the firehose (every line the board sends); `--quiet`
+restores the old behaviour of printing nothing until the run ends. For a
+permanent record use `--capture BASE`, which writes `BASE.raw` (the raw
+socket bytes) and `BASE_timing.log`. Keep captures OUT of `re/oracle/` —
+two corpus tests count the files in there.
+
 It targets the live MBBSEmu board (WCCMMUD 1.11p-WG) and the in-repo
 `mud-server` reimplementation. The two differ in more than the login
 dance — see [Target differences](#target-differences).
