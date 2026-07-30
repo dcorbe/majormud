@@ -66,12 +66,17 @@ HEALER = 2190
 # which false-positived the follower check into a junk capture.  The
 # KOBOLD SLAVE (#54) is the true pet: charmlvl 1, aggression 10, and the
 # noun "slave" is adjective-proof.  39 map-1 rooms.
-PET, PET_NOUN, PET_MAP = "kobold slave", "slave", 1
-# Only the type-3 SWARM rooms — they loop-spawn while a player stands
-# in them; the type-0 rest are spawn-proof to a sweep (monsters.md §1).
-RAT_ROOMS = [1753, 1760, 1777, 1780, 1785, 1792, 1793, 1794]
-ASSIST_ROOMS = [722, 723, 724, 725, 726, 727, 728]   # plain kobolds, map 6
-ASSIST_TARGET, ASSIST_NOUN = "kobold", "kobold"
+# FINAL TARGETING (2026-07-30): the plain kobold after all. The room
+# model resolved (monster `index` = LEVEL, `group` = spawn zone): the
+# slave is one rare candidate among the orc gang's band in a dark,
+# lethal warren, while map-6 rooms 722-751 are an EXCLUSIVE band (zone
+# 24, level exactly 19 -> only the kobold spawns). charmlvl 12 == the
+# Bard's level. Aggression 30 is the price; the L12 Bard affords it.
+PET, PET_NOUN, PET_MAP = "kobold", "kobold", 6
+RAT_ROOMS = [722, 723, 724, 725, 726, 727, 728, 729, 730, 731, 732,
+             733, 734, 745, 746, 747, 748, 749, 750, 751]
+ASSIST_ROOMS = [752, 753, 754, 755, 756, 757]        # centipede band
+ASSIST_TARGET, ASSIST_NOUN = "centipede", "centipede"
 DIRS = ["n", "s", "e", "w", "ne", "nw", "se", "sw", "u", "d"]
 DB = "../../re/mmud_wgnt.sqlite"
 
@@ -182,7 +187,7 @@ def find_rat(start_ix=0, alone=True):
     for k in range(len(RAT_ROOMS)):
         room = RAT_ROOMS[(start_ix + k) % len(RAT_ROOMS)]
         sess.send(f"/xgoto {room} {PET_MAP}", pause=1.6)
-        sess.dump(12.0)            # let the swarm room fill around us
+        sess.dump(4.0)
         out = cmd("look", tag=f"room {room}", drain=1.8, echo=False)
         if PET not in out:
             continue
