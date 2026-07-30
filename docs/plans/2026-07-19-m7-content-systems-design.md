@@ -622,6 +622,41 @@ goldens; expiry reversal golden; suppression unit. Oracle expedition:
 charm a low monster, walk it, watch it assist, let it expire — pin every
 string.
 
+**Slice 6 COMPLETE (2026-07-30, 877 tests, commits 51450e3..the doc
+commit carrying this banner) — the quest text-block VM, end to end.**
+Everything the slice scoped landed: `Room.command_block` (`cmdtext`,
+810 shipped rooms, pinned to map-1-room-2 → 997); the 30-slot innate
+table with `player_ability`/`quest_flags` persistence and the
+FUN_0046c507/addability/removeability writer semantics (full-table and
+absent-id fail-stops the spec missed); the full `perform_matched_action`
+verb set — gates, mutations, items with the takeitem/price rollback
+(KID_GLOVES modeled always-on, the literal uses-0 restore), output and
+world verbs, `random`/`price`/`adddelay`/`remoteaction` (the lever
+bit-word machinery incl. ordered multi-lever puzzles, gate toggles with
+paired reverse exits); the three interpreters with the DLL's
+stop-on-first-Continue and colon rules; the fall-through funnel fidelity
+FIX (all 17 verb arms + Unknown now run action exits → cmdtext → say,
+zero goldens moved); `Ability::TextBlock` live in the benign-cast and
+monster-cast apply loops (the 199 chest/box item-use carriers;
+monster-target is a DLL no-op); the `ask` verb with the corrected
+next-link script semantics, real-content smoke against the shipped
+kobold conversation (closing the WCCTEXT2-assembly risk); and the
+completion detector + login class-skill strip off the recovered asm
+(last-slot-wins capture, the strict >35M SheDragon bar, the full
+PerStealth/Meditate gate tables read out of load_player).
+
+Deviations, all in `re/docs/quests.md` "As built": the trap-cast arm
+(17 offensive `cast` carriers) and remoteaction's type-9/0x18
+force-move arm carry cited `M7 PENDING` markers; the 12 named teleport
+destinations (zero shipped uses) are unported; the three special-site
+cmdtext hooks (look/buy/use) reduce to the funnel — measured: zero
+shipped triggers need the intrusive forms. The eight spec corrections
+(room-only wildcard hook, testability-as-upper-gate, the missed `flag`
+verb, roomitem-as-gate, checkspell-scans-active-slots, the `+0x334`
+stackable array, givecoins denomination letters, the ask next-link) are
+folded into quests.md. Oracle expedition (one real Newhaven quest
+end-to-end + string pins) carries to slice 8 per the plan.
+
 ## Slice 6 — Quest text-block VM (the core)
 
 - **Interpreters** (quests.md §1.2): unconditional block runner;

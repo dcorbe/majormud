@@ -157,7 +157,9 @@ const VERBS: [(&str, usize, Verb); 55] = [
     ("attack", 1, Verb::WithArgs(Command::Attack)), // ORACLE: a/at/att
     // ORACLE-VERIFY min abbrevs for the MA verbs: unmeasured. `k` and
     // `j` are unambiguous today; `p` is reserved against a future `put`
-    // (the quest-VM wildcard family), so punch takes 2.
+    // (slice-6 as built: `put`/`pull`/`press` stayed cmdtext wildcards
+    // in the fall-through funnel, not verbs — the reservation held
+    // without a new entry), so punch takes 2.
     ("punch", 2, Verb::WithArgs(Command::Punch)),
     // ORACLE-VERIFY min abbrev: unmeasured; `b` is free (`bu` still
     // reaches buy — not a prefix of backstab).

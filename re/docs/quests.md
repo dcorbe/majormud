@@ -307,3 +307,103 @@ ids · `+0x776[30]` their values · `+0x90` race · `+0x92` class · `+0x94` lev
 `+0x620` currency (givecoins) · `+0x6e2` unspent CP · `+0x724` HP base ·
 `+0x7d4`/`+0x7d5` flags (0x2000 restructured, 0x80 one-time-reclass used,
 `+0x7d5 & 0x20` = restructured gate for `add_quest_exp`).
+
+---
+
+## 7. As built (M7 slice 6, 2026-07-30)
+
+The whole system above is live in `crates/mud-core` (`questvm.rs` +
+`game.rs::perform_matched_action` and friends; tests in
+`tests/quest_vm.rs`, `quest_dispatch.rs`, `quest_ask.rs`,
+`quest_completion.rs`, `quest_scenario.rs`, and the mud-server
+`ask_real_content.rs`/`quest_persist.rs` smokes). The implementation
+pass corrected or sharpened this spec in the following ways — the
+decompile line numbers cited are `WCCMMUD_decompiled.c`'s.
+
+### 7.1 Spec corrections
+
+- **The input-wildcard hook is ROOM-only** (§1.2/§1.3 overstated it).
+  `perform_special_command` fires on `room+0x5b4` (`cmdtext`, 810
+  shipped rooms) from execute_input's fall-through (49143) and the
+  cmd_look (50208) / cmd_buy (51177) / cmd_use (58990) failure paths.
+  Ability 148 has NO get-ability consumer; it fires as `case 0x94` of
+  the cast apply switches — and the `cast_monster_target` arm is a
+  NO-OP (44210-44217). Items reach the VM through their spells (199
+  shipped chest/box carriers), monsters through `ask` and their casts.
+- **`testability` is the UPPER/exact gate** (§2 said minimum): present
+  fails when value > val; absent fails for val >= 0 (passes for a
+  negative val). The shipped `testability X v:checkability X v` pairs
+  enforce exact step progression.
+- **`roomitem` is a GATE** (require the item on the floor, visible or
+  hidden), not a spawn; the hidden spawn is `hideitem`.
+- **`checkspell` scans the ACTIVE effect slots** (`+0x40`), not the
+  spellbook, and its failure arg is a fail-BLOCK run through the
+  unconditional runner (67891-67936).
+- **`testskill`/`checkskill` take NAMED skills** (agility …
+  magicresistance, current_hp) with per-skill roll ranges
+  (stats/MR 150, spellcasting 110, skill words 175, hp 100); testskill
+  rolls genrdn(0,range) once with an optional modifier and a
+  fail-BLOCK; checkskill is a deterministic threshold with a fail
+  message — and only checks when the message arg is present.
+- **`givecoins` takes a denomination letter** (C/S/G/P/R; every
+  shipped use carries one, almost always G); the bare form adds to
+  `+0x620` = copper. Ghidra's apparent early-return in the letter arm
+  is a mangled indirect jump — the chain continues.
+- **The `flag` verb was missed entirely**: 64 player script bits
+  (`+0x71c` 1-32, `+0x460` 33-64; ours: one `quest_flags` u64) with
+  set/check/fail/clear sub-ops (FUN_0046fdda 68319-68413). Zero
+  shipped uses; ported literally.
+- **The takeitem rollback** (§2's "rolled back if a later verb fails")
+  fires only on a LATER `takeitem` or `price` failure (69397-69404,
+  69662-69674), is gated on the KID_GLOVES config (`DAT_004906dc`;
+  modeled always-on), and re-adds with USES 0 — the re-add's literal
+  third arg.
+- **`giveitem` overflow** drops the item on the floor VISIBLE and
+  stops the chain with code 1 (not a fail-stop); `hideitem` always
+  stops the chain; `teleport` returns code 2 ON SUCCESS (you left the
+  room; numeric form is `<room> <map>`, room first — all 240 shipped
+  uses; the 12 named destinations have zero uses and are unported).
+- **`+0x334[50]` is the STACKABLE-item array** (item type 7,
+  add_item_to_inventory 13928-13945) — checkitem/failitem scan carried
+  inventory + stackables and NEVER worn/wielded gear. Our single
+  inventory covers both arrays.
+- **`ask`'s matched answer runs the SPOKEN block's `next`**
+  (18185-18187 — display_LONG_text returns word +10), not the spoken
+  block; the display substitutes the speaker into the body's `%s`
+  (36055-36059). Bare `ask`/unresolved monster fall to say.
+- **The completion detector** (asm-verified): counter capture is
+  LAST-matching-slot-wins; the reward-slot pre-zero frees the whole
+  slot; the SheDragon==2 strip fires only above 35,000,000 exp
+  STRICTLY (JBE skips at the bar) but the 0x83 slots clear either way;
+  the §4.4 gate tables in full: Smash {1:22, 2:20, 3:25, 4:27, 0xb:27,
+  0xe:22}, PerfectStealth {6:25, 7:20, 8:20, 9:25, 10:25, 0xe:20,
+  0xf:27}, Meditate {3:27, 4:23, 5:20, 6:23, 9:27, 10:23, 0xb:23,
+  0xc:20, 0xd:20, 0xe:27}.
+- **`remoteaction` is the remote-EXIT machine** (FUN_0046c573): case 6
+  drives a concealment bit-word (action 0 = full reveal; actions 1-9
+  clear bit n+3 gated on bit n+4 unless para2 < 0 — ordered lever
+  puzzles; all bits clear → reveal + ~5 min re-hide + "A concealed
+  passage opens to the %s!"), case 7/0xb toggles the gate lock with a
+  re-lock timer and the PAIRED reverse exit; its message pair is room
+  line THEN user line — the reverse of FUN_0046f360.
+
+### 7.2 Divergences (ours, documented)
+
+- The restructured-exp gate on `add_quest_exp` is always-passing (no
+  unrestructured legacy characters exist here).
+- `ask` has no multi-match disambiguation (find_monster takes the
+  first match).
+- `teleport` shows the destination room (the DLL leaves display to the
+  caller; ORACLE-VERIFY at the slice-8 expedition), and the DLL's
+  room-history trails / entry-cast hook are unmodeled engine-wide.
+- The de-level helper ports the level walk only; the DLL's CP sentinel
+  and HP-base resets per step are recompute machinery our model
+  derives elsewhere.
+- giveitem's failure condition is the 100-slot cap; the DLL's weight
+  and add-logical gates are unmodeled engine-wide.
+- `M7 PENDING` survivors from this slice, both cited in code: the
+  offensive trap-cast arm (17 shipped `cast` carriers, spelltype 0)
+  and remoteaction's type-9/0x18 force-move arm (≤2 ambiguous uses).
+- The look/buy/use cmdtext hook sites reduce to the fall-through
+  funnel: measured 2026-07-30, zero shipped `buy` triggers sit in shop
+  rooms and none of the trigger census requires the pre-refusal form.

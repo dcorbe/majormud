@@ -346,9 +346,12 @@ pub struct Monster {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TextBlock {
     pub id: TextBlockId,
-    /// Word 10 of the engine record — a link to a companion block (e.g. an
-    /// ask keyword table's spoken text). Exact consumer semantics land with
-    /// the M7 quest VM.
+    /// Word 10 of the engine record — the companion-block link, with two
+    /// consumers (M7 slice 6, as built): a conversation table's next is
+    /// its bare-`ask` default long text (handler 18131-18142), and a
+    /// SPOKEN answer block's next is the quest script the match fires
+    /// through the unconditional runner (18185-18187 —
+    /// `display_LONG_text` returns this field).
     pub next: Option<TextBlockId>,
     /// Decoded body; lines separated by `\n`, embedded ANSI preserved.
     pub body: String,
