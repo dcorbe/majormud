@@ -126,6 +126,49 @@ fn fame_and_warn_flag_roundtrip() {
     assert!(!loaded.warn_on_evil);
 }
 
+// --- M7 slice 6: the innate/quest ability table (quests.md §1.1,
+// `+0x73a`/`+0x776`) persists as player_ability, player_effect-style ---
+
+#[test]
+fn innate_abilities_roundtrip() {
+    use mud_core::ability::Ability;
+    let db = db();
+    let mut p = player("Vexil");
+    // Accuracy in slot 0, DarkDruidQuest counter in slot 7; the empty
+    // slots between must survive — slot index is state (a full table
+    // makes addability fail-stop), mirroring player_effect.
+    p.innate[0] = (Some(Ability::from_id(22).unwrap()), 3);
+    p.innate[7] = (Some(Ability::from_id(129).unwrap()), 2);
+    db.save_player(&p).expect("save");
+    let loaded = db.load_player("Vexil").expect("query").expect("found");
+    assert_eq!(loaded, p);
+
+    // Mutate and resave: delete-before-insert leaves no stale rows.
+    p.innate[0] = (None, 0);
+    p.innate[7].1 = 3;
+    db.save_player(&p).expect("resave");
+    let loaded = db.load_player("Vexil").expect("query").expect("found");
+    assert_eq!(loaded, p);
+    assert_eq!(loaded.innate[0], (None, 0));
+    assert_eq!(loaded.innate[7].1, 3);
+}
+
+#[test]
+fn delete_player_purges_innate_abilities() {
+    use mud_core::ability::Ability;
+    let db = db();
+    let mut p = player("Vexil");
+    p.innate[4] = (Some(Ability::from_id(129).unwrap()), 2);
+    db.save_player(&p).expect("save");
+    db.delete_player("Vexil").expect("delete");
+    assert_eq!(db.side_table_rows("Vexil"), 0, "no orphan rows survive");
+
+    let fresh = player("vexil");
+    db.save_player(&fresh).expect("save fresh");
+    let loaded = db.load_player("vexil").expect("query").expect("found");
+    assert_eq!(loaded.innate, [(None, 0); 30]);
+}
+
 #[test]
 fn missing_player_loads_as_none() {
     let db = db();
@@ -291,6 +334,9 @@ fn old_database_is_migrated_on_open() {
         value: 5,
         remaining: 70,
     };
+    // …and an innate slot, which needs the player_ability table the old
+    // database never had (M7 slice 6).
+    modern.innate[2] = (Some(mud_core::ability::Ability::from_id(129).unwrap()), 1);
     db.save_player(&modern).expect("modern save succeeds");
     let loaded = db.load_player("Newbie").expect("query").expect("found");
     assert_eq!(loaded, modern);

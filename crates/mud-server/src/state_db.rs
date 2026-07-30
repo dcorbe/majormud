@@ -182,6 +182,21 @@ const TABLES: &[TableDef] = &[
         ],
         constraint: "PRIMARY KEY (name, slot)",
     },
+    // M7 slice 6: the innate/quest ability table (quests.md §1.1 —
+    // `+0x73a[30]` ids / `+0x776[30]` values). Only occupied slots are
+    // stored; `slot` is the array index, preserved so slot order — and
+    // slot exhaustion (addability fail-stops on a full table) — survives
+    // a reload.
+    TableDef {
+        name: "player_ability",
+        columns: &[
+            ("name", "TEXT NOT NULL COLLATE NOCASE"),
+            ("slot", "INTEGER NOT NULL"),
+            ("ability", "INTEGER NOT NULL"),
+            ("value", "INTEGER NOT NULL"),
+        ],
+        constraint: "PRIMARY KEY (name, slot)",
+    },
     // M6 slice 5: limited-population kill stamps (knmsr+0xb4/+0xb6).
     // `killed_at` is wall-clock seconds since the Unix epoch; the boot
     // path hands the CORE the elapsed seconds.
@@ -435,7 +450,13 @@ impl StateDb {
     /// Test hook: rows for `name` remaining across the per-player side
     /// tables (player_item, bankbook, player_spell, player_effect).
     pub fn side_table_rows(&self, name: &str) -> usize {
-        ["player_item", "bankbook", "player_spell", "player_effect"]
+        [
+            "player_item",
+            "bankbook",
+            "player_spell",
+            "player_effect",
+            "player_ability",
+        ]
             .iter()
             .map(|table| {
                 self.conn
@@ -499,6 +520,18 @@ impl StateDb {
                 "INSERT INTO player_effect (name, slot, spell, value, remaining) \
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![player.name, slot as i64, spell.0, active.value, active.remaining],
+            )?;
+        }
+        tx.execute(
+            "DELETE FROM player_ability WHERE name = ?1",
+            params![player.name],
+        )?;
+        for (slot, (ability, value)) in player.innate.iter().enumerate() {
+            let Some(ability) = ability else { continue };
+            tx.execute(
+                "INSERT INTO player_ability (name, slot, ability, value) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![player.name, slot as i64, ability.id(), value],
             )?;
         }
         tx.execute(
@@ -634,6 +667,7 @@ impl StateDb {
             "bankbook",
             "player_spell",
             "player_effect",
+            "player_ability",
         ] {
             tx.execute(
                 &format!("DELETE FROM {table} WHERE name = ?1"),
@@ -710,6 +744,24 @@ impl StateDb {
                 value,
                 remaining,
             };
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT slot, ability, value FROM player_ability WHERE name = ?1",
+        )?;
+        let rows = stmt.query_map(params![name], |r| {
+            let slot = r.get::<_, usize>(0)?;
+            if slot >= 30 {
+                return Err(rusqlite::Error::IntegralValueOutOfRange(0, slot as i64));
+            }
+            Ok((slot, r.get::<_, u16>(1)?, r.get::<_, i16>(2)?))
+        })?;
+        for row in rows {
+            let (slot, ability, value) = row?;
+            // Unknown ability ids (content drift under a save) are
+            // skipped, the same tolerance the spell loaders show.
+            if let Some(ability) = mud_core::ability::Ability::from_id(ability) {
+                player.innate[slot] = (Some(ability), value);
+            }
         }
         Ok(Some(player))
     }
