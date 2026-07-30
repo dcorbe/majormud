@@ -1252,6 +1252,18 @@ async fn farm_stop(
             stats.slowdowns += 1;
         }
         if let Event::Line(line) = &ev {
+            // A kill frees the bot to take the next target, but it only
+            // picks one from a ROOM BLOCK -- and the next of those is the
+            // idle poke, up to idle_poke_ms away. Something already
+            // standing in the room would go unattacked for that whole
+            // gap, which is where most of "waiting" came from. Ask now.
+            if (line.contains("falls to the ground")
+                || (line.to_lowercase().contains("you gain ")
+                    && line.to_lowercase().contains("experience")))
+                && gate.in_flight().is_none()
+            {
+                gate.push("look".into());
+            }
             // A dark stop shows no room block, so the bot cannot see what
             // is in it. Light it and look again rather than dwelling
             // blind -- fighting in the dark is heavily penalised anyway.
