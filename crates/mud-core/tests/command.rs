@@ -87,7 +87,7 @@ fn minimum_abbreviations_match_the_oracle() {
     assert_eq!(parse("sta"), Command::Status);
     assert_eq!(parse("he"), Command::Health);
     assert_eq!(parse("hel"), Command::Help);
-    assert_eq!(parse("to"), Command::Top);
+    assert_eq!(parse("to"), Command::Top(String::new()));
     assert!(matches!(parse("t"), Command::Unknown(_)));
     assert_eq!(parse("trai"), Command::Train);
     assert!(matches!(parse("tra"), Command::Unknown(_)));
@@ -152,4 +152,72 @@ fn equip_verb_minimums_match_the_oracle() {
     assert_eq!(parse("wie dagger"), Command::Arm("dagger".into()));
     assert_eq!(parse("eq staff"), Command::Arm("staff".into()));
     assert!(!matches!(parse("wi staff"), Command::Arm(_)), "wi is not wield");
+}
+
+// --- M7 slice 7: the gang verb surface (gangs.md §1, §5). Min
+// abbreviations are ORACLE-VERIFY (parse_command's compiled tree was not
+// extracted) — chosen non-colliding against the measured table. ---
+
+#[test]
+fn gang_and_guild_parse_with_the_roster_broadgang_split() {
+    // Bare = roster, args = broadgang (cmd_broadgang margc split).
+    assert_eq!(parse("gang"), Command::Gang(String::new()));
+    assert_eq!(parse("guild"), Command::Gang(String::new()));
+    assert_eq!(parse("gang hello all"), Command::Gang("hello all".into()));
+    assert_eq!(parse("guild hi"), Command::Gang("hi".into()));
+    assert_eq!(parse("ga"), Command::Gang(String::new()));
+    assert_eq!(parse("gu"), Command::Gang(String::new()));
+    // `g` stays get's oracle-measured single-letter match.
+    assert_eq!(parse("g"), Command::Get(String::new()));
+}
+
+#[test]
+fn create_join_leave_disband_parse() {
+    assert_eq!(parse("create gang Iron Fist"), Command::Create("gang Iron Fist".into()));
+    assert_eq!(parse("cr guild Vex"), Command::Create("guild Vex".into()));
+    assert_eq!(parse("join gang Iron Fist"), Command::Join("gang Iron Fist".into()));
+    assert_eq!(parse("jo gang X"), Command::Join("gang X".into()));
+    // `j` stays jumpkick's single-letter match.
+    assert_eq!(parse("j"), Command::JumpKick(String::new()));
+    assert_eq!(parse("leave gang"), Command::Leave("gang".into()));
+    assert_eq!(parse("le gang"), Command::Leave("gang".into()));
+    assert_eq!(parse("disband gang"), Command::Disband("gang".into()));
+    assert_eq!(parse("disb gang"), Command::Disband("gang".into()));
+    // `dis` stays disarm's measured minimum.
+    assert_eq!(parse("dis trap north"), Command::Disarm("trap north".into()));
+}
+
+#[test]
+fn membership_admin_verbs_parse() {
+    assert_eq!(parse("invite Torgo"), Command::Invite("Torgo".into()));
+    assert_eq!(parse("invi Torgo"), Command::Invite("Torgo".into()));
+    // `in`/`inv` are MEASURED say (§8.12) — invite cannot match below 4.
+    assert!(matches!(parse("inv Torgo"), Command::Unknown(_)));
+    assert_eq!(parse("uninvite Torgo"), Command::Uninvite("Torgo".into()));
+    assert_eq!(parse("un Torgo"), Command::Uninvite("Torgo".into()));
+    assert_eq!(parse("promote Torgo"), Command::Promote("Torgo".into()));
+    assert_eq!(parse("pr Torgo"), Command::Promote("Torgo".into()));
+    assert_eq!(parse("demote Torgo"), Command::Demote("Torgo".into()));
+    assert_eq!(parse("de Torgo"), Command::Demote("Torgo".into()));
+    // deposit keeps its measured 3.
+    assert_eq!(parse("dep 5 gold"), Command::Deposit("5 gold".into()));
+}
+
+#[test]
+fn gang_shop_verbs_parse() {
+    assert_eq!(parse("stock sword"), Command::Stock("sword".into()));
+    assert_eq!(parse("sto sword"), Command::Stock("sword".into()));
+    // `st` stays status.
+    assert_eq!(parse("st"), Command::Status);
+    assert_eq!(parse("unstock sword"), Command::Unstock("sword".into()));
+    assert_eq!(parse("uns sword"), Command::Unstock("sword".into()));
+    assert_eq!(parse("markup 120"), Command::Markup("120".into()));
+    assert_eq!(parse("ma 120"), Command::Markup("120".into()));
+}
+
+#[test]
+fn top_takes_arguments_for_the_gangs_arm() {
+    assert_eq!(parse("top"), Command::Top(String::new()));
+    assert_eq!(parse("top 5 gangs"), Command::Top("5 gangs".into()));
+    assert_eq!(parse("to gangs"), Command::Top("gangs".into()));
 }

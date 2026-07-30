@@ -824,6 +824,15 @@ pub fn alter_sp_dmg(amount: i32, pct: i32) -> i32 {
     amount + amount * pct / 100
 }
 
+/// First word and trimmed remainder of a command argument string (the
+/// margv[1]/tail split several DLL commands use).
+fn split_word(args: &str) -> (&str, &str) {
+    match args.trim().split_once(char::is_whitespace) {
+        Some((word, rest)) => (word, rest.trim()),
+        None => (args.trim(), ""),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     Output { session: SessionId, text: String },
@@ -5390,7 +5399,67 @@ impl Core {
             Command::Look => self.show_room(session),
             Command::Exits => self.show_exits_line(session),
             Command::Help => self.output_line(session, text::HELP_BANNER),
-            Command::Top => self.output_line(session, text::TOP_HEADER),
+            Command::Top(args) => self.top_command(session, &args),
+            Command::Gang(message) => {
+                if self.gang_command(session, &message) == Resolution::FallThrough {
+                    self.fall_through(session, line);
+                }
+            }
+            Command::Create(args) => {
+                if self.create_command(session, &args) == Resolution::FallThrough {
+                    self.fall_through(session, line);
+                }
+            }
+            Command::Join(args) => {
+                if self.join_command(session, &args) == Resolution::FallThrough {
+                    self.fall_through(session, line);
+                }
+            }
+            Command::Invite(name) => {
+                if self.invite_command(session, &name) == Resolution::FallThrough {
+                    self.fall_through(session, line);
+                }
+            }
+            Command::Uninvite(name) => {
+                if self.uninvite_command(session, &name) == Resolution::FallThrough {
+                    self.fall_through(session, line);
+                }
+            }
+            Command::Promote(name) => {
+                if self.promote_command(session, &name, true) == Resolution::FallThrough {
+                    self.fall_through(session, line);
+                }
+            }
+            Command::Demote(name) => {
+                if self.promote_command(session, &name, false) == Resolution::FallThrough {
+                    self.fall_through(session, line);
+                }
+            }
+            Command::Disband(args) => {
+                if self.disband_command(session, &args) == Resolution::FallThrough {
+                    self.fall_through(session, line);
+                }
+            }
+            Command::Leave(args) => {
+                if self.leave_command(session, &args) == Resolution::FallThrough {
+                    self.fall_through(session, line);
+                }
+            }
+            Command::Stock(args) => {
+                if self.stock_command(session, &args) == Resolution::FallThrough {
+                    self.fall_through(session, line);
+                }
+            }
+            Command::Unstock(args) => {
+                if self.unstock_command(session, &args) == Resolution::FallThrough {
+                    self.fall_through(session, line);
+                }
+            }
+            Command::Markup(args) => {
+                if self.markup_command(session, &args) == Resolution::FallThrough {
+                    self.fall_through(session, line);
+                }
+            }
             Command::Get(target) => {
                 if target.trim().is_empty() {
                     self.output_line(session, text::SYNTAX_GET);
@@ -8326,6 +8395,88 @@ impl Core {
         );
         self.output_line(session, line);
         self.events.push(Event::Persist(snapshot));
+    }
+
+    // --- gang commands (gangs.md §1, §5; M7 slice 7) ---
+
+    /// `top [n] [gangs]` (gangs.md §5.1). The player-ranking arm is the
+    /// pre-slice-7 stub. M7 PENDING: the gangs arm lands with the
+    /// economy task; the player arm needs board-wide account data (M8).
+    fn top_command(&mut self, session: SessionId, _args: &str) {
+        self.output_line(session, text::TOP_HEADER);
+    }
+
+    /// `gang`/`guild` (cmd_broadgang 0x585cc): bare = roster, args =
+    /// gangpath broadcast — both refuse without a gang (§1.6/§5.2).
+    /// Roster and broadcast land with the membership task.
+    fn gang_command(&mut self, session: SessionId, _message: &str) -> Resolution {
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+            return Resolution::Handled;
+        };
+        if player.gang.is_empty() {
+            self.output_line(session, text::NOT_IN_A_GANG);
+            return Resolution::Handled;
+        }
+        Resolution::FallThrough
+    }
+
+    /// `create` (cmd_create 0x57d4a): the GANG/GUILD subwords form a
+    /// gang (§1.1 — membership task); every other form is the DLL's
+    /// stubbed house-build path, which prints the lease line (§3.2).
+    fn create_command(&mut self, session: SessionId, args: &str) -> Resolution {
+        let (subword, _name) = split_word(args);
+        if subword.eq_ignore_ascii_case("gang") || subword.eq_ignore_ascii_case("guild") {
+            return Resolution::FallThrough; // membership task
+        }
+        self.output_line(session, text::GANG_HOUSE_LEASE_STUB);
+        Resolution::Handled
+    }
+
+    /// `join` (cmd_join 0x541fb): bare prints the syntax line; the GANG
+    /// subword joins (§1.3 — membership task); group/user joins are
+    /// unported (M8) and fall through.
+    fn join_command(&mut self, session: SessionId, args: &str) -> Resolution {
+        if args.trim().is_empty() {
+            self.output_line(session, text::SYNTAX_JOIN);
+            return Resolution::Handled;
+        }
+        let (subword, _name) = split_word(args);
+        if subword.eq_ignore_ascii_case("gang") || subword.eq_ignore_ascii_case("guild") {
+            return Resolution::FallThrough; // membership task
+        }
+        Resolution::FallThrough
+    }
+
+    fn invite_command(&mut self, _session: SessionId, _name: &str) -> Resolution {
+        Resolution::FallThrough // membership task
+    }
+
+    fn uninvite_command(&mut self, _session: SessionId, _name: &str) -> Resolution {
+        Resolution::FallThrough // membership task
+    }
+
+    fn promote_command(&mut self, _session: SessionId, _name: &str, _promote: bool) -> Resolution {
+        Resolution::FallThrough // membership task
+    }
+
+    fn disband_command(&mut self, _session: SessionId, _args: &str) -> Resolution {
+        Resolution::FallThrough // membership task
+    }
+
+    fn leave_command(&mut self, _session: SessionId, _args: &str) -> Resolution {
+        Resolution::FallThrough // membership task
+    }
+
+    fn stock_command(&mut self, _session: SessionId, _args: &str) -> Resolution {
+        Resolution::FallThrough // guild-house task
+    }
+
+    fn unstock_command(&mut self, _session: SessionId, _args: &str) -> Resolution {
+        Resolution::FallThrough // guild-house task
+    }
+
+    fn markup_command(&mut self, _session: SessionId, _args: &str) -> Resolution {
+        Resolution::FallThrough // guild-house task
     }
 
     /// Test/inspection: the runtime hidden byte (`+0x5f6`).

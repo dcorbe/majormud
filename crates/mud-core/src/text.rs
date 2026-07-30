@@ -709,6 +709,22 @@ pub const HELP_BANNER: &str = "Type HELP followed by a topic for help on that to
 /// VERIFIED (oracle): the top command header.
 pub const TOP_HEADER: &str = "Top Heroes of the Realm\n-=-=-=-=-=-=-=-=-=-=-=-";
 
+// --- gangs (M7 slice 7, gangs.md; literals from the DLL string table
+// unless tagged otherwise) ---
+
+/// DLL 0x48a9e4 — bare GANG with no gang, and GANG <msg> with no gang
+/// (cmd_broadgang, gangs.md §5.2).
+pub const NOT_IN_A_GANG: &str = "You are not in a gang at the present!";
+
+/// DLL literal (cmd_join margc==1, gangs.md §1.3). Group/user joins are
+/// unported (M8) — the line still names them, as the DLL's does.
+pub const SYNTAX_JOIN: &str = "Syntax: JOIN {group number} or {user name} or GANG {gangname}";
+
+/// DLL 0x489467 — every arm of the stubbed house-build path AND
+/// `BUY ROOM` outside a storefront (gangs.md §3.1-§3.2). ORACLE-VERIFY:
+/// whether bare CREATE prints this same stub is unmeasured.
+pub const GANG_HOUSE_LEASE_STUB: &str = "If you are a gang leader you may lease a Gang House.";
+
 // --- inventory strings (VERIFIED oracle_m4_items.raw / round2) ---
 pub const CARRYING_NOTHING: &str = "You are carrying Nothing!";
 pub const NO_KEYS: &str = "You have no keys.";

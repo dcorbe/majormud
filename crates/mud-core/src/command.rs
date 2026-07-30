@@ -32,7 +32,9 @@ pub enum Command {
     /// abbreviation: `in`/`inv` fall through to say (MEASURED).
     Invoke(String),
     Help,
-    Top,
+    /// `top [n] [gangs]` — the ranking listings (gangs.md §5.1). The
+    /// gangs arm ships in M7; the player arm is a stub.
+    Top(String),
     Train,
     /// `attack [target]` — empty target means auto-pick.
     Attack(String),
@@ -91,6 +93,33 @@ pub enum Command {
     Use(String),
     /// `read <item>` — like `use`, plus the unowned-item description path.
     Read(String),
+    /// `gang [message]` / `guild [message]` — bare = roster, args =
+    /// broadgang (cmd_broadgang 0x585cc, gangs.md §1.6/§5.2).
+    Gang(String),
+    /// `create gang|guild <name>` (cmd_create 0x57d4a); other forms hit
+    /// the DLL's stubbed house-build path (gangs.md §3.2).
+    Create(String),
+    /// `join gang <name>` (cmd_join 0x541fb); bare prints the syntax
+    /// line. Party/group joins are unported (M8) — they fall through.
+    Join(String),
+    /// `invite <name>` — leader/lieutenant only (gangs.md §1.2).
+    Invite(String),
+    /// `uninvite <name>` — remove a member, online or offline (§1.4).
+    Uninvite(String),
+    /// `promote <name>` / `demote <name>` — lieutenant rank (§1.5).
+    Promote(String),
+    Demote(String),
+    /// `disband gang` — leader only (§1.4).
+    Disband(String),
+    /// `leave gang` — non-leader departure (§1.4). Bare/other forms
+    /// fall through.
+    Leave(String),
+    /// Gang stock-shop verbs (cmd_stock 0x52b1e / cmd_unstock 0x5326b /
+    /// cmd_markup 0x53715, gangs.md §3.1 — behavior lands with the
+    /// guild-house task).
+    Stock(String),
+    Unstock(String),
+    Markup(String),
     /// Shop commands.
     List,
     Buy(String),
@@ -143,7 +172,7 @@ enum Verb {
 /// All direction minimums are ORACLE-verified (oracle_directions.raw):
 /// north/south/west = full word, east = 3 (eat blocks 2), down = 3,
 /// up = 2, diagonals = 6. Hand-authored asymmetry is the original's.
-const VERBS: [(&str, usize, Verb); 55] = [
+const VERBS: [(&str, usize, Verb); 68] = [
     ("north", 5, Verb::Plain(|| Command::Move(Direction::North))),
     ("south", 5, Verb::Plain(|| Command::Move(Direction::South))),
     ("east", 3, Verb::Plain(|| Command::Move(Direction::East))),
@@ -208,7 +237,7 @@ const VERBS: [(&str, usize, Verb); 55] = [
     ("spells", 2, Verb::Plain(|| Command::Spells)),
     // ORACLE-VERIFY min abbrev: unmeasured; 2 is unambiguous.
     ("powers", 2, Verb::Plain(|| Command::Powers)),
-    ("top", 2, Verb::Plain(|| Command::Top)),       // ORACLE: to (t says)
+    ("top", 2, Verb::WithArgs(Command::Top)),       // ORACLE: to (t says)
     ("train", 4, Verb::Plain(|| Command::Train)),   // ORACLE: trai (tra says)
     ("quit", 1, Verb::Plain(|| Command::Quit)),     // ORACLE: q
     // OURS (divergence): no DLL surface exists — full word only.
@@ -232,6 +261,31 @@ const VERBS: [(&str, usize, Verb); 55] = [
     // ("dr") and "d" stays the down alias.
     ("disarm", 3, Verb::WithArgs(Command::Disarm)),
     ("forgive", 4, Verb::WithArgs(Command::Forgive)),
+    // --- M7 slice 7: gangs (gangs.md §1, §5). Every minimum below is
+    // ORACLE-VERIFY (parse_command's compiled tree, combat_rounds.md) —
+    // chosen non-colliding against the measured entries above. ---
+    // `g` stays get's measured single letter; gang starts at 2.
+    ("gang", 2, Verb::WithArgs(Command::Gang)),
+    ("guild", 2, Verb::WithArgs(Command::Gang)),
+    ("create", 2, Verb::WithArgs(Command::Create)),
+    // `j` stays jumpkick's single letter.
+    ("join", 2, Verb::WithArgs(Command::Join)),
+    // `in`/`inv` are MEASURED say (§8.12) — invite cannot start below 4
+    // ("invi" vs inventory's "inve" and invoke's "invo").
+    ("invite", 4, Verb::WithArgs(Command::Invite)),
+    // Listed before unstock: "un"/"uni" reach uninvite, "uns" unstock.
+    ("uninvite", 2, Verb::WithArgs(Command::Uninvite)),
+    ("unstock", 3, Verb::WithArgs(Command::Unstock)),
+    // "pu"/"pi"/"po" are taken (punch/picklock/powers); "pr" is free.
+    ("promote", 2, Verb::WithArgs(Command::Promote)),
+    // "de" is free — deposit keeps its measured 3 ("dep").
+    ("demote", 2, Verb::WithArgs(Command::Demote)),
+    // "dis" stays disarm's; disband starts at 4.
+    ("disband", 4, Verb::WithArgs(Command::Disband)),
+    ("leave", 2, Verb::WithArgs(Command::Leave)),
+    // "st"/"sta" stay status's measured matches; stock starts at 3.
+    ("stock", 3, Verb::WithArgs(Command::Stock)),
+    ("markup", 2, Verb::WithArgs(Command::Markup)),
 ];
 
 pub fn parse(input: &str) -> Command {
