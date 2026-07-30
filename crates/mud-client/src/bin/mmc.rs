@@ -287,6 +287,18 @@ fn farm_command(
             _ = tokio::signal::ctrl_c() => None,
         };
 
+        // Say why the run stopped BEFORE walking home, so the two read
+        // in the order they happened. Printing the walk first made
+        // "interrupted" look like it was the walk that got interrupted.
+        match &outcome {
+            None => eprintln!("interrupted"),
+            Some(Ok((end, stats))) => println!(
+                "{end:?}: {} kills, {} laps, {} flees, {} slowdowns, {} interrupts",
+                stats.kills, stats.loops, stats.flees, stats.slowdowns, stats.interrupts
+            ),
+            Some(Err(e)) => eprintln!("farm: {e}"),
+        }
+
         // Walk home on every route out of the run, interrupted included.
         // Ctrl-C is the commonest way a farm ends, so a finish walk that
         // only ran on a clean finish would miss the case that matters.
@@ -301,26 +313,11 @@ fn farm_command(
         }
 
         match outcome {
-            None => {
-                eprintln!("interrupted");
-                ExitCode::FAILURE
-            }
-            Some(Ok((end, stats))) => {
-                println!(
-                    "{end:?}: {} kills, {} laps, {} flees, {} slowdowns, {} interrupts",
-                    stats.kills, stats.loops, stats.flees, stats.slowdowns, stats.interrupts
-                );
-                match end {
-                    // Both mean the patrol stopped short because the
-                    // character could not go on.
-                    FarmEnd::Died | FarmEnd::TooHurt => ExitCode::FAILURE,
-                    _ => ExitCode::SUCCESS,
-                }
-            }
-            Some(Err(e)) => {
-                eprintln!("farm: {e}");
-                ExitCode::FAILURE
-            }
+            None | Some(Err(_)) => ExitCode::FAILURE,
+            // Both mean the patrol stopped short because the character
+            // could not go on.
+            Some(Ok((FarmEnd::Died | FarmEnd::TooHurt, _))) => ExitCode::FAILURE,
+            Some(Ok(_)) => ExitCode::SUCCESS,
         }
     })
 }

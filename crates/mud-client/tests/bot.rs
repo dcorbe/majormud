@@ -438,3 +438,29 @@ fn a_refused_target_is_not_attacked_again() {
 
     assert!(actions.is_empty(), "re-attacked a target the board already refused: {actions:?}");
 }
+
+/// PROOF of the death-detection gap, not a fix for it.
+///
+/// `DEATH_MARK` is the single phrase "falls to the ground", but death
+/// lines are per-template prose: only 67 of the 1085 monsters carrying a
+/// death record use that wording. The other 1018 -- "The filthbug
+/// collapses, its legs curling tightly around it." and friends -- leave
+/// the bot latched on a corpse forever, which is the same hang the
+/// refusal handling fixed for a different cause.
+#[test]
+fn an_unrecognised_death_line_leaves_the_bot_latched() {
+    let mut bot = combat_bot();
+    bot.on_event(&room(&["filthbug"]));
+    assert_eq!(bot.engaged(), Some("filthbug"));
+
+    // Verbatim from the shipped data: message 31, messageline3.
+    bot.on_event(&Event::Line(
+        "The filthbug collapses, its legs curling tightly around it.".into(),
+    ));
+
+    assert_eq!(
+        bot.engaged(),
+        Some("filthbug"),
+        "documents the bug: the kill went unnoticed and the latch is stuck"
+    );
+}
