@@ -21,7 +21,7 @@ pub enum Command {
         /// Character profile (TOML)
         #[arg(long)]
         profile: PathBuf,
-        /// Capture basename: writes <capture>.raw and <capture>_timing.log
+        /// Capture basename: writes `<capture>.raw` and `<capture>_timing.log`
         #[arg(long)]
         capture: Option<PathBuf>,
     },
@@ -32,8 +32,8 @@ pub enum Command {
         /// Character profile (TOML)
         #[arg(long)]
         profile: PathBuf,
-        /// Capture basename: writes <capture>.raw and
-        /// <capture>_timing.log; sections land in <capture>_sections.json
+        /// Capture basename: writes `<capture>.raw` and
+        /// `<capture>_timing.log`; sections land in `<capture>_sections.json`
         #[arg(long)]
         capture: Option<PathBuf>,
     },
@@ -49,13 +49,13 @@ pub enum Command {
     },
     /// Walk the profile's patrol circuit, farming each stop
     Farm {
-        /// Character profile (TOML); needs a [farm] table
+        /// Character profile (TOML); needs a `[farm]` table
         #[arg(long)]
         profile: PathBuf,
-        /// Capture basename: writes <capture>.raw and <capture>_timing.log
+        /// Capture basename: writes `<capture>.raw` and `<capture>_timing.log`
         #[arg(long)]
         capture: Option<PathBuf>,
-        /// Room database, overriding the profile's [farm].content
+        /// Room database, overriding the profile's `[farm].content`
         #[arg(long)]
         content: Option<PathBuf>,
     },

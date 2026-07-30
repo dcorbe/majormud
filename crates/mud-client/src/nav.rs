@@ -2,6 +2,20 @@
 //! confirming each arrival by the parsed room name. Never blind —
 //! desyncs (lag, blocked exits, combat interruptions) surface as
 //! errors or re-localization, not silent drift.
+//!
+//! Two things the walker knows how to do beyond putting one foot in
+//! front of the other:
+//!
+//! - **Doors.** A route through a door or gate (exit types 2, 7, 0xb)
+//!   opens it rather than stopping at it, falling back to bashing when
+//!   `open` will not shift it. Only the graph decides an exit is a door;
+//!   see [`Navigator::goto`]'s step handling.
+//! - **Working out where it is.** [`Navigator::localize`] answers from a
+//!   room name alone and is therefore limited to one hop, because names
+//!   repeat across the ~26k-room world. [`Navigator::localize_view`]
+//!   answers from a whole room block, using the exits to tell same-named
+//!   rooms apart, and so can recover from arbitrary displacement — a
+//!   flee chain, a recall — rather than giving up.
 
 use std::sync::Arc;
 

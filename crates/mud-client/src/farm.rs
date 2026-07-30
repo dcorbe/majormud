@@ -6,6 +6,22 @@
 //! every leg between them is checked against the room graph up front —
 //! a typo in `[farm].circuit` must fail before the client connects, not
 //! halfway around the lap with a live character standing in a spawn.
+//!
+//! `[farm].start` is where the character *stands at login*, not where the
+//! farming happens. The runner verifies it by room name and then walks
+//! the first leg onto the circuit itself, so the two are often different
+//! rooms — a town room to log in at, a lair to farm.
+//!
+//! `[farm].finish_at` is where to leave the character when the run stops.
+//! Without it a run ends wherever it happened to be, which for a lair
+//! circuit means standing among the monsters with nobody driving. See
+//! [`go_to_finish`], which the caller runs on every exit route rather
+//! than [`run_farm`] running it internally — Ctrl-C cancels `run_farm`,
+//! and that is the commonest way a farm ends.
+//!
+//! **There is no dry run.** Building the plan validates the configuration,
+//! but `mmc farm` connects and starts farming as soon as the start room
+//! checks out; there is no way to ask it only to check the config.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -598,7 +614,7 @@ impl crate::nav::TravelGuard for FarmGuard {
 ///   the leg back up. `[farm].depart_at_percent` still keeps a wounded
 ///   character from setting off; what is new is that aggro in transit
 ///   is fought rather than merely survived.
-/// - **Farm** is a fresh [`Bot`] per stop — latches start clean, so no
+/// - **Farm** is a fresh [`crate::bot::Bot`] per stop — latches start clean, so no
 ///   reset API is needed — driven by the pump below.
 /// - **Recover** is what happens when a flee moves the character with no
 ///   navigator involved: work out where it landed, walk back, and after
