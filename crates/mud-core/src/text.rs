@@ -830,6 +830,66 @@ pub fn gang_left_room(name: &str, gang: &str) -> String {
     format!("{name} has left {gang}.")
 }
 
+// cmd_uninvite (0x5699f) — §1.4 (the MEMBER arm).
+pub const SYNTAX_UNINVITE: &str = "Syntax: UNINVITE {user name}";
+pub const GANG_UNINVITE_RANK: &str =
+    "You must be the leader or lieutenant of your gang to uninvite members!";
+pub const GANG_UNINVITE_LEADER: &str = "You are not able to uninvite the gang leader.";
+pub const GANG_UNINVITE_LT: &str = "You must be the gang leader to uninvite a lieutenant!";
+pub const GANG_INSOLENCE: &str =
+    "Such insolence as this may not be tolerated if the gang leader were to be informed.";
+pub const WHY_UNINVITE_YOURSELF: &str = "Why would you uninvite yourself?";
+/// Offline removal echoes the name AS TYPED; the online form uses the
+/// resolved name.
+pub fn gang_removed_offline(name: &str) -> String {
+    format!("You removed {name} from your gang.")
+}
+pub fn gang_removed(name: &str) -> String {
+    format!("You have removed {name} from your gang.")
+}
+pub fn gang_exiled(leader: bool, actor: &str, gang: &str) -> String {
+    let rank = if leader { "Gang leader " } else { "Lieutenant " };
+    format!("{rank}{actor} has exiled you from {gang}.")
+}
+pub fn gang_not_in_yours(name: &str) -> String {
+    format!("{name} is not in your gang.")
+}
+
+// cmd_promote (0x5adb4) / cmd_demote (0x5b193) — §1.5. Both are silent
+// no-ops for non-leaders and multi-word names (margc == 2 gate).
+pub const SYNTAX_PROMOTE: &str = "Syntax: PROMOTE {user name}";
+pub const SYNTAX_DEMOTE: &str = "Syntax: DEMOTE {user name}";
+/// The DLL reuses the demote-yourself line for self-PROMOTE too.
+pub const GANG_SELF_PROMOTE: &str =
+    "You may not demote yourself to lieutenant. Your gang needs a leader!";
+pub const GANG_SELF_DEMOTE: &str = "You wish to demote yourself from leader of your gang?";
+/// Online arms (the trailing "!." on promote is the DLL's).
+pub const GANG_PROMOTE_NOT_MEMBER: &str =
+    "You may not promote somebody who is not in your gang!.";
+pub const GANG_DEMOTE_NOT_MEMBER: &str =
+    "You may not demote someone who is not in your gang!";
+/// Demote's OFFLINE gang-mismatch wording (period, "somebody").
+pub const GANG_DEMOTE_NOT_MEMBER_OFFLINE: &str =
+    "You may not demote somebody who is not in your gang.";
+pub const GANG_PROMOTE_LEADER: &str = "You may not promote your gang leader!";
+pub const GANG_PROMOTED_YOU: &str =
+    "Your gang leader has promoted you to the rank of lieutenant.";
+pub const GANG_DEMOTED_YOU: &str = "Your gang leader has demoted you.";
+pub fn gang_rank_notified(name: &str, promote: bool) -> String {
+    let what = if promote { "promotion" } else { "demotion" };
+    format!("Gang member {name} has been notified of their {what}.")
+}
+pub fn gang_rank_deferred(name: &str, promote: bool) -> String {
+    let what = if promote { "promotion" } else { "demotion" };
+    format!("Gang member {name} will be notified of their {what} next time they log on.")
+}
+pub fn gang_already_lt(name: &str) -> String {
+    format!("Gang member {name} is already a lieutenant in your gang.")
+}
+pub fn gang_invite_first(name: &str) -> String {
+    format!("Perhaps you should invite {name} into your gang first.")
+}
+
 // cmd_disband (0x58725) + the 0x88 confirmation arm (3741) — §1.4.
 pub const GANG_NOT_IN_BANG: &str = "You are not in a gang!";
 pub const GANG_NOT_THE_LEADER_DISBAND: &str =

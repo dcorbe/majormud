@@ -710,3 +710,229 @@ fn disband_decline_and_gates() {
     let out = texts(&core2.drain_events(), t[0]);
     assert!(out.contains("You are not in a gang!"), "{out:?}");
 }
+
+// --- §1.4 UNINVITE MEMBER ---
+
+#[test]
+fn leader_uninvites_online_member() {
+    let (mut core, s) = gang_world(&[("Salad", true, 0), ("Grunt", true, 0)]);
+    core.input(s[0], "uninvite member Grunt");
+    let events = core.drain_events();
+    assert!(
+        texts(&events, s[1]).contains("Gang leader Salad has exiled you from Iron Fist."),
+        "{:?}", texts(&events, s[1])
+    );
+    assert!(
+        texts(&events, s[0]).contains("You have removed Grunt from your gang."),
+        "{:?}", texts(&events, s[0])
+    );
+    assert_eq!(core.gang("Iron Fist").unwrap().member_count, 0);
+    assert!(
+        events.iter().any(|e| matches!(e, Event::Persist(p) if p.name == "Grunt" && p.gang.is_empty())),
+    );
+}
+
+#[test]
+fn uninvite_rank_gates() {
+    use mud_core::gang::GF_LIEUTENANT;
+    let (mut core, s) = gang_world(&[
+        ("Salad", true, 0),
+        ("Vex", true, GF_LIEUTENANT),
+        ("Kord", true, GF_LIEUTENANT),
+        ("Grunt", true, 0),
+    ]);
+    // Lieutenant removing a lieutenant.
+    core.input(s[1], "uninvite member Kord");
+    let out = texts(&core.drain_events(), s[1]);
+    assert!(out.contains("You must be the gang leader to uninvite a lieutenant!"), "{out:?}");
+    // Typing the leader's exact name.
+    core.input(s[1], "uninvite member Salad");
+    let out = texts(&core.drain_events(), s[1]);
+    assert!(out.contains("You are not able to uninvite the gang leader."), "{out:?}");
+    // Reaching the leader by abbreviation slips the name gate and hits
+    // the insolence arm instead.
+    core.input(s[1], "uninvite member Sal");
+    let out = texts(&core.drain_events(), s[1]);
+    assert!(out.contains("Such insolence as this may not be tolerated"), "{out:?}");
+    // A plain member has no rank at all.
+    core.input(s[3], "uninvite member Vex");
+    let out = texts(&core.drain_events(), s[3]);
+    assert!(
+        out.contains("You must be the leader or lieutenant of your gang to uninvite members!"),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn uninvite_offline_member_and_misc() {
+    use mud_core::gang::Gang;
+    let config = CoreConfig {
+        restored_gangs: {
+            let mut g = Gang::new("Iron Fist", "Salad", 0);
+            g.member_count = 2;
+            vec![g]
+        },
+        restored_gang_members: vec![
+            ("Salad".into(), "Iron Fist".into(), 0),
+            ("Ghost".into(), "Iron Fist".into(), 0),
+        ],
+        ..CoreConfig::default()
+    };
+    let mut core = Core::new(world(), config);
+    let mut leader = person("Salad");
+    leader.gang = "Iron Fist".into();
+    let s = core.attach_player(leader);
+    core.drain_events();
+
+    // Offline removal prints the name AS TYPED and emits the offline
+    // row write.
+    core.input(s, "uninvite member ghost");
+    let events = core.drain_events();
+    assert!(
+        texts(&events, s).contains("You removed ghost from your gang."),
+        "{:?}", texts(&events, s)
+    );
+    assert_eq!(core.gang("Iron Fist").unwrap().member_count, 1);
+    assert!(
+        events.iter().any(|e| matches!(e, Event::PersistOfflineGangMember { name, clear_gang: true, .. } if name == "Ghost")),
+        "offline clear event"
+    );
+    // Roster no longer lists Ghost.
+    core.input(s, "gang");
+    assert!(!texts(&core.drain_events(), s).contains("Ghost"));
+
+    // Unknown name — the bang line with the name as typed.
+    core.input(s, "uninvite member nobody");
+    let out = texts(&core.drain_events(), s);
+    assert!(out.contains("You don't see nobody here!"), "{out:?}");
+
+    // Self, bare, and the unported party arm.
+    core.input(s, "uninvite member Salad");
+    let out = texts(&core.drain_events(), s);
+    assert!(out.contains("You are not able to uninvite the gang leader."), "{out:?}");
+    core.input(s, "uninvite");
+    let out = texts(&core.drain_events(), s);
+    assert!(out.contains("Syntax: UNINVITE {user name}"), "{out:?}");
+    core.input(s, "uninvite Salad");
+    let out = texts(&core.drain_events(), s);
+    assert!(out.contains("You say"), "party-follow arm falls through: {out:?}");
+}
+
+// --- §1.5 PROMOTE / DEMOTE ---
+
+#[test]
+fn promote_and_demote_online() {
+    use mud_core::gang::GF_LIEUTENANT;
+    let (mut core, s) = gang_world(&[("Salad", true, 0), ("Grunt", true, 0)]);
+    core.input(s[0], "promote Grunt");
+    let events = core.drain_events();
+    assert!(
+        texts(&events, s[1]).contains("Your gang leader has promoted you to the rank of lieutenant."),
+    );
+    assert!(
+        texts(&events, s[0]).contains("Gang member Grunt has been notified of their promotion."),
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, Event::Persist(p)
+            if p.name == "Grunt" && p.gang_flags & GF_LIEUTENANT != 0)),
+    );
+    // The roster reflects the new rank.
+    core.input(s[0], "gang");
+    let out = texts(&core.drain_events(), s[0]);
+    assert!(out.contains("[Lieutenant]"), "{out:?}");
+
+    core.input(s[0], "demote Grunt");
+    let events = core.drain_events();
+    assert!(texts(&events, s[1]).contains("Your gang leader has demoted you."));
+    assert!(
+        texts(&events, s[0]).contains("Gang member Grunt has been notified of their demotion."),
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, Event::Persist(p)
+            if p.name == "Grunt" && p.gang_flags & GF_LIEUTENANT == 0)),
+    );
+}
+
+#[test]
+fn promote_and_demote_offline_set_pending_bits() {
+    use mud_core::gang::{Gang, GF_PENDING_DEMOTE, GF_PENDING_PROMOTE};
+    let config = CoreConfig {
+        restored_gangs: vec![Gang::new("Iron Fist", "Salad", 0)],
+        restored_gang_members: vec![
+            ("Salad".into(), "Iron Fist".into(), 0),
+            ("Ghost".into(), "Iron Fist".into(), 0),
+        ],
+        ..CoreConfig::default()
+    };
+    let mut core = Core::new(world(), config);
+    let mut leader = person("Salad");
+    leader.gang = "Iron Fist".into();
+    let s = core.attach_player(leader);
+    core.drain_events();
+
+    core.input(s, "promote ghost");
+    let events = core.drain_events();
+    assert!(
+        texts(&events, s)
+            .contains("Gang member Ghost will be notified of their promotion next time they log on."),
+        "record casing in the notice: {:?}", texts(&events, s)
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, Event::PersistOfflineGangMember { name, or_mask, clear_gang: false, .. }
+            if name == "Ghost" && or_mask & GF_PENDING_PROMOTE != 0)),
+    );
+
+    core.input(s, "demote ghost");
+    let events = core.drain_events();
+    assert!(
+        texts(&events, s)
+            .contains("Gang member Ghost will be notified of their demotion next time they log on."),
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, Event::PersistOfflineGangMember { name, or_mask, clear_gang: false, .. }
+            if name == "Ghost" && or_mask & GF_PENDING_DEMOTE != 0)),
+    );
+}
+
+#[test]
+fn promote_demote_gates() {
+    use mud_core::gang::GF_LIEUTENANT;
+    let (mut core, s) = gang_world(&[
+        ("Salad", true, 0),
+        ("Vex", true, GF_LIEUTENANT),
+        ("Torgo", false, 0),
+    ]);
+    // Self: the DLL's reused demote-yourself line.
+    core.input(s[0], "promote Salad");
+    let out = texts(&core.drain_events(), s[0]);
+    assert!(
+        out.contains("You may not demote yourself to lieutenant. Your gang needs a leader!"),
+        "{out:?}"
+    );
+    core.input(s[0], "demote Salad");
+    let out = texts(&core.drain_events(), s[0]);
+    assert!(out.contains("You wish to demote yourself from leader of your gang?"), "{out:?}");
+    // Online non-member (note the two arms' different wording, sic).
+    core.input(s[0], "promote Torgo");
+    let out = texts(&core.drain_events(), s[0]);
+    assert!(out.contains("You may not promote somebody who is not in your gang!."), "{out:?}");
+    core.input(s[0], "demote Torgo");
+    let out = texts(&core.drain_events(), s[0]);
+    assert!(out.contains("You may not demote someone who is not in your gang!"), "{out:?}");
+    // Non-leader: silent consume (the decompile has no else arm).
+    core.input(s[1], "promote Torgo");
+    let out = texts(&core.drain_events(), s[1]);
+    assert!(!out.contains("notified") && !out.contains("You say"), "{out:?}");
+    // Bare: syntax.
+    core.input(s[0], "promote");
+    let out = texts(&core.drain_events(), s[0]);
+    assert!(out.contains("Syntax: PROMOTE {user name}"), "{out:?}");
+    // Unknown offline name: the syntax line again (the DLL quirk).
+    core.input(s[0], "promote nobody");
+    let out = texts(&core.drain_events(), s[0]);
+    assert!(out.contains("Syntax: PROMOTE {user name}"), "{out:?}");
+    // Multi-word names never reach the command (margc == 2 gate).
+    core.input(s[0], "promote Iron Fist");
+    let out = texts(&core.drain_events(), s[0]);
+    assert!(!out.contains("Syntax") && !out.contains("You say"), "{out:?}");
+}

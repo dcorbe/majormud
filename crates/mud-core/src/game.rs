@@ -8769,12 +8769,261 @@ impl Core {
         Resolution::Handled
     }
 
-    fn uninvite_command(&mut self, _session: SessionId, _name: &str) -> Resolution {
-        Resolution::FallThrough // membership task
+    /// `uninvite` (cmd_uninvite 0x5699f). Only the MEMBER arm is
+    /// ported; plain `UNINVITE <name>` is the party follow-list (M8
+    /// PENDING) and falls through.
+    fn uninvite_command(&mut self, session: SessionId, args: &str) -> Resolution {
+        if args.trim().is_empty() {
+            self.output_line(session, text::SYNTAX_UNINVITE);
+            return Resolution::Handled;
+        }
+        let (subword, name) = split_word(args);
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+            return Resolution::Handled;
+        };
+        let key = player.gang.to_uppercase();
+        if !subword.eq_ignore_ascii_case("member")
+            || name.is_empty()
+            || player.gang.is_empty()
+            || !self.gangs.contains_key(&key)
+        {
+            return Resolution::FallThrough;
+        }
+        let actor = player.name.clone();
+        let actor_lt = player.gang_flags & crate::gang::GF_LIEUTENANT != 0;
+        let room = player.location;
+        let gang = &self.gangs[&key];
+        let is_leader = gang.is_leader(&actor);
+        let gang_display = gang.display.clone();
+        let leader_name = gang.leader.clone();
+        if !is_leader && !actor_lt {
+            self.output_line(session, text::GANG_UNINVITE_RANK);
+            return Resolution::Handled;
+        }
+        if name.eq_ignore_ascii_case(&leader_name) {
+            self.output_line(session, text::GANG_UNINVITE_LEADER);
+            return Resolution::Handled;
+        }
+        let want = name.to_ascii_lowercase();
+        let target = self
+            .in_game_sessions()
+            .filter(|(_, p)| p.location == room)
+            .chain(self.in_game_sessions())
+            .find(|(_, p)| word_prefix_match(&p.name, &want))
+            .map(|(id, p)| (id, p.name.clone(), p.gang_flags));
+        let name = name.to_string();
+        let Some((target_id, target_name, target_flags)) = target else {
+            // Offline path (remove_offline_user_from_gang 0x4fd25): the
+            // saved row must carry this gang. NOTE the DLL skips the
+            // rank checks here — a lieutenant can offline-remove
+            // another lieutenant (faithful quirk).
+            let record = self.gang_members.get(&key).and_then(|members| {
+                members
+                    .iter()
+                    .find(|(n, _)| n.eq_ignore_ascii_case(&name))
+                    .map(|(n, _)| n.clone())
+            });
+            let Some(record_name) = record else {
+                let line = text::dont_see_here_bang(&name);
+                self.output_line(session, &line);
+                return Resolution::Handled;
+            };
+            if let Some(members) = self.gang_members.get_mut(&key) {
+                members.retain(|(n, _)| !n.eq_ignore_ascii_case(&record_name));
+            }
+            let gang = self.gangs.get_mut(&key).expect("checked above");
+            gang.member_count = gang.member_count.saturating_sub(1);
+            let gang_row = gang.clone();
+            self.events.push(Event::PersistGang(Box::new(gang_row)));
+            self.events.push(Event::PersistOfflineGangMember {
+                name: record_name,
+                or_mask: 0,
+                and_mask: !0,
+                clear_gang: true,
+            });
+            let line = text::gang_removed_offline(&name);
+            self.output_line(session, &line);
+            return Resolution::Handled;
+        };
+        if target_id == session {
+            self.output_line(session, text::WHY_UNINVITE_YOURSELF);
+            return Resolution::Handled;
+        }
+        if target_flags & crate::gang::GF_LIEUTENANT != 0 && !is_leader {
+            self.output_line(session, text::GANG_UNINVITE_LT);
+            return Resolution::Handled;
+        }
+        if target_name.eq_ignore_ascii_case(&leader_name) && actor_lt {
+            self.output_line(session, text::GANG_INSOLENCE);
+            return Resolution::Handled;
+        }
+        // The exile notice goes out BEFORE the strip (the DLL's order —
+        // remove_from_gang needs the target's gang string intact too).
+        let exile = text::gang_exiled(is_leader, &actor, &gang_display);
+        let in_gang = self
+            .player(target_id)
+            .gang
+            .eq_ignore_ascii_case(&gang_display);
+        if !in_gang || !{
+            self.output_line(target_id, &exile);
+            self.remove_from_gang(target_id)
+        } {
+            let line = text::gang_not_in_yours(&target_name);
+            self.output_line(session, &line);
+            return Resolution::Handled;
+        }
+        let line = text::gang_removed(&target_name);
+        self.output_line(session, &line);
+        Resolution::Handled
     }
 
-    fn promote_command(&mut self, _session: SessionId, _name: &str, _promote: bool) -> Resolution {
-        Resolution::FallThrough // membership task
+    /// `promote`/`demote` (0x5adb4/0x5b193, §1.5). Leader-only; silent
+    /// consume for non-leaders, gangless actors, and multi-word names
+    /// (the margc == 2 gate). Online targets flip the bit immediately;
+    /// offline targets get the pending bit on their saved row.
+    fn promote_command(&mut self, session: SessionId, args: &str, promote: bool) -> Resolution {
+        let syntax = if promote { text::SYNTAX_PROMOTE } else { text::SYNTAX_DEMOTE };
+        let args = args.trim();
+        if args.is_empty() {
+            self.output_line(session, syntax);
+            return Resolution::Handled;
+        }
+        if args.split_whitespace().nth(1).is_some() {
+            return Resolution::Handled; // margc > 2: silent consume
+        }
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+            return Resolution::Handled;
+        };
+        if player.gang.is_empty() {
+            return Resolution::Handled; // silent
+        }
+        let actor = player.name.clone();
+        let key = player.gang.to_uppercase();
+        let Some(gang) = self.gangs.get(&key) else {
+            return Resolution::Handled;
+        };
+        if !gang.is_leader(&actor) {
+            return Resolution::Handled; // silent
+        }
+        let gang_display = gang.display.clone();
+        let leader_name = gang.leader.clone();
+        // find_any_action_target: online anywhere.
+        let want = args.to_ascii_lowercase();
+        let target = self
+            .in_game_sessions()
+            .find(|(_, p)| word_prefix_match(&p.name, &want))
+            .map(|(id, p)| (id, p.name.clone(), p.gang.clone()));
+        match target {
+            Some((target_id, _, _)) if target_id == session => {
+                self.output_line(
+                    session,
+                    if promote { text::GANG_SELF_PROMOTE } else { text::GANG_SELF_DEMOTE },
+                );
+            }
+            Some((target_id, target_name, target_gang)) => {
+                if !target_gang.eq_ignore_ascii_case(&gang_display) {
+                    self.output_line(
+                        session,
+                        if promote {
+                            text::GANG_PROMOTE_NOT_MEMBER
+                        } else {
+                            text::GANG_DEMOTE_NOT_MEMBER
+                        },
+                    );
+                    return Resolution::Handled;
+                }
+                if promote && target_name.eq_ignore_ascii_case(&leader_name) {
+                    self.output_line(session, text::GANG_PROMOTE_LEADER);
+                    return Resolution::Handled;
+                }
+                // Idempotent set/clear — the DLL never checks the
+                // current online state.
+                let snapshot = {
+                    let Some(Session::InGame { player, .. }) =
+                        self.sessions.get_mut(&target_id)
+                    else {
+                        return Resolution::Handled;
+                    };
+                    if promote {
+                        player.gang_flags |= crate::gang::GF_LIEUTENANT;
+                    } else {
+                        player.gang_flags &= !crate::gang::GF_LIEUTENANT;
+                    }
+                    player.clone()
+                };
+                if let Some(members) = self.gang_members.get_mut(&key) {
+                    for (n, f) in members.iter_mut() {
+                        if n.eq_ignore_ascii_case(&target_name) {
+                            *f = snapshot.gang_flags;
+                        }
+                    }
+                }
+                self.output_line(
+                    target_id,
+                    if promote { text::GANG_PROMOTED_YOU } else { text::GANG_DEMOTED_YOU },
+                );
+                let line = text::gang_rank_notified(&target_name, promote);
+                self.output_line(session, &line);
+                self.events.push(Event::Persist(snapshot));
+            }
+            None => {
+                // Offline: the saved row by exact name — searched across
+                // the whole mirror (the DLL loads any WCCUSERS record; a
+                // GANGLESS offline player is invisible to the mirror and
+                // gets the syntax line — documented divergence, the DLL
+                // would say the invite-first line).
+                let record = self
+                    .gang_members
+                    .iter()
+                    .find_map(|(gkey, members)| {
+                        members
+                            .iter()
+                            .find(|(n, _)| n.eq_ignore_ascii_case(args))
+                            .map(|(n, f)| (gkey.clone(), n.clone(), *f))
+                    });
+                let Some((record_gang, record_name, record_flags)) = record else {
+                    self.output_line(session, syntax);
+                    return Resolution::Handled;
+                };
+                if record_gang != key {
+                    let line = if promote {
+                        text::gang_invite_first(&record_name)
+                    } else {
+                        text::GANG_DEMOTE_NOT_MEMBER_OFFLINE.to_string()
+                    };
+                    self.output_line(session, &line);
+                    return Resolution::Handled;
+                }
+                if promote && record_flags & crate::gang::GF_LIEUTENANT != 0 {
+                    let line = text::gang_already_lt(&record_name);
+                    self.output_line(session, &line);
+                    return Resolution::Handled;
+                }
+                // Demote sets the pending bit UNCONDITIONALLY on a gang
+                // match (no is-lieutenant check — decompile 55456).
+                let bit = if promote {
+                    crate::gang::GF_PENDING_PROMOTE
+                } else {
+                    crate::gang::GF_PENDING_DEMOTE
+                };
+                if let Some(members) = self.gang_members.get_mut(&key) {
+                    for (n, f) in members.iter_mut() {
+                        if n.eq_ignore_ascii_case(&record_name) {
+                            *f |= bit;
+                        }
+                    }
+                }
+                self.events.push(Event::PersistOfflineGangMember {
+                    name: record_name.clone(),
+                    or_mask: bit,
+                    and_mask: !0,
+                    clear_gang: false,
+                });
+                let line = text::gang_rank_deferred(&record_name, promote);
+                self.output_line(session, &line);
+            }
+        }
+        Resolution::Handled
     }
 
     /// `remove_from_gang` (0x4fc2f): clears membership + the Lieutenant
