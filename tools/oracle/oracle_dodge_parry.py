@@ -360,7 +360,7 @@ sess.dump(5.0)
 # /xgoto is a no-op and every look answers "You must choose a valid
 # race", which reads exactly like an empty world. One script swept
 # blind for two hours that way and burned the character entirely.
-if "valid race" in sess.clean()[-400:]:
+if re.search(r"valid race|choose your race", sess.clean()[-600:]):
     sys.exit("the account is at the CHARACTER CREATION screen — the "
              "character is gone (permadeath?). Recreate it before running.")
 note(f"=== config {CONFIG}: target {TARGET!r} ===")
@@ -435,6 +435,12 @@ cmd(f"/xcash {COPPER} copper", tag="purse", drain=1.0)
 # The analyzer's inputs: `st` gives Str/Agl/level, `i` gives the encumbrance
 # percent that sets `skill`, and both pin the configuration in the transcript.
 stats = cmd("st", tag="STATS (accuracy inputs)")
+# LIVES FLOOR: both campaign characters permadeathed when recovery
+# deaths quietly exhausted the budget. Refuse to run on a thin one.
+lm = re.search(r"Lives/CP:\s*(\d+)", stats)
+if lm and int(lm.group(1)) <= 3:
+    sys.exit(f"only {lm.group(1)} lives left — train a level (grants lives) "
+             f"or retire the character before running field work")
 inv = flat(cmd("i", tag="INVENTORY (encumbrance)"))
 
 # Trust the board, not the config: re-derive `ratings` from what is actually

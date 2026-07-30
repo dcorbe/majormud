@@ -203,11 +203,16 @@ sess.dump(5.0)
 # /xgoto is a no-op and every look answers "You must choose a valid
 # race", which reads exactly like an empty world. One script swept
 # blind for two hours that way and burned the character entirely.
-if "valid race" in sess.clean()[-400:]:
+if re.search(r"valid race|choose your race", sess.clean()[-600:]):
     sys.exit("the account is at the CHARACTER CREATION screen — the "
              "character is gone (permadeath?). Recreate it before running.")
 if (hp() or 0) < 0:
     die_and_revive()
+st_out = cmd("st", tag="stats", echo=False)
+# LIVES FLOOR (see oracle_dodge_parry.py)
+lm = re.search(r"Lives/CP:\s*(\d+)", st_out)
+if lm and int(lm.group(1)) <= 3:
+    sys.exit(f"only {lm.group(1)} lives left — refusing to run field work")
 cmd("/xcash 2000 copper", tag="heal purse")
 inv = " ".join(cmd("i", tag="inventory", echo=False).split())
 if WEAPON not in inv:

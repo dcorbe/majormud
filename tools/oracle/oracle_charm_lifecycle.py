@@ -257,6 +257,10 @@ sess.dump(5.0)
 if (hp() or 0) < 0:
     die_and_revive()
 st = cmd("st", tag="STATS on entry")
+# LIVES FLOOR (see oracle_dodge_parry.py)
+lm = re.search(r"Lives/CP:\s*(\d+)", st)
+if lm and int(lm.group(1)) <= 3:
+    sys.exit(f"only {lm.group(1)} lives left — refusing to run field work")
 spl = cmd("spells", tag="spellbook")
 if "char" not in spl:
     sys.exit("song of charming is not in the book; stage the Bard first")
