@@ -310,7 +310,20 @@ ids · `+0x776[30]` their values · `+0x90` race · `+0x92` class · `+0x94` lev
 
 ---
 
-## 7. As built (M7 slice 6, 2026-07-30)
+## 7. As built (M7 slice 6, 2026-07-30; slice-8 expedition 2026-07-31)
+
+> **Slice-8 live pass (`slice8_hand.raw`):** one real quest step ran
+> end-to-end on the board — `ask dhelvanen about help` returned the
+> greettxt-177 `help:180` dialogue block, and `give spider silk to
+> Dhelvanen` ran room 7/1008's cmdtext-181 chain (takeitem 481 →
+> messages → giveitem 466): "You give Dhelvanen some spider silk." /
+> "Dhelvanen gives you a green potion.", inventory confirmed both ways,
+> and the state survived a board restart. The §3 say-fallback model also
+> confirmed live: bare `ask` and an unresolved monster say at every
+> length; `as <npc> <q>` works from 2 ("healer has nothing to tell
+> you!" for a talktxt-less NPC). The offensive forced-cast arm (the 17
+> `cast` trap carriers) LANDED at the close-out — see §7.2's rehome
+> note and `quest_vm.rs`'s six trap pins.
 
 The whole system above is live in `crates/mud-core` (`questvm.rs` +
 `game.rs::perform_matched_action` and friends; tests in
