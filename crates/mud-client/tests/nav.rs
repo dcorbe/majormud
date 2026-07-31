@@ -633,3 +633,38 @@ fn localize_view_works_from_a_meaningless_hint() {
         Some(RoomId { map: 1, room: 2 })
     );
 }
+
+/// "The room is very dark - you can't see anything" answers BOTH walking
+/// into an unlit room and looking while stood in one. The navigator used
+/// to read it as arrival wherever it appeared, including here:
+///
+/// ```text
+/// There is no exit in that direction!
+/// [HP=46/MA=11]:look
+/// The room is very dark - you can't see anything
+/// ```
+///
+/// The board says the move did not happen, the walk asks where it is,
+/// cannot see — and the old code concluded it had ARRIVED at the room it
+/// had just been told it could not reach. `current` then ran a room ahead
+/// of the character and every later step compounded it, which is the
+/// desync that ended live cave-bear runs with a stray `s` into a wall.
+///
+/// The dark line is identical either way, so the only thing that can tell
+/// them apart is what was asked.
+#[test]
+fn a_dark_room_answers_a_look_and_a_move_with_the_same_line() {
+    use mud_client::nav::BlindContext;
+
+    // A direction was sent: dark is the destination reporting itself.
+    assert_eq!(
+        Navigator::blind_position(BlindContext::AfterMove, "Small Cavern", "Dungeon, Entrance"),
+        "Small Cavern"
+    );
+    // A look was sent, which moves nothing.
+    assert_eq!(
+        Navigator::blind_position(BlindContext::AfterLook, "Small Cavern", "Dungeon, Entrance"),
+        "Dungeon, Entrance",
+        "a blind look was read as arrival at the destination"
+    );
+}

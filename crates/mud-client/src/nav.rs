@@ -214,9 +214,25 @@ enum StepEvent {
     CombatBlocked,
     /// There is no such exit; the graph and the board disagree.
     NoSuchExit,
-    /// We moved, but the room is too dark to see: the board sent no room
-    /// block at all, only "you can't see anything".
-    ArrivedBlind,
+    /// The room is too dark to see: the board sent no room block at all,
+    /// only "you can't see anything".
+    ///
+    /// Deliberately NOT named "arrived" any more. The same line answers a
+    /// `look` from a standing start, so on its own it says nothing about
+    /// whether a step landed — see [`Navigator::blind_position`].
+    Blind,
+}
+
+/// What the walk had just asked when the board answered it could not see.
+///
+/// The dark line is identical either way, so the question is the only
+/// thing that distinguishes them. See [`Navigator::blind_position`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlindContext {
+    /// A direction was sent, so dark is the destination reporting itself.
+    AfterMove,
+    /// A `look` was sent, which moves nothing.
+    AfterLook,
 }
 
 pub struct Navigator {
@@ -333,12 +349,22 @@ impl Navigator {
                     .map(|e| e.exit_type)
                     .unwrap_or(0);
 
+                // The room the walk believes it is standing in. Needed
+                // because a dark answer means "still here" when it
+                // follows a look -- see Navigator::blind_position.
+                let here_name = self
+                    .graph
+                    .room(current)
+                    .map(|r| r.name.clone())
+                    .unwrap_or_default();
+
                 session.send(dir_word(step));
                 let outcome = self
                     .walk_step(
                         step,
                         exit_type,
                         &expected_name,
+                        &here_name,
                         session,
                         &mut events,
                         guard,
@@ -472,6 +498,38 @@ impl Navigator {
         }
     }
 
+    /// Where a blind answer leaves the walk.
+    ///
+    /// "The room is very dark - you can't see anything" is printed BOTH on
+    /// entering an unlit room AND in reply to a `look` while standing in
+    /// one. It is evidence about the ROOM, never about whether a step
+    /// landed, and this code used to read it as arrival wherever it turned
+    /// up. Verified in `re/oracle` and reproduced live:
+    ///
+    /// ```text
+    /// There is no exit in that direction!
+    /// [HP=46/MA=11]:look
+    /// The room is very dark - you can't see anything
+    /// ```
+    ///
+    /// The board has just said the move did not happen, the navigator asks
+    /// where it is, cannot see — and concluded it had ARRIVED at the room
+    /// it was told it could not reach. `current` then advanced a room past
+    /// reality and every later step compounded it, which is the desync
+    /// that ended live runs with a stray `s` into a wall.
+    ///
+    /// So the answer depends entirely on what was asked:
+    /// [`BlindContext::AfterMove`] follows a direction we sent, where dark
+    /// really is the destination reporting itself; [`BlindContext::
+    /// AfterLook`] follows a `look`, which moves nothing, so the walk is
+    /// still exactly where it was.
+    pub fn blind_position<'a>(after: BlindContext, expected: &'a str, here: &'a str) -> &'a str {
+        match after {
+            BlindContext::AfterMove => expected,
+            BlindContext::AfterLook => here,
+        }
+    }
+
     pub fn localize(&self, at: RoomId, seen: &str) -> Option<RoomId> {
         self.graph
             .room(at)
@@ -483,6 +541,9 @@ impl Navigator {
 
     /// Resolve one step that has already been sent, opening a door in the
     /// way if there is one.
+    ///
+    /// `here` is the room the walk believes it is standing in, and it is
+    /// load-bearing rather than decorative — see [`blind_position`].
     ///
     /// `open` is tried before `bash` because it is free: the board answers
     /// "The door was already open." when there was nothing to do, whereas
@@ -500,6 +561,7 @@ impl Navigator {
         step: Direction,
         exit_type: i64,
         expected: &str,
+        here: &str,
         session: &Session,
         events: &mut tokio::sync::broadcast::Receiver<crate::events::Event>,
         guard: &mut impl TravelGuard,
@@ -508,11 +570,13 @@ impl Navigator {
         let dir = dir_word(step);
         match self.wait_room(events, guard, armed).await? {
             StepEvent::Arrived(name) => return Ok(name),
-            // Dead reckoning, and sound: the board only says this on
-            // ENTERING a room too dark to see, so it is positive evidence
-            // the step landed. The name comes from the graph edge we
+            // A direction was just sent, so dark is the destination
+            // reporting itself; the name comes from the graph edge we
             // chose, not from a guess that movement generally works.
-            StepEvent::ArrivedBlind => return Ok(expected.to_string()),
+            StepEvent::Blind => {
+                return Ok(Navigator::blind_position(BlindContext::AfterMove, expected, here)
+                    .to_string());
+            }
             // The graph says there is an exit and the board says there is
             // not, so the walk is not where it believes. Ask the room and
             // report what it actually is: goto answers a name mismatch by
@@ -521,7 +585,8 @@ impl Navigator {
             // of a whole step deadline.
             StepEvent::NoSuchExit => {
                 session.send("look");
-                return self.arrival(expected, events, guard, armed).await;
+                return self.arrival(here, expected, BlindContext::AfterLook, events, guard, armed)
+                    .await;
             }
             // Hand straight back so the caller can fight: no deadline is
             // going to produce a room block while this is true.
@@ -533,7 +598,8 @@ impl Navigator {
             StepEvent::DoorYielded => {
                 // Someone else's door, or one that swung on its own.
                 session.send(dir);
-                return self.arrival(expected, events, guard, armed).await;
+                return self.arrival(here, expected, BlindContext::AfterMove, events, guard, armed)
+                    .await;
             }
             StepEvent::DoorBlocked if !is_door(exit_type) => {
                 // The graph says there is no door here, so we have no
@@ -550,10 +616,14 @@ impl Navigator {
         match self.wait_room(events, guard, armed).await? {
             // Some boards walk you through on the open itself.
             StepEvent::Arrived(name) => return Ok(name),
-            StepEvent::ArrivedBlind => return Ok(expected.to_string()),
+            StepEvent::Blind => {
+                return Ok(Navigator::blind_position(BlindContext::AfterMove, expected, here)
+                    .to_string());
+            }
             StepEvent::NoSuchExit => {
                 session.send("look");
-                return self.arrival(expected, events, guard, armed).await;
+                return self.arrival(here, expected, BlindContext::AfterLook, events, guard, armed)
+                    .await;
             }
             StepEvent::CombatBlocked => {
                 return Err(NavErrorKind::Interrupted(Interrupt::Attacked {
@@ -562,7 +632,8 @@ impl Navigator {
             }
             StepEvent::DoorYielded => {
                 session.send(dir);
-                return self.arrival(expected, events, guard, armed).await;
+                return self.arrival(here, expected, BlindContext::AfterMove, events, guard, armed)
+                    .await;
             }
             StepEvent::DoorBlocked => {}
         }
@@ -578,10 +649,13 @@ impl Navigator {
         match self.wait_room(events, guard, armed).await? {
             // The bash carried us through the doorway.
             StepEvent::Arrived(name) => Ok(name),
-            StepEvent::ArrivedBlind => Ok(expected.to_string()),
+            StepEvent::Blind => {
+                Ok(Navigator::blind_position(BlindContext::AfterMove, expected, here).to_string())
+            }
             StepEvent::NoSuchExit => {
                 session.send("look");
-                self.arrival(expected, events, guard, armed).await
+                self.arrival(here, expected, BlindContext::AfterLook, events, guard, armed)
+                    .await
             }
             // It only opened it; the step is still owed.
             StepEvent::CombatBlocked => Err(NavErrorKind::Interrupted(Interrupt::Attacked {
@@ -589,23 +663,35 @@ impl Navigator {
             })),
             StepEvent::DoorYielded | StepEvent::DoorBlocked => {
                 session.send(dir);
-                self.arrival(expected, events, guard, armed).await
+                self.arrival(here, expected, BlindContext::AfterMove, events, guard, armed)
+                    .await
             }
         }
     }
 
     /// Wait specifically for a room block, treating door chatter as noise.
+    ///
+    /// `after` says what was last sent, which is the only thing that can
+    /// tell a dark answer's meaning apart — see
+    /// [`Navigator::blind_position`].
     async fn arrival(
         &self,
+        here: &str,
         expected: &str,
+        after: BlindContext,
         events: &mut tokio::sync::broadcast::Receiver<crate::events::Event>,
         guard: &mut impl TravelGuard,
         armed: &mut Option<Interrupt>,
     ) -> Result<String, NavErrorKind> {
         loop {
-            match self.wait_room(events, guard, armed).await? {
+            match self
+                .wait_room(events, guard, armed)
+                .await?
+            {
                 StepEvent::Arrived(name) => return Ok(name),
-                StepEvent::ArrivedBlind => return Ok(expected.to_string()),
+                StepEvent::Blind => {
+                    return Ok(Navigator::blind_position(after, expected, here).to_string());
+                }
                 StepEvent::NoSuchExit => continue,
                 StepEvent::CombatBlocked => {
                     return Err(NavErrorKind::Interrupted(Interrupt::Attacked {
@@ -670,7 +756,7 @@ impl Navigator {
                         return Ok(StepEvent::NoSuchExit);
                     }
                     if line.contains(crate::sheet::TOO_DARK) {
-                        return Ok(StepEvent::ArrivedBlind);
+                        return Ok(StepEvent::Blind);
                     }
                     if DOOR_BLOCKED.iter().any(|m| line.contains(m)) {
                         return Ok(StepEvent::DoorBlocked);

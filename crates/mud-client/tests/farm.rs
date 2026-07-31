@@ -1200,3 +1200,56 @@ fn a_stop_does_not_end_while_a_flee_is_outstanding() {
     look_and_see(&mut stop, &mut bot, &block(&[]), t0);
     assert_eq!(stop.verdict(&bot, t0), Verdict::Empty);
 }
+
+/// Leaving a stop hands the connection to the navigator, which verifies
+/// each step by the next room block it sees. A `look` we sent and have
+/// not had answered is a room block still owed to US — it arrives
+/// mid-step and satisfies it, and the walk believes it is a room further
+/// on than it is.
+///
+/// Measured live as `expected "Dungeon, Entrance", saw "Newhaven, Arena"`
+/// — the Arena's own block answering the step out of the Arena.
+///
+/// `Gate::is_idle` does not cover this: it clears on any prompt, and a
+/// room with a fight in it produces plenty that have nothing to do with
+/// our look.
+#[test]
+fn a_stop_does_not_end_while_a_look_is_unanswered() {
+    let t0 = Instant::now();
+    let mut bot = combat_bot();
+    let mut stop = stop_state(0);
+
+    look_and_see(&mut stop, &mut bot, &block(&[]), t0);
+    assert_eq!(stop.verdict(&bot, t0), Verdict::Empty, "proven empty");
+
+    // A fresh look goes out — the runner's idle poke, say — and has not
+    // been answered yet.
+    stop.on_sent("look");
+    assert_ne!(
+        stop.verdict(&bot, t0),
+        Verdict::Empty,
+        "left the stop owing a room block to a look already sent"
+    );
+
+    // Its answer settles it.
+    feed(&mut stop, &mut bot, &block(&[]), t0);
+    assert_eq!(stop.verdict(&bot, t0), Verdict::Empty);
+}
+
+/// A dark room answers a look with "you can't see anything" and never
+/// sends a block, so that IS the answer — the stop must not wait forever
+/// for one that is not coming.
+#[test]
+fn a_dark_answer_settles_an_outstanding_look() {
+    let t0 = Instant::now();
+    let mut bot = combat_bot();
+    let mut stop = stop_state(0);
+    stop.on_sent("look");
+    feed(
+        &mut stop,
+        &mut bot,
+        &Event::Line(mud_client::sheet::TOO_DARK.to_string()),
+        t0,
+    );
+    assert_eq!(stop.verdict(&bot, t0), Verdict::Blind);
+}

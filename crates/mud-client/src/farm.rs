@@ -562,6 +562,19 @@ pub struct StopState {
     empty_since: Option<Instant>,
     /// The board said the room cannot be seen.
     blind: bool,
+    /// A `look` has gone out and nothing has come back to answer it.
+    ///
+    /// The stop must not end while this is true. Leaving hands the
+    /// connection to the navigator, which verifies each step by the next
+    /// room block it sees — and the block still owed to our `look` then
+    /// arrives mid-step and satisfies it. Measured live: the Arena's own
+    /// block answering a step north into the Dungeon Entrance, ending the
+    /// run on `expected "Dungeon, Entrance", saw "Newhaven, Arena"`.
+    ///
+    /// `Gate::is_idle` does NOT cover this. It clears on any prompt, and
+    /// in a room with a fight going on the board sends plenty that have
+    /// nothing to do with our look.
+    awaiting_look: bool,
 }
 
 impl StopState {
@@ -573,6 +586,7 @@ impl StopState {
             seen: None,
             changed: 0,
             asked_when: None,
+            awaiting_look: false,
             empty_since: None,
             blind: false,
         }
@@ -587,6 +601,7 @@ impl StopState {
     pub fn on_sent(&mut self, line: &str) {
         if line.trim().eq_ignore_ascii_case("look") {
             self.asked_when = Some(self.changed);
+            self.awaiting_look = true;
         }
     }
 
@@ -606,6 +621,7 @@ impl StopState {
             Event::Prompt { .. } => {}
             Event::RoomSeen(room) if room.name == self.stop_name => {
                 self.blind = false;
+                self.awaiting_look = false;
                 // Only believed when nothing went stale between the `look`
                 // going out and this block coming back. Without that a
                 // block can race an arrival: the rat walks in, the bot
@@ -636,7 +652,12 @@ impl StopState {
                 ..
             } => self.invalidate(),
             Event::Line(line) if crate::bot::is_kill_line(line) => self.invalidate(),
-            Event::Line(line) if line.contains(crate::sheet::TOO_DARK) => self.blind = true,
+            Event::Line(line) if line.contains(crate::sheet::TOO_DARK) => {
+                // The answer to a look in an unlit room: no block is
+                // coming, so nothing is still owed.
+                self.blind = true;
+                self.awaiting_look = false;
+            }
             _ => {}
         }
     }
@@ -650,6 +671,7 @@ impl StopState {
     pub fn reset(&mut self) {
         self.seen = None;
         self.asked_when = None;
+        self.awaiting_look = false;
         self.empty_since = None;
         self.blind = false;
         // Anything already in flight predates the reset.
@@ -695,6 +717,13 @@ impl StopState {
         // arrived: a target refused since then no longer holds the stop.
         if bot.has_target(&seen.room) {
             return Verdict::Busy;
+        }
+        // Never hand over to the navigator owing a room block; see
+        // `awaiting_look`.
+        if self.awaiting_look {
+            return Verdict::Waiting {
+                until: now + self.recheck,
+            };
         }
         match self.empty_since {
             Some(since) if now.duration_since(since) >= self.linger => Verdict::Empty,
