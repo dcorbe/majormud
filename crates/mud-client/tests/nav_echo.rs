@@ -1,0 +1,214 @@
+//! The walk under attribution: scripted echoing boards replaying the
+//! failure shapes measured in the live captures (stopstate-run5/6, see
+//! docs/board-correlation.md). Every script echoes accepted commands
+//! like the real board — the reply follows the echo — and every test
+//! here is a way the old first-block-wins walk went wrong.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
+
+use mud_client::graph::{ExitEdge, GraphRoom, RoomGraph};
+use mud_client::nav::{NavConfig, Navigator, NoGuard};
+use mud_client::profile::Profile;
+use mud_client::session::Session;
+use mud_core::content::{Direction, RoomId};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+const HERE: RoomId = RoomId { map: 1, room: 1 };
+const THERE: RoomId = RoomId { map: 1, room: 2 };
+
+fn room_block(name: &str, exits: &str) -> String {
+    format!("\r\n\x1b[1;36m{name}\r\nObvious exits: {exits}\r\n[HP=30/MA=0]:")
+}
+
+fn graph(exit_type: i64) -> Arc<RoomGraph> {
+    let mut here = GraphRoom {
+        name: "Guard Post".into(),
+        exits: Default::default(),
+    };
+    here.exits[Direction::North as usize] = Some(ExitEdge { dest: THERE, exit_type });
+    let mut there = GraphRoom {
+        name: "Inner Ward".into(),
+        exits: Default::default(),
+    };
+    there.exits[Direction::South as usize] = Some(ExitEdge { dest: HERE, exit_type });
+    Arc::new(RoomGraph::from_rooms(vec![(HERE, here), (THERE, there)]))
+}
+
+async fn session_for(addr: std::net::SocketAddr) -> Session {
+    let profile = Profile {
+        target: mud_client::dialect::Target::MbbsEmu,
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        username: "testuser".into(),
+        password: "testpass".into(),
+        pace_ms: Some(0),
+        disable_evil_warnings: false,
+        bot: None,
+        farm: None,
+    };
+    Session::connect(&profile, None).await.unwrap()
+}
+
+fn nav(g: Arc<RoomGraph>) -> Navigator {
+    Navigator::new(
+        g,
+        NavConfig {
+            step_timeout_ms: 1500,
+            ..NavConfig::default()
+        },
+    )
+}
+
+/// A board driven by a per-line script: `(matcher, reply)` where the
+/// reply is raw bytes already containing whatever echo the scenario
+/// wants. Unmatched lines echo + say back.
+async fn scripted_board(
+    script: Vec<(&'static str, String)>,
+) -> (std::net::SocketAddr, Arc<AtomicUsize>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let opens = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&opens);
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        sock.write_all(room_block("Guard Post", "north").as_bytes())
+            .await
+            .unwrap();
+        let mut used = vec![false; script.len()];
+        let mut pending = String::new();
+        let mut buf = [0u8; 512];
+        while let Ok(n) = sock.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            pending.push_str(&String::from_utf8_lossy(&buf[..n]));
+            while let Some(nl) = pending.find('\n') {
+                let line: String = pending.drain(..=nl).collect();
+                let line = line.trim().to_lowercase();
+                if line.starts_with("open") || line.starts_with("bash") {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+                let hit = script
+                    .iter()
+                    .enumerate()
+                    .find(|(i, (m, _))| !used[*i] && *m == line);
+                let reply = match hit {
+                    Some((i, (_, r))) => {
+                        used[i] = true;
+                        r.clone()
+                    }
+                    None => format!("\r\n{line}\r\nYou say \"{line}\"\r\n[HP=30/MA=0]:"),
+                };
+                sock.write_all(reply.as_bytes()).await.unwrap();
+            }
+        }
+    });
+    (addr, opens)
+}
+
+/// The desync that ended live runs, mechanized: the board front-runs the
+/// step's answer with a stale render of the room being left (a prior
+/// look's block landing late). The walk must ignore it and land on the
+/// block that follows ITS echo.
+#[tokio::test]
+async fn a_stale_render_before_the_echo_does_not_satisfy_the_step() {
+    let (addr, _) = scripted_board(vec![(
+        "n",
+        format!(
+            "{}\r\nn{}",
+            room_block("Guard Post", "north"), // stale: nobody asked
+            room_block("Inner Ward", "south")  // the echoed answer
+        ),
+    )])
+    .await;
+    let session = session_for(addr).await;
+    let n = nav(graph(0));
+
+    let at = tokio::time::timeout(
+        Duration::from_secs(10),
+        n.goto(&session, HERE, THERE, &mut NoGuard),
+    )
+    .await
+    .expect("goto should not hang")
+    .expect("the echoed block is the real arrival");
+    assert_eq!(at, THERE);
+}
+
+/// The run5 double echo: a receipt echo at accept, the reply arriving
+/// later behind a SECOND (execution) echo. The duplicate must confirm,
+/// never advance — the walk sees one answer and takes one step.
+#[tokio::test]
+async fn a_double_echoed_step_lands_once() {
+    let (addr, _) = scripted_board(vec![(
+        "n",
+        format!(
+            "\r\nn\r\n[HP=30/MA=0]:n{}",
+            room_block("Inner Ward", "south")
+        ),
+    )])
+    .await;
+    let session = session_for(addr).await;
+    let n = nav(graph(0));
+
+    let at = tokio::time::timeout(
+        Duration::from_secs(10),
+        n.goto(&session, HERE, THERE, &mut NoGuard),
+    )
+    .await
+    .expect("goto should not hang")
+    .expect("double echo still lands");
+    assert_eq!(at, THERE);
+}
+
+/// A block with NO echo is unsolicited — somebody else's render. It must
+/// never satisfy the step; the deadline hands the failure to goto's
+/// machinery instead of silently drifting position.
+#[tokio::test]
+async fn an_echoless_render_never_satisfies_a_step() {
+    let (addr, _) = scripted_board(vec![(
+        "n",
+        room_block("Inner Ward", "south"), // no echo anywhere
+    )])
+    .await;
+    let session = session_for(addr).await;
+    let n = nav(graph(0));
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        n.goto(&session, HERE, THERE, &mut NoGuard),
+    )
+    .await
+    .expect("goto should not hang");
+    assert!(
+        result.is_err(),
+        "an unsolicited render satisfied the step: {result:?}"
+    );
+}
+
+/// _cmd_look's refusal wording ("The door is closed in that direction!")
+/// is not a move refusal — _move_user's is "There is a closed door in
+/// that direction!". The look wording arriving during a step must not
+/// provoke door handling; the step falls to its deadline and the graph
+/// (exit_type 0: no door) is believed over a wording that answers a
+/// command the walk never sent.
+#[tokio::test]
+async fn a_look_refusal_wording_provokes_no_door_handling() {
+    let (addr, opens) = scripted_board(vec![(
+        "n",
+        "\r\nn\r\nThe door is closed in that direction!\r\n[HP=30/MA=0]:".to_string(),
+    )])
+    .await;
+    let session = session_for(addr).await;
+    let n = nav(graph(0));
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        n.goto(&session, HERE, THERE, &mut NoGuard),
+    )
+    .await
+    .expect("goto should not hang");
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(opens.load(Ordering::SeqCst), 0, "no open/bash for a look refusal");
+}

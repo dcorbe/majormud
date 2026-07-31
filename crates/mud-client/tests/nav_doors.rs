@@ -65,6 +65,9 @@ async fn door_board(locked: bool) -> (std::net::SocketAddr, Arc<DoorLog>) {
                 break;
             }
             let line = String::from_utf8_lossy(&buf[..n]).trim().to_lowercase();
+            // The real board echoes every accepted line; the reply
+            // follows the echo. The client's attribution stands on this.
+            let echo = format!("\r\n{line}");
             let reply = match line.as_str() {
                 "n" => {
                     counter.moves.fetch_add(1, Ordering::SeqCst);
@@ -92,7 +95,7 @@ async fn door_board(locked: bool) -> (std::net::SocketAddr, Arc<DoorLog>) {
                 }
                 other => format!("\r\nYou say \"{other}\"\r\n[HP=30/MA=0]:"),
             };
-            sock.write_all(reply.as_bytes()).await.unwrap();
+            sock.write_all(format!("{echo}{reply}").as_bytes()).await.unwrap();
         }
     });
     (addr, log)
@@ -253,8 +256,10 @@ async fn a_step_refused_for_combat_hands_back_at_once() {
             if n == 0 {
                 break;
             }
+            let line = String::from_utf8_lossy(&buf[..n]).trim().to_string();
             sock.write_all(
-                b"\r\nYou may not enter that room while in combat.\r\n[HP=30/MA=0]:",
+                format!("\r\n{line}\r\nYou may not enter that room while in combat.\r\n[HP=30/MA=0]:")
+                    .as_bytes(),
             )
             .await
             .unwrap();
@@ -312,8 +317,10 @@ async fn a_dark_room_is_navigated_by_dead_reckoning() {
             if n == 0 {
                 break;
             }
+            let line = String::from_utf8_lossy(&buf[..n]).trim().to_string();
             sock.write_all(
-                b"\r\nThe room is very dark - you can't see anything\r\n[HP=30/MA=0]:",
+                format!("\r\n{line}\r\nThe room is very dark - you can't see anything\r\n[HP=30/MA=0]:")
+                    .as_bytes(),
             )
             .await
             .unwrap();

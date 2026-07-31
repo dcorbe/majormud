@@ -143,10 +143,15 @@ fn is_door(exit_type: i64) -> bool {
 }
 
 /// Lines that mean a shut door turned the step back. Lowercased before
-/// matching, because the DLL ships both "Closed!" and "closed!".
+/// matching, because the DLL ships both "Closed!" and "closed!". These
+/// are _move_user's and _cmd_open's wordings only — "There is a closed
+/// door in that direction!" is _move_user's (ReMUD decompile), NOT a
+/// look refusal; _cmd_look's "The door is closed in that direction!"
+/// never reaches this classifier because it can only be attributed to a
+/// `look <dir>` the walk never sends. The bangs keep the two apart.
 const DOOR_BLOCKED: [&str; 5] = [
-    "the door is closed",
-    "the gate is closed",
+    "the door is closed!",
+    "the gate is closed!",
     "closed door in that direction",
     "the door is locked",
     "the gate is locked",
@@ -358,11 +363,12 @@ impl Navigator {
                     .map(|r| r.name.clone())
                     .unwrap_or_default();
 
-                session.send(dir_word(step));
+                let sent = session.send(dir_word(step));
                 let outcome = self
                     .walk_step(
                         step,
                         exit_type,
+                        sent,
                         &expected_name,
                         &here_name,
                         session,
@@ -560,6 +566,7 @@ impl Navigator {
         &self,
         step: Direction,
         exit_type: i64,
+        sent: crate::correlate::CmdId,
         expected: &str,
         here: &str,
         session: &Session,
@@ -568,7 +575,7 @@ impl Navigator {
         armed: &mut Option<Interrupt>,
     ) -> Result<String, NavErrorKind> {
         let dir = dir_word(step);
-        match self.wait_room(events, guard, armed).await? {
+        match self.wait_room(events, guard, armed, sent).await? {
             StepEvent::Arrived(name) => return Ok(name),
             // A direction was just sent, so dark is the destination
             // reporting itself; the name comes from the graph edge we
@@ -584,8 +591,8 @@ impl Navigator {
             // recovery this needs — and asking costs one command instead
             // of a whole step deadline.
             StepEvent::NoSuchExit => {
-                session.send("look");
-                return self.arrival(here, expected, BlindContext::AfterLook, events, guard, armed)
+                let ask = session.send("look");
+                return self.arrival(here, expected, BlindContext::AfterLook, events, guard, armed, ask)
                     .await;
             }
             // Hand straight back so the caller can fight: no deadline is
@@ -597,8 +604,8 @@ impl Navigator {
             }
             StepEvent::DoorYielded => {
                 // Someone else's door, or one that swung on its own.
-                session.send(dir);
-                return self.arrival(here, expected, BlindContext::AfterMove, events, guard, armed)
+                let again = session.send(dir);
+                return self.arrival(here, expected, BlindContext::AfterMove, events, guard, armed, again)
                     .await;
             }
             StepEvent::DoorBlocked if !is_door(exit_type) => {
@@ -612,8 +619,8 @@ impl Navigator {
             StepEvent::DoorBlocked => {}
         }
 
-        session.send(&format!("open {dir}"));
-        match self.wait_room(events, guard, armed).await? {
+        let opened = session.send(&format!("open {dir}"));
+        match self.wait_room(events, guard, armed, opened).await? {
             // Some boards walk you through on the open itself.
             StepEvent::Arrived(name) => return Ok(name),
             StepEvent::Blind => {
@@ -621,8 +628,8 @@ impl Navigator {
                     .to_string());
             }
             StepEvent::NoSuchExit => {
-                session.send("look");
-                return self.arrival(here, expected, BlindContext::AfterLook, events, guard, armed)
+                let ask = session.send("look");
+                return self.arrival(here, expected, BlindContext::AfterLook, events, guard, armed, ask)
                     .await;
             }
             StepEvent::CombatBlocked => {
@@ -631,8 +638,8 @@ impl Navigator {
                 }));
             }
             StepEvent::DoorYielded => {
-                session.send(dir);
-                return self.arrival(here, expected, BlindContext::AfterMove, events, guard, armed)
+                let again = session.send(dir);
+                return self.arrival(here, expected, BlindContext::AfterMove, events, guard, armed, again)
                     .await;
             }
             StepEvent::DoorBlocked => {}
@@ -645,16 +652,16 @@ impl Navigator {
             }));
         }
 
-        session.send(&format!("bash {dir}"));
-        match self.wait_room(events, guard, armed).await? {
+        let bashed = session.send(&format!("bash {dir}"));
+        match self.wait_room(events, guard, armed, bashed).await? {
             // The bash carried us through the doorway.
             StepEvent::Arrived(name) => Ok(name),
             StepEvent::Blind => {
                 Ok(Navigator::blind_position(BlindContext::AfterMove, expected, here).to_string())
             }
             StepEvent::NoSuchExit => {
-                session.send("look");
-                self.arrival(here, expected, BlindContext::AfterLook, events, guard, armed)
+                let ask = session.send("look");
+                self.arrival(here, expected, BlindContext::AfterLook, events, guard, armed, ask)
                     .await
             }
             // It only opened it; the step is still owed.
@@ -662,8 +669,8 @@ impl Navigator {
                 by: "combat".into(),
             })),
             StepEvent::DoorYielded | StepEvent::DoorBlocked => {
-                session.send(dir);
-                self.arrival(here, expected, BlindContext::AfterMove, events, guard, armed)
+                let again = session.send(dir);
+                self.arrival(here, expected, BlindContext::AfterMove, events, guard, armed, again)
                     .await
             }
         }
@@ -682,10 +689,11 @@ impl Navigator {
         events: &mut tokio::sync::broadcast::Receiver<crate::correlate::Correlated>,
         guard: &mut impl TravelGuard,
         armed: &mut Option<Interrupt>,
+        awaiting: crate::correlate::CmdId,
     ) -> Result<String, NavErrorKind> {
         loop {
             match self
-                .wait_room(events, guard, armed)
+                .wait_room(events, guard, armed, awaiting)
                 .await?
             {
                 StepEvent::Arrived(name) => return Ok(name),
@@ -703,13 +711,23 @@ impl Navigator {
         }
     }
 
-    /// Next RoomSeen name within the step timeout, showing everything
-    /// that goes past to the guard on the way.
+    /// The next answer to `awaiting` within the step timeout, showing
+    /// everything that goes past to the guard on the way.
+    ///
+    /// ONLY events attributed to `awaiting` classify. An unattributed
+    /// room block — a stale look's answer, a login render, somebody
+    /// else's re-render — used to satisfy the step and silently drift
+    /// `current` a room ahead of the character, which is the desync that
+    /// ended live runs. It now goes past like any other noise; if the
+    /// step's real answer never arrives, the deadline hands the failure
+    /// to `goto`'s re-localize machinery, which is honest about not
+    /// knowing rather than confidently wrong.
     async fn wait_room(
         &self,
         events: &mut tokio::sync::broadcast::Receiver<crate::correlate::Correlated>,
         guard: &mut impl TravelGuard,
         armed: &mut Option<Interrupt>,
+        awaiting: crate::correlate::CmdId,
     ) -> Result<StepEvent, NavErrorKind> {
         let deadline = tokio::time::Instant::now() + self.step_timeout;
         loop {
@@ -725,7 +743,7 @@ impl Navigator {
                     None => {}
                 }
             }
-            match ev {
+            let cor = match ev {
                 Err(_) => {
                     return Err(NavErrorKind::Expect(ExpectError::Timeout {
                         needle: "room block after movement".into(),
@@ -738,10 +756,16 @@ impl Navigator {
                         tail: String::new(),
                     }));
                 }
-                Ok(Ok(crate::correlate::Correlated { event: crate::events::Event::RoomSeen(room), .. })) => {
+                Ok(Ok(cor)) => cor,
+            };
+            if cor.answers != Some(awaiting) {
+                continue;
+            }
+            match cor.event {
+                crate::events::Event::RoomSeen(room) => {
                     return Ok(StepEvent::Arrived(room.name));
                 }
-                Ok(Ok(crate::correlate::Correlated { event: crate::events::Event::Line(line), .. })) => {
+                crate::events::Event::Line(line) => {
                     let line = line.to_lowercase();
                     // Checked before DOOR_YIELDED: this wording contains
                     // "open" too, but it means we are already through and
@@ -764,9 +788,11 @@ impl Navigator {
                     if DOOR_YIELDED.iter().any(|m| line.contains(m)) {
                         return Ok(StepEvent::DoorYielded);
                     }
+                    // The echo itself, or an unmodelled wording: the
+                    // board accepted us; the outcome is still coming.
                     continue;
                 }
-                Ok(Ok(_)) => continue,
+                _ => continue,
             }
         }
     }
