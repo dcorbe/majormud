@@ -439,7 +439,7 @@ async fn handle_connection(
                     // request/response correlation stands on this, so a
                     // fixture that stayed silent would exercise only the
                     // deadline fallbacks.
-                    write_text(&mut writer, &format!("{line}\r\n")).await?;
+                    write_text(&mut writer, &format!("{line}\n")).await?;
                     if core_tx.send(CoreMsg::Input { session, line }).is_err() {
                         break;
                     }
