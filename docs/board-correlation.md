@@ -154,6 +154,40 @@ Not implemented; recorded so it can be planned rather than guessed at.
    (look) and `"the door is closed"` (move) mean different things and
    currently collapse onto one constant.
 
+## Acceptance
+
+**100% success on the Newhaven Arena / cave bear loop.** It is the
+simplest loop in the game — three adjacent rooms, one door, one boss —
+and if position tracking cannot survive it, the approach is wrong and
+should be abandoned rather than tuned.
+
+Concretely, and all of it on the live board, not the fixture server:
+
+- `circuit = ["1/2150", "1/2152", "1/2156"]`, `max_seconds = 300`
+- **five consecutive runs**, each ending `TimeUp` and walking to the
+  finish room
+- **zero** `NavError` of any kind — no `Desync`, no
+  `Expect(Timeout { needle: "room block after movement" })`, no
+  `There is no exit in that direction!` reaching the board
+- board restarted before each run (the spawner is player-driven and the
+  boot-fill drains within the hour)
+
+Two things this criterion drags into scope that are easy to wave away:
+
+- **The door at 1/2150 north is part of the loop.** A board restart
+  re-locks it and the navigator's own open/bash currently gives up, so
+  today it takes a manual `~/mmc-probe/opendoor.lua`. Needing a hand-run
+  script to start the simplest loop in the game is a failure of the same
+  system. Either nav opens it reliably or we know precisely why it
+  cannot.
+- **The dungeon rooms are dark**, so two of the three stops send no room
+  block at all. Position there is dead reckoning by definition — the
+  correlation work has to make that dead reckoning *sound*, which is what
+  `blind_position` started and did not finish.
+
+A run that dies at 80s is not a partial pass. The measurements in this
+document are diagnostics, not a score.
+
 ### Not the fix
 
 Counting unanswered sends at the session layer was tried and reverted
