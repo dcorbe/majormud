@@ -153,6 +153,175 @@ async fn send(stream: &mut TcpStream, line: &str) {
         .expect("write");
 }
 
+// Telnet bytes, for the negotiation tests below.
+const IAC: u8 = 255;
+const WILL: u8 = 251;
+const WONT: u8 = 252;
+const DONT: u8 = 254;
+const OPT_ECHO: u8 = 1;
+const OPT_SGA: u8 = 3;
+
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+/// Like `read_until`, but keeps the bytes intact: the lossy transcript
+/// above turns every IAC into U+FFFD and then throws it away, so
+/// negotiation is invisible to it.
+async fn read_raw_until(stream: &mut TcpStream, raw: &mut Vec<u8>, needle: &[u8]) {
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+    let mut buf = [0u8; 4096];
+    while find(raw, needle).is_none() {
+        let n = tokio::time::timeout_at(deadline, stream.read(&mut buf))
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "timed out waiting for {:?}; got:\n{}",
+                    String::from_utf8_lossy(needle),
+                    String::from_utf8_lossy(raw)
+                )
+            })
+            .expect("read");
+        assert!(n > 0, "connection closed waiting for {needle:?}");
+        raw.extend_from_slice(&buf[..n]);
+    }
+}
+
+/// Drives account creation through to the first in-realm prompt.
+async fn create_and_enter_raw(stream: &mut TcpStream, raw: &mut Vec<u8>, name: &str) {
+    read_raw_until(stream, raw, b"Account: ").await;
+    send(stream, name).await;
+    read_raw_until(stream, raw, b"Create new account? (y/n)").await;
+    send(stream, "y").await;
+    read_raw_until(stream, raw, b"Password: ").await;
+    send(stream, "pw").await;
+    read_raw_until(stream, raw, b"Gender (M/F): ").await;
+    send(stream, "M").await;
+    read_raw_until(stream, raw, b"race").await;
+    send(stream, "1").await;
+    read_raw_until(stream, raw, b"class").await;
+    send(stream, "1").await;
+    read_raw_until(stream, raw, b"Lawful").await;
+    send(stream, "No").await;
+    read_raw_until(stream, raw, b"[HP=").await;
+}
+
+/// The board suppresses the password echo by negotiating telnet ECHO;
+/// ours must do the same, or a caller's password appears on their screen.
+#[tokio::test]
+async fn negotiates_sga_and_suppresses_the_password_echo() {
+    let state = StateDb::open_in_memory().expect("state db");
+    state
+        .create_account("Dora", "right", mud_core::game::Gender::Female)
+        .expect("account");
+    let server = Server::start(world(), test_config(), state, "127.0.0.1:0")
+        .await
+        .expect("start server");
+
+    let mut stream = TcpStream::connect(server.local_addr())
+        .await
+        .expect("connect");
+    let mut raw = Vec::new();
+
+    read_raw_until(&mut stream, &mut raw, b"Account: ").await;
+    let sga = find(&raw, &[IAC, WILL, OPT_SGA]).expect("IAC WILL SGA at connect");
+    let account = find(&raw, b"Account: ").expect("account prompt");
+    assert!(sga < account, "negotiation opens the connection");
+
+    send(&mut stream, "Dora").await;
+    read_raw_until(&mut stream, &mut raw, b"Password: ").await;
+    let will_echo = find(&raw, &[IAC, WILL, OPT_ECHO]).expect("IAC WILL ECHO before the password");
+    let password = find(&raw, b"Password: ").expect("password prompt");
+    assert!(will_echo < password, "echo is taken over before we ask");
+
+    send(&mut stream, "right").await;
+    read_raw_until(&mut stream, &mut raw, &[IAC, WONT, OPT_ECHO]).await;
+    let wont_echo = find(&raw, &[IAC, WONT, OPT_ECHO]).expect("IAC WONT ECHO after the password");
+    assert!(wont_echo > will_echo, "echo is handed back afterwards");
+    assert!(
+        !raw.windows(5).any(|w| w == b"right"),
+        "the password must never be echoed: {}",
+        String::from_utf8_lossy(&raw)
+    );
+}
+
+/// Same suppression on the account-creation password, which is a
+/// separate read in the login dialogue.
+#[tokio::test]
+async fn negotiates_echo_around_the_creation_password() {
+    let state = StateDb::open_in_memory().expect("state db");
+    let server = Server::start(world(), test_config(), state, "127.0.0.1:0")
+        .await
+        .expect("start server");
+
+    let mut stream = TcpStream::connect(server.local_addr())
+        .await
+        .expect("connect");
+    let mut raw = Vec::new();
+
+    read_raw_until(&mut stream, &mut raw, b"Account: ").await;
+    send(&mut stream, "Edmund").await;
+    read_raw_until(&mut stream, &mut raw, b"Create new account? (y/n)").await;
+    send(&mut stream, "y").await;
+    read_raw_until(&mut stream, &mut raw, b"Password: ").await;
+    assert!(
+        find(&raw, &[IAC, WILL, OPT_ECHO]).is_some(),
+        "creation asks for a password with echo suppressed"
+    );
+    send(&mut stream, "s3cret").await;
+    read_raw_until(&mut stream, &mut raw, b"Gender (M/F): ").await;
+    assert!(
+        find(&raw, &[IAC, WONT, OPT_ECHO]).is_some(),
+        "echo comes back before the next question"
+    );
+    assert!(
+        find(&raw, b"s3cret").is_none(),
+        "the creation password must never be echoed: {}",
+        String::from_utf8_lossy(&raw)
+    );
+}
+
+/// Now that we negotiate, clients answer — and their answers can land
+/// split across packets, mid-command. A half-arrived IAC sequence must
+/// wait for the rest of itself instead of leaking option bytes into the
+/// command text.
+#[tokio::test]
+async fn telnet_replies_split_across_packets_never_reach_the_command() {
+    let state = StateDb::open_in_memory().expect("state db");
+    let server = Server::start(world(), test_config(), state, "127.0.0.1:0")
+        .await
+        .expect("start server");
+
+    let mut stream = TcpStream::connect(server.local_addr())
+        .await
+        .expect("connect");
+    let mut raw = Vec::new();
+    create_and_enter_raw(&mut stream, &mut raw, "Fitz").await;
+    raw.clear();
+
+    // "look", then a refusal dribbled in one byte at a time, then the
+    // rest of the line. The board sees the command; we see its reply.
+    for chunk in [
+        &b"loo"[..],
+        &[IAC][..],
+        &[DONT][..],
+        &[OPT_ECHO][..],
+        &b"k\r\n"[..],
+    ] {
+        stream.write_all(chunk).await.expect("write");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    read_raw_until(&mut stream, &mut raw, b"Obvious exits: north").await;
+    assert!(
+        find(&raw, b"look\r\n").is_some(),
+        "the command reassembles around the negotiation: {}",
+        String::from_utf8_lossy(&raw)
+    );
+}
+
 #[tokio::test]
 async fn full_session_create_walk_quit() {
     let state = StateDb::open_in_memory().expect("state db");

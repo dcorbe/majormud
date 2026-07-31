@@ -17,6 +17,17 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::state_db::{CreateAccountError, StateDb};
 
+/// Telnet protocol bytes. We speak only enough of it to do what the
+/// board does: announce SGA once, and take echo away around password
+/// entry. There is no option state machine — see `read_password`.
+const IAC: u8 = 255;
+const SE: u8 = 240;
+const SB: u8 = 250;
+const WILL: u8 = 251;
+const WONT: u8 = 252;
+const OPT_ECHO: u8 = 1;
+const OPT_SGA: u8 = 3;
+
 /// Messages into the game-core thread.
 enum CoreMsg {
     AttachSaved {
@@ -305,6 +316,8 @@ struct TelnetReader {
     socket: OwnedReadHalf,
     buf: Vec<u8>,
     line: Vec<u8>,
+    /// The previous line ended on CR; swallow one following LF or NUL.
+    after_cr: bool,
 }
 
 impl TelnetReader {
@@ -313,53 +326,72 @@ impl TelnetReader {
             socket,
             buf: Vec::new(),
             line: Vec::new(),
+            after_cr: false,
         }
     }
 
     /// The next input line, or `None` on EOF/error.
+    ///
+    /// An IAC sequence that has only partly arrived is left in the buffer
+    /// until the rest of it turns up. Consuming it early would push the
+    /// stragglers into the command text — a real failure now that we
+    /// negotiate and clients answer back mid-line.
     async fn read_line(&mut self) -> Option<String> {
-        const IAC: u8 = 255;
-        const SB: u8 = 250;
-        const SE: u8 = 240;
         loop {
             // Consume buffered bytes first.
             while !self.buf.is_empty() {
-                let b = self.buf.remove(0);
-                match b {
+                // A CR ended the previous line; an LF or NUL arriving now
+                // completes that terminator and is not a line of its own.
+                if std::mem::take(&mut self.after_cr) && matches!(self.buf[0], b'\n' | 0) {
+                    self.buf.remove(0);
+                    continue;
+                }
+                match self.buf[0] {
                     IAC => {
-                        if self.buf.first() == Some(&IAC) {
-                            self.buf.remove(0);
-                            self.line.push(IAC);
-                        } else if self.buf.first() == Some(&SB) {
-                            // Subnegotiation: drop through IAC SE.
-                            while self.buf.len() >= 2 {
-                                if self.buf[0] == IAC && self.buf[1] == SE {
-                                    self.buf.drain(..2);
+                        // The verb byte decides the length; without it we
+                        // cannot tell the shapes apart yet.
+                        let Some(&verb) = self.buf.get(1) else { break };
+                        match verb {
+                            // Escaped 0xFF: one literal byte of data.
+                            IAC => {
+                                self.buf.drain(..2);
+                                self.line.push(IAC);
+                            }
+                            // Subnegotiation runs to IAC SE.
+                            SB => match self.subnegotiation_end() {
+                                Some(end) => {
+                                    self.buf.drain(..end);
+                                }
+                                None => break,
+                            },
+                            // Three-byte command (WILL/WONT/DO/DONT/...).
+                            // We never answer: see `read_password`.
+                            _ => {
+                                if self.buf.len() < 3 {
                                     break;
                                 }
-                                self.buf.remove(0);
+                                self.buf.drain(..3);
                             }
-                        } else {
-                            // Three-byte command (WILL/WONT/DO/DONT/...).
-                            let drop = self.buf.len().min(2);
-                            self.buf.drain(..drop);
                         }
                     }
                     b'\r' => {
-                        // CR LF or CR NUL both end a line.
-                        if matches!(self.buf.first(), Some(&b'\n') | Some(&0)) {
-                            self.buf.remove(0);
-                        }
-                        let line = String::from_utf8_lossy(&self.line).into_owned();
-                        self.line.clear();
-                        return Some(line);
+                        // CR ends the line on its own — the board's
+                        // full-screen entry sends a bare one. Any LF or
+                        // NUL completing a CRLF/CRNUL pair is swallowed
+                        // by the `after_cr` check above, whenever it
+                        // arrives, so a split pair is still one line.
+                        self.buf.remove(0);
+                        self.after_cr = true;
+                        return Some(self.take_line());
                     }
                     b'\n' => {
-                        let line = String::from_utf8_lossy(&self.line).into_owned();
-                        self.line.clear();
-                        return Some(line);
+                        self.buf.remove(0);
+                        return Some(self.take_line());
                     }
-                    _ => self.line.push(b),
+                    b => {
+                        self.buf.remove(0);
+                        self.line.push(b);
+                    }
                 }
             }
             let mut chunk = [0u8; 1024];
@@ -369,6 +401,30 @@ impl TelnetReader {
             }
         }
     }
+
+    /// The offset just past the `IAC SE` closing a subnegotiation at the
+    /// head of the buffer, or `None` while it is still arriving.
+    fn subnegotiation_end(&self) -> Option<usize> {
+        let mut i = 2;
+        while i + 1 < self.buf.len() {
+            if self.buf[i] == IAC {
+                // Escaped 0xFF inside the payload is data, not the end.
+                if self.buf[i + 1] == SE {
+                    return Some(i + 2);
+                }
+                i += 2;
+            } else {
+                i += 1;
+            }
+        }
+        None
+    }
+
+    fn take_line(&mut self) -> String {
+        let line = String::from_utf8_lossy(&self.line).into_owned();
+        self.line.clear();
+        line
+    }
 }
 
 async fn write_text(writer: &mut BufWriter<OwnedWriteHalf>, text: &str) -> io::Result<()> {
@@ -376,6 +432,35 @@ async fn write_text(writer: &mut BufWriter<OwnedWriteHalf>, text: &str) -> io::R
         .write_all(text.replace('\n', "\r\n").as_bytes())
         .await?;
     writer.flush().await
+}
+
+/// Protocol bytes, which must not go through `write_text`'s newline
+/// rewriting.
+async fn write_raw(writer: &mut BufWriter<OwnedWriteHalf>, bytes: &[u8]) -> io::Result<()> {
+    writer.write_all(bytes).await?;
+    writer.flush().await
+}
+
+/// Asks for a password with the echo suppressed, the way the board does:
+/// `IAC WILL ECHO` claims responsibility for echoing, and since we echo
+/// nothing, the typed characters never appear. `IAC WONT ECHO` hands the
+/// job back, and a fresh line stands in for the Enter we swallowed.
+///
+/// Fire-and-forget — we never read the answer. Clients that refuse (our
+/// own `mud-client` refuses every option it is offered) still get
+/// suppression: what the real board does against a refusing client is
+/// unverified, and suppressing regardless is the safe reading of "the
+/// board takes echo for passwords".
+async fn read_password(
+    reader: &mut TelnetReader,
+    writer: &mut BufWriter<OwnedWriteHalf>,
+) -> io::Result<Option<String>> {
+    write_raw(writer, &[IAC, WILL, OPT_ECHO]).await?;
+    write_text(writer, "Password: ").await?;
+    let password = reader.read_line().await;
+    write_raw(writer, &[IAC, WONT, OPT_ECHO]).await?;
+    write_text(writer, "\n").await?;
+    Ok(password)
 }
 
 /// Login dialogue -> attach to core -> bridge lines/output until close.
@@ -387,6 +472,10 @@ async fn handle_connection(
     let (read_half, write_half) = socket.into_split();
     let mut reader = TelnetReader::new(read_half);
     let mut writer = BufWriter::new(write_half);
+
+    // Suppress-Go-Ahead: this is a full-duplex stream, not half-duplex
+    // line-at-a-time. Announced once and never revisited.
+    write_raw(&mut writer, &[IAC, WILL, OPT_SGA]).await?;
 
     let Some(profile) = login(&mut reader, &mut writer, &state).await? else {
         return Ok(()); // connection dropped during login
@@ -481,8 +570,7 @@ async fn login(
             .unwrap_or(false);
 
         if exists {
-            write_text(writer, "Password: ").await?;
-            let Some(password) = reader.read_line().await else {
+            let Some(password) = read_password(reader, writer).await? else {
                 return Ok(None);
             };
             let verified = state
@@ -506,8 +594,7 @@ async fn login(
         if !answer.trim().eq_ignore_ascii_case("y") {
             continue;
         }
-        write_text(writer, "Password: ").await?;
-        let Some(password) = reader.read_line().await else {
+        let Some(password) = read_password(reader, writer).await? else {
             return Ok(None);
         };
         let gender = loop {
