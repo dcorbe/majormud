@@ -128,7 +128,14 @@ Prereq (RE): extract the bash-*failure* wording from the DLL — it is in neithe
 ## Deferred (recorded, not dropped)
 
 - **Render-preamble token** (Reset→`ESC[79D`→`ESC[K`→Colour through wire.rs): would make "room render" positive evidence, retire the parse.rs banner heuristic, and double-check the dark-entry case (entering dark carries the preamble; look-in-dark does not — verified in run7). Defer until after acceptance passes so any regression is attributable; echo attribution already makes unsolicited renders inert everywhere it matters.
-- mud-server execution-echo modeling under the round timer.
+- ~~mud-server execution-echo modeling under the round timer.~~ **LANDED**:
+  `CoreConfig::command_round_seconds` gates a per-session FIFO queue, and a
+  queued command is echoed from the core immediately before its reply. Measured
+  from `oracle_blur_duration_timing.log` (1.15s/1.25s between consecutive queued
+  moves; the queue window is completely silent — no prompt, no acknowledgement).
+  Default 0 keeps every existing fixture on the run-immediately path; the shipped
+  binary sets 1. `mud-server/tests/telnet_e2e.rs` now produces the double echo
+  the client's scripted TCP boards used to be needed for.
 - Optional live probe: does a flood-dropped command still echo? (Design is safe either way via flush+deadline.)
 
 ## Risk register (top items)

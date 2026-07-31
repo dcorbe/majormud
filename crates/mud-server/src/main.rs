@@ -122,6 +122,16 @@ fn main() -> ExitCode {
                 // The live server speaks ANSI (the MBBS graphics
                 // setting); a per-user toggle can arrive later.
                 ansi: true,
+                // Commands occupy their player for a round, so a second
+                // one sent inside it queues and is echoed again when it
+                // runs. MEASURED at 1.15s and 1.25s between consecutive
+                // queued moves (oracle_blur_duration_timing.log); the
+                // client saw up to ~3s on a board busy with combat. One
+                // second is the closest our 1 Hz gate can sit to the
+                // measurement, and a single uniform round is an
+                // approximation of a scheduler that paces each command
+                // differently. Fixtures leave this at 0.
+                command_round_seconds: 1,
                 ..CoreConfig::default()
             },
             state,

@@ -130,6 +130,14 @@ fn test_config() -> CoreConfig {
     }
 }
 
+/// The shipped binary runs a command round; fixtures normally do not.
+fn round_config() -> CoreConfig {
+    CoreConfig {
+        command_round_seconds: 1,
+        ..test_config()
+    }
+}
+
 /// Reads from the socket until `needle` appears in the accumulated transcript
 /// (with a timeout so failures are readable, not hangs).
 async fn read_until(stream: &mut TcpStream, transcript: &mut String, needle: &str) {
@@ -279,6 +287,53 @@ async fn negotiates_echo_around_the_creation_password() {
     assert!(
         find(&raw, b"s3cret").is_none(),
         "the creation password must never be echoed: {}",
+        String::from_utf8_lossy(&raw)
+    );
+}
+
+/// Pipelining two commands into a board that runs a round produces the
+/// live board's double echo: both receipt echoes go out at once, the
+/// first command answers, and then the second is echoed AGAIN, right
+/// before its own reply. That adjacency is what the client's correlator
+/// attributes replies by, and until now only its scripted TCP boards
+/// could produce it.
+#[tokio::test]
+async fn a_queued_command_is_echoed_again_before_its_reply() {
+    let state = StateDb::open_in_memory().expect("state db");
+    let server = Server::start(world(), round_config(), state, "127.0.0.1:0")
+        .await
+        .expect("start server");
+
+    let mut stream = TcpStream::connect(server.local_addr())
+        .await
+        .expect("connect");
+    let mut raw = Vec::new();
+    create_and_enter_raw(&mut stream, &mut raw, "Ivor").await;
+    raw.clear();
+
+    // Both in one write: the second cannot help but land inside the
+    // first one's round.
+    stream
+        .write_all(b"look\r\nn\r\n")
+        .await
+        .expect("write");
+
+    read_raw_until(&mut stream, &mut raw, b"Town Square").await;
+    let first_n = find(&raw, b"n\r\n").expect("the receipt echo of n");
+    let gates = find(&raw, b"Town Gates").expect("look's reply");
+    let square = find(&raw, b"Town Square").expect("n's reply");
+    let second_n = find(&raw[gates..], b"n\r\n")
+        .map(|i| i + gates)
+        .expect("the execution echo of n");
+
+    assert!(
+        first_n < gates,
+        "the receipt echo goes out before anything is answered: {}",
+        String::from_utf8_lossy(&raw)
+    );
+    assert!(
+        gates < second_n && second_n < square,
+        "the second echo sits between the previous reply and its own: {}",
         String::from_utf8_lossy(&raw)
     );
 }

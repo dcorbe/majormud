@@ -4,7 +4,7 @@
 //! in, and consume `Event`s out. No I/O happens here — the caller owns
 //! networking and persistence.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::ability::Ability;
 use crate::command::{parse, Command, Resolution};
@@ -548,6 +548,23 @@ pub struct CoreConfig {
     /// core always BUILDS colored text; false strips every escape at the
     /// output funnel. Tests default plain; the server enables it.
     pub ansi: bool,
+    /// How long a command occupies its player before the next one may
+    /// run. While the round is running, further input QUEUES: the board
+    /// says nothing about a queued command until its turn, then echoes
+    /// it immediately before its reply.
+    ///
+    /// MEASURED (`re/oracle/oracle_blur_duration_timing.log`): ~1.15s
+    /// and ~1.25s between consecutive queued moves, and up to ~3s in the
+    /// stop-state runs the client measured. A single uniform gate is an
+    /// APPROXIMATION of the DLL's scheduler, which paces different
+    /// commands differently.
+    ///
+    /// 0 disables the queue entirely — every command runs the moment it
+    /// arrives and no execution echo is ever emitted. That is the
+    /// default because it is the shape the rest of this crate's tests
+    /// and the client's fixtures were written against; the server opts
+    /// in to the faithful value.
+    pub command_round_seconds: u8,
 }
 
 impl Default for CoreConfig {
@@ -570,6 +587,7 @@ impl Default for CoreConfig {
             restored_gang_members: Vec::new(),
             wall_base: 0,
             ansi: false,
+            command_round_seconds: 0,
         }
     }
 }
@@ -929,9 +947,9 @@ enum Session {
         /// current room); `dir_player_travelling_coord` walks it to chase.
         trail: Vec<RoomId>,
         /// A prompt is dangling on the player's current line. Async
-        /// output erases it (`\r ESC[K` — the DLL's ESC[79D ESC[K
-        /// discipline) and the end-of-entry sweep redraws it; input
-        /// consumes it silently (the echoed Enter broke the line).
+        /// output erases it (`ESC[79D ESC[K`) and the end-of-entry sweep
+        /// redraws it; input consumes it silently (the echoed Enter
+        /// broke the line).
         at_prompt: bool,
         /// The attack mode (`DAT_004877e4`, kept per-fighter in the
         /// autocombat record +8 and restored each round): cmd_attack
@@ -943,6 +961,14 @@ enum Session {
         /// SNEAK and HIDE gate on it per theft.md; every charging
         /// command extends it.
         delay: u8,
+        /// Commands that arrived while a round was still running, oldest
+        /// first. Strictly FIFO: the board answers in send order, which
+        /// is what makes echo attribution work at all.
+        cmd_queue: VecDeque<String>,
+        /// Seconds left in the current command round. Zero means the
+        /// next command runs on arrival. Always zero when
+        /// `CoreConfig::command_round_seconds` is 0.
+        cmd_gate: u8,
     },
 }
 
@@ -3792,6 +3818,9 @@ impl Core {
                         }
                     }
                     self.fast_update();
+                    // Whoever's command round just ended runs their next
+                    // queued command, echoing it against the prompt.
+                    self.drain_command_queues();
                     self.scheduler.schedule_in(FAST_INTERVAL, Job::Fast);
                 }
                 Job::Spawn => {
@@ -5022,6 +5051,8 @@ impl Core {
                 at_prompt: false,
                 attack_mode: crate::combat::AttackType::Normal,
                 delay: 0,
+                cmd_queue: VecDeque::new(),
+                cmd_gate: 0,
             });
         for line in penalty_lines {
             self.output_line(id, &line);
@@ -5511,11 +5542,104 @@ impl Core {
     /// Feeds one line of player input. Input from unknown (never attached or
     /// already disconnected) sessions is dropped.
     pub fn input(&mut self, session: SessionId, line: &str) {
+        // A command arriving while the round is still running waits its
+        // turn, and the board says nothing about it meanwhile — not even
+        // a prompt. It is answered by `drain_command_queues`.
+        if self.enqueue_if_busy(session, line) {
+            return;
+        }
         // The player's echoed Enter already broke the prompt line — no
         // erase codes for their own command's responses.
         if let Some(Session::InGame { at_prompt, .. }) = self.sessions.get_mut(&session) {
             *at_prompt = false;
         }
+        self.run_line(session, line);
+        self.arm_command_round(session);
+        self.reprompt_disturbed();
+    }
+
+    /// Queues `line` if this session is still inside a command round.
+    /// Returns whether it was queued.
+    ///
+    /// Only in-game sessions queue. Character creation answers its own
+    /// questions immediately, and the exit meditation must refuse on the
+    /// spot — queuing that refusal until after the player has left would
+    /// answer nobody.
+    fn enqueue_if_busy(&mut self, session: SessionId, line: &str) -> bool {
+        if self.config.command_round_seconds == 0 {
+            return false;
+        }
+        match self.sessions.get_mut(&session) {
+            Some(Session::InGame {
+                exiting: None,
+                cmd_queue,
+                cmd_gate,
+                ..
+            }) if *cmd_gate > 0 || !cmd_queue.is_empty() => {
+                cmd_queue.push_back(line.to_string());
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Starts the round that the command just dispatched occupies.
+    fn arm_command_round(&mut self, session: SessionId) {
+        let round = self.config.command_round_seconds;
+        if round == 0 {
+            return;
+        }
+        if let Some(Session::InGame { cmd_gate, .. }) = self.sessions.get_mut(&session) {
+            *cmd_gate = round;
+        }
+    }
+
+    /// One second of the round has passed for every session; whoever's
+    /// round just ended runs their next queued command.
+    ///
+    /// The command is echoed first. That is the board's SECOND echo, and
+    /// it lands against the dangling prompt without erasing it — the
+    /// capture shows prompt and command sharing one physical line
+    /// (`[HP=26/MA=12]:n`) immediately before the reply. Being adjacent
+    /// to the reply is the whole point: it is what lets a client attribute
+    /// an answer to the command that asked for it.
+    fn drain_command_queues(&mut self) {
+        if self.config.command_round_seconds == 0 {
+            return;
+        }
+        let ids: Vec<SessionId> = self.sessions.keys().copied().collect();
+        for id in ids {
+            let next = match self.sessions.get_mut(&id) {
+                Some(Session::InGame {
+                    exiting: None,
+                    cmd_queue,
+                    cmd_gate,
+                    at_prompt,
+                    ..
+                }) => {
+                    *cmd_gate = cmd_gate.saturating_sub(1);
+                    if *cmd_gate > 0 {
+                        continue;
+                    }
+                    let next = cmd_queue.pop_front();
+                    if next.is_some() {
+                        // The echo joins the prompt line rather than
+                        // erasing it, exactly as the receipt echo does.
+                        *at_prompt = false;
+                    }
+                    next
+                }
+                _ => continue,
+            };
+            let Some(line) = next else { continue };
+            self.output(id, &format!("{line}\n"));
+            self.run_line(id, &line);
+            self.arm_command_round(id);
+        }
+    }
+
+    /// Dispatches one line of input against the session's current state.
+    fn run_line(&mut self, session: SessionId, line: &str) {
         match self.sessions.get(&session) {
             None => {}
             Some(Session::ChoosingRace { .. }) => self.choose_race(session, line),
@@ -5535,7 +5659,6 @@ impl Core {
                 }
             }
         }
-        self.reprompt_disturbed();
     }
 
     fn game_command(&mut self, session: SessionId, line: &str) {
@@ -16051,6 +16174,8 @@ impl Core {
                 at_prompt: false,
                 attack_mode: crate::combat::AttackType::Normal,
                 delay: 0,
+                cmd_queue: VecDeque::new(),
+                cmd_gate: 0,
             });
         // Oracle: first entry shows the stat sheet, not the room.
         self.show_sheet(session);
