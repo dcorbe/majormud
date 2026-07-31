@@ -275,14 +275,14 @@ fn powers_and_invoke_parse() {
 }
 
 #[test]
-fn invoke_has_no_abbreviation_and_inventory_keeps_i() {
+fn invoke_abbreviates_at_four_and_inventory_keeps_i() {
     // MEASURED (§8.12): `in` and `inv` fall through to say.
     assert_eq!(parse("in"), Command::Unknown("in".into()));
     assert_eq!(parse("inv swan"), Command::Unknown("inv swan".into()));
-    // ORACLE-VERIFY: invo/invok unmeasured; the no-abbreviation model
-    // sends them to say as well.
-    assert_eq!(parse("invo"), Command::Unknown("invo".into()));
-    assert_eq!(parse("invok"), Command::Unknown("invok".into()));
+    // MEASURED (slice8_abbrevs.raw): invo/invok print the INVOKE syntax
+    // line — minimum 4, not the no-abbreviation model.
+    assert_eq!(parse("invo"), Command::Invoke(String::new()));
+    assert_eq!(parse("invok swan"), Command::Invoke("swan".into()));
     // `i` is still inventory (oracle).
     assert_eq!(parse("i"), Command::Inventory);
 }

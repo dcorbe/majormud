@@ -10,6 +10,8 @@ use mud_core::content::{
 use mud_core::game::{ActiveSpell, Core, CoreConfig, Event, Gender, Player, SessionId};
 
 const A: RoomId = RoomId { map: 1, room: 1 };
+/// Protected (attribute bit 1) — the forced-cast guilt-gate fixture.
+const TEMPLE: RoomId = RoomId { map: 1, room: 4 };
 const DARK_DRUID: u16 = 129;
 
 fn spell(id: SpellId, name: &str) -> Spell {
@@ -125,9 +127,61 @@ fn world() -> Content {
     aura.duration = 40;
     aura.abilities = vec![(ab(2), 5)]; // AC +5 while active
     content.add_spell(aura);
+    // The shipped trap shapes (quests.md: 17 spelltype-0 `cast` verb
+    // carriers, all match 1 — self-casts; the victim is the caster).
     let mut trap = spell(SpellId(625), "spear trap");
     trap.target_mode = mud_core::content::TargetMode::Offensive0;
+    trap.match_type = mud_core::content::MatchType::Single1;
+    trap.min_base = 60;
+    trap.max_base = 60; // deterministic: the magnitude roll collapses
+    trap.abilities = vec![(ab(1), 0)]; // Damage, rolled value
+    trap.msg_style = 1; // the real spear trap (1865) is odd-style
+    trap.cast_msg_b = Some(MessageId(802));
     content.add_spell(trap);
+    content.add_message(Message {
+        id: MessageId(802),
+        lines: vec![
+            "A spear flies out of the door and impales %s for %d damage!".into(),
+            String::new(),
+            String::new(),
+        ],
+    });
+    // TextBlock trigger trap (the 627/629/632/635 shape).
+    let mut trigger = spell(SpellId(627), "trigger trap");
+    trigger.target_mode = mud_core::content::TargetMode::Offensive0;
+    trigger.match_type = mud_core::content::MatchType::Single1;
+    trigger.abilities = vec![(ab(148), 900)];
+    content.add_spell(trigger);
+    // Poison trap (the shipped 628 redberry shape: Poison + duration).
+    let mut venom = spell(SpellId(628), "venom trap");
+    venom.target_mode = mud_core::content::TargetMode::Offensive0;
+    venom.match_type = mud_core::content::MatchType::Single1;
+    venom.duration = 200;
+    venom.abilities = vec![(ab(19), 5)];
+    content.add_spell(venom);
+    // A lethal trap: 300 off 40 hp crosses the -200 death floor.
+    let mut doom = spell(SpellId(629), "doom trap");
+    doom.target_mode = mud_core::content::TargetMode::Offensive0;
+    doom.match_type = mud_core::content::MatchType::Single1;
+    doom.min_base = 300;
+    doom.max_base = 300;
+    doom.abilities = vec![(ab(1), 0)];
+    content.add_spell(doom);
+    // Damage(-MR) trap: scales against the CASTER's own MR.
+    let mut burn = spell(SpellId(630), "mana burn");
+    burn.target_mode = mud_core::content::TargetMode::Offensive0;
+    burn.match_type = mud_core::content::MatchType::Single1;
+    burn.min_base = 20;
+    burn.max_base = 20;
+    burn.abilities = vec![(ab(17), 0)];
+    content.add_spell(burn);
+    // A protected room for the guilt gate.
+    content.add_room(Room {
+        id: TEMPLE,
+        name: "Temple".into(),
+        attributes: 1,
+        ..Default::default()
+    });
     let mut costly = spell(SpellId(301), "greater aura");
     costly.mana_cost = 999;
     content.add_spell(costly);
@@ -788,14 +842,86 @@ fn textblock_ability_runs_the_block_on_cast() {
 }
 
 #[test]
-fn cast_offensive_trap_arm_is_pending() {
-    // M7 PENDING(slice-6): the 17 shipped trap spells (spelltype 0,
-    // e.g. 625 spear trap) reach cast_no_target's offensive machinery
-    // (39200-39500) — unported; currently a silent no-op that keeps the
-    // chain alive. This test pins the placeholder behavior.
+fn cast_offensive_trap_damages_the_caster() {
+    // The offensive forced-cast arm (M7 close-out): all 17 shipped trap
+    // spells are match-1 SELF-casts — the victim IS the caster.
+    // cast_no_target case 1 (39613-39650): dealt lands on hp, the
+    // success line shows the dealt number, the chain continues.
     let (mut core, s) = boot();
     assert_eq!(core.debug_perform_matched_action(s, "cast 625:flag 3 set"), 1);
-    assert_eq!(core.player_snapshot(s).quest_flags, 1 << 2);
+    let out = text_to(&core.drain_events(), s);
+    let p = core.player_snapshot(s);
+    assert_eq!(p.current_hp, -20, "60 damage off 40 hp");
+    assert_eq!(p.quest_flags, 1 << 2, "chain continued");
+    assert!(
+        out.contains("impales Quester for 60 damage!"),
+        "odd-style caster line with the dealt number: {out:?}"
+    );
+}
+
+#[test]
+fn trap_textblock_trigger_runs_the_block() {
+    // The four trigger traps (627/629/632/635 shape) carry TextBlock(148)
+    // — the block runs on the caster exactly like the benign 0x94 arm.
+    let (mut core, s) = boot();
+    assert_eq!(core.debug_perform_matched_action(s, "cast 627"), 1);
+    assert_eq!(
+        core.player_snapshot(s).quest_flags,
+        1 << 6,
+        "block 900 (`flag 7 set`) ran"
+    );
+}
+
+#[test]
+fn poison_trap_slots_and_raises_the_counter() {
+    // The duration arm: Poison max-writes the counter at entry
+    // (40536-40538) AND the spell enters the caster's slots.
+    let (mut core, s) = boot();
+    assert_eq!(core.debug_perform_matched_action(s, "cast 628"), 1);
+    let p = core.player_snapshot(s);
+    assert_eq!(p.poison, 5, "counter max-write at entry");
+    assert!(
+        p.active_spells.iter().any(|sl| sl.spell == Some(SpellId(628))),
+        "slot entered: {:?}",
+        p.active_spells
+    );
+}
+
+#[test]
+fn lethal_trap_kills_the_caster() {
+    // 300 off 40 hp crosses the -200 death floor: check_kill_user fires
+    // (39639-39649) — the full death path, a life spent.
+    let (mut core, s) = boot();
+    assert_eq!(core.debug_perform_matched_action(s, "cast 629"), 1);
+    assert_eq!(core.player_snapshot(s).lives, 8, "a life spent");
+}
+
+#[test]
+fn mr_trap_scales_against_the_casters_own_mr() {
+    // Damage(-MR), case 0x11 (40137-40198): the scale runs against the
+    // CASTER's own MR — MR 0, no AntiMagic → dealt = 20 * 1.5 = 30.
+    let (mut core, s) = boot();
+    assert_eq!(core.debug_perform_matched_action(s, "cast 630"), 1);
+    assert_eq!(core.player_snapshot(s).current_hp, 10, "40 - 30");
+}
+
+#[test]
+fn offensive_forced_cast_in_a_protected_room_guilt_stops() {
+    // The cast_no_target protection gate (39164-39184) is NOT mode-gated:
+    // a forced offensive cast in a protected room guilt-refuses (round
+    // cost charged when affordable) and the chain fail-stops.
+    let mut p = player("Quester");
+    p.location = TEMPLE;
+    let (mut core, s) = boot_with(p);
+    assert_eq!(core.debug_perform_matched_action(s, "cast 625:flag 3 set"), 2);
+    let out = text_to(&core.drain_events(), s);
+    assert!(
+        out.contains("You are overcome with a feeling of guilt"),
+        "{out:?}"
+    );
+    let p = core.player_snapshot(s);
+    assert_eq!(p.quest_flags, 0, "fail-stop");
+    assert_eq!(p.current_hp, 40, "no damage");
 }
 
 // --- item verbs + the takeitem rollback (Task 6) ---

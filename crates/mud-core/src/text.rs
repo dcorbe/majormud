@@ -758,11 +758,12 @@ pub fn dont_see_here_bang(name: &str) -> String {
     format!("You don't see {name} here!")
 }
 /// The target-side notice; `leader` picks the DLL's rank prefix by the
-/// INVITER's rank. ORACLE-VERIFY: the 0x48950c bright-blue lead-in is
-/// not reproduced.
+/// INVITER's rank. MEASURED (slice8_gang1b.raw): the 0x48950c
+/// bright-blue (1;34) lead-in, live: "\x1b[1;34mGang leader Kaimon has
+/// invited you to join Slice Eight."
 pub fn gang_invite_target(leader: bool, inviter: &str, gang: &str) -> String {
     let rank = if leader { "Gang leader " } else { "Lieutenant " };
-    format!("{rank}{inviter} has invited you to join {gang}.")
+    format!("\x1b[1;34m{rank}{inviter} has invited you to join {gang}.{}", color::RESET)
 }
 pub fn gang_invite_confirm(target: &str) -> String {
     format!("You have invited {target} to join your gang.")
@@ -773,11 +774,13 @@ pub const GANG_JOIN_ALREADY: &str =
     "You may not join another gang!  You are already a member of one.";
 pub const GANG_DOESNT_EXIST: &str = "That gang doesn't exist!";
 pub const GANG_NOT_INVITED: &str = "You have not been invited to join that gang!";
+/// MEASURED (slice8_gang1b.raw): the gang notice family paints bright
+/// blue (1;34) — join confirm, join announce, the invite notice.
 pub fn gang_joined(gang: &str) -> String {
-    format!("You have joined the gang {gang}.")
+    format!("\x1b[1;34mYou have joined the gang {gang}.{}", color::RESET)
 }
 pub fn gang_join_broadcast(name: &str) -> String {
-    format!("{name} just joined your gang.")
+    format!("\x1b[1;34m{name} just joined your gang.{}", color::RESET)
 }
 
 // The roster (§1.6): display_online_gang_members (0x3bf6f) and
@@ -820,7 +823,8 @@ pub fn gang_all_row(name: &str, online: bool, lieutenant: bool) -> String {
 }
 
 // cmd_leave (0x53cba) / remove_from_gang (0x4fc2f) — §1.4.
-pub const GANG_NOT_CURRENTLY_IN: &str = "You are not currently in a gang.";
+/// MEASURED (slice8_gang4.raw): bright-blue lead-in.
+pub const GANG_NOT_CURRENTLY_IN: &str = "\x1b[1;34mYou are not currently in a gang.\x1b[0m";
 pub const GANG_LEADER_MAY_NOT_LEAVE: &str =
     "You are the leader - you may not leave your gang. Use DISBAND GANG";
 pub fn gang_left(gang: &str) -> String {
@@ -887,7 +891,8 @@ pub const NO_GANGS_ESTABLISHED: &str = "There are no gangs currently established
 /// Header block; the doubled `=` in the title rule is the DLL's.
 pub fn top_gangs_header() -> Vec<String> {
     vec![
-        "Top Gangs of the Realm".to_string(),
+        // MEASURED (slice8_gang.raw): the title paints 0;33.
+        "\x1b[0;33mTop Gangs of the Realm".to_string(),
         "\x1b[37m-=-==-=-=-=-=-=-=-=-=-".to_string(),
         String::new(),
         format!(
@@ -1022,13 +1027,13 @@ pub const GANG_NAME_LOCKED: &str =
 pub const GANG_NOT_DISBANDED: &str = "Your gang has not been disbanded.";
 
 /// The gangpath line (cmd_broadgang, exact literal `"%s gangpaths: %s%s"`
-/// @0x48a9bb). The middle arg is a raw blob @0x48a9cf — a bracket/
-/// backspace compose ending in ESC[0;33m — recorded in gangs.md §5.2;
-/// ORACLE-VERIFY: we render its visible intent (dark-yellow message),
-/// not the byte dance. The DLL's leading-'/- strip arm keys off
-/// margv[0][0], unreachable through our verb table.
+/// @0x48a9bb). MEASURED (slice8_gang1b.raw): green sender lead-in
+/// (0;32), dark-yellow message (0;33) — live bytes
+/// "\x1b[0;32mKaimon gangpaths: \x1b[0;33mgreetings...". The DLL's
+/// leading-'/- strip arm keys off margv[0][0], unreachable through our
+/// verb table.
 pub fn gangpath(sender: &str, message: &str) -> String {
-    format!("{sender} gangpaths: \x1b[0;33m{message}{}", color::RESET)
+    format!("\x1b[0;32m{sender} gangpaths: \x1b[0;33m{message}{}", color::RESET)
 }
 
 // The SET GANG view toggle (cmd_set 54136/54556): bare = toggle,

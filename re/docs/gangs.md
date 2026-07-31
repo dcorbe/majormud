@@ -651,6 +651,56 @@ the DLL would say the invite-first line); GANGEXP/MAXTOP are
 compile-time defaults (1000/30) rather than MSG options; the bank-8
 u32 skip-on-overflow guard is unreachable under u64 balances.
 
+### 9.1 Slice-8 expedition pass (2026-07-31, `slice8_gang*.raw` + `slice8_abbrevs*.raw`)
+
+Two-character live program (Kaimon leader, Oracle member) with a board
+restart mid-program. Everything below is measured:
+
+- **`gang`/`guild` are NOT verbs in 1.11p-WG** — they fall to say with or
+  without arguments, even for members. The broadcast verb is BROADGANG
+  (min 6, "broadg"); it renders `"%s gangpaths: %s"` with a green (0;32)
+  sender lead-in and dark-yellow (0;33) message. There is **no player
+  roster verb** — `roster`/`gangs` say for members too; the §1.6 display
+  functions have no player-facing trigger found (our bare-broadgang
+  roster arm keeps ORACLE-VERIFY). The verb table was corrected
+  accordingly at the close-out.
+- Gang notices paint bright blue (1;34): invite notice ("Gang leader %s
+  has invited you to join %s."), join confirm + announce, the leave
+  refusal "You are not currently in a gang." The gangless broadgang
+  refusal ("You are not in a gang at the present!") is plain.
+- Min-abbrevs measured for the whole family: create 2 (pattern-gated —
+  bare says), join 2, invite 4, uninvite 3, promote 4 ("pr"/"pro" belong
+  to an unshipped session-info verb), demote 3, disband 4, leave 2
+  (pattern-gated), stock 3, unstock 3, markup 3 ("ma" is the unshipped
+  MAP verb), broadgang 6, top 2.
+- promote/demote print the offline-notify form even for an ONLINE
+  target: "Gang member %s will be notified of their promotion next time
+  they log on." Lieutenant uninvite guard: "You are not able to uninvite
+  the gang leader."
+- **DISBAND has a confirm prompt**: "Are you sure you want to disband
+  %s?" — decline: "Your gang has not been disbanded."; accept: the §1.4
+  disband line + "The name may not be used again until all members have
+  entered the game!" (name quarantine).
+- Top-gangs table pinned (title 0;33): Rank/Gangname/Leader/Members/
+  Created columns, date DD/MM/YY.
+- **Restart persistence**: gang record and player-side membership both
+  survived a full MBBSEmu restart; the record's MEMBER COUNT did not
+  (created-at-1, join's ++ never flushed before the restart — the DLL
+  writes the gang record lazily). Ours persists the count on join;
+  divergence in our favor, documented not cloned.
+- Deed shop (type 0xc, 15/732) LIST: ten parchment deeds, 40/60/100/170/
+  200/260/340/800/2000 platinum + white 100 runic; `buy deed` prints the
+  multi-match "Please be more specific" list.
+- Gang shop (type 0xb, 15/973): room .HSE missing on the install → "MUD
+  Internal Error - Please tell your sysop" + "Can't display gang house
+  file WCC97315.HSE" (the §4 error string, live); LIST on empty runtime
+  shelves prints NOTHING (confirms the close-out LIST port); STOCK/
+  MARKUP syntax lines match §3.1.
+- **.HSE success render** (WCC85015.HSE installed at 15/850): the file
+  streams as the room description with its first line doubling as the
+  room title; "closed door south" in the exits line (the slice-4
+  closed-door wording).
+
 ## 10. M7 deferrals
 
 | item | target | note |
@@ -662,5 +712,5 @@ u32 skip-on-overflow guard is unreachable under u64 balances.
 | .HSE editing | never | out-of-band even in the original (§4.3) |
 | Gang war | M8+ | needs PvP combat |
 | Limited-item / worn-second-copy STOCK gates | M8 | fields unmodeled; marker at cmd_stock port |
-| Oracle expedition (strings, min-abbrevs, gangpath render, deed dead-code-4) | slice 8 | two-character program + .HSE render |
-| LIST rendering of gang-shop runtime shelves | slice 8 | buyers currently browse blind; the DLL renders the same overloaded slot fields |
+| Oracle expedition (strings, min-abbrevs, gangpath render, deed dead-code-4) | **RAN (slice 8, 2026-07-31)** | see §9.1 — two-character program + restart persistence + .HSE error AND success renders (`slice8_gang*.raw`) |
+| LIST rendering of gang-shop runtime shelves | **LANDED (slice 8)** | display_shop_items' type-0xb branch (34841-34900): shared header/Free-row/suffix strings, price = slot × (markup+100)/100 in the slot denom, no CHA factor at LIST time (buy-side only). Pinned in `gang_shop.rs` (5 tests) |

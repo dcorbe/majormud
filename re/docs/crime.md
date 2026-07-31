@@ -127,7 +127,7 @@ No pair timer, no multiplier. Apply §2.4 add.
 the committed-Lawful refusal (17454, "You have chosen a way of life which prevents
 this action." — same message that blocks `rob_user` for Lawful players, 17163-17167).
 
-#### 2.5.1 `cast_monster_target` 43330 — the ability-52 arm (**M7 PENDING**)
+#### 2.5.1 `cast_monster_target` 43330 — the ability-52 arm (**LANDED, M7 slice 8**)
 
 The three `cast_monster_target` call sites are **not** the same gate. Two are
 hostility-gated the way the row above implies; the middle one is not:
@@ -165,14 +165,19 @@ wrathful curse, blind, slow, hold person, confusion, sleep, entangle, mute,
 senselessness, vulnerability, damnation, divine disfavour, rotting flesh,
 partial petrification, burning aura, creeping doom and the seven songs.
 
-**Not implemented.** `Core::charge_passive_monster_evil` already encodes this
-predicate exactly, but its call site in `cmd_cast` gates on
-`TargetMode::is_offensive()` instead of on the ability, so all 25 are currently
-free and earn no grudge. The 16 learnable match-12 AREA spells that carry 52 are
-likewise unhandled on the `area_cast` path — that gap predates the cast-routing
-work; the single-target side merely widens it. Both belong to the M7 crime
-slice, together with the grudge/suppression writes (`mon+0x50`, `mon+0x1a`,
-`mon+0x116`) that neither path performs today.
+**Landed (M7 slice 8).** The 43330 twin sits in `cmd_cast`'s monster arm ahead
+of the SpellImmu gate (the DLL's scan-before-43380 order), keyed on the spell
+carrying 52; `charge_passive_monster_evil` returns a tri-state so the
+43335-43346 grudge body (`retaliation_lock` — the same function every other
+twin uses) fires only on a real charge. The area side landed in the same
+slice: the per-slot 39313 arm (one 10-point hit, whole-cast abort on refusal,
+NO grudge writes — 38759-38812 has none) plus the 39164 protection gate's
+has-52 half. Six single-target pins and four area pins in `crime.rs`.
+KNOWN-DIVERGENCE (documented at `cast_eligibility_refused`): our refusal scan
+runs before the 52 charge instead of slot-interleaved — one learnable
+exception (35 poison bolt, slots 17/52/151/108: the DLL charges then refuses
+at a passive NonLiving target; we refuse free), re-open if a content patch
+makes another 52-before-refusal spell learnable.
 
 ### 2.6 Complete writer census of `player+0x542`
 
@@ -458,3 +463,46 @@ Inside `perform_matched_action` (0x70209, fn at 68548):
 * `load_player` migration messages reference a "new punishment associated with being
   evil" (0x47db50/0x47db93) — the 1.11 changelog context for the bucket clamp values
   (0x1d/0x27/0x4f/0x77/0xd1/299) is inferred from the code only.
+
+---
+
+## 11. As built — M7 slice 3 + close-out (2026-07-31)
+
+Implementation: `crates/mud-core/src/crime.rs` (pure tier/charge machinery),
+`game.rs` call sites (§2.5 melee/cast/area/forced), `tests/crime.rs` (28
+tests incl. the ability-52 suites).
+
+### 11.1 Spec corrections (implementation + expedition pass)
+
+- **`SET EVIL` does not exist** — the live verb is `SET WARNING ON|OFF`
+  (found live, commit 9565575; re-confirmed at the slice-8 expedition,
+  `slice8_hand.raw`): OFF "You will no longer be stopped from performing
+  evil actions.", ON "You will now be warned and stopped from doing most
+  evil actions." The `SET` summary lists WARNING among 14 options (no
+  ANSI, no EVIL).
+- **§2.5.1 landed** (see the section header): the 52-arm on the single
+  cast path ahead of SpellImmu, the area per-slot arm, the offensive-or-52
+  protection gates (area + forced), each pinned in `crime.rs`.
+- The passive-attack charge fired live (`a elite` → "A dark cloud passes
+  over you", `slice8_seedy2.raw`) — first live confirmation of an
+  initiate charge; every prior pin was decompile-side.
+- **WHO shows no legal-level word at Neutral** (`slice8_seedy.raw`:
+  "Oracle Delver - Warrior Novice") — the §1 "level 0 prints no word"
+  model confirmed. The Seedy+ word form and the guardian reaction to a
+  Seedy player remain UNMEASURED live: the walk needs three initiates
+  against passive city guards, and the slice-8 attempts (guard return
+  fire downed a L3 warrior inside one exchange; wanderer population
+  drained before a third fresh guard was found) are documented in
+  `slice8_seedy*.log`. Decompile citations stand (§2.5, §6).
+- **Absent-target asymmetry** (`slice8_hand.raw`): `rob <absent>` refuses
+  with "You don't see that anywhere!" while `attack <absent>` and
+  `ask <absent> …` fall through to say — rob resolves its target inside
+  the verb; attack/ask fall through at the finder.
+
+### 11.2 Divergences (ours, documented)
+
+- Refusals-first vs the DLL's slot-ordered ability scan: one learnable
+  spell (35 poison bolt) refuses free where the DLL charges-then-refuses
+  — census + re-open condition at `cast_eligibility_refused`.
+- The slice-3 strings in §3 remain DLL-cited; the slice-8 sweep measured
+  the SET WARNING pair and the rob/absent strings listed above.

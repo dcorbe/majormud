@@ -417,7 +417,7 @@ fn corpus_all_files_parse_and_prompt_totals_match() {
     // every oracle expedition adds transcripts. Both numbers below therefore
     // move by design — when they do, recompute the ground truth rather than
     // taking the Rust parser's word for it (see below) and update them.
-    assert_eq!(files.len(), 107, "corpus size changed");
+    assert_eq!(files.len(), 120, "corpus size changed");
     let mut prompts = 0;
     for f in &files {
         let ev = corpus_events(f);
@@ -446,9 +446,13 @@ fn corpus_all_files_parse_and_prompt_totals_match() {
     // swarm probes, recreations and training runs) — 13,911 more prompts.
     // Recomputed with the same reference pipeline over all 102 files.
     //
-    // 2026-07-31: the five acceptance runs of the correlation rework
-    // (accept-run1..5) joined the corpus — 1,124 more prompts over 107.
-    assert_eq!(prompts, 21162);
+    // 2026-07-31: two expeditions landed the same day and merged. The
+    // slice-8 field expedition added 13 raws (hand session, gang program
+    // + restart-persistence passes, the min-abbrev sweeps, seedy fame
+    // walks, the slime lair camp — 607 prompts, the first `/KAI=`
+    // captures), and the correlation rework's five acceptance runs added
+    // accept-run1..5 (1,124 prompts). 20,038 + 607 + 1,124 over 120.
+    assert_eq!(prompts, 21769);
 }
 
 #[test]

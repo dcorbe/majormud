@@ -169,7 +169,13 @@ pub struct Room {
     /// `room+0x464` (`maxindex`) — maximum template level for region spawns.
     pub max_level: i16,
     /// `room+0x5bc` (`delay`) — per-room respawn delay; 0 = use the global
-    /// default (monsters.md §1 respawn timing).
+    /// default (monsters.md §1 respawn timing). ORACLE-VERIFY (design doc
+    /// carry 4d): player lore says the slime-beast lair (1/2333, delay 0)
+    /// respawns near-instantly, which would mean 0 = NO delay. The slice-8
+    /// probe (slice8_slime.raw, 2026-07-31) could not settle it: the lair
+    /// never populated across a 15-minute occupied camp on a fresh boot,
+    /// so no kill-respawn cycle was observable. Re-open with a character
+    /// that can kill a slime beast while the lair is populated.
     pub respawn_delay: i16,
     /// `room+0x466` (`bynumber`) — forced spawn template; `None` = pick from
     /// the region (monsters.md §1).

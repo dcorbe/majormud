@@ -1207,6 +1207,19 @@ enum CharmedExemption {
     Ignored,
 }
 
+/// [`Core::charge_passive_monster_evil`]'s outcome. The DLL sites branch
+/// on `add_evil_points`' return (non-zero = refused) but the 43330 site
+/// ALSO runs the grudge body only after a successful charge — a plain
+/// "refused?" bool cannot distinguish `Charged` from `NotEligible`
+/// (already fighting you, aggressive, own pet), so the three-way split
+/// is load-bearing there and documentation everywhere else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PassiveEvilCharge {
+    NotEligible,
+    Charged,
+    Refused,
+}
+
 /// What a Summon(12) spawn is bound to (charm.md §6). All four DLL
 /// handlers call the same `generate_monster(map, room, -1, templateId,
 /// 0, 65000, -1, 0, 1)` and then write DIFFERENT ownership state, so the
@@ -3288,10 +3301,11 @@ impl Core {
                 match exit.exit_type {
                     6 => self.remote_lever(target, d, &exit, action),
                     7 | 0xb => self.remote_gate_toggle(target, d, &exit),
-                    // M7 PENDING(slice-6): the type-9/0x18 arm
+                    // M8 PENDING (quests.md §7.2): the type-9/0x18 arm
                     // (66119-66150) force-moves every player and monster
                     // in the target room through the exit (move_user
-                    // mode 7); at most two ambiguous shipped uses.
+                    // mode 7); at most two ambiguous shipped uses, none
+                    // exercised — rehomed at the M7 close-out.
                     _ => {}
                 }
                 CONTINUE
@@ -6083,7 +6097,7 @@ impl Core {
         let Some(monster) = monster else {
             return Resolution::FallThrough;
         };
-        if self.charge_passive_monster_evil(session, monster) {
+        if self.charge_passive_monster_evil(session, monster) == PassiveEvilCharge::Refused {
             return Resolution::Handled;
         }
         if let Some(Session::InGame { target, casting, .. }) = self.sessions.get_mut(&session) {
@@ -6902,6 +6916,26 @@ impl Core {
                 self.output_line(session, &text::spell_no_effect_on(&name));
                 return;
             }
+            // The ability-52 arm (crime.md §2.5.1, cast_monster_target
+            // 43323-43347): a spell CARRYING EvilInCombat (0x34) charges
+            // the same 10 points at a passive monster — no `spelltype`
+            // test — which puts 25 of the 29 learnable benign
+            // match-4/6/8 spells (curse, blind, slow, hold person, the
+            // songs) in front of it. On success the 43335-43346 grudge
+            // body runs: `retaliation_lock` IS that body (its doc lists
+            // 43335 among its twins), and behaviour 0/4 makes the lock
+            // unconditional after a charge. Sits AHEAD of SpellImmu,
+            // whose gate is at 43380, after the scan. A refusal aborts
+            // the verb before any cost (43331-43333).
+            if spell.abilities.iter().any(|(a, _)| *a == Ability::EvilInCombat) {
+                match self.charge_passive_monster_evil(session, monster_id) {
+                    PassiveEvilCharge::Refused => return,
+                    PassiveEvilCharge::Charged => {
+                        self.retaliation_lock(monster_id, session, CharmedExemption::Exempt);
+                    }
+                    PassiveEvilCharge::NotEligible => {}
+                }
+            }
             // SpellImmu (139): a monster immune to spells at or below this
             // level refuses the cast before any cost or engagement
             // (decompile cast_monster_target 43630-43638: spell level <
@@ -6914,17 +6948,13 @@ impl Core {
                 return;
             }
             // Offensive casts at passive monsters charge like melee
-            // (crime.md §2.5 cast_monster_target rows).
-            //
-            // M7 PENDING (`re/docs/crime.md` §2.5, the 43330 row): the
-            // `is_offensive()` gate is OURS, not the DLL's. 43323-43347
-            // charges the same 10 points off the SPELL'S ABILITY 0x34
-            // (EvilInCombat) with no `spelltype` test at all, so 25 of the
-            // 29 learnable benign match-4/6/8 spells (curse, blind, slow,
-            // hold person, the songs) should charge here and do not — see
-            // the long note in `offensive_cast_attempt`'s fail arm.
+            // (crime.md §2.5, the 43417 row — the manual attempt loop's
+            // spelltype-gated twin). After the 52 arm above has charged,
+            // the grudge makes this site `NotEligible`, exactly the
+            // DLL's `sameas` term at 43419.
             if spell.target_mode.is_offensive()
                 && self.charge_passive_monster_evil(session, monster_id)
+                    == PassiveEvilCharge::Refused
             {
                 return;
             }
@@ -7345,49 +7375,14 @@ impl Core {
             }
             return;
         }
-        // add_evil_warnings_to_room (crime.md §2.5 last row): an offensive
-        // sweep over a room holding an innocent passive monster charges
-        // ONE 10-point NPC-style hit before any cost; a refusal aborts the
-        // whole cast. (The per-victim 0-point PAIR timers are the PvP
-        // half — slice 4 with rob.)
-        if spell.target_mode.is_offensive() && spell.match_type.hits_monsters() {
-            // The monster loop is MATCH-GATED (38793-38795): it runs only
-            // for `spell+0xcc` in {3, 5, 9, 0xb, 0xc} — exactly
-            // [`MatchType::hits_monsters`]. An offensive room-wide cast of
-            // any other area type (10/0xd) charges nothing here, so the
-            // gate is a conjunct and not a doc note.
-            //
-            // Inside it, 38802-38805 conjoins the innocence out-param with
-            // `is_valid_monster_target` itself, so a body the sweep will
-            // not reach is not a body you can be charged for either —
-            // which on match 9/0xc silently retires the `behaviour == 4`
-            // half of the innocence test (38454-38456: innocent requires
-            // `+0x106` in {0, 4} and an unnamed link, but 38495 makes
-            // mode 4 invalid).
-            let passive = self
-                .monsters
-                .iter()
-                .find(|(id, m)| {
-                    m.location == room
-                        && m.current_hp > 0
-                        && matches!(m.behaviour, 0 | 4)
-                        && m.target != Some(session)
-                        && self.is_valid_monster_target(session, spell, **id)
-                })
-                .map(|(id, _)| *id);
-            if let Some(id) = passive
-                && self.charge_passive_monster_evil(session, id)
-            {
-                return;
-            }
-        }
-        // Room protection (§3 step 2) precedes target counting for
-        // offensive modes — the same guilt gate and round-cost-only
-        // charging as the single-target paths. ORACLE-VERIFY: every
-        // learnable area is benign-mode (spelltype 3), so this leg is
-        // decompile-mirrored only.
+        // Room protection (§3 step 2; cast_no_target 39164-39184) — the
+        // gate keys on `spelltype < 3 || spell_has_ability(0x34)`, so a
+        // BENIGN EvilInCombat carrier (the 16 learnable match-12 songs/
+        // webs) guilt-refuses here too, before counting and before any
+        // charge. Round-cost-only charging like the single-target paths.
         let round_cost = i32::from(spell.round_cost);
-        if spell.target_mode.is_offensive()
+        if (spell.target_mode.is_offensive()
+            || spell.abilities.iter().any(|(a, _)| *a == Ability::EvilInCombat))
             && self.content.rooms.get(&room).is_some_and(|r| r.protected())
         {
             if let Some(Session::InGame { energy, .. }) = self.sessions.get_mut(&session)
@@ -7421,6 +7416,28 @@ impl Core {
             self.output_line(session, text::SPELL_NO_EFFECT_IN_ROOM);
             return;
         }
+        // add_evil_warnings_to_room (crime.md §2.5 last row; the 39216
+        // normal-arm site — which the DLL reaches AFTER the protection
+        // gate and the zero-target abort, hence this block's position):
+        // an offensive sweep over a room holding an innocent passive
+        // monster charges ONE 10-point NPC-style hit before any cost; a
+        // refusal aborts the whole cast. (The per-victim 0-point PAIR
+        // timers are the PvP half — slice 4 with rob.)
+        if spell.target_mode.is_offensive() && spell.match_type.hits_monsters() {
+            // The monster loop is MATCH-GATED (38793-38795): it runs only
+            // for `spell+0xcc` in {3, 5, 9, 0xb, 0xc} — exactly
+            // [`MatchType::hits_monsters`]. An offensive room-wide cast of
+            // any other area type (10/0xd) charges nothing here, so the
+            // gate is a conjunct and not a doc note. The innocence
+            // predicate lives in [`Core::first_chargeable_innocent`] —
+            // note match 9/0xc silently retires the `behaviour == 4`
+            // half of it (38454-38456 vs 38495).
+            if let Some(id) = self.first_chargeable_innocent(session, spell, room)
+                && self.charge_passive_monster_evil(session, id) == PassiveEvilCharge::Refused
+            {
+                return;
+            }
+        }
         // Costs and the roll at the command, like the benign self path
         // (MEASURED §8.13: flash/stinking cloud mana moved at the
         // prompt). Offensive-mode areas charge here too — the engage-only
@@ -7439,6 +7456,27 @@ impl Core {
         }
         if player.current_mana < mana_cost {
             self.output_line(session, self.not_enough_mana_line(session));
+            return;
+        }
+        // The per-slot 0x34 arm (cast_no_target 39299-39313, after the
+        // triple gate): a spell CARRYING EvilInCombat runs the room
+        // charge with NO spelltype test — this is how the 16 learnable
+        // benign match-12 52-carriers (the songs, web, tangle) charge.
+        // The immediate flag is set (add_evil_warnings_to_room param_3 =
+        // 1, 38774-38777): one 10-point NPC-style hit when an innocent
+        // passive monster is a valid target; a refusal aborts the WHOLE
+        // cast, costs unpaid. An offensive 52-carrier charges here AND
+        // at the 39216 arm above — the DLL double-charges the same way
+        // (only unlearnable spells, e.g. 1071 black wave, are both). NO
+        // grudge writes on this path (38759-38812 has none). The DLL
+        // draws its success roll before this scan and wastes it on a
+        // refusal; ours draws after — unobservable, nothing downstream
+        // of an abort consumes a roll.
+        if spell.abilities.iter().any(|(a, _)| *a == Ability::EvilInCombat)
+            && spell.match_type.hits_monsters()
+            && let Some(id) = self.first_chargeable_innocent(session, spell, room)
+            && self.charge_passive_monster_evil(session, id) == PassiveEvilCharge::Refused
+        {
             return;
         }
         if let Some(Session::InGame { cast_this_round, .. }) = self.sessions.get_mut(&session) {
@@ -7621,9 +7659,9 @@ impl Core {
             // — but NO caster-side engagement (no *Combat Engaged*
             // MEASURED §8.13 on debuff-only payloads; ORACLE-VERIFY for
             // damaging sweeps — fixture-only today; the area path's
-            // ability-52 evil charge is the still-open gap logged at
-            // `offensive_cast_attempt`'s fail arm, 16 learnable match-12
-            // carriers). The AREA damage twins (40370-40385 and 40601-40614)
+            // ability-52 evil charge landed with the M7 close-out, up in
+            // this function ahead of the roll). The AREA damage twins
+            // (40370-40385 and 40601-40614)
             // consult the charmed bit exactly as much as the
             // single-target one does — not at all. Unlike 43752 they gate
             // on the INSTANCE roam class with no null-template clause;
@@ -7645,13 +7683,16 @@ impl Core {
         }
     }
 
-    /// Everything a SUCCESSFUL benign cast does after its costs are paid
-    /// — shared by the self-cast command path (`target == session`), the
-    /// player-target path (`benign_target_cast`) and the mode-2 forced
-    /// cast (`forced_cast`): the dispel pre-pass, the instant apply loop
-    /// or duration slot entry, then the success lines. Every effect —
-    /// dispel, hard-write, apply loop, slot entry — lands on the TARGET;
-    /// only the fan-out geometry involves the caster.
+    /// Everything a SUCCESSFUL user-target cast does after its costs are
+    /// paid — shared by the self-cast command path (`target == session`),
+    /// the player-target path (`benign_target_cast`) and the mode-2
+    /// forced cast (`forced_cast`, BOTH arms: the quest VM's 17 trap
+    /// spells are offensive match-1 self-casts and land here too — the
+    /// Damage/DamageMR arms below are their case-1/0x11 match-1/2/6
+    /// legs): the dispel pre-pass, the instant apply loop or duration
+    /// slot entry, then the success lines. Every effect — dispel,
+    /// hard-write, apply loop, slot entry — lands on the TARGET; only
+    /// the fan-out geometry involves the caster.
     fn benign_success_effects(
         &mut self,
         session: SessionId,
@@ -7744,6 +7785,27 @@ impl Core {
             // the costs stay paid (the roll already succeeded).
             return;
         }
+        // The offensive-arm inputs (Damage 1 / DamageMR 17 — the forced
+        // trap legs): caster-side AlterSpDmg boost, target-side MR and
+        // AntiMagic, all read before the loop borrow. Zero-cost when the
+        // spell carries neither.
+        let has_damage_arms = spell
+            .abilities
+            .iter()
+            .any(|(a, _)| matches!(a, Ability::Damage | Ability::DamageMR));
+        let (boost, target_mr, target_anti_magic) = if has_damage_arms {
+            let boost = self.ability_bag(self.player(session)).value(Ability::AlterSpDmg);
+            let anti = self.ability_bag(self.player(target_id)).value(Ability::AntiMagic) != 0;
+            let mr = match self.sessions.get(&target_id) {
+                Some(Session::InGame { derived, .. }) => derived.magic_resist,
+                _ => 0,
+            };
+            (boost, mr, anti)
+        } else {
+            (0, 0, false)
+        };
+        let mut damage_dealt = 0i32;
+        let mut was_up = true;
         // Summon(12) and TextBlock(148) rows collected in the instant
         // loop; executed after the session borrow drops.
         let mut summons: Vec<i32> = Vec::new();
@@ -7758,6 +7820,7 @@ impl Core {
             else {
                 return;
             };
+            was_up = player.current_hp >= 1;
             for (ability, value) in &spell.abilities {
                 let amount = match *value {
                     0 => magnitude,
@@ -7767,6 +7830,27 @@ impl Core {
                     // Heal (18): HP += V, capped at the derived max.
                     Ability::Heal => {
                         player.current_hp = (player.current_hp + amount).min(max_hp);
+                    }
+                    // Damage (1), the case-1 match-1/2/6 leg (39613-
+                    // 39650): the AlterSpDmg-boosted amount straight off
+                    // hp. Shipped reach: the quest VM's forced traps
+                    // (match-1 self-casts — the victim is the caster).
+                    // Kill check and the drops pair run AFTER the
+                    // success display, below.
+                    Ability::Damage => {
+                        let dealt = alter_sp_dmg(amount, boost);
+                        player.current_hp -= dealt;
+                        damage_dealt += dealt;
+                    }
+                    // Damage(-MR) (17), the case-0x11 match-1/2/6 leg
+                    // (40137-40198): boosted, then scaled against the
+                    // TARGET's own MR with the AntiMagic(0x33) branch —
+                    // on a forced trap that is the caster's own MR.
+                    Ability::DamageMR => {
+                        let dealt =
+                            damage_mr(alter_sp_dmg(amount, boost), target_mr, target_anti_magic);
+                        player.current_hp -= dealt;
+                        damage_dealt += dealt;
                     }
                     // EnergyLevel (11): round pool += V, capped at max.
                     Ability::EnergyLevel => {
@@ -7935,7 +8019,30 @@ impl Core {
                 );
             }
         }
+        // A damage arm displays its DEALT number (case 1/0x11 pass
+        // local_78 — the post-boost, post-MR value — to
+        // display_spell_success), not the raw slot/magnitude.
+        let display_damage = if damage_dealt > 0 { damage_dealt } else { display_damage };
         self.emit_cast_success_lines(session, target_id, spell, display_damage, everyone_target);
+        // check_kill_user then the drops pair (39639-39649), both AFTER
+        // the success display — the DLL prints the damage line first.
+        // check_kill_user's self-kill distribute_experience call
+        // (killer == victim) awards nothing observable; player_killed
+        // owns the death path.
+        if damage_dealt > 0 {
+            let (hp, name, room) = {
+                let Some(Session::InGame { player, .. }) = self.sessions.get(&target_id) else {
+                    return;
+                };
+                (player.current_hp, player.name.clone(), player.location)
+            };
+            if hp <= DEATH_FLOOR {
+                self.player_killed(target_id);
+            } else if was_up && hp < 1 {
+                self.output_line(target_id, &text::drops_to_ground(&name));
+                self.broadcast_to_room(room, Some(target_id), &text::drops_to_ground(&name));
+            }
+        }
     }
 
     /// `cast_item_target` (decompile 0x49232), scoped to the LEARNABLE
@@ -8311,26 +8418,43 @@ impl Core {
     ///   pathological negative mana_cost the DLL would grant mana, we
     ///   refuse; unreachable with shipped data).
     ///
-    /// Scope: benign self-cast only — no shipped EndCast chain is
-    /// reachable by a player cast (48 duration spells carry EndCast 151;
-    /// none is named by any LearnSp scroll). The offensive arm gained a
-    /// reachable trigger with M7 slice 6 (the quest VM's `cast` verb
-    /// names 17 trap spells) and carries the PENDING marker below.
+    /// Scope: both arms of the shared body. The benign arm has no
+    /// shipped EndCast trigger (48 duration spells carry EndCast 151;
+    /// none is named by any LearnSp scroll); the OFFENSIVE arm is the
+    /// quest VM's `cast` verb — 17 shipped trap spells (spelltype 0:
+    /// spear/venom/fire traps, chest triggers), every one match 1, so
+    /// the victim IS the caster and the whole cast routes through the
+    /// same self-target apply body as the benign arm (case 1/0x11
+    /// match-1/2/6 legs, 39613-39650 and 40137-40198).
     /// Returns whether the cast landed — the quest VM's `cast` verb
     /// fail-stops on a 0 return from cast_no_target (69650-69656).
     fn forced_cast(&mut self, session: SessionId, spell_id: SpellId) -> bool {
         let Some(spell) = self.content.spells.get(&spell_id).cloned() else {
             return false;
         };
-        if spell.target_mode.is_offensive() {
-            // M7 PENDING(slice-6): the offensive forced-cast now HAS
-            // shipped triggers — the quest VM's `cast` verb names 17
-            // trap spells (spelltype 0: spear/venom/fire traps etc.,
-            // fired by chest/search blocks) into cast_no_target's
-            // offensive machinery (39200-39500). Unported; a silent
-            // no-op that keeps the block chain alive. The EndCast-chain
-            // trigger remains dead (all 48 carriers unlearnable).
-            return true;
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+            return false;
+        };
+        let room = player.location;
+        let round_cost = i32::from(spell.round_cost);
+        let mana_cost = i32::from(spell.mana_cost);
+        // Room protection FIRST (39164-39184, ahead of the class gate at
+        // 39235): the gate keys on `spelltype < 3 ||
+        // spell_has_ability(0x34)` and is NOT mode-gated — a forced trap
+        // cast in a protected room guilt-refuses like any other. Round
+        // cost charged when affordable, mana untouched (the area twin's
+        // shape); the 0 return fail-stops the block chain.
+        if (spell.target_mode.is_offensive()
+            || spell.abilities.iter().any(|(a, _)| *a == Ability::EvilInCombat))
+            && self.content.rooms.get(&room).is_some_and(|r| r.protected())
+        {
+            if let Some(Session::InGame { energy, .. }) = self.sessions.get_mut(&session)
+                && *energy >= round_cost
+            {
+                *energy -= round_cost;
+            }
+            self.output_line(session, text::CAST_GUILT);
+            return false;
         }
         let Some(Session::InGame { player, energy, .. }) = self.sessions.get(&session) else {
             return false;
@@ -8339,8 +8463,6 @@ impl Core {
         if self.spell_gate(player, &spell) == SpellGate::WrongClass {
             return false;
         }
-        let round_cost = i32::from(spell.round_cost);
-        let mana_cost = i32::from(spell.mana_cost);
         // The unconditional triple gate (39253), refusal lines in the
         // decompile's order (39264-39281): round energy prints the
         // already-cast line, then mana, then level-vs-required-power.
@@ -8538,7 +8660,7 @@ impl Core {
 
     /// `top [n] [gangs]` (cmd_topten 0x58891, gangs.md §5.1). The gangs
     /// arm ships; every player-ranking form stays the pre-slice-7 stub
-    /// (M7 PENDING: needs board-wide account data — M8). Forms: bare
+    /// (M8 PENDING, gangs.md §10: needs board-wide account data). Forms: bare
     /// GANGS = 10; `<n> GANGS` / `GANGS <n>` capped at MAXTOP (30,
     /// MSG-option default) for unprivileged viewers.
     fn top_command(&mut self, session: SessionId, args: &str) {
@@ -9389,8 +9511,8 @@ impl Core {
     /// TEN gang slots is claimed. Price/denomination default to the
     /// item's own cost fields; explicit price caps at 9999. Every stock
     /// overwrites last_stocker with the stocker (the bank-8 deposit
-    /// target). Unported gates, M7 PENDING: the limited-item and
-    /// worn-second-copy refusals (fields unmodeled).
+    /// target). Unported gates, M8 PENDING (gangs.md §10): the
+    /// limited-item and worn-second-copy refusals (fields unmodeled).
     fn stock_command(&mut self, session: SessionId, args: &str) -> Resolution {
         if args.trim().is_empty() {
             self.output_line(session, text::SYNTAX_STOCK);
@@ -10701,8 +10823,10 @@ impl Core {
     /// 43255/43330/43417): initiating violence against a passive (mode
     /// 0/4) monster that is not already fighting you charges 10 evil via
     /// the NPC path (`crime::charge_npc_evil` — gates, dark cloud,
-    /// minimum-10 bump). Returns true when the action is REFUSED; the
-    /// caller aborts before any engagement. The own-summon exemption
+    /// minimum-10 bump). On `Refused` the caller aborts before any
+    /// engagement; the 43330 site additionally owes the grudge body on
+    /// `Charged` — which is why `Charged` and `NotEligible` are distinct
+    /// arms and not one `false`. The own-summon exemption
     /// (the DLL's `sameas(mon+0x1a, user+0x1e) == 0` term) IS ported —
     /// M7 slice 5 gave the name link its owner semantics, and the
     /// `m.target != Some(session)` clause below is that term. What stays
@@ -10712,23 +10836,23 @@ impl Core {
         &mut self,
         session: SessionId,
         monster: MonsterInstanceId,
-    ) -> bool {
+    ) -> PassiveEvilCharge {
         let eligible = self
             .monsters
             .get(&monster)
             .is_some_and(|m| matches!(m.behaviour, 0 | 4) && m.target != Some(session));
         if !eligible {
-            return false;
+            return PassiveEvilCharge::NotEligible;
         }
         let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
-            return false;
+            return PassiveEvilCharge::NotEligible;
         };
         let mut fame = player.fame;
         let before = crate::crime::legal_level(fame);
         match crate::crime::charge_npc_evil(&mut fame, player.warn_on_evil, player.lawful, 10) {
             Err(refusal) => {
                 self.output_line(session, refusal);
-                true
+                PassiveEvilCharge::Refused
             }
             Ok(cloud) => {
                 player.fame = fame;
@@ -10739,9 +10863,34 @@ impl Core {
                     self.update_allowed_worn_items(session);
                 }
                 self.events.push(Event::Persist(snapshot));
-                false
+                PassiveEvilCharge::Charged
             }
         }
+    }
+
+    /// The innocent-passive-monster half of `count_valid_targets`'
+    /// `local_65` out-bits (38600-38620): bit 1 set + bit 2 cleared
+    /// whenever an innocent monster (mode 0/4, no name link) is a valid
+    /// target of the sweep — 38802-38805 conjoins the innocence flag
+    /// with `is_valid_monster_target` itself, so a body the sweep will
+    /// not reach is not a body you can be charged for either. The
+    /// player half of those bits is the PvP innocence test (M8).
+    fn first_chargeable_innocent(
+        &self,
+        session: SessionId,
+        spell: &crate::content::Spell,
+        room: RoomId,
+    ) -> Option<MonsterInstanceId> {
+        self.monsters
+            .iter()
+            .find(|(id, m)| {
+                m.location == room
+                    && m.current_hp > 0
+                    && matches!(m.behaviour, 0 | 4)
+                    && m.target != Some(session)
+                    && self.is_valid_monster_target(session, spell, **id)
+            })
+            .map(|(id, _)| *id)
     }
 
     /// `update_allowed_worn_items` (crime.md §2.4/§6.1): when a fame
@@ -11047,6 +11196,22 @@ impl Core {
     /// control undead AffectsUndead, 92 charm animal AffectsAnimals — so
     /// without this, `charm animal` was legal on all 1101 templates
     /// instead of 155, and `control undead` on 1101 instead of 115.
+    ///
+    /// KNOWN-DIVERGENCE (slot order vs the 52 charge; M7 close-out): the
+    /// DLL interleaves these refusal arms with the EvilInCombat(52)
+    /// charge in ONE slot-ordered walk; we run ALL refusals first and
+    /// the 52 arm second (`cmd_cast`'s monster arm). Census
+    /// (`re/mmud_wgnt.sqlite`): exactly one LEARNABLE spell lists 52
+    /// ahead of a refusal ability — 35 poison bolt (scroll 303; slots
+    /// 17, 52, 151, 108). Cast at a passive NonLiving monster the DLL
+    /// charges 10 evil + grudge and THEN refuses; we refuse free. The
+    /// other two such spells (177 flay, 1009 sunburst) are unlearnable;
+    /// all 25 learnable benign 52-carriers order their refusal ability
+    /// (if any) first, where both engines refuse free. Pinned by
+    /// `crime.rs::refusal_ability_before_52_refuses_free`. Re-open if a
+    /// content patch makes another 52-before-refusal spell learnable —
+    /// then restructure the scan into a slot-ordered walk instead of
+    /// widening this note.
     fn cast_eligibility_refused(
         &self,
         id: MonsterInstanceId,
@@ -11200,24 +11365,15 @@ impl Core {
             //     into `mon+0x1a` and clear the suppression byte at
             //     `mon+0x116`.
             //
-            // M7 PENDING (`re/docs/crime.md` §2.5, the 43330 row): the
-            // 0x34 arm is NOT implemented. In the DLL, cursing a passive
-            // monster costs 10 evil points and earns a grudge; here it is
-            // free and the monster never retaliates. DATA
-            // (`re/mmud_wgnt.sqlite`): 25 of the 29 learnable benign
-            // match-4/6/8 spells carry ability 52 — curse, blind, slow,
-            // hold person, confusion, sleep, entangle, mute, the seven
-            // songs, creeping doom, wrathful curse. This is a WIDENING of
-            // an existing gap, not a new one: 16 learnable AREA spells
-            // (match 12) already carry ability 52 and are already
-            // unhandled on the `area_cast` path. `charge_passive_monster_evil`
-            // already implements the 43323 predicate exactly — it is only
-            // gated at the CALL SITE on `is_offensive()` rather than on
-            // the ability, so closing this is a call-site change plus the
-            // grudge/suppression writes. HOME: the crime slice has already
-            // shipped, so this carries to the M7 close-out (slice 8) — it
-            // was logged during slice 5's Task-3b routing fix, which is
-            // what put 25 more spells in front of this gate.
+            // The 0x34 arm shipped with the M7 close-out: it lives in
+            // `cmd_cast`'s monster arm (ahead of the SpellImmu gate,
+            // matching the DLL's scan-before-43380 order) and fires off
+            // the SPELL'S ability list — 25 of the 29 learnable benign
+            // match-4/6/8 spells carry 52 (curse, blind, slow, hold
+            // person, confusion, sleep, entangle, mute, the seven songs,
+            // creeping doom, wrathful curse; `re/mmud_wgnt.sqlite`). The
+            // arm THIS comment sits in stays spelltype-gated because it
+            // mirrors 43249-43273 only.
             if spell.duration == 0
                 && spell.target_mode.is_offensive()
                 && self.monsters.get(&monster_id).is_some_and(|m| m.target.is_none())
@@ -11585,6 +11741,56 @@ impl Core {
             self.output_line(session, text::NOT_IN_SHOP_LIST);
             return Resolution::Handled;
         };
+        // Gang stock shop (type 0xb): display_shop_items' dedicated
+        // branch (34841-34900) renders the 10 RUNTIME slots — the same
+        // header strings as the regular branch (004849fd/00484a26/
+        // 00484a5b), price = slot price × (markup+100)/100 in the SLOT's
+        // own denomination, the same Free row (00484b35) and can't-use
+        // suffix pair. NO Charm factor and NO >100000 quirk at LIST time
+        // — both are buy-side only (buy_item 14571+, mirrored in
+        // buy_from_gang_shop), so LIST shows markup-only prices exactly
+        // like a regular shelf shows value without the haggle. (The
+        // priced row is 00484b1a `%5u` vs the regular 00484b73 `%5d` —
+        // output-indistinguishable for a u16-sourced price.)
+        if self.content.shops[&shop_id].shop_type == 11 {
+            let Some(state) = self.gang_shops.get(&shop_id).cloned() else {
+                return Resolution::Handled; // never stocked: nothing prints
+            };
+            let mut out = String::new();
+            for slot in &state.slots {
+                let Some(item_id) = slot.item else { continue };
+                if slot.count == 0 {
+                    continue;
+                }
+                let Some(item) = self.content.items.get(&item_id) else {
+                    continue;
+                };
+                if out.is_empty() {
+                    out.push_str(text::SHOP_HEADER);
+                    out.push('\n');
+                }
+                let shelf = i64::from(slot.price) * (i64::from(state.markup) + 100) / 100;
+                let row = if shelf == 0 {
+                    text::shop_row_free(&item.name, slot.count)
+                } else {
+                    text::shop_row_priced(
+                        &item.name,
+                        slot.count,
+                        shelf,
+                        slot.denom.clamp(0, 4) as usize,
+                    )
+                };
+                out.push_str(&row);
+                if let Some(suffix) = self.list_row_suffix(session, item) {
+                    out.push_str(suffix);
+                }
+                out.push('\n');
+            }
+            if !out.is_empty() {
+                self.output(session, &out);
+            }
+            return Resolution::Handled;
+        }
         let shop = &self.content.shops[&shop_id];
         let counts = self.shop_stock.get(&shop_id).copied().unwrap_or_default();
         // The header prints lazily on the first stocked row, and

@@ -310,7 +310,20 @@ ids · `+0x776[30]` their values · `+0x90` race · `+0x92` class · `+0x94` lev
 
 ---
 
-## 7. As built (M7 slice 6, 2026-07-30)
+## 7. As built (M7 slice 6, 2026-07-30; slice-8 expedition 2026-07-31)
+
+> **Slice-8 live pass (`slice8_hand.raw`):** one real quest step ran
+> end-to-end on the board — `ask dhelvanen about help` returned the
+> greettxt-177 `help:180` dialogue block, and `give spider silk to
+> Dhelvanen` ran room 7/1008's cmdtext-181 chain (takeitem 481 →
+> messages → giveitem 466): "You give Dhelvanen some spider silk." /
+> "Dhelvanen gives you a green potion.", inventory confirmed both ways,
+> and the state survived a board restart. The §3 say-fallback model also
+> confirmed live: bare `ask` and an unresolved monster say at every
+> length; `as <npc> <q>` works from 2 ("healer has nothing to tell
+> you!" for a talktxt-less NPC). The offensive forced-cast arm (the 17
+> `cast` trap carriers) LANDED at the close-out — see §7.2's rehome
+> note and `quest_vm.rs`'s six trap pins.
 
 The whole system above is live in `crates/mud-core` (`questvm.rs` +
 `game.rs::perform_matched_action` and friends; tests in
@@ -401,9 +414,11 @@ decompile line numbers cited are `WCCMMUD_decompiled.c`'s.
   derives elsewhere.
 - giveitem's failure condition is the 100-slot cap; the DLL's weight
   and add-logical gates are unmodeled engine-wide.
-- `M7 PENDING` survivors from this slice, both cited in code: the
-  offensive trap-cast arm (17 shipped `cast` carriers, spelltype 0)
-  and remoteaction's type-9/0x18 force-move arm (≤2 ambiguous uses).
+- Slice-6 survivors, dispositioned at the M7 close-out (slice 8): the
+  offensive trap-cast arm LANDED (17 shipped `cast` carriers, all
+  match-1 self-casts — Damage/DamageMR legs, guilt gate, death path;
+  six pins in `quest_vm.rs`); remoteaction's type-9/0x18 force-move
+  arm (≤2 ambiguous uses, none exercised) rehomed `M8 PENDING`.
 - The look/buy/use cmdtext hook sites reduce to the fall-through
   funnel: measured 2026-07-30, zero shipped `buy` triggers sit in shop
   rooms and none of the trigger census requires the pre-refusal form.

@@ -750,6 +750,54 @@ strings); exp-pool saturation golden; deed/shop gating; .HSE resolution
 restart. Oracle expedition: two characters — create/invite/join/roster/
 top/broadgang string pins; stock guild-house .HSE render; deed price.
 
+**Slice 8 COMPLETE (2026-07-31, 1242 workspace tests, commits
+c372e14..the doc commit carrying this banner) — M7 CLOSED.**
+The two spec-named survivors landed: the EvilInCombat(52) ability-gated
+charge + grudge on the single-target cast path (tri-state
+`charge_passive_monster_evil`, 43335-grudge via `retaliation_lock`,
+poison-bolt slot-order divergence documented at
+`cast_eligibility_refused`), the area per-slot arm + offensive-or-52
+protection gates (area AND forced), and the offensive forced-cast — all
+17 quest trap spells are match-1 self-casts, routed through the shared
+apply body with new Damage/DamageMR legs, death path, and the guilt
+gate (six pins). Gang-shop LIST renders the runtime shelves
+(display_shop_items' type-0xb branch — decompile-specified, not
+unmeasured). Marker sweep: zero `M7 PENDING` in crates/ and re/docs/
+(force-move / TOP / STOCK gates rehomed M8 with citations;
+`docs/plans/*.md` mentions are historical records, exempt by
+convention). Field expedition (13 raws, `slice8_*.raw`): the hand
+session ran scripted — SET summary (NO ANSI option: the server-edge
+toggle is now a MEASURED divergence), SET WARNING pair, the Dhelvanen
+quest end-to-end (ask + give step + reward + restart survival), rob/
+picklock/search/sneak/hide strings at a real locked door, MA swing
+verbs (kick/jumpkick + crit form), the two-character gang program
+(create → INVITE MEMBER → join → broadgang → promote/demote →
+DISBAND-confirm, top-gangs table, deed price table, .HSE error AND
+success renders) with a mid-program board RESTART proving gang + fame +
+inventory + quest state survive; the min-abbrev sweep measured the
+whole marked cluster and CORRECTED ten shipped minimums (backstab 5,
+kick 3, jumpkick 2, invoke 4, ask 2, read 4, uninvite 3, promote 4,
+demote 3, markup 3) and removed the invented gang/guild verbs (the live
+broadcast verb is BROADGANG, min 6 — roster verbs do not exist in
+1.11p-WG); gang string colours applied from receiver-side bytes (1;34
+notices, 0;32/0;33 gangpath, 0;33 top-gangs title). Migrations proven
+against the REAL pre-M7 July-26 state.sqlite (server boot + old-row
+character load + play + idempotent reopen) on top of the
+old_database_is_migrated_on_open unit proof. mud-client corpus repinned
+(115 raws, 20645 prompts, reference-pipeline cross-validated) and the
+new corpus caught a real bot-safety bug (adjective-prefixed named NPCs
+were attackable). Tier-3 program status: MA strings RAN, fame/status
+display RAN (Neutral WHO form; the Seedy-tier word + guardian flip stay
+decompile-cited — three walk attempts documented in `slice8_seedy*`,
+guard lethality + population drain), theft RAN (skilled-thief success
+paths remain decompile-cited — no thief char on the install), quest
+end-to-end RAN, gang program + .HSE RAN, charm lifecycle closed
+2026-07-30. Carry 4d (slime delay-0) attempted and still open: the lair
+never populated across a 15-minute occupied camp (marker refreshed at
+`content.rs::respawn_delay`). crime.md §11 and theft.md as-built
+sections written (the two that were missing); gangs.md §9.1 expedition
+pass; quests.md §7 expedition note.**
+
 ## Slice 8 — Close-out
 
 Consolidated oracle re-verification of all M7 strings → retag text.rs;

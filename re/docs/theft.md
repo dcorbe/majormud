@@ -718,3 +718,38 @@ clamp to cap (95 from both callers), then clamp ≥ 0
   predecessor is the list head, leaving `DAT_00488180` dangling
   (use-after-free). Only the head-match path is correct. A reimplementation
   should free the matched node; do not clone the original behavior.
+
+---
+
+## As built — M7 slice 4 + close-out (2026-07-31)
+
+Implementation: rob/picklock/search/disarm/sneak/hide in `game.rs`
+(spec sections above, cited per-arm); slice-8 live pins in
+`slice8_abbrevs.raw` / `slice8_abbrevs2.raw` / `slice8_gang1b.raw`.
+
+### Live-measured (slice-8 expedition)
+
+- `rob` minimum 2 ("ro"), bare form prints "Syntax: ROB {user/monster}";
+  an absent target refuses "You don't see that anywhere!" (no say
+  fall-through, unlike attack/ask).
+- **`picklock` is pattern-parsed**: every bare prefix through the full
+  word falls to SAY; with a direction argument it parses from 2 ("pi n"),
+  and the two-word "pick lock n" form prints "Syntax: PICKLOCK
+  {direction}". A skill-0 attempt at a real locked door (15/850 south)
+  fails "Your skill fails you this time."; `open` on the same door prints
+  "The door is locked." — both strings live.
+- `search` shortest live form "sea" (se belongs to southeast); a bare
+  search in an empty room prints "Your search revealed nothing."
+- `disarm` owns di/dis live (silent no-op with no trap present).
+- `sneak`/`hide`: "Attempting to sneak..." / "Attempting to hide...";
+  the failed-sneak reveal "You don't think you're sneaking." captured.
+- Closed-door render: "Obvious exits: north, closed door south"
+  (`slice8_gang1b.raw`) — the slice-4 closed-door wording pin.
+
+### Residue (documented, not blocking)
+
+- Success-path rob/picklock (skilled thief) unmeasured — no thief-class
+  character exists on the current oracle install; the decompile citations
+  (§1-§8) remain authoritative for the roll/branch structure.
+- The `attempt_to_forgive` engine bug (UNDETERMINED above) stays
+  deliberately un-cloned.

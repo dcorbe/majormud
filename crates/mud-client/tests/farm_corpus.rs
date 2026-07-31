@@ -289,8 +289,9 @@ fn emissions_flow_one_per_ack_and_never_wedge() {
             );
         }
     }
-    // 1857 -> 1947 when the five acceptance runs joined the corpus.
-    assert_eq!(total, 1947, "corpus gate throughput changed");
+    // 1857 -> 1947 when the five acceptance runs joined the corpus;
+    // -> 1962 when the merge brought slice-8's 13 expedition raws in.
+    assert_eq!(total, 1962, "corpus gate throughput changed");
 }
 
 /// The gate invents nothing. Everything it emits was either a bot
@@ -354,9 +355,11 @@ fn the_corpus_shows_the_bot_occupied_rooms() {
     // for the wrong reason and nothing else would say so.
     // 393 -> 394 when the parser learned to open a room block whose name
     // is glued to a redrawn prompt on one physical line (the busy-room
-    // render); one such block in the corpus lists a target.
+    // render); one such block in the corpus lists a target. -> 399 when
+    // the merge brought slice-8's expedition raws in (five more occupied
+    // blocks across the gang and slime-lair sessions).
     assert_eq!(
-        total, 394,
+        total, 399,
         "room blocks listing an attackable target changed; if that is \
          intended, update the number — but check the stop assertions \
          above are still doing work"

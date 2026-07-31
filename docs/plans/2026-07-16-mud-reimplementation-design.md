@@ -103,6 +103,9 @@ Tiers 1–2 run per commit; the oracle runs on demand per system.
   unique-spawn timers. **COMPLETE 2026-07-18** (design + six slices:
   `2026-07-18-m6-living-world-design.md`; charm/pets re-deferred to M7).
 - **M7 Content systems** — quest text-block VM, gangs + `.HSE` houses.
+  **COMPLETE 2026-07-31** (design + eight slices:
+  `2026-07-19-m7-content-systems-design.md`; 1242 workspace tests, zero
+  `M7 PENDING`, slice-8 field expedition + pre-M7 migration proof).
 - **M8 Plus (optional)** — WCCMMPLS add-on.
 
 Open spec items (unextracted `.data` constants) are resolved via Ghidra or oracle

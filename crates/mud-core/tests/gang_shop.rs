@@ -62,6 +62,29 @@ fn world() -> Content {
         abilities: vec![(Ability::from_id(100).unwrap(), 1)], // LoyalItem
         ..Item::default()
     });
+    // Cost 0 → the Free row when stocked bare.
+    content.add_item(Item {
+        id: ItemId(71),
+        name: "wooden bowl".into(),
+        weight: 1,
+        item_type: 0,
+        uses: -1,
+        cost: 0,
+        gettable: 1,
+        ..Item::default()
+    });
+    // MinLevel 99 → the "(You can't use)" suffix on the shelf row.
+    content.add_item(Item {
+        id: ItemId(72),
+        name: "ancient relic".into(),
+        weight: 1,
+        item_type: 0,
+        uses: -1,
+        cost: 10,
+        gettable: 1,
+        abilities: vec![(Ability::MinLevel, 99)],
+        ..Item::default()
+    });
     content.add_race(Race {
         id: RaceId(1),
         name: "Human".into(),
@@ -260,6 +283,94 @@ fn buy_pays_the_stocker_price_and_deposits_to_bank_8() {
     core.input(b, "buy dagger");
     let out = texts(&core.drain_events(), b);
     assert!(out.contains("is not a known item"), "sold out and delisted: {out:?}");
+}
+
+// --- LIST rendering of the runtime shelves (gangs.md §3.1;
+// display_shop_items' dedicated type-0xb branch, decompile 34841-34900):
+// the same header strings as a regular shop, the 10 runtime slots,
+// price = slot price × (markup+100)/100 in the SLOT's own denomination,
+// zero price → the Free row, same can't-use suffix pair. NO Charm
+// factor and NO >100000 quirk at LIST time — both are buy-side only
+// (buy_item 14571+, mirrored in buy_from_gang_shop). ---
+
+#[test]
+fn list_renders_the_stocked_shelves() {
+    let mut core =
+        Core::new(world(), CoreConfig { start_location: SHOPROOM, ..CoreConfig::default() });
+    let s = stocker(&mut core);
+    core.input(s, "stock dagger 25 silver");
+    core.drain_events();
+    core.input(s, "list");
+    let out = texts(&core.drain_events(), s);
+    assert!(
+        out.contains("The following items are for sale here:"),
+        "shared header (004849fd): {out:?}"
+    );
+    let row = format!("{:<30}{:<10}{:>4} {}", "dagger", 1, 25, "silver nobles");
+    assert!(out.contains(&row), "stocker-priced row in the slot denom: {out:?}");
+}
+
+#[test]
+fn list_applies_the_gang_markup() {
+    let mut core =
+        Core::new(world(), CoreConfig { start_location: SHOPROOM, ..CoreConfig::default() });
+    let s = stocker(&mut core);
+    core.input(s, "stock dagger 30 copper");
+    core.input(s, "markup 50");
+    core.drain_events();
+    core.input(s, "list");
+    let out = texts(&core.drain_events(), s);
+    let row = format!("{:<30}{:<10}{:>4} {}", "dagger", 1, 45, "copper farthings");
+    assert!(out.contains(&row), "30 × 150 / 100 truncated: {out:?}");
+}
+
+#[test]
+fn list_shows_free_for_zero_priced_stock() {
+    let mut core =
+        Core::new(world(), CoreConfig { start_location: SHOPROOM, ..CoreConfig::default() });
+    let s = stocker(&mut core);
+    core.give_item(s, ItemId(71));
+    core.drain_events();
+    core.input(s, "stock bowl");
+    core.drain_events();
+    core.input(s, "list");
+    let out = texts(&core.drain_events(), s);
+    let row = format!("{:<30}{:<10}   Free", "wooden bowl", 1);
+    assert!(out.contains(&row), "the shared Free row (00484b35): {out:?}");
+}
+
+#[test]
+fn sold_out_slots_are_hidden_and_an_empty_shop_lists_nothing() {
+    let mut core =
+        Core::new(world(), CoreConfig { start_location: SHOPROOM, ..CoreConfig::default() });
+    let s = stocker(&mut core);
+    core.input(s, "stock dagger 30 copper");
+    core.drain_events();
+    let b = core.attach_player(person("Buyer"));
+    core.drain_events();
+    core.input(b, "buy dagger");
+    core.drain_events();
+    core.input(b, "list");
+    let out = texts(&core.drain_events(), b);
+    assert!(
+        !out.contains("for sale"),
+        "sold out delists; a fully empty shop prints nothing: {out:?}"
+    );
+}
+
+#[test]
+fn unusable_stock_carries_the_cant_use_suffix() {
+    let mut core =
+        Core::new(world(), CoreConfig { start_location: SHOPROOM, ..CoreConfig::default() });
+    let s = stocker(&mut core);
+    core.give_item(s, ItemId(72));
+    core.drain_events();
+    core.input(s, "stock relic");
+    core.drain_events();
+    core.input(s, "list");
+    let out = texts(&core.drain_events(), s);
+    let row = format!("{:<30}{:<10}{:>4} {} (You can't use)", "ancient relic", 1, 10, "copper farthings");
+    assert!(out.contains(&row), "same suffix pair as the regular branch: {out:?}");
 }
 
 #[test]

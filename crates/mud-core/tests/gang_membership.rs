@@ -437,7 +437,7 @@ fn all_roster_view_lists_mirror_members_with_online_marks() {
         ids.push(core.attach_player(p));
     }
     core.drain_events();
-    core.input(ids[0], "gang");
+    core.input(ids[0], "broadgang");
     let out = texts(&core.drain_events(), ids[0]);
     assert!(out.contains("Iron Fist members (4)"), "{out:?}");
     let salad = format!("{:<29.29} - Online [Leader]", "Salad");
@@ -461,7 +461,7 @@ fn online_roster_view_hides_offline_members() {
     // Ghost is only in the mirror (never attached in gang_world's list),
     // so seed via a third member who detaches — instead just rely on
     // the mirror having exactly the attached two plus none offline.
-    core.input(s[0], "gang");
+    core.input(s[0], "broadgang");
     let out = texts(&core.drain_events(), s[0]);
     assert!(out.contains("Iron Fist members (online)"), "{out:?}");
     let leader = format!("{:<29.29}  [Leader]", "Salad");
@@ -475,13 +475,13 @@ fn roster_leader_offline_forms() {
     use mud_core::gang::GF_ROSTER_ONLINE_ONLY;
     // The leader never attaches.
     let (mut core, s) = gang_world(&[("Grunt", true, 0)]);
-    core.input(s[0], "gang");
+    core.input(s[0], "broadgang");
     let out = texts(&core.drain_events(), s[0]);
     let leader = format!("{:<29.29}          [Leader]", "Salad");
     assert!(out.contains(&leader), "ALL view offline leader: {out:?}");
 
     let (mut core, s) = gang_world(&[("Grunt", true, GF_ROSTER_ONLINE_ONLY)]);
-    core.input(s[0], "gang");
+    core.input(s[0], "broadgang");
     let out = texts(&core.drain_events(), s[0]);
     let leader = format!("{:<29.29}  [Leader - Offline]", "Salad");
     assert!(out.contains(&leader), "online view offline leader: {out:?}");
@@ -528,6 +528,25 @@ fn set_gang_toggles_and_sets_the_roster_view() {
     );
 }
 
+#[test]
+fn gang_string_colours_match_the_live_board() {
+    // MEASURED (slice8_gang1b.raw / slice8_gang4.raw byte captures):
+    // gang notices paint bright blue (1;34); the gangpath line is a
+    // green sender lead-in (0;32) + dark-yellow message (0;33); the
+    // gangless broadgang refusal is PLAIN (no lead-in in the capture).
+    use mud_core::text;
+    assert!(
+        text::gangpath("Salad", "hi").starts_with("\x1b[0;32mSalad gangpaths: \x1b[0;33mhi"),
+        "{:?}",
+        text::gangpath("Salad", "hi")
+    );
+    assert!(text::gang_invite_target(true, "Kaimon", "Slice Eight").starts_with("\x1b[1;34m"));
+    assert!(text::gang_joined("Slice Eight").starts_with("\x1b[1;34m"));
+    assert!(text::gang_join_broadcast("Oracle").starts_with("\x1b[1;34m"));
+    assert!(text::GANG_NOT_CURRENTLY_IN.starts_with("\x1b[1;34m"));
+    assert!(!text::NOT_IN_A_GANG.starts_with('\x1b'), "measured plain");
+}
+
 // --- §5.2 gangpaths ---
 
 #[test]
@@ -538,7 +557,7 @@ fn gangpath_reaches_the_gang_including_the_sender() {
         ("Vex", true, GF_LIEUTENANT),
         ("Torgo", false, 0),
     ]);
-    core.input(s[0], "gang meet at the well");
+    core.input(s[0], "broadgang meet at the well");
     let events = core.drain_events();
     for (label, id) in [("sender", s[0]), ("member", s[1])] {
         let out = texts(&events, id);
@@ -556,7 +575,7 @@ fn gangpath_reaches_the_gang_including_the_sender() {
 #[test]
 fn gangpath_without_a_gang_refuses() {
     let (mut core, s) = gang_world(&[("Torgo", false, 0)]);
-    core.input(s[0], "gang hello?");
+    core.input(s[0], "broadgang hello?");
     let out = texts(&core.drain_events(), s[0]);
     assert!(out.contains("You are not in a gang at the present!"), "{out:?}");
 }
@@ -585,7 +604,7 @@ fn member_leaves_with_room_broadcast() {
         "leaver persisted gangless"
     );
     // The roster no longer lists them.
-    core.input(s[0], "gang");
+    core.input(s[0], "broadgang");
     let out = texts(&core.drain_events(), s[0]);
     assert!(!out.contains("Grunt"), "{out:?}");
 }
@@ -820,7 +839,7 @@ fn promote_and_demote_online() {
             if p.name == "Grunt" && p.gang_flags & GF_LIEUTENANT != 0)),
     );
     // The roster reflects the new rank.
-    core.input(s[0], "gang");
+    core.input(s[0], "broadgang");
     let out = texts(&core.drain_events(), s[0]);
     assert!(out.contains("[Lieutenant]"), "{out:?}");
 
