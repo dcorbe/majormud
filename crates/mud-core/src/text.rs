@@ -179,6 +179,12 @@ pub const SET_EVIL_WARN_ON: &str =
     "You will now be warned and stopped from doing most evil actions.";
 pub const SET_EVIL_WARN_OFF: &str =
     "You will no longer be stopped from performing evil actions.";
+/// The argument is required and explicit — `WARNING` sits in the SET
+/// list at 0xd8027 and this is the refusal at 0xd7d68. Punctuation
+/// ORACLE-VERIFY: the wording comes from the decompile, and no capture
+/// contains a malformed SET WARNING to check the tail against. Shaped
+/// after `SET_GANG_VALID`, its neighbour in the same command.
+pub const SET_WARNING_VALID: &str = "Valid warning options: ON, OFF";
 
 /// OURS (divergence — the real board keys ANSI on the MBBS account):
 /// the `ansi` toggle's confirmations.

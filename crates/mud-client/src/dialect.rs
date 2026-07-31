@@ -58,7 +58,7 @@ pub async fn finish_creation(session: &Session) -> Result<(), ExpectError> {
 /// mutates persistent state on the board.
 async fn apply_evil_preference(session: &Session, profile: &Profile) -> Result<(), ExpectError> {
     if profile.disable_evil_warnings {
-        ensure_evil_warnings_off(session, profile.target).await?;
+        ensure_evil_warnings_off(session).await?;
     }
     Ok(())
 }
@@ -66,19 +66,12 @@ async fn apply_evil_preference(session: &Session, profile: &Profile) -> Result<(
 /// Leave the character with Warn on Evil OFF, so the board stops refusing
 /// attacks on unprovoked (behaviour 0/4) monsters.
 ///
-/// The two targets do not spell this the same way, and the difference is
-/// not cosmetic:
-///
-/// - **The live board** takes `SET WARNING OFF` — an explicit setter with
-///   a required argument ("Valid warning options: ON, OFF", DLL 0xd7d68;
-///   `WARNING` is in the SET list at 0xd8027). One command, no guessing,
-///   and idempotent.
-/// - **`mud-server`** implements it as a bare `set evil` TOGGLE that
-///   reports the state it landed in. A toggle has to be read back: if the
-///   first one turned the warning ON, the character already had it off
-///   and a second puts it back. That is a DIVERGENCE from the board, not
-///   a design choice — the reimplementation should grow `SET WARNING
-///   ON|OFF` and this branch should then collapse.
+/// `SET WARNING OFF` is an explicit setter with a required argument
+/// ("Valid warning options: ON, OFF", DLL 0xd7d68; `WARNING` is in the
+/// SET list at 0xd8027). One command, no guessing, and idempotent — so
+/// both targets take the same one. `mud-server` used to implement a bare
+/// `set evil` TOGGLE, which had to be read back and put right when it
+/// landed the wrong way; it speaks the board's setter now.
 ///
 /// Sending the wrong one is silent: the board does not error, it SAYS the
 /// command out loud and leaves the setting alone.
@@ -86,29 +79,12 @@ async fn apply_evil_preference(session: &Session, profile: &Profile) -> Result<(
 /// This is a real change to the character: with warnings off, evil acts
 /// go through and accrue fame, which moves the legal level toward
 /// Criminal. That is why nothing calls this unless the profile says so.
-pub async fn ensure_evil_warnings_off(
-    session: &Session,
-    target: Target,
-) -> Result<(), ExpectError> {
+pub async fn ensure_evil_warnings_off(session: &Session) -> Result<(), ExpectError> {
     use std::time::Duration;
-    let t = Duration::from_secs(30);
-    match target {
-        Target::MbbsEmu => {
-            session.send("set warning off");
-            session.expect(text::SET_EVIL_WARN_OFF, t).await?;
-        }
-        Target::RustServer => {
-            session.send("set evil");
-            let landed_on = session
-                .expect_any(&[text::SET_EVIL_WARN_OFF, text::SET_EVIL_WARN_ON], t)
-                .await?
-                == 1;
-            if landed_on {
-                session.send("set evil");
-                session.expect(text::SET_EVIL_WARN_OFF, t).await?;
-            }
-        }
-    }
+    session.send("set warning off");
+    session
+        .expect(text::SET_EVIL_WARN_OFF, Duration::from_secs(30))
+        .await?;
     Ok(())
 }
 

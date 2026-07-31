@@ -232,7 +232,8 @@ pub struct Player {
     pub ansi: bool,
     /// `+0x700 & 0x10` — the "Warn on Evil" setting: while set, any
     /// action that would grant evil points is REFUSED (crime.md §2.1).
-    /// Creation sets it ON (create_player ~53795); `set evil` toggles.
+    /// Creation sets it ON (create_player ~53795); `SET WARNING ON|OFF`
+    /// sets it either way.
     pub warn_on_evil: bool,
     /// `+0x5f6` — the HIDDEN byte (theft.md §11.2). Runtime only, never
     /// persisted; cleared by non-sneak movement and combat engagement.
@@ -8624,19 +8625,32 @@ impl Core {
         if subword.eq_ignore_ascii_case("gang") {
             return self.set_gang_command(session, rest);
         }
-        if !args.trim().eq_ignore_ascii_case("evil") {
+        if !subword.eq_ignore_ascii_case("warning") {
             return Resolution::FallThrough;
         }
+        // An explicit setter, not a toggle: the caller says which state
+        // it wants and gets that state, however many times it asks.
+        let want = match rest.trim() {
+            w if w.eq_ignore_ascii_case("on") => true,
+            w if w.eq_ignore_ascii_case("off") => false,
+            _ => {
+                self.output_line(session, text::SET_WARNING_VALID);
+                return Resolution::Handled;
+            }
+        };
         let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
             return Resolution::Handled;
         };
-        player.warn_on_evil = !player.warn_on_evil;
+        let changed = player.warn_on_evil != want;
+        player.warn_on_evil = want;
         let (line, snapshot) = (
-            if player.warn_on_evil { text::SET_EVIL_WARN_ON } else { text::SET_EVIL_WARN_OFF },
+            if want { text::SET_EVIL_WARN_ON } else { text::SET_EVIL_WARN_OFF },
             player.clone(),
         );
         self.output_line(session, line);
-        self.events.push(Event::Persist(snapshot));
+        if changed {
+            self.events.push(Event::Persist(snapshot));
+        }
         Resolution::Handled
     }
 

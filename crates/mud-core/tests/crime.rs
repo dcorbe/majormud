@@ -272,7 +272,7 @@ fn set_evil_toggles_the_warning() {
     // Both confirms are now read straight out of the DLL: the OFF string
     // at 0xd76f1 and the ON string at 0xd772e, adjacent in the binary.
     // Neither matches what was guessed here before.
-    core.input(s, "set evil");
+    core.input(s, "set warning off");
     let out = texts(&core.drain_events(), s);
     assert!(
         out.contains("You will no longer be stopped from performing evil actions."),
@@ -283,7 +283,7 @@ fn set_evil_toggles_the_warning() {
     assert!(out.contains("A dark cloud passes over you"), "{out:?}");
     assert_eq!(core.player_fame(s), 10);
     // And back ON.
-    core.input(s, "set evil");
+    core.input(s, "set warning on");
     let out = texts(&core.drain_events(), s);
     assert!(
         out.contains("You will now be warned and stopped from doing most evil actions."),

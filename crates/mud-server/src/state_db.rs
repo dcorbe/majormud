@@ -379,7 +379,7 @@ impl StateDb {
             conn.execute("UPDATE player SET ansi = 1", [])?;
         } else if col == "warn_on_evil" {
             // The DLL's creation default — evil actions refuse until the
-            // player opts in with `set evil`.
+            // player opts out with `SET WARNING OFF`.
             conn.execute("UPDATE player SET warn_on_evil = 1", [])?;
         }
         Ok(())
