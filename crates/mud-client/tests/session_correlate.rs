@@ -29,22 +29,29 @@ async fn echoing_board() -> std::net::SocketAddr {
         let (mut sock, _) = listener.accept().await.unwrap();
         // The login render: no command asked for it.
         sock.write_all(room_block("Guard Post").as_bytes()).await.unwrap();
+        // Line-buffered: rapid sends coalesce into one read (Nagle), and
+        // a board that trims the whole buffer would answer garbage.
+        let mut pending = String::new();
         let mut buf = [0u8; 512];
         while let Ok(n) = sock.read(&mut buf).await {
             if n == 0 {
                 break;
             }
-            let line = String::from_utf8_lossy(&buf[..n]).trim().to_string();
-            let reply = match line.as_str() {
-                "look" => format!("\r\nlook{}", room_block("Guard Post")),
-                "n" => format!(
-                    "{}\r\nn{}",
-                    room_block("Guard Post"), // stale render, nobody asked
-                    room_block("Inner Ward")  // the echo'd answer
-                ),
-                other => format!("\r\nYou say \"{other}\"\r\n[HP=30/MA=0]:"),
-            };
-            sock.write_all(reply.as_bytes()).await.unwrap();
+            pending.push_str(&String::from_utf8_lossy(&buf[..n]));
+            while let Some(nl) = pending.find('\n') {
+                let line: String = pending.drain(..=nl).collect();
+                let line = line.trim();
+                let reply = match line {
+                    "look" => format!("\r\nlook{}", room_block("Guard Post")),
+                    "n" => format!(
+                        "{}\r\nn{}",
+                        room_block("Guard Post"), // stale render, nobody asked
+                        room_block("Inner Ward")  // the echo'd answer
+                    ),
+                    other => format!("\r\nYou say \"{other}\"\r\n[HP=30/MA=0]:"),
+                };
+                sock.write_all(reply.as_bytes()).await.unwrap();
+            }
         }
     });
     addr
@@ -137,11 +144,30 @@ async fn a_stale_render_cannot_satisfy_the_step_that_did_not_ask() {
 }
 
 #[tokio::test]
-async fn every_send_gets_a_distinct_id_in_order() {
+async fn every_send_gets_a_distinct_id() {
+    // Distinct is all that is promised. Numeric order equals wire order
+    // only per sender — two tasks racing send() can enqueue opposite to
+    // allocation — which is why CmdId does not implement Ord: equality
+    // matching is the whole contract.
     let addr = echoing_board().await;
     let session = session_for(addr).await;
     let a = session.send("look");
     let b = session.send("look");
     let c = session.send("look");
-    assert!(a < b && b < c, "{a:?} {b:?} {c:?}");
+    assert!(a != b && b != c && a != c, "{a:?} {b:?} {c:?}");
+}
+
+#[tokio::test]
+async fn an_untrimmed_send_still_correlates() {
+    // The TUI hands over raw editor lines and scripts hand over raw lua
+    // strings; a trailing space must not defeat echo matching (or, in
+    // debug builds, panic the writer task on sent()'s precondition).
+    let addr = echoing_board().await;
+    let session = session_for(addr).await;
+    let mut events = session.events();
+    let id = session.send("  look  ");
+    let evs = collect(&mut events, |got| blocks(got).len() >= 2).await;
+    let bs = blocks(&evs);
+    assert_eq!(bs.len(), 2, "{evs:?}");
+    assert_eq!(bs[1].answers, Some(id), "{evs:?}");
 }

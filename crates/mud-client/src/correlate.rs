@@ -66,8 +66,14 @@ use std::time::{Duration, Instant};
 
 use crate::events::Event;
 
-/// Identity of one sent line, allocated by the session in send order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Identity of one sent line, allocated by the session.
+///
+/// Deliberately NOT `Ord`: numeric order equals wire order only within
+/// one sending task (allocation and enqueue race across tasks), so the
+/// only sound consumer operation is equality against
+/// [`Correlated::answers`] — and a `<` that would compile is a bug that
+/// would not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CmdId(pub u64);
 
 /// An event plus the command it answers, if any. `None` means

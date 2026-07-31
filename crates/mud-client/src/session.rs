@@ -294,13 +294,20 @@ impl Session {
                     }
                     let _ = raw_tx.send(out.data.clone());
                     let decoded = cp437_to_string(&out.data);
-                    for ev in parser.push(&decoded) {
-                        let cor = correlator
-                            .lock()
-                            .expect("correlator lock")
-                            .on_event(ev, Instant::now());
-                        state_tx.send_if_modified(|s| apply_event(s, &cor.event));
-                        let _ = events_tx.send(cor);
+                    let batch = parser.push(&decoded);
+                    if !batch.is_empty() {
+                        // One lock for the whole chunk: with per-event
+                        // acquisitions the writer could register a
+                        // same-text command BETWEEN an execution echo
+                        // and its block, and the echo would falsely
+                        // accept the brand-new entry. Nothing in here
+                        // awaits.
+                        let mut guard = correlator.lock().expect("correlator lock");
+                        for ev in batch {
+                            let cor = guard.on_event(ev, Instant::now());
+                            state_tx.send_if_modified(|s| apply_event(s, &cor.event));
+                            let _ = events_tx.send(cor);
+                        }
                     }
                     let stripped = stripper.push(&decoded);
                     if let Some(t) = &timing {
@@ -312,13 +319,14 @@ impl Session {
                     }
                     shared.append(&stripped);
                 }
-                for ev in parser.finish() {
-                    let cor = correlator
-                        .lock()
-                        .expect("correlator lock")
-                        .on_event(ev, Instant::now());
-                    state_tx.send_if_modified(|s| apply_event(s, &cor.event));
-                    let _ = events_tx.send(cor);
+                let tail = parser.finish();
+                if !tail.is_empty() {
+                    let mut guard = correlator.lock().expect("correlator lock");
+                    for ev in tail {
+                        let cor = guard.on_event(ev, Instant::now());
+                        state_tx.send_if_modified(|s| apply_event(s, &cor.event));
+                        let _ = events_tx.send(cor);
+                    }
                 }
                 if let (Some(t), false) = (&timing, rx_line.is_empty()) {
                     t.write("RX", rx_line.trim_end_matches(['\r', '\n']));
@@ -345,10 +353,20 @@ impl Session {
 
     /// Queue a line for sending (CRLF appended); pacing applies. The
     /// returned id names this send in every event that answers it —
-    /// match it against [`Correlated::answers`].
+    /// match it against [`Correlated::answers`] by EQUALITY only: id
+    /// numeric order equals wire order per sender, not across tasks.
+    ///
+    /// Two contract notes for waiters: the id returns immediately but
+    /// the bytes leave after the pacing backlog, so a wait on `answers`
+    /// must budget for pacing it cannot observe; and a `SlowDown` resend
+    /// (the Gate re-queues its in-flight command) mints a NEW id — the
+    /// flushed original will never answer.
+    ///
+    /// Trimmed at this boundary: the TUI and scripts hand over raw
+    /// lines, and a trailing space must not defeat echo matching.
     pub fn send(&self, line: &str) -> CmdId {
         let id = CmdId(self.next_id.fetch_add(1, Ordering::Relaxed));
-        let _ = self.cmd_tx.send(Cmd::Line(id, line.to_string()));
+        let _ = self.cmd_tx.send(Cmd::Line(id, line.trim().to_string()));
         id
     }
 
