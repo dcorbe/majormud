@@ -377,8 +377,12 @@ async fn rolling_door_board(fails: usize) -> (std::net::SocketAddr, Arc<DoorLog>
                     "\r\nThe door is locked.\r\n[HP=30/MA=0]:".to_string()
                 }
                 "bash n" | "bash north" => {
-                    counter.bashes.fetch_add(1, Ordering::SeqCst);
-                    if failed < fails {
+                    let attempt = counter.bashes.fetch_add(1, Ordering::SeqCst);
+                    // Every second attempt sits on the action timer: the
+                    // scold paces the roll, it must not spend the budget.
+                    if attempt % 2 == 1 {
+                        "\r\nYou must wait before you may do that!\r\n[HP=28/MA=0]:".to_string()
+                    } else if failed < fails {
                         failed += 1;
                         "\r\nYou take 2 damage for bashing the door!\r\nYour attempts to bash through fail!\r\n[HP=28/MA=0]:"
                             .to_string()
@@ -412,7 +416,9 @@ async fn a_bash_that_fails_is_rolled_again_until_the_door_gives() {
     .expect("goto should not hang")
     .expect("the third roll opens it");
     assert_eq!(at, THERE);
-    assert_eq!(log.bashes.load(Ordering::SeqCst), 3, "two fails then the yield");
+    // Two real fails, the yield, and the interleaved scolds — five
+    // sends, but only two spent the roll budget.
+    assert_eq!(log.bashes.load(Ordering::SeqCst), 5, "scold, fail, scold, fail, yield");
 }
 
 /// A door that never gives ends in a bounded, diagnosable error — not a
@@ -432,9 +438,83 @@ async fn a_door_that_never_yields_fails_cleanly_within_the_retry_budget() {
     .expect("goto should not hang");
     assert!(result.is_err(), "{result:?}");
     let bashes = log.bashes.load(Ordering::SeqCst);
+    // 60 real rolls plus the interleaved scolds.
     assert!(
-        (1..=25).contains(&bashes),
+        (1..=121).contains(&bashes),
         "unbounded bashing: {bashes} attempts in {:?}",
         started.elapsed()
+    );
+}
+
+/// The guard IS the health backstop for the HP each roll costs, so it
+/// must be heard BETWEEN rolls: a monster spawning mid-door-work
+/// otherwise swings freely at a character locked in the loop for up to
+/// sixty rolls (measured live: a kobold thief spawned into the Arena
+/// during exactly this door work, stopstate-run1).
+#[tokio::test]
+async fn a_guard_interrupt_breaks_the_bash_loop() {
+    struct ArmOnHit;
+    impl mud_client::nav::TravelGuard for ArmOnHit {
+        fn on_event(&mut self, ev: &mud_client::events::Event) -> Option<mud_client::nav::Interrupt> {
+            match ev {
+                mud_client::events::Event::CombatHit { .. } => {
+                    Some(mud_client::nav::Interrupt::Attacked { by: "kobold".into() })
+                }
+                _ => None,
+            }
+        }
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let log = Arc::new(DoorLog::default());
+    let counter = Arc::clone(&log);
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        sock.write_all(room_block("Guard Post", "closed door north").as_bytes())
+            .await
+            .unwrap();
+        let mut buf = [0u8; 512];
+        while let Ok(n) = sock.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            let line = String::from_utf8_lossy(&buf[..n]).trim().to_lowercase();
+            let echo = format!("\r\n{line}");
+            let reply = match line.as_str() {
+                "n" => "\r\nThe door is closed!\r\n[HP=30/MA=0]:".to_string(),
+                "open n" => "\r\nThe door is locked.\r\n[HP=30/MA=0]:".to_string(),
+                "bash n" => {
+                    counter.bashes.fetch_add(1, Ordering::SeqCst);
+                    // A monster is swinging while the roll fails.
+                    "\r\nThe kobold thief slashes you for 5 damage!\r\nYour attempts to bash through fail!\r\n[HP=25/MA=0]:"
+                        .to_string()
+                }
+                other => format!("\r\nYou say \"{other}\"\r\n[HP=30/MA=0]:"),
+            };
+            sock.write_all(format!("{echo}{reply}").as_bytes()).await.unwrap();
+        }
+    });
+    let session = session_for(addr).await;
+    let n = nav(graph_with_exit(7));
+
+    let err = tokio::time::timeout(
+        Duration::from_secs(10),
+        n.goto(&session, HERE, THERE, &mut ArmOnHit),
+    )
+    .await
+    .expect("goto should not hang")
+    .expect_err("the guard must take the walk back");
+    assert!(
+        matches!(
+            err.kind,
+            mud_client::nav::NavErrorKind::Interrupted(mud_client::nav::Interrupt::Attacked { .. })
+        ),
+        "{err:?}"
+    );
+    assert!(
+        log.bashes.load(Ordering::SeqCst) <= 2,
+        "kept rolling with a monster swinging: {} bashes",
+        log.bashes.load(Ordering::SeqCst)
     );
 }

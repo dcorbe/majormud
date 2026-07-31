@@ -196,17 +196,21 @@ const COMBAT_BLOCKED: &str = "may not enter that room while in combat";
 const BASH_CARRIED_THROUGH: &str = "walk through";
 
 /// Bashing is a ROLL: "Your attempts to bash through fail!" (captured
-/// live, stopstate-run1) — and the cooldown scold "You must wait before
-/// you may do that!" paces it. One try per step was why the
-/// restart-locked door at 1/2150 needed a hand-run script that leaned on
-/// it for up to sixty rolls.
-const BASH_FAILED: [&str; 2] = ["bash through fail", "must wait before you may do that"];
+/// live, stopstate-run1). One try per step was why the restart-locked
+/// door at 1/2150 needed a hand-run script that leaned on it for up to
+/// sixty rolls.
+const BASH_FAILED: &str = "bash through fail";
 
-/// Rolls per step before the door is declared unbashable. Each roll
-/// costs HP ("You take %d damage for bashing the door!" — chatter, not
-/// an outcome), so the walk's guard is the health backstop; this bound
-/// is the diagnosability backstop.
-const BASH_RETRIES: u32 = 20;
+/// The cooldown scold: the bash sat on the action timer and never
+/// rolled. It paces, it does not fail — counting it against the roll
+/// budget deflated twenty nominal rolls to a handful of real ones.
+const BASH_PACED: &str = "must wait before you may do that";
+
+/// Real failed rolls per step before the door is declared unbashable —
+/// sized to the field evidence (opendoor.lua leaned on this door for up
+/// to 60). Scolds are bounded separately and generously; the walk's
+/// guard is the health backstop, this bound the diagnosability one.
+const BASH_RETRIES: u32 = 60;
 
 /// The direction an "Obvious exits" token points.
 ///
@@ -246,6 +250,8 @@ enum StepEvent {
     NoSuchExit,
     /// The bash roll came up short; the door still stands.
     BashFailed,
+    /// The bash never rolled: it sat on the action timer.
+    BashPaced,
     /// The room is too dark to see: the board sent no room block at all,
     /// only "you can't see anything".
     ///
@@ -641,9 +647,9 @@ impl Navigator {
             // re-localizing and re-routing, which is precisely the
             // recovery this needs — and asking costs one command instead
             // of a whole step deadline.
-            // A bash-fail wording can only attribute to a bash the walk
-            // sent; unreachable here, kept for match completeness.
-            StepEvent::BashFailed => {}
+            // Bash wordings can only attribute to a bash the walk sent;
+            // unreachable here, kept for match completeness.
+            StepEvent::BashFailed | StepEvent::BashPaced => {}
             StepEvent::NoSuchExit => {
                 let ask = session.send("look");
                 return self
@@ -691,7 +697,7 @@ impl Navigator {
                 return Ok(StepOutcome::StayedPut(here.to_string()));
             }
             // Unreachable for an open; kept for match completeness.
-            StepEvent::BashFailed => {}
+            StepEvent::BashFailed | StepEvent::BashPaced => {}
             StepEvent::NoSuchExit => {
                 let ask = session.send("look");
                 return self
@@ -721,13 +727,32 @@ impl Navigator {
             }));
         }
 
-        for _ in 0..BASH_RETRIES {
+        let mut rolls = 0u32;
+        let mut scolds = 0u32;
+        while rolls < BASH_RETRIES {
+            // The guard IS the health backstop, so it must be heard
+            // between rolls: a monster spawning mid-door-work otherwise
+            // swings freely at a character locked in the loop.
+            if let Some(interrupt) = armed.take() {
+                return Err(NavErrorKind::Interrupted(interrupt));
+            }
             let bashed = session.send(&format!("bash {dir}"));
             match self.wait_room(events, guard, armed, bashed).await? {
-                // The roll came up short; the door still stands. Roll
-                // again — the guard is the health backstop for the HP
-                // each attempt costs.
-                StepEvent::BashFailed => continue,
+                // The roll came up short; the door still stands.
+                StepEvent::BashFailed => {
+                    rolls += 1;
+                    continue;
+                }
+                // Never rolled: the action timer. Pacing spaces the
+                // resend; bounded only against a board that never stops
+                // scolding.
+                StepEvent::BashPaced => {
+                    scolds += 1;
+                    if scolds > BASH_RETRIES * 4 {
+                        break;
+                    }
+                    continue;
+                }
                 // The bash carried us through the doorway.
                 StepEvent::Arrived(name) => return Ok(StepOutcome::Arrived(name)),
                 StepEvent::Blind => {
@@ -788,7 +813,7 @@ impl Navigator {
                 StepEvent::Blind => {
                     return Ok(Navigator::blind_position(after, expected, here).to_string());
                 }
-                StepEvent::NoSuchExit | StepEvent::BashFailed => continue,
+                StepEvent::NoSuchExit | StepEvent::BashFailed | StepEvent::BashPaced => continue,
                 StepEvent::CombatBlocked => {
                     return Err(NavErrorKind::Interrupted(Interrupt::Attacked {
                         by: "combat".into(),
@@ -871,8 +896,11 @@ impl Navigator {
                     if line.contains(crate::sheet::TOO_DARK) {
                         return Ok(StepEvent::Blind);
                     }
-                    if BASH_FAILED.iter().any(|m| line.contains(m)) {
+                    if line.contains(BASH_FAILED) {
                         return Ok(StepEvent::BashFailed);
+                    }
+                    if line.contains(BASH_PACED) {
+                        return Ok(StepEvent::BashPaced);
                     }
                     if DOOR_BLOCKED.iter().any(|m| line.contains(m)) {
                         return Ok(StepEvent::DoorBlocked);
