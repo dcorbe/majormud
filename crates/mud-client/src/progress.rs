@@ -119,23 +119,50 @@ pub struct ExpMeter {
     total: i64,
 }
 
+/// The board's award line for a kill of ours — "You gain 16 experience."
+/// (DLL 0xbc65f) — and the amount it paid.
+///
+/// **The** definition, because there were three: an unanchored
+/// two-substring `contains` in `bot.rs`, a second copy of that same pair
+/// in `farm.rs`, and this one. Three spellings of one rule drift apart,
+/// and the drift is silent.
+///
+/// This line carries weight no death line can. Monster deaths are
+/// per-template PROSE — of the 1085 monsters shipping a death record, 67
+/// say "falls to the ground" and 1018 say something else entirely ("The
+/// filthbug collapses, its legs curling tightly around it."). Matching
+/// them all would mean carrying a thousand strings; the award is one, and
+/// the board prints it every time a kill of ours pays out.
+///
+/// Anchored, which matters more than it looks: the award arrives glued to
+/// the prompt on a single physical line — "[HP=29/MA=18]:You gain 6
+/// experience." is verbatim from the corpus — and it is only the parser
+/// splitting at every prompt that leaves a segment starting at "You".
+/// `tests/bot_corpus.rs` asserts the anchored and unanchored rules agree
+/// on every line the board actually sent.
+pub fn exp_award(line: &str) -> Option<i64> {
+    let lower = line.trim_start().to_lowercase();
+    let rest = lower.strip_prefix("you gain ")?;
+    if !rest.contains("experience") {
+        return None;
+    }
+    // The board groups thousands once the awards get large.
+    rest.split_whitespace()
+        .next()?
+        .replace(',', "")
+        .parse()
+        .ok()
+}
+
+/// Did this line award experience? See [`exp_award`].
+pub fn is_exp_award(line: &str) -> bool {
+    exp_award(line).is_some()
+}
+
 impl ExpMeter {
     /// Note a line; awards are counted, everything else ignored.
     pub fn observe(&mut self, line: &str) {
-        let lower = line.to_lowercase();
-        let Some(rest) = lower.strip_prefix("you gain ") else {
-            return;
-        };
-        let Some(number) = rest.split_whitespace().next() else {
-            return;
-        };
-        if !rest.contains("experience") {
-            return;
-        }
-        // The board groups thousands once the awards get large.
-        if let Ok(n) = number.replace(',', "").parse::<i64>() {
-            self.total += n;
-        }
+        self.total += exp_award(line).unwrap_or(0);
     }
 
     pub fn total(&self) -> i64 {

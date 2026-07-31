@@ -22,17 +22,17 @@ static COIN_DROP_RE: LazyLock<Regex> =
 /// matched — it does not end our fight.
 const DEATH_MARK: &str = "falls to the ground";
 
-/// The line that follows one of our kills ("You gain %s experience.",
-/// DLL 0xbc65f).
+/// Did a monster just die?
 ///
-/// This carries the weight [`DEATH_MARK`] cannot. Death lines are
-/// per-template PROSE — of the 1085 monsters shipping a death record,
-/// 67 say "falls to the ground" and 1018 say something else entirely
-/// ("The filthbug collapses, its legs curling tightly around it.", "The
-/// skeleton crumbles into a pile of dust."). Matching them all would mean
-/// carrying a thousand strings; the experience line is one, and the board
-/// prints it every time a kill of ours pays out.
-const EXP_MARK: (&str, &str) = ("you gain ", " experience");
+/// Either the classic phrase, or the experience award that follows any
+/// kill of ours — see [`crate::progress::exp_award`] for why the award is
+/// the load-bearing half and the phrase only covers 67 of 1085 templates.
+///
+/// Public because the farm runner asks the same question, and used to
+/// answer it with its own inlined copy of both strings.
+pub fn is_kill_line(line: &str) -> bool {
+    line.contains(DEATH_MARK) || crate::progress::is_exp_award(line)
+}
 
 /// The board's three ways of refusing an attack outright (crime.md §3,
 /// all present verbatim in the shipped DLL). A refusal aborts the swing,
@@ -429,10 +429,7 @@ impl Bot {
         // lines name the template, not the rolled instance, so any death
         // clears — a redundant re-attack is harmless, a permanent latch
         // on a corpse is not.
-        let lower = line.to_lowercase();
-        if line.contains(DEATH_MARK)
-            || (lower.contains(EXP_MARK.0) && lower.contains(EXP_MARK.1))
-        {
+        if is_kill_line(line) {
             self.engaged = None;
             self.quiet_prompts = 0;
         }

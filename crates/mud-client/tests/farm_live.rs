@@ -695,7 +695,7 @@ async fn a_prose_death_line_does_not_wedge_the_stop() {
     let graph = Arc::new(client_graph());
     let plan = FarmPlan::build(&cfg, &graph).expect("plan");
 
-    let (end, _stats) = tokio::time::timeout(
+    let (end, stats) = tokio::time::timeout(
         Duration::from_secs(30),
         run_farm(&session, graph.clone(), &plan, &bot, &cfg, None),
     )
@@ -704,4 +704,12 @@ async fn a_prose_death_line_does_not_wedge_the_stop() {
     .expect("farm run");
 
     assert_eq!(end, FarmEnd::LoopsDone);
+    // The filthbug dies with prose and never says "falls to the ground",
+    // which is precisely what the kill counter used to look for — this
+    // kill scored zero. Counting the experience award instead is what
+    // makes it visible, and this is the case that distinguishes the two.
+    assert_eq!(
+        stats.kills, 1,
+        "a prose death paid experience but was not counted: {stats:?}"
+    );
 }

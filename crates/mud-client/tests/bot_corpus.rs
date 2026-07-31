@@ -191,3 +191,47 @@ fn does_not_go_quiet_over_a_long_fight() {
         attacks.len()
     );
 }
+
+/// The experience line had three definitions: an unanchored two-substring
+/// `contains` in `bot.rs`, a second copy of that pair in `farm.rs`, and an
+/// anchored `strip_prefix` in `progress.rs`. Three spellings of one rule
+/// drift apart silently, so they were collapsed onto the anchored one.
+///
+/// Anchoring is the risky half of that change. The award arrives glued to
+/// the prompt on a single physical line — "[HP=29/MA=18]:You gain 6
+/// experience." is verbatim from this corpus — and it is only the
+/// parser's prompt-splitting that leaves a segment starting at "You".
+/// This asserts the two rules agree on every line the board actually
+/// sent, which is the only place that claim can be checked.
+#[test]
+fn the_anchored_experience_rule_matches_the_unanchored_one() {
+    let mut awards = 0usize;
+    let mut disagreements = Vec::new();
+    for path in corpus_files() {
+        for ev in corpus_events(&path) {
+            let Event::Line(line) = &ev else { continue };
+            let lower = line.to_lowercase();
+            let loose = lower.contains("you gain ") && lower.contains(" experience");
+            let anchored = mud_client::progress::is_exp_award(line);
+            if loose != anchored {
+                disagreements.push(format!(
+                    "{}: loose={loose} anchored={anchored} {line:?}",
+                    path.file_name().unwrap().to_string_lossy()
+                ));
+            }
+            if anchored {
+                awards += 1;
+            }
+        }
+    }
+    assert!(
+        disagreements.is_empty(),
+        "anchoring changed which lines count as a kill:\n{}",
+        disagreements.join("\n")
+    );
+    // Without this the assertion above passes vacuously on an empty set.
+    assert!(
+        awards > 0,
+        "no experience awards in the corpus — the rule was not exercised"
+    );
+}

@@ -1316,7 +1316,16 @@ async fn farm_stop(
             if is_player_death(line, &username) {
                 return Ok(StopEnd::Died);
             }
-            if line.contains("falls to the ground") {
+            // Counted on the award, NOT on the death phrase, and never on
+            // both: one kill prints both lines, and the phrase alone
+            // appears in only 67 of the 1085 shipped death records, so
+            // this had been undercounting by roughly 94%.
+            //
+            // The meaning narrows deliberately -- "kills that paid us
+            // experience". A monster somebody else finished in the same
+            // room no longer counts, which is what the number was always
+            // supposed to mean.
+            if crate::progress::is_exp_award(line) {
                 stats.kills += 1;
             }
         }
