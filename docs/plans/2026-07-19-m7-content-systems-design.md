@@ -690,6 +690,39 @@ grant → re-strip on declassing); ability-table persistence round-trip.
 Oracle expedition: one real Newhaven starter quest end-to-end on the
 live board, diffing every emitted line + ask-dialogue strings.
 
+**Slice 7 COMPLETE (2026-07-30, 1220 workspace tests, commits 9b3bc5b..the doc
+commit carrying this banner) — gangs & guild houses, end to end.**
+Everything the slice scoped landed: the gang record + persistence
+(state.sqlite `gang` table, player gang/rank columns, offline-member
+writes, boot restore incl. the offline-roster mirror); 13 new verbs
+(min-abbrevs ORACLE-VERIFY — parse_command is a compiled decision
+tree); the full §1 membership machine (CREATE with the compiled gate
+order incl. the too-LONG gate gangs.md missed, INVITE/UNINVITE as
+MEMBER-keyword arms — the plain forms are M8 parties — JOIN with the
+clear-all-invites rule and no GUILD alias, LEAVE, PROMOTE/DEMOTE with
+their silent-consume and offline-pending quirks, DISBAND behind the
+0x88 yes/no continuation, the login deferred-bit sweep); gangpaths +
+the roster with both views and the SET GANG toggle; the per-kill
+exp-pool feed with saturation; TOP n GANGS (exp-descending divergence
+documented); .HSE streaming (sentinel corrected to "FILE DESCRIPTION"
+with a space — all 136 shipped rooms resolve, 2 board-custom refs
+allowlisted); the Realm Deed Shop with the compiled refusal precedence
+(and the DEAD already-owner string — the pool check clobbers code 4 to
+5); and the gang stock shop (ten runtime slots, controller-key gate
+against the NEWLY PINNED room+0x46e = `ganghousenumber`, per-slot
+pricing, MARKUP, sellout delisting, bank-8 deposit to the last
+stocker — shop 8 "Bank of Godfrey", settled in slice Task 0).
+
+Headline decompile findings, folded into gangs.md (§9 as-built): the
+shop-type polarity was SWAPPED in the spec (0xc = deed shop, 0xb =
+stock shop); the deed purchase neither debits the pool nor deposits
+anywhere; paperwork 0x4000 is SET by selling a deed back; tell_gang
+has no sender exclusion; the tax/eviction lifecycle exists in the DLL
+and is specced as §8, deferred to M8 (USER DECISION, with sysop
+commands schema-only and the player TOP arm stubbed). Deferrals
+consolidated in gangs.md §10; the oracle expedition carries to slice 8
+per the plan, plus the LIST gang-shelf rendering gap.
+
 ## Slice 7 — Gangs & guild houses
 
 - **State:** `gang` table in state.sqlite (schema from the confirmed

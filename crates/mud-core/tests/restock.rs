@@ -243,7 +243,11 @@ fn interval_zero_slots_do_not_restock_at_runtime() {
 
 #[test]
 fn gang_shops_are_skipped() {
-    // check_initiate_restocking bails on shop type 11 (gang houses).
+    // check_initiate_restocking bails on shop type 11 (gang houses) —
+    // a pre-drained content shelf never refills. (Since slice 7, BUYS
+    // route to the runtime gang shelves instead — the content shelf is
+    // unreachable merchandise, matching the shipped type-11 shops'
+    // empty stock.)
     let mut content = world_with_slot(ShopStock {
         item: Some(ItemId(100)),
         max: 5,
@@ -255,9 +259,21 @@ fn gang_shops_are_skipped() {
     let shop = content.shops.get_mut(&ShopId(45)).unwrap();
     shop.shop_type = 11;
     let mut core = Core::new(content, config());
+    // Pre-drained shelf via the boot-restore path (boot otherwise
+    // fills to max).
+    core.restore_shop_stock(&[(ShopId(45), 0, 4)]);
     let s = create(&mut core, "Dain");
-    core.input(s, "buy quarterstaff");
-    core.drain_events();
     ticks(&mut core, 5 * SWEEP);
-    assert_eq!(quantity_shown(&mut core, s), 4);
+    assert_eq!(quantity_shown(&mut core, s), 4, "no restock ever fires");
+    // And the buy path no longer sees the content shelf at all.
+    core.input(s, "buy quarterstaff");
+    let events = core.drain_events();
+    let out: String = events
+        .iter()
+        .filter_map(|e| match e {
+            mud_core::game::Event::Output { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(out.contains("is not a known item"), "{out:?}");
 }
