@@ -157,6 +157,47 @@ already makes unsolicited renders inert at every consumer.
 
 The original sketch, kept as written; the paragraph above says what became of it.
 
+## Server side: what mud-server now speaks, and what it still owes
+
+Written 2026-07-31, after reproducing the measured protocol in
+`mud-server`/`mud-core`. Each item below was verified against the corpus
+in `re/oracle`, not taken from these notes.
+
+**Landed.** Telnet ECHO/SGA negotiation with password suppression; CP437
+in both directions (one shared table in `mud_core::cp437`, so client and
+server cannot drift); BS/DEL line editing; the two render preambles
+(`ESC[0;37;40m ESC[79D ESC[K ESC[1;36m` for look and move,
+without the reset for game entry and the bare-Enter re-show) and
+`ESC[79D ESC[K` as the generic burst erase; `SET WARNING ON|OFF`; the
+round-timer command queue and its execution echo; the anti-bot junk +
+backspace in direction words.
+
+**Wordings the client's reply grammar expects that we cannot emit yet.**
+The audit found no case where `mud-core` prints a *wrong* wording — every
+gap is a command that does not exist, so nothing reaches the string:
+
+| Wording | Blocked on |
+|---|---|
+| `The door is closed in that direction!` (look) vs `The door is closed!` (move) | `look <direction>` — `Command::Look` takes no argument |
+| `There is a closed door in that direction!` | same |
+| the OPEN/CLOSE replies (`is now open`, `was already open`, `successfully unlocked`, `The door is locked`) | no `open`/`close` verb |
+| the BASH roll (`Your attempts to bash through fail!`, `You bash the door open and walk through`, `You bashed the door open.`) | no `bash` verb |
+| `The room is %s - you can't see anything` | darkness and light are unmodeled; no `light` verb |
+| `You may not enter that room while in combat.` | movement is not refused during combat |
+
+The client's side of this contract is `mud_client::correlate`'s wording
+tables — the closed reply grammar it retires pending commands on. Adding
+any of these commands means matching those strings exactly, including the
+look-vs-move door split, which is load-bearing: one shared constant
+matching both once read a look-refusal as a move-refusal.
+
+**A divergence worth knowing about.** `move_player` gates on the exit's
+LOCK state, never on `exit.door_closed`. `exit_entry` does read it, so
+the exits line renders `closed door north` for a closed-but-unlocked
+type-2 door and walking north then succeeds silently. Monster roaming
+reads it too. Closing that gap belongs with the OPEN command family,
+since a door you cannot open is not one you should be stopped by.
+
 1. **Correlate on the echo, not the prompt.** A command is answered when
    its echo appears and the reply that follows it completes. `Gate`
    should acknowledge on the echo; `Navigator` should accept the room

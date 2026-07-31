@@ -16426,6 +16426,16 @@ impl Core {
         // door-open command family is still unmodeled — a locked type-2
         // door refuses with the closed-door line, secret types stay
         // masked as no-exit. Wordings ORACLE-VERIFY).
+        //
+        // This gates on the LOCK state only. `exit.door_closed` is read
+        // by `exit_entry`, which renders "closed door north", and by
+        // monster roaming — but not here, so a closed-but-unlocked door
+        // is walked through silently while the exits line says it is
+        // shut. Closing that gap belongs with the OPEN command family:
+        // a door with no way to open it is not one to be stopped by.
+        // See docs/board-correlation.md, "Server side", for the full
+        // list of wordings that family still owes the client's reply
+        // grammar (`mud_client::correlate`).
         if matches!(exit.exit_type, 2 | 7 | 0xb)
             && self.exit_lock_state(from, direction as usize as u8, &exit) == 2
         {
