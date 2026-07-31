@@ -493,3 +493,154 @@ fn flush_forgets_everything_pending() {
     c.flush();
     assert_eq!(ans(&mut c, room("Small Cavern"), t), None);
 }
+
+// ------------------------------------------- grammar corners (review 2)
+
+#[test]
+fn a_monsters_failed_cast_does_not_answer_ours() {
+    // DLL ships "%s attempted to cast %s at you, but failed." as routine
+    // combat din — it must not retire OUR cast, whose failure wording is
+    // "You attempt to cast %s, but fail." (both contain "but fail").
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "cast star", t);
+    ans(&mut c, line("cast star"), t);
+    assert_eq!(
+        ans(&mut c, line("The acid slime attempted to cast starlight at you, but failed."), t),
+        None
+    );
+    assert_eq!(
+        ans(&mut c, line("You attempt to cast starlight, but fail."), t),
+        Some(CmdId(1))
+    );
+}
+
+#[test]
+fn every_captured_cast_reply_completes_the_cast() {
+    // stopstate-run3/4/5: success, already-cast, and no-mana all end a
+    // cast; leaving any of them out makes two back-to-back casts
+    // mis-attribute (oldest-matching would hand the second's failure to
+    // the first).
+    let t = Instant::now();
+    for reply in [
+        "You cast starlight!",
+        "You have already cast a spell this round!",
+        "You do not have enough mana to cast that spell.",
+    ] {
+        let mut c = Correlator::new(TTL);
+        c.sent(CmdId(1), "cast star", t);
+        ans(&mut c, line("cast star"), t);
+        assert_eq!(ans(&mut c, line(reply), t), Some(CmdId(1)), "{reply:?}");
+        c.sent(CmdId(2), "cast star", t);
+        ans(&mut c, line("cast star"), t);
+        assert_eq!(
+            ans(&mut c, line("You attempt to cast starlight, but fail."), t),
+            Some(CmdId(2)),
+            "lingerer stole the second cast's reply after {reply:?}"
+        );
+    }
+}
+
+#[test]
+fn both_look_refusal_wordings_complete_the_look() {
+    // The DLL ships two: "The door is closed in that direction!" and
+    // "There is a closed door in that direction!". Miss one and the look
+    // lingers — and the NEXT move's block retires the stale look instead
+    // of the move, handing a post-move room to a look consumer.
+    let t = Instant::now();
+    for refusal in [
+        "The door is closed in that direction!",
+        "There is a closed door in that direction!",
+    ] {
+        let mut c = Correlator::new(TTL);
+        c.sent(CmdId(1), "look", t);
+        ans(&mut c, line("look"), t);
+        assert_eq!(ans(&mut c, line(refusal), t), Some(CmdId(1)), "{refusal:?}");
+        c.sent(CmdId(2), "n", t);
+        ans(&mut c, line("n"), t);
+        assert_eq!(ans(&mut c, room("Dungeon, Entrance"), t), Some(CmdId(2)));
+    }
+}
+
+#[test]
+fn a_failed_bash_never_claims_the_next_room_block() {
+    // stopstate-run1 170-174: "Your attempts to bash through fail!" — the
+    // wording nav never knew, which is why doors "gave up". If it does
+    // not retire the bash, the entry lingers and the next look's block
+    // reads as the bash carrying us through a door that never opened:
+    // position poison.
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "bash n", t);
+    ans(&mut c, line("bash n"), t);
+    assert_eq!(
+        ans(&mut c, line("Your attempts to bash through fail!"), t),
+        Some(CmdId(1))
+    );
+    c.sent(CmdId(2), "look", t);
+    ans(&mut c, line("look"), t);
+    assert_eq!(ans(&mut c, room("Newhaven, Arena"), t), Some(CmdId(2)));
+}
+
+#[test]
+fn a_carried_through_bash_is_confirmed_by_the_line_and_retired_by_its_block() {
+    // The other bash outcome (DLL 0xd538e) walks the character through:
+    // the wording announces it, the block that follows IS the arrival.
+    // The line must confirm (attribute, keep pending) so the block still
+    // attributes to the bash — retiring on the line would make every
+    // successful bash-through arrival read unsolicited.
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "bash n", t);
+    ans(&mut c, line("bash n"), t);
+    assert_eq!(
+        ans(&mut c, line("You bash the door open and walk through!"), t),
+        Some(CmdId(1))
+    );
+    assert_eq!(ans(&mut c, room("Dungeon, Entrance"), t), Some(CmdId(1)));
+    assert_eq!(ans(&mut c, room("Dungeon, Entrance"), t), None); // retired
+}
+
+#[test]
+fn open_light_get_and_heal_replies_complete_their_commands() {
+    let t = Instant::now();
+    for (cmd, reply) in [
+        ("open n", "The door is now open."),
+        ("open n", "The door was already open!"),
+        ("open n", "You successfully unlocked the gate."),
+        ("light torch", "You lit the torch."),
+        ("get silver", "You picked up 7 silver nobles."),
+        ("buy healing", "You hand over nothing and all your wounds are healed."),
+    ] {
+        let mut c = Correlator::new(TTL);
+        c.sent(CmdId(1), cmd, t);
+        ans(&mut c, line(cmd), t);
+        assert_eq!(ans(&mut c, line(reply), t), Some(CmdId(1)), "{cmd:?} <- {reply:?}");
+        assert_eq!(ans(&mut c, room("Newhaven, Arena"), t), None, "{cmd:?} not retired");
+    }
+}
+
+#[test]
+fn constant_traffic_cannot_keep_a_dead_entry_alive_forever() {
+    // Progress-refresh exists for round-timer waits, but it must not
+    // defeat the deadline outright: a move whose block was eaten would
+    // otherwise ride along under constant combat traffic and steal an
+    // unsolicited block minutes later. A hard lifetime cap, never
+    // refreshed, bounds the residual.
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "n", t);
+    ans(&mut c, line("n"), t); // accepted; its block will be eaten
+    // Opaque traffic keeps the queue "progressing" every few seconds.
+    let mut now = t;
+    let mut id = 2;
+    while now < t + TTL * 6 {
+        now += Duration::from_secs(3);
+        c.sent(CmdId(id), "a kobold", now);
+        ans(&mut c, line("a kobold"), now);
+        id += 1;
+    }
+    // Way past any honest wait: the stale step must be gone, so the
+    // unsolicited block answers nobody.
+    assert_eq!(ans(&mut c, room("Dungeon, Entrance"), now), None);
+}

@@ -39,13 +39,18 @@
 //! the round timer (receipt echo to execution echo was measured at ~3s
 //! per queued command), while genuine silence still expires.
 //!
-//! Honest residuals, all bounded by the deadline: a chat line quoting a
-//! grammar wording verbatim can retire a real entry early (missed, not
-//! wrong, unless a same-type entry is also pending); if two same-text
-//! entries are pending and the older's echo was eaten mid-block, the
-//! younger is marked accepted by the older's execution echo and can claim
-//! one unsolicited block within its TTL; multi-line replies to commands
-//! outside the grammar attribute nothing at all.
+//! Honest residuals, all bounded by the hard lifetime cap: a chat or
+//! description line quoting a grammar wording verbatim retires — and IS
+//! ATTRIBUTED TO — a pending entry of matching kind, a genuinely wrong
+//! association (no such line exists in any capture; the corpus has no
+//! second player talking, so this is unfalsified, not disproved); if two
+//! same-text entries are pending and the older's echo was eaten
+//! mid-block, the younger is marked accepted by the older's execution
+//! echo and can claim one unsolicited block; a grammar gap (an
+//! unmodelled reply wording) leaves its entry lingering until the cap,
+//! able to claim one same-kind event meanwhile; multi-line replies to
+//! Opaque commands attribute nothing at all. Every consumer keeps its
+//! own timeout precisely because of this floor.
 //!
 //! `SlowDown` flushes everything pending: flood control DROPPED input,
 //! and whether a dropped command still echoes is unverified.
@@ -183,21 +188,50 @@ fn completes(kind: Kind, ev: &Event) -> bool {
                 || has("the gate is locked")
                 || has("may not enter that room while in combat")
         }
-        Kind::Look => has(DARK) || has("door is closed in that direction"),
+        // Both DLL look-refusal wordings: "The door is closed in that
+        // direction!" and "There is a closed door in that direction!".
+        // Miss one and the look lingers — and the next move's block
+        // retires the stale look instead of the move.
+        Kind::Look => has(DARK) || has("door is closed in that direction")
+            || has("closed door in that direction"),
         Kind::Open => {
             has("is now open")
                 || has("was already open")
+                || has("successfully unlocked")
                 || has("unlocked the door")
                 || has("the door is locked")
                 || has("the gate is locked")
         }
-        Kind::Bash => has("bashed the") || has("walk through"),
-        Kind::Cast => has("but fail") || has("you lit the"),
+        // "Your attempts to bash through fail!" is captured live
+        // (stopstate-run1, 170s) — the wording nav never recognized,
+        // which is why doors "gave up". The carried-through wording is
+        // handled by `confirms`, not here: its block is the arrival.
+        Kind::Bash => has("bashed the") || has("bash through fail"),
+        // "You attempt to cast %s, but fail." — the leading "you
+        // attempt" matters: the DLL also ships "%s attempted to cast %s
+        // at you, but failed.", routine din from any casting monster,
+        // which must never retire OUR cast.
+        Kind::Cast => {
+            (has("you attempt to cast") && has("but fail"))
+                || has("you cast ")
+                || has("already cast a spell")
+                || has("enough mana to cast")
+                || has("you lit the")
+        }
         Kind::Light => has("you lit the"),
         Kind::Get => has("you picked up"),
         Kind::BuyHealing => has("wounds are healed"),
         Kind::Opaque => false,
     }
+}
+
+/// Wordings that CONFIRM a command without completing it: the reply is
+/// still owed. The bash that carries the character through the doorway
+/// (DLL 0xd538e) announces itself and then renders the arrival — the
+/// block is the answer, so the announce must not retire the entry or
+/// every successful bash-through arrival would read unsolicited.
+fn confirms(kind: Kind, line: &str) -> bool {
+    matches!(kind, Kind::Bash) && line.contains("walk through")
 }
 
 struct Entry {
@@ -211,6 +245,10 @@ struct Entry {
     /// as unsolicited. Refreshed by every acceptance and retirement —
     /// queue progress — so only genuine silence expires anyone.
     deadline: Instant,
+    /// Absolute cap, never refreshed: progress-refresh exists for
+    /// round-timer waits, not for keeping a command whose reply was eaten
+    /// alive under constant traffic to steal a block minutes later.
+    lifetime: Instant,
 }
 
 /// The one correlator, owned by the session: registry fed in wire order,
@@ -238,6 +276,10 @@ impl Correlator {
             kind: kind_of(line),
             echoed: false,
             deadline: now + self.ttl,
+            // Generous: covers the deepest measured pipeline (~3s of
+            // round-timer wait per queued command) several times over,
+            // while still bounding the eaten-reply residual absolutely.
+            lifetime: now + self.ttl * 4,
         });
     }
 
@@ -308,6 +350,16 @@ impl Correlator {
             self.refresh(now);
             return Some(id);
         }
+        let lowered = line.to_lowercase();
+        if let Some(conf) = self
+            .queue
+            .iter()
+            .find(|e| e.echoed && confirms(e.kind, &lowered))
+        {
+            let id = conf.id;
+            self.refresh(now);
+            return Some(id);
+        }
         self.retire(&Event::Line(line.to_string()), now)
     }
 
@@ -338,6 +390,6 @@ impl Correlator {
     }
 
     fn expire(&mut self, now: Instant) {
-        self.queue.retain(|e| now <= e.deadline);
+        self.queue.retain(|e| now <= e.deadline && now <= e.lifetime);
     }
 }
