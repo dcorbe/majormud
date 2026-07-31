@@ -496,6 +496,23 @@ async fn recovers_from_a_flee_and_moves_on() {
         max_hp: 0,
         ..BotConfig::default()
     };
+    // KNOWN FLAKE, roughly 1 full-suite run in 10, and only under the
+    // load of the whole file running at once:
+    //
+    //   farm run: Nav(Desync { at: 1/4, expected: "Training Yard",
+    //                          saw: "Town Gates" })
+    //
+    // The walk back out of the Side Alley is verified by room name with
+    // no request/response correlation underneath it, so a room block the
+    // runner asked for BEFORE the flee can land during the first step and
+    // satisfy it. The character is then a room further on than the
+    // navigator believes.
+    //
+    // Measured at 1/11 here and 0/4 on the pre-refactor runner, which is
+    // not enough to attribute — this config flees on EVERY prompt (101%),
+    // which no real profile does, and recovery has never had correlation
+    // to lean on. Recorded rather than papered over: the fix belongs with
+    // `recover`, not with another timing tweak here.
     let (end, stats) = farm(&session, bot, farm_config(&["1/2"], 1))
         .await
         .expect("farm run");
