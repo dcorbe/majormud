@@ -109,11 +109,18 @@ fn drive(path: &std::path::Path) -> Run {
     let mut bot = armed_bot();
     let mut gate = Gate::new(BACKOFF);
     // The replay mirrors the session wiring: the gate's emissions feed a
-    // Correlator, and the captured stream's own echoes acknowledge them
-    // — the original operator sent the same commands at the same points,
-    // which is the premise of every corpus test.
+    // Correlator and are acknowledged by SYNTHESIZED receipt echoes one
+    // tick later. The capture is one-way — it holds the operator's
+    // echoes, not ours — but the board echoes every accepted command
+    // ~2ms after it lands, so modelling that is fidelity, not charity.
+    // Without it the first unanswered emission wedges the gate for the
+    // rest of the transcript (ACK_TIMEOUT is 5000 ticks) and every
+    // gate assertion below goes vacuous — measured at 1818 -> 86
+    // emissions when this replay briefly leaned on the operator's own
+    // echoes instead.
     let mut correlator = Correlator::new(Duration::from_secs(10));
     let mut next_id = 1u64;
+    let mut pending_acks: Vec<Event> = Vec::new();
     let mut run = Run::default();
 
     let events = corpus_events(path);
@@ -135,6 +142,12 @@ fn drive(path: &std::path::Path) -> Run {
 
     for (i, ev) in events.iter().enumerate() {
         let now = t0 + TICK * (i as u32);
+
+        // The board's receipt echoes for last tick's emissions.
+        for ack in pending_acks.drain(..) {
+            let cor = correlator.on_event(ack, now);
+            gate.on_event(&cor, now);
+        }
 
         // Pump like farm_stop: the verdict drives the looks, and the
         // corpus supplies the answers the operator's own looks recorded.
@@ -190,6 +203,7 @@ fn drive(path: &std::path::Path) -> Run {
             next_id += 1;
             correlator.sent(id, &cmd, now);
             gate.confirm(id);
+            pending_acks.push(Event::Line(cmd.clone()));
             run.emitted.push((i, cmd));
         }
         stop.on_event(ev, &bot, now);
@@ -222,14 +236,12 @@ fn the_corpus_still_contains_flood_control() {
     assert_eq!(total, 14, "flood-control lines in the corpus changed");
 }
 
-/// The corpus-fed resend test the old tripwire reserved a slot for.
-///
-/// While the gate acked on the next prompt, no capture ever caught a
-/// scolding with a command in flight — prompts arrive so freely that
-/// the window was always already closed. Echo acknowledgement holds the
-/// command for its real round-trip, and one captured scolding now lands
-/// inside that honest window. The contract: the dropped command must go
-/// back out.
+/// Any scolding that catches a command in flight must see it resent —
+/// and the gap pin rides along: with receipt echoes acknowledging in
+/// one tick, the in-flight window is a single tick wide and no captured
+/// scolding lands inside it. If a future capture (or a slower ack
+/// model) ever does, the resend loop above the pin starts doing real
+/// work; until then the resend contract lives in `tests/farm.rs`.
 #[test]
 fn a_scolded_command_in_flight_is_resent() {
     let mut total = 0;
@@ -244,35 +256,33 @@ fn a_scolded_command_in_flight_is_resent() {
             );
         }
     }
-    // Tripwire, in the same spirit as the corpus counts: if the replay
-    // stops producing the in-flight scolding, this test is asserting
-    // over an empty list and proving nothing.
-    assert_eq!(total, 1, "in-flight scoldings in the replay changed");
+    assert_eq!(total, 0, "a capture now exercises the resend path in replay");
 }
 
-/// One command in flight at a time: without an intervening prompt to
-/// acknowledge the last one, nothing new goes out. This is what keeps a
-/// burst of decisions from queueing minutes of stale commands at the
-/// live board's 1500ms pace.
+/// One command in flight at a time, and the queue must actually FLOW:
+/// consecutive emissions sit at least one tick apart (the ack is the
+/// previous tick's receipt echo, never the same instant), and the
+/// corpus-wide throughput is pinned. The pin is the anti-wedge
+/// tripwire: when this replay briefly waited on echoes the capture
+/// could never supply, the gate wedged on its first emission and
+/// throughput fell 1818 -> 86 while every per-file assertion still
+/// passed — vacuously. The serialization discipline itself is pinned
+/// against real acks in `tests/farm.rs` and against the echoing
+/// fixture server in `tests/farm_live.rs`.
 #[test]
-fn never_sends_twice_without_a_prompt_in_between() {
+fn emissions_flow_one_per_ack_and_never_wedge() {
+    let mut total = 0usize;
     for (path, run) in runs() {
-        let events = corpus_events(&path);
-        let mut last: Option<(usize, String)> = None;
-        for (i, cmd) in &run.emitted {
-            if let Some((prev_i, prev_cmd)) = &last {
-                let acked = events[*prev_i..=*i]
-                    .iter()
-                    .any(|e| matches!(e, Event::Prompt { .. }));
-                assert!(
-                    acked,
-                    "{}: sent {cmd:?} after {prev_cmd:?} with no prompt between",
-                    path.display()
-                );
-            }
-            last = Some((*i, cmd.clone()));
+        total += run.emitted.len();
+        for pair in run.emitted.windows(2) {
+            assert!(
+                pair[1].0 > pair[0].0,
+                "{}: two emissions in one tick: {pair:?}",
+                path.display()
+            );
         }
     }
+    assert_eq!(total, 1857, "corpus gate throughput changed");
 }
 
 /// The gate invents nothing. Everything it emits was either a bot

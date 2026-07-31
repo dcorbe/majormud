@@ -232,6 +232,22 @@ fn a_burst_of_unsolicited_prompts_never_acks() {
 }
 
 #[test]
+fn an_attributed_reply_acks_like_the_echo_does() {
+    // "The echo, or any later reply": a RoomSeen attributed to the
+    // in-flight send clears it through the same path.
+    let t0 = Instant::now();
+    let mut g = gate();
+    g.push("look".into());
+    g.poll(t0);
+    g.confirm(CmdId(9));
+    g.on_event(
+        &answering(Event::RoomSeen(RoomView::default()), CmdId(9)),
+        t0 + Duration::from_millis(5),
+    );
+    assert_eq!(g.in_flight(), None);
+}
+
+#[test]
 fn an_answer_to_somebody_else_does_not_ack() {
     let t0 = Instant::now();
     let mut g = gate();

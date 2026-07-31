@@ -436,10 +436,13 @@ impl Gate {
     }
 
     /// Attach the session's send id to the command `poll` just released.
-    /// The runner calls this right after `session.send` — the id is what
-    /// the acknowledgement will carry.
+    /// The runner calls this right after `session.send`, in the same
+    /// synchronous stretch — before any event can be processed — which
+    /// is what makes the id-less window unobservable. A second confirm
+    /// for one poll would silently swap the id, so it crashes instead.
     pub fn confirm(&mut self, id: CmdId) {
         if let Some((_, slot, _)) = &mut self.in_flight {
+            debug_assert!(slot.is_none(), "confirm() twice for one poll");
             *slot = Some(id);
         }
     }
