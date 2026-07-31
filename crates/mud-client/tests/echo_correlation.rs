@@ -28,6 +28,7 @@
 //! Reset -> CursorBackward(79) -> EraseLine -> RoomNameColour, verbatim
 //! on our own board as `ESC[0;37;40m ESC[79D ESC[K ESC[1;36m`.
 
+use mud_client::correlate::strip_decoration;
 use mud_client::events::Event;
 use mud_client::parse::Parser;
 use mud_client::wire::{TelnetFilter, cp437_to_string};
@@ -39,15 +40,6 @@ const CMDS: [&str; 12] = [
     "n", "s", "e", "w", "u", "d", "look", "open n", "bash n", "rest", "stand", "get copper",
 ];
 
-/// The board splices a "(Resting) " marker into lines it emits while the
-/// character is resting, and the echo carries it too.
-fn strip_status(s: &str) -> &str {
-    s.strip_prefix('(')
-        .and_then(|r| r.split_once(')'))
-        .map(|(_, a)| a.trim_start())
-        .unwrap_or(s)
-}
-
 /// The command whose echo introduced this room block, if we can see one.
 /// Prompts between the echo and the block are skipped: the board emits
 /// them freely and they carry no bearing on which question was asked.
@@ -57,7 +49,7 @@ fn asking_command(evs: &[Event], block: usize) -> Option<String> {
         i -= 1;
         match &evs[i] {
             Event::Prompt { .. } => continue,
-            Event::Line(l) => return Some(strip_status(l.trim()).to_string()),
+            Event::Line(l) => return Some(strip_decoration(l.trim()).to_string()),
             _ => return None,
         }
     }

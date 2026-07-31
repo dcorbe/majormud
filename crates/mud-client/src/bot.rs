@@ -161,10 +161,7 @@ fn is_attackable(name: &str) -> bool {
 /// through, so the case test still runs, on the name rather than the
 /// bracket.
 fn strip_status(name: &str) -> &str {
-    name.strip_prefix('(')
-        .and_then(|rest| rest.split_once(')'))
-        .map(|(_, after)| after.trim_start())
-        .unwrap_or(name)
+    crate::correlate::strip_decoration(name)
 }
 
 /// Monster name (as the shipped data spells it, lowercase) -> how
