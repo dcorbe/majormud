@@ -385,6 +385,13 @@ const SOOTHE: SpellId = SpellId(701);
 const ZAP: SpellId = SpellId(702);
 /// AffectsLiving(108) ahead of 52 — pins the shipped refusal-first order.
 const BANE: SpellId = SpellId(703);
+/// Benign match-12 area, carries 52 — the song-of-slumber band shape.
+const DOOM: SpellId = SpellId(704);
+/// Benign match-12 area, no 52 — the area control.
+const BREEZE: SpellId = SpellId(705);
+
+/// A protected room (attribute bit 1) one exit north of the square.
+const CHAPEL: RoomId = RoomId { map: 1, room: 2 };
 
 fn charge_spell(id: SpellId, name: &str, short: &str, mode: TargetMode) -> Spell {
     Spell {
@@ -463,17 +470,30 @@ fn caster_world() -> Content {
         abilities: vec![(Ability::NonLiving, 1)],
         ..Default::default()
     });
+    content.add_room(Room {
+        id: CHAPEL,
+        name: "Chapel".into(),
+        attributes: 1, // protected
+        ..Default::default()
+    });
     let mut soothe = charge_spell(SOOTHE, "soothe", "soot", TargetMode::Benign);
     soothe.abilities = vec![(Ability::AC, -1)];
     let mut zap = charge_spell(ZAP, "zap", "zapp", TargetMode::Offensive0);
     zap.duration = 0;
     let mut bane = charge_spell(BANE, "bane", "bane", TargetMode::Benign);
     bane.abilities = vec![(Ability::AffectsLiving, 1), (Ability::EvilInCombat, 0)];
+    let mut doom = charge_spell(DOOM, "doom", "doom", TargetMode::Benign);
+    doom.match_type = MatchType::AreaC;
+    let mut breeze = charge_spell(BREEZE, "breeze", "bree", TargetMode::Benign);
+    breeze.match_type = MatchType::AreaC;
+    breeze.abilities = vec![(Ability::AC, -1)];
     for s in [
         charge_spell(CURSE, "curse", "curs", TargetMode::Benign),
         soothe,
         zap,
         bane,
+        doom,
+        breeze,
     ] {
         content.add_spell(s);
     }
@@ -481,8 +501,10 @@ fn caster_world() -> Content {
 }
 
 fn hexer(name: &str, warn: bool) -> Player {
-    let book: BTreeMap<SpellId, bool> =
-        [CURSE, SOOTHE, ZAP, BANE].into_iter().map(|s| (s, false)).collect();
+    let book: BTreeMap<SpellId, bool> = [CURSE, SOOTHE, ZAP, BANE, DOOM, BREEZE]
+        .into_iter()
+        .map(|s| (s, false))
+        .collect();
     let mut p = citizen(name, warn);
     p.class = ClassId(2);
     p.current_mana = 100;
@@ -579,6 +601,85 @@ fn charge_and_grudge_precede_the_spellimmu_refusal() {
     assert_eq!(core.monster_target(m), Some(s), "grudge survives the fizzle");
     let slots = core.monster_active_spells(m).unwrap();
     assert!(slots.iter().all(|a| a.spell.is_none()), "no effect landed: {slots:?}");
+}
+
+#[test]
+fn benign_area_52_charges_ten_evil_without_a_grudge() {
+    // cast_no_target's per-slot 0x34 arm (crime.md §2.5 last row;
+    // decompile 39299-39313 → add_evil_warnings_to_room 38774-38777):
+    // ONE 10-point NPC-style charge when an innocent passive monster is
+    // a valid target. NO grudge writes — 38759-38812 contains none; the
+    // per-victim pair timers are the PvP half (M8).
+    let mut core = Core::new(caster_world(), CoreConfig::default());
+    let s = core.attach_player(hexer("Chanter", false));
+    let m = core.spawn_monster(MonsterId(1), SQUARE).unwrap();
+    core.drain_events();
+    core.input(s, "cast doom");
+    let out = texts(&core.drain_events(), s);
+    assert!(out.contains("A dark cloud passes over you"), "{out:?}");
+    assert_eq!(core.player_fame(s), 10);
+    assert_eq!(core.monster_target(m), None, "the area path takes no grudge");
+    let slots = core.monster_active_spells(m).unwrap();
+    assert!(
+        slots.iter().any(|a| a.spell == Some(DOOM)),
+        "the sweep still resolves after the charge: {slots:?}"
+    );
+}
+
+#[test]
+fn benign_area_52_refused_on_warnings_aborts_the_whole_cast() {
+    // A non-zero add_evil_warnings_to_room return aborts cast_no_target
+    // entirely (39310-39313: `return 0`) — costs unpaid, nothing lands.
+    let mut core = Core::new(caster_world(), CoreConfig::default());
+    let s = core.attach_player(hexer("Cautious", true));
+    let m = core.spawn_monster(MonsterId(1), SQUARE).unwrap();
+    core.drain_events();
+    core.input(s, "cast doom");
+    let out = texts(&core.drain_events(), s);
+    assert!(
+        out.contains("To do this action, you must turn off your evil warnings."),
+        "{out:?}"
+    );
+    assert_eq!(core.player_fame(s), 0);
+    assert!(out.contains("MA=100"), "mana unpaid on the abort: {out:?}");
+    let slots = core.monster_active_spells(m).unwrap();
+    assert!(slots.iter().all(|a| a.spell.is_none()), "nothing landed: {slots:?}");
+}
+
+#[test]
+fn benign_area_without_52_stays_free() {
+    let mut core = Core::new(caster_world(), CoreConfig::default());
+    let s = core.attach_player(hexer("Breather", false));
+    let m = core.spawn_monster(MonsterId(1), SQUARE).unwrap();
+    core.drain_events();
+    core.input(s, "cast breeze");
+    let _ = core.drain_events();
+    assert_eq!(core.player_fame(s), 0);
+    let slots = core.monster_active_spells(m).unwrap();
+    assert!(slots.iter().any(|a| a.spell == Some(BREEZE)), "{slots:?}");
+}
+
+#[test]
+fn benign_area_52_in_a_protected_room_takes_the_guilt_refusal() {
+    // The cast_no_target room-protection gate keys on `spelltype < 3 ||
+    // spell_has_ability(0x34)` (39164-39171) — a BENIGN 52-carrier is
+    // guilt-refused in a protected room, before the charge scan, so the
+    // fame stays untouched.
+    let mut core = Core::new(caster_world(), CoreConfig::default());
+    let mut p = hexer("Pilgrim", false);
+    p.location = CHAPEL;
+    let s = core.attach_player(p);
+    let m = core.spawn_monster(MonsterId(1), CHAPEL).unwrap();
+    core.drain_events();
+    core.input(s, "cast doom");
+    let out = texts(&core.drain_events(), s);
+    assert!(
+        out.contains("You are overcome with a feeling of guilt"),
+        "{out:?}"
+    );
+    assert_eq!(core.player_fame(s), 0, "the gate precedes the charge");
+    let slots = core.monster_active_spells(m).unwrap();
+    assert!(slots.iter().all(|a| a.spell.is_none()), "nothing landed: {slots:?}");
 }
 
 #[test]

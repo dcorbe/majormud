@@ -577,7 +577,10 @@ fn offensive_area_in_a_protected_room_is_guilt_refused() {
 #[test]
 fn benign_area_in_a_protected_room_still_casts() {
     // Benign casts are legal in protected rooms (§8.6: blur was cast in
-    // the Newhaven Spell Shop) — the guilt gate is offensive-only.
+    // the Newhaven Spell Shop) — the guilt gate fires on offensive
+    // spelltypes OR an EvilInCombat(52) carrier (39164-39171); glare is
+    // neither. The 52 half is pinned in
+    // `crime.rs::benign_area_52_in_a_protected_room_takes_the_guilt_refusal`.
     let mut core = Core::new(world(), CoreConfig::default());
     let zin = core.attach_player(player("Zinvar", MAGE, SHOP));
     core.spawn_monster(RAT, SHOP).expect("fixture template");

@@ -7374,49 +7374,14 @@ impl Core {
             }
             return;
         }
-        // add_evil_warnings_to_room (crime.md §2.5 last row): an offensive
-        // sweep over a room holding an innocent passive monster charges
-        // ONE 10-point NPC-style hit before any cost; a refusal aborts the
-        // whole cast. (The per-victim 0-point PAIR timers are the PvP
-        // half — slice 4 with rob.)
-        if spell.target_mode.is_offensive() && spell.match_type.hits_monsters() {
-            // The monster loop is MATCH-GATED (38793-38795): it runs only
-            // for `spell+0xcc` in {3, 5, 9, 0xb, 0xc} — exactly
-            // [`MatchType::hits_monsters`]. An offensive room-wide cast of
-            // any other area type (10/0xd) charges nothing here, so the
-            // gate is a conjunct and not a doc note.
-            //
-            // Inside it, 38802-38805 conjoins the innocence out-param with
-            // `is_valid_monster_target` itself, so a body the sweep will
-            // not reach is not a body you can be charged for either —
-            // which on match 9/0xc silently retires the `behaviour == 4`
-            // half of the innocence test (38454-38456: innocent requires
-            // `+0x106` in {0, 4} and an unnamed link, but 38495 makes
-            // mode 4 invalid).
-            let passive = self
-                .monsters
-                .iter()
-                .find(|(id, m)| {
-                    m.location == room
-                        && m.current_hp > 0
-                        && matches!(m.behaviour, 0 | 4)
-                        && m.target != Some(session)
-                        && self.is_valid_monster_target(session, spell, **id)
-                })
-                .map(|(id, _)| *id);
-            if let Some(id) = passive
-                && self.charge_passive_monster_evil(session, id) == PassiveEvilCharge::Refused
-            {
-                return;
-            }
-        }
-        // Room protection (§3 step 2) precedes target counting for
-        // offensive modes — the same guilt gate and round-cost-only
-        // charging as the single-target paths. ORACLE-VERIFY: every
-        // learnable area is benign-mode (spelltype 3), so this leg is
-        // decompile-mirrored only.
+        // Room protection (§3 step 2; cast_no_target 39164-39184) — the
+        // gate keys on `spelltype < 3 || spell_has_ability(0x34)`, so a
+        // BENIGN EvilInCombat carrier (the 16 learnable match-12 songs/
+        // webs) guilt-refuses here too, before counting and before any
+        // charge. Round-cost-only charging like the single-target paths.
         let round_cost = i32::from(spell.round_cost);
-        if spell.target_mode.is_offensive()
+        if (spell.target_mode.is_offensive()
+            || spell.abilities.iter().any(|(a, _)| *a == Ability::EvilInCombat))
             && self.content.rooms.get(&room).is_some_and(|r| r.protected())
         {
             if let Some(Session::InGame { energy, .. }) = self.sessions.get_mut(&session)
@@ -7450,6 +7415,28 @@ impl Core {
             self.output_line(session, text::SPELL_NO_EFFECT_IN_ROOM);
             return;
         }
+        // add_evil_warnings_to_room (crime.md §2.5 last row; the 39216
+        // normal-arm site — which the DLL reaches AFTER the protection
+        // gate and the zero-target abort, hence this block's position):
+        // an offensive sweep over a room holding an innocent passive
+        // monster charges ONE 10-point NPC-style hit before any cost; a
+        // refusal aborts the whole cast. (The per-victim 0-point PAIR
+        // timers are the PvP half — slice 4 with rob.)
+        if spell.target_mode.is_offensive() && spell.match_type.hits_monsters() {
+            // The monster loop is MATCH-GATED (38793-38795): it runs only
+            // for `spell+0xcc` in {3, 5, 9, 0xb, 0xc} — exactly
+            // [`MatchType::hits_monsters`]. An offensive room-wide cast of
+            // any other area type (10/0xd) charges nothing here, so the
+            // gate is a conjunct and not a doc note. The innocence
+            // predicate lives in [`Core::first_chargeable_innocent`] —
+            // note match 9/0xc silently retires the `behaviour == 4`
+            // half of it (38454-38456 vs 38495).
+            if let Some(id) = self.first_chargeable_innocent(session, spell, room)
+                && self.charge_passive_monster_evil(session, id) == PassiveEvilCharge::Refused
+            {
+                return;
+            }
+        }
         // Costs and the roll at the command, like the benign self path
         // (MEASURED §8.13: flash/stinking cloud mana moved at the
         // prompt). Offensive-mode areas charge here too — the engage-only
@@ -7468,6 +7455,27 @@ impl Core {
         }
         if player.current_mana < mana_cost {
             self.output_line(session, self.not_enough_mana_line(session));
+            return;
+        }
+        // The per-slot 0x34 arm (cast_no_target 39299-39313, after the
+        // triple gate): a spell CARRYING EvilInCombat runs the room
+        // charge with NO spelltype test — this is how the 16 learnable
+        // benign match-12 52-carriers (the songs, web, tangle) charge.
+        // The immediate flag is set (add_evil_warnings_to_room param_3 =
+        // 1, 38774-38777): one 10-point NPC-style hit when an innocent
+        // passive monster is a valid target; a refusal aborts the WHOLE
+        // cast, costs unpaid. An offensive 52-carrier charges here AND
+        // at the 39216 arm above — the DLL double-charges the same way
+        // (only unlearnable spells, e.g. 1071 black wave, are both). NO
+        // grudge writes on this path (38759-38812 has none). The DLL
+        // draws its success roll before this scan and wastes it on a
+        // refusal; ours draws after — unobservable, nothing downstream
+        // of an abort consumes a roll.
+        if spell.abilities.iter().any(|(a, _)| *a == Ability::EvilInCombat)
+            && spell.match_type.hits_monsters()
+            && let Some(id) = self.first_chargeable_innocent(session, spell, room)
+            && self.charge_passive_monster_evil(session, id) == PassiveEvilCharge::Refused
+        {
             return;
         }
         if let Some(Session::InGame { cast_this_round, .. }) = self.sessions.get_mut(&session) {
@@ -10773,6 +10781,31 @@ impl Core {
                 PassiveEvilCharge::Charged
             }
         }
+    }
+
+    /// The innocent-passive-monster half of `count_valid_targets`'
+    /// `local_65` out-bits (38600-38620): bit 1 set + bit 2 cleared
+    /// whenever an innocent monster (mode 0/4, no name link) is a valid
+    /// target of the sweep — 38802-38805 conjoins the innocence flag
+    /// with `is_valid_monster_target` itself, so a body the sweep will
+    /// not reach is not a body you can be charged for either. The
+    /// player half of those bits is the PvP innocence test (M8).
+    fn first_chargeable_innocent(
+        &self,
+        session: SessionId,
+        spell: &crate::content::Spell,
+        room: RoomId,
+    ) -> Option<MonsterInstanceId> {
+        self.monsters
+            .iter()
+            .find(|(id, m)| {
+                m.location == room
+                    && m.current_hp > 0
+                    && matches!(m.behaviour, 0 | 4)
+                    && m.target != Some(session)
+                    && self.is_valid_monster_target(session, spell, **id)
+            })
+            .map(|(id, _)| *id)
     }
 
     /// `update_allowed_worn_items` (crime.md §2.4/§6.1): when a fame
