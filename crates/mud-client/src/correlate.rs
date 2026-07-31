@@ -186,24 +186,41 @@ fn completes(kind: Kind, ev: &Event) -> bool {
         // closed in that direction!". Crossing them hands a post-move
         // room to a look consumer, or leaves a refused move lingering to
         // claim the next block.
+        // The full _move_user refusal table from the ReMUD decompile
+        // (31588-33100), second-person terminal refusals only. NO locked
+        // wording — a move at a locked door answers "The door is
+        // closed!" (22+ corpus occurrences agree); "locked" replies
+        // belong to open alone, and carrying them here let a stale move
+        // steal an open's refusal. The bang on "move anywhere!" keeps
+        // the hide refusal ("...to move anywhere to hide!") out.
         Kind::Move => {
             has(DARK)
                 || has("no exit in that direction")
                 || has("the door is closed!")
                 || has("the gate is closed!")
-                || has("the door is locked")
-                || has("the gate is locked")
                 || has("closed door in that direction")
                 || has("may not enter that room while in combat")
-                || has("can't seem to move anywhere")
+                || has("may not enter that room during a retaliation")
+                || has("can't seem to move anywhere!")
                 || has("need to cast a spell to go that way")
+                || has("not permitted in that room")
+                || has("too evil to go through this exit")
+                || has("too good to go through this exit")
+                || has("too heavy to move")
+                || has("too stunned to move anywhere")
+                || has("appropriate item to go that direction")
+                || has("progressed too far to go through this exit")
+                || has("may not go through this exit")
+                || has("may not pass through that exit")
+                || has("cover the toll of")
         }
-        Kind::Look => has(DARK) || has("door is closed in that direction"),
+        Kind::Look => {
+            has(DARK) || has("door is closed in that direction") || has("there are no exits")
+        }
         Kind::Open => {
             has("is now open")
                 || has("already open")
                 || has("successfully unlocked")
-                || has("unlocked the door")
                 || has("the door is locked")
                 || has("the gate is locked")
         }
@@ -211,7 +228,11 @@ fn completes(kind: Kind, ev: &Event) -> bool {
         // (stopstate-run1, 170s) — the wording nav never recognized,
         // which is why doors "gave up". The carried-through wording is
         // handled by `confirms`, not here: its block is the arrival.
-        Kind::Bash => has("bashed the") || has("bash through fail"),
+        Kind::Bash => {
+            has("bashed the")
+                || has("bash through fail")
+                || has("must wait before you may do that")
+        }
         // "You attempt to cast %s, but fail." — the leading "you
         // attempt" matters: the DLL also ships "%s attempted to cast %s
         // at you, but failed.", routine din from any casting monster,
@@ -220,11 +241,14 @@ fn completes(kind: Kind, ev: &Event) -> bool {
             (has("you attempt to cast") && has("but fail"))
                 || has("you cast ")
                 || has("spell is resisted")
+                || has("resists your spell")
                 || has("already cast a spell")
                 || has("enough mana to cast")
+                // A cast of a light spell routes through the light
+                // routine and answers with its wording.
                 || has("you lit the")
         }
-        Kind::Light => has("you lit the"),
+        Kind::Light => has("you lit the") || has("already have something lit"),
         Kind::Get => has("you picked up"),
         Kind::BuyHealing => has("wounds are healed"),
         Kind::Opaque => false,

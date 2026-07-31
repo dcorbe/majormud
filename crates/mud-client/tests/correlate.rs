@@ -578,6 +578,18 @@ fn every_move_refusal_completes_the_move() {
     for refusal in [
         "You can't seem to move anywhere!",
         "You need to cast a spell to go that way!",
+        "You are not permitted in that room!",
+        "You are too evil to go through this exit!",
+        "You are too good to go through this exit!",
+        "You are too heavy to move!",
+        "You are too stunned to move anywhere!",
+        "You do not have the appropriate item to go that direction!",
+        "You have progressed too far to go through this exit!",
+        "You may not go through this exit!",
+        "You may not go through this exit during tournament play!",
+        "You may not pass through that exit at this point in time.",
+        "You do not have enough to cover the toll of 100 copper farthings.",
+        "You may not enter that room during a retaliation time-period.",
     ] {
         let mut c = Correlator::new(TTL);
         c.sent(CmdId(1), "n", t);
@@ -692,4 +704,97 @@ fn a_confirmed_bash_owns_the_next_block_even_past_a_stale_move() {
     );
     assert_eq!(ans(&mut c, room("Dungeon, Entrance"), t), Some(CmdId(2)));
     assert_eq!(ans(&mut c, room("Dungeon, Entrance"), t), None);
+}
+
+#[test]
+fn a_locked_reply_belongs_to_the_open_even_past_a_stale_move() {
+    // _move_user emits NO locked wording — a move at a locked door
+    // answers "The door is closed!" (22+ corpus occurrences agree). "The
+    // door is locked." is _cmd_open's reply. With the needle wrongly in
+    // the Move arm, a move whose refusal was eaten would steal the
+    // open's lock line and leave the open lingering: two wrong
+    // associations from one eaten line, on the standard door workflow.
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "n", t);
+    ans(&mut c, line("n"), t); // refusal eaten
+    c.sent(CmdId(2), "open n", t);
+    ans(&mut c, line("open n"), t);
+    assert_eq!(ans(&mut c, line("The door is locked."), t), Some(CmdId(2)));
+}
+
+#[test]
+fn the_hide_refusal_does_not_complete_a_move() {
+    // "You can't seem to move anywhere to hide!" (0xdb396) shares the
+    // move refusal's prefix; the trailing bang on the needle keeps the
+    // two apart.
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "n", t);
+    ans(&mut c, line("n"), t);
+    assert_eq!(
+        ans(&mut c, line("You can't seem to move anywhere to hide!"), t),
+        None
+    );
+    assert_eq!(ans(&mut c, room("Dungeon, Entrance"), t), Some(CmdId(1)));
+}
+
+#[test]
+fn a_resisting_target_completes_the_cast() {
+    // Second-person resist replies (0xcffe5 / 0xd03e9): without them a
+    // resisted cast lingers and the next cast's reply retires the stale
+    // one — the shift-by-one chain, while casting fast.
+    let t = Instant::now();
+    for reply in ["The kobold resists your spell!", "kobold thief resists your spell!"] {
+        let mut c = Correlator::new(TTL);
+        c.sent(CmdId(1), "cast star", t);
+        ans(&mut c, line("cast star"), t);
+        assert_eq!(ans(&mut c, line(reply), t), Some(CmdId(1)), "{reply:?}");
+    }
+}
+
+#[test]
+fn light_refusal_and_cast_lit_success_complete_their_commands() {
+    // "You already have something lit!" (0xdb396 cluster) ends a light
+    // command; "You lit the %s." also answers a CAST of a light spell
+    // (the cast routes through the light routine).
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "light torch", t);
+    ans(&mut c, line("light torch"), t);
+    assert_eq!(
+        ans(&mut c, line("You already have something lit!"), t),
+        Some(CmdId(1))
+    );
+
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "cast light", t);
+    ans(&mut c, line("cast light"), t);
+    assert_eq!(ans(&mut c, line("You lit the torch."), t), Some(CmdId(1)));
+}
+
+#[test]
+fn the_bash_cooldown_refusal_completes_the_bash() {
+    // "You must wait before you may do that!" (0xd53fd, bash routine).
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "bash n", t);
+    ans(&mut c, line("bash n"), t);
+    assert_eq!(
+        ans(&mut c, line("You must wait before you may do that!"), t),
+        Some(CmdId(1))
+    );
+}
+
+#[test]
+fn a_directed_look_with_no_exit_completes_the_look() {
+    // _cmd_look: "There are no exits to the %s!" / upwards / downwards.
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "look e", t);
+    ans(&mut c, line("look e"), t);
+    assert_eq!(
+        ans(&mut c, line("There are no exits to the east!"), t),
+        Some(CmdId(1))
+    );
 }
