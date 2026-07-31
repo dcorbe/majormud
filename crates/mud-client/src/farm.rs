@@ -40,29 +40,6 @@ use crate::graph::RoomGraph;
 /// would wedge the runner on any line the board answers silently.
 pub const ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// How many times to try lighting a dark stop, per visit, before writing
-/// it off and moving on.
-///
-/// **One.** The retry used to be unbounded — every "but fail" re-armed it
-/// — and was held in check only by the prompt counter that ended the stop
-/// regardless. Removing that counter meant the retry needed a real bound,
-/// and three looked like a reasonable roll-again allowance.
-///
-/// Measured on the live board, three was wrong. The Newhaven dungeon legs
-/// are dark, and each attempt costs a `cast` AND the `look` that checks
-/// it: a 300s run made 9-10 casts against the pre-refactor client's 2, at
-/// 1.2s a command. Every one of those looks is a room block still in
-/// flight when the runner walks out of the stop, and they arrive while
-/// the navigator is verifying its next step — two runs out of two died at
-/// ~80s on `expected "Dungeon, Entrance", saw "Newhaven, Arena"`, where
-/// the old client ran the full 300s.
-///
-/// Retrying was near-worthless anyway. The common reason a light fails is
-/// no mana (`MA=7` in both failed runs), and mana does not come back
-/// inside a stop visit — so attempts two and three buy nothing and cost
-/// four commands. The stop is revisited every lap, which is the retry.
-const MAX_LIGHT_ATTEMPTS: u32 = 1;
-
 /// `"1/860"` -> map 1, room 860. The `mmc path` argument syntax.
 pub fn parse_room_id(s: &str) -> Option<RoomId> {
     let (map, room) = s.split_once('/')?;
@@ -1118,8 +1095,8 @@ pub async fn run_farm(
     // Ask once what the character is carrying and what it can cast. The
     // answer decides whether a dark room is a dead end or a command away,
     // and both listings are cheap.
-    let light = read_light_plan(session).await;
-    if let Some(cmd) = &light {
+    let mut light = crate::sheet::LightState::new(read_light_plan(session).await);
+    if let Some(cmd) = light.plan() {
         eprintln!("dark rooms will be handled with `{cmd}`");
     }
 
@@ -1147,7 +1124,7 @@ pub async fn run_farm(
                     &bot_config,
                     &threat,
                     &refusals,
-                    light.as_ref(),
+                    &mut light,
                     started,
                     &mut stats,
                     phase,
@@ -1168,7 +1145,7 @@ pub async fn run_farm(
                 &bot_config,
                 &threat,
                 &refusals,
-                light.as_ref(),
+                &mut light,
                 cfg,
                 started,
                 None,
@@ -1384,7 +1361,7 @@ async fn travel(
     bot_config: &crate::bot::BotConfig,
     threat: &std::sync::Arc<crate::bot::ThreatTable>,
     refusals: &crate::bot::Refusals,
-    light: Option<&String>,
+    light: &mut crate::sheet::LightState,
     started: Instant,
     stats: &mut FarmStats,
     phase: PhaseSink<'_>,
@@ -1541,7 +1518,7 @@ async fn farm_stop(
     // every lag and recovery, and a forgotten refusal is a refused swing
     // repeated -- a crime-system interaction on the live board.
     refusals: &crate::bot::Refusals,
-    light: Option<&String>,
+    light: &mut crate::sheet::LightState,
     cfg: &FarmConfig,
     started: Instant,
     // Hard cap on this stop, or None to stay until it goes quiet.
@@ -1551,7 +1528,7 @@ async fn farm_stop(
 ) -> Result<StopEnd, FarmError> {
     let stop_name = graph.room(stop).map(|r| r.name.clone()).unwrap_or_default();
     let mut resting = false;
-    let mut light_attempts = 0u32;
+    light.new_visit();
     let username = session.profile().username.clone();
     let backoff = Duration::from_millis(cfg.slowdown_backoff_ms);
     let poke_after = Duration::from_millis(cfg.idle_poke_ms);
@@ -1603,19 +1580,27 @@ async fn farm_stop(
                     return Ok(StopEnd::Dwelt);
                 }
             }
-            Verdict::Blind => match light {
-                Some(cmd) if light_attempts < MAX_LIGHT_ATTEMPTS && gate.is_idle() => {
-                    light_attempts += 1;
-                    gate.push(cmd.clone());
-                    gate.push("look".into());
+            Verdict::Blind => {
+                // Blind again while a source was believed burning: it
+                // burned out. There is no wording for this — the
+                // darkness IS the message.
+                light.source_died();
+                match light.attempt() {
+                    Some(cmd) if gate.is_idle() => {
+                        gate.push(cmd);
+                        gate.push("look".into());
+                    }
+                    // A stop we cannot see is a stop we cannot farm, and
+                    // fighting in the dark is heavily penalised anyway.
+                    // Defending is the exception: there the deadline
+                    // governs, or we walk on and leave whatever is
+                    // hitting us behind.
+                    None if until.is_none() && gate.is_idle() => {
+                        return Ok(StopEnd::Dwelt);
+                    }
+                    _ => {}
                 }
-                // A stop we cannot see is a stop we cannot farm, and
-                // fighting in the dark is heavily penalised anyway.
-                // Defending is the exception: there the deadline governs,
-                // or we walk on and leave whatever is hitting us behind.
-                _ if until.is_none() && gate.is_idle() => return Ok(StopEnd::Dwelt),
-                _ => {}
-            },
+            }
         }
 
         set_phase(
@@ -1639,6 +1624,7 @@ async fn farm_stop(
             let id = session.send(&cmd);
             gate.confirm(id);
             seen.on_sent(&cmd, id);
+            light.on_sent(&cmd, id);
         }
 
         // Sleep until the next event, the gate's own deadline, the idle
@@ -1753,6 +1739,7 @@ async fn farm_stop(
             }
             gate.push(cmd);
         }
+        light.on_event(&cor);
         // Folded last, so `engaged` and `has_target` already account for
         // this event when the next iteration asks for a verdict.
         seen.on_event(&cor, &bot, Instant::now());

@@ -188,3 +188,129 @@ pub fn light_plan(inventory: &Inventory, spellbook: &Spellbook) -> Option<String
 /// %s - you can't see anything" (DLL 0xdf37e). The descriptor varies, so
 /// the tail is what is matched.
 pub const TOO_DARK: &str = "you can't see anything";
+
+/// Light the room, CONFIRM it from the board, and only give up when
+/// nothing can work. Walking a dark room blind is the LAST resort.
+///
+/// The board's own wordings are the state transitions, each attributed
+/// to OUR light command by the session's correlation — a stale or
+/// somebody-else's outcome line proves nothing:
+///
+/// - "You lit the %s." (DLL 0xdb52d) and "You already have something
+///   lit!" mean a source is burning.
+/// - "You may not light that item!" means the plan is wrong outright and
+///   is never retried.
+/// - A failed cast ("...but fail.", resist, no mana) spends this VISIT's
+///   attempt: mana does not come back inside a stop visit (measured live
+///   — extra attempts bought nothing and cost four commands each), and
+///   the stop is revisited every lap, which is the retry.
+/// - Burn-out has NO wording. The darkness is the message: the stop
+///   going Blind again while a source was believed lit means it died,
+///   and a dead source is not retried ([`LightState::source_died`]).
+pub struct LightState {
+    /// The command that lights, from [`light_plan`]; None means nothing
+    /// on the character can light a room.
+    plan: Option<String>,
+    /// The board confirmed a burning source and nothing has gone dark
+    /// since.
+    lit: bool,
+    /// A light command is out; its outcome will carry this id.
+    pending: Option<crate::correlate::CmdId>,
+    /// Attempts spent at the current stop visit.
+    spent: u32,
+    /// Plans the board refused or that burned out: dead for the run.
+    exhausted: Vec<String>,
+}
+
+impl LightState {
+    pub fn new(plan: Option<String>) -> Self {
+        LightState {
+            plan,
+            lit: false,
+            pending: None,
+            spent: 0,
+            exhausted: Vec::new(),
+        }
+    }
+
+    pub fn lit(&self) -> bool {
+        self.lit
+    }
+
+    /// The current plan, for flows that fire one attempt themselves
+    /// (the finish walk).
+    pub fn plan(&self) -> Option<&String> {
+        self.plan.as_ref()
+    }
+
+    /// A fresh stop visit: the per-visit attempt budget resets.
+    pub fn new_visit(&mut self) {
+        self.spent = 0;
+    }
+
+    /// The command worth sending now, if any attempt can work: none
+    /// while an outcome is owed, a source is already burning, the visit
+    /// budget is spent, or the plan is exhausted.
+    pub fn attempt(&mut self) -> Option<String> {
+        if self.lit || self.pending.is_some() || self.spent >= 1 {
+            return None;
+        }
+        let plan = self.plan.as_ref()?;
+        if self.exhausted.contains(plan) {
+            return None;
+        }
+        Some(plan.clone())
+    }
+
+    /// Called for every command the gate releases, like the other
+    /// watchers: only our own plan's send arms the outcome watch.
+    pub fn on_sent(&mut self, line: &str, id: crate::correlate::CmdId) {
+        if Some(line) == self.plan.as_deref() {
+            self.pending = Some(id);
+            self.spent += 1;
+        }
+    }
+
+    /// Fold one attributed event; only the outcome answering OUR light
+    /// command moves the state.
+    pub fn on_event(&mut self, cor: &crate::correlate::Correlated) {
+        let Some(pending) = self.pending else { return };
+        if cor.answers != Some(pending) {
+            return;
+        }
+        let crate::events::Event::Line(line) = &cor.event else {
+            return;
+        };
+        let line = line.to_lowercase();
+        if line.contains("you lit the") || line.contains("already have something lit") {
+            self.pending = None;
+            self.lit = true;
+        } else if line.contains("may not light that item") {
+            self.pending = None;
+            if let Some(plan) = &self.plan {
+                self.exhausted.push(plan.clone());
+            }
+        } else if line.contains("but fail")
+            || line.contains("spell is resisted")
+            || line.contains("resists your spell")
+            || line.contains("enough mana to cast")
+            || line.contains("already cast a spell")
+        {
+            // Recoverable: the visit's attempt is spent, the next visit
+            // may try again.
+            self.pending = None;
+        }
+    }
+
+    /// The stop went Blind while a source was believed burning: it
+    /// burned out. There is no wording for this — the darkness is the
+    /// message — and a dead source is not retried.
+    pub fn source_died(&mut self) {
+        if self.lit {
+            self.lit = false;
+            if let Some(plan) = self.plan.take() {
+                self.exhausted.push(plan);
+            }
+        }
+    }
+}

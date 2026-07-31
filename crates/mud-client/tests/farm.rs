@@ -1413,3 +1413,108 @@ fn our_own_movement_invalidates_the_stop() {
         "believed a room block that predates our own flee"
     );
 }
+
+// ---------------------------------------------------------------------
+// LightState: light the room, CONFIRM it from the board, only give up
+// when nothing can work. The old shape read the plan once, fired it
+// blind, and never learned whether it took — live, `cast star` answered
+// "You attempt to cast starlight, but fail." and the runner walked into
+// the dark anyway.
+// ---------------------------------------------------------------------
+
+use mud_client::sheet::LightState;
+
+const LIGHT_ID: CmdId = CmdId(91);
+
+fn lit_state(plan: &str) -> LightState {
+    LightState::new(Some(plan.to_string()))
+}
+
+#[test]
+fn a_confirmed_light_is_lit_and_not_relit() {
+    let mut l = lit_state("light torch");
+    assert_eq!(l.attempt(), Some("light torch".to_string()));
+    l.on_sent("light torch", LIGHT_ID);
+    // Outcome owed: no second attempt while one is in flight.
+    assert_eq!(l.attempt(), None);
+    l.on_event(&answering(Event::Line("You lit the torch.".into()), LIGHT_ID));
+    assert!(l.lit());
+    // Lit sources are not re-lit.
+    assert_eq!(l.attempt(), None);
+}
+
+#[test]
+fn already_lit_counts_as_lit() {
+    let mut l = lit_state("light torch");
+    l.attempt();
+    l.on_sent("light torch", LIGHT_ID);
+    l.on_event(&answering(
+        Event::Line("You already have something lit!".into()),
+        LIGHT_ID,
+    ));
+    assert!(l.lit());
+}
+
+#[test]
+fn may_not_light_exhausts_the_plan() {
+    let mut l = lit_state("light rock");
+    l.attempt();
+    l.on_sent("light rock", LIGHT_ID);
+    l.on_event(&answering(
+        Event::Line("You may not light that item!".into()),
+        LIGHT_ID,
+    ));
+    assert!(!l.lit());
+    // The board refused the item outright: never try it again.
+    assert_eq!(l.attempt(), None);
+}
+
+#[test]
+fn a_failed_cast_is_retryable_but_not_within_the_visit() {
+    // The common failure is no mana, and mana does not come back inside
+    // a stop visit (measured live: attempts two and three bought nothing
+    // and cost four commands each). The stop is revisited every lap —
+    // that is the retry.
+    let mut l = lit_state("cast star");
+    assert_eq!(l.attempt(), Some("cast star".to_string()));
+    l.on_sent("cast star", LIGHT_ID);
+    l.on_event(&answering(
+        Event::Line("You attempt to cast starlight, but fail.".into()),
+        LIGHT_ID,
+    ));
+    assert!(!l.lit());
+    // Spent for this visit...
+    assert_eq!(l.attempt(), None);
+    // ...but the next visit may try again.
+    l.new_visit();
+    assert_eq!(l.attempt(), Some("cast star".to_string()));
+}
+
+#[test]
+fn dark_while_lit_means_the_source_died() {
+    let mut l = lit_state("light torch");
+    l.attempt();
+    l.on_sent("light torch", LIGHT_ID);
+    l.on_event(&answering(Event::Line("You lit the torch.".into()), LIGHT_ID));
+    assert!(l.lit());
+    // The stop went Blind again while we believed a source was burning:
+    // it burned OUT — the board has no wording for it, the darkness IS
+    // the message. A dead torch is not retried.
+    l.source_died();
+    assert!(!l.lit());
+    l.new_visit();
+    assert_eq!(l.attempt(), None);
+}
+
+#[test]
+fn an_unattributed_outcome_is_ignored() {
+    let mut l = lit_state("light torch");
+    l.attempt();
+    l.on_sent("light torch", LIGHT_ID);
+    // Somebody else's lighting, or a stale line: not our outcome.
+    l.on_event(&unsolicited(Event::Line("You lit the torch.".into())));
+    assert!(!l.lit());
+    // Ours settles it.
+    l.on_event(&answering(Event::Line("You lit the torch.".into()), LIGHT_ID));
+    assert!(l.lit());
+}
