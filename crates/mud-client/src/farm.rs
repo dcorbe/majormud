@@ -531,14 +531,12 @@ pub enum Verdict {
     Blind,
 }
 
-/// One room block, accepted as describing this stop.
+/// One room block, accepted as describing this stop. Anything that
+/// changes the room deletes it (see [`StopState::invalidate`]).
 struct Seen {
     room: crate::events::RoomView,
     /// When it arrived, for the staleness bound.
     at: Instant,
-    /// `changed` as it stood when this was accepted. If it has moved on
-    /// since, the room has changed and this block no longer describes it.
-    change: u64,
 }
 
 /// What the runner has actually SEEN at this stop, and what that implies
@@ -575,30 +573,30 @@ pub struct StopState {
     recheck: Duration,
     /// The last block accepted as describing this stop.
     seen: Option<Seen>,
-    /// Bumped by every parsed message that could have changed who is
-    /// standing here.
-    changed: u64,
-    /// `changed` as it stood when the outstanding `look` was released.
-    asked_when: Option<u64>,
     /// When the room was FIRST proven empty. The respawn budget runs from
     /// here, so re-asking does not restart it; anything that makes the
     /// room untrue clears it.
     empty_since: Option<Instant>,
     /// The board said the room cannot be seen.
     blind: bool,
-    /// A `look` has gone out and nothing has come back to answer it.
+    /// The `look` owed an answer: its send id, matched against
+    /// [`Correlated::answers`]. Only the block (or dark line) ANSWERING
+    /// this send is believed — an unsolicited block is somebody else's
+    /// render and clears nothing.
     ///
-    /// The stop must not end while this is true. Leaving hands the
-    /// connection to the navigator, which verifies each step by the next
-    /// room block it sees — and the block still owed to our `look` then
-    /// arrives mid-step and satisfies it. Measured live: the Arena's own
-    /// block answering a step north into the Dungeon Entrance, ending the
-    /// run on `expected "Dungeon, Entrance", saw "Newhaven, Arena"`.
+    /// The stop must not end while this is `Some`. Leaving hands the
+    /// connection to the navigator, and the block still owed to our
+    /// `look` then arrives mid-step. Attribution keeps it from
+    /// SATISFYING the step now, but walking out while owed an answer is
+    /// still walking out on evidence in flight.
     ///
-    /// `Gate::is_idle` does NOT cover this. It clears on any prompt, and
-    /// in a room with a fight going on the board sends plenty that have
-    /// nothing to do with our look.
-    awaiting_look: bool,
+    /// Cleared by [`StopState::invalidate`] too: if the room changed
+    /// while the look was in flight (a mid-render arrival — parse
+    /// classifies async lines inside an accumulating block, so the
+    /// block's content can predate an ActorEntered that was EMITTED
+    /// first), the answer predates reality and must be re-asked, not
+    /// believed.
+    pending_look: Option<(crate::correlate::CmdId, Instant)>,
 }
 
 impl StopState {
@@ -608,61 +606,68 @@ impl StopState {
             linger: Duration::from_secs(cfg.dwell_empty_seconds),
             recheck: Duration::from_millis(cfg.idle_poke_ms),
             seen: None,
-            changed: 0,
-            asked_when: None,
-            awaiting_look: false,
+            pending_look: None,
             empty_since: None,
             blind: false,
         }
     }
 
     /// Called for every command the gate actually releases — the same
-    /// hook [`HealWatch::on_sent`] uses.
-    ///
-    /// A `look` going out is the request half of the only request/response
-    /// pair the runner has. The session layer has no correlation at all,
-    /// but the gate holds exactly one command in flight, which is enough.
-    pub fn on_sent(&mut self, line: &str) {
+    /// hook [`HealWatch::on_sent`] uses — with the send id the session
+    /// allocated, which is what the answer will carry.
+    pub fn on_sent(&mut self, line: &str, id: crate::correlate::CmdId) {
         if line.trim().eq_ignore_ascii_case("look") {
-            self.asked_when = Some(self.changed);
-            self.awaiting_look = true;
+            self.pending_look = Some((id, Instant::now()));
         }
     }
 
-    /// Something happened that could have changed who is standing here, so
-    /// any block still in flight predates it and must not be believed.
+    /// Something happened that could have changed who is standing here.
+    /// What we saw is discarded outright, and so is the outstanding ask:
+    /// its answer predates this and must not be believed.
     fn invalidate(&mut self) {
-        self.changed += 1;
+        self.seen = None;
         self.empty_since = None;
+        self.pending_look = None;
     }
 
-    /// Fold one event. Call AFTER [`crate::bot::Bot::on_event`], so
-    /// `engaged` and `has_target` already account for it.
-    pub fn on_event(&mut self, ev: &Event, bot: &crate::bot::Bot, now: Instant) {
-        match ev {
+    /// Fold one attributed event. Call AFTER
+    /// [`crate::bot::Bot::on_event`], so `engaged` and `has_target`
+    /// already account for it.
+    pub fn on_event(
+        &mut self,
+        cor: &crate::correlate::Correlated,
+        bot: &crate::bot::Bot,
+        now: Instant,
+    ) {
+        // Does this event answer OUR outstanding look? An unsolicited
+        // block — somebody else's render, a stale answer to a forgotten
+        // ask — is never believed and never clears the ask.
+        let answers_look = cor
+            .answers
+            .is_some_and(|a| self.pending_look.is_some_and(|(id, _)| a == id));
+        match &cor.event {
             // A prompt means the board answered SOMETHING. It says nothing
             // about who is standing here, and that is the whole point.
             Event::Prompt { .. } => {}
-            Event::RoomSeen(room) if room.name == self.stop_name => {
-                self.blind = false;
-                self.awaiting_look = false;
-                // Only believed when nothing went stale between the `look`
-                // going out and this block coming back. Without that a
-                // block can race an arrival: the rat walks in, the bot
-                // engages it, and the block rendered BEFORE the rat then
-                // reads as an empty room -- clearing the fight and walking
-                // out of it.
-                if self.asked_when == Some(self.changed) {
-                    if bot.has_target(room) {
-                        self.empty_since = None;
-                    } else {
-                        self.empty_since.get_or_insert(now);
+            Event::RoomSeen(room) => {
+                if answers_look {
+                    // Our look was answered — the ask is settled either
+                    // way. A block naming somewhere ELSE is not this
+                    // stop (the pump reads it as a flee); only the
+                    // stop's own block is evidence about the stop.
+                    self.pending_look = None;
+                    if room.name == self.stop_name {
+                        self.blind = false;
+                        if bot.has_target(room) {
+                            self.empty_since = None;
+                        } else {
+                            self.empty_since.get_or_insert(now);
+                        }
+                        self.seen = Some(Seen {
+                            room: room.clone(),
+                            at: now,
+                        });
                     }
-                    self.seen = Some(Seen {
-                        room: room.clone(),
-                        at: now,
-                        change: self.changed,
-                    });
                 }
             }
             // No name matching here on purpose: the parser has been seen
@@ -676,11 +681,14 @@ impl StopState {
                 ..
             } => self.invalidate(),
             Event::Line(line) if crate::bot::is_kill_line(line) => self.invalidate(),
-            Event::Line(line) if line.contains(crate::sheet::TOO_DARK) => {
-                // The answer to a look in an unlit room: no block is
-                // coming, so nothing is still owed.
+            Event::Line(line)
+                if line.contains(crate::sheet::TOO_DARK) && answers_look =>
+            {
+                // The answer to OUR look in an unlit room: no block is
+                // coming, so nothing is still owed. A stale dark line
+                // answering something else proves nothing about now.
                 self.blind = true;
-                self.awaiting_look = false;
+                self.pending_look = None;
             }
             _ => {}
         }
@@ -694,12 +702,10 @@ impl StopState {
     /// carrying a stale "empty" across would walk out immediately.
     pub fn reset(&mut self) {
         self.seen = None;
-        self.asked_when = None;
-        self.awaiting_look = false;
+        // Anything already in flight predates the reset.
+        self.pending_look = None;
         self.empty_since = None;
         self.blind = false;
-        // Anything already in flight predates the reset.
-        self.changed += 1;
     }
 
     /// What to do now.
@@ -725,29 +731,33 @@ impl StopState {
         if self.blind {
             return Verdict::Blind;
         }
+        // An unanswered ask: wait for it, never stack another. Each look
+        // supersedes the last in the correlator's eyes, so re-asking
+        // while owed would orphan the in-flight answer and loop — and
+        // flooding looks at the board was its own measured failure. An
+        // OVERDUE ask (answer eaten or expired) falls through to Ask,
+        // and the fresh id supersedes the stale one honestly.
+        if let Some((_, at)) = self.pending_look {
+            if now.duration_since(at) < self.recheck {
+                return Verdict::Waiting { until: at + self.recheck };
+            }
+            return Verdict::Ask;
+        }
         let Some(seen) = &self.seen else {
             return Verdict::Ask;
         };
         // Staleness is settled BEFORE occupancy, and the order is
-        // load-bearing. A block that listed monsters but has since been
-        // invalidated -- by the kill that emptied the room, say -- would
-        // otherwise read as `Busy` forever: the bot has no target left to
-        // drive the fight, and `Busy` is the one verdict that asks the
-        // board nothing. Nothing would ever look again.
-        if seen.change != self.changed || now.duration_since(seen.at) >= self.recheck {
+        // load-bearing. Invalidation now DELETES the observation (the
+        // kill that emptied the room lands as `seen = None` -> `Ask`),
+        // so what is left here is pure shelf life: nothing announces a
+        // respawn, so an old block must be re-asked, not trusted.
+        if now.duration_since(seen.at) >= self.recheck {
             return Verdict::Ask;
         }
         // Judged against the CURRENT bot, not as of when the block
         // arrived: a target refused since then no longer holds the stop.
         if bot.has_target(&seen.room) {
             return Verdict::Busy;
-        }
-        // Never hand over to the navigator owing a room block; see
-        // `awaiting_look`.
-        if self.awaiting_look {
-            return Verdict::Waiting {
-                until: now + self.recheck,
-            };
         }
         match self.empty_since {
             Some(since) if now.duration_since(since) >= self.linger => Verdict::Empty,
@@ -1612,8 +1622,9 @@ async fn farm_stop(
         // Release whatever the gate is willing to send.
         while let Some(cmd) = gate.poll(now) {
             heal.on_sent(&cmd);
-            seen.on_sent(&cmd);
-            gate.confirm(session.send(&cmd));
+            let id = session.send(&cmd);
+            gate.confirm(id);
+            seen.on_sent(&cmd, id);
         }
 
         // Sleep until the next event, the gate's own deadline, the idle
@@ -1722,7 +1733,7 @@ async fn farm_stop(
         }
         // Folded last, so `engaged` and `has_target` already account for
         // this event when the next iteration asks for a verdict.
-        seen.on_event(ev, &bot, Instant::now());
+        seen.on_event(&cor, &bot, Instant::now());
     }
 }
 

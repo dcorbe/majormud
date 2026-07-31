@@ -155,9 +155,16 @@ fn drive(path: &std::path::Path) -> Run {
             // The runner's `look` is deliberately NOT pushed through
             // `gate`: that gate is what the assertions below audit, and
             // injecting commands the bot never decided would rewrite what
-            // they measure. Marking it sent is all the correlation needs,
-            // and the corpus cannot answer an extra look anyway.
-            Verdict::Ask | Verdict::Blind => stop.on_sent("look"),
+            // they measure. It IS registered with the correlator, so the
+            // operator's own captured `look` echo accepts it and the
+            // block that follows attributes — the request/response pair
+            // the stream actually recorded.
+            Verdict::Ask | Verdict::Blind => {
+                let id = CmdId(next_id);
+                next_id += 1;
+                correlator.sent(id, "look", now);
+                stop.on_sent("look", id);
+            }
             Verdict::Empty => {
                 match &last_block {
                     None => run.left_without_ever_looking += 1,
@@ -206,7 +213,7 @@ fn drive(path: &std::path::Path) -> Run {
             pending_acks.push(Event::Line(cmd.clone()));
             run.emitted.push((i, cmd));
         }
-        stop.on_event(ev, &bot, now);
+        stop.on_event(&cor, &bot, now);
     }
     let after = t0 + TICK * (events.len() as u32) + BACKOFF * 2;
     while let Some(cmd) = gate.poll(after) {

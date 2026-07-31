@@ -880,17 +880,29 @@ fn block(also_here: &[&str]) -> Event {
     block_named(STOP, also_here)
 }
 
+/// The id every test look goes out under. `pending_look` clears on each
+/// accepted answer, so reusing one id across sequential asks is safe.
+const LOOK_ID: CmdId = CmdId(77);
+
 /// The runner's order: the bot folds the event first, then the stop
-/// state, so `engaged` and `has_target` already reflect it.
+/// state, so `engaged` and `has_target` already reflect it. Events fed
+/// this way are UNSOLICITED (`answers: None`).
 fn feed(stop: &mut StopState, bot: &mut Bot, ev: &Event, now: Instant) {
     bot.on_event(ev);
-    stop.on_event(ev, bot, now);
+    stop.on_event(&unsolicited(ev.clone()), bot, now);
+}
+
+/// Feed an event ATTRIBUTED to the outstanding look.
+fn feed_answer(stop: &mut StopState, bot: &mut Bot, ev: &Event, now: Instant) {
+    bot.on_event(ev);
+    stop.on_event(&answering(ev.clone(), LOOK_ID), bot, now);
 }
 
 /// Ask, and answer -- the only request/response pair the runner has.
+/// The answer arrives ATTRIBUTED to the ask, as the session guarantees.
 fn look_and_see(stop: &mut StopState, bot: &mut Bot, ev: &Event, now: Instant) {
-    stop.on_sent("look");
-    feed(stop, bot, ev, now);
+    stop.on_sent("look", LOOK_ID);
+    feed_answer(stop, bot, ev, now);
 }
 
 /// THE regression test for the whole bug class. Prompts say the board is
@@ -978,7 +990,7 @@ fn a_room_block_that_raced_a_new_arrival_is_not_believed() {
     let mut bot = combat_bot();
     let mut stop = stop_state(0);
 
-    stop.on_sent("look");
+    stop.on_sent("look", LOOK_ID);
     feed(
         &mut stop,
         &mut bot,
@@ -1009,8 +1021,8 @@ fn an_unfinished_fight_outranks_an_empty_block() {
     let mut stop = stop_state(0);
     look_and_see(&mut stop, &mut bot, &block(&["cave bear"]), t0);
     assert!(bot.engaged().is_some(), "test needs a live fight");
-    stop.on_sent("look");
-    stop.on_event(&block(&[]), &bot, t0);
+    stop.on_sent("look", LOOK_ID);
+    stop.on_event(&answering(block(&[]), LOOK_ID), &bot, t0);
     assert_eq!(stop.verdict(&bot, t0), Verdict::Busy);
 }
 
@@ -1064,22 +1076,22 @@ fn being_hit_invalidates_the_room_block_but_swinging_does_not() {
 
     look_and_see(&mut stop, &mut bot, &block(&[]), t0);
     stop.on_event(
-        &Event::CombatHit {
+        &unsolicited(Event::CombatHit {
             attacker: Actor::You,
             target: Actor::Other("giant rat".into()),
             damage: 3,
-        },
+        }),
         &bot,
         t0,
     );
     assert_eq!(stop.verdict(&bot, t0), Verdict::Empty, "our own swing");
 
     stop.on_event(
-        &Event::CombatHit {
+        &unsolicited(Event::CombatHit {
             attacker: Actor::Other("giant rat".into()),
             target: Actor::You,
             damage: 7,
-        },
+        }),
         &bot,
         t0,
     );
@@ -1180,8 +1192,8 @@ fn a_dark_room_is_blind_not_empty() {
     let t0 = Instant::now();
     let mut bot = combat_bot();
     let mut stop = stop_state(0);
-    stop.on_sent("look");
-    feed(
+    stop.on_sent("look", LOOK_ID);
+    feed_answer(
         &mut stop,
         &mut bot,
         &Event::Line(format!("  {}!", mud_client::sheet::TOO_DARK)),
@@ -1195,7 +1207,7 @@ fn a_room_block_after_lighting_clears_blind() {
     let t0 = Instant::now();
     let mut bot = combat_bot();
     let mut stop = stop_state(0);
-    stop.on_sent("look");
+    stop.on_sent("look", LOOK_ID);
     feed(
         &mut stop,
         &mut bot,
@@ -1226,8 +1238,8 @@ fn a_room_block_for_somewhere_else_is_not_this_stop() {
     let t0 = Instant::now();
     let bot = combat_bot();
     let mut stop = stop_state(0);
-    stop.on_sent("look");
-    stop.on_event(&block_named("Narrow Road", &[]), &bot, t0);
+    stop.on_sent("look", LOOK_ID);
+    stop.on_event(&answering(block_named("Narrow Road", &[]), LOOK_ID), &bot, t0);
     assert_eq!(stop.verdict(&bot, t0), Verdict::Ask);
 }
 
@@ -1303,15 +1315,20 @@ fn a_stop_does_not_end_while_a_look_is_unanswered() {
 
     // A fresh look goes out — the runner's idle poke, say — and has not
     // been answered yet.
-    stop.on_sent("look");
+    stop.on_sent("look", LOOK_ID);
     assert_ne!(
         stop.verdict(&bot, t0),
         Verdict::Empty,
         "left the stop owing a room block to a look already sent"
     );
 
-    // Its answer settles it.
+    // A block that answers NOBODY — somebody else's render — settles
+    // nothing: the ask is still owed.
     feed(&mut stop, &mut bot, &block(&[]), t0);
+    assert_ne!(stop.verdict(&bot, t0), Verdict::Empty, "unsolicited block settled the look");
+
+    // Its real answer settles it.
+    feed_answer(&mut stop, &mut bot, &block(&[]), t0);
     assert_eq!(stop.verdict(&bot, t0), Verdict::Empty);
 }
 
@@ -1323,8 +1340,17 @@ fn a_dark_answer_settles_an_outstanding_look() {
     let t0 = Instant::now();
     let mut bot = combat_bot();
     let mut stop = stop_state(0);
-    stop.on_sent("look");
+    stop.on_sent("look", LOOK_ID);
+    // A STALE dark line answering nobody proves nothing about now.
     feed(
+        &mut stop,
+        &mut bot,
+        &Event::Line(mud_client::sheet::TOO_DARK.to_string()),
+        t0,
+    );
+    assert_ne!(stop.verdict(&bot, t0), Verdict::Blind, "a stale dark line settled the look");
+    // The one answering OUR look is the answer.
+    feed_answer(
         &mut stop,
         &mut bot,
         &Event::Line(mud_client::sheet::TOO_DARK.to_string()),

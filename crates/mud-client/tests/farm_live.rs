@@ -513,9 +513,16 @@ async fn recovers_from_a_flee_and_moves_on() {
     // which no real profile does, and recovery has never had correlation
     // to lean on. Recorded rather than papered over: the fix belongs with
     // `recover`, not with another timing tweak here.
-    let (end, stats) = farm(&session, bot, farm_config(&["1/2"], 1))
-        .await
-        .expect("farm run");
+    // A dwell keeps the stop open long enough for a prompt to reach the
+    // bot. The stop used to linger by ACCIDENT — the old runner stacked
+    // redundant looks and could not leave until the gate drained; the
+    // attributed runner leaves the instant a clean empty answer lands,
+    // so the flee choreography needs an honest budget instead.
+    let cfg = FarmConfig {
+        dwell_empty_seconds: 2,
+        ..farm_config(&["1/2"], 1)
+    };
+    let (end, stats) = farm(&session, bot, cfg).await.expect("farm run");
 
     assert_eq!(end, FarmEnd::LoopsDone);
     assert!(
