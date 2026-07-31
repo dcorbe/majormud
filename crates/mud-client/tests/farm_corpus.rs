@@ -297,8 +297,11 @@ fn the_corpus_shows_the_bot_occupied_rooms() {
     // file count above: if a change to the bot's targeting quietly stops
     // it seeing monsters, the two assertions above would start passing
     // for the wrong reason and nothing else would say so.
+    // 393 -> 394 when the parser learned to open a room block whose name
+    // is glued to a redrawn prompt on one physical line (the busy-room
+    // render); one such block in the corpus lists a target.
     assert_eq!(
-        total, 393,
+        total, 394,
         "room blocks listing an attackable target changed; if that is \
          intended, update the number — but check the stop assertions \
          above are still doing work"

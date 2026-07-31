@@ -90,6 +90,7 @@ impl Parser {
         let cleaned = resolve_backspaces(&strip_ansi(raw));
         let mut rest = cleaned.as_str();
         let mut opening = opening_sgr(raw);
+        let mut saw_prompt = false;
         // Prompts can appear anywhere in a physical line (mid-line
         // redraws); classify the segments between them in order.
         while let Some(c) = PROMPT_RE.captures(rest) {
@@ -102,9 +103,22 @@ impl Parser {
             rest = &rest[m.end()..];
             // The opening color applied to the first segment only.
             opening = None;
+            saw_prompt = true;
         }
         if rest.is_empty() {
             return;
+        }
+        if saw_prompt {
+            // A redrawn prompt and the text answering it share a physical
+            // line — the board separates them with cursor-back and
+            // erase-line, not a newline (stopstate-run6.raw). The colour
+            // opening the trailing segment sits after the prompt's
+            // literal "]:" in the raw bytes; without it a room name glued
+            // to a prompt dissolves into description lines, which is how
+            // busy-room blocks went missing.
+            opening = raw
+                .rfind("]:")
+                .and_then(|p| opening_sgr(&raw[p + 2..]));
         }
         self.classify(rest, opening, events);
     }

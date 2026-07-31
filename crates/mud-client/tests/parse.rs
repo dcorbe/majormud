@@ -490,3 +490,27 @@ fn corpus_oracle_arena2_events() {
     );
     assert_eq!(incoming, 45);
 }
+
+// --- prompt-glued room render (stopstate-run6.raw, live board) ---
+
+#[test]
+fn a_room_name_glued_to_a_redrawn_prompt_still_opens_the_block() {
+    // A dangling prompt disturbed by async output gets redrawn, and the
+    // room render lands on the SAME physical line: the board separates
+    // them with cursor-back + erase-line, not a newline. Byte-exact from
+    // stopstate-run6.raw — this is how every room block renders in a busy
+    // room, which is exactly where position tracking matters most.
+    let glued = "\x1b[79D\x1b[K\x1b[0;37m[HP=45\x1b[0;37m/MA=8\x1b[0;37m]:\
+                 \x1b[0;37;40m\x1b[79D\x1b[K\x1b[1;36mDungeon, Entrance\r\n\
+                 \x1b[79D\x1b[K\x1b[0;37;40m    You stand in a barely torchlit entryway.\r\n\
+                 Obvious exits: north, south\r\n";
+    let ev = parse_all(glued);
+    assert!(
+        ev.iter().any(|e| matches!(
+            e,
+            Event::RoomSeen(r) if r.name == "Dungeon, Entrance"
+                && r.exits == ["north", "south"]
+        )),
+        "the glued room block dissolved: {ev:?}"
+    );
+}

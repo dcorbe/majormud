@@ -1,23 +1,28 @@
 //! The Correlator answers "which command does this event answer?" — by
-//! echo and FIFO order, never by prompt or count.
+//! echo, FIFO order, and a reply grammar. Never by prompt, count, or
+//! "whatever line came next".
 //!
-//! The rules it must satisfy were measured, not designed (see
-//! docs/board-correlation.md and ~/mmc-probe/stopstate-run5_timing.log,
-//! which is transcribed into fixtures here because the capture itself
-//! carries a live password and stays out of the repo):
+//! The rules were measured, not designed (docs/board-correlation.md; the
+//! stopstate-run5/6/7 live captures, transcribed here because the raw
+//! captures carry a live password and stay out of the repo):
 //!
 //! - The board echoes every ACCEPTED command. On a busy board a command
 //!   echoes TWICE: a receipt echo ~2ms after send, and an execution echo
 //!   immediately before its reply when commands queue behind the round
-//!   timer. Idle, the two coincide. Post-parse the two are
-//!   indistinguishable — both are `Line(cmd)` — so a duplicate echo must
-//!   re-confirm the entry, never advance the queue.
-//! - Replies are strictly FIFO. Order attributes; echo text alone never
-//!   does (four pipelined `n` produced five `n` echo occurrences).
-//! - No echo means unsolicited: the login render, a summon, a respawn.
-//!   `answers: None`, and it must never satisfy anyone's pending step.
-//! - A wrong association is worse than none. Anything ambiguous falls to
-//!   the deadline and the consumer re-asks.
+//!   timer. Post-parse the two are indistinguishable — both `Line(cmd)`
+//!   — so a duplicate echo must re-confirm, never advance.
+//! - Replies are strictly FIFO. Echo text identifies nothing (four
+//!   pipelined `n` produced five `n` echo occurrences); order does.
+//! - The board talks constantly without being asked: swing announces
+//!   ("The fierce kobold thief lunges at you...!"), spawn wordings the
+//!   classifier doesn't cover, "You hear movement...", exp and loot
+//!   lines. None of that may retire or attribute — run6 127-131s shows a
+//!   room block landing on the WRONG movement command if it does.
+//!   Retirement therefore needs positive evidence: an event the pending
+//!   command's reply grammar expects. Unknown lines answer nothing.
+//! - No echo means unsolicited (`answers: None`), and it must never
+//!   satisfy anyone's pending step. A wrong association is worse than no
+//!   association: everything ambiguous falls to the deadline.
 
 use std::time::{Duration, Instant};
 
@@ -34,11 +39,11 @@ fn room(name: &str) -> Event {
 }
 
 fn prompt() -> Event {
-    Event::Prompt { hp: 43, mana: Some(6) }
+    Event::Prompt { hp: 45, mana: Some(8) }
 }
 
-fn miss(line: &str) -> Event {
-    Event::CombatMiss { line: line.to_string() }
+fn line(l: &str) -> Event {
+    Event::Line(l.to_string())
 }
 
 /// Feed one event, return who it answered.
@@ -53,6 +58,7 @@ fn an_echo_is_the_exact_text_we_sent() {
     assert!(is_echo("n", "n"));
     assert!(is_echo("look", "look"));
     assert!(is_echo("open n", "open n"));
+    assert!(is_echo(" look ", "look")); // wire-trimmed
     assert!(!is_echo("s", "n"));
     assert!(!is_echo("looked", "look"));
     assert!(!is_echo("", "n"));
@@ -62,7 +68,7 @@ fn an_echo_is_the_exact_text_we_sent() {
 fn a_status_decoration_on_the_echo_is_stripped() {
     // The board splices "(Resting) " into lines it emits while the
     // character rests (DLL 0xe06f6); other markers are uncaptured, so any
-    // single leading parenthesized token strips.
+    // single leading parenthesized run strips.
     assert!(is_echo("(Resting) look", "look"));
     assert!(is_echo("(Hiding) n", "n"));
     assert!(!is_echo("(Resting) s", "n"));
@@ -74,6 +80,7 @@ fn a_split_echo_matches_by_proper_suffix_with_length_floors() {
     // arrives as `l` + <async line> + `ook`. The suffix fragment matches;
     // the prefix fragment does not (the suffix will).
     assert!(is_echo("ook", "look"));
+    assert!(is_echo("(Resting) ook", "look")); // decorated fragment
     assert!(!is_echo("l", "look")); // prefix, not suffix
     assert!(!is_echo("k", "look")); // fragment floor: len >= 2
     // A one-letter direction never suffix-matches a longer command: a
@@ -81,9 +88,10 @@ fn a_split_echo_matches_by_proper_suffix_with_length_floors() {
     assert!(!is_echo("n", "open n"));
     // Commands shorter than 3 chars only match exactly.
     assert!(!is_echo("w", "nw"));
+    assert!(is_echo("ook", "ook")); // equal length: the exact path
 }
 
-// ------------------------------------------------------------- Correlator
+// ------------------------------------------------------------- acceptance
 
 #[test]
 fn the_echo_line_answers_the_command_it_echoes() {
@@ -92,7 +100,7 @@ fn the_echo_line_answers_the_command_it_echoes() {
     c.sent(CmdId(1), "look", t);
     // The echo itself is attributed: it is the board saying "accepted",
     // and the Gate acks on exactly this.
-    assert_eq!(ans(&mut c, Event::Line("look".into()), t), Some(CmdId(1)));
+    assert_eq!(ans(&mut c, line("look"), t), Some(CmdId(1)));
 }
 
 #[test]
@@ -100,7 +108,7 @@ fn a_room_block_answers_the_echoed_command_and_retires_it() {
     let t = Instant::now();
     let mut c = Correlator::new(TTL);
     c.sent(CmdId(1), "look", t);
-    ans(&mut c, Event::Line("look".into()), t);
+    ans(&mut c, line("look"), t);
     assert_eq!(ans(&mut c, room("Newhaven, Arena"), t), Some(CmdId(1)));
     // Retired: the next block is nobody's answer.
     assert_eq!(ans(&mut c, room("Newhaven, Arena"), t), None);
@@ -120,145 +128,12 @@ fn a_block_with_no_echo_is_unsolicited() {
 }
 
 #[test]
-fn prompts_answer_nothing_and_retire_nothing() {
+fn a_decorated_echo_still_answers() {
     let t = Instant::now();
     let mut c = Correlator::new(TTL);
     c.sent(CmdId(1), "look", t);
-    ans(&mut c, Event::Line("look".into()), t);
-    for _ in 0..5 {
-        assert_eq!(ans(&mut c, prompt(), t), None);
-    }
-    // Still pending: the block after the prompt burst is still ours.
+    assert_eq!(ans(&mut c, line("(Resting) look"), t), Some(CmdId(1)));
     assert_eq!(ans(&mut c, room("Newhaven, Arena"), t), Some(CmdId(1)));
-}
-
-#[test]
-fn classified_async_events_answer_nothing_and_retire_nothing() {
-    let t = Instant::now();
-    let mut c = Correlator::new(TTL);
-    c.sent(CmdId(1), "look", t);
-    ans(&mut c, Event::Line("look".into()), t);
-    let hit = Event::CombatHit {
-        attacker: Actor::Other("The cave bear".into()),
-        target: Actor::You,
-        damage: 3,
-    };
-    assert_eq!(ans(&mut c, hit, t), None);
-    assert_eq!(ans(&mut c, miss("The cave bear swipes at you!"), t), None);
-    let entered = Event::ActorEntered { name: "acid slime".into(), from: Some("nowhere".into()) };
-    assert_eq!(ans(&mut c, entered, t), None);
-    assert_eq!(ans(&mut c, room("Small Cavern"), t), Some(CmdId(1)));
-}
-
-#[test]
-fn an_unknown_line_is_a_single_line_reply_and_retires_the_head() {
-    let t = Instant::now();
-    let mut c = Correlator::new(TTL);
-    c.sent(CmdId(1), "cast star", t);
-    ans(&mut c, Event::Line("cast star".into()), t);
-    assert_eq!(
-        ans(&mut c, Event::Line("You attempt to cast starlight, but fail.".into()), t),
-        Some(CmdId(1))
-    );
-    // Retired: the next command's answer is not stolen by the lingerer.
-    c.sent(CmdId(2), "look", t);
-    ans(&mut c, Event::Line("look".into()), t);
-    assert_eq!(
-        ans(&mut c, Event::Line("The room is very dark - you can't see anything".into()), t),
-        Some(CmdId(2))
-    );
-}
-
-#[test]
-fn identical_texts_attribute_fifo_and_duplicates_confirm_not_advance() {
-    // Transcribed from stopstate-run5_timing.log 516-528s: four pipelined
-    // `n` against a shut door, then open, then bash. Five `n` echo
-    // occurrences for four `n` sends — the execution echo re-echoes the
-    // command the receipt echo already covered. Replies are FIFO.
-    let t = Instant::now();
-    let mut c = Correlator::new(TTL);
-
-    c.sent(CmdId(1), "n", t); // 517.390
-    assert_eq!(ans(&mut c, prompt(), t), None);
-    assert_eq!(ans(&mut c, Event::Line("n".into()), t), Some(CmdId(1))); // 517.757
-
-    c.sent(CmdId(2), "n", t); // 518.589
-    assert_eq!(
-        ans(&mut c, Event::Line("The door is closed!".into()), t),
-        Some(CmdId(1)) // 518.800 answers the FIRST n
-    );
-    assert_eq!(ans(&mut c, Event::Line("n".into()), t), Some(CmdId(2))); // 518.805
-
-    c.sent(CmdId(3), "n", t); // 519.789
-    assert_eq!(ans(&mut c, Event::Line("n".into()), t), Some(CmdId(3))); // 519.791 receipt
-    assert_eq!(
-        ans(&mut c, Event::Line("The door is closed!".into()), t),
-        Some(CmdId(2)) // 520.291 answers the SECOND n, even though n3 already echoed
-    );
-    // 520.298: execution echo of n3 — a duplicate. It confirms n3, it
-    // does not advance past it.
-    assert_eq!(ans(&mut c, Event::Line("n".into()), t), Some(CmdId(3)));
-
-    c.sent(CmdId(4), "open n", t); // 520.989
-    assert_eq!(ans(&mut c, Event::Line("open n".into()), t), Some(CmdId(4))); // receipt
-    c.sent(CmdId(5), "bash n", t); // 522.190
-    assert_eq!(ans(&mut c, Event::Line("bash n".into()), t), Some(CmdId(5))); // receipt
-
-    // 522.740, three lines in one burst:
-    assert_eq!(
-        ans(&mut c, Event::Line("The door is closed!".into()), t),
-        Some(CmdId(3)) // the third n's reply
-    );
-    assert_eq!(ans(&mut c, Event::Line("open n".into()), t), Some(CmdId(4))); // execution echo
-    assert_eq!(
-        ans(&mut c, Event::Line("The door is locked.".into()), t),
-        Some(CmdId(4)) // open's reply
-    );
-
-    c.sent(CmdId(6), "n", t); // 523.389
-    assert_eq!(ans(&mut c, Event::Line("n".into()), t), Some(CmdId(6))); // 523.390 receipt
-    assert_eq!(ans(&mut c, Event::Line("bash n".into()), t), Some(CmdId(5))); // 523.750 execution
-    assert_eq!(
-        ans(&mut c, Event::Line("You bashed the door open.".into()), t),
-        Some(CmdId(5)) // 523.753
-    );
-    // 526.235 execution echo of the last n, 527.683 its block.
-    assert_eq!(ans(&mut c, Event::Line("n".into()), t), Some(CmdId(6)));
-    assert_eq!(ans(&mut c, room("Dungeon, Entrance"), t), Some(CmdId(6)));
-    assert_eq!(ans(&mut c, room("Dungeon, Entrance"), t), None); // retired
-}
-
-#[test]
-fn the_dark_line_answers_the_command_that_asked() {
-    // Transcribed from stopstate-run7_timing.log 604-612s. The same
-    // wording answers a MOVE (step landed, room is dark) and a LOOK
-    // (position unchanged) — only attribution tells them apart, which is
-    // what makes dead reckoning sound.
-    const DARK: &str = "The room is very dark - you can't see anything";
-    let t = Instant::now();
-    let mut c = Correlator::new(TTL);
-
-    c.sent(CmdId(1), "n", t); // 605.767 — step into the dark
-    assert_eq!(ans(&mut c, Event::Line("n".into()), t), Some(CmdId(1)));
-    assert_eq!(ans(&mut c, Event::Line(DARK.into()), t), Some(CmdId(1)));
-
-    c.sent(CmdId(2), "look", t); // 607.047
-    assert_eq!(ans(&mut c, Event::Line("look".into()), t), Some(CmdId(2)));
-    assert_eq!(ans(&mut c, Event::Line(DARK.into()), t), Some(CmdId(2)));
-
-    // 609.449 cast star: async combat lands BEFORE the echo and answers
-    // nothing; the failure line lands after it and answers the cast.
-    c.sent(CmdId(3), "cast star", t);
-    assert_eq!(ans(&mut c, miss("The cave bear claws at you, but you dodge out of the way!"), t), None);
-    assert_eq!(ans(&mut c, Event::Line("cast star".into()), t), Some(CmdId(3)));
-    assert_eq!(
-        ans(&mut c, Event::Line("You attempt to cast starlight, but fail.".into()), t),
-        Some(CmdId(3))
-    );
-
-    c.sent(CmdId(4), "s", t); // 611.848 — step back out
-    assert_eq!(ans(&mut c, Event::Line("s".into()), t), Some(CmdId(4)));
-    assert_eq!(ans(&mut c, room("Dungeon, Entrance"), t), Some(CmdId(4)));
 }
 
 #[test]
@@ -266,12 +141,9 @@ fn a_split_echo_still_answers_its_command() {
     let t = Instant::now();
     let mut c = Correlator::new(TTL);
     c.sent(CmdId(1), "look", t);
-    // `look` reaches the parser as `l` + async + `ook` (~0.4% live). The
-    // prefix fragment is an unknown line — with nothing echoed yet it
-    // answers nothing and retires nothing.
-    assert_eq!(ans(&mut c, Event::Line("l".into()), t), None);
-    assert_eq!(ans(&mut c, miss("The cave bear swipes at you!"), t), None);
-    assert_eq!(ans(&mut c, Event::Line("ook".into()), t), Some(CmdId(1)));
+    assert_eq!(ans(&mut c, line("l"), t), None); // prefix fragment: unknown line
+    assert_eq!(ans(&mut c, line("The cave bear swipes at you!"), t), None);
+    assert_eq!(ans(&mut c, line("ook"), t), Some(CmdId(1)));
     assert_eq!(ans(&mut c, room("Small Cavern"), t), Some(CmdId(1)));
 }
 
@@ -285,12 +157,267 @@ fn an_echo_for_a_later_command_drops_earlier_unechoed_entries() {
     let mut c = Correlator::new(TTL);
     c.sent(CmdId(1), "get copper", t);
     c.sent(CmdId(2), "look", t);
-    assert_eq!(ans(&mut c, Event::Line("look".into()), t), Some(CmdId(2)));
+    assert_eq!(ans(&mut c, line("look"), t), Some(CmdId(2)));
     assert_eq!(ans(&mut c, room("Small Cavern"), t), Some(CmdId(2)));
-    // The eaten command's echo never comes; a late matching line is now
-    // an unknown line, not a resurrection.
     assert_eq!(ans(&mut c, room("Small Cavern"), t), None);
 }
+
+// ---------------------------------------------------- the unsolicited din
+
+#[test]
+fn unknown_lines_answer_nothing_and_retire_nothing() {
+    // The stray vocabulary is large and constant: swing announces, spawn
+    // wordings the classifier misses, "You hear movement...", exp/loot
+    // lines, death cries. If any of it retired the pending command, its
+    // real reply would attribute one command late — run6 shows a room
+    // block landing on the WRONG move exactly that way.
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "n", t);
+    ans(&mut c, line("n"), t);
+    for stray in [
+        "The fierce kobold thief lunges at you with their shortsword!",
+        "You hear movement to the north.",
+        "You gain 23 experience.",
+        "7 silver drop to the ground.",
+        "The giant rat falls to the ground with a shrill cry!",
+        "The room is dimly lit",
+        "(Resting)", // prompt-pileup residue: empty after decoration strip
+    ] {
+        assert_eq!(ans(&mut c, line(stray), t), None, "{stray:?} must not attribute");
+    }
+    // The step's real reply is still ours.
+    assert_eq!(ans(&mut c, room("Dungeon, Entrance"), t), Some(CmdId(1)));
+}
+
+#[test]
+fn classified_async_events_answer_nothing_and_retire_nothing() {
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "look", t);
+    ans(&mut c, line("look"), t);
+    let hit = Event::CombatHit {
+        attacker: Actor::Other("The cave bear".into()),
+        target: Actor::You,
+        damage: 3,
+    };
+    assert_eq!(ans(&mut c, hit, t), None);
+    let entered = Event::ActorEntered { name: "acid slime".into(), from: Some("east".into()) };
+    assert_eq!(ans(&mut c, entered, t), None);
+    for _ in 0..5 {
+        assert_eq!(ans(&mut c, prompt(), t), None);
+    }
+    assert_eq!(ans(&mut c, room("Small Cavern"), t), Some(CmdId(1)));
+}
+
+// -------------------------------------------------------- reply grammar
+
+#[test]
+fn a_reply_retires_only_a_command_that_expects_it() {
+    // `cast star` fails; `look` is answered by the dark line. The cast's
+    // failure wording completes the cast, so the look's answer is not
+    // stolen by a lingerer — and the dark line completes the look, not
+    // the cast.
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "cast star", t);
+    ans(&mut c, line("cast star"), t);
+    assert_eq!(
+        ans(&mut c, line("You attempt to cast starlight, but fail."), t),
+        Some(CmdId(1))
+    );
+    c.sent(CmdId(2), "look", t);
+    ans(&mut c, line("look"), t);
+    assert_eq!(
+        ans(&mut c, line("The room is very dark - you can't see anything"), t),
+        Some(CmdId(2))
+    );
+}
+
+#[test]
+fn a_lingerer_with_no_known_reply_is_skipped_not_credited() {
+    // `health` has no reply grammar; it lingers until its deadline. The
+    // block that answers the later step must skip over it — and its
+    // retirement clears the lingerer too, because replies are FIFO: if
+    // the step's answer arrived, everything older was answered or eaten.
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "health", t);
+    ans(&mut c, line("health"), t);
+    c.sent(CmdId(2), "n", t);
+    ans(&mut c, line("n"), t);
+    assert_eq!(ans(&mut c, room("Dungeon, Entrance"), t), Some(CmdId(2)));
+    // The lingerer died with the retirement; a late line cannot revive it.
+    assert_eq!(ans(&mut c, line("Hits: 45/45 Mana: 8/8"), t), None);
+}
+
+#[test]
+fn a_multi_line_reply_is_missed_never_wrong() {
+    // `inventory` answers with two lines; neither is in any grammar. The
+    // entry expires on its deadline — a missed association, which the
+    // sender's own timeout absorbs. It must never poison a neighbor.
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "inventory", t);
+    ans(&mut c, line("inventory"), t);
+    assert_eq!(ans(&mut c, line("You are carrying 600 copper farthings, gilded robes (Torso)"), t), None);
+    assert_eq!(ans(&mut c, line("You have no keys."), t), None);
+    c.sent(CmdId(2), "look", t);
+    ans(&mut c, line("look"), t);
+    assert_eq!(ans(&mut c, room("Newhaven, Arena"), t), Some(CmdId(2)));
+}
+
+#[test]
+fn the_look_door_refusal_answers_the_look_not_the_move() {
+    // Two wordings, two meanings (OmegaMUD splits them; ours conflated
+    // them): "The door is closed!" refuses a MOVE, "The door is closed in
+    // that direction!" refuses a LOOK. The bang on the move wording is
+    // load-bearing — the look wording must never read as a move refusal.
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "n", t);
+    ans(&mut c, line("n"), t);
+    c.sent(CmdId(2), "look", t);
+    ans(&mut c, line("look"), t);
+    assert_eq!(
+        ans(&mut c, line("The door is closed in that direction!"), t),
+        Some(CmdId(2))
+    );
+    // FIFO cleanup took the older step with it: its reply already came or
+    // never will.
+    assert_eq!(ans(&mut c, room("Dungeon, Entrance"), t), None);
+}
+
+// ----------------------------------------------------- captured sequences
+
+#[test]
+fn run6_a_swing_announce_never_steals_a_room_block() {
+    // stopstate-run6_timing.log 127-131s, fully faithful: two pipelined
+    // `n`, a kobold swing announce between the first echo and its block,
+    // then a third `n` answered by "no exit". Under a retire-on-any-line
+    // rule the swing shifts attribution one command late and Small Cavern
+    // lands on the WRONG move — the exact position poison this module
+    // exists to kill.
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+
+    c.sent(CmdId(1), "n", t); // 127.665
+    assert_eq!(ans(&mut c, prompt(), t), None);
+    assert_eq!(ans(&mut c, line("n"), t), Some(CmdId(1))); // 128.420
+    c.sent(CmdId(2), "n", t); // 128.864
+    assert_eq!(
+        ans(&mut c, line("The fierce kobold thief lunges at you with their shortsword!"), t),
+        None // 129.440 — nobody asked
+    );
+    assert_eq!(ans(&mut c, room("Dungeon, Entrance"), t), Some(CmdId(1))); // 129.446
+    assert_eq!(ans(&mut c, line("n"), t), Some(CmdId(2))); // 129.446, glued echo
+    c.sent(CmdId(3), "n", t); // 130.065
+    assert_eq!(ans(&mut c, line("n"), t), Some(CmdId(3))); // 130.066 receipt
+    assert_eq!(ans(&mut c, line("You hear movement to the north."), t), None); // 131.087
+    assert_eq!(ans(&mut c, room("Small Cavern"), t), Some(CmdId(2))); // 131.088
+    assert_eq!(ans(&mut c, line("The room is dimly lit"), t), None);
+    assert_eq!(
+        ans(&mut c, line("There is no exit in that direction!"), t),
+        Some(CmdId(3)) // 131.094
+    );
+}
+
+#[test]
+fn run5_identical_texts_attribute_fifo_and_duplicates_confirm_not_advance() {
+    // stopstate-run5_timing.log 516-528s, faithful including the async
+    // slime lines: four pipelined `n` against a shut door, then open,
+    // then bash. Five `n` echo occurrences for four `n` sends — the
+    // execution echo re-echoes what the receipt echo already covered.
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+
+    c.sent(CmdId(1), "n", t); // 517.390
+    assert_eq!(ans(&mut c, prompt(), t), None);
+    assert_eq!(ans(&mut c, line("A acid slime oozes into the room from nowhere."), t), None);
+    assert_eq!(ans(&mut c, line("The acid slime flails at you!"), t), None);
+    assert_eq!(ans(&mut c, line("n"), t), Some(CmdId(1))); // 517.757
+
+    c.sent(CmdId(2), "n", t); // 518.589
+    assert_eq!(ans(&mut c, line("The door is closed!"), t), Some(CmdId(1))); // 518.800
+    assert_eq!(ans(&mut c, line("n"), t), Some(CmdId(2))); // 518.805
+
+    c.sent(CmdId(3), "n", t); // 519.789
+    assert_eq!(ans(&mut c, line("n"), t), Some(CmdId(3))); // 519.791 receipt
+    assert_eq!(ans(&mut c, line("The door is closed!"), t), Some(CmdId(2))); // 520.291
+    // 520.298: execution echo of n3 — a duplicate. Confirms, never
+    // advances.
+    assert_eq!(ans(&mut c, line("n"), t), Some(CmdId(3)));
+
+    c.sent(CmdId(4), "open n", t); // 520.989
+    assert_eq!(ans(&mut c, line("open n"), t), Some(CmdId(4))); // receipt
+    c.sent(CmdId(5), "bash n", t); // 522.190
+    assert_eq!(ans(&mut c, line("bash n"), t), Some(CmdId(5))); // receipt
+
+    // 522.740, three lines in one burst:
+    assert_eq!(ans(&mut c, line("The door is closed!"), t), Some(CmdId(3)));
+    assert_eq!(ans(&mut c, line("open n"), t), Some(CmdId(4))); // execution echo
+    assert_eq!(ans(&mut c, line("The door is locked."), t), Some(CmdId(4)));
+
+    c.sent(CmdId(6), "n", t); // 523.389
+    assert_eq!(ans(&mut c, line("n"), t), Some(CmdId(6))); // 523.390 receipt
+    assert_eq!(ans(&mut c, line("bash n"), t), Some(CmdId(5))); // 523.750 execution
+    assert_eq!(ans(&mut c, line("You bashed the door open."), t), Some(CmdId(5)));
+    // 526.235 execution echo of the last n, 527.683 its block.
+    assert_eq!(ans(&mut c, line("n"), t), Some(CmdId(6)));
+    assert_eq!(ans(&mut c, room("Dungeon, Entrance"), t), Some(CmdId(6)));
+    assert_eq!(ans(&mut c, room("Dungeon, Entrance"), t), None); // retired
+}
+
+#[test]
+fn run7_the_dark_line_answers_the_command_that_asked() {
+    // stopstate-run7_timing.log 604-612s, faithful. The same wording
+    // answers a MOVE (step landed, room is dark) and a LOOK (position
+    // unchanged) — only attribution tells them apart, which is what makes
+    // dead reckoning sound.
+    const DARK: &str = "The room is very dark - you can't see anything";
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+
+    c.sent(CmdId(1), "look", t); // 604.567
+    assert_eq!(ans(&mut c, line("look"), t), Some(CmdId(1)));
+    assert_eq!(ans(&mut c, room("Dungeon, Entrance"), t), Some(CmdId(1)));
+
+    c.sent(CmdId(2), "n", t); // 605.767 — step into the dark
+    assert_eq!(ans(&mut c, line("n"), t), Some(CmdId(2)));
+    assert_eq!(ans(&mut c, line(DARK), t), Some(CmdId(2)));
+
+    c.sent(CmdId(3), "look", t); // 607.047
+    assert_eq!(ans(&mut c, line("look"), t), Some(CmdId(3)));
+    assert_eq!(ans(&mut c, line(DARK), t), Some(CmdId(3)));
+
+    c.sent(CmdId(4), "look", t); // 608.248
+    assert_eq!(ans(&mut c, line("look"), t), Some(CmdId(4)));
+    assert_eq!(ans(&mut c, line(DARK), t), Some(CmdId(4)));
+
+    // 609.449 cast star: async combat lands BEFORE the echo and answers
+    // nothing (live wordings — the parser classifies neither).
+    c.sent(CmdId(5), "cast star", t);
+    assert_eq!(
+        ans(&mut c, line("The cave bear claws at you, but you dodge out of the way!"), t),
+        None
+    );
+    assert_eq!(ans(&mut c, line("The giant rat lunges at you!"), t), None);
+    assert_eq!(ans(&mut c, line("cast star"), t), Some(CmdId(5)));
+    assert_eq!(
+        ans(&mut c, line("You attempt to cast starlight, but fail."), t),
+        Some(CmdId(5))
+    );
+
+    c.sent(CmdId(6), "look", t); // 610.648
+    assert_eq!(ans(&mut c, line("look"), t), Some(CmdId(6)));
+    assert_eq!(ans(&mut c, line(DARK), t), Some(CmdId(6)));
+
+    c.sent(CmdId(7), "s", t); // 611.848 — step back out
+    assert_eq!(ans(&mut c, line("s"), t), Some(CmdId(7)));
+    assert_eq!(ans(&mut c, room("Dungeon, Entrance"), t), Some(CmdId(7)));
+}
+
+// ------------------------------------------------------ deadlines & flush
 
 #[test]
 fn an_entry_expires_on_its_deadline() {
@@ -299,7 +426,7 @@ fn an_entry_expires_on_its_deadline() {
     c.sent(CmdId(1), "look", t);
     let late = t + TTL + Duration::from_secs(1);
     // Expired before its echo: the echo text is now just a line.
-    assert_eq!(ans(&mut c, Event::Line("look".into()), late), None);
+    assert_eq!(ans(&mut c, line("look"), late), None);
     assert_eq!(ans(&mut c, room("Small Cavern"), late), None);
 }
 
@@ -312,9 +439,33 @@ fn the_echo_refreshes_the_deadline_while_the_reply_streams() {
     // execution: acceptance restarts the clock, so the reply that follows
     // the late echo still attributes.
     let echo_at = t + TTL - Duration::from_secs(1);
-    assert_eq!(ans(&mut c, Event::Line("n".into()), echo_at), Some(CmdId(1)));
+    assert_eq!(ans(&mut c, line("n"), echo_at), Some(CmdId(1)));
     let reply_at = echo_at + TTL - Duration::from_secs(1);
     assert_eq!(ans(&mut c, room("Dungeon, Entrance"), reply_at), Some(CmdId(1)));
+}
+
+#[test]
+fn queue_progress_keeps_a_waiting_command_alive() {
+    // Between its receipt echo and its execution echo a queued command
+    // hears nothing about itself — the board is grinding the round timer,
+    // ~6s per queued round (run5: n6 receipt 523.390, execution 526.235).
+    // Any acceptance or retirement is proof the queue is moving, so it
+    // refreshes everyone still waiting.
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "n", t);
+    ans(&mut c, line("n"), t);
+    c.sent(CmdId(2), "n", t + Duration::from_secs(1));
+    // n2's receipt echo lands just before n1's TTL would lapse...
+    let t9 = t + TTL - Duration::from_secs(1);
+    assert_eq!(ans(&mut c, line("n"), t9), Some(CmdId(2)));
+    // ...and n1's reply, arriving after n1's original deadline, is still
+    // n1's: the acceptance refreshed it.
+    let t12 = t + TTL + Duration::from_secs(2);
+    assert_eq!(ans(&mut c, room("Dungeon, Entrance"), t12), Some(CmdId(1)));
+    // Retirement refreshed n2 the same way.
+    let t20 = t12 + TTL - Duration::from_secs(1);
+    assert_eq!(ans(&mut c, room("Small Cavern"), t20), Some(CmdId(2)));
 }
 
 #[test]
@@ -325,12 +476,11 @@ fn slow_down_flushes_everything_pending() {
     let t = Instant::now();
     let mut c = Correlator::new(TTL);
     c.sent(CmdId(1), "n", t);
-    ans(&mut c, Event::Line("n".into()), t);
+    ans(&mut c, line("n"), t);
     c.sent(CmdId(2), "look", t);
     assert_eq!(ans(&mut c, Event::SlowDown, t), None);
-    // Neither the echoed step nor the un-echoed look survives.
     assert_eq!(ans(&mut c, room("Dungeon, Entrance"), t), None);
-    assert_eq!(ans(&mut c, Event::Line("look".into()), t), None);
+    assert_eq!(ans(&mut c, line("look"), t), None);
 }
 
 #[test]
@@ -339,16 +489,7 @@ fn flush_forgets_everything_pending() {
     let t = Instant::now();
     let mut c = Correlator::new(TTL);
     c.sent(CmdId(1), "look", t);
-    ans(&mut c, Event::Line("look".into()), t);
+    ans(&mut c, line("look"), t);
     c.flush();
     assert_eq!(ans(&mut c, room("Small Cavern"), t), None);
-}
-
-#[test]
-fn a_decorated_echo_still_answers() {
-    let t = Instant::now();
-    let mut c = Correlator::new(TTL);
-    c.sent(CmdId(1), "look", t);
-    assert_eq!(ans(&mut c, Event::Line("(Resting) look".into()), t), Some(CmdId(1)));
-    assert_eq!(ans(&mut c, room("Newhaven, Arena"), t), Some(CmdId(1)));
 }

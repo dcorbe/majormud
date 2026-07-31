@@ -7,38 +7,54 @@
 //! pending step (docs/board-correlation.md, measured 94.1% of 6,344
 //! corpus blocks; the shortfall is genuinely unsolicited output).
 //!
-//! Three measured facts shape the rules (stopstate-run5/run7 live
-//! captures, transcribed into tests/correlate.rs):
+//! Four measured facts shape the rules (stopstate-run5/6/7 live captures,
+//! transcribed into tests/correlate.rs):
 //!
 //! - **A busy board echoes twice.** A receipt echo ~2ms after send, and a
 //!   second execution echo right before the reply when commands queue
 //!   behind the round timer. Post-parse both are `Line(cmd)`, so a
 //!   duplicate must re-confirm the entry it echoes, never advance.
 //! - **Replies are FIFO.** With four `n` pipelined, echo text identifies
-//!   nothing; only order does. Replies attribute to the OLDEST accepted
-//!   (echoed) entry, and its reply retires it.
+//!   nothing; only order does.
+//! - **The board talks constantly without being asked** — swing
+//!   announces, spawn wordings the classifier misses, "You hear
+//!   movement...", exp and loot lines. A rule that retires the pending
+//!   command on "whatever line came next" converts that din into wrong
+//!   associations the moment two commands are in flight: run6 127-131s
+//!   replays a room block landing on the WRONG move under exactly that
+//!   rule. So retirement needs positive evidence — an event the pending
+//!   command's reply grammar EXPECTS. We control the send vocabulary, so
+//!   the grammar is small and closed; commands outside it (inventory,
+//!   health) simply expire, a missed association their sender's own
+//!   timeout absorbs.
 //! - **A wrong association is worse than none.** Everything ambiguous —
-//!   a never-arriving echo, a worse-than-observed split — falls to the
-//!   deadline, and the consumer re-asks or re-localizes.
+//!   a never-arriving echo, a worse-than-observed split, an unknown line
+//!   — answers nothing and falls to the deadline; the consumer re-asks or
+//!   re-localizes.
 //!
-//! What retires the head: a room block (`RoomSeen`), or the first
-//! unrecognized line after acceptance — single-line replies (door
-//! refusals, the dark line, cast failures) are the board's norm, and
-//! mid-block description text never reaches the event stream (the parser
-//! folds it into the block). Classified async events — combat, actors
-//! entering and leaving, prompts — answer nothing and retire nothing.
-//! The known cost: a stray broadcast line lands as a false single-line
-//! reply and the real answer then reads unsolicited. That is a missed
-//! association, never a wrong one, and the deadline path absorbs it.
+//! When a reply retires an entry, everything older goes with it: replies
+//! are FIFO, so the answered command's juniors-in-waiting are the only
+//! ones still owed anything. And any acceptance or retirement refreshes
+//! every pending deadline — queue progress is proof the board is grinding
+//! the round timer (receipt echo to execution echo was measured at ~3s
+//! per queued command), while genuine silence still expires.
+//!
+//! Honest residuals, all bounded by the deadline: a chat line quoting a
+//! grammar wording verbatim can retire a real entry early (missed, not
+//! wrong, unless a same-type entry is also pending); if two same-text
+//! entries are pending and the older's echo was eaten mid-block, the
+//! younger is marked accepted by the older's execution echo and can claim
+//! one unsolicited block within its TTL; multi-line replies to commands
+//! outside the grammar attribute nothing at all.
 //!
 //! `SlowDown` flushes everything pending: flood control DROPPED input,
 //! and whether a dropped command still echoes is unverified.
 //!
-//! This was nearly built two other ways, both wrong: counting unanswered
-//! sends at the session layer (reverted in `7ddfd17` — login lines are
-//! answered by menus, the count never drains, "a proxy for correlation is
-//! not correlation"), and per-consumer echo watching (dies at phase
-//! handoffs, double-counts the execution echo).
+//! This was nearly built three other ways, all wrong: counting unanswered
+//! sends at the session layer (reverted in `7ddfd17` — "a proxy for
+//! correlation is not correlation"), per-consumer echo watching (dies at
+//! phase handoffs, double-counts the execution echo), and
+//! retire-on-first-unknown-line (the run6 wrong association above).
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -59,8 +75,8 @@ pub struct Correlated {
 }
 
 /// Strip the board's single leading parenthesized status decoration:
-/// `(Resting) look` -> `look` (DLL 0xe06f6; other markers uncaptured, so
-/// any single `(word)` token strips).
+/// `(Resting) look` -> `look` (DLL 0xe06f6; other markers are uncaptured,
+/// so any single leading `(...)` run strips, spaces inside included).
 pub fn strip_decoration(s: &str) -> &str {
     s.strip_prefix('(')
         .and_then(|rest| rest.split_once(')'))
@@ -84,15 +100,116 @@ pub fn is_echo(line: &str, cmd: &str) -> bool {
     cmd.len() >= 3 && line.len() >= 2 && line.len() < cmd.len() && cmd.ends_with(line)
 }
 
+/// The shape of reply a command's answer can take. Derived from the
+/// command text — the client controls its own send vocabulary, so this is
+/// closed and small. `Opaque` commands (inventory, health, attacks) have
+/// no modelled reply: they are retired by their deadline alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Move,
+    Look,
+    Open,
+    Bash,
+    Cast,
+    Light,
+    Get,
+    BuyHealing,
+    Opaque,
+}
+
+fn kind_of(cmd: &str) -> Kind {
+    const DIRS: [&str; 20] = [
+        "n", "s", "e", "w", "ne", "nw", "se", "sw", "u", "d", "north", "south", "east", "west",
+        "northeast", "northwest", "southeast", "southwest", "up", "down",
+    ];
+    if DIRS.contains(&cmd) {
+        return Kind::Move;
+    }
+    if cmd == "look" || cmd.starts_with("look ") {
+        return Kind::Look;
+    }
+    if cmd.starts_with("open ") {
+        return Kind::Open;
+    }
+    if cmd.starts_with("bash ") {
+        return Kind::Bash;
+    }
+    if cmd.starts_with("cast ") {
+        return Kind::Cast;
+    }
+    if cmd.starts_with("light ") {
+        return Kind::Light;
+    }
+    if cmd.starts_with("get ") {
+        return Kind::Get;
+    }
+    if cmd == "buy healing" {
+        return Kind::BuyHealing;
+    }
+    Kind::Opaque
+}
+
+/// The board's answer to seeing (or stepping into) an unlit room. Also in
+/// `sheet::TOO_DARK`; duplicated here rather than imported so the grammar
+/// reads as one table. Both are pinned against the DLL wording.
+const DARK: &str = "you can't see anything";
+
+/// Does this event complete `kind`'s reply? Wordings verified against the
+/// live captures and the DLL string table (see nav.rs constants, which
+/// classify the same lines for the walk's own purposes).
+///
+/// The move/look door split matters: "The door is closed!" (with the
+/// bang) refuses a MOVE; "The door is closed in that direction!" refuses
+/// a LOOK. Conflating them is how a look-refusal used to read as a step
+/// being blocked.
+fn completes(kind: Kind, ev: &Event) -> bool {
+    let line = match ev {
+        Event::RoomSeen(_) => {
+            // A block answers movement and looking — and a bash that
+            // carried the character through the doorway.
+            return matches!(kind, Kind::Move | Kind::Look | Kind::Bash);
+        }
+        Event::Line(l) => l.to_lowercase(),
+        _ => return false,
+    };
+    let has = |needle: &str| line.contains(needle);
+    match kind {
+        Kind::Move => {
+            has(DARK)
+                || has("no exit in that direction")
+                || has("the door is closed!")
+                || has("the gate is closed!")
+                || has("the door is locked")
+                || has("the gate is locked")
+                || has("may not enter that room while in combat")
+        }
+        Kind::Look => has(DARK) || has("door is closed in that direction"),
+        Kind::Open => {
+            has("is now open")
+                || has("was already open")
+                || has("unlocked the door")
+                || has("the door is locked")
+                || has("the gate is locked")
+        }
+        Kind::Bash => has("bashed the") || has("walk through"),
+        Kind::Cast => has("but fail") || has("you lit the"),
+        Kind::Light => has("you lit the"),
+        Kind::Get => has("you picked up"),
+        Kind::BuyHealing => has("wounds are healed"),
+        Kind::Opaque => false,
+    }
+}
+
 struct Entry {
     id: CmdId,
     text: String,
+    kind: Kind,
     /// The board echoed it: accepted, reply owed. Set by the receipt or
     /// execution echo, whichever arrives first.
     echoed: bool,
     /// Past this instant the entry is forgotten and its late answers read
-    /// as unsolicited. Refreshed by each echo occurrence, so a command
-    /// the round timer sat on still gets its reply attributed.
+    /// as unsolicited. Refreshed by every acceptance and retirement —
+    /// queue progress — so only genuine silence expires anyone.
     deadline: Instant,
 }
 
@@ -109,12 +226,16 @@ impl Correlator {
     }
 
     /// Record a line the writer put on the wire. Must be called in wire
-    /// order — echoes arrive in send order and attribution is FIFO.
+    /// order — echoes arrive in send order and attribution is FIFO. Pass
+    /// the command text, not the wire bytes: trailing CR/LF would defeat
+    /// every echo match silently.
     pub fn sent(&mut self, id: CmdId, line: &str, now: Instant) {
+        debug_assert_eq!(line, line.trim(), "sent() wants the trimmed command text");
         self.expire(now);
         self.queue.push_back(Entry {
             id,
             text: line.to_string(),
+            kind: kind_of(line),
             echoed: false,
             deadline: now + self.ttl,
         });
@@ -135,8 +256,11 @@ impl Correlator {
                 self.flush();
                 None
             }
-            Event::Line(l) => self.on_line(l, now),
-            Event::RoomSeen(_) => self.retire_head(),
+            Event::Line(l) => {
+                let l = l.clone();
+                self.on_line(&l, now)
+            }
+            Event::RoomSeen(_) => self.retire(&event, now),
             // Classified async traffic: combat, actors, prompts. The
             // board emits these freely; they answer nothing.
             Event::Prompt { .. }
@@ -152,22 +276,19 @@ impl Correlator {
     /// oldest not-yet-accepted entry (acceptance — and every earlier
     /// never-echoed entry was eaten, echoes arrive in send order); a
     /// duplicate echo of an already-accepted entry (the execution echo —
-    /// confirm, refresh, never advance); or a single-line reply to the
-    /// oldest accepted entry, which it retires.
+    /// confirm, never advance); or a reply completing the oldest accepted
+    /// entry that expects it. Anything else — the board's constant
+    /// unsolicited din — answers nothing and retires nothing.
     fn on_line(&mut self, line: &str, now: Instant) -> Option<CmdId> {
         if let Some(pos) = self
             .queue
             .iter()
             .position(|e| !e.echoed && is_echo(line, &e.text))
         {
-            let id = {
-                let e = &mut self.queue[pos];
-                e.echoed = true;
-                e.deadline = now + self.ttl;
-                e.id
-            };
+            let id = self.queue[pos].id;
+            self.queue[pos].echoed = true;
             // Every EARLIER entry that never echoed was eaten — echoes
-            // arrive in send order. Earlier echoed entries still owe
+            // arrive in send order. Earlier accepted entries still owe
             // their replies and stay.
             let mut idx = 0;
             self.queue.retain(|e| {
@@ -175,23 +296,45 @@ impl Correlator {
                 idx += 1;
                 keep
             });
+            self.refresh(now);
             return Some(id);
         }
         if let Some(dup) = self
             .queue
-            .iter_mut()
+            .iter()
             .find(|e| e.echoed && is_echo(line, &e.text))
         {
-            dup.deadline = now + self.ttl;
-            return Some(dup.id);
+            let id = dup.id;
+            self.refresh(now);
+            return Some(id);
         }
-        self.retire_head()
+        self.retire(&Event::Line(line.to_string()), now)
     }
 
-    /// The reply belongs to the oldest accepted entry, and completes it.
-    fn retire_head(&mut self) -> Option<CmdId> {
-        let pos = self.queue.iter().position(|e| e.echoed)?;
-        Some(self.queue.remove(pos).unwrap().id)
+    /// The reply completes the oldest accepted entry whose grammar
+    /// expects it — accepted entries with unmodelled replies are skipped,
+    /// not credited. Retirement takes everything older with it: replies
+    /// are FIFO, so anything senior to the answered command was already
+    /// answered or never will be.
+    fn retire(&mut self, ev: &Event, now: Instant) -> Option<CmdId> {
+        let pos = self
+            .queue
+            .iter()
+            .position(|e| e.echoed && completes(e.kind, ev))?;
+        let id = self.queue[pos].id;
+        self.queue.drain(..=pos);
+        self.refresh(now);
+        Some(id)
+    }
+
+    /// Queue progress refreshes every pending deadline: a queued command
+    /// hears nothing about itself between its receipt echo and its
+    /// execution echo (~3s per queued round measured live), and only
+    /// genuine silence should expire it.
+    fn refresh(&mut self, now: Instant) {
+        for e in &mut self.queue {
+            e.deadline = now + self.ttl;
+        }
     }
 
     fn expire(&mut self, now: Instant) {
