@@ -353,14 +353,15 @@ async fn the_fixture_world_spawns_a_rat_that_can_be_killed() {
 /// idle stop with a `look` and counts the answers.
 ///
 /// The poke interval here is far below the shipped default: these tests
-/// want the dwell to expire in milliseconds, not the fifteen seconds
-/// that is right for a live board.
+/// want a stale observation re-asked in milliseconds, not the five
+/// seconds that is right for a live board. `dwell_empty_seconds` stays
+/// at its default 0 — the suite wants the runner to move on the instant
+/// the room block proves the room empty, with no respawn wait.
 fn farm_config(circuit: &[&str], loops: u32) -> FarmConfig {
     FarmConfig {
         start: "1/1".into(),
         circuit: circuit.iter().map(|s| (*s).to_string()).collect(),
         loops,
-        dwell_idle_prompts: 2,
         idle_poke_ms: 150,
         // HP gating off: these tests are about the circuit, and the
         // depart gate has nothing to do while nothing is hitting us.

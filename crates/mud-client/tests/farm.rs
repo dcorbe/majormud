@@ -1165,3 +1165,38 @@ fn an_idle_gate_owes_the_board_nothing() {
     g.on_event(&prompt(30), t0);
     assert!(g.is_idle());
 }
+
+/// The window between a flee going out and the board saying where it
+/// landed. The last block describes a room we may no longer be in, and
+/// ending the stop on it records a tidy dwell while the character is
+/// standing somewhere else -- so the next leg starts from a lie.
+///
+/// Found by the live flee-recovery test, which the prompt counter this
+/// replaced was simply too slow to reach.
+#[test]
+fn a_stop_does_not_end_while_a_flee_is_outstanding() {
+    let t0 = Instant::now();
+    let mut bot = Bot::new(BotConfig {
+        auto_flee: true,
+        flee_at_percent: 101,
+        max_hp: 30,
+        ..BotConfig::default()
+    });
+    let mut stop = stop_state(0);
+
+    look_and_see(&mut stop, &mut bot, &block(&[]), t0);
+    assert_eq!(stop.verdict(&bot, t0), Verdict::Empty, "nothing here yet");
+
+    // Any prompt looks like an emergency at 101%, so this flees.
+    feed(&mut stop, &mut bot, &prompt(30), t0);
+    assert!(bot.fled(), "test needs an outstanding flee");
+    assert_eq!(
+        stop.verdict(&bot, t0),
+        Verdict::Ask,
+        "ended the stop while the character was in transit"
+    );
+
+    // The next block settles it, whichever room it names.
+    look_and_see(&mut stop, &mut bot, &block(&[]), t0);
+    assert_eq!(stop.verdict(&bot, t0), Verdict::Empty);
+}

@@ -39,6 +39,17 @@ use crate::graph::RoomGraph;
 /// would wedge the runner on any line the board answers silently.
 pub const ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How many times to try lighting a dark stop before writing it off.
+///
+/// A cast is a roll, not a command that either works or is wrong ("You
+/// attempt to cast starlight, but fail."), so one failure is worth
+/// another go. The retry used to be unbounded — every failure re-armed it
+/// — and was held in check only by the prompt counter that ended the stop
+/// regardless. With the stop ending on evidence instead, that accidental
+/// bound is gone and the retry needs a real one, or a character with mana
+/// to burn stands in the dark casting forever.
+const MAX_LIGHT_ATTEMPTS: u32 = 3;
+
 /// `"1/860"` -> map 1, room 860. The `mmc path` argument syntax.
 pub fn parse_room_id(s: &str) -> Option<RoomId> {
     let (map, room) = s.split_once('/')?;
@@ -72,9 +83,6 @@ pub struct FarmConfig {
     pub loops: u32,
     /// Wall-clock cap; 0 = unlimited.
     pub max_seconds: u64,
-    /// Leave a stop after this many consecutive prompts with nothing to
-    /// fight and nothing to do.
-    pub dwell_idle_prompts: u32,
     /// How long to hold a stop open once the room block has PROVEN it
     /// empty, waiting for a respawn. 0 leaves the moment it is proven.
     ///
@@ -181,7 +189,6 @@ impl Default for FarmConfig {
             finish_at: None,
             loops: 0,
             max_seconds: 0,
-            dwell_idle_prompts: 3,
             dwell_empty_seconds: 0,
             depart_at_percent: 80,
             fight_while_travelling: true,
@@ -647,6 +654,15 @@ impl StopState {
         // blow which started the fight is not evidence it is over.
         if bot.engaged().is_some() {
             return Verdict::Busy;
+        }
+        // A flee has gone out and nothing has come back to say where it
+        // landed, so the last block may describe a room we are no longer
+        // standing in. Ending the stop here records a tidy dwell while the
+        // character is somewhere else entirely, and the next leg then
+        // starts from a lie -- caught by the live flee-recovery test,
+        // which the old prompt counter was merely too slow to hit.
+        if bot.fled() {
+            return Verdict::Ask;
         }
         if self.blind {
             return Verdict::Blind;
@@ -1431,12 +1447,7 @@ async fn farm_stop(
 ) -> Result<StopEnd, FarmError> {
     let stop_name = graph.room(stop).map(|r| r.name.clone()).unwrap_or_default();
     let mut resting = false;
-    // One attempt per stop: if lighting did not take, saying it twice
-    // will not help and the second is just noise at the board.
-    let mut lit = false;
-    // A look has been asked for and its room block has not arrived yet.
-    // Until it does there is no basis for calling the room empty.
-    let mut awaiting_look = false;
+    let mut light_attempts = 0u32;
     let username = session.profile().username.clone();
     let backoff = Duration::from_millis(cfg.slowdown_backoff_ms);
     let poke_after = Duration::from_millis(cfg.idle_poke_ms);
@@ -1452,11 +1463,7 @@ async fn farm_stop(
     let mut bot = crate::bot::Bot::with_threat(bot_config.clone(), threat.clone());
     let mut gate = Gate::new(backoff);
     let mut heal = HealWatch::new(bot_config, cfg);
-    let mut idle_prompts = 0u32;
-    let mut acted_since_prompt = false;
-
-    // Seed the bot: exits to flee through, and anything already here.
-    gate.push("look".into());
+    let mut seen = StopState::new(stop_name.clone(), cfg);
 
     loop {
         if time_up(started, cfg).is_some() {
@@ -1468,84 +1475,105 @@ async fn farm_stop(
             return Ok(StopEnd::Dwelt);
         }
 
-        // Release whatever the gate is willing to send.
+        // What the stop's own evidence says to do, decided BEFORE waiting
+        // on anything. It has to be reachable on the iterations where no
+        // event arrives, because that is where a respawn budget expires
+        // and where an unanswered `look` gets asked again. The opening
+        // `look` that seeds the bot is just the first `Ask`.
         let now = Instant::now();
+        let verdict = seen.verdict(&bot, now);
+        let mut hold_until = None;
+        match &verdict {
+            // The bot is driving; nothing for the runner to decide.
+            Verdict::Busy => {}
+            Verdict::Waiting { until } => hold_until = Some(*until),
+            Verdict::Ask => {
+                if gate.is_idle() {
+                    gate.push("look".into());
+                }
+            }
+            // Never while we still owe the board something: the `get` for
+            // the coins the last kill dropped is what would be lost.
+            Verdict::Empty => {
+                if gate.is_idle() {
+                    return Ok(StopEnd::Dwelt);
+                }
+            }
+            Verdict::Blind => match light {
+                Some(cmd) if light_attempts < MAX_LIGHT_ATTEMPTS && gate.is_idle() => {
+                    light_attempts += 1;
+                    gate.push(cmd.clone());
+                    gate.push("look".into());
+                }
+                // A stop we cannot see is a stop we cannot farm, and
+                // fighting in the dark is heavily penalised anyway.
+                // Defending is the exception: there the deadline governs,
+                // or we walk on and leave whatever is hitting us behind.
+                _ if until.is_none() && gate.is_idle() => return Ok(StopEnd::Dwelt),
+                _ => {}
+            },
+        }
+
+        set_phase(
+            phase,
+            match bot.engaged() {
+                Some(target) => {
+                    resting = false;
+                    Phase::Fighting {
+                        at: stop,
+                        target: target.to_string(),
+                    }
+                }
+                None if resting => Phase::Resting { at: stop },
+                None => Phase::Waiting { at: stop },
+            },
+        );
+
+        // Release whatever the gate is willing to send.
         while let Some(cmd) = gate.poll(now) {
             heal.on_sent(&cmd);
+            seen.on_sent(&cmd);
             session.send(&cmd);
         }
 
-        // Sleep until the next event, the gate's own deadline, or the
-        // idle poke — whichever comes first.
-        let wake = gate
+        // Sleep until the next event, the gate's own deadline, the idle
+        // poke, or a respawn budget expiring — whichever comes first.
+        let mut wake = gate
             .next_deadline()
             .map(|d| d.min(now + poke_after))
             .unwrap_or(now + poke_after);
+        if let Some(hold) = hold_until {
+            wake = wake.min(hold);
+        }
         let wake = tokio::time::Instant::from_std(wake);
 
         let ev = match tokio::time::timeout_at(wake, events.recv()).await {
-            Ok(Ok(ev)) => ev,
+            Ok(Ok(ev)) => Some(ev),
             // Dropped events desync a stateful bot: it can miss the death
             // that ends a fight and sit latched on a corpse. Start over
             // rather than carry on with a bot that quietly lost track.
+            //
+            // The stop's evidence goes with it. A lag happens precisely
+            // because a lot is going on, which is the busy room where
+            // carrying a stale "nothing here" across would walk out on
+            // everything still standing in it.
             Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {
                 bot = crate::bot::Bot::with_threat(bot_config.clone(), threat.clone());
                 gate = Gate::new(backoff);
-                gate.push("look".into());
-                continue;
+                seen.reset();
+                None
             }
             Ok(Err(_)) => return Err(FarmError::Disconnected),
-            // Nothing happening. Ask the room whether that is still true;
-            // the answer is a prompt, which is what dwell counts.
-            Err(_) => {
-                if gate.in_flight().is_none() && bot.engaged().is_none() {
-                    gate.push("look".into());
-                }
-                continue;
-            }
+            // Nothing arrived. The verdict at the top of the next
+            // iteration decides what to make of that.
+            Err(_) => None,
         };
+        let Some(ev) = ev else { continue };
 
         if let Event::SlowDown = ev {
             stats.slowdowns += 1;
         }
         if let Event::Line(line) = &ev {
-            // A kill frees the bot to take the next target, but it only
-            // picks one from a ROOM BLOCK -- and the next of those is the
-            // idle poke, up to idle_poke_ms away. Something already
-            // standing in the room would go unattacked for that whole
-            // gap, which is where most of "waiting" came from. Ask now.
-            if (line.contains("falls to the ground")
-                || (line.to_lowercase().contains("you gain ")
-                    && line.to_lowercase().contains("experience")))
-                && gate.in_flight().is_none()
-            {
-                gate.push("look".into());
-                // The stop must not end before that answer arrives. A
-                // kill is followed immediately by a prompt, and with a
-                // tight dwell that prompt alone would end the stop --
-                // walking out of a room with three more things in it,
-                // every single time something died.
-                awaiting_look = true;
-                idle_prompts = 0;
-            }
-            // A dark stop shows no room block, so the bot cannot see what
-            // is in it. Light it and look again rather than dwelling
-            // blind -- fighting in the dark is heavily penalised anyway.
-            if line.contains(crate::sheet::TOO_DARK)
-                && let Some(cmd) = light
-                && !lit
-            {
-                lit = true;
-                gate.push(cmd.clone());
-                gate.push("look".into());
-            }
-            // A cast is a roll, not a command that either works or is
-            // wrong ("You attempt to cast starlight, but fail."), so a
-            // failure is worth another go -- bounded by mana, which runs
-            // out on its own.
-            if line.contains("but fail") {
-                lit = false;
-            }
             if is_player_death(line, &username) {
                 return Ok(StopEnd::Died);
             }
@@ -1588,14 +1616,13 @@ async fn farm_stop(
             if let RecoverEnd::Died = recover(session, nav, graph, stop, room).await? {
                 return Ok(StopEnd::Died);
             }
-            // Back at the stop with a clean slate.
+            // Back at the stop with a clean slate. Nothing observed
+            // before the flee describes the room we are standing in now.
             events = session.events();
             bot = crate::bot::Bot::with_threat(bot_config.clone(), threat.clone());
             gate = Gate::new(backoff);
             heal = HealWatch::new(bot_config, cfg);
-            gate.push("look".into());
-            idle_prompts = 0;
-            acted_since_prompt = false;
+            seen = StopState::new(stop_name.clone(), cfg);
             continue;
         }
 
@@ -1604,11 +1631,7 @@ async fn farm_stop(
             bot.rearm();
         }
 
-        let actions = bot.on_event(&ev);
-        if !actions.is_empty() {
-            acted_since_prompt = true;
-        }
-        for crate::bot::BotAction::Send(cmd) in actions {
+        for crate::bot::BotAction::Send(cmd) in bot.on_event(&ev) {
             // The heal command is the only way to tell resting from
             // simply standing about; the bot's own debounce is private.
             if cmd == bot_config.heal_command {
@@ -1616,40 +1639,9 @@ async fn farm_stop(
             }
             gate.push(cmd);
         }
-        set_phase(
-            phase,
-            match bot.engaged() {
-                Some(target) => {
-                    resting = false;
-                    Phase::Fighting {
-                        at: stop,
-                        target: target.to_string(),
-                    }
-                }
-                None if resting => Phase::Resting { at: stop },
-                None => Phase::Waiting { at: stop },
-            },
-        );
-
-        // The stop is done when the board has answered repeatedly with
-        // nothing for the bot to do and no fight outstanding. Only the
-        // bot's own decisions count as activity: the idle `look` is the
-        // runner asking whether anything is happening, and counting it
-        // would answer its own question and dwell forever.
-        if let Event::RoomSeen(_) = &ev {
-            awaiting_look = false;
-        }
-        if let Event::Prompt { .. } = ev {
-            if acted_since_prompt || bot.engaged().is_some() || awaiting_look {
-                idle_prompts = 0;
-            } else {
-                idle_prompts += 1;
-                if idle_prompts >= cfg.dwell_idle_prompts {
-                    return Ok(StopEnd::Dwelt);
-                }
-            }
-            acted_since_prompt = false;
-        }
+        // Folded last, so `engaged` and `has_target` already account for
+        // this event when the next iteration asks for a verdict.
+        seen.on_event(&ev, &bot, Instant::now());
     }
 }
 

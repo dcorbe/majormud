@@ -72,12 +72,7 @@ pub struct BotConfig {
     /// kill, a monster somebody else finished, or one of the 14 templates
     /// that ship with no death record at all. Without it the bot can sit
     /// latched on a corpse forever, and the farm runner reads a latched
-    /// bot as a fight in progress — it stops poking the room and stops
-    /// counting the stop as idle, so the stop never ends.
-    ///
-    /// Too low abandons a slow fight, which is worse than the hang this
-    /// guards against: `farm_stop` reads a cleared latch as an idle room,
-    /// dwells out, and walks off mid-fight.
+    /// bot as a fight in progress, so the stop never ends.
     ///
     /// It has to be generous because prompts do NOT arrive one per combat
     /// round. They come in bursts — async output disturbs the dangling
@@ -86,10 +81,18 @@ pub struct BotConfig {
     /// hits, so rounds are seconds apart. Three was measured leaving a
     /// fight after a single burst.
     ///
-    /// Being generous costs almost nothing, because this is a BACKSTOP,
-    /// not the primary mechanism: the room block from the runner's idle
-    /// `look` clears the latch properly by finding the target gone. This
-    /// only has to cover the case where no room block is coming.
+    /// Being generous costs almost nothing, and costs less than it used
+    /// to. This is a BACKSTOP, not the primary mechanism: the room block
+    /// clears the latch properly by finding the target gone, and
+    /// [`crate::farm::StopState`] now overrides this outright. If the
+    /// count fires early in a genuinely slow fight, the last accepted room
+    /// block still lists the monster, so the stop stays `Busy` and the
+    /// runner does not walk off mid-fight — which it previously did, by
+    /// reading the cleared latch as an idle room. The evidence beats the
+    /// timer.
+    ///
+    /// What is left for this to cover is the case where no room block is
+    /// coming at all — a dark room being the obvious one.
     pub combat_idle_prompts: u32,
 }
 
@@ -225,6 +228,18 @@ impl Bot {
     /// quiet room from an unfinished fight.
     pub fn engaged(&self) -> Option<&str> {
         self.engaged.as_deref()
+    }
+
+    /// A flee has been decided and no room block has arrived since, so
+    /// where the character is standing is currently unknown.
+    ///
+    /// Cleared by the next block, whichever room it names — including the
+    /// same one, when the flee did not take. The farm runner reads this to
+    /// avoid ending a stop in the window between the flee going out and
+    /// the board saying where it landed: the last block describes a room
+    /// we may no longer be in.
+    pub fn fled(&self) -> bool {
+        self.fled
     }
 
     /// Feed one parsed event; returns the commands to send now.
