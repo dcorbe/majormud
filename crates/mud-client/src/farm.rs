@@ -1075,6 +1075,32 @@ pub async fn run_farm(
     cfg: &FarmConfig,
     phase: PhaseSink<'_>,
 ) -> Result<(FarmEnd, FarmStats), FarmError> {
+    let mut light = crate::sheet::LightState::new(read_light_plan(session).await);
+    if let Some(cmd) = light.plan() {
+        eprintln!("dark rooms will be handled with `{cmd}`");
+    }
+    let out = farm_loop(session, graph, plan, bot_config, cfg, phase, &mut light).await;
+    // A lit source burns one use per 3s medium tick whether anything
+    // needs the light or not; walked away from, it spends the run's
+    // whole burn budget on idle time. Best effort — a dead character
+    // cannot remove anything, and Ctrl-C never reaches here at all.
+    if let (Ok((end, _)), Some(cmd)) = (&out, light.extinguish())
+        && !matches!(end, FarmEnd::Died)
+    {
+        session.send(&cmd);
+    }
+    out
+}
+
+async fn farm_loop(
+    session: &crate::session::Session,
+    graph: std::sync::Arc<RoomGraph>,
+    plan: &FarmPlan,
+    bot_config: &crate::bot::BotConfig,
+    cfg: &FarmConfig,
+    phase: PhaseSink<'_>,
+    light: &mut crate::sheet::LightState,
+) -> Result<(FarmEnd, FarmStats), FarmError> {
     let started = Instant::now();
     let mut stats = FarmStats::default();
     let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone());
@@ -1100,11 +1126,6 @@ pub async fn run_farm(
     // Ask once what the character is carrying and what it can cast. The
     // answer decides whether a dark room is a dead end or a command away,
     // and both listings are cheap.
-    let mut light = crate::sheet::LightState::new(read_light_plan(session).await);
-    if let Some(cmd) = light.plan() {
-        eprintln!("dark rooms will be handled with `{cmd}`");
-    }
-
     verify_start(session, &graph, plan.start).await?;
 
     // One refusal set for the whole run. Learning that the board will not
@@ -1129,7 +1150,7 @@ pub async fn run_farm(
                     &bot_config,
                     &threat,
                     &refusals,
-                    &mut light,
+                    light,
                     started,
                     &mut stats,
                     phase,
@@ -1150,7 +1171,7 @@ pub async fn run_farm(
                 &bot_config,
                 &threat,
                 &refusals,
-                &mut light,
+                light,
                 cfg,
                 started,
                 None,
@@ -1281,7 +1302,10 @@ async fn next_room_view(
 /// discovering at the mouth of an unlit room.
 async fn read_light_plan(session: &crate::session::Session) -> Option<String> {
     let inventory = ask(session, "inventory", "Encumbrance:").await;
-    let spells = ask(session, "spells", "").await;
+    // No terminal wording is pinned for the spell listing, so the
+    // collection is bounded by a short deadline instead of the full 10s
+    // — this runs at every farm start and on dark finish walks.
+    let spells = ask_for(session, "spells", "", Duration::from_secs(3)).await;
     crate::sheet::light_plan(
         &crate::sheet::Inventory::parse(&inventory),
         &crate::sheet::Spellbook::parse(&spells),
@@ -1295,10 +1319,19 @@ async fn read_light_plan(session: &crate::session::Session) -> Option<String> {
 /// Transcript-style collection bounded by `until` and the deadline is
 /// the honest tool here.
 async fn ask(session: &crate::session::Session, cmd: &str, until: &str) -> String {
+    ask_for(session, cmd, until, Duration::from_secs(10)).await
+}
+
+async fn ask_for(
+    session: &crate::session::Session,
+    cmd: &str,
+    until: &str,
+    within: Duration,
+) -> String {
     let mut events = session.events();
     crate::session::drain(&mut events, |_| {});
     session.send(cmd);
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + within;
     let mut out = String::new();
     loop {
         match tokio::time::timeout_at(deadline, events.recv()).await {

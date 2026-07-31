@@ -1587,3 +1587,32 @@ fn an_arrival_during_light_recovery_does_not_poison_the_plan() {
         "a stale Blind verdict would kill the just-lit source"
     );
 }
+
+/// Burn-out announces itself unsolicited — "%s is no longer lit!" /
+/// "It's uses gone, %s disappears from your inventory!" — and the
+/// wording decides lighting, never position, so it is read without
+/// attribution. And a confirmed-lit item plan yields the remove that
+/// extinguishes it, because one use burns every 3s tick whether anything
+/// needs the light or not.
+#[test]
+fn burn_out_wordings_and_the_extinguish_command() {
+    let mut l = lit_state("light torch");
+    l.attempt();
+    l.on_sent("light torch", LIGHT_ID);
+    l.on_event(&answering(Event::Line("You lit the torch.".into()), LIGHT_ID));
+    assert!(l.lit());
+    assert_eq!(l.extinguish(), Some("remove torch".to_string()));
+
+    l.on_event(&unsolicited(Event::Line("torch is no longer lit!".into())));
+    assert!(!l.lit());
+    assert_eq!(l.extinguish(), None);
+    l.new_visit();
+    assert_eq!(l.attempt(), None, "a burned-out source is not retried");
+
+    // A cast plan has nothing to remove.
+    let mut l = lit_state("cast star");
+    l.attempt();
+    l.on_sent("cast star", LIGHT_ID);
+    l.on_event(&answering(Event::Line("You lit the torch.".into()), LIGHT_ID));
+    assert_eq!(l.extinguish(), None);
+}

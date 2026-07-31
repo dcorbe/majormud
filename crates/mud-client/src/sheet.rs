@@ -204,9 +204,15 @@ pub const TOO_DARK: &str = "you can't see anything";
 ///   attempt: mana does not come back inside a stop visit (measured live
 ///   — extra attempts bought nothing and cost four commands each), and
 ///   the stop is revisited every lap, which is the retry.
-/// - Burn-out has NO wording. The darkness is the message: the stop
-///   going Blind again while a source was believed lit means it died,
-///   and a dead source is not retried ([`LightState::source_died`]).
+/// - Burn-out HAS wordings — "%s is no longer lit!" and "It's uses
+///   gone, %s disappears from your inventory!" (_MEDIUM_UPDATE_CHARACTER
+///   decrements one use per 3s medium tick, unconditionally while lit;
+///   800 uses = 40 minutes of total lit time on a torch). They arrive
+///   UNSOLICITED — no command of ours asks for them — so they are read
+///   unattributed; the wording is unambiguous and it decides lighting,
+///   never position. The darkness returning is the backstop for a
+///   wording missed ([`LightState::source_died`]); either way a dead
+///   source is not retried.
 pub struct LightState {
     /// The command that lights, from [`light_plan`]; None means nothing
     /// on the character can light a room.
@@ -279,6 +285,18 @@ impl LightState {
     /// Fold one attributed event; only the outcome answering OUR light
     /// command moves the state.
     pub fn on_event(&mut self, cor: &crate::correlate::Correlated) {
+        // Burn-out announces itself unsolicited; the wording is
+        // unambiguous and decides lighting, never position.
+        if let crate::events::Event::Line(line) = &cor.event {
+            let l = line.to_lowercase();
+            if l.contains("is no longer lit") || l.contains("uses gone") {
+                self.lit = false;
+                if let Some(plan) = self.plan.take() {
+                    self.exhausted.push(plan);
+                }
+                return;
+            }
+        }
         let Some(pending) = self.pending else { return };
         if cor.answers != Some(pending) {
             return;
@@ -307,9 +325,21 @@ impl LightState {
         }
     }
 
+    /// The `remove` that extinguishes the burning item, when the plan
+    /// is an item and the board confirmed it lit. One use burns every 3s
+    /// medium tick while lit — dark room or not — so a run that walks
+    /// away burning spends the acceptance budget on idle time.
+    pub fn extinguish(&self) -> Option<String> {
+        if !self.lit {
+            return None;
+        }
+        let item = self.plan.as_ref()?.strip_prefix("light ")?;
+        Some(format!("remove {item}"))
+    }
+
     /// The stop went Blind while a source was believed burning: it
-    /// burned out. There is no wording for this — the darkness is the
-    /// message — and a dead source is not retried.
+    /// burned out (the backstop for a missed burn-out wording — the
+    /// darkness is also the message), and a dead source is not retried.
     pub fn source_died(&mut self) {
         if self.lit {
             self.lit = false;
