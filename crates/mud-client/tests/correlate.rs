@@ -798,3 +798,37 @@ fn a_directed_look_with_no_exit_completes_the_look() {
         Some(CmdId(1))
     );
 }
+
+#[test]
+fn cast_and_light_refusals_are_symmetric() {
+    // A cast of a light spell routes through _cmd_light, so its refusal
+    // branch answers the CAST too; and _cmd_light's other refusal ends a
+    // light command. The stunned needle keeps its bang discipline: the
+    // hide routine ships "You are too stunned to move anywhere to
+    // hide!", which must not complete a move.
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "cast light", t);
+    ans(&mut c, line("cast light"), t);
+    assert_eq!(
+        ans(&mut c, line("You already have something lit!"), t),
+        Some(CmdId(1))
+    );
+
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "light torch", t);
+    ans(&mut c, line("light torch"), t);
+    assert_eq!(
+        ans(&mut c, line("You may not light that item!"), t),
+        Some(CmdId(1))
+    );
+
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "n", t);
+    ans(&mut c, line("n"), t);
+    assert_eq!(
+        ans(&mut c, line("You are too stunned to move anywhere to hide!"), t),
+        None
+    );
+    assert_eq!(ans(&mut c, room("Dungeon, Entrance"), t), Some(CmdId(1)));
+}

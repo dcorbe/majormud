@@ -207,7 +207,7 @@ fn completes(kind: Kind, ev: &Event) -> bool {
                 || has("too evil to go through this exit")
                 || has("too good to go through this exit")
                 || has("too heavy to move")
-                || has("too stunned to move anywhere")
+                || has("too stunned to move anywhere!")
                 || has("appropriate item to go that direction")
                 || has("progressed too far to go through this exit")
                 || has("may not go through this exit")
@@ -245,10 +245,16 @@ fn completes(kind: Kind, ev: &Event) -> bool {
                 || has("already cast a spell")
                 || has("enough mana to cast")
                 // A cast of a light spell routes through the light
-                // routine and answers with its wording.
+                // routine and answers with its wordings — success and
+                // the already-lit refusal alike.
                 || has("you lit the")
+                || has("already have something lit")
         }
-        Kind::Light => has("you lit the") || has("already have something lit"),
+        Kind::Light => {
+            has("you lit the")
+                || has("already have something lit")
+                || has("may not light that item")
+        }
         Kind::Get => has("you picked up"),
         Kind::BuyHealing => has("wounds are healed"),
         Kind::Opaque => false,
