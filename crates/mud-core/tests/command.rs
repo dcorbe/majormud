@@ -127,12 +127,13 @@ fn direction_word_minimums_match_the_oracle() {
 
 #[test]
 fn use_and_read_verbs() {
-    // ORACLE-VERIFY min abbrevs: unmeasured; use = 2 ("u" stays the up
-    // alias), read = 2.
+    // MEASURED (slice8_abbrevs.raw): us uses ("u" stays the up alias);
+    // r/re say, "rea" belongs to the unshipped READY verb, read is the
+    // full word.
     assert_eq!(parse("us scroll"), Command::Use("scroll".into()));
     assert_eq!(parse("use scroll of blur"), Command::Use("scroll of blur".into()));
     assert_eq!(parse("u"), Command::Move(Direction::Up)); // alias intact
-    assert_eq!(parse("re scroll"), Command::Read("scroll".into()));
+    assert!(matches!(parse("re scroll"), Command::Unknown(_)));
     assert_eq!(parse("read scroll"), Command::Read("scroll".into()));
 }
 
@@ -159,16 +160,50 @@ fn equip_verb_minimums_match_the_oracle() {
 // extracted) — chosen non-colliding against the measured table. ---
 
 #[test]
-fn gang_and_guild_parse_with_the_roster_broadgang_split() {
-    // Bare = roster, args = broadgang (cmd_broadgang margc split).
-    assert_eq!(parse("gang"), Command::Gang(String::new()));
-    assert_eq!(parse("guild"), Command::Gang(String::new()));
-    assert_eq!(parse("gang hello all"), Command::Gang("hello all".into()));
-    assert_eq!(parse("guild hi"), Command::Gang("hi".into()));
-    assert_eq!(parse("ga"), Command::Gang(String::new()));
-    assert_eq!(parse("gu"), Command::Gang(String::new()));
+fn broadgang_is_the_broadcast_verb_and_gang_guild_say() {
+    // MEASURED (slice8_abbrevs2.raw / slice8_gang1b.raw, 2026-07-31):
+    // `gang`/`guild` are NOT verbs in 1.11p-WG — even for members they
+    // fall to say; the gang broadcast is BROADGANG, minimum 6
+    // ("broadg"), rendered "%s gangpaths: %s". Bare broadgang keeps the
+    // roster arm (ORACLE-VERIFY: the bare form was not probed live).
+    assert!(matches!(parse("gang hello all"), Command::Unknown(_)));
+    assert!(matches!(parse("guild hi"), Command::Unknown(_)));
+    assert!(matches!(parse("broad hello"), Command::Unknown(_)));
+    assert_eq!(parse("broadg hello"), Command::Gang("hello".into()));
+    assert_eq!(parse("broadgang hi"), Command::Gang("hi".into()));
+    assert_eq!(parse("broadgang"), Command::Gang(String::new()));
     // `g` stays get's oracle-measured single-letter match.
     assert_eq!(parse("g"), Command::Get(String::new()));
+}
+
+#[test]
+fn slice8_measured_minimums() {
+    // The slice-8 live sweep (slice8_abbrevs.raw, slice8_abbrevs2.raw):
+    // per-prefix ownership probed bare and with arguments.
+    assert!(matches!(parse("ki"), Command::Unknown(_)));
+    assert_eq!(parse("kic rat"), Command::Kick("rat".into()));
+    assert!(matches!(parse("j"), Command::Unknown(_)));
+    assert_eq!(parse("ju rat"), Command::JumpKick("rat".into()));
+    assert!(matches!(parse("back"), Command::Unknown(_)));
+    assert_eq!(parse("backs thug"), Command::Backstab("thug".into()));
+    assert!(matches!(parse("inv"), Command::Unknown(_)));
+    assert_eq!(parse("invo heal"), Command::Invoke("heal".into()));
+    // ask works at 2 WITH a target ("as healer hello" measured).
+    assert_eq!(parse("as healer hello"), Command::Ask("healer hello".into()));
+    // "rea" belongs to the unshipped READY verb live; we reserve it.
+    assert!(matches!(parse("rea scroll"), Command::Unknown(_)));
+    assert_eq!(parse("read scroll"), Command::Read("scroll".into()));
+    assert!(matches!(parse("un Torgo"), Command::Unknown(_)));
+    assert_eq!(parse("uni Torgo"), Command::Uninvite("Torgo".into()));
+    // "pr"/"pro" belong to an unshipped verb live (session info panel).
+    assert!(matches!(parse("pr Torgo"), Command::Unknown(_)));
+    assert_eq!(parse("prom Torgo"), Command::Promote("Torgo".into()));
+    assert!(matches!(parse("de Torgo"), Command::Unknown(_)));
+    assert_eq!(parse("dem Torgo"), Command::Demote("Torgo".into()));
+    // "ma" belongs to the unshipped MAP verb live.
+    assert!(matches!(parse("ma 120"), Command::Unknown(_)));
+    assert_eq!(parse("mar 120"), Command::Markup("120".into()));
+    assert_eq!(parse("sea"), Command::Search(String::new()));
 }
 
 #[test]
@@ -177,8 +212,6 @@ fn create_join_leave_disband_parse() {
     assert_eq!(parse("cr guild Vex"), Command::Create("guild Vex".into()));
     assert_eq!(parse("join gang Iron Fist"), Command::Join("gang Iron Fist".into()));
     assert_eq!(parse("jo gang X"), Command::Join("gang X".into()));
-    // `j` stays jumpkick's single-letter match.
-    assert_eq!(parse("j"), Command::JumpKick(String::new()));
     assert_eq!(parse("leave gang"), Command::Leave("gang".into()));
     assert_eq!(parse("le gang"), Command::Leave("gang".into()));
     assert_eq!(parse("disband gang"), Command::Disband("gang".into()));
@@ -194,11 +227,11 @@ fn membership_admin_verbs_parse() {
     // `in`/`inv` are MEASURED say (§8.12) — invite cannot match below 4.
     assert!(matches!(parse("inv Torgo"), Command::Unknown(_)));
     assert_eq!(parse("uninvite Torgo"), Command::Uninvite("Torgo".into()));
-    assert_eq!(parse("un Torgo"), Command::Uninvite("Torgo".into()));
+    assert_eq!(parse("uni Torgo"), Command::Uninvite("Torgo".into()));
     assert_eq!(parse("promote Torgo"), Command::Promote("Torgo".into()));
-    assert_eq!(parse("pr Torgo"), Command::Promote("Torgo".into()));
+    assert_eq!(parse("prom Torgo"), Command::Promote("Torgo".into()));
     assert_eq!(parse("demote Torgo"), Command::Demote("Torgo".into()));
-    assert_eq!(parse("de Torgo"), Command::Demote("Torgo".into()));
+    assert_eq!(parse("dem Torgo"), Command::Demote("Torgo".into()));
     // deposit keeps its measured 3.
     assert_eq!(parse("dep 5 gold"), Command::Deposit("5 gold".into()));
 }
@@ -212,7 +245,7 @@ fn gang_shop_verbs_parse() {
     assert_eq!(parse("unstock sword"), Command::Unstock("sword".into()));
     assert_eq!(parse("uns sword"), Command::Unstock("sword".into()));
     assert_eq!(parse("markup 120"), Command::Markup("120".into()));
-    assert_eq!(parse("ma 120"), Command::Markup("120".into()));
+    assert_eq!(parse("mar 120"), Command::Markup("120".into()));
 }
 
 #[test]

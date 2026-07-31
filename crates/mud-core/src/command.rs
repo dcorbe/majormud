@@ -93,8 +93,11 @@ pub enum Command {
     Use(String),
     /// `read <item>` — like `use`, plus the unowned-item description path.
     Read(String),
-    /// `gang [message]` / `guild [message]` — bare = roster, args =
-    /// broadgang (cmd_broadgang 0x585cc, gangs.md §1.6/§5.2).
+    /// `broadgang [message]` — args = the gang broadcast (cmd_broadgang
+    /// 0x585cc, "%s gangpaths: %s" MEASURED slice8_gang1b.raw), bare =
+    /// the §1.6 roster (ORACLE-VERIFY: bare form unprobed live; the
+    /// roster display functions have no other player-facing trigger
+    /// found — gang/guild themselves are NOT verbs in 1.11p-WG).
     Gang(String),
     /// `create gang|guild <name>` (cmd_create 0x57d4a); other forms hit
     /// the DLL's stubbed house-build path (gangs.md §3.2).
@@ -172,7 +175,7 @@ enum Verb {
 /// All direction minimums are ORACLE-verified (oracle_directions.raw):
 /// north/south/west = full word, east = 3 (eat blocks 2), down = 3,
 /// up = 2, diagonals = 6. Hand-authored asymmetry is the original's.
-const VERBS: [(&str, usize, Verb); 68] = [
+const VERBS: [(&str, usize, Verb); 67] = [
     ("north", 5, Verb::Plain(|| Command::Move(Direction::North))),
     ("south", 5, Verb::Plain(|| Command::Move(Direction::South))),
     ("east", 3, Verb::Plain(|| Command::Move(Direction::East))),
@@ -184,23 +187,21 @@ const VERBS: [(&str, usize, Verb); 68] = [
     ("up", 2, Verb::Plain(|| Command::Move(Direction::Up))),
     ("down", 3, Verb::Plain(|| Command::Move(Direction::Down))),
     ("attack", 1, Verb::WithArgs(Command::Attack)), // ORACLE: a/at/att
-    // ORACLE-VERIFY min abbrevs for the MA verbs: unmeasured. `k` and
-    // `j` are unambiguous today; `p` is reserved against a future `put`
-    // (slice-6 as built: `put`/`pull`/`press` stayed cmdtext wildcards
-    // in the fall-through funnel, not verbs — the reservation held
-    // without a new entry), so punch takes 2.
+    // MEASURED (slice8_abbrevs.raw): p says, pu punches.
     ("punch", 2, Verb::WithArgs(Command::Punch)),
-    // ORACLE-VERIFY min abbrev: unmeasured; `b` is free (`bu` still
-    // reaches buy — not a prefix of backstab).
-    ("backstab", 1, Verb::WithArgs(Command::Backstab)),
-    ("kick", 1, Verb::WithArgs(Command::Kick)),
-    ("jumpkick", 1, Verb::WithArgs(Command::JumpKick)),
+    // MEASURED (slice8_abbrevs.raw): b/ba/bac/back all say; backs is
+    // the shortest accepted form.
+    ("backstab", 5, Verb::WithArgs(Command::Backstab)),
+    // MEASURED (slice8_abbrevs.raw): k/ki say, kic kicks.
+    ("kick", 3, Verb::WithArgs(Command::Kick)),
+    // MEASURED (slice8_abbrevs.raw): j says, ju jumpkicks.
+    ("jumpkick", 2, Verb::WithArgs(Command::JumpKick)),
     // Min 1 like attack, so `c` and `c args` both cast (MEASURED §8.9).
     // ORACLE-VERIFY: only c/cast measured; ca/cas assumed by prefix model.
     ("cast", 1, Verb::WithArgs(Command::Cast)),
-    // MEASURED (§8.12): no abbreviation — `in`/`inv` say. invo/invok are
-    // ORACLE-VERIFY (the no-abbreviation model sends them to say too).
-    ("invoke", 6, Verb::WithArgs(Command::Invoke)),
+    // MEASURED (§8.12 + slice8_abbrevs.raw): in/inv say, invo invokes —
+    // minimum 4, not the no-abbreviation model shipped through M7.
+    ("invoke", 4, Verb::WithArgs(Command::Invoke)),
     ("aid", 2, Verb::WithArgs(Command::Aid)),       // ORACLE: ai
     ("get", 1, Verb::WithArgs(Command::Get)),       // ORACLE: g/ge/get
     ("drop", 2, Verb::WithArgs(Command::Drop)),
@@ -214,9 +215,12 @@ const VERBS: [(&str, usize, Verb); 68] = [
     ("remove", 3, Verb::WithArgs(Command::Remove)),
     // ORACLE-VERIFY min abbrev: unmeasured; "u" is the up alias, so 2.
     ("use", 2, Verb::WithArgs(Command::Use)),
-    // ORACLE-VERIFY min abbrev: unmeasured; 2 cannot shadow remove's
-    // oracle minimum of 3 ("rem" is not a prefix of "read").
-    ("read", 2, Verb::WithArgs(Command::Read)),
+    // MEASURED (slice8_abbrevs.raw): r/re say and "rea" belongs to the
+    // UNSHIPPED READY verb ("Syntax: READY {weapon name}") — read's own
+    // shortest form is the full word. KNOWN-DIVERGENCE: our "rea" says
+    // instead of printing READY's syntax line; ready lands with its
+    // system (M8 candidate).
+    ("read", 4, Verb::WithArgs(Command::Read)),
     ("list", 2, Verb::Plain(|| Command::List)),
     ("buy", 2, Verb::WithArgs(Command::Buy)),
     ("sell", 3, Verb::WithArgs(Command::Sell)),
@@ -224,9 +228,10 @@ const VERBS: [(&str, usize, Verb); 68] = [
     ("withdraw", 4, Verb::WithArgs(Command::Withdraw)),
     ("balance", 3, Verb::Plain(|| Command::Balance)),
     ("look", 2, Verb::Plain(|| Command::Look)),     // ORACLE: lo
-    // ORACLE-VERIFY min abbrev: unmeasured — full word only, keeping
-    // `as` free (the DLL's cmd table is not letter-pinned here).
-    ("ask", 3, Verb::WithArgs(Command::Ask)),
+    // MEASURED (slice8_abbrevs2.raw): "as healer hello" asks — 2 with a
+    // target. Bare ask/as at ANY length says (the tree matches the
+    // pattern, not the bare word; quests.md §3).
+    ("ask", 2, Verb::WithArgs(Command::Ask)),
     ("exits", 3, Verb::Plain(|| Command::Exits)),   // ORACLE: exi (ex says)
     ("experience", 3, Verb::Plain(|| Command::Experience)), // ORACLE: exp
     ("status", 2, Verb::Plain(|| Command::Status)), // ORACLE: st/sta/stat
@@ -248,44 +253,59 @@ const VERBS: [(&str, usize, Verb); 68] = [
     // ORACLE-VERIFY min abbrevs: unmeasured for both.
     ("sneak", 2, Verb::Plain(|| Command::Sneak)),
     ("hide", 3, Verb::WithArgs(Command::Hide)),
-    // ORACLE-VERIFY min abbrevs: unmeasured ("ro" cannot shadow
-    // remove's 3 — "rem" is not a prefix of "rob").
+    // MEASURED (slice8_abbrevs.raw): ro robs ("Syntax: ROB
+    // {user/monster}").
     ("rob", 2, Verb::WithArgs(Command::Rob)),
-    // ORACLE-VERIFY min abbrev: unmeasured; "pi" is free (punch is 2 at
-    // "pu").
+    // MEASURED (slice8_abbrevs2.raw): "pi n" picks at 2 — WITH a
+    // direction; every bare prefix through the full word says (the tree
+    // matches the pattern). "pick lock n" also reaches it. Our bare
+    // "pi" prints the syntax line instead of saying — KNOWN-DIVERGENCE,
+    // same family as ask's pattern-gated parse.
     ("picklock", 2, Verb::WithArgs(Command::Picklock)),
-    // ORACLE-VERIFY min abbrev: unmeasured; "se" cannot shadow sell(3)
-    // or set(3) — both need 3 chars and neither is a prefix of search.
-    ("search", 2, Verb::WithArgs(Command::Search)),
-    // ORACLE-VERIFY min abbrev: unmeasured; "di" cannot shadow drop's 2
-    // ("dr") and "d" stays the down alias.
-    ("disarm", 3, Verb::WithArgs(Command::Disarm)),
+    // MEASURED (slice8_abbrevs.raw): "sea" is the shortest form that
+    // searches — se belongs to southeast (our alias handles it; the 3
+    // keeps the table honest if the alias ever moves).
+    ("search", 3, Verb::WithArgs(Command::Search)),
+    // MEASURED (slice8_abbrevs.raw/2): di/dis/disarm all silently no-op
+    // in an empty room (no say) — 2 is live; 3 kept "di" free before,
+    // but the live tree owns di.
+    ("disarm", 2, Verb::WithArgs(Command::Disarm)),
     ("forgive", 4, Verb::WithArgs(Command::Forgive)),
-    // --- M7 slice 7: gangs (gangs.md §1, §5). Every minimum below is
-    // ORACLE-VERIFY (parse_command's compiled tree, combat_rounds.md) —
-    // chosen non-colliding against the measured entries above. ---
-    // `g` stays get's measured single letter; gang starts at 2.
-    ("gang", 2, Verb::WithArgs(Command::Gang)),
-    ("guild", 2, Verb::WithArgs(Command::Gang)),
+    // --- M7 slice 7: gangs (gangs.md §1, §5). Minimums MEASURED at the
+    // slice-8 sweep (slice8_abbrevs.raw, slice8_abbrevs2.raw,
+    // slice8_gang1b.raw) unless noted. ---
+    // MEASURED: gang/guild are NOT verbs in 1.11p-WG (they say even for
+    // members, args or not) — the broadcast verb is BROADGANG, minimum
+    // 6, rendered "%s gangpaths: %s". Bare broadgang keeps the roster
+    // arm (ORACLE-VERIFY: the bare form was not probed live; the §1.6
+    // roster display functions exist in the DLL with no other
+    // player-facing trigger found).
+    ("broadgang", 6, Verb::WithArgs(Command::Gang)),
+    // MEASURED: "cr gang X" refused on the exp gate — 2, pattern-gated
+    // (bare create says).
     ("create", 2, Verb::WithArgs(Command::Create)),
     // `j` stays jumpkick's single letter.
     ("join", 2, Verb::WithArgs(Command::Join)),
     // `in`/`inv` are MEASURED say (§8.12) — invite cannot start below 4
     // ("invi" vs inventory's "inve" and invoke's "invo").
     ("invite", 4, Verb::WithArgs(Command::Invite)),
-    // Listed before unstock: "un"/"uni" reach uninvite, "uns" unstock.
-    ("uninvite", 2, Verb::WithArgs(Command::Uninvite)),
+    // MEASURED: un says, uni uninvites; uns unstocks.
+    ("uninvite", 3, Verb::WithArgs(Command::Uninvite)),
     ("unstock", 3, Verb::WithArgs(Command::Unstock)),
-    // "pu"/"pi"/"po" are taken (punch/picklock/powers); "pr" is free.
-    ("promote", 2, Verb::WithArgs(Command::Promote)),
-    // "de" is free — deposit keeps its measured 3 ("dep").
-    ("demote", 2, Verb::WithArgs(Command::Demote)),
+    // MEASURED: pr/pro belong to an UNSHIPPED session-info verb live
+    // ("Life for this CHAR ..."); prom promotes. KNOWN-DIVERGENCE: our
+    // pr/pro say instead of that panel.
+    ("promote", 4, Verb::WithArgs(Command::Promote)),
+    // MEASURED: de says, dem demotes.
+    ("demote", 3, Verb::WithArgs(Command::Demote)),
     // "dis" stays disarm's; disband starts at 4.
     ("disband", 4, Verb::WithArgs(Command::Disband)),
     ("leave", 2, Verb::WithArgs(Command::Leave)),
-    // "st"/"sta" stay status's measured matches; stock starts at 3.
+    // MEASURED: sto stocks ("st"/"sta" stay status's).
     ("stock", 3, Verb::WithArgs(Command::Stock)),
-    ("markup", 2, Verb::WithArgs(Command::Markup)),
+    // MEASURED: ma belongs to the UNSHIPPED MAP verb live (the town
+    // ANSI map); mar markups. KNOWN-DIVERGENCE: our ma says.
+    ("markup", 3, Verb::WithArgs(Command::Markup)),
 ];
 
 pub fn parse(input: &str) -> Command {

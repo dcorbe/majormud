@@ -417,7 +417,7 @@ fn corpus_all_files_parse_and_prompt_totals_match() {
     // every oracle expedition adds transcripts. Both numbers below therefore
     // move by design — when they do, recompute the ground truth rather than
     // taking the Rust parser's word for it (see below) and update them.
-    assert_eq!(files.len(), 102, "corpus size changed");
+    assert_eq!(files.len(), 115, "corpus size changed");
     let mut prompts = 0;
     for f in &files {
         let ev = corpus_events(f);
@@ -445,7 +445,13 @@ fn corpus_all_files_parse_and_prompt_totals_match() {
     // blocks a1-b3, engage-lock attempts, the charm lifecycle takes, the
     // swarm probes, recreations and training runs) — 13,911 more prompts.
     // Recomputed with the same reference pipeline over all 102 files.
-    assert_eq!(prompts, 20038);
+    //
+    // 2026-07-31: the slice-8 field expedition added 13 raws (hand session,
+    // gang program + restart-persistence passes, the two min-abbrev sweeps,
+    // seedy fame walks, the slime lair camp) — 607 more prompts, including
+    // the first `/KAI=` prompt captures. Recomputed with the reference
+    // pipeline over all 115 files.
+    assert_eq!(prompts, 20645);
 }
 
 #[test]
