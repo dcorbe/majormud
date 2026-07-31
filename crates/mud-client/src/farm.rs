@@ -75,6 +75,20 @@ pub struct FarmConfig {
     /// Leave a stop after this many consecutive prompts with nothing to
     /// fight and nothing to do.
     pub dwell_idle_prompts: u32,
+    /// How long to hold a stop open once the room block has PROVEN it
+    /// empty, waiting for a respawn. 0 leaves the moment it is proven.
+    ///
+    /// This is a policy budget, not a state inference, and the difference
+    /// is the whole point of [`StopState`]. "Is there anything here to
+    /// fight" is a question the board answers outright in every room
+    /// block. "How long is it worth waiting for something new to turn up"
+    /// is a judgement about this circuit that no message can answer, so it
+    /// gets a knob with an honest name.
+    ///
+    /// Respawns are silent — `generate_monster` places a monster with no
+    /// announcement whatsoever — so the wait is spent re-asking, not
+    /// listening.
+    pub dwell_empty_seconds: u64,
     /// Never start a leg below this hp% (needs a known max HP); 0
     /// disables the gate. This is the first of the two travel defences:
     /// it keeps a wounded character from setting off at all, while
@@ -168,6 +182,7 @@ impl Default for FarmConfig {
             loops: 0,
             max_seconds: 0,
             dwell_idle_prompts: 3,
+            dwell_empty_seconds: 0,
             depart_at_percent: 80,
             fight_while_travelling: true,
             slowdown_backoff_ms: 5000,
@@ -394,6 +409,16 @@ impl Gate {
         self.in_flight.as_ref().map(|(line, _)| line.as_str())
     }
 
+    /// Nothing queued and nothing awaiting acknowledgement: everything the
+    /// runner decided has been sent, and the board has answered it.
+    ///
+    /// The runner will not leave a stop while this is false. A queued
+    /// `get copper` from the last kill's loot is the case that matters --
+    /// walking out drops it on the floor.
+    pub fn is_idle(&self) -> bool {
+        self.queue.is_empty() && self.in_flight.is_none()
+    }
+
     pub fn on_event(&mut self, ev: &Event, now: Instant) {
         match ev {
             // The board answered, so whatever we sent landed.
@@ -441,6 +466,214 @@ impl Gate {
             // Both must pass before anything can go out.
             (Some(a), Some(b)) => Some(a.max(b)),
             (a, b) => a.or(b),
+        }
+    }
+}
+
+/// What the stop's own evidence says to do next.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verdict {
+    /// No room block worth trusting. Ask (`look`) and decide when the
+    /// board answers.
+    Ask,
+    /// A fight is outstanding, or the board listed something worth
+    /// swinging at. Stay — the bot is driving.
+    Busy,
+    /// Proven empty, held open for a respawn until this instant.
+    Waiting { until: Instant },
+    /// Proven empty for the whole respawn budget. Done here.
+    Empty,
+    /// The board answered a `look` with "you can't see anything". No room
+    /// block is coming, so nothing here can be decided from one.
+    Blind,
+}
+
+/// One room block, accepted as describing this stop.
+struct Seen {
+    room: crate::events::RoomView,
+    /// When it arrived, for the staleness bound.
+    at: Instant,
+    /// `changed` as it stood when this was accepted. If it has moved on
+    /// since, the room has changed and this block no longer describes it.
+    change: u64,
+}
+
+/// What the runner has actually SEEN at this stop, and what that implies
+/// about leaving it.
+///
+/// The stop used to end on a count of prompts. A prompt is evidence that
+/// the board answered *something*; it is not evidence about who is
+/// standing in the room, and four successive patches tuned that threshold
+/// without ever making it true. Three live failures came out of it:
+/// walking out with three monsters still listed under "Also here:",
+/// abandoning a fight that was still going, and hanging forever on an
+/// attack the board had refused. The room block states all three
+/// outright, and the parser has been delivering it the whole time.
+///
+/// Pure and clock-injected, like [`Gate`] and [`HealWatch`], so the
+/// decision can be unit-tested — which `farm_stop`, an `async fn` over a
+/// live [`crate::session::Session`], never could be. That asymmetry is
+/// why the four patches never caught each other.
+///
+/// Two things here are still time-based, and both are honest about it:
+/// [`FarmConfig::dwell_empty_seconds`] is a policy budget, and `recheck`
+/// bounds how stale an observation may get. The second is unavoidable —
+/// **nothing announces a respawn**, the board simply puts a monster in
+/// the room, so silence is not proof the room is unchanged. Bounding an
+/// observation's shelf life is a different thing from inferring state
+/// from a clock: it forces a re-observation, it never decides on its own.
+pub struct StopState {
+    /// This stop's room name. A block naming anywhere else describes
+    /// anywhere else; the runner handles that as a flee.
+    stop_name: String,
+    /// How long a proven-empty stop is held open for a respawn.
+    linger: Duration,
+    /// How stale an accepted block may get before it must be re-asked.
+    recheck: Duration,
+    /// The last block accepted as describing this stop.
+    seen: Option<Seen>,
+    /// Bumped by every parsed message that could have changed who is
+    /// standing here.
+    changed: u64,
+    /// `changed` as it stood when the outstanding `look` was released.
+    asked_when: Option<u64>,
+    /// When the room was FIRST proven empty. The respawn budget runs from
+    /// here, so re-asking does not restart it; anything that makes the
+    /// room untrue clears it.
+    empty_since: Option<Instant>,
+    /// The board said the room cannot be seen.
+    blind: bool,
+}
+
+impl StopState {
+    pub fn new(stop_name: String, cfg: &FarmConfig) -> Self {
+        StopState {
+            stop_name,
+            linger: Duration::from_secs(cfg.dwell_empty_seconds),
+            recheck: Duration::from_millis(cfg.idle_poke_ms),
+            seen: None,
+            changed: 0,
+            asked_when: None,
+            empty_since: None,
+            blind: false,
+        }
+    }
+
+    /// Called for every command the gate actually releases — the same
+    /// hook [`HealWatch::on_sent`] uses.
+    ///
+    /// A `look` going out is the request half of the only request/response
+    /// pair the runner has. The session layer has no correlation at all,
+    /// but the gate holds exactly one command in flight, which is enough.
+    pub fn on_sent(&mut self, line: &str) {
+        if line.trim().eq_ignore_ascii_case("look") {
+            self.asked_when = Some(self.changed);
+        }
+    }
+
+    /// Something happened that could have changed who is standing here, so
+    /// any block still in flight predates it and must not be believed.
+    fn invalidate(&mut self) {
+        self.changed += 1;
+        self.empty_since = None;
+    }
+
+    /// Fold one event. Call AFTER [`crate::bot::Bot::on_event`], so
+    /// `engaged` and `has_target` already account for it.
+    pub fn on_event(&mut self, ev: &Event, bot: &crate::bot::Bot, now: Instant) {
+        match ev {
+            // A prompt means the board answered SOMETHING. It says nothing
+            // about who is standing here, and that is the whole point.
+            Event::Prompt { .. } => {}
+            Event::RoomSeen(room) if room.name == self.stop_name => {
+                self.blind = false;
+                // Only believed when nothing went stale between the `look`
+                // going out and this block coming back. Without that a
+                // block can race an arrival: the rat walks in, the bot
+                // engages it, and the block rendered BEFORE the rat then
+                // reads as an empty room -- clearing the fight and walking
+                // out of it.
+                if self.asked_when == Some(self.changed) {
+                    if bot.has_target(room) {
+                        self.empty_since = None;
+                    } else {
+                        self.empty_since.get_or_insert(now);
+                    }
+                    self.seen = Some(Seen {
+                        room: room.clone(),
+                        at: now,
+                        change: self.changed,
+                    });
+                }
+            }
+            // No name matching here on purpose: the parser has been seen
+            // gluing the player's "(Resting)" marker onto an actor name,
+            // and marking the room stale is immune to that.
+            Event::ActorEntered { .. } | Event::ActorLeft { .. } => self.invalidate(),
+            // A blow landing on US proves something is here that the block
+            // may not have listed. Our own swings prove nothing.
+            Event::CombatHit {
+                target: crate::events::Actor::You,
+                ..
+            } => self.invalidate(),
+            Event::Line(line) if crate::bot::is_kill_line(line) => self.invalidate(),
+            Event::Line(line) if line.contains(crate::sheet::TOO_DARK) => self.blind = true,
+            _ => {}
+        }
+    }
+
+    /// Everything observed is dropped: a lagged broadcast, or a walk back
+    /// from a flee. Nothing seen before it can be trusted.
+    ///
+    /// A lag happens exactly when a lot is going on — that is what
+    /// overflows the channel — so it is precisely the busy room where
+    /// carrying a stale "empty" across would walk out immediately.
+    pub fn reset(&mut self) {
+        self.seen = None;
+        self.asked_when = None;
+        self.empty_since = None;
+        self.blind = false;
+        // Anything already in flight predates the reset.
+        self.changed += 1;
+    }
+
+    /// What to do now.
+    ///
+    /// Asked once per pump iteration, INCLUDING the iterations where no
+    /// event arrived — that is where a respawn budget expires, so folding
+    /// this into `on_event` would make it unreachable.
+    pub fn verdict(&self, bot: &crate::bot::Bot, now: Instant) -> Verdict {
+        // An unfinished fight outranks everything. A block that raced the
+        // blow which started the fight is not evidence it is over.
+        if bot.engaged().is_some() {
+            return Verdict::Busy;
+        }
+        if self.blind {
+            return Verdict::Blind;
+        }
+        let Some(seen) = &self.seen else {
+            return Verdict::Ask;
+        };
+        // Staleness is settled BEFORE occupancy, and the order is
+        // load-bearing. A block that listed monsters but has since been
+        // invalidated -- by the kill that emptied the room, say -- would
+        // otherwise read as `Busy` forever: the bot has no target left to
+        // drive the fight, and `Busy` is the one verdict that asks the
+        // board nothing. Nothing would ever look again.
+        if seen.change != self.changed || now.duration_since(seen.at) >= self.recheck {
+            return Verdict::Ask;
+        }
+        // Judged against the CURRENT bot, not as of when the block
+        // arrived: a target refused since then no longer holds the stop.
+        if bot.has_target(&seen.room) {
+            return Verdict::Busy;
+        }
+        match self.empty_since {
+            Some(since) if now.duration_since(since) >= self.linger => Verdict::Empty,
+            Some(since) => Verdict::Waiting {
+                until: since + self.linger,
+            },
+            None => Verdict::Ask,
         }
     }
 }
