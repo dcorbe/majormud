@@ -1207,6 +1207,19 @@ enum CharmedExemption {
     Ignored,
 }
 
+/// [`Core::charge_passive_monster_evil`]'s outcome. The DLL sites branch
+/// on `add_evil_points`' return (non-zero = refused) but the 43330 site
+/// ALSO runs the grudge body only after a successful charge — a plain
+/// "refused?" bool cannot distinguish `Charged` from `NotEligible`
+/// (already fighting you, aggressive, own pet), so the three-way split
+/// is load-bearing there and documentation everywhere else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PassiveEvilCharge {
+    NotEligible,
+    Charged,
+    Refused,
+}
+
 /// What a Summon(12) spawn is bound to (charm.md §6). All four DLL
 /// handlers call the same `generate_monster(map, room, -1, templateId,
 /// 0, 65000, -1, 0, 1)` and then write DIFFERENT ownership state, so the
@@ -6083,7 +6096,7 @@ impl Core {
         let Some(monster) = monster else {
             return Resolution::FallThrough;
         };
-        if self.charge_passive_monster_evil(session, monster) {
+        if self.charge_passive_monster_evil(session, monster) == PassiveEvilCharge::Refused {
             return Resolution::Handled;
         }
         if let Some(Session::InGame { target, casting, .. }) = self.sessions.get_mut(&session) {
@@ -6902,6 +6915,26 @@ impl Core {
                 self.output_line(session, &text::spell_no_effect_on(&name));
                 return;
             }
+            // The ability-52 arm (crime.md §2.5.1, cast_monster_target
+            // 43323-43347): a spell CARRYING EvilInCombat (0x34) charges
+            // the same 10 points at a passive monster — no `spelltype`
+            // test — which puts 25 of the 29 learnable benign
+            // match-4/6/8 spells (curse, blind, slow, hold person, the
+            // songs) in front of it. On success the 43335-43346 grudge
+            // body runs: `retaliation_lock` IS that body (its doc lists
+            // 43335 among its twins), and behaviour 0/4 makes the lock
+            // unconditional after a charge. Sits AHEAD of SpellImmu,
+            // whose gate is at 43380, after the scan. A refusal aborts
+            // the verb before any cost (43331-43333).
+            if spell.abilities.iter().any(|(a, _)| *a == Ability::EvilInCombat) {
+                match self.charge_passive_monster_evil(session, monster_id) {
+                    PassiveEvilCharge::Refused => return,
+                    PassiveEvilCharge::Charged => {
+                        self.retaliation_lock(monster_id, session, CharmedExemption::Exempt);
+                    }
+                    PassiveEvilCharge::NotEligible => {}
+                }
+            }
             // SpellImmu (139): a monster immune to spells at or below this
             // level refuses the cast before any cost or engagement
             // (decompile cast_monster_target 43630-43638: spell level <
@@ -6914,17 +6947,13 @@ impl Core {
                 return;
             }
             // Offensive casts at passive monsters charge like melee
-            // (crime.md §2.5 cast_monster_target rows).
-            //
-            // M7 PENDING (`re/docs/crime.md` §2.5, the 43330 row): the
-            // `is_offensive()` gate is OURS, not the DLL's. 43323-43347
-            // charges the same 10 points off the SPELL'S ABILITY 0x34
-            // (EvilInCombat) with no `spelltype` test at all, so 25 of the
-            // 29 learnable benign match-4/6/8 spells (curse, blind, slow,
-            // hold person, the songs) should charge here and do not — see
-            // the long note in `offensive_cast_attempt`'s fail arm.
+            // (crime.md §2.5, the 43417 row — the manual attempt loop's
+            // spelltype-gated twin). After the 52 arm above has charged,
+            // the grudge makes this site `NotEligible`, exactly the
+            // DLL's `sameas` term at 43419.
             if spell.target_mode.is_offensive()
                 && self.charge_passive_monster_evil(session, monster_id)
+                    == PassiveEvilCharge::Refused
             {
                 return;
             }
@@ -7376,7 +7405,7 @@ impl Core {
                 })
                 .map(|(id, _)| *id);
             if let Some(id) = passive
-                && self.charge_passive_monster_evil(session, id)
+                && self.charge_passive_monster_evil(session, id) == PassiveEvilCharge::Refused
             {
                 return;
             }
@@ -10701,8 +10730,10 @@ impl Core {
     /// 43255/43330/43417): initiating violence against a passive (mode
     /// 0/4) monster that is not already fighting you charges 10 evil via
     /// the NPC path (`crime::charge_npc_evil` — gates, dark cloud,
-    /// minimum-10 bump). Returns true when the action is REFUSED; the
-    /// caller aborts before any engagement. The own-summon exemption
+    /// minimum-10 bump). On `Refused` the caller aborts before any
+    /// engagement; the 43330 site additionally owes the grudge body on
+    /// `Charged` — which is why `Charged` and `NotEligible` are distinct
+    /// arms and not one `false`. The own-summon exemption
     /// (the DLL's `sameas(mon+0x1a, user+0x1e) == 0` term) IS ported —
     /// M7 slice 5 gave the name link its owner semantics, and the
     /// `m.target != Some(session)` clause below is that term. What stays
@@ -10712,23 +10743,23 @@ impl Core {
         &mut self,
         session: SessionId,
         monster: MonsterInstanceId,
-    ) -> bool {
+    ) -> PassiveEvilCharge {
         let eligible = self
             .monsters
             .get(&monster)
             .is_some_and(|m| matches!(m.behaviour, 0 | 4) && m.target != Some(session));
         if !eligible {
-            return false;
+            return PassiveEvilCharge::NotEligible;
         }
         let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
-            return false;
+            return PassiveEvilCharge::NotEligible;
         };
         let mut fame = player.fame;
         let before = crate::crime::legal_level(fame);
         match crate::crime::charge_npc_evil(&mut fame, player.warn_on_evil, player.lawful, 10) {
             Err(refusal) => {
                 self.output_line(session, refusal);
-                true
+                PassiveEvilCharge::Refused
             }
             Ok(cloud) => {
                 player.fame = fame;
@@ -10739,7 +10770,7 @@ impl Core {
                     self.update_allowed_worn_items(session);
                 }
                 self.events.push(Event::Persist(snapshot));
-                false
+                PassiveEvilCharge::Charged
             }
         }
     }
@@ -11047,6 +11078,22 @@ impl Core {
     /// control undead AffectsUndead, 92 charm animal AffectsAnimals — so
     /// without this, `charm animal` was legal on all 1101 templates
     /// instead of 155, and `control undead` on 1101 instead of 115.
+    ///
+    /// KNOWN-DIVERGENCE (slot order vs the 52 charge; M7 close-out): the
+    /// DLL interleaves these refusal arms with the EvilInCombat(52)
+    /// charge in ONE slot-ordered walk; we run ALL refusals first and
+    /// the 52 arm second (`cmd_cast`'s monster arm). Census
+    /// (`re/mmud_wgnt.sqlite`): exactly one LEARNABLE spell lists 52
+    /// ahead of a refusal ability — 35 poison bolt (scroll 303; slots
+    /// 17, 52, 151, 108). Cast at a passive NonLiving monster the DLL
+    /// charges 10 evil + grudge and THEN refuses; we refuse free. The
+    /// other two such spells (177 flay, 1009 sunburst) are unlearnable;
+    /// all 25 learnable benign 52-carriers order their refusal ability
+    /// (if any) first, where both engines refuse free. Pinned by
+    /// `crime.rs::refusal_ability_before_52_refuses_free`. Re-open if a
+    /// content patch makes another 52-before-refusal spell learnable —
+    /// then restructure the scan into a slot-ordered walk instead of
+    /// widening this note.
     fn cast_eligibility_refused(
         &self,
         id: MonsterInstanceId,
@@ -11200,24 +11247,15 @@ impl Core {
             //     into `mon+0x1a` and clear the suppression byte at
             //     `mon+0x116`.
             //
-            // M7 PENDING (`re/docs/crime.md` §2.5, the 43330 row): the
-            // 0x34 arm is NOT implemented. In the DLL, cursing a passive
-            // monster costs 10 evil points and earns a grudge; here it is
-            // free and the monster never retaliates. DATA
-            // (`re/mmud_wgnt.sqlite`): 25 of the 29 learnable benign
-            // match-4/6/8 spells carry ability 52 — curse, blind, slow,
-            // hold person, confusion, sleep, entangle, mute, the seven
-            // songs, creeping doom, wrathful curse. This is a WIDENING of
-            // an existing gap, not a new one: 16 learnable AREA spells
-            // (match 12) already carry ability 52 and are already
-            // unhandled on the `area_cast` path. `charge_passive_monster_evil`
-            // already implements the 43323 predicate exactly — it is only
-            // gated at the CALL SITE on `is_offensive()` rather than on
-            // the ability, so closing this is a call-site change plus the
-            // grudge/suppression writes. HOME: the crime slice has already
-            // shipped, so this carries to the M7 close-out (slice 8) — it
-            // was logged during slice 5's Task-3b routing fix, which is
-            // what put 25 more spells in front of this gate.
+            // The 0x34 arm shipped with the M7 close-out: it lives in
+            // `cmd_cast`'s monster arm (ahead of the SpellImmu gate,
+            // matching the DLL's scan-before-43380 order) and fires off
+            // the SPELL'S ability list — 25 of the 29 learnable benign
+            // match-4/6/8 spells carry 52 (curse, blind, slow, hold
+            // person, confusion, sleep, entangle, mute, the seven songs,
+            // creeping doom, wrathful curse; `re/mmud_wgnt.sqlite`). The
+            // arm THIS comment sits in stays spelltype-gated because it
+            // mirrors 43249-43273 only.
             if spell.duration == 0
                 && spell.target_mode.is_offensive()
                 && self.monsters.get(&monster_id).is_some_and(|m| m.target.is_none())
