@@ -188,6 +188,56 @@ Two things this criterion drags into scope that are easy to wave away:
 A run that dies at 80s is not a partial pass. The measurements in this
 document are diagnostics, not a score.
 
+### Lighting is part of it, and comes first
+
+Walking a dark room blind is the LAST resort, permitted only when there
+is genuinely no way to light it — no torch, no lamp, no lantern, no
+spell, or every one of them exhausted. Anything else is stumbling from
+room to room and guessing at where we ended up, which is the bug this
+whole document is about, wearing a different hat.
+
+The pieces already exist and are the right shape (`sheet.rs`):
+
+- `LIGHT_ITEMS` — torch (175, 800 uses), lantern (176, 2400), brass lamp
+  (286, 1800), moon-lamp (1153, 4000), scaled lantern (1233, 6000)
+- `LIGHT_SPELLS` — starlight (26), light, continual light
+- `light_plan()` prefers a carried source over a spell, because an item
+  costs no mana. That preference is right; keep it.
+
+What is wrong is how they are used:
+
+1. **The plan is read ONCE, at run start** (`read_light_plan`). A torch
+   that burns through its uses mid-run, or mana that comes back after a
+   rest, never changes the answer. The plan has to be re-derived when the
+   situation changes, not cached for the life of the run.
+2. **Nothing verifies the light took.** The live failure was `cast star`
+   against `MA=7`, answered "You attempt to cast starlight, but fail." —
+   and the runner carried on into the dark anyway. The board says whether
+   it worked ("You lit the %s.", DLL 0xdb52d) and that answer must gate
+   what happens next.
+3. **A lit source is treated as a per-visit command.** A torch is lit
+   once and then burns; re-issuing `light torch` at every stop is waste
+   and noise. Track that it is already lit.
+4. **Exhaustion is not modelled.** Out of mana is recoverable — rest and
+   retry. A torch with no uses left is not; it needs a different source.
+   These need different responses and currently get the same one.
+5. **`MAX_LIGHT_ATTEMPTS = 1` is the wrong lever.** It was set to 1 to
+   stop the runner flooding the board with `cast`/`look` pairs, which was
+   the right call for that symptom. But the real rule is not "try once",
+   it is "try what can actually work, verify it, and only give up when
+   nothing can". Retrying a spell that failed for want of mana is
+   pointless; resting and then casting is not.
+
+So the order is: light the room, confirm from the board that it is lit,
+then navigate by room block like anywhere else. Dead reckoning
+(`blind_position`) stays as the floor for the genuinely unlightable case
+— and when it is used, it has to be sound, which is what the correlation
+work is for.
+
+Salad currently carries no light source at all, which is why the live
+runs fell through to `cast star`. Getting a torch or lantern onto the
+character is a prerequisite for the acceptance run, not a code change.
+
 ### Not the fix
 
 Counting unanswered sends at the session layer was tried and reverted
