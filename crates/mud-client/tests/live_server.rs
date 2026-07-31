@@ -158,6 +158,54 @@ async fn rust_server_login_create_look() {
     assert!(state.hp > 0, "prompt HP tracked, got {}", state.hp);
 }
 
+/// The board hides a junk character and a backspace inside every
+/// direction word it prints. The client's pipeline resolves those before
+/// anything classifies the text, so a scrambled exits line has to parse
+/// exactly like a clean one — that resolution step is the reason period
+/// clients could read the board at all.
+#[tokio::test]
+async fn a_scrambled_exits_line_parses_like_a_clean_one() {
+    let state = StateDb::open_in_memory().expect("state db");
+    let server = Server::start(
+        world(),
+        CoreConfig {
+            wire_noise: true,
+            ..config()
+        },
+        state,
+        "127.0.0.1:0",
+    )
+    .await
+    .expect("start server");
+
+    let profile = rust_profile(server.local_addr());
+    let session = Session::connect(&profile, None).await.expect("connect");
+    let mut events = session.events();
+    dialect::login(&session, &profile).await.expect("login");
+    dialect::finish_creation(&session).await.expect("creation");
+
+    let look = session.send("look");
+    session
+        .expect("Obvious exits:", Duration::from_secs(5))
+        .await
+        .expect("room");
+
+    let mut seen = None;
+    while let Ok(ev) = events.try_recv() {
+        if let Event::RoomSeen(r) = ev.event {
+            assert_eq!(ev.answers, Some(look), "still attributed to our look");
+            seen = Some(r);
+        }
+    }
+    let room = seen.expect("RoomSeen event");
+    assert_eq!(room.name, "Town Gates");
+    assert_eq!(
+        room.exits,
+        vec!["north"],
+        "the direction survives the anti-bot junk"
+    );
+}
+
 /// `finish_creation` drives the race/class/alignment dialogue that
 /// `login` stops in front of, and lands on the game prompt. The runner
 /// (and the nav tests) rely on it instead of re-inlining the sequence.

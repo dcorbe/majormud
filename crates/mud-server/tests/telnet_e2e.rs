@@ -138,6 +138,14 @@ fn round_config() -> CoreConfig {
     }
 }
 
+/// The shipped binary also scrambles direction words; fixtures do not.
+fn noisy_config() -> CoreConfig {
+    CoreConfig {
+        wire_noise: true,
+        ..test_config()
+    }
+}
+
 /// Reads from the socket until `needle` appears in the accumulated transcript
 /// (with a timeout so failures are readable, not hangs).
 async fn read_until(stream: &mut TcpStream, transcript: &mut String, needle: &str) {
@@ -288,6 +296,112 @@ async fn negotiates_echo_around_the_creation_password() {
         find(&raw, b"s3cret").is_none(),
         "the creation password must never be echoed: {}",
         String::from_utf8_lossy(&raw)
+    );
+}
+
+/// Resolve backspaces the way a period client does, so a test can check
+/// what the caller actually sees on their screen.
+fn resolve_backspaces(bytes: &[u8]) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    for &b in bytes {
+        match b {
+            0x08 if !matches!(out.last(), None | Some(b'\n') | Some(b'\r')) => {
+                out.pop();
+            }
+            0x08 => {}
+            _ => out.push(b),
+        }
+    }
+    out
+}
+
+/// The board hides a junk character and a backspace inside every
+/// direction word it prints, so a scraper reading "Obvious exits: north"
+/// finds "nO\x08orth" instead. MEASURED across the whole oracle corpus:
+/// 14515 insertions, every one of them at offset 1 of a direction word,
+/// on exits lines and movement lines alike.
+#[tokio::test]
+async fn direction_words_carry_the_anti_bot_backspace() {
+    let state = StateDb::open_in_memory().expect("state db");
+    let server = Server::start(world(), noisy_config(), state, "127.0.0.1:0")
+        .await
+        .expect("start server");
+
+    let mut stream = TcpStream::connect(server.local_addr())
+        .await
+        .expect("connect");
+    let mut raw = Vec::new();
+    create_and_enter_raw(&mut stream, &mut raw, "Jonas").await;
+    raw.clear();
+
+    send(&mut stream, "look").await;
+    read_raw_until(&mut stream, &mut raw, b"Obvious exits").await;
+    // Wait for the whole line to land.
+    read_raw_until(&mut stream, &mut raw, b"\r\n").await;
+
+    assert!(
+        raw.contains(&0x08),
+        "the exits line is scrambled: {}",
+        String::from_utf8_lossy(&raw)
+    );
+    assert!(
+        find(&raw, b"north").is_none(),
+        "a scraper cannot read the direction straight off the wire: {raw:?}"
+    );
+    // But a client that resolves backspaces sees the real thing.
+    let seen = resolve_backspaces(&raw);
+    assert!(
+        find(&seen, b"Obvious exits: north").is_some(),
+        "and a real terminal shows it intact: {}",
+        String::from_utf8_lossy(&seen)
+    );
+}
+
+/// The command echo is the caller's own text coming back; the board
+/// leaves it alone (every full-word direction echo in the corpus is
+/// clean), and scrambling it would fight the client's echo matching.
+#[tokio::test]
+async fn the_echo_is_never_scrambled() {
+    let state = StateDb::open_in_memory().expect("state db");
+    let server = Server::start(world(), noisy_config(), state, "127.0.0.1:0")
+        .await
+        .expect("start server");
+
+    let mut stream = TcpStream::connect(server.local_addr())
+        .await
+        .expect("connect");
+    let mut raw = Vec::new();
+    create_and_enter_raw(&mut stream, &mut raw, "Kara").await;
+    raw.clear();
+
+    send(&mut stream, "north").await;
+    read_raw_until(&mut stream, &mut raw, b"Town Square").await;
+    assert!(
+        find(&raw, b"north\r\n").is_some(),
+        "the echo comes back verbatim: {}",
+        String::from_utf8_lossy(&raw)
+    );
+}
+
+/// Fixtures get a clean stream by default.
+#[tokio::test]
+async fn wire_noise_is_off_unless_asked_for() {
+    let state = StateDb::open_in_memory().expect("state db");
+    let server = Server::start(world(), test_config(), state, "127.0.0.1:0")
+        .await
+        .expect("start server");
+
+    let mut stream = TcpStream::connect(server.local_addr())
+        .await
+        .expect("connect");
+    let mut raw = Vec::new();
+    create_and_enter_raw(&mut stream, &mut raw, "Lena").await;
+    raw.clear();
+    send(&mut stream, "look").await;
+    read_raw_until(&mut stream, &mut raw, b"Obvious exits: north").await;
+    assert!(
+        !raw.contains(&0x08),
+        "no backspaces in a quiet fixture: {raw:?}"
     );
 }
 

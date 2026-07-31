@@ -1,6 +1,7 @@
 //! Standalone telnet server for the MajorMUD reimplementation.
 //!
 //! Usage: mud-server [--content <path>] [--state <path>] [--listen <addr>]
+//!        [--houses <path>] [--spawn id@map,room] [--no-wire-noise]
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -18,6 +19,10 @@ struct Args {
     /// Dev fixture spawns: "id@map,room", repeatable (the M6 spawner runs
     /// regardless; fixtures are the test/staging placement path).
     spawns: Vec<(u16, u16, u16)>,
+    /// Send direction words plainly instead of hiding the board's
+    /// anti-bot junk character and backspace inside them. Useful when
+    /// reading a raw capture by eye.
+    no_wire_noise: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -27,6 +32,7 @@ fn parse_args() -> Result<Args, String> {
         listen: "0.0.0.0:2325".into(),
         houses: "re/hse_files".into(),
         spawns: Vec::new(),
+        no_wire_noise: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -39,6 +45,7 @@ fn parse_args() -> Result<Args, String> {
             "--state" => args.state = value("--state")?.into(),
             "--listen" => args.listen = value("--listen")?,
             "--houses" => args.houses = value("--houses")?.into(),
+            "--no-wire-noise" => args.no_wire_noise = true,
             "--spawn" => {
                 let v = value("--spawn")?;
                 let (id, loc) = v
@@ -132,6 +139,11 @@ fn main() -> ExitCode {
                 // approximation of a scheduler that paces each command
                 // differently. Fixtures leave this at 0.
                 command_round_seconds: 1,
+                // The board hides a junk character and a backspace in
+                // every direction word; period clients expect it, and a
+                // terminal renders it away. --no-wire-noise turns it off
+                // for anyone reading the stream by eye.
+                wire_noise: !args.no_wire_noise,
                 ..CoreConfig::default()
             },
             state,

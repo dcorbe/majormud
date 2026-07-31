@@ -565,6 +565,16 @@ pub struct CoreConfig {
     /// and the client's fixtures were written against; the server opts
     /// in to the faithful value.
     pub command_round_seconds: u8,
+    /// Hide a junk character and a backspace inside every direction word
+    /// on the way out, the way the board does, so a scraper reading
+    /// "Obvious exits: north" finds `nO\x08orth` and a real terminal
+    /// still shows "north".
+    ///
+    /// Consumed by the SERVER's write path, not by the core — it is a
+    /// wire-encoding concern and nothing in the game logic can see it.
+    /// It lives here because `ansi` does, and because threading a second
+    /// flag through `Server::start` would churn every fixture.
+    pub wire_noise: bool,
 }
 
 impl Default for CoreConfig {
@@ -588,6 +598,7 @@ impl Default for CoreConfig {
             wall_base: 0,
             ansi: false,
             command_round_seconds: 0,
+            wire_noise: false,
         }
     }
 }

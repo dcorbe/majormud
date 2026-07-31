@@ -90,6 +90,9 @@ impl Server {
         let local = listener.local_addr()?;
         let state = Arc::new(Mutex::new(state));
         let (core_tx, core_rx) = std_mpsc::channel::<CoreMsg>();
+        // A write-path concern the core never sees; read it out before
+        // the config is handed over to the core thread.
+        let wire_noise = config.wire_noise;
 
         {
             let state = Arc::clone(&state);
@@ -119,7 +122,7 @@ impl Server {
                 let state = Arc::clone(&state);
                 tokio::spawn(async move {
                     // Connection errors just end that connection.
-                    let _ = handle_connection(socket, core_tx, state).await;
+                    let _ = handle_connection(socket, core_tx, state, wire_noise).await;
                 });
             }
         });
@@ -451,6 +454,119 @@ async fn write_text(writer: &mut BufWriter<OwnedWriteHalf>, text: &str) -> io::R
     writer.flush().await
 }
 
+/// The words the board scrambles, longest first so that `northeast`
+/// wins over `north`.
+const DIRECTION_WORDS: [&str; 10] = [
+    "northeast",
+    "northwest",
+    "southeast",
+    "southwest",
+    "north",
+    "south",
+    "east",
+    "west",
+    "down",
+    "up",
+];
+
+/// The board's anti-bot measure: a junk letter and a backspace hidden
+/// inside every direction word it prints, so `north` goes out as
+/// `nO\x08orth`. A terminal backspaces over the junk and shows "north";
+/// a scraper matching on the literal word finds nothing.
+///
+/// MEASURED across the whole `re/oracle` corpus: 14515 insertions,
+/// every single one at offset 1 of a direction word — after the first
+/// character, never anywhere else — on exits lines ("Obvious exits:
+/// nO\x08orth, eP\x08ast") and movement lines ("moves into the room
+/// from the sCouth") alike. The junk is an uppercase letter.
+///
+/// Not applied to the command echo: that is the caller's own text
+/// coming back, and every full-word direction echo in the corpus is
+/// clean. Scrambling it would also fight the client's echo matching,
+/// which is what request/response attribution stands on.
+struct WireNoise {
+    state: u64,
+}
+
+impl WireNoise {
+    fn new(seed: u64) -> Self {
+        // Any odd, non-zero state; the seed only has to differ per
+        // connection so two callers do not see identical junk.
+        WireNoise {
+            state: seed.wrapping_mul(2).wrapping_add(0x9e37_79b9_7f4a_7c15),
+        }
+    }
+
+    /// An uppercase letter, A-Y (the alphabet observed in the corpus).
+    fn junk(&mut self) -> char {
+        self.state = self
+            .state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (b'A' + ((self.state >> 33) % 25) as u8) as char
+    }
+
+    /// Rewrite `text`, scrambling every whole-word direction in it.
+    /// ANSI escape sequences are stepped over untouched — a junk byte
+    /// inside one would change what it means.
+    fn apply(&mut self, text: &str) -> String {
+        let bytes = text.as_bytes();
+        let mut out = String::with_capacity(text.len() + text.len() / 8);
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == 0x1b {
+                let end = escape_end(bytes, i);
+                out.push_str(&text[i..end]);
+                i = end;
+                continue;
+            }
+            match self.direction_at(bytes, i) {
+                Some(len) => {
+                    // `n` + junk + BS + `orth`
+                    out.push(bytes[i] as char);
+                    out.push(self.junk());
+                    out.push('\u{8}');
+                    out.push_str(&text[i + 1..i + len]);
+                    i += len;
+                }
+                None => {
+                    let ch = text[i..].chars().next().expect("char boundary");
+                    out.push(ch);
+                    i += ch.len_utf8();
+                }
+            }
+        }
+        out
+    }
+
+    /// The length of the direction word starting at `i`, if one starts
+    /// there and stands alone rather than inside a longer word.
+    fn direction_at(&self, bytes: &[u8], i: usize) -> Option<usize> {
+        if i > 0 && bytes[i - 1].is_ascii_alphabetic() {
+            return None;
+        }
+        DIRECTION_WORDS.iter().find_map(|word| {
+            let end = i + word.len();
+            let fits = bytes.len() >= end
+                && bytes[i..end].eq_ignore_ascii_case(word.as_bytes())
+                && !bytes.get(end).is_some_and(|b| b.is_ascii_alphabetic());
+            fits.then_some(word.len())
+        })
+    }
+}
+
+/// The offset just past the ANSI escape sequence starting at `i`.
+fn escape_end(bytes: &[u8], i: usize) -> usize {
+    let mut j = i + 1;
+    if bytes.get(j) == Some(&b'[') {
+        j += 1;
+        while j < bytes.len() && !bytes[j].is_ascii_alphabetic() {
+            j += 1;
+        }
+    }
+    (j + 1).min(bytes.len())
+}
+
 /// Protocol bytes, which must not go through `write_text`'s newline
 /// rewriting.
 async fn write_raw(writer: &mut BufWriter<OwnedWriteHalf>, bytes: &[u8]) -> io::Result<()> {
@@ -485,6 +601,7 @@ async fn handle_connection(
     socket: TcpStream,
     core_tx: std_mpsc::Sender<CoreMsg>,
     state: Arc<Mutex<StateDb>>,
+    wire_noise: bool,
 ) -> io::Result<()> {
     let (read_half, write_half) = socket.into_split();
     let mut reader = TelnetReader::new(read_half);
@@ -523,6 +640,9 @@ async fn handle_connection(
         return Ok(());
     }
     let session = reply_rx.await.map_err(|_| io::ErrorKind::BrokenPipe)?;
+    // Seeded per session so two callers never see the same junk, and so
+    // a fixture replays identically.
+    let mut noise = wire_noise.then(|| WireNoise::new(session.0 as u64));
 
     loop {
         tokio::select! {
@@ -532,7 +652,13 @@ async fn handle_connection(
             // never produces.
             biased;
             out = out_rx.recv() => match out {
-                Some(OutMsg::Text(text)) => write_text(&mut writer, &text).await?,
+                Some(OutMsg::Text(text)) => {
+                    let text = match noise.as_mut() {
+                        Some(noise) => noise.apply(&text),
+                        None => text,
+                    };
+                    write_text(&mut writer, &text).await?
+                }
                 Some(OutMsg::Close) | None => break,
             },
             line = reader.read_line() => match line {
