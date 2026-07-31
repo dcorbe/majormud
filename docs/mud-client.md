@@ -121,6 +121,42 @@ the reimplementation's, not the board's.
 - **`idle_poke_ms`** (5000) — an idle board sends *nothing*, not even a
   prompt, for minutes at a stretch. The poke is the only thing that
   produces prompts at an empty stop, and it doubles as a respawn check.
+  It is also how stale an observation may get before the runner re-asks.
+- **`dwell_empty_seconds`** (0) — how long to hold a stop open once the
+  room block has *proven* it empty, waiting for a respawn. 0 leaves the
+  moment it is proven. This is a policy budget, not a state inference —
+  see below.
+
+### How a stop ends
+
+A stop ends on **evidence**, not on elapsed time or a count of prompts.
+
+The board answers "is there anything here to fight" outright, in every
+room block, under `Also here:`. `StopState` keeps the last block accepted
+for this stop and the runner leaves only when that block is fresh, lists
+nothing the bot would swing at, no fight is outstanding, and nothing is
+still owed to the board.
+
+This replaced a rule that counted prompts with nothing to do. A prompt is
+evidence that the board answered *something*; it says nothing about who
+is standing in the room. That mismatch produced three separate failures —
+walking out with three monsters still listed, abandoning a fight that was
+still going, and hanging forever on an attack the board had refused — and
+four successive patches tuned the threshold without addressing any of it.
+
+Two things remain time-based, and both are honest about it:
+
+- `dwell_empty_seconds` is a **judgement about this circuit**. No message
+  can say how long a respawn is worth waiting for.
+- An accepted block goes stale after `idle_poke_ms` and must be re-asked,
+  because **nothing announces a respawn** — the board simply puts a
+  monster in the room. Silence is not proof the room is unchanged. This
+  forces a re-observation; it never decides anything by itself.
+
+A stop that cannot be seen at all is `Blind`, not empty: a dark room
+answers `look` with "you can't see anything" and never sends a block. The
+runner tries the light plan a bounded number of times and then moves on,
+except while defending, where the deadline governs.
 
 ### `combat_idle_prompts`
 
@@ -135,14 +171,16 @@ record at all. Matching them all would mean carrying a thousand strings.
 So the bot ends a fight on three signals instead: the classic death
 phrase, the experience line that follows any kill of ours ("You gain %s
 experience.", DLL 0xbc65f), and — as the backstop for an exp-less kill or
-a monster somebody else finished — `combat_idle_prompts` (3) prompts with
+a monster somebody else finished — `combat_idle_prompts` (12) prompts with
 no blow struck either way. A fight in progress refreshes that on every
 swing, hit or miss, so it only counts genuine silence.
 
-This matters more than it sounds: the farm runner reads a latched bot as
-a fight in progress, so it stops poking the room and stops counting the
-stop as idle. A missed kill does not merely lose a target — it wedges the
-whole run.
+It is now a true last resort. The room block clears the engaged latch
+properly by finding the target gone, and the stop decision overrides the
+counter outright: if it fires early in a genuinely slow fight, the last
+accepted block still lists the monster, so the stop stays busy and the
+runner does not walk off mid-fight. What is left for it to cover is the
+case where no room block is coming at all.
 
 ### `[farm.nav]`
 
