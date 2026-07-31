@@ -9369,7 +9369,7 @@ impl Core {
             self.content.items.get(id).is_some_and(|i| {
                 i.abilities
                     .iter()
-                    .any(|(a, v)| *a == controller && i16::from(*v) == house)
+                    .any(|(a, v)| *a == controller && *v == house)
             })
         });
         if !has_key {
