@@ -1016,6 +1016,38 @@ enum Job {
     ExitRelock(RoomId, u8),
 }
 
+/// Erase the line the cursor sits on: back up further than any terminal
+/// is wide, then clear to the end. The board opens every burst with this
+/// rather than a carriage return, and it opens room renders with it too.
+const ERASE_LINE: &str = "\x1b[79D\x1b[K";
+
+/// Which preamble introduces a room render.
+///
+/// MEASURED (`re/oracle/accept-run1.raw`), matching the grammar
+/// OmegaMUD's `Parsing/RoomParseState.cs` documents: a look or a move
+/// resets the SGR before erasing, while entering the game and the
+/// bare-Enter re-show erase without resetting. `ESC[79D` alone marks
+/// nothing — that capture has 354 of them and only 25 open a room.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Render {
+    /// Look, and arriving anywhere — including relocations the player
+    /// did not walk (teleports, trapdoors), which render like a move.
+    LookOrMove,
+    /// Entering the game, and re-showing the room on a bare Enter.
+    EntryOrRefresh,
+}
+
+impl Render {
+    fn preamble(self) -> &'static str {
+        match self {
+            // Reset -> CursorBackward(79) -> EraseLine, then the room
+            // name's own colour closes the sequence.
+            Render::LookOrMove => concat!("\x1b[0;37;40m", "\x1b[79D\x1b[K"),
+            Render::EntryOrRefresh => ERASE_LINE,
+        }
+    }
+}
+
 const SLOW_INTERVAL: u64 = 30;
 /// The pursuit tier (`background_fast`).
 const FAST_INTERVAL: u64 = 1;
@@ -3210,7 +3242,7 @@ impl Core {
                 if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
                     player.location = dest;
                 }
-                self.show_room(session);
+                self.show_room(session, Render::LookOrMove); // questVM teleport: a relocation
                 let snapshot = Box::new(self.player(session).clone());
                 self.events.push(Event::Persist(snapshot));
                 FAIL
@@ -4993,7 +5025,7 @@ impl Core {
         for line in penalty_lines {
             self.output_line(id, &line);
         }
-        self.show_room(id);
+        self.show_room(id, Render::EntryOrRefresh);
         self.show_prompt(id);
         self.reprompt_disturbed();
         id
@@ -5509,8 +5541,8 @@ impl Core {
         match parse(line) {
             Command::Quit => self.quit(session),
             // Blank input re-shows the room without its description (oracle).
-            Command::Blank => self.show_room_brief(session),
-            Command::Look => self.show_room(session),
+            Command::Blank => self.show_room_brief(session, Render::EntryOrRefresh),
+            Command::Look => self.show_room(session, Render::LookOrMove),
             Command::Exits => self.show_exits_line(session),
             Command::Help => self.output_line(session, text::HELP_BANNER),
             Command::Top(args) => self.top_command(session, &args),
@@ -10025,7 +10057,7 @@ impl Core {
             if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
                 player.location = exit.dest;
             }
-            self.show_room(session);
+            self.show_room(session, Render::LookOrMove); // trapdoor: a relocation
             return;
         }
         let rating = exit.param.max(1);
@@ -10066,7 +10098,11 @@ impl Core {
                 Some(session),
                 &format!("{name} is searching the area."),
             );
-            self.show_room_brief(session);
+            // ORACLE-VERIFY: no capture contains a SEARCH, so which
+            // preamble the board uses here is a guess. Treated as a
+            // re-show of the room, like the bare-Enter case it shares
+            // this renderer with.
+            self.show_room_brief(session, Render::EntryOrRefresh);
             // The hidden stash surfaces to a searcher (theft.md §11.2;
             // presentation ORACLE-VERIFY — the notice-line frame reused).
             let stash: Vec<String> = self
@@ -16365,7 +16401,7 @@ impl Core {
                 &text::walks_in_from(&name, direction.opposite()),
             );
         }
-        self.show_room(session);
+        self.show_room(session, Render::LookOrMove);
     }
 
     /// A perception-filtered room broadcast (the DLL's tell_room
@@ -16391,8 +16427,8 @@ impl Core {
         }
     }
 
-    fn show_room(&mut self, session: SessionId) {
-        self.render_room(session, true);
+    fn show_room(&mut self, session: SessionId, render: Render) {
+        self.render_room(session, true, render);
     }
 
     /// One exit's obvious-exits entry, or `None` when hidden. ORACLE
@@ -16437,18 +16473,29 @@ impl Core {
         self.output_line(session, &line);
     }
 
-    fn show_room_brief(&mut self, session: SessionId) {
-        self.render_room(session, false);
+    fn show_room_brief(&mut self, session: SessionId, render: Render) {
+        self.render_room(session, false, render);
     }
 
     /// Renders the session's current room: name, description (full display
     /// only, first line indented four spaces per the oracle transcript),
     /// occupants, obvious exits.
-    fn render_room(&mut self, session: SessionId, full: bool) {
+    fn render_room(&mut self, session: SessionId, full: bool, render: Render) {
+        let mut out = String::new();
+        // The board's render preamble. It carries its own erase, so an
+        // ANSI session must not also collect `output`'s — that would
+        // erase the same line twice. A plain terminal has no preamble at
+        // all (it strips away below) and still wants the newline
+        // step-off, so it keeps `output`'s handling.
+        out.push_str(render.preamble());
+        if self.session_ansi(session)
+            && let Some(Session::InGame { at_prompt, .. }) = self.sessions.get_mut(&session)
+        {
+            *at_prompt = false;
+        }
+
         let player = self.player(session);
         let room = &self.content.rooms[&player.location];
-
-        let mut out = String::new();
         out.push_str(text::color::ROOM_NAME);
         out.push_str(&room.name);
         out.push_str(text::color::RESET);
@@ -16610,6 +16657,15 @@ impl Core {
         })
     }
 
+    /// Per-user ANSI overrides the global once a character is attached;
+    /// login/creation sessions follow the server global.
+    fn session_ansi(&self, session: SessionId) -> bool {
+        match self.sessions.get(&session) {
+            Some(Session::InGame { player, .. }) => player.ansi,
+            _ => self.config.ansi,
+        }
+    }
+
     fn output(&mut self, session: SessionId, text: &str) {
         // Erase a dangling prompt before async output lands on it
         // (the DLL prefixes every burst with ESC[79D ESC[K).
@@ -16620,22 +16676,17 @@ impl Core {
             }
             _ => false,
         };
-        // Per-user ANSI overrides the global once a character is
-        // attached; login/creation sessions follow the server global.
-        let ansi = match self.sessions.get(&session) {
-            Some(Session::InGame { player, .. }) => player.ansi,
-            _ => self.config.ansi,
-        };
+        let ansi = self.session_ansi(session);
         let mut text = if ansi {
             text.to_string()
         } else {
             text::strip_ansi(text)
         };
         if erase {
-            // ANSI: erase the dangling prompt in place (ESC[79D ESC[K);
-            // plain terminals get a newline away from it instead.
+            // ANSI: erase the dangling prompt in place; plain terminals
+            // get a newline away from it instead.
             text = if ansi {
-                format!("\r\x1b[K{text}")
+                format!("{ERASE_LINE}{text}")
             } else {
                 format!("\r\n{text}")
             };
