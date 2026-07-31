@@ -195,6 +195,19 @@ const COMBAT_BLOCKED: &str = "may not enter that room while in combat";
 /// direction again would overshoot by a room.
 const BASH_CARRIED_THROUGH: &str = "walk through";
 
+/// Bashing is a ROLL: "Your attempts to bash through fail!" (captured
+/// live, stopstate-run1) — and the cooldown scold "You must wait before
+/// you may do that!" paces it. One try per step was why the
+/// restart-locked door at 1/2150 needed a hand-run script that leaned on
+/// it for up to sixty rolls.
+const BASH_FAILED: [&str; 2] = ["bash through fail", "must wait before you may do that"];
+
+/// Rolls per step before the door is declared unbashable. Each roll
+/// costs HP ("You take %d damage for bashing the door!" — chatter, not
+/// an outcome), so the walk's guard is the health backstop; this bound
+/// is the diagnosability backstop.
+const BASH_RETRIES: u32 = 20;
+
 /// The direction an "Obvious exits" token points.
 ///
 /// Exits render as display strings, not commands — "closed door north",
@@ -231,6 +244,8 @@ enum StepEvent {
     CombatBlocked,
     /// There is no such exit; the graph and the board disagree.
     NoSuchExit,
+    /// The bash roll came up short; the door still stands.
+    BashFailed,
     /// The room is too dark to see: the board sent no room block at all,
     /// only "you can't see anything".
     ///
@@ -626,6 +641,9 @@ impl Navigator {
             // re-localizing and re-routing, which is precisely the
             // recovery this needs — and asking costs one command instead
             // of a whole step deadline.
+            // A bash-fail wording can only attribute to a bash the walk
+            // sent; unreachable here, kept for match completeness.
+            StepEvent::BashFailed => {}
             StepEvent::NoSuchExit => {
                 let ask = session.send("look");
                 return self
@@ -672,6 +690,8 @@ impl Navigator {
             StepEvent::Blind => {
                 return Ok(StepOutcome::StayedPut(here.to_string()));
             }
+            // Unreachable for an open; kept for match completeness.
+            StepEvent::BashFailed => {}
             StepEvent::NoSuchExit => {
                 let ask = session.send("look");
                 return self
@@ -701,30 +721,47 @@ impl Navigator {
             }));
         }
 
-        let bashed = session.send(&format!("bash {dir}"));
-        match self.wait_room(events, guard, armed, bashed).await? {
-            // The bash carried us through the doorway.
-            StepEvent::Arrived(name) => Ok(StepOutcome::Arrived(name)),
-            StepEvent::Blind => Ok(StepOutcome::Arrived(
-                Navigator::blind_position(BlindContext::AfterMove, expected, here).to_string(),
-            )),
-            StepEvent::NoSuchExit => {
-                let ask = session.send("look");
-                self.arrival(here, expected, BlindContext::AfterLook, events, guard, armed, ask)
-                    .await
-                    .map(StepOutcome::StayedPut)
-            }
-            // It only opened it; the step is still owed.
-            StepEvent::CombatBlocked => Err(NavErrorKind::Interrupted(Interrupt::Attacked {
-                by: "combat".into(),
-            })),
-            StepEvent::DoorYielded | StepEvent::DoorBlocked => {
-                let again = session.send(dir);
-                self.arrival(here, expected, BlindContext::AfterMove, events, guard, armed, again)
-                    .await
-                    .map(StepOutcome::Arrived)
+        for _ in 0..BASH_RETRIES {
+            let bashed = session.send(&format!("bash {dir}"));
+            match self.wait_room(events, guard, armed, bashed).await? {
+                // The roll came up short; the door still stands. Roll
+                // again — the guard is the health backstop for the HP
+                // each attempt costs.
+                StepEvent::BashFailed => continue,
+                // The bash carried us through the doorway.
+                StepEvent::Arrived(name) => return Ok(StepOutcome::Arrived(name)),
+                StepEvent::Blind => {
+                    return Ok(StepOutcome::Arrived(
+                        Navigator::blind_position(BlindContext::AfterMove, expected, here)
+                            .to_string(),
+                    ));
+                }
+                StepEvent::NoSuchExit => {
+                    let ask = session.send("look");
+                    return self
+                        .arrival(here, expected, BlindContext::AfterLook, events, guard, armed, ask)
+                        .await
+                        .map(StepOutcome::StayedPut);
+                }
+                StepEvent::CombatBlocked => {
+                    return Err(NavErrorKind::Interrupted(Interrupt::Attacked {
+                        by: "combat".into(),
+                    }));
+                }
+                // It only opened it; the step is still owed.
+                StepEvent::DoorYielded | StepEvent::DoorBlocked => {
+                    let again = session.send(dir);
+                    return self
+                        .arrival(here, expected, BlindContext::AfterMove, events, guard, armed, again)
+                        .await
+                        .map(StepOutcome::Arrived);
+                }
             }
         }
+        Err(NavErrorKind::Expect(ExpectError::Timeout {
+            needle: "room block after movement".into(),
+            tail: format!("door did not yield to {BASH_RETRIES} bashes"),
+        }))
     }
 
     /// Wait specifically for a room block, treating door chatter as noise.
@@ -751,7 +788,7 @@ impl Navigator {
                 StepEvent::Blind => {
                     return Ok(Navigator::blind_position(after, expected, here).to_string());
                 }
-                StepEvent::NoSuchExit => continue,
+                StepEvent::NoSuchExit | StepEvent::BashFailed => continue,
                 StepEvent::CombatBlocked => {
                     return Err(NavErrorKind::Interrupted(Interrupt::Attacked {
                         by: "combat".into(),
@@ -833,6 +870,9 @@ impl Navigator {
                     }
                     if line.contains(crate::sheet::TOO_DARK) {
                         return Ok(StepEvent::Blind);
+                    }
+                    if BASH_FAILED.iter().any(|m| line.contains(m)) {
+                        return Ok(StepEvent::BashFailed);
                     }
                     if DOOR_BLOCKED.iter().any(|m| line.contains(m)) {
                         return Ok(StepEvent::DoorBlocked);

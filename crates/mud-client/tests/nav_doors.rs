@@ -339,3 +339,102 @@ async fn a_dark_room_is_navigated_by_dead_reckoning() {
 
     assert_eq!(at, THERE, "position comes from the graph edge taken");
 }
+
+/// A board whose door needs `fails` bash rolls before it gives — the
+/// live 1/2150 door after a restart is exactly this (opendoor.lua leaned
+/// on it up to 60 tries). Bash costs HP and the board says so; the
+/// damage line is chatter, not an outcome.
+async fn rolling_door_board(fails: usize) -> (std::net::SocketAddr, Arc<DoorLog>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let log = Arc::new(DoorLog::default());
+    let counter = Arc::clone(&log);
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut open = false;
+        let mut failed = 0usize;
+        sock.write_all(room_block("Guard Post", "closed door north").as_bytes())
+            .await
+            .unwrap();
+        let mut buf = [0u8; 512];
+        while let Ok(n) = sock.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            let line = String::from_utf8_lossy(&buf[..n]).trim().to_lowercase();
+            let echo = format!("\r\n{line}");
+            let reply = match line.as_str() {
+                "n" => {
+                    counter.moves.fetch_add(1, Ordering::SeqCst);
+                    if open {
+                        room_block("Inner Ward", "open door south")
+                    } else {
+                        "\r\nThe door is closed!\r\n[HP=30/MA=0]:".to_string()
+                    }
+                }
+                "open n" | "open north" => {
+                    counter.opens.fetch_add(1, Ordering::SeqCst);
+                    "\r\nThe door is locked.\r\n[HP=30/MA=0]:".to_string()
+                }
+                "bash n" | "bash north" => {
+                    counter.bashes.fetch_add(1, Ordering::SeqCst);
+                    if failed < fails {
+                        failed += 1;
+                        "\r\nYou take 2 damage for bashing the door!\r\nYour attempts to bash through fail!\r\n[HP=28/MA=0]:"
+                            .to_string()
+                    } else {
+                        open = true;
+                        "\r\nYou bashed the door open.\r\n[HP=28/MA=0]:".to_string()
+                    }
+                }
+                other => format!("\r\nYou say \"{other}\"\r\n[HP=30/MA=0]:"),
+            };
+            sock.write_all(format!("{echo}{reply}").as_bytes()).await.unwrap();
+        }
+    });
+    (addr, log)
+}
+
+/// Bashing is a roll ("Your attempts to bash through fail!", captured
+/// live in stopstate-run1) — one try was why the restart-locked door at
+/// 1/2150 needed a hand-run script. The walk keeps rolling.
+#[tokio::test]
+async fn a_bash_that_fails_is_rolled_again_until_the_door_gives() {
+    let (addr, log) = rolling_door_board(2).await;
+    let session = session_for(addr).await;
+    let n = nav(graph_with_exit(7));
+
+    let at = tokio::time::timeout(
+        Duration::from_secs(10),
+        n.goto(&session, HERE, THERE, &mut NoGuard),
+    )
+    .await
+    .expect("goto should not hang")
+    .expect("the third roll opens it");
+    assert_eq!(at, THERE);
+    assert_eq!(log.bashes.load(Ordering::SeqCst), 3, "two fails then the yield");
+}
+
+/// A door that never gives ends in a bounded, diagnosable error — not a
+/// hang, and not an unbounded HP drain.
+#[tokio::test]
+async fn a_door_that_never_yields_fails_cleanly_within_the_retry_budget() {
+    let (addr, log) = rolling_door_board(usize::MAX).await;
+    let session = session_for(addr).await;
+    let n = nav(graph_with_exit(7));
+
+    let started = std::time::Instant::now();
+    let result = tokio::time::timeout(
+        Duration::from_secs(30),
+        n.goto(&session, HERE, THERE, &mut NoGuard),
+    )
+    .await
+    .expect("goto should not hang");
+    assert!(result.is_err(), "{result:?}");
+    let bashes = log.bashes.load(Ordering::SeqCst);
+    assert!(
+        (1..=25).contains(&bashes),
+        "unbounded bashing: {bashes} attempts in {:?}",
+        started.elapsed()
+    );
+}
