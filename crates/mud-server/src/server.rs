@@ -420,6 +420,15 @@ async fn handle_connection(
 
     loop {
         tokio::select! {
+            // Biased, output first: a queued reply must reach the wire
+            // before the NEXT command's echo, or the fixture would emit
+            // "echo A, echo B, reply A" — a schedule the real board
+            // never produces.
+            biased;
+            out = out_rx.recv() => match out {
+                Some(OutMsg::Text(text)) => write_text(&mut writer, &text).await?,
+                Some(OutMsg::Close) | None => break,
+            },
             line = reader.read_line() => match line {
                 Some(line) => {
                     // Echo the accepted line back before dispatch, like
@@ -439,10 +448,6 @@ async fn handle_connection(
                     let _ = core_tx.send(CoreMsg::Detach { session });
                     break;
                 }
-            },
-            out = out_rx.recv() => match out {
-                Some(OutMsg::Text(text)) => write_text(&mut writer, &text).await?,
-                Some(OutMsg::Close) | None => break,
             },
         }
     }

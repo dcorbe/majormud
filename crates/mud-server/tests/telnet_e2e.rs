@@ -191,6 +191,12 @@ async fn full_session_create_walk_quit() {
     send(&mut stream, "look").await;
     read_until(&mut stream, &mut t, "Town Gates").await;
     read_until(&mut stream, &mut t, "Obvious exits: north").await;
+    // The board echoes every accepted line, and the reply follows the
+    // echo — the client's request/response correlation stands on this,
+    // so the fixture pins it in its own suite.
+    let echo = t.find("look\r\n").expect("the accepted command is echoed");
+    let room = t.rfind("Town Gates").expect("room render");
+    assert!(echo < room, "the echo must precede the reply");
 
     send(&mut stream, "n").await;
     read_until(&mut stream, &mut t, "Town Square").await;

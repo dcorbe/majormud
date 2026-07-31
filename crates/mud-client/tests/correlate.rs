@@ -832,3 +832,25 @@ fn cast_and_light_refusals_are_symmetric() {
     );
     assert_eq!(ans(&mut c, room("Dungeon, Entrance"), t), Some(CmdId(1)));
 }
+
+#[test]
+fn an_empty_send_never_matches_and_never_evicts() {
+    // Bare Enter in the TUI reaches send("") — meaningful on the wire
+    // (pager advance) but meaningless to correlate: board output is full
+    // of whitespace-only and decoration-only lines that strip to empty,
+    // and an empty entry they falsely accepted would FIFO-drop every
+    // earlier pending command as "eaten".
+    assert!(!is_echo("", ""));
+    assert!(!is_echo("   ", ""));
+    assert!(!is_echo("(Resting)", ""));
+
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "n", t); // echo still in flight
+    c.sent(CmdId(2), "", t); // bare Enter
+    assert_eq!(ans(&mut c, line("   "), t), None);
+    assert_eq!(ans(&mut c, line("(Resting)"), t), None);
+    // The step survived: its echo and block still attribute.
+    assert_eq!(ans(&mut c, line("n"), t), Some(CmdId(1)));
+    assert_eq!(ans(&mut c, room("Dungeon, Entrance"), t), Some(CmdId(1)));
+}

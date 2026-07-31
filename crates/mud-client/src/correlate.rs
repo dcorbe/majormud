@@ -104,6 +104,13 @@ pub fn strip_decoration(s: &str) -> &str {
 /// and the fragment >= 2, so a stray `n` never reads as the tail of
 /// `open n` and one-letter directions only ever match exactly.
 pub fn is_echo(line: &str, cmd: &str) -> bool {
+    // An empty command matches nothing: board output is full of
+    // whitespace-only and decoration-only lines that strip to empty, and
+    // a falsely-accepted empty entry would FIFO-drop real pending
+    // commands as "eaten".
+    if cmd.is_empty() {
+        return false;
+    }
     let line = strip_decoration(line.trim());
     if line == cmd {
         return true;
@@ -313,6 +320,12 @@ impl Correlator {
     pub fn sent(&mut self, id: CmdId, line: &str, now: Instant) {
         debug_assert_eq!(line, line.trim(), "sent() wants the trimmed command text");
         self.expire(now);
+        // A bare Enter is meaningful on the wire (pager advance) but
+        // meaningless to correlate — never registered, so it can never
+        // be falsely accepted.
+        if line.is_empty() {
+            return;
+        }
         self.queue.push_back(Entry {
             id,
             text: line.to_string(),
