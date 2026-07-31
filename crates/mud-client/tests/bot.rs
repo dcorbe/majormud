@@ -9,13 +9,17 @@ use mud_client::events::{Actor, Event, RoomView};
 // same room asserted in tests/parse.rs. Do not sanitise them here: the
 // display token is not a movement command, and that gap is the bug
 // `flees_through_a_closed_door` pins.
-fn room(also_here: &[&str]) -> Event {
-    Event::RoomSeen(RoomView {
+fn view(also_here: &[&str]) -> RoomView {
+    RoomView {
         name: "Arena, Blood Pit".into(),
         exits: vec!["closed door north".into(), "up".into()],
         also_here: also_here.iter().map(|s| s.to_string()).collect(),
         items: vec![],
-    })
+    }
+}
+
+fn room(also_here: &[&str]) -> Event {
+    Event::RoomSeen(view(also_here))
 }
 
 fn combat_bot() -> Bot {
@@ -637,4 +641,70 @@ fn a_monster_with_a_status_prefix_is_still_a_monster() {
 fn a_prefixed_player_is_still_not_attacked() {
     let mut bot = combat_bot();
     assert!(bot.on_event(&room(&["(Resting) Vexil"])).is_empty());
+}
+
+// --- has_target: "is this room worth staying in" ---------------------
+//
+// The farm runner used to answer that by counting prompts since it last
+// did something, and shipped three bugs doing it. The room block states
+// the answer outright, and these pin the predicate it reads.
+
+/// The question is about the ROOM, not about what we happen to be doing.
+/// A monster we are mid-fight with is still listed under "Also here:"
+/// (verified in re/oracle/oracle_attack_syntax.raw), and a caller asking
+/// "is there anything here" must get `true` for it — otherwise the runner
+/// reads a live fight as an empty room and walks out of it.
+#[test]
+fn has_target_sees_past_the_current_fight() {
+    let mut bot = combat_bot();
+    bot.on_event(&room(&["giant rat", "cave bear"]));
+    // No threat table here, so both score 0 and the board's own order
+    // stands — which of the two it picked does not matter, only that a
+    // fight is now outstanding.
+    assert_eq!(bot.engaged(), Some("giant rat"), "test needs a live fight");
+    assert!(
+        bot.has_target(&view(&["giant rat", "cave bear"])),
+        "a room we are fighting in read as having nothing to fight"
+    );
+}
+
+/// Everything the bot would not swing at leaves the room effectively
+/// empty: the ignore list, the case rule that tells a player from a
+/// monster, and the toggle itself.
+#[test]
+fn has_target_is_false_for_names_we_would_never_attack() {
+    let bot = combat_bot();
+    assert!(!bot.has_target(&view(&[])), "empty room");
+    assert!(!bot.has_target(&view(&["town guard"])), "ignore list");
+    assert!(
+        !bot.has_target(&view(&["Vexil"])),
+        "players are not targets"
+    );
+    assert!(
+        !Bot::new(BotConfig::default()).has_target(&view(&["kobold thief"])),
+        "auto_combat off"
+    );
+}
+
+/// A refusal is the board saying we may not attack this at all. The stop
+/// must not be held open waiting for a swing that will never land — this
+/// is the hang that shipped.
+#[test]
+fn has_target_is_false_for_a_refused_name() {
+    let mut bot = combat_bot();
+    bot.on_event(&room(&["kobold thief"]));
+    bot.on_event(&Event::Line(
+        mud_core::crime::WARN_ON_EVIL_REFUSAL.to_string(),
+    ));
+    assert!(
+        !bot.has_target(&view(&["kobold thief"])),
+        "a refused monster held the room open"
+    );
+}
+
+/// One name we would fight is enough, wherever it sits in the listing.
+#[test]
+fn has_target_is_true_when_anything_in_the_listing_qualifies() {
+    let bot = combat_bot();
+    assert!(bot.has_target(&view(&["town guard", "Vexil", "giant rat"])));
 }

@@ -303,15 +303,43 @@ impl Bot {
         }
     }
 
-    /// Is this something we would swing at at all? Split out of
-    /// [`Bot::engage`] so candidates can be ranked before one is chosen,
-    /// rather than the first acceptable name winning by position.
-    fn attackable(&self, name: &str) -> bool {
+    /// Is there anything in this room block we would swing at — now, or
+    /// once the current fight ends?
+    ///
+    /// The farm runner asks this to decide whether a stop is finished.
+    /// "No death line was seen" is a guess; "the board listed nobody we
+    /// would fight" is a fact, and it is printed in every room block.
+    ///
+    /// Deliberately blind to [`Bot::engaged`]: a monster we are mid-fight
+    /// with is STILL listed under "Also here:" — verbatim in
+    /// `re/oracle/oracle_attack_syntax.raw`, where the block renders twice
+    /// with the kobold thief stabbing throughout. Answering this with
+    /// [`Bot::attackable`] instead would report an empty room in the
+    /// middle of a fight, and the runner would walk out of it.
+    pub fn has_target(&self, room: &crate::events::RoomView) -> bool {
+        room.also_here.iter().any(|name| self.would_attack(name))
+    }
+
+    /// Would we swing at this name at all? The toggle, the case rule that
+    /// tells a monster from a player, the ignore list, and the set of
+    /// targets the board has already refused.
+    ///
+    /// Says nothing about whether we are *already busy* — that is
+    /// [`Bot::attackable`]. The split exists because "is this room worth
+    /// staying in" and "should I attack this now" are different questions
+    /// and only the second one cares about the current fight.
+    fn would_attack(&self, name: &str) -> bool {
         self.config.auto_combat
-            && self.engaged.is_none()
             && is_attackable(name)
             && !self.refused.contains(target_word(name))
             && !self.config.ignore.iter().any(|i| name.contains(i.as_str()))
+    }
+
+    /// Is this something we would swing at right now? Split out of
+    /// [`Bot::engage`] so candidates can be ranked before one is chosen,
+    /// rather than the first acceptable name winning by position.
+    fn attackable(&self, name: &str) -> bool {
+        self.engaged.is_none() && self.would_attack(name)
     }
 
     /// How dangerous `name` is.
