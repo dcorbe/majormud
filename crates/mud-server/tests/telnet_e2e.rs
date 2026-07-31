@@ -315,11 +315,10 @@ fn resolve_backspaces(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-/// The board hides a junk character and a backspace inside every
-/// direction word it prints, so a scraper reading "Obvious exits: north"
+/// The board hides a junk character and a backspace inside the direction
+/// words on its exits line, so a scraper reading "Obvious exits: north"
 /// finds "nO\x08orth" instead. MEASURED across the whole oracle corpus:
-/// 14515 insertions, every one of them at offset 1 of a direction word,
-/// on exits lines and movement lines alike.
+/// 14515 insertions, every one at offset 1 of a direction word.
 #[tokio::test]
 async fn direction_words_carry_the_anti_bot_backspace() {
     let state = StateDb::open_in_memory().expect("state db");
@@ -354,6 +353,40 @@ async fn direction_words_carry_the_anti_bot_backspace() {
         find(&seen, b"Obvious exits: north").is_some(),
         "and a real terminal shows it intact: {}",
         String::from_utf8_lossy(&seen)
+    );
+}
+
+/// Prose is left alone. The board scrambles navigational text, not
+/// flavour: 4903 direction words in captured room descriptions, not one
+/// of them touched. A description saying "the gates lie to the north"
+/// must arrive verbatim.
+#[tokio::test]
+async fn room_descriptions_are_never_scrambled() {
+    let mut content = world();
+    let mut gates = content.rooms[&RoomId { map: 1, room: 1 }].clone();
+    gates.description = vec!["A dusty path runs north and south from here.".into()];
+    content.add_room(gates);
+
+    let state = StateDb::open_in_memory().expect("state db");
+    let server = Server::start(content, noisy_config(), state, "127.0.0.1:0")
+        .await
+        .expect("start server");
+
+    let mut stream = TcpStream::connect(server.local_addr())
+        .await
+        .expect("connect");
+    let mut raw = Vec::new();
+    create_and_enter_raw(&mut stream, &mut raw, "Mira").await;
+    raw.clear();
+
+    send(&mut stream, "look").await;
+    read_raw_until(&mut stream, &mut raw, b"Obvious exits").await;
+    read_raw_until(&mut stream, &mut raw, b"\r\n").await;
+
+    assert!(
+        find(&raw, b"A dusty path runs north and south from here.").is_some(),
+        "the description arrives verbatim: {}",
+        String::from_utf8_lossy(&raw)
     );
 }
 

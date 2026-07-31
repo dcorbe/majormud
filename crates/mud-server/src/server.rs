@@ -476,11 +476,23 @@ const DIRECTION_WORDS: [&str; 10] = [
 ///
 /// MEASURED across the whole `re/oracle` corpus: 14515 insertions,
 /// every single one at offset 1 of a direction word — after the first
-/// character, never anywhere else — on exits lines ("Obvious exits:
-/// nO\x08orth, eP\x08ast") and movement lines ("moves into the room
-/// from the sCouth") alike. The junk is an uppercase letter.
+/// character, never anywhere else. The junk is an uppercase letter.
 ///
-/// Not applied to the command echo: that is the caller's own text
+/// It applies to NAVIGATIONAL text only. Room descriptions are left
+/// alone even when they name a direction: 4903 direction words in board
+/// prose, not one of them scrambled ("The path leads east and west"
+/// arrives verbatim). Which fits what the measure is for — a scraper
+/// navigates by the exits line, not by flavour text.
+///
+/// Scoped here to the exits line, the 6768-of-7788 majority case and the
+/// one automation actually reads. Recorded simplification: the board
+/// also scrambles its movement announcements ("moves into the room from
+/// the sCouth", ~1020 lines). We do not, because nothing in the flat
+/// text distinguishes them from a description — real descriptions
+/// contain "to the north" too, and only the composition site knows
+/// which direction words are data rather than prose.
+///
+/// Not applied to the command echo either: that is the caller's own text
 /// coming back, and every full-word direction echo in the corpus is
 /// clean. Scrambling it would also fight the client's echo matching,
 /// which is what request/response attribution stands on.
@@ -506,10 +518,31 @@ impl WireNoise {
         (b'A' + ((self.state >> 33) % 25) as u8) as char
     }
 
-    /// Rewrite `text`, scrambling every whole-word direction in it.
-    /// ANSI escape sequences are stepped over untouched — a junk byte
-    /// inside one would change what it means.
+    /// Rewrite `text`, scrambling the directions on any exits line it
+    /// contains and leaving every other line alone. Output arrives as
+    /// whole blocks — a room render is one string — so the decision is
+    /// per line, not per block.
     fn apply(&mut self, text: &str) -> String {
+        if !text.contains(mud_core::text::OBVIOUS_EXITS) {
+            return text.to_string();
+        }
+        let mut out = String::with_capacity(text.len() + 32);
+        // `split_inclusive` keeps each newline on its own line, so
+        // rejoining is just concatenation.
+        for line in text.split_inclusive('\n') {
+            if line.contains(mud_core::text::OBVIOUS_EXITS) {
+                out.push_str(&self.scramble_directions(line));
+            } else {
+                out.push_str(line);
+            }
+        }
+        out
+    }
+
+    /// Scramble every whole-word direction in one line. ANSI escape
+    /// sequences are stepped over untouched — a junk byte inside one
+    /// would change what it means.
+    fn scramble_directions(&mut self, text: &str) -> String {
         let bytes = text.as_bytes();
         let mut out = String::with_capacity(text.len() + text.len() / 8);
         let mut i = 0;
