@@ -6,6 +6,7 @@
 use std::time::{Duration, Instant};
 
 use mud_client::bot::{Bot, BotConfig};
+use mud_client::correlate::{CmdId, Correlated};
 use mud_client::events::{Actor, Event, RoomView};
 use mud_client::farm::{
     ACK_TIMEOUT, FarmConfig, FarmGuard, FarmPlan, Gate, HealWatch, StopState, Verdict,
@@ -171,6 +172,16 @@ fn prompt(hp: i32) -> Event {
     Event::Prompt { hp, mana: None }
 }
 
+/// An event nobody asked for.
+fn unsolicited(ev: Event) -> Correlated {
+    Correlated { event: ev, answers: None }
+}
+
+/// An event attributed to `id`.
+fn answering(ev: Event, id: CmdId) -> Correlated {
+    Correlated { event: ev, answers: Some(id) }
+}
+
 #[test]
 fn an_empty_gate_sends_nothing() {
     let mut g = gate();
@@ -178,23 +189,74 @@ fn an_empty_gate_sends_nothing() {
 }
 
 #[test]
-fn holds_one_command_in_flight_until_the_prompt_acks_it() {
+fn holds_one_command_in_flight_until_its_echo_acks_it() {
     let t0 = Instant::now();
     let mut g = gate();
     g.push("a rat".into());
     g.push("get copper".into());
 
     assert_eq!(g.poll(t0), Some("a rat".to_string()));
-    // The board has not answered yet, so nothing else goes out.
+    g.confirm(CmdId(7));
+    // The board has not accepted it yet, so nothing else goes out.
     assert_eq!(g.poll(t0 + Duration::from_millis(10)), None);
     assert_eq!(g.in_flight(), Some("a rat"));
 
-    g.on_event(&prompt(30), t0 + Duration::from_millis(20));
+    // The echo — any event ANSWERING our send — is the acknowledgement.
+    g.on_event(
+        &answering(Event::Line("a rat".into()), CmdId(7)),
+        t0 + Duration::from_millis(20),
+    );
     assert_eq!(g.in_flight(), None);
     assert_eq!(
         g.poll(t0 + Duration::from_millis(30)),
         Some("get copper".to_string())
     );
+}
+
+#[test]
+fn a_burst_of_unsolicited_prompts_never_acks() {
+    // Prompts arrive in bursts and unsolicited — the board re-prompts
+    // whenever async output disturbs a dangling one. A prompt is not
+    // evidence OUR command was answered; treating it as one is how a
+    // stranger's blow used to clear our in-flight command.
+    let t0 = Instant::now();
+    let mut g = gate();
+    g.push("a rat".into());
+    assert_eq!(g.poll(t0), Some("a rat".to_string()));
+    g.confirm(CmdId(7));
+    for i in 0..5 {
+        g.on_event(&unsolicited(prompt(30)), t0 + Duration::from_millis(i));
+    }
+    assert_eq!(g.in_flight(), Some("a rat"), "a prompt is not an ack");
+    assert_eq!(g.poll(t0 + Duration::from_millis(10)), None);
+}
+
+#[test]
+fn an_answer_to_somebody_else_does_not_ack() {
+    let t0 = Instant::now();
+    let mut g = gate();
+    g.push("a rat".into());
+    g.poll(t0);
+    g.confirm(CmdId(7));
+    // A stale look's block, attributed to an EARLIER send.
+    g.on_event(
+        &answering(Event::Line("look".into()), CmdId(3)),
+        t0 + Duration::from_millis(5),
+    );
+    assert_eq!(g.in_flight(), Some("a rat"));
+}
+
+#[test]
+fn an_unconfirmed_command_still_expires() {
+    // poll() handed the command out but the runner never reported the
+    // send id (crash between poll and send). The ACK_TIMEOUT floor keeps
+    // the queue moving regardless.
+    let t0 = Instant::now();
+    let mut g = gate();
+    g.push("a rat".into());
+    g.push("get copper".into());
+    assert_eq!(g.poll(t0), Some("a rat".to_string()));
+    assert_eq!(g.poll(t0 + ACK_TIMEOUT), Some("get copper".to_string()));
 }
 
 #[test]
@@ -206,7 +268,7 @@ fn slow_down_resends_the_command_the_board_dropped() {
 
     // "Why don't you slow down for a few seconds?" — the swing never
     // happened, so it has to go out again once the board calms down.
-    g.on_event(&Event::SlowDown, t0);
+    g.on_event(&unsolicited(Event::SlowDown), t0);
     assert_eq!(
         g.poll(t0 + Duration::from_millis(1)),
         None,
@@ -224,7 +286,7 @@ fn a_burst_of_slow_downs_resends_once() {
 
     // The board repeats the scolding for every line it drops.
     for i in 0..3 {
-        g.on_event(&Event::SlowDown, t0 + Duration::from_millis(i));
+        g.on_event(&unsolicited(Event::SlowDown), t0 + Duration::from_millis(i));
     }
 
     assert_eq!(g.poll(t0 + BACKOFF * 2), Some("a rat".to_string()));
@@ -237,8 +299,8 @@ fn a_later_slow_down_extends_the_backoff() {
     let mut g = gate();
     g.push("a rat".into());
     g.poll(t0);
-    g.on_event(&Event::SlowDown, t0);
-    g.on_event(&Event::SlowDown, t0 + Duration::from_millis(2000));
+    g.on_event(&unsolicited(Event::SlowDown), t0);
+    g.on_event(&unsolicited(Event::SlowDown), t0 + Duration::from_millis(2000));
 
     // Backoff runs from the *last* scolding, not the first.
     assert_eq!(g.poll(t0 + BACKOFF), None);
@@ -254,7 +316,7 @@ fn a_later_slow_down_extends_the_backoff() {
 fn slow_down_with_nothing_in_flight_still_backs_off() {
     let t0 = Instant::now();
     let mut g = gate();
-    g.on_event(&Event::SlowDown, t0);
+    g.on_event(&unsolicited(Event::SlowDown), t0);
     g.push("a rat".into());
 
     assert_eq!(g.poll(t0 + Duration::from_millis(1)), None);
@@ -285,7 +347,7 @@ fn next_deadline_is_when_the_backoff_ends() {
     g.poll(t0);
     assert_eq!(g.next_deadline(), Some(t0 + ACK_TIMEOUT));
 
-    g.on_event(&Event::SlowDown, t0);
+    g.on_event(&unsolicited(Event::SlowDown), t0);
     assert_eq!(g.next_deadline(), Some(t0 + BACKOFF));
 }
 
@@ -1161,8 +1223,9 @@ fn an_idle_gate_owes_the_board_nothing() {
     g.push("get copper".into());
     assert!(!g.is_idle(), "a queued command is still owed");
     assert_eq!(g.poll(t0), Some("get copper".to_string()));
+    g.confirm(CmdId(4));
     assert!(!g.is_idle(), "an unacknowledged command is still owed");
-    g.on_event(&prompt(30), t0);
+    g.on_event(&answering(Event::Line("get copper".into()), CmdId(4)), t0);
     assert!(g.is_idle());
 }
 

@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 
 use mud_core::content::RoomId;
 
-use crate::correlate::Correlated;
+use crate::correlate::{CmdId, Correlated};
 use crate::events::Event;
 use crate::graph::RoomGraph;
 
@@ -392,7 +392,11 @@ fn set_phase(sink: PhaseSink<'_>, phase: Phase) {
 /// queue, and the live board paces at 1500ms, so firing every bot
 /// decision straight at it buries the character under minutes of stale
 /// commands with no way to cancel. The gate keeps exactly one command in
-/// flight until the board's prompt acknowledges it.
+/// flight until an event ANSWERING that send arrives — the echo, or any
+/// later attributed reply. A prompt is not an acknowledgement: the board
+/// sends them in bursts and unsolicited, re-prompting whenever async
+/// output disturbs a dangling one, so "next prompt" used to let a
+/// stranger's blow clear our in-flight command.
 ///
 /// It is also the only thing that acts on [`Event::SlowDown`], which
 /// means the board *dropped* our input. The dropped command goes back to
@@ -402,8 +406,10 @@ fn set_phase(sink: PhaseSink<'_>, phase: Phase) {
 /// re-arm.
 pub struct Gate {
     queue: VecDeque<String>,
-    /// The command awaiting its prompt, and when it went out.
-    in_flight: Option<(String, Instant)>,
+    /// The command awaiting acknowledgement: its text, the send id to
+    /// match against `Correlated::answers` (None between `poll` and
+    /// `confirm`), and when it went out.
+    in_flight: Option<(String, Option<CmdId>, Instant)>,
     /// Nothing may be sent before this instant (flood control).
     blocked_until: Option<Instant>,
     backoff: Duration,
@@ -426,7 +432,16 @@ impl Gate {
 
     /// The command awaiting acknowledgement, if any.
     pub fn in_flight(&self) -> Option<&str> {
-        self.in_flight.as_ref().map(|(line, _)| line.as_str())
+        self.in_flight.as_ref().map(|(line, _, _)| line.as_str())
+    }
+
+    /// Attach the session's send id to the command `poll` just released.
+    /// The runner calls this right after `session.send` — the id is what
+    /// the acknowledgement will carry.
+    pub fn confirm(&mut self, id: CmdId) {
+        if let Some((_, slot, _)) = &mut self.in_flight {
+            *slot = Some(id);
+        }
     }
 
     /// Nothing queued and nothing awaiting acknowledgement: everything the
@@ -439,20 +454,25 @@ impl Gate {
         self.queue.is_empty() && self.in_flight.is_none()
     }
 
-    pub fn on_event(&mut self, ev: &Event, now: Instant) {
-        match ev {
-            // The board answered, so whatever we sent landed.
-            Event::Prompt { .. } => self.in_flight = None,
-            Event::SlowDown => {
-                // Flood control ate the in-flight command. Taking it here
-                // is what keeps a burst of scoldings from queueing a
-                // resend apiece: the second SlowDown finds nothing left.
-                if let Some((line, _)) = self.in_flight.take() {
-                    self.queue.push_front(line);
-                }
-                self.blocked_until = Some(now + self.backoff);
+    pub fn on_event(&mut self, cor: &Correlated, now: Instant) {
+        if let Event::SlowDown = cor.event {
+            // Flood control ate the in-flight command. Taking it here
+            // is what keeps a burst of scoldings from queueing a
+            // resend apiece: the second SlowDown finds nothing left.
+            // The resend goes out under a NEW send id.
+            if let Some((line, _, _)) = self.in_flight.take() {
+                self.queue.push_front(line);
             }
-            _ => {}
+            self.blocked_until = Some(now + self.backoff);
+            return;
+        }
+        // The board accepted our send: the echo (or any later reply)
+        // arrives attributed to its id. Nothing else acks — least of
+        // all a prompt.
+        if let (Some(answers), Some((_, Some(id), _))) = (cor.answers, &self.in_flight)
+            && answers == *id
+        {
+            self.in_flight = None;
         }
     }
 
@@ -465,14 +485,14 @@ impl Gate {
             }
             self.blocked_until = None;
         }
-        if let Some((_, sent_at)) = &self.in_flight {
+        if let Some((_, _, sent_at)) = &self.in_flight {
             if now.duration_since(*sent_at) < ACK_TIMEOUT {
                 return None;
             }
             self.in_flight = None;
         }
         let line = self.queue.pop_front()?;
-        self.in_flight = Some((line.clone(), now));
+        self.in_flight = Some((line.clone(), None, now));
         Some(line)
     }
 
@@ -481,7 +501,7 @@ impl Gate {
     /// The runner sleeps until this rather than polling.
     pub fn next_deadline(&self) -> Option<Instant> {
         let backoff = self.blocked_until;
-        let ack = self.in_flight.as_ref().map(|(_, at)| *at + ACK_TIMEOUT);
+        let ack = self.in_flight.as_ref().map(|(_, _, at)| *at + ACK_TIMEOUT);
         match (backoff, ack) {
             // Both must pass before anything can go out.
             (Some(a), Some(b)) => Some(a.max(b)),
@@ -1590,7 +1610,7 @@ async fn farm_stop(
         while let Some(cmd) = gate.poll(now) {
             heal.on_sent(&cmd);
             seen.on_sent(&cmd);
-            session.send(&cmd);
+            gate.confirm(session.send(&cmd));
         }
 
         // Sleep until the next event, the gate's own deadline, the idle
@@ -1604,10 +1624,8 @@ async fn farm_stop(
         }
         let wake = tokio::time::Instant::from_std(wake);
 
-        let ev = match tokio::time::timeout_at(wake, events.recv()).await {
-            // Attribution rides in the envelope; the pump reads the
-            // event for now and Phases 4/6 put `answers` to work.
-            Ok(Ok(cor)) => Some(cor.event),
+        let cor = match tokio::time::timeout_at(wake, events.recv()).await {
+            Ok(Ok(cor)) => Some(cor),
             // Dropped events desync a stateful bot: it can miss the death
             // that ends a fight and sit latched on a corpse. Start over
             // rather than carry on with a bot that quietly lost track.
@@ -1627,7 +1645,8 @@ async fn farm_stop(
             // iteration decides what to make of that.
             Err(_) => None,
         };
-        let Some(ev) = ev else { continue };
+        let Some(cor) = cor else { continue };
+        let ev = &cor.event;
 
         if let Event::SlowDown = ev {
             stats.slowdowns += 1;
@@ -1650,7 +1669,7 @@ async fn farm_stop(
             }
         }
         if let Event::Prompt { hp, .. } = ev
-            && hp <= 0
+            && *hp <= 0
         {
             return Ok(StopEnd::Died);
         }
@@ -1685,12 +1704,12 @@ async fn farm_stop(
             continue;
         }
 
-        gate.on_event(&ev, Instant::now());
-        if heal.on_event(&ev) {
+        gate.on_event(&cor, Instant::now());
+        if heal.on_event(ev) {
             bot.rearm();
         }
 
-        for crate::bot::BotAction::Send(cmd) in bot.on_event(&ev) {
+        for crate::bot::BotAction::Send(cmd) in bot.on_event(ev) {
             // The heal command is the only way to tell resting from
             // simply standing about; the bot's own debounce is private.
             if cmd == bot_config.heal_command {
@@ -1700,7 +1719,7 @@ async fn farm_stop(
         }
         // Folded last, so `engaged` and `has_target` already account for
         // this event when the next iteration asks for a verdict.
-        seen.on_event(&ev, &bot, Instant::now());
+        seen.on_event(ev, &bot, Instant::now());
     }
 }
 

@@ -21,6 +21,7 @@
 use std::time::{Duration, Instant};
 
 use mud_client::bot::{Bot, BotAction, BotConfig};
+use mud_client::correlate::{CmdId, Correlator};
 use mud_client::events::Event;
 use mud_client::farm::{FarmConfig, Gate, StopState, Verdict};
 use mud_client::parse::Parser;
@@ -77,9 +78,17 @@ struct Run {
     decided: usize,
     slow_downs: usize,
     /// Scoldings that arrived with a command in flight — the only ones
-    /// that can force a resend. Zero across the whole corpus; see the
-    /// module docs.
+    /// that can force a resend. One, since the gate started holding a
+    /// command until its echo instead of until the next prompt.
     scoldings_with_a_command_in_flight: usize,
+    /// The (event index, command) pairs the board scolded away while in
+    /// flight; each must be re-emitted later.
+    scolded: Vec<(usize, String)>,
+    /// What the gate still owed when the transcript ended, drained with
+    /// the backoff expired: a scolding near the end of a capture backs
+    /// off past the replay's last tick, and the resend it still owes
+    /// lands here instead of in `emitted`.
+    tail: Vec<String>,
     /// Times the stop was called finished while the last room block for
     /// it still listed something the bot would have swung at. Must be
     /// zero: that is the bug this whole mechanism replaced.
@@ -99,6 +108,12 @@ fn drive(path: &std::path::Path) -> Run {
     let t0 = Instant::now();
     let mut bot = armed_bot();
     let mut gate = Gate::new(BACKOFF);
+    // The replay mirrors the session wiring: the gate's emissions feed a
+    // Correlator, and the captured stream's own echoes acknowledge them
+    // — the original operator sent the same commands at the same points,
+    // which is the premise of every corpus test.
+    let mut correlator = Correlator::new(Duration::from_secs(10));
+    let mut next_id = 1u64;
     let mut run = Run::default();
 
     let events = corpus_events(path);
@@ -155,12 +170,14 @@ fn drive(path: &std::path::Path) -> Run {
 
         if matches!(ev, Event::SlowDown) {
             run.slow_downs += 1;
-            if gate.in_flight().is_some() {
+            if let Some(cmd) = gate.in_flight() {
                 run.scoldings_with_a_command_in_flight += 1;
+                run.scolded.push((i, cmd.to_string()));
             }
         }
 
-        gate.on_event(ev, now);
+        let cor = correlator.on_event(ev.clone(), now);
+        gate.on_event(&cor, now);
         for BotAction::Send(cmd) in bot.on_event(ev) {
             run.decided += 1;
             gate.push(cmd);
@@ -169,9 +186,17 @@ fn drive(path: &std::path::Path) -> Run {
         // Drain whatever the gate is willing to release. The backoff is
         // far longer than TICK, so a scolding genuinely stalls the run.
         while let Some(cmd) = gate.poll(now) {
+            let id = CmdId(next_id);
+            next_id += 1;
+            correlator.sent(id, &cmd, now);
+            gate.confirm(id);
             run.emitted.push((i, cmd));
         }
         stop.on_event(ev, &bot, now);
+    }
+    let after = t0 + TICK * (events.len() as u32) + BACKOFF * 2;
+    while let Some(cmd) = gate.poll(after) {
+        run.tail.push(cmd);
     }
     run
 }
@@ -197,20 +222,32 @@ fn the_corpus_still_contains_flood_control() {
     assert_eq!(total, 14, "flood-control lines in the corpus changed");
 }
 
-/// Pins the gap itself. If a future capture ever catches the board
-/// scolding us with a bot command in flight, this fails — and that is
-/// the signal to replace the unit-level resend test with a corpus-fed
-/// one, because the real thing finally exists to test against.
+/// The corpus-fed resend test the old tripwire reserved a slot for.
+///
+/// While the gate acked on the next prompt, no capture ever caught a
+/// scolding with a command in flight — prompts arrive so freely that
+/// the window was always already closed. Echo acknowledgement holds the
+/// command for its real round-trip, and one captured scolding now lands
+/// inside that honest window. The contract: the dropped command must go
+/// back out.
 #[test]
-fn no_capture_yet_catches_a_scolding_with_a_command_in_flight() {
-    let total: usize = runs()
-        .iter()
-        .map(|(_, r)| r.scoldings_with_a_command_in_flight)
-        .sum();
-    assert_eq!(
-        total, 0,
-        "a capture now exercises the resend path — write the corpus-fed resend test"
-    );
+fn a_scolded_command_in_flight_is_resent() {
+    let mut total = 0;
+    for (path, run) in runs() {
+        for (at, cmd) in &run.scolded {
+            total += 1;
+            assert!(
+                run.emitted.iter().any(|(i, c)| i > at && c == cmd)
+                    || run.tail.contains(cmd),
+                "{}: {cmd:?} scolded at event {at} and never resent",
+                path.display()
+            );
+        }
+    }
+    // Tripwire, in the same spirit as the corpus counts: if the replay
+    // stops producing the in-flight scolding, this test is asserting
+    // over an empty list and proving nothing.
+    assert_eq!(total, 1, "in-flight scoldings in the replay changed");
 }
 
 /// One command in flight at a time: without an intervening prompt to
