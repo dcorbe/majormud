@@ -234,11 +234,20 @@ impl Bot {
                 self.exits = room.exits.clone();
                 // Somewhere new: running away is allowed again.
                 self.fled = false;
-                if self
-                    .engaged
-                    .as_ref()
-                    .is_some_and(|t| !room.also_here.contains(t))
-                {
+                // Compared through `strip_status`, not by exact string.
+                // A monster that sits down mid-fight re-renders with a
+                // "(Resting) " decoration spliced in (DLL 0xe06f6), and
+                // an exact match read the decorated name as a DIFFERENT
+                // monster: the latch cleared, the target was re-engaged,
+                // and the bot sent a fresh attack on every room block --
+                // straight into flood control, on a fight already in
+                // progress.
+                if self.engaged.as_deref().is_some_and(|target| {
+                    !room
+                        .also_here
+                        .iter()
+                        .any(|name| strip_status(name) == strip_status(target))
+                }) {
                     self.engaged = None;
                 }
                 // Biggest threat first. "Also here:" is in the board's

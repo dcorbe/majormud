@@ -708,3 +708,58 @@ fn has_target_is_true_when_anything_in_the_listing_qualifies() {
     let bot = combat_bot();
     assert!(bot.has_target(&view(&["town guard", "Vexil", "giant rat"])));
 }
+
+/// A monster that sits down mid-fight re-renders with a "(Resting) "
+/// decoration spliced in (DLL 0xe06f6). The engaged latch was compared
+/// against "Also here:" by EXACT string, so the decorated name did not
+/// match the plain one we latched onto — the bot concluded its target
+/// had left, cleared the latch, and immediately re-attacked the very
+/// same monster. That is a duplicate command per room block, straight
+/// into flood control.
+#[test]
+fn a_target_that_sits_down_is_not_treated_as_a_new_monster() {
+    let mut bot = combat_bot();
+    assert_eq!(
+        bot.on_event(&room(&["fierce filthbug"])),
+        vec![BotAction::Send("a filthbug".into())]
+    );
+    let actions = bot.on_event(&room(&["(Resting) fierce filthbug"]));
+    assert!(
+        actions.is_empty(),
+        "re-attacked a monster we were already fighting: {actions:?}"
+    );
+    assert_eq!(
+        bot.engaged(),
+        Some("fierce filthbug"),
+        "dropped a fight that was still going"
+    );
+}
+
+/// The mirror case: we latched on through an `ActorEntered` that carried
+/// the decoration, and the room block prints the plain name.
+#[test]
+fn a_decorated_latch_matches_the_plain_name_in_the_room_block() {
+    let mut bot = combat_bot();
+    bot.on_event(&Event::ActorEntered {
+        name: "(Resting) fierce filthbug".into(),
+        from: None,
+    });
+    assert!(bot.engaged().is_some(), "test needs a live fight");
+    let actions = bot.on_event(&room(&["fierce filthbug"]));
+    assert!(
+        actions.is_empty(),
+        "re-attacked a monster we were already fighting: {actions:?}"
+    );
+}
+
+/// Normalising must not blind the latch to the target actually leaving.
+#[test]
+fn a_decorated_latch_still_clears_when_the_room_empties() {
+    let mut bot = combat_bot();
+    bot.on_event(&Event::ActorEntered {
+        name: "(Resting) fierce filthbug".into(),
+        from: None,
+    });
+    bot.on_event(&room(&[]));
+    assert_eq!(bot.engaged(), None, "latched on a monster that is gone");
+}
