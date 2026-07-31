@@ -139,6 +139,14 @@ fn ticks(core: &mut Core, n: u64) {
     core.drain_events();
 }
 
+/// Like [`ticks`] but hands back everything the ticks emitted.
+fn ticks_collect(core: &mut Core, n: u64) -> Vec<mud_core::game::Event> {
+    for _ in 0..n {
+        core.tick();
+    }
+    core.drain_events()
+}
+
 #[test]
 fn boot_fills_shelves_to_max() {
     // Extracted shopnow is played-board state; a fresh world stocks full.
@@ -263,8 +271,22 @@ fn gang_shops_are_skipped() {
     // fills to max).
     core.restore_shop_stock(&[(ShopId(45), 0, 4)]);
     let s = create(&mut core, "Dain");
-    ticks(&mut core, 5 * SWEEP);
-    assert_eq!(quantity_shown(&mut core, s), 4, "no restock ever fires");
+    let events = ticks_collect(&mut core, 5 * SWEEP);
+    // No restock ever fires: a top-up would persist the new count.
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, mud_core::game::Event::PersistShopStock { .. })),
+        "no restock persist for a type-11 shop"
+    );
+    // And LIST renders the RUNTIME shelves (empty here), never the
+    // content shelf — the M7 close-out's display_shop_items 0xb branch.
+    core.input(s, "list");
+    let shown = text_to(&core.drain_events(), s);
+    assert!(
+        !shown.contains("quarterstaff"),
+        "content shelf invisible on a gang shop: {shown:?}"
+    );
     // And the buy path no longer sees the content shelf at all.
     core.input(s, "buy quarterstaff");
     let events = core.drain_events();

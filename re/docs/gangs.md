@@ -663,4 +663,4 @@ u32 skip-on-overflow guard is unreachable under u64 balances.
 | Gang war | M8+ | needs PvP combat |
 | Limited-item / worn-second-copy STOCK gates | M8 | fields unmodeled; marker at cmd_stock port |
 | Oracle expedition (strings, min-abbrevs, gangpath render, deed dead-code-4) | slice 8 | two-character program + .HSE render |
-| LIST rendering of gang-shop runtime shelves | slice 8 | buyers currently browse blind; the DLL renders the same overloaded slot fields |
+| LIST rendering of gang-shop runtime shelves | **LANDED (slice 8)** | display_shop_items' type-0xb branch (34841-34900): shared header/Free-row/suffix strings, price = slot × (markup+100)/100 in the slot denom, no CHA factor at LIST time (buy-side only). Pinned in `gang_shop.rs` (5 tests) |

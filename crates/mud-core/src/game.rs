@@ -11740,6 +11740,56 @@ impl Core {
             self.output_line(session, text::NOT_IN_SHOP_LIST);
             return Resolution::Handled;
         };
+        // Gang stock shop (type 0xb): display_shop_items' dedicated
+        // branch (34841-34900) renders the 10 RUNTIME slots — the same
+        // header strings as the regular branch (004849fd/00484a26/
+        // 00484a5b), price = slot price × (markup+100)/100 in the SLOT's
+        // own denomination, the same Free row (00484b35) and can't-use
+        // suffix pair. NO Charm factor and NO >100000 quirk at LIST time
+        // — both are buy-side only (buy_item 14571+, mirrored in
+        // buy_from_gang_shop), so LIST shows markup-only prices exactly
+        // like a regular shelf shows value without the haggle. (The
+        // priced row is 00484b1a `%5u` vs the regular 00484b73 `%5d` —
+        // output-indistinguishable for a u16-sourced price.)
+        if self.content.shops[&shop_id].shop_type == 11 {
+            let Some(state) = self.gang_shops.get(&shop_id).cloned() else {
+                return Resolution::Handled; // never stocked: nothing prints
+            };
+            let mut out = String::new();
+            for slot in &state.slots {
+                let Some(item_id) = slot.item else { continue };
+                if slot.count == 0 {
+                    continue;
+                }
+                let Some(item) = self.content.items.get(&item_id) else {
+                    continue;
+                };
+                if out.is_empty() {
+                    out.push_str(text::SHOP_HEADER);
+                    out.push('\n');
+                }
+                let shelf = i64::from(slot.price) * (i64::from(state.markup) + 100) / 100;
+                let row = if shelf == 0 {
+                    text::shop_row_free(&item.name, slot.count)
+                } else {
+                    text::shop_row_priced(
+                        &item.name,
+                        slot.count,
+                        shelf,
+                        slot.denom.clamp(0, 4) as usize,
+                    )
+                };
+                out.push_str(&row);
+                if let Some(suffix) = self.list_row_suffix(session, item) {
+                    out.push_str(suffix);
+                }
+                out.push('\n');
+            }
+            if !out.is_empty() {
+                self.output(session, &out);
+            }
+            return Resolution::Handled;
+        }
         let shop = &self.content.shops[&shop_id];
         let counts = self.shop_stock.get(&shop_id).copied().unwrap_or_default();
         // The header prints lazily on the first stocked row, and
