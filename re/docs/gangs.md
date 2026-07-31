@@ -248,8 +248,10 @@ guard `balance+amount > balance` under which **the deposit is skipped entirely**
 (not clamped) — marks the bankbook dirty, logs
 `"GANGSHOP DEPOSIT : %s : %s copper farthings."` (exact literal), and flushes
 all bankbooks. So the **gold price** a member pays for a gang-shop item is
-deposited into the gang's bank-8 account; the deed's **experience price** is
-charged against the pool in §2.1.
+deposited into the gang's bank-8 account. **The deed purchase touches
+neither** (corrected 2026-07-30, slice-7 implementation pass): the type-`0xc`
+branch never calls the deposit, and the exp pool is a threshold GATE — it is
+never debited (14416-14437 only read it).
 
 ### 2.3 Gang-house tax — `GHouseTax` (182 / 0xb5-adjacent abilities)
 
@@ -498,11 +500,12 @@ separate system from gangs.)
 
 ## 7. Undetermined / flagged
 
-- **`GangHouseNumber @ room+0x62`** (cited from the room schema) was **not** the
-  linkage found in code; the operative gang-house room fields here are the `+0x564`
-  bit-`0x40` flag, `+0x5c4` controlling-room, and `+0x444` owner name. Whether the
-  disk WCCMP001 record additionally stores a numeric gang-house id near `+0x62`
-  (populated but unused by the paths read) was not disk-verified.
+- ~~**`GangHouseNumber @ room+0x62`**~~ **CLOSED (2026-07-30):** the number
+  lives at **`room+0x46e`** — the extractor's `ganghousenumber` column, which
+  matches the manifest's `ganghouse#` (1..10) on every sampled room, and is
+  exactly what the `GShopItem` controller gate compares against (`cmd_stock`
+  50646). Item 844 "red key" carries GShopItem value 1 = the Red house, whose
+  shop room (15/973) carries `ganghousenumber` 1.
 - **Player-side description editing.** No in-game command that *writes* the room
   `Desc[1]` filename or authors the external file was located; descriptions appear to
   be placed as external text files out-of-band. The `CREATE <direction>` house-build
@@ -589,3 +592,74 @@ to M8 with this section as the spec seed. Where the house-number lives on the
 room/gang record remains unlocated (§7 first bullet).
 </content>
 </invoke>
+
+## 9. As built — M7 slice 7 (2026-07-30)
+
+The port (crates/mud-core `gang.rs` + the `game.rs` gang surfaces,
+crates/mud-server persistence) ships everything in §0-§5 except the
+deferrals below. Spec corrections discovered DURING implementation, all
+decompile-read:
+
+- **INVITE and UNINVITE gang arms require the `MEMBER` keyword**
+  (`INVITE MEMBER <name>` / `UNINVITE MEMBER <name>`); the plain forms
+  are the party follow system (unported, M8). §1.2/§1.4's bare-form
+  aliases were wrong. The gang arm's not-found line prints margv[1] — so
+  it literally says "You don't see member here!" (52753, ported).
+- **JOIN has no GUILD alias** (cmd_join matches only "gang"), and ANY
+  join attempt against an EXISTING gang clears EVERY pending invite for
+  the user (`clear_gang_invitations(user, NULL)`); a nonexistent gang
+  leaves them intact.
+- **cmd_create**: separate too-LONG gate ("The name you have chosen is
+  too LONG: %s") ahead of the 'None'/charset checks; `CREATE ROOM <arg>`
+  is the lease-stub build path; other keyword pairs with args are a
+  SILENT consume; fewer than two words falls to say (margc < 3). The
+  in-use refusal appends "%s is the leader of %s." unless the holder is
+  disbanded.
+- **PROMOTE/DEMOTE are silent no-ops** for non-leaders, gangless actors,
+  and multi-word names (margc == 2 gate). Self-promote prints the
+  demote-yourself line (string reuse). Unknown OFFLINE names print the
+  syntax line. Offline demote sets the pending bit with NO
+  is-lieutenant check; offline promote does check already-lieutenant.
+  "Gang member %s is not a lieutenant in your gang." is UNPLACED dead
+  text (no call site found). Offline gang-mismatch wording differs per
+  verb (invite-first vs the period-form demote line).
+- **DISBAND GANG runs a yes/no continuation** (input state 0x88): one
+  word starting with Y accepts; the gang hears BOTH lines ("The gang %s
+  has now been disbanded." + "The name may not be used again until all
+  members have entered the game!") via tell_gang before the silent
+  online sweep. **tell_gang has no sender exclusion** — joiners hear
+  their own join broadcast, gangpath senders their own line.
+- **The deed shop's already-owner refusal (code 4) is DEAD CODE**: the
+  pool check clobbers it to 5 (14435), so an owner sees the
+  exp-insufficient line (ORACLE-VERIFY). The pool is never debited and
+  no deposit fires on a deed sale (§2.2 correction). Selling a stocked
+  item back to the type-0xc shop sets the 0x4000 paperwork bit and
+  skips the shelf restock.
+- **Gang shops**: ten slots, count cap 20, sold-out/emptied slots are
+  DELISTED; every STOCK rewrites slot price/denomination (explicit args
+  or the item's own +0x322/+0x429) and overwrites last_stocker; UNSTOCK
+  pulls from the lowest-count slot; buy price carries the DLL's >100000
+  1/100-precision quirk and deposits the FULL price to bank 8.
+
+**Port divergences** (each cited at its call site): roster ALL-view
+order is mirror order (boot scan + joins), not WCCUSERS record order;
+the Btrieve check-vs-insert race arm of cmd_create is unportable;
+top-gangs order is exp-descending by assumption (§5.1 note); the
+gangpath ANSI blob renders as its visible intent; offline promote of a
+GANGLESS player prints the syntax line (the mirror cannot see them —
+the DLL would say the invite-first line); GANGEXP/MAXTOP are
+compile-time defaults (1000/30) rather than MSG options; the bank-8
+u32 skip-on-overflow guard is unreachable under u64 balances.
+
+## 10. M7 deferrals
+
+| item | target | note |
+|---|---|---|
+| Gang-house tax / eviction lifecycle | **M8** | §8 — evidence only; the paperwork bit ships with no clearer |
+| Sysop gang commands (DISBAND/DISABLE/ENABLE/GANGSIZE, LIST GANG, rename) | M8 | flags bit 0x4 is schema-only; TOP skips it |
+| Player TOP arm | M8 | needs board-wide account data; stub + marker |
+| Party/group system (plain INVITE/UNINVITE, JOIN channels, cmd_follow, DISBAND PARTY) | M8 | gang arms fall through to say |
+| .HSE editing | never | out-of-band even in the original (§4.3) |
+| Gang war | M8+ | needs PvP combat |
+| Limited-item / worn-second-copy STOCK gates | M8 | fields unmodeled; marker at cmd_stock port |
+| Oracle expedition (strings, min-abbrevs, gangpath render, deed dead-code-4) | slice 8 | two-character program + .HSE render |
