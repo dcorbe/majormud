@@ -422,6 +422,15 @@ async fn handle_connection(
         tokio::select! {
             line = reader.read_line() => match line {
                 Some(line) => {
+                    // Echo the accepted line back before dispatch, like
+                    // the real board: WCCMMUD echoes every line it
+                    // accepts, at menus and in the realm alike, and the
+                    // reply follows the echo (docs/board-correlation.md,
+                    // 94.1% of corpus room blocks). The client's
+                    // request/response correlation stands on this, so a
+                    // fixture that stayed silent would exercise only the
+                    // deadline fallbacks.
+                    write_text(&mut writer, &format!("{line}\r\n")).await?;
                     if core_tx.send(CoreMsg::Input { session, line }).is_err() {
                         break;
                     }

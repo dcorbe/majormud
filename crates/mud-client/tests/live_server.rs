@@ -135,13 +135,16 @@ async fn rust_server_login_create_look() {
     session.send("No");
     session.expect("[HP=", t).await.expect("prompt");
 
-    session.send("look");
+    let look = session.send("look");
     session.expect("Obvious exits:", t).await.expect("room");
 
-    // The RoomSeen event must have come through the broadcast channel.
+    // The server echoes the accepted command like the real board does
+    // (that echo is what correlation stands on), so the RoomSeen that
+    // came through the broadcast must be ATTRIBUTED to our look.
     let mut seen = None;
     while let Ok(ev) = events.try_recv() {
         if let Event::RoomSeen(r) = ev.event {
+            assert_eq!(ev.answers, Some(look), "the fixture server must echo");
             seen = Some(r);
         }
     }
