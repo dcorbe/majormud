@@ -368,6 +368,167 @@ fn actor_entered_lines() {
     );
 }
 
+/// Monster movement wordings are DATA, not grammar: each monster's
+/// `movemsg` record holds free-form enter/leave/follow templates
+/// (`re/mmud_wgnt.sqlite`, `message` table), so the verb is per-monster,
+/// the article is part of the template, and spawns say "from nowhere".
+/// Every line here is either a live capture (2026-07-31 arena session,
+/// `re/docs/spellcasting.md` §spawn-incidentals) or a shipped template
+/// rendered with a real monster name.
+#[test]
+fn movemsg_arrivals_cover_the_template_families() {
+    for (line, name, from) in [
+        // The one that shipped the bug: farm sat blind to a spawned rat.
+        (
+            "A thin giant rat creeps into the room from nowhere.",
+            "thin giant rat",
+            None,
+        ),
+        ("A acid slime oozes into the room from nowhere.", "acid slime", None),
+        (
+            "A angry kobold thief sneaks into the room from nowhere.",
+            "angry kobold thief",
+            None,
+        ),
+        (
+            "A black cat slinks into the room from the west.",
+            "black cat",
+            Some("west"),
+        ),
+        (
+            "An small orc rogue walks into the room from the west.",
+            "small orc rogue",
+            Some("west"),
+        ),
+        // "<verb> in from <origin>" family.
+        ("A cave bear lumbers in from the east!", "cave bear", Some("east")),
+        ("The giant snake slithers in from the north.", "giant snake", Some("north")),
+        // Templates hardcoding "the" double it when %s fills "the west".
+        ("A scorpion crawls in from the the west!", "scorpion", Some("west")),
+        // "enters" with and without "the room".
+        ("A walking chest enters from the south.", "walking chest", Some("south")),
+        (
+            "A giant war dog enters the room from the east.",
+            "giant war dog",
+            Some("east"),
+        ),
+        // Vertical and spawn origins on the default monster wording.
+        ("short kobold moves into the room from below.", "short kobold", Some("down")),
+        ("kobold moves into the room from nowhere.", "kobold", None),
+        (
+            "A tasloi warrior drops into the room from above.",
+            "tasloi warrior",
+            Some("up"),
+        ),
+        ("A demonling flaps down from above!", "demonling", Some("up")),
+        // Origin-less room entries.
+        ("A hill giant stomps into the room!", "hill giant", None),
+        ("A snake slithers into the area!", "snake", None),
+        ("A giant crab scurries into the room.", "giant crab", None),
+        // Follow: the monster chased us through the exit.
+        ("The giant rat creeps in after you!", "giant rat", None),
+        (
+            "The kobold thief creeps into the room after you!",
+            "kobold thief",
+            None,
+        ),
+    ] {
+        assert_eq!(
+            parse_all(&format!("{line}\r\n")),
+            vec![Event::ActorEntered {
+                name: name.into(),
+                from: from.map(str::to_string),
+            }],
+            "line: {line}"
+        );
+    }
+}
+
+#[test]
+fn movemsg_departures_cover_the_template_families() {
+    for (line, name, to) in [
+        (
+            "The thin giant rat creeps out of the room to the north.",
+            "thin giant rat",
+            Some("north"),
+        ),
+        ("The acid slime oozes out of the room to the east.", "acid slime", Some("east")),
+        ("The giant snake slithers out to the west!", "giant snake", Some("west")),
+        ("A black cat slinks off to the south.", "black cat", Some("south")),
+        ("The barmaid walks off to the the west.", "barmaid", Some("west")),
+        ("The moss zombie leaves to the north.", "moss zombie", Some("north")),
+    ] {
+        assert_eq!(
+            parse_all(&format!("{line}\r\n")),
+            vec![Event::ActorLeft {
+                name: name.into(),
+                to: to.map(str::to_string),
+            }],
+            "line: {line}"
+        );
+    }
+}
+
+/// Live monster whiffs: the attack text is per-monster data too
+/// (`attackmissmsg`/`attackdodgemsg` templates), so the fixed mud-core
+/// tails are not enough. All four lines are live captures or shipped
+/// templates rendered with their real monster.
+#[test]
+fn live_monster_whiffs_are_combat_misses() {
+    for line in [
+        "The thin giant rat lunges at you!",
+        "The thin giant rat lunges at you, but you dodge out of the way!",
+        "The giant snake snaps at you, but you dodge out of its way!",
+        "The kobold thief strikes you, but your armour deflects the blow!",
+    ] {
+        let ev = parse_all(&format!("{line}\r\n"));
+        assert!(
+            matches!(ev.as_slice(), [Event::CombatMiss { .. }]),
+            "expected CombatMiss for {line:?}, got {ev:?}"
+        );
+    }
+    // The long tail has no shared wording at all ("reaches out for
+    // you!", "slashes you with their scimitar!") — there the whiff cyan
+    // plus "you" is the signature. All four painted lines are corpus
+    // captures.
+    for line in [
+        "The carrion beast snaps at you with its teeth!",
+        "The angry orc trainee swings at you with their longsword!",
+        "The angry dark cleric attempted to cast spiritual hammer at you, but failed.",
+        "The wraith reaches out for you!",
+    ] {
+        let ev = parse_all(&format!("\x1b[0;36m{line}\x1b[0m\r\n"));
+        assert!(
+            matches!(ev.as_slice(), [Event::CombatMiss { .. }]),
+            "expected CombatMiss for {line:?}, got {ev:?}"
+        );
+    }
+    // A bystander's whiff names no "you": same cyan, stays a plain line.
+    let ev = parse_all("\x1b[0;36mPoop swipes at kobold thief!\x1b[0m\r\n");
+    assert!(
+        matches!(ev.as_slice(), [Event::Line(_)]),
+        "bystander whiff misread: {ev:?}"
+    );
+}
+
+/// The template dump also holds pattern-less lines ("A dark storm
+/// approaches!") and near-misses; those must stay plain [`Event::Line`]s
+/// for the combat backstops rather than fabricate an actor.
+#[test]
+fn arrival_lookalikes_stay_plain_lines() {
+    for line in [
+        "A massive wave appears from the east, announcing a massive sea creature!",
+        "A dark storm approaches!",
+        "You hear movement to the north.",
+    ] {
+        assert_eq!(
+            parse_all(&format!("{line}\r\n")),
+            vec![Event::Line(line.into())],
+            "line: {line}"
+        );
+    }
+}
+
 // --- flood control / fallback ---
 
 #[test]

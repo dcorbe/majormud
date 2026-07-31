@@ -10,6 +10,25 @@ pub enum Actor {
     Other(String),
 }
 
+/// Drop the leading article a message template glues onto a monster name
+/// ("The thin giant rat" -> "thin giant rat"). The article belongs to
+/// the per-monster template, not the name: "Also here:" and the attack
+/// command both use the bare name, and the article's capital defeats the
+/// player/monster case rule. Player names never start with one.
+pub fn strip_article(name: &str) -> &str {
+    ["A ", "An ", "The "]
+        .iter()
+        .find_map(|art| name.strip_prefix(art))
+        .unwrap_or(name)
+}
+
+/// Does this line say something about US — "you" or "your" as a whole
+/// word? Word-split, not substring, so "at young girl" does not count.
+pub fn mentions_you(line: &str) -> bool {
+    line.split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|w| w == "you" || w == "your")
+}
+
 /// One rendered room block (name through exits line).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RoomView {

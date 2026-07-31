@@ -669,6 +669,13 @@ impl StopState {
                 target: crate::events::Actor::You,
                 ..
             } => self.invalidate(),
+            // A whiff aimed at us proves occupancy exactly like a landed
+            // blow: the live rat behind this lunged twenty times without
+            // connecting while the runner sat on a proven-empty verdict.
+            // Whiff wordings are per-monster data, so no attacker name
+            // can be trusted out of them — but the swing itself is
+            // enough to re-ask.
+            Event::CombatMiss { line } if whiff_at_us(line) => self.invalidate(),
             Event::Line(line) if crate::bot::is_kill_line(line) => self.invalidate(),
             Event::Line(line)
                 if line.contains(crate::sheet::TOO_DARK) && answers_look =>
@@ -762,6 +769,13 @@ impl StopState {
             None => Verdict::Ask,
         }
     }
+}
+
+/// Is this whiff a monster swinging at US? Our own whiffs start with
+/// "You" and prove nothing about occupancy; a bystander's fight ("Poop
+/// swipes at kobold thief!") mentions neither "you" nor "your".
+fn whiff_at_us(line: &str) -> bool {
+    !line.starts_with("You") && crate::events::mentions_you(line)
 }
 
 /// Decides when a heal has plainly failed, so the runner can call

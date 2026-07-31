@@ -1103,6 +1103,45 @@ fn being_hit_invalidates_the_room_block_but_swinging_does_not() {
     assert_eq!(stop.verdict(&bot, t0), Verdict::Ask, "something hit us");
 }
 
+/// A monster whiffing at us proves occupancy exactly like a blow landing:
+/// the live rat that shipped this bug lunged twenty times without ever
+/// connecting, and the runner sat on a proven-empty verdict throughout.
+/// Whiff wordings are per-monster data, so no name can be trusted out of
+/// them — but "something is swinging at us" is enough to re-ask. Our own
+/// whiffs prove nothing.
+#[test]
+fn a_whiff_at_us_invalidates_the_room_block() {
+    let t0 = Instant::now();
+    let mut bot = combat_bot();
+    let mut stop = stop_state(0);
+    look_and_see(&mut stop, &mut bot, &block(&[]), t0);
+    assert_eq!(stop.verdict(&bot, t0), Verdict::Empty);
+    feed(
+        &mut stop,
+        &mut bot,
+        &Event::CombatMiss {
+            line: "The thin giant rat lunges at you!".into(),
+        },
+        t0,
+    );
+    assert_eq!(
+        stop.verdict(&bot, t0),
+        Verdict::Ask,
+        "a monster is swinging at us and the runner still called the room empty"
+    );
+
+    look_and_see(&mut stop, &mut bot, &block(&[]), t0);
+    feed(
+        &mut stop,
+        &mut bot,
+        &Event::CombatMiss {
+            line: "You swing at giant rat!".into(),
+        },
+        t0,
+    );
+    assert_eq!(stop.verdict(&bot, t0), Verdict::Empty, "our own whiff");
+}
+
 /// NOTHING announces a respawn -- the board simply puts a monster in the
 /// room. Silence is not proof the room is unchanged, so an accepted block
 /// has a shelf life and must be re-asked.

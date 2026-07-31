@@ -348,6 +348,16 @@ impl Bot {
                 {
                     self.quiet_prompts = 0;
                 }
+                // Deliberately NO counter-attack here. The attacker slot
+                // of a hit line cannot be split out reliably: the attack
+                // verb is per-monster data and can be multi-word — "The
+                // fierce orc trainee all-out slashes you for 37 damage!"
+                // (live, oracle_charm_lifecycle5.raw) parses its attacker
+                // as "...trainee all-out", and a counter would have sent
+                // "a all-out". Being hit by something unlisted is instead
+                // answered by the farm's re-look (StopState invalidates
+                // on a blow landing on us), where the room block names
+                // the attacker properly and THIS bot engages from it.
                 Vec::new()
             }
             Event::CombatMiss { line } => {

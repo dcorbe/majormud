@@ -61,6 +61,27 @@ fn attacks_monster_that_walks_in() {
     assert_eq!(actions, vec![BotAction::Send("a thief".into())]);
 }
 
+/// A hit on us is deliberately NOT blind-countered. The attacker slot of
+/// a hit line cannot be split out reliably — the attack verb is
+/// per-monster data and can be multi-word: "The fierce orc trainee
+/// all-out slashes you for 37 damage!" (live, oracle_charm_lifecycle5)
+/// parses its attacker as "...trainee all-out", and a counter would have
+/// sent "a all-out". Being hit by something unlisted is answered by the
+/// farm's re-look instead (see tests/farm.rs,
+/// `being_hit_invalidates_the_room_block_but_swinging_does_not`), where
+/// the room block names the attacker properly and the bot engages from
+/// it.
+#[test]
+fn a_hit_on_us_is_not_blindly_countered() {
+    let mut bot = combat_bot();
+    let actions = bot.on_event(&Event::CombatHit {
+        attacker: Actor::Other("The fierce orc trainee all-out".into()),
+        target: Actor::You,
+        damage: 37,
+    });
+    assert!(actions.is_empty());
+}
+
 #[test]
 fn does_not_spam_attack_same_target() {
     let mut bot = combat_bot();
