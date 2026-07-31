@@ -1000,7 +1000,11 @@ fn a_room_block_that_raced_a_new_arrival_is_not_believed() {
         },
         t0,
     );
-    feed(&mut stop, &mut bot, &block(&[]), t0);
+    // The block ARRIVES ATTRIBUTED to the look — the correlator cannot
+    // know the room changed mid-render; only invalidate() forgetting the
+    // ask keeps it from being believed. (Mutation-tested: deleting the
+    // pending clear from invalidate() must fail here.)
+    feed_answer(&mut stop, &mut bot, &block(&[]), t0);
     assert_ne!(
         stop.verdict(&bot, t0),
         Verdict::Empty,
@@ -1208,7 +1212,7 @@ fn a_room_block_after_lighting_clears_blind() {
     let mut bot = combat_bot();
     let mut stop = stop_state(0);
     stop.on_sent("look", LOOK_ID);
-    feed(
+    feed_answer(
         &mut stop,
         &mut bot,
         &Event::Line(mud_client::sheet::TOO_DARK.to_string()),
@@ -1357,4 +1361,35 @@ fn a_dark_answer_settles_an_outstanding_look() {
         t0,
     );
     assert_eq!(stop.verdict(&bot, t0), Verdict::Blind);
+}
+
+/// The light-recovery flow: `light` + `look` go out, and the gate is
+/// idle the moment the look's ECHO acks — one event before its answer.
+/// Blind-before-pending ended the stop right there, owing the lit
+/// room's block, every time lighting worked.
+#[test]
+fn an_owed_look_outranks_blind() {
+    let t0 = Instant::now();
+    let mut bot = combat_bot();
+    let mut stop = stop_state(0);
+    stop.on_sent("look", LOOK_ID);
+    feed_answer(
+        &mut stop,
+        &mut bot,
+        &Event::Line(mud_client::sheet::TOO_DARK.to_string()),
+        t0,
+    );
+    assert_eq!(stop.verdict(&bot, t0), Verdict::Blind);
+
+    // The runner lit the room and asked again.
+    stop.on_sent("look", LOOK_ID);
+    assert!(
+        matches!(stop.verdict(&bot, t0), Verdict::Waiting { .. }),
+        "left (or re-lit) while the lit room's block was still owed: {:?}",
+        stop.verdict(&bot, t0)
+    );
+
+    // The answer arrives: sighted again.
+    feed_answer(&mut stop, &mut bot, &block(&[]), t0);
+    assert_eq!(stop.verdict(&bot, t0), Verdict::Empty);
 }

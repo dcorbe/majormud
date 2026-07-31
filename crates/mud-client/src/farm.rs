@@ -728,20 +728,26 @@ impl StopState {
         if bot.fled() {
             return Verdict::Ask;
         }
-        if self.blind {
-            return Verdict::Blind;
-        }
-        // An unanswered ask: wait for it, never stack another. Each look
-        // supersedes the last in the correlator's eyes, so re-asking
-        // while owed would orphan the in-flight answer and loop — and
-        // flooding looks at the board was its own measured failure. An
-        // OVERDUE ask (answer eaten or expired) falls through to Ask,
-        // and the fresh id supersedes the stale one honestly.
+        // An unanswered ask outranks Blind, and the order is load-bearing:
+        // the light-recovery flow sends `light` + `look`, and the gate is
+        // idle the moment the look's ECHO acks — one event before its
+        // answer. Blind-first ended the stop right there, owing the lit
+        // room's block, every time lighting worked. Waiting is bounded by
+        // `recheck`; a still-dark answer re-enters Blind honestly.
+        //
+        // Each look supersedes the last in the correlator's eyes, so
+        // re-asking while owed would orphan the in-flight answer and
+        // loop — and flooding looks at the board was its own measured
+        // failure. An OVERDUE ask (answer eaten or expired) falls
+        // through to Ask, and the fresh id supersedes honestly.
         if let Some((_, at)) = self.pending_look {
             if now.duration_since(at) < self.recheck {
                 return Verdict::Waiting { until: at + self.recheck };
             }
             return Verdict::Ask;
+        }
+        if self.blind {
+            return Verdict::Blind;
         }
         let Some(seen) = &self.seen else {
             return Verdict::Ask;

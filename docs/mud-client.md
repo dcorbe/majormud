@@ -137,6 +137,25 @@ for this stop and the runner leaves only when that block is fresh, lists
 nothing the bot would swing at, no fight is outstanding, and nothing is
 still owed to the board.
 
+"Accepted" is attributed, not merely named: the session correlates every
+reply to the send it answers (see `board-correlation.md`), and the only
+block `StopState` believes is the one whose `Correlated::answers`
+matches the `look` it is owed for. An unsolicited block — somebody
+else's render, a stale answer to a superseded ask — is never believed
+and never settles the ask. Anything that changes the room (an arrival,
+a blow landing on us, a kill) discards both the accepted block AND the
+outstanding ask, because a block can be mid-render when the room
+changes and its content then predates an event emitted before it.
+
+While an ask is owed, the verdict is `Waiting`, never another `Ask`:
+each look supersedes the last in the correlator's eyes, so stacking
+would orphan the in-flight answer — and flooding looks at the board was
+its own measured failure. An overdue ask (answer eaten) falls back to
+`Ask` and the fresh id supersedes honestly. The owed ask also outranks
+`Blind`: the light-recovery flow ends with a `look` whose echo idles
+the gate one event before its answer, and blind-first walked out owing
+the lit room's block every time lighting worked.
+
 This replaced a rule that counted prompts with nothing to do. A prompt is
 evidence that the board answered *something*; it says nothing about who
 is standing in the room. That mismatch produced three separate failures —
