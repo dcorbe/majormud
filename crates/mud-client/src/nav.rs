@@ -333,7 +333,7 @@ impl Navigator {
                 // guard still sees them: nothing is in flight yet, so a
                 // trip here is honoured before the step goes out at all.
                 crate::session::drain(&mut events, |ev| {
-                    armed = armed.take().or_else(|| guard.on_event(ev));
+                    armed = armed.take().or_else(|| guard.on_event(&ev.event));
                 });
                 if let Some(interrupt) = armed.take() {
                     return Err(NavError {
@@ -563,7 +563,7 @@ impl Navigator {
         expected: &str,
         here: &str,
         session: &Session,
-        events: &mut tokio::sync::broadcast::Receiver<crate::events::Event>,
+        events: &mut tokio::sync::broadcast::Receiver<crate::correlate::Correlated>,
         guard: &mut impl TravelGuard,
         armed: &mut Option<Interrupt>,
     ) -> Result<String, NavErrorKind> {
@@ -679,7 +679,7 @@ impl Navigator {
         here: &str,
         expected: &str,
         after: BlindContext,
-        events: &mut tokio::sync::broadcast::Receiver<crate::events::Event>,
+        events: &mut tokio::sync::broadcast::Receiver<crate::correlate::Correlated>,
         guard: &mut impl TravelGuard,
         armed: &mut Option<Interrupt>,
     ) -> Result<String, NavErrorKind> {
@@ -707,7 +707,7 @@ impl Navigator {
     /// that goes past to the guard on the way.
     async fn wait_room(
         &self,
-        events: &mut tokio::sync::broadcast::Receiver<crate::events::Event>,
+        events: &mut tokio::sync::broadcast::Receiver<crate::correlate::Correlated>,
         guard: &mut impl TravelGuard,
         armed: &mut Option<Interrupt>,
     ) -> Result<StepEvent, NavErrorKind> {
@@ -715,7 +715,7 @@ impl Navigator {
         loop {
             let ev = tokio::time::timeout_at(deadline, events.recv()).await;
             if let Ok(Ok(ev)) = &ev {
-                match guard.on_event(ev) {
+                match guard.on_event(&ev.event) {
                     // Nothing more is going to land. Say so now rather
                     // than sit out the deadline.
                     Some(Interrupt::Died) => {
@@ -738,10 +738,10 @@ impl Navigator {
                         tail: String::new(),
                     }));
                 }
-                Ok(Ok(crate::events::Event::RoomSeen(room))) => {
+                Ok(Ok(crate::correlate::Correlated { event: crate::events::Event::RoomSeen(room), .. })) => {
                     return Ok(StepEvent::Arrived(room.name));
                 }
-                Ok(Ok(crate::events::Event::Line(line))) => {
+                Ok(Ok(crate::correlate::Correlated { event: crate::events::Event::Line(line), .. })) => {
                     let line = line.to_lowercase();
                     // Checked before DOOR_YIELDED: this wording contains
                     // "open" too, but it means we are already through and

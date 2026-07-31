@@ -141,7 +141,7 @@ async fn rust_server_login_create_look() {
     // The RoomSeen event must have come through the broadcast channel.
     let mut seen = None;
     while let Ok(ev) = events.try_recv() {
-        if let Event::RoomSeen(r) = ev {
+        if let Event::RoomSeen(r) = ev.event {
             seen = Some(r);
         }
     }

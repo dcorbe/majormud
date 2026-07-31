@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 
 use mud_core::content::RoomId;
 
+use crate::correlate::Correlated;
 use crate::events::Event;
 use crate::graph::RoomGraph;
 
@@ -1222,13 +1223,13 @@ pub async fn go_to_finish(
 
 /// The next room block in full, not just its name.
 async fn next_room_view(
-    events: &mut tokio::sync::broadcast::Receiver<Event>,
+    events: &mut tokio::sync::broadcast::Receiver<Correlated>,
     within: Duration,
 ) -> Option<crate::events::RoomView> {
     let deadline = tokio::time::Instant::now() + within;
     loop {
         match tokio::time::timeout_at(deadline, events.recv()).await {
-            Ok(Ok(Event::RoomSeen(room))) => return Some(room),
+            Ok(Ok(Correlated { event: Event::RoomSeen(room), .. })) => return Some(room),
             Ok(Ok(_)) => continue,
             Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
             Ok(Err(_)) | Err(_) => return None,
@@ -1259,7 +1260,7 @@ async fn ask(session: &crate::session::Session, cmd: &str, until: &str) -> Strin
     let mut out = String::new();
     loop {
         match tokio::time::timeout_at(deadline, events.recv()).await {
-            Ok(Ok(Event::Line(line))) => {
+            Ok(Ok(Correlated { event: Event::Line(line), .. })) => {
                 let done = !until.is_empty() && line.contains(until);
                 out.push_str(&line);
                 out.push('\n');
@@ -1297,13 +1298,13 @@ async fn verify_start(
 /// The next room block, or `None` if the board did not print one in time.
 async fn next_room(
     _session: &crate::session::Session,
-    events: &mut tokio::sync::broadcast::Receiver<Event>,
+    events: &mut tokio::sync::broadcast::Receiver<Correlated>,
     within: Duration,
 ) -> Option<String> {
     let deadline = tokio::time::Instant::now() + within;
     loop {
         match tokio::time::timeout_at(deadline, events.recv()).await {
-            Ok(Ok(Event::RoomSeen(room))) => return Some(room.name),
+            Ok(Ok(Correlated { event: Event::RoomSeen(room), .. })) => return Some(room.name),
             Ok(Ok(_)) => continue,
             Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
             Ok(Err(_)) | Err(_) => return None,
@@ -1462,7 +1463,9 @@ async fn wait_for_departure_health(
         match tokio::time::timeout(poke, state.changed()).await {
             Ok(Ok(())) => {}
             Ok(Err(_)) => return,
-            Err(_) => session.send("look"),
+            Err(_) => {
+                session.send("look");
+            }
         }
     }
 }
@@ -1602,7 +1605,9 @@ async fn farm_stop(
         let wake = tokio::time::Instant::from_std(wake);
 
         let ev = match tokio::time::timeout_at(wake, events.recv()).await {
-            Ok(Ok(ev)) => Some(ev),
+            // Attribution rides in the envelope; the pump reads the
+            // event for now and Phases 4/6 put `answers` to work.
+            Ok(Ok(cor)) => Some(cor.event),
             // Dropped events desync a stateful bot: it can miss the death
             // that ends a fight and sit latched on a corpse. Start over
             // rather than carry on with a bot that quietly lost track.

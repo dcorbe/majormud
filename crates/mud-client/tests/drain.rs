@@ -6,11 +6,15 @@
 
 use tokio::sync::broadcast;
 
+use mud_client::correlate::Correlated;
 use mud_client::events::Event;
 use mud_client::session::drain;
 
-fn prompt(hp: i32) -> Event {
-    Event::Prompt { hp, mana: None }
+fn prompt(hp: i32) -> Correlated {
+    Correlated {
+        event: Event::Prompt { hp, mana: None },
+        answers: None,
+    }
 }
 
 #[test]

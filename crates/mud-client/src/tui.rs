@@ -190,7 +190,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
             ev = events.recv() => {
                 // Only for the counters; the display comes from raw
                 // passthrough, so nothing is rendered here.
-                if let Ok(crate::events::Event::Line(line)) = &ev {
+                if let Ok(crate::correlate::Correlated { event: crate::events::Event::Line(line), .. }) = &ev {
                     let before = exp.total();
                     exp.observe(line);
                     if exp.total() != before {
@@ -389,7 +389,9 @@ fn handle_key(
             match line.trim() {
                 "/quit" => return KeyOutcome::Quit,
                 "/farm" => return KeyOutcome::StartFarm,
-                _ => session.send(&line),
+                _ => {
+                    session.send(&line);
+                }
             }
         }
         _ => {}

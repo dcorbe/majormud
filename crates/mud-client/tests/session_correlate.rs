@@ -1,0 +1,147 @@
+//! Session-level attribution: the Correlator wired between the writer
+//! task (registry, wire order) and the reader task (attribution, arrival
+//! order), with `answers` carried inside every broadcast event.
+//!
+//! Driven against a scripted echoing board — the real board echoes every
+//! accepted command (docs/board-correlation.md), and these scripts model
+//! that, including the unsolicited stale block that used to satisfy the
+//! next step and desync the walk.
+
+use std::time::Duration;
+
+use mud_client::correlate::Correlated;
+use mud_client::events::Event;
+use mud_client::profile::Profile;
+use mud_client::session::Session;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+fn room_block(name: &str) -> String {
+    format!("\r\n\x1b[1;36m{name}\r\nObvious exits: north, south\r\n[HP=30/MA=0]:")
+}
+
+/// A board that echoes accepted commands like the real one. On `n` it
+/// front-runs the reply with an UNSOLICITED stale block — the desync
+/// repro — before echoing and answering.
+async fn echoing_board() -> std::net::SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        // The login render: no command asked for it.
+        sock.write_all(room_block("Guard Post").as_bytes()).await.unwrap();
+        let mut buf = [0u8; 512];
+        while let Ok(n) = sock.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            let line = String::from_utf8_lossy(&buf[..n]).trim().to_string();
+            let reply = match line.as_str() {
+                "look" => format!("\r\nlook{}", room_block("Guard Post")),
+                "n" => format!(
+                    "{}\r\nn{}",
+                    room_block("Guard Post"), // stale render, nobody asked
+                    room_block("Inner Ward")  // the echo'd answer
+                ),
+                other => format!("\r\nYou say \"{other}\"\r\n[HP=30/MA=0]:"),
+            };
+            sock.write_all(reply.as_bytes()).await.unwrap();
+        }
+    });
+    addr
+}
+
+async fn session_for(addr: std::net::SocketAddr) -> Session {
+    let profile = Profile {
+        target: mud_client::dialect::Target::MbbsEmu,
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        username: "testuser".into(),
+        password: "testpass".into(),
+        pace_ms: Some(0),
+        disable_evil_warnings: false,
+        bot: None,
+        farm: None,
+    };
+    Session::connect(&profile, None).await.unwrap()
+}
+
+/// Collect events until `stop` says done or the deadline passes.
+async fn collect(
+    events: &mut tokio::sync::broadcast::Receiver<Correlated>,
+    mut stop: impl FnMut(&[Correlated]) -> bool,
+) -> Vec<Correlated> {
+    let mut got = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !stop(&got) {
+        match tokio::time::timeout_at(deadline, events.recv()).await {
+            Ok(Ok(ev)) => got.push(ev),
+            _ => break,
+        }
+    }
+    got
+}
+
+fn blocks(evs: &[Correlated]) -> Vec<&Correlated> {
+    evs.iter()
+        .filter(|c| matches!(c.event, Event::RoomSeen(_)))
+        .collect()
+}
+
+#[tokio::test]
+async fn the_block_after_our_echo_answers_our_send() {
+    let addr = echoing_board().await;
+    let session = session_for(addr).await;
+    let mut events = session.events();
+    let id = session.send("look");
+    // Two blocks arrive: the unsolicited login render, then the look's
+    // echoed answer.
+    let evs = collect(&mut events, |got| blocks(got).len() >= 2).await;
+    let bs = blocks(&evs);
+    assert_eq!(bs.len(), 2, "{evs:?}");
+    assert_eq!(bs[0].answers, None, "{evs:?}");
+    assert_eq!(bs[1].answers, Some(id), "{evs:?}");
+}
+
+#[tokio::test]
+async fn the_login_render_answers_nobody() {
+    let addr = echoing_board().await;
+    let session = session_for(addr).await;
+    let mut events = session.events();
+    // No send at all: the greeting block must flow, unattributed.
+    let evs = collect(&mut events, |got| !blocks(got).is_empty()).await;
+    let bs = blocks(&evs);
+    assert_eq!(bs.len(), 1, "{evs:?}");
+    assert_eq!(bs[0].answers, None, "{evs:?}");
+}
+
+#[tokio::test]
+async fn a_stale_render_cannot_satisfy_the_step_that_did_not_ask() {
+    // The desync repro, end to end: the board front-runs the step's
+    // answer with a stale render of the room we are leaving. Attribution
+    // must hand the step ONLY the block that follows its echo.
+    let addr = echoing_board().await;
+    let session = session_for(addr).await;
+    let mut events = session.events();
+    // Consume the login render first so the test sees only the step.
+    let _ = collect(&mut events, |got| !blocks(got).is_empty()).await;
+    let id = session.send("n");
+    let evs = collect(&mut events, |got| blocks(got).len() >= 2).await;
+    let bs = blocks(&evs);
+    assert_eq!(bs.len(), 2, "{evs:?}");
+    let stale = &bs[0];
+    let answer = &bs[1];
+    assert_eq!(stale.answers, None, "the stale render answered someone: {evs:?}");
+    assert!(matches!(&stale.event, Event::RoomSeen(r) if r.name == "Guard Post"));
+    assert_eq!(answer.answers, Some(id), "{evs:?}");
+    assert!(matches!(&answer.event, Event::RoomSeen(r) if r.name == "Inner Ward"));
+}
+
+#[tokio::test]
+async fn every_send_gets_a_distinct_id_in_order() {
+    let addr = echoing_board().await;
+    let session = session_for(addr).await;
+    let a = session.send("look");
+    let b = session.send("look");
+    let c = session.send("look");
+    assert!(a < b && b < c, "{a:?} {b:?} {c:?}");
+}

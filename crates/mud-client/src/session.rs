@@ -1,12 +1,20 @@
 //! The session engine: one TCP connection to a board, shared by the
 //! TUI, scripts, and bot. A tokio actor owns the socket; consumers see
-//! a paced `send`, expect-style waits over the cleaned transcript, a
-//! broadcast of parsed [`Event`]s, raw bytes for terminal passthrough,
-//! and a `watch` of the accumulated [`GameState`].
+//! a paced `send` returning a [`CmdId`], expect-style waits over the
+//! cleaned transcript, a broadcast of attributed [`Correlated`] events,
+//! raw bytes for terminal passthrough, and a `watch` of the accumulated
+//! [`GameState`].
+//!
+//! Correlation lives HERE and nowhere else: the writer task feeds the
+//! registry in wire order right before each write, the reader task
+//! attributes each parsed event as it is born, and `answers` rides
+//! inside the broadcast — so a fresh subscriber (every phase handoff
+//! makes one) inherits correct attribution instead of a private guess.
 
 use std::fs::File;
 use std::io::Write as _;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -14,6 +22,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, mpsc, watch};
 
+use crate::correlate::{CmdId, Correlated, Correlator};
 use crate::events::{Event, RoomView};
 use crate::parse::Parser;
 use crate::profile::Profile;
@@ -135,11 +144,19 @@ impl Shared {
 }
 
 enum Cmd {
-    /// Paced game line (CRLF appended).
-    Line(String),
-    /// Unpaced raw bytes (telnet negotiation replies).
+    /// Paced game line (CRLF appended), tagged with its correlation id.
+    Line(CmdId, String),
+    /// Unpaced raw bytes (telnet negotiation replies, FSD keystrokes).
+    /// Excluded from correlation: not line-shaped, never echoed as one.
     Raw(Vec<u8>),
 }
+
+/// How long the correlator waits on an unanswered command before its
+/// late answers read as unsolicited. Sliding with queue progress; the
+/// absolute cap is 4x this (see `correlate::Correlator`). Generous
+/// against the measured worst case: ~3s of round-timer wait per queued
+/// command, at pipeline depths the client never exceeds.
+const CORRELATE_TTL: Duration = Duration::from_secs(10);
 
 struct TimingLog {
     file: Mutex<File>,
@@ -159,10 +176,11 @@ impl TimingLog {
 pub struct Session {
     cmd_tx: mpsc::UnboundedSender<Cmd>,
     shared: Arc<Shared>,
-    events_tx: broadcast::Sender<Event>,
+    events_tx: broadcast::Sender<Correlated>,
     raw_tx: broadcast::Sender<Vec<u8>>,
     state_rx: watch::Receiver<GameState>,
     profile: Profile,
+    next_id: AtomicU64,
 }
 
 impl Session {
@@ -198,19 +216,31 @@ impl Session {
             None => None,
         };
 
+        let correlator = Arc::new(Mutex::new(Correlator::new(CORRELATE_TTL)));
+
         // Writer task: paced lines + unpaced negotiation replies.
         {
             let pace = profile.pace();
             let timing = timing.clone();
+            let correlator = Arc::clone(&correlator);
             tokio::spawn(async move {
                 let mut pacer = Pacer::new(pace);
                 while let Some(cmd) = cmd_rx.recv().await {
                     match cmd {
-                        Cmd::Line(line) => {
+                        Cmd::Line(id, line) => {
                             let delay = pacer.delay_for(Instant::now());
                             if !delay.is_zero() {
                                 tokio::time::sleep(delay).await;
                             }
+                            // Register BEFORE the bytes hit the wire:
+                            // registry order provably equals wire order
+                            // (this task is the only writer), and the
+                            // entry exists before its echo can possibly
+                            // arrive.
+                            correlator
+                                .lock()
+                                .expect("correlator lock")
+                                .sent(id, &line, Instant::now());
                             let mut bytes = line.clone().into_bytes();
                             bytes.extend_from_slice(b"\r\n");
                             if write_half.write_all(&bytes).await.is_err() {
@@ -239,6 +269,7 @@ impl Session {
             let events_tx = events_tx.clone();
             let raw_tx = raw_tx.clone();
             let cmd_tx = cmd_tx.clone();
+            let correlator = Arc::clone(&correlator);
             tokio::spawn(async move {
                 let mut filter = TelnetFilter::new();
                 let mut stripper = AnsiStripper::new();
@@ -264,8 +295,12 @@ impl Session {
                     let _ = raw_tx.send(out.data.clone());
                     let decoded = cp437_to_string(&out.data);
                     for ev in parser.push(&decoded) {
-                        state_tx.send_if_modified(|s| apply_event(s, &ev));
-                        let _ = events_tx.send(ev);
+                        let cor = correlator
+                            .lock()
+                            .expect("correlator lock")
+                            .on_event(ev, Instant::now());
+                        state_tx.send_if_modified(|s| apply_event(s, &cor.event));
+                        let _ = events_tx.send(cor);
                     }
                     let stripped = stripper.push(&decoded);
                     if let Some(t) = &timing {
@@ -278,8 +313,12 @@ impl Session {
                     shared.append(&stripped);
                 }
                 for ev in parser.finish() {
-                    state_tx.send_if_modified(|s| apply_event(s, &ev));
-                    let _ = events_tx.send(ev);
+                    let cor = correlator
+                        .lock()
+                        .expect("correlator lock")
+                        .on_event(ev, Instant::now());
+                    state_tx.send_if_modified(|s| apply_event(s, &cor.event));
+                    let _ = events_tx.send(cor);
                 }
                 if let (Some(t), false) = (&timing, rx_line.is_empty()) {
                     t.write("RX", rx_line.trim_end_matches(['\r', '\n']));
@@ -295,6 +334,7 @@ impl Session {
             raw_tx,
             state_rx,
             profile: profile.clone(),
+            next_id: AtomicU64::new(1),
         })
     }
 
@@ -303,9 +343,13 @@ impl Session {
         &self.profile
     }
 
-    /// Queue a line for sending (CRLF appended); pacing applies.
-    pub fn send(&self, line: &str) {
-        let _ = self.cmd_tx.send(Cmd::Line(line.to_string()));
+    /// Queue a line for sending (CRLF appended); pacing applies. The
+    /// returned id names this send in every event that answers it —
+    /// match it against [`Correlated::answers`].
+    pub fn send(&self, line: &str) -> CmdId {
+        let id = CmdId(self.next_id.fetch_add(1, Ordering::Relaxed));
+        let _ = self.cmd_tx.send(Cmd::Line(id, line.to_string()));
+        id
     }
 
     /// Send bytes verbatim: no CRLF, no pacing, no timing-log line.
@@ -385,7 +429,7 @@ impl Session {
         tr.text[start..].to_string()
     }
 
-    pub fn events(&self) -> broadcast::Receiver<Event> {
+    pub fn events(&self) -> broadcast::Receiver<Correlated> {
         self.events_tx.subscribe()
     }
 
@@ -410,7 +454,7 @@ impl Session {
 /// Every event is shown to `seen` on its way out. Discarded is not the
 /// same as unseen: [`crate::nav::Navigator::goto`] drains between steps,
 /// and a death landing in that window is still a death.
-pub fn drain(events: &mut broadcast::Receiver<Event>, mut seen: impl FnMut(&Event)) {
+pub fn drain(events: &mut broadcast::Receiver<Correlated>, mut seen: impl FnMut(&Correlated)) {
     use broadcast::error::TryRecvError;
     loop {
         match events.try_recv() {

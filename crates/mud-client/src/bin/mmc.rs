@@ -302,6 +302,7 @@ fn farm_command(
                     tokio::select! {
                         ev = events.recv() => match ev {
                             Ok(ev) => {
+                                let ev = ev.event;
                                 if let mud_client::events::Event::Line(line) = &ev {
                                     exp.observe(line);
                                 }
