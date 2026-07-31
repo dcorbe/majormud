@@ -157,8 +157,9 @@ fn accepts_a_single_stop_circuit() {
 // Session::send is unbounded and unacknowledged, and the live board
 // paces at 1500ms, so firing every bot decision straight at it queues
 // minutes of stale commands with no way to cancel. The gate holds one
-// command in flight until the board's prompt acknowledges it, and it is
-// what turns Event::SlowDown — which means the board DROPPED our input —
+// command in flight until an event ANSWERING that send arrives — its
+// echo, or any later attributed reply; never a prompt — and it is what
+// turns Event::SlowDown — which means the board DROPPED our input —
 // back into a resend.
 // ---------------------------------------------------------------------
 

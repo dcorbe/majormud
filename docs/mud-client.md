@@ -140,7 +140,11 @@ still owed to the board.
 "Accepted" is attributed, not merely named: the session correlates every
 reply to the send it answers (see `board-correlation.md`), and the only
 block `StopState` believes is the one whose `Correlated::answers`
-matches the `look` it is owed for. An unsolicited block — somebody
+matches the `look` it is owed for. The Bot stays a pure `Event` core, so
+the pump curates for it: an unsolicited render never reaches its latches
+(one line in the stop pump, untested-by-design — the unit suites drive
+Gate/StopState directly and no fixture scripts an unsolicited same-name
+block; the live acceptance is its field test). An unsolicited block — somebody
 else's render, a stale answer to a superseded ask — is never believed
 and never settles the ask. Anything that changes the room (an arrival,
 a blow landing on us, a kill) discards both the accepted block AND the
@@ -246,8 +250,9 @@ of killing the process and logging in again while it stands in a lair.
 
 While the runner drives, the line editor is **locked** except for Ctrl-F
 and Ctrl-Q. This is not politeness — `Gate` is built on being the only
-sender, one command in flight acknowledged by a prompt, and a line typed
-mid-leg consumes the prompt the navigator was waiting for. Two senders
+sender, one command in flight acknowledged by the event that ANSWERS it
+(its echo, or any later attributed reply — never a prompt), and a line
+typed mid-leg consumes the prompt the navigator was waiting for. Two senders
 desync the walk, which is the exact failure verified navigation exists to
 prevent.
 

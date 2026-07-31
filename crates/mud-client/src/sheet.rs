@@ -225,6 +225,10 @@ pub struct LightState {
     /// Attempts spent at the current stop visit.
     spent: u32,
     /// Plans the board refused or that burned out: dead for the run.
+    /// The plan is derived once at run start and never re-derived
+    /// mid-run, so a second carried torch is NOT tried after a burn-out
+    /// — a deliberate retreat from the sketch, sized to a torch that
+    /// outlives any 300s run; `go_to_finish` re-derives independently.
     exhausted: Vec<String>,
 }
 

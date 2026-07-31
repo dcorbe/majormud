@@ -438,7 +438,10 @@ async fn handle_connection(
                     // 94.1% of corpus room blocks). The client's
                     // request/response correlation stands on this, so a
                     // fixture that stayed silent would exercise only the
-                    // deadline fallbacks.
+                    // deadline fallbacks. Deliberately unmodeled: the
+                    // SECOND execution echo the live board emits when a
+                    // command queues behind the round timer — the
+                    // client's scripted TCP boards cover that case.
                     write_text(&mut writer, &format!("{line}\n")).await?;
                     if core_tx.send(CoreMsg::Input { session, line }).is_err() {
                         break;

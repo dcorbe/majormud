@@ -147,7 +147,15 @@ Reset→Back→Erase→Colour signature marks a render.
 
 ## Shape of a permanent fix (original sketch; see Status for as-built)
 
-Not implemented; recorded so it can be planned rather than guessed at.
+As-built: items 1-3 and 5 landed (amended — see Status). Item 4, the
+render-preamble token, is the one live deferral: carrying
+Reset→`ESC[79D`→`ESC[K`→Colour through `wire.rs` as a token would make
+"this is a room render" positive evidence and retire the banner-art
+heuristic in `parse.rs`. Deferred deliberately until after the
+acceptance so any regression stays attributable; echo attribution
+already makes unsolicited renders inert at every consumer.
+
+The original sketch, kept as written; the paragraph above says what became of it.
 
 1. **Correlate on the echo, not the prompt.** A command is answered when
    its echo appears and the reply that follows it completes. `Gate`
@@ -249,9 +257,10 @@ then navigate by room block like anywhere else. Dead reckoning
 — and when it is used, it has to be sound, which is what the correlation
 work is for.
 
-Salad currently carries no light source at all, which is why the live
-runs fell through to `cast star`. Getting a torch or lantern onto the
-character is a prerequisite for the acceptance run, not a code change.
+Salad carried no light source when this was written, which is why the
+live runs fell through to `cast star`; a torch was conjured on for the
+acceptance (`SYSOP SUMMON torch`), and getting one onto a character
+remains an operational prerequisite, not a code change.
 
 ### Not the fix
 

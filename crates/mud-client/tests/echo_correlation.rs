@@ -22,6 +22,15 @@
 //! a room further on than the character is. That is the desync that ends
 //! live runs.
 //!
+//! This file remains the CHARACTERIZATION pin — the measurement that
+//! the board behaves as claimed. The mechanism built on it is pinned
+//! elsewhere: `tests/correlate.rs` (the run5/6/7 live captures,
+//! transcribed), `tests/session_correlate.rs` and `tests/nav_echo.rs`
+//! (scripted echoing boards end to end), the echoing fixture server,
+//! and the five accept-run raws in this corpus. A corpus-wide TX/RX
+//! mechanism replay was considered and dropped: the raws are RX-only,
+//! and the TX timing sidecars that exist pair with only half the corpus.
+//!
 //! OmegaMUD (docs/mirrors/github-RonPenton-OmegaMUD) does not have this
 //! problem, and its `RoomParseState` says why: it parses the ANSI control
 //! stream and tracks what it asked. The room render is introduced by

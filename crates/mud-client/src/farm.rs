@@ -1623,8 +1623,9 @@ async fn farm_stop(
             }
             Verdict::Blind => {
                 // Blind again while a source was believed burning: it
-                // burned out. There is no wording for this — the
-                // darkness IS the message.
+                // burned out. The burn-out wordings arrive unsolicited
+                // and LightState reads them directly; the darkness
+                // returning is the backstop for one that was missed.
                 light.source_died();
                 match light.attempt() {
                     Some(cmd) if gate.is_idle() => {
