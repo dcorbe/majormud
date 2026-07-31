@@ -179,6 +179,13 @@ fn completes(kind: Kind, ev: &Event) -> bool {
     };
     let has = |needle: &str| line.contains(needle);
     match kind {
+        // The refusal wordings are pinned to their emitters via the
+        // ReMUD decompile: _move_user says "There is a closed door in
+        // that direction!" (exit-type case 2, beside "There is no
+        // exit...", plus 0xbc745 / 0xbc8c4); _cmd_look says "The door is
+        // closed in that direction!". Crossing them hands a post-move
+        // room to a look consumer, or leaves a refused move lingering to
+        // claim the next block.
         Kind::Move => {
             has(DARK)
                 || has("no exit in that direction")
@@ -186,17 +193,15 @@ fn completes(kind: Kind, ev: &Event) -> bool {
                 || has("the gate is closed!")
                 || has("the door is locked")
                 || has("the gate is locked")
+                || has("closed door in that direction")
                 || has("may not enter that room while in combat")
+                || has("can't seem to move anywhere")
+                || has("need to cast a spell to go that way")
         }
-        // Both DLL look-refusal wordings: "The door is closed in that
-        // direction!" and "There is a closed door in that direction!".
-        // Miss one and the look lingers — and the next move's block
-        // retires the stale look instead of the move.
-        Kind::Look => has(DARK) || has("door is closed in that direction")
-            || has("closed door in that direction"),
+        Kind::Look => has(DARK) || has("door is closed in that direction"),
         Kind::Open => {
             has("is now open")
-                || has("was already open")
+                || has("already open")
                 || has("successfully unlocked")
                 || has("unlocked the door")
                 || has("the door is locked")
@@ -214,6 +219,7 @@ fn completes(kind: Kind, ev: &Event) -> bool {
         Kind::Cast => {
             (has("you attempt to cast") && has("but fail"))
                 || has("you cast ")
+                || has("spell is resisted")
                 || has("already cast a spell")
                 || has("enough mana to cast")
                 || has("you lit the")
@@ -227,11 +233,12 @@ fn completes(kind: Kind, ev: &Event) -> bool {
 
 /// Wordings that CONFIRM a command without completing it: the reply is
 /// still owed. The bash that carries the character through the doorway
-/// (DLL 0xd538e) announces itself and then renders the arrival — the
-/// block is the answer, so the announce must not retire the entry or
-/// every successful bash-through arrival would read unsolicited.
+/// (DLL 0xd538e, "You bash the door open and walk through") announces
+/// itself and then renders the arrival — the block is the answer, so the
+/// announce must not retire the entry or every successful bash-through
+/// arrival would read unsolicited.
 fn confirms(kind: Kind, line: &str) -> bool {
-    matches!(kind, Kind::Bash) && line.contains("walk through")
+    matches!(kind, Kind::Bash) && line.to_lowercase().contains("walk through")
 }
 
 struct Entry {
@@ -314,13 +321,15 @@ impl Correlator {
         Correlated { event, answers }
     }
 
-    /// A line is one of three things, checked in order: the echo of the
+    /// A line is one of four things, checked in order: the echo of the
     /// oldest not-yet-accepted entry (acceptance — and every earlier
     /// never-echoed entry was eaten, echoes arrive in send order); a
     /// duplicate echo of an already-accepted entry (the execution echo —
-    /// confirm, never advance); or a reply completing the oldest accepted
-    /// entry that expects it. Anything else — the board's constant
-    /// unsolicited din — answers nothing and retires nothing.
+    /// confirm, never advance); a confirm wording (the reply is
+    /// announced but still owed — see `confirms`); or a reply completing
+    /// the oldest accepted entry that expects it. Anything else — the
+    /// board's constant unsolicited din — answers nothing and retires
+    /// nothing.
     fn on_line(&mut self, line: &str, now: Instant) -> Option<CmdId> {
         if let Some(pos) = self
             .queue
@@ -350,13 +359,17 @@ impl Correlator {
             self.refresh(now);
             return Some(id);
         }
-        let lowered = line.to_lowercase();
-        if let Some(conf) = self
+        if let Some(pos) = self
             .queue
             .iter()
-            .find(|e| e.echoed && confirms(e.kind, &lowered))
+            .position(|e| e.echoed && confirms(e.kind, line))
         {
-            let id = conf.id;
+            // The confirm is FIFO evidence too: this command executing
+            // means everything senior was answered or never will be —
+            // left in place, a stale senior would steal the confirmed
+            // command's arrival block.
+            let id = self.queue[pos].id;
+            self.queue.drain(..pos);
             self.refresh(now);
             return Some(id);
         }

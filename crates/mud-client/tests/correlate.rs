@@ -526,6 +526,7 @@ fn every_captured_cast_reply_completes_the_cast() {
         "You cast starlight!",
         "You have already cast a spell this round!",
         "You do not have enough mana to cast that spell.",
+        "You attempt to cast starlight at the kobold, but the spell is resisted.",
     ] {
         let mut c = Correlator::new(TTL);
         c.sent(CmdId(1), "cast star", t);
@@ -542,23 +543,49 @@ fn every_captured_cast_reply_completes_the_cast() {
 }
 
 #[test]
-fn both_look_refusal_wordings_complete_the_look() {
-    // The DLL ships two: "The door is closed in that direction!" and
-    // "There is a closed door in that direction!". Miss one and the look
-    // lingers — and the NEXT move's block retires the stale look instead
-    // of the move, handing a post-move room to a look consumer.
+fn each_door_refusal_wording_answers_its_own_command() {
+    // The ReMUD decompile pins the emitters: _cmd_look says "The door is
+    // closed in that direction!"; _move_user says "There is a closed
+    // door in that direction!" (exit-type case 2, beside "There is no
+    // exit..."). Crossing them hands a post-move room to a look consumer
+    // or leaves a refused move lingering to claim the next block.
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "n", t);
+    ans(&mut c, line("n"), t);
+    c.sent(CmdId(2), "look", t);
+    ans(&mut c, line("look"), t);
+    assert_eq!(
+        ans(&mut c, line("There is a closed door in that direction!"), t),
+        Some(CmdId(1)) // refuses the MOVE
+    );
+    assert_eq!(ans(&mut c, room("Newhaven, Arena"), t), Some(CmdId(2)));
+
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "look nw", t);
+    ans(&mut c, line("look nw"), t);
+    assert_eq!(
+        ans(&mut c, line("The door is closed in that direction!"), t),
+        Some(CmdId(1)) // refuses the LOOK
+    );
+}
+
+#[test]
+fn every_move_refusal_completes_the_move() {
+    // _move_user's other refusals (DLL 0xbc745, 0xbc8c4): a refused move
+    // that lingers claims the next look's block as a phantom arrival.
     let t = Instant::now();
     for refusal in [
-        "The door is closed in that direction!",
-        "There is a closed door in that direction!",
+        "You can't seem to move anywhere!",
+        "You need to cast a spell to go that way!",
     ] {
         let mut c = Correlator::new(TTL);
-        c.sent(CmdId(1), "look", t);
-        ans(&mut c, line("look"), t);
-        assert_eq!(ans(&mut c, line(refusal), t), Some(CmdId(1)), "{refusal:?}");
-        c.sent(CmdId(2), "n", t);
+        c.sent(CmdId(1), "n", t);
         ans(&mut c, line("n"), t);
-        assert_eq!(ans(&mut c, room("Dungeon, Entrance"), t), Some(CmdId(2)));
+        assert_eq!(ans(&mut c, line(refusal), t), Some(CmdId(1)), "{refusal:?}");
+        c.sent(CmdId(2), "look", t);
+        ans(&mut c, line("look"), t);
+        assert_eq!(ans(&mut c, room("Newhaven, Arena"), t), Some(CmdId(2)));
     }
 }
 
@@ -594,7 +621,7 @@ fn a_carried_through_bash_is_confirmed_by_the_line_and_retired_by_its_block() {
     c.sent(CmdId(1), "bash n", t);
     ans(&mut c, line("bash n"), t);
     assert_eq!(
-        ans(&mut c, line("You bash the door open and walk through!"), t),
+        ans(&mut c, line("You bash the door open and walk through"), t),
         Some(CmdId(1))
     );
     assert_eq!(ans(&mut c, room("Dungeon, Entrance"), t), Some(CmdId(1)));
@@ -607,6 +634,7 @@ fn open_light_get_and_heal_replies_complete_their_commands() {
     for (cmd, reply) in [
         ("open n", "The door is now open."),
         ("open n", "The door was already open!"),
+        ("open n", "The door is already open."),
         ("open n", "You successfully unlocked the gate."),
         ("light torch", "You lit the torch."),
         ("get silver", "You picked up 7 silver nobles."),
@@ -643,4 +671,25 @@ fn constant_traffic_cannot_keep_a_dead_entry_alive_forever() {
     // Way past any honest wait: the stale step must be gone, so the
     // unsolicited block answers nobody.
     assert_eq!(ans(&mut c, room("Dungeon, Entrance"), now), None);
+}
+
+#[test]
+fn a_confirmed_bash_owns_the_next_block_even_past_a_stale_move() {
+    // The walk-through confirm is FIFO evidence too: the bash executing
+    // means everything senior was answered or never will be. Without the
+    // senior drain, a move whose block was eaten sits in front and
+    // steals the confirmed bash's arrival — two wrong associations from
+    // one eaten reply.
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "n", t);
+    ans(&mut c, line("n"), t); // accepted; its block will be eaten
+    c.sent(CmdId(2), "bash n", t);
+    ans(&mut c, line("bash n"), t);
+    assert_eq!(
+        ans(&mut c, line("You bash the door open and walk through"), t),
+        Some(CmdId(2))
+    );
+    assert_eq!(ans(&mut c, room("Dungeon, Entrance"), t), Some(CmdId(2)));
+    assert_eq!(ans(&mut c, room("Dungeon, Entrance"), t), None);
 }
