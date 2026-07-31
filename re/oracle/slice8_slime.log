@@ -1,0 +1,136 @@
+
+===== train up (grants HP + lives) + kit [02:30:48.6] =====
+[02:30:52.7] /xcash 20000 copper
+/xcash 20000 copper
+
+[xcash] copper: 0 -> 20000; type 'i' to confirm.
+
+[02:30:56.7] /xexp 600000
+/xexp 600000
+You have progressed too far without training to acquire anymore experience!
+[HP=28]:
+[xexp] granted 600000 experience via _ADD_EXPERIENCE.
+
+[02:31:00.5] /xgoto 289 1
+/xgoto 289 1
+
+[xgoto] 1/2190 -> 1/289; type 'look'.
+
+[02:31:05.3] train
+train
+You hand over 50 copper farthings and you receive training to attain level 2.
+You receive the following:
+10 additional character points
+You learn the following Kai abilities:
+way of the swan
+[HP=28/KAI=0]:
+[02:31:10.3] train
+train
+You hand over 100 copper farthings and you receive training to attain level 3.
+You receive the following:
+10 additional character points
+You learn the following Kai abilities:
+way of the owl
+[HP=28/KAI=0]:
+[02:31:15.1] train
+train
+You hand over 150 copper farthings and you receive training to attain level 4.
+You receive the following:
+10 additional character points
+You learn the following Kai abilities:
+way of the cat
+[HP=28/KAI=0]:
+[02:31:19.8] train
+The river bashes you up against some rocks!
+
+[02:31:23.6] /xgoto 2190 1
+train
+You hand over 200 copper farthings and you receive training to attain level 5.
+You receive the following:
+10 additional character points
+You learn the following Kai abilities:
+way of the tiger
+[HP=11/KAI=0]:/xgoto 2190 1
+
+[xgoto] 1/289 -> 1/2190; type 'look'.
+
+[02:31:28.4] buy healing
+buy healing
+You hand over 86 copper farthings and all your wounds are healed.
+[HP=54/KAI=0]:
+[02:31:33.1] st
+st
+Name: Kaimon Sable                     Lives/CP:      9/140  
+Race: Human       Exp: 150009          Perception:     40
+Class: Mystic     Level: 5             Stealth:        51
+Hits:    54/54    Armour Class:   0/0  Thievery:        0
+Kai:      0/4                          Traps:           0
+                                       Picklocks:       0
+Strength:  40     Agility: 40          Tracking:        0
+Intellect: 40     Health:  40          Martial Arts:  108
+Willpower: 40     Charm:   40          MagicRes:       40
+[HP=54/KAI=0]:[HP=54/KAI=1]:
+
+===== engage the slime beast (1/2333) [02:31:33.1] =====
+[02:31:37.1] /xgoto 2333 1
+/xgoto 2333 1
+
+[xgoto] 1/2190 -> 1/2333; type 'look'.
+
+[02:31:41.9] look
+look
+Small Dark Room
+    This stone chamber is completely bare except for a long, grungy table and a
+wooden chair. It is dimly lit by flickering candles set in alcoves in the
+walls. 
+Obvious exits: sBouth
+[HP=54/KAI=1]:
+[02:31:41.9] no slime beast present at entry; camping
+[02:31:50.3] look
+look
+Small Dark Room
+    This stone chamber is completely bare except for a long, grungy table and a
+wooden chair. It is dimly lit by flickering candles set in alcoves in the
+walls. 
+Obvious exits: sBouth
+[HP=54/KAI=1]:
+[02:32:08.5] look
+look
+Small Dark Room
+    This stone chamber is completely bare except for a long, grungy table and a
+wooden chair. It is dimly lit by flickering candles set in alcoves in the
+walls. 
+Obvious exits: sBouth
+[HP=54/KAI=1]:
+[02:32:26.9] look
+look
+Small Dark Room
+    This stone chamber is completely bare except for a long, grungy table and a
+wooden chair. It is dimly lit by flickering candles set in alcoves in the
+walls. 
+Obvious exits: sNouth
+[HP=54/KAI=2]:
+[02:32:45.3] look
+[HP=54/KAI=3]:look
+Small Dark Room
+    This stone chamber is completely bare except for a long, grungy table and a
+wooden chair. It is dimly lit by flickering candles set in alcoves in the
+walls. 
+Obvious exits: sAouth
+[HP=54/KAI=3]:
+[02:33:03.8] look
+look
+Small Dark Room
+    This stone chamber is completely bare except for a long, grungy table and a
+wooden chair. It is dimly lit by flickering candles set in alcoves in the
+walls. 
+Obvious exits: sAouth
+[HP=54/KAI=3]:
+[02:33:21.9] look
+look
+Small Dark Room
+    This stone chamber is completely bare except for a long, grungy table and a
+wooden chair. It is dimly lit by flickering candles set in alcoves in the
+walls. 
+Obvious exits: sGouth
+[HP=54/KAI=4]:

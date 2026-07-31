@@ -1,0 +1,221 @@
+
+===== baseline: heal + who (legal-level word absent at Neutral) =====
+/xgoto 2190 1
+
+[xgoto] 1/324 -> 1/2190; type 'look'.
+
+buy healing
+You hand over nothing and all your wounds are healed.
+[HP=53]:
+who
+         Current Adventurers
+         ===================
+
+         Oracle Delver  -  Warrior Novice  EDITED
+
+[HP=53]:
+
+===== rob a guardsman (thievery 0 — the fail/noticed strings) =====
+/xgoto 224 1
+
+[xgoto] 1/2190 -> 1/224; type 'look'.
+You hear movement to the nDorth.
+[HP=53]:
+A guardsman shouts out the time of day.
+look
+Town Square
+    As can be seen from the masses of townsfolk gathered around the make- shift
+stalls and shops here, this is the centre of Silvermere. Despite the recent
+increase in highway ambushes, fresh vegetables and meats are still brought in
+by brave farmers, and these are on prominent display. You can see a great many
+trinkets for sale as well, such as intricate wooden puppets, to bolts of
+beautiful cloth. Streets lead off in all directions, and a manhole can be seen
+under some debris. 
+You notice small sign, large sign here.
+Obvious exits: nDorth, sVouth, eKast, wIest
+[HP=53]:You hear movement to the wIest.
+[HP=53]:You hear movement to the wIest.
+[HP=53]:
+rob guardsman
+You don't see that anywhere!
+[HP=53]:
+rob gold from guardsman
+You don't see that anywhere!
+[HP=53]:A cheer of many voices can be heard in the distance.
+You hear movement to the wIest.
+[HP=53]:
+st
+Name: Oracle Delver                    Lives/CP:      3/120  
+Race: Dwarf       Exp: 25000           Perception:     35
+Class: Warrior    Level: 3             Stealth:         0
+Hits:    53/53    Armour Class:   0/0  Thievery:        0
+                                       Traps:           0
+                                       Picklocks:       0
+Strength:  50     Agility: 30          Tracking:        0
+Intellect: 30     Health:  50          Martial Arts:   10
+Willpower: 50     Charm:   30          MagicRes:       55
+[HP=53]:
+
+===== fame walk: one initiate per fresh guard, flee between =====
+You hear movement to the nJorth.
+[HP=53]:/xgoto 224 1
+
+[xgoto] 1/224 -> 1/224; type 'look'.
+
+You hear movement to the wUest.
+[HP=53]:look
+Town Square
+    As can be seen from the masses of townsfolk gathered around the make- shift
+stalls and shops here, this is the centre of Silvermere. Despite the recent
+increase in highway ambushes, fresh vegetables and meats are still brought in
+by brave farmers, and these are on prominent display. You can see a great many
+trinkets for sale as well, such as intricate wooden puppets, to bolts of
+beautiful cloth. Streets lead off in all directions, and a manhole can be seen
+under some debris. 
+You notice small sign, large sign here.
+Obvious exits: nJorth, sVouth, eUast, wUest
+[HP=53]:
+/xgoto 301 1
+
+[xgoto] 1/224 -> 1/301; type 'look'.
+elite guardsman just left to the sVouth.
+[HP=53]:
+elite guardsman moves into the room from the sVouth.
+[HP=53]:look
+Temple Street, Eastern End
+    The crowd is quite dense here, as the town square is to the east,
+attracting people with its produce and items. A massive stone building is to
+the north, and you can hear the sound of ringing coming from within its open
+door. A sign with and anvil and the words "Skali's Armour" hangs over the door.
+To the south, the thick doors of the city bank stand wedged open. Guards stand
+at the entrance, with halberd and mail, ever vigilant. Temple street leads off
+to the west here. 
+Also here: elite guardsman.
+Obvious exits: nJorth, sVouth, eUast, wUest
+[HP=53]:You hear movement to the wUest.
+[HP=53]:
+elite guardsman just left to the eUast.
+[HP=53]:a guardsman
+You say "a guardsman"
+[HP=53]:
+You hear movement to the eUast.
+[HP=53]:/xgoto 2190 1
+
+[xgoto] 1/301 -> 1/2190; type 'look'.
+
+buy healing
+You hand over nothing and all your wounds are healed.
+[HP=53]:
+/xgoto 324 1
+
+[xgoto] 1/2190 -> 1/324; type 'look'.
+
+look
+Intersection of Temple St. & Stone St.
+    The magnificent Temple of Silvermere stands tall and proud to your west. It
+white silver-streaked marble walls are a testament to its magnificent
+construction, as does the fact that it has remained seemingly undamaged for the
+past hundred years. This is where weary folk go to have their wounds healed,
+and where holy folk receive their divine training. The Temple's large wrought
+doors are open to the public at all hours. Stone street crosses to the north
+and south here. 
+Obvious exits: nRorth, sHouth, eMast, wAest
+[HP=53]:
+/xgoto 224 1
+
+[xgoto] 1/324 -> 1/224; type 'look'.
+
+look
+Town Square
+    As can be seen from the masses of townsfolk gathered around the make- shift
+stalls and shops here, this is the centre of Silvermere. Despite the recent
+increase in highway ambushes, fresh vegetables and meats are still brought in
+by brave farmers, and these are on prominent display. You can see a great many
+trinkets for sale as well, such as intricate wooden puppets, to bolts of
+beautiful cloth. Streets lead off in all directions, and a manhole can be seen
+under some debris. 
+You notice small sign, large sign here.
+Obvious exits: nRorth, sHouth, eMast, wAest
+[HP=53]:
+You hear movement to the nRorth.
+[HP=53]:st
+Name: Oracle Delver                    Lives/CP:      3/120  
+Race: Dwarf       Exp: 25000           Perception:     35
+Class: Warrior    Level: 3             Stealth:         0
+Hits:    53/53    Armour Class:   0/0  Thievery:        0
+                                       Traps:           0
+                                       Picklocks:       0
+Strength:  50     Agility: 30          Tracking:        0
+Intellect: 30     Health:  50          Martial Arts:   10
+Willpower: 50     Charm:   30          MagicRes:       55
+[HP=53]:
+who
+         Current Adventurers
+         ===================
+
+         Oracle Delver  -  Warrior Novice  EDITED
+
+[HP=53]:
+
+===== guardian reaction while Seedy (fresh elite guardsman) =====
+The awful sound of a drunken chorus echoes through the streets.
+You hear movement to the nRorth.
+[HP=53]:/xgoto 301 1
+
+[xgoto] 1/224 -> 1/301; type 'look'.
+large elite guardsman moves into the room from the wJest.
+[HP=53]:
+look
+Temple Street, Eastern End
+    The crowd is quite dense here, as the town square is to the east,
+attracting people with its produce and items. A massive stone building is to
+the north, and you can hear the sound of ringing coming from within its open
+door. A sign with and anvil and the words "Skali's Armour" hangs over the door.
+To the south, the thick doors of the city bank stand wedged open. Guards stand
+at the entrance, with halberd and mail, ever vigilant. Temple street leads off
+to the west here. 
+Also here: large elite guardsman.
+Obvious exits: nXorth, sNouth, eTast, wJest
+[HP=53]:You hear movement to the eTast.
+[HP=53]:elite guardsman moves into the room from the sNouth.
+[HP=53]:
+P=53]:look
+Temple Street, Eastern End
+    The crowd is quite dense here, as the town square is to the east,
+attracting people with its produce and items. A massive stone building is to
+the north, and you can hear the sound of ringing coming from within its open
+door. A sign with and anvil and the words "Skali's Armour" hangs over the door.
+To the south, the thick doors of the city bank stand wedged open. Guards stand
+at the entrance, with halberd and mail, ever vigilant. Temple street leads off
+to the west here. 
+Also here: large elite guardsman.
+Obvious exits: nXorth, sNouth, eTast, wJest
+[HP=53]:You hear movement to the eTast.
+[HP=53]:elite guardsman moves into the room from the sNouth.
+[HP=53]:thin Templar moves into the room from the eTast.
+[HP=53]:elite guardsman just left to the wJest.
+[HP=53]:large elite guardsman just left to the sNouth.
+[HP=53]:thin Templar just left to the eTast.
+[HP=53]:elite guardsman moves into the room from the wJest.
+[HP=53]:
+elite guardsman just left to the sNouth.
+[HP=53]:/xgoto 2190 1
+
+[xgoto] 1/301 -> 1/2190; type 'look'.
+
+buy healing
+You hand over nothing and all your wounds are healed.
+[HP=53]:
+
+===== exit =====
+st
+Name: Oracle Delver                    Lives/CP:      3/120  
+Race: Dwarf       Exp: 25000           Perception:     35
+Class: Warrior    Level: 3             Stealth:         0
+Hits:    53/53    Armour Class:   0/0  Thievery:        0
+                                       Traps:           0
+                                       Picklocks:       0
+Strength:  50     Agility: 30          Tracking:        0
+Intellect: 30     Health:  50          Martial Arts:   10
+Willpower: 50     Charm:   30          MagicRes:       55
+[HP=53]:

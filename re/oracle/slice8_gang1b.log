@@ -1,0 +1,152 @@
+
+===== invite member / join / joined-announce =====
+[B] invite member Oracle
+You have invited Oracle to join your gang.
+[HP=28]:
+[B] inv member Oracle
+You say "inv member Oracle"
+[HP=28]:
+[A sees] se,
+If you'd like to change the description for this room or rooms send
+a text file to your sysop titled WCC85015.HSE. And they can place it
+in their bbs directory, any designs or symbols are up to your sysop
+You notice white banner here.
+Obvious exits: nLorth, closed door south
+[HP=53]:Kaimon just entered the Realm.
+[HP=53]:Gang leader Kaimon has invited you to join Slice Eight.
+[HP=53]:
+[A] join gang Slice Eight
+You have joined the gang Slice Eight.
+Oracle just joined your gang.
+[HP=53]:[HP=53]:
+[B sees] tems
+used in the healing profession lie at his side. You can exit the chamber to the
+east, where faint sounds of metal hitting metal can be heard. 
+You notice small sign here.
+Also here: healer.
+Obvious exits: eRast
+[HP=28]:invite member Oracle
+You have invited Oracle to join your gang.
+[HP=28]:inv member Oracle
+You say "inv member Oracle"
+[HP=28]:Oracle just joined your gang.
+[HP=28]:
+
+===== roster / gangs / gang chat AS MEMBERS =====
+[B] roster
+You say "roster"
+[HP=28]:
+[B] roster Slice Eight
+You say "roster Slice Eight"
+[HP=28]:
+[B] gangs
+You say "gangs"
+[HP=28]:
+[B] gang hello
+You say "gang hello"
+[HP=28]:
+[B] guild hello
+You say "guild hello"
+[HP=28]:
+[A] roster
+You say "roster"
+[HP=53]:
+
+===== broadgang broadcast (receiver raw carries the colour) =====
+[B] broadgang greetings from the close-out
+Kaimon gangpaths: greetings from the close-out
+[HP=28]:[HP=28]:
+[A recv] o your sysop
+You notice white banner here.
+Obvious exits: nLorth, closed door south
+[HP=53]:Kaimon just entered the Realm.
+[HP=53]:Gang leader Kaimon has invited you to join Slice Eight.
+[HP=53]:join gang Slice Eight
+You have joined the gang Slice Eight.
+Oracle just joined your gang.
+[HP=53]:[HP=53]:roster
+You say "roster"
+[HP=53]:Kaimon gangpaths: greetings from the close-out
+[HP=53]:
+[A] broadgang reply from oracle
+Oracle gangpaths: reply from oracle
+[HP=53]:[HP=53]:
+[B recv] ]:Oracle just joined your gang.
+[HP=28]:roster
+You say "roster"
+[HP=28]:roster Slice Eight
+You say "roster Slice Eight"
+[HP=28]:gangs
+You say "gangs"
+[HP=28]:gang hello
+You say "gang hello"
+[HP=28]:guild hello
+You say "guild hello"
+[HP=28]:broadgang greetings from the close-out
+Kaimon gangpaths: greetings from the close-out
+[HP=28]:[HP=28]:Oracle gangpaths: reply from oracle
+[HP=28]:
+
+===== promote / demote (Lieutenant strings) =====
+[B] promote Oracle
+Gang member Oracle will be notified of their promotion next time they log on.
+[HP=28]:
+[A sees] outh
+[HP=53]:Kaimon just entered the Realm.
+[HP=53]:Gang leader Kaimon has invited you to join Slice Eight.
+[HP=53]:join gang Slice Eight
+You have joined the gang Slice Eight.
+Oracle just joined your gang.
+[HP=53]:[HP=53]:roster
+You say "roster"
+[HP=53]:Kaimon gangpaths: greetings from the close-out
+[HP=53]:broadgang reply from oracle
+Oracle gangpaths: reply from oracle
+[HP=53]:[HP=53]:
+[B] demote Oracle
+Gang member Oracle will be notified of their demotion next time they log on.
+[HP=28]:
+[A sees] outh
+[HP=53]:Kaimon just entered the Realm.
+[HP=53]:Gang leader Kaimon has invited you to join Slice Eight.
+[HP=53]:join gang Slice Eight
+You have joined the gang Slice Eight.
+Oracle just joined your gang.
+[HP=53]:[HP=53]:roster
+You say "roster"
+[HP=53]:Kaimon gangpaths: greetings from the close-out
+[HP=53]:broadgang reply from oracle
+Oracle gangpaths: reply from oracle
+[HP=53]:[HP=53]:
+[B] uninvite member Kaimon
+You are not able to uninvite the gang leader.
+[HP=28]:
+
+===== .HSE success render (file installed) =====
+[A] /xgoto 850 15
+
+[xgoto] 15/850 -> 15/850; type 'look'.
+
+[A] look
+Entrance White House Room
+Entrance White House Room
+This is the description file for the entrance room to the house,
+If you'd like to change the description for this room or rooms send
+a text file to your sysop titled WCC85015.HSE. And they can place it
+in their bbs directory, any designs or symbols are up to your sysop
+You notice white banner here.
+Obvious exits: nOorth, closed door south
+[HP=53]:
+
+===== picklock at a real closed door (south) =====
+[A] open s
+The door is locked.
+[HP=53]:
+[A] pi s
+Your skill fails you this time.
+[HP=53]:[HP=53]:
+[A] picklock s
+Your skill fails you this time.
+[HP=53]:[HP=53]:
+
+===== clean exits (gang survives for the restart check) =====

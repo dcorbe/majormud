@@ -1,0 +1,272 @@
+E] . Enter the Realm
+[H] . Help
+[A] . About the Game
+[C] . Game Counts
+[T] . Topten Adventurers
+[G] . Topten Gangs
+[W] . Who's in the Realm
+[R] . Release Notes
+[I] . Information
+[X] . Exit Game
+
+[MAJORMUD]: E
+
+MajorMUD - ROL
+
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+
+Newhaven, Village Entrance
+    Welcome to Newhaven! You are standing at the crude wooden gates of the
+village entrance, in the middle of a dusty path. A low wooden palisade
+surrounds the village, to protect against creatures of the night and random
+raiders. You can see small buildings to the north and south, and a dusty path
+that leads to the west and southeast. 
+You notice large sign, newbie manual here.
+Obvious exits: nSorth, sQouth, wAest, sLoutheast
+[HP=28]:
+
+===== empty-room setup =====
+look
+Blank Room
+    
+Obvious exits: nGorth
+[HP=28]:
+
+===== min-abbrev probes =====
+punch      p          say
+punch      pu         VERB
+punch      pun        VERB
+punch      punc       VERB
+punch      punch      VERB
+backstab   b          say
+backstab   ba         say
+backstab   bac        say
+backstab   back       say
+backstab   backs      VERB
+backstab   backst     VERB
+backstab   backsta    VERB
+backstab   backstab   VERB
+kick       k          say
+kick       ki         say
+kick       kic        VERB
+kick       kick       VERB
+jumpkick   j          say
+jumpkick   ju         VERB
+jumpkick   jum        VERB
+jumpkick   jump       VERB
+jumpkick   jumpk      VERB
+jumpkick   jumpki     VERB
+jumpkick   jumpkic    VERB
+jumpkick   jumpkick   VERB
+use        u          VERB
+use        us         VERB
+use        use        VERB
+read       r          say
+read       re         say
+read       rea        VERB
+read       read       VERB
+ask        a          VERB
+ask        as         say
+ask        ask        say
+spells     s          VERB
+spells     sp         VERB
+spells     spe        VERB
+spells     spel       VERB
+spells     spell      VERB
+spells     spells     VERB
+powers     p          say
+powers     po         VERB
+powers     pow        VERB
+powers     powe       VERB
+powers     power      VERB
+powers     powers     VERB
+set        s          VERB
+set        se         VERB
+set        set        VERB
+sneak      s          VERB
+sneak      sn         VERB
+sneak      sne        VERB
+sneak      snea       VERB
+sneak      sneak      VERB
+hide       h          say
+hide       hi         say
+hide       hid        VERB
+hide       hide       VERB
+rob        r          say
+rob        ro         VERB
+rob        rob        VERB
+picklock   p          say
+picklock   pi         say
+picklock   pic        say
+picklock   pick       say
+picklock   pickl      say
+picklock   picklo     say
+picklock   pickloc    say
+picklock   picklock   say
+search     s          VERB
+search     se         VERB
+search     sea        VERB
+search     sear       VERB
+search     searc      VERB
+search     search     VERB
+disarm     d          VERB
+disarm     di         VERB
+disarm     dis        VERB
+disarm     disa       VERB
+disarm     disar      VERB
+disarm     disarm     VERB
+invoke     i          VERB
+invoke     in         say
+invoke     inv        say
+invoke     invo       VERB
+invoke     invok      VERB
+invoke     invoke     VERB
+inventory  i          VERB
+inventory  in         say
+inventory  inv        say
+inventory  inve       VERB
+inventory  inven      VERB
+inventory  invent     VERB
+inventory  invento    VERB
+inventory  inventor   VERB
+inventory  inventory  VERB
+gang       g          VERB
+gang       ga         say
+gang       gan        say
+gang       gang       say
+guild      g          VERB
+guild      gu         say
+guild      gui        say
+guild      guil       say
+guild      guild      say
+create     c          VERB
+create     cr         say
+create     cre        say
+create     crea       say
+create     creat      say
+create     create     say
+join       j          say
+join       jo         VERB
+join       joi        VERB
+join       join       VERB
+invite     i          VERB
+invite     in         say
+invite     inv        say
+invite     invi       VERB
+invite     invit      VERB
+invite     invite     VERB
+uninvite   u          VERB
+uninvite   un         say
+uninvite   uni        VERB
+uninvite   unin       VERB
+uninvite   uninv      VERB
+uninvite   uninvi     VERB
+uninvite   uninvit    VERB
+uninvite   uninvite   VERB
+unstock    u          VERB
+unstock    un         say
+unstock    uns        VERB
+unstock    unst       VERB
+unstock    unsto      VERB
+unstock    unstoc     VERB
+unstock    unstock    VERB
+promote    p          say
+promote    pr         VERB
+promote    pro        VERB
+promote    prom       VERB
+promote    promo      VERB
+promote    promot     VERB
+promote    promote    VERB
+demote     d          VERB
+demote     de         say
+demote     dem        VERB
+demote     demo       VERB
+demote     demot      VERB
+demote     demote     VERB
+disband    d          VERB
+disband    di         VERB
+disband    dis        VERB
+disband    disb       VERB
+disband    disba      VERB
+disband    disban     VERB
+disband    disband    VERB
+leave      l          VERB
+leave      le         say
+leave      lea        say
+leave      leav       say
+leave      leave      say
+stock      s          VERB
+stock      st         VERB
+stock      sto        VERB
+stock      stoc       VERB
+stock      stock      VERB
+markup     m          say
+markup     ma         VERB
+markup     mar        VERB
+markup     mark       VERB
+markup     marku      VERB
+markup     markup     VERB
+top        t          say
+top        to         VERB
+top        top        VERB
+
+RESULTS {'punch': 'SVVVV', 'backstab': 'SSSSVVVV', 'kick': 'SSVV', 'jumpkick': 'SVVVVVVV', 'use': 'VVV', 'read': 'SSVV', 'ask': 'VSS', 'spells': 'VVVVVV', 'powers': 'SVVVVV', 'set': 'VVV', 'sneak': 'VVVVV', 'hide': 'SSVV', 'rob': 'SVV', 'picklock': 'SSSSSSSS', 'search': 'VVVVVV', 'disarm': 'VVVVVV', 'invoke': 'VSSVVV', 'inventory': 'VSSVVVVVV', 'gang': 'VSSS', 'guild': 'VSSSS', 'create': 'VSSSSS', 'join': 'SVVV', 'invite': 'VSSVVV', 'uninvite': 'VSVVVVVV', 'unstock': 'VSVVVVV', 'promote': 'SVVVVVV', 'demote': 'VSVVVV', 'disband': 'VVVVVVV', 'leave': 'VSSSS', 'stock': 'VVVVV', 'markup': 'SVVVVV', 'top': 'SVV'}
+
+===== kai st + wealth + stealth strings =====
+st
+Name: Kaimon Sable                     Lives/CP:      9/100  
+Race: Human       Exp: 0               Perception:     40
+Class: Mystic     Level: 1             Stealth:        43
+Hits:    28/28    Armour Class:   0/0  Thievery:        0
+Kai:      0/0                          Traps:           0
+                                       Picklocks:       0
+Strength:  40     Agility: 40          Tracking:        0
+Intellect: 40     Health:  40          Martial Arts:   98
+Willpower: 40     Charm:   40          MagicRes:       40
+[HP=28]:
+wealth
+You have No money!
+[HP=28]:
+sneak
+Attempting to sneak...You don't think you're sneaking.
+[HP=28]:
+hide
+Attempting to hide...
+[HP=28]:
+search
+Your search revealed nothing.
+[HP=28]:
+
+===== MA swing verbs at the rat cavern =====
+look
+The room is very dark - you can't see anything
+[HP=28]:The giant rat lunges at you!
+[HP=28]:
+kick rat
+*Combat Engaged*
+[HP=28]:You kick giant rat for 6 damage!
+[HP=28]:The giant rat lunges at you!
+[HP=28]:
+jumpkick rat
+*Combat Off*
+[HP=28]:*Combat Engaged*
+[HP=28]:You critically jumpkick giant rat for 42 damage!
+[HP=28]:The giant rat falls to the ground with a tortured squeak.
+[HP=28]:You gain 9 experience.
+[HP=28]:*Combat Off*
+[HP=28]:The cave bear claws at you, but you dodge out of the way!
+[HP=28]:
+punch rat
+You say "punch rat"
+[HP=28]:The cave bear snaps at you, but you dodge out of the way!
+[HP=28]:
+kick rat
+You say "kick rat"
+[HP=28]:The cave bear claws at you, but you dodge out of the way!
+[HP=28]:
+br
+You say "br"
+[HP=28]:The cave bear claws at you, but you dodge out of the way!
+[HP=28]:
+
+===== clean exit =====

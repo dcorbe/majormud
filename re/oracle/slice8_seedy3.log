@@ -1,0 +1,219 @@
+st
+Name: Oracle Delver                    Lives/CP:      3/120  
+Race: Dwarf       Exp: 25000           Perception:     35
+Class: Warrior    Level: 3             Stealth:         0
+Hits:   -71/53    Armour Class:   0/0  Thievery:        0
+                                       Traps:           0
+                                       Picklocks:       0
+Strength:  50     Agility: 30          Tracking:        0
+Intellect: 30     Health:  50          Martial Arts:   10
+Willpower: 50     Charm:   30          MagicRes:       55
+[HP=-71]:
+
+===== mortally wounded: walk into the grudge to finish it =====
+/xgoto 224 1
+
+[xgoto] 1/2190 -> 1/224; type 'look'.
+
+/xgoto 301 1
+
+[xgoto] 1/224 -> 1/301; type 'look'.
+elite guardsman just left to the eHast.
+[HP=-72]:large guardsman moves into the room from the wJest.
+[HP=-72]:
+/xgoto 301 1
+
+[xgoto] 1/301 -> 1/301; type 'look'.
+
+elite guardsman moves into the room from the sYouth.
+[HP=-72]:large guardsman just left to the wJest.
+[HP=-72]:elite guardsman moves into the room from the sYouth.
+[HP=-72]:/xgoto 301 1
+
+[xgoto] 1/301 -> 1/301; type 'look'.
+
+/xgoto 301 1
+
+[xgoto] 1/301 -> 1/301; type 'look'.
+
+/xgoto 301 1
+
+[xgoto] 1/301 -> 1/301; type 'look'.
+You hear movement to the ePast.
+[HP=-73]:elite guardsman moves into the room from the wGest.
+[HP=-73]:
+large guardsman moves into the room from the sBouth.
+[HP=-73]:elite guardsman just left to the wGest.
+[HP=-73]:/xgoto 301 1
+
+[xgoto] 1/301 -> 1/301; type 'look'.
+large guardsman just left to the ePast.
+[HP=-73]:elite guardsman moves into the room from the wGest.
+[HP=-73]:
+/xgoto 301 1
+
+[xgoto] 1/301 -> 1/301; type 'look'.
+
+/xgoto 301 1
+
+[xgoto] 1/301 -> 1/301; type 'look'.
+
+/xgoto 301 1
+
+[xgoto] 1/301 -> 1/301; type 'look'.
+
+/xgoto 301 1
+
+[xgoto] 1/301 -> 1/301; type 'look'.
+
+/xgoto 301 1
+
+[xgoto] 1/301 -> 1/301; type 'look'.
+
+/xgoto 301 1
+
+[xgoto] 1/301 -> 1/301; type 'look'.
+
+/xgoto 301 1
+
+[xgoto] 1/301 -> 1/301; type 'look'.
+
+/xgoto 301 1
+
+[xgoto] 1/301 -> 1/301; type 'look'.
+
+/xgoto 301 1
+
+[xgoto] 1/301 -> 1/301; type 'look'.
+
+/xgoto 301 1
+
+[xgoto] 1/301 -> 1/301; type 'look'.
+
+/xgoto 301 1
+
+[xgoto] 1/301 -> 1/301; type 'look'.
+
+/xgoto 301 1
+
+[xgoto] 1/301 -> 1/301; type 'look'.
+
+/xgoto 301 1
+
+[xgoto] 1/301 -> 1/301; type 'look'.
+
+st
+Name: Oracle Delver                    Lives/CP:      3/120  
+Race: Dwarf       Exp: 25000           Perception:     35
+Class: Warrior    Level: 3             Stealth:         0
+Hits:   -80/53    Armour Class:   0/0  Thievery:        0
+                                       Traps:           0
+                                       Picklocks:       0
+Strength:  50     Agility: 30          Tracking:        0
+Intellect: 30     Health:  50          Martial Arts:   10
+Willpower: 50     Charm:   30          MagicRes:       55
+[HP=-80]:
+
+===== heal + charges on Dhelvanen (instant host-command flee) =====
+/xcash 2000 copper
+
+[xcash] copper: 3950 -> 2000; type 'i' to confirm.
+
+/xgoto 2190 1
+
+[xgoto] 1/301 -> 1/2190; type 'look'.
+
+buy healing
+You may not do that while you are mortally wounded!
+[HP=-80]:[HP=-81]:
+/xgoto 1008 7
+
+[xgoto] 1/2190 -> 7/1008; type 'look'.
+
+a dhelvanen
+You may not do that while you are mortally wounded!
+[HP=-81]:
+/xgoto 2190 1
+
+[xgoto] 7/1008 -> 1/2190; type 'look'.
+
+buy healing
+You may not do that while you are mortally wounded!
+[HP=-81]:
+/xgoto 1008 7
+
+[xgoto] 1/2190 -> 7/1008; type 'look'.
+
+a dhelvanen
+You may not do that while you are mortally wounded!
+[HP=-81]:
+/xgoto 2190 1
+
+[xgoto] 7/1008 -> 1/2190; type 'look'.
+
+buy healing
+You may not do that while you are mortally wounded!
+[HP=-81]:[HP=-82]:
+
+===== who + st at (expected) Seedy =====
+who
+         Current Adventurers
+         ===================
+
+         Oracle Delver  -  Warrior Novice  EDITED
+
+[HP=-82]:
+st
+Name: Oracle Delver                    Lives/CP:      3/120  
+Race: Dwarf       Exp: 25000           Perception:     35
+Class: Warrior    Level: 3             Stealth:         0
+Hits:   -82/53    Armour Class:   0/0  Thievery:        0
+                                       Traps:           0
+                                       Picklocks:       0
+Strength:  50     Agility: 30          Tracking:        0
+Intellect: 30     Health:  50          Martial Arts:   10
+Willpower: 50     Charm:   30          MagicRes:       55
+[HP=-82]:
+
+===== guardian reaction while Seedy =====
+/xgoto 301 1
+
+[xgoto] 1/2190 -> 1/301; type 'look'.
+
+look
+Temple Street, Eastern End
+    The crowd is quite dense here, as the town square is to the east,
+attracting people with its produce and items. A massive stone building is to
+the north, and you can hear the sound of ringing coming from within its open
+door. A sign with and anvil and the words "Skali's Armour" hangs over the door.
+To the south, the thick doors of the city bank stand wedged open. Guards stand
+at the entrance, with halberd and mail, ever vigilant. Temple street leads off
+to the west here. 
+Also here: fierce guardsman.
+Obvious exits: nXorth, sTouth, eIast, wFest
+[HP=-82]:
+                    Picklocks:       0
+Strength:  50     Agility: 30          Tracking:        0
+Intellect: 30     Health:  50          Martial Arts:   10
+Willpower: 50     Charm:   30          MagicRes:       55
+[HP=-82]:/xgoto 301 1
+
+[xgoto] 1/2190 -> 1/301; type 'look'.
+look
+Temple Street, Eastern End
+    The crowd is quite dense here, as the town square is to the east,
+attracting people with its produce and items. A massive stone building is to
+the north, and you can hear the sound of ringing coming from within its open
+door. A sign with and anvil and the words "Skali's Armour" hangs over the door.
+To the south, the thick doors of the city bank stand wedged open. Guards stand
+at the entrance, with halberd and mail, ever vigilant. Temple street leads off
+to the west here. 
+Also here: fierce guardsman.
+Obvious exits: nXorth, sTouth, eIast, wFest
+[HP=-82]:[HP=-83]:
+/xgoto 2190 1
+
+[xgoto] 1/301 -> 1/2190; type 'look'.
+
+
+===== exit =====

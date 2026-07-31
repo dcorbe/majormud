@@ -73,3 +73,25 @@ class Session:
         self.ru("Make your selection")
         self.send("A")
         self.ru("[MAJORMUD]:")
+
+    def enter_game(self, timeout=25):
+        """From the module menu ([MAJORMUD]:) into the realm: E, then the
+        splash scrolls until the status prompt appears."""
+        self.send("E", pause=0.8)
+        self.ru("[HP=", timeout=timeout)
+        self.dump(2)
+
+    def exit_game(self):
+        """Leave the realm and the module cleanly (a hard disconnect is
+        punished: 'The gods have punished you appropriately')."""
+        self.send("=x", pause=1.2)
+        self.dump(3)
+        if "[MAJORMUD]" not in self.clean()[-300:]:
+            self.send("x", pause=1.2)
+            self.dump(3)
+        self.send("x", pause=1.0)  # module menu -> BBS main menu
+        self.dump(2)
+        try:
+            self.s.close()
+        except OSError:
+            pass

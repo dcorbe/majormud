@@ -134,12 +134,19 @@ fn exit_command(exit: &str) -> &str {
 /// "Also here:" lists players first, then monsters. Players and named
 /// NPCs print capitalised; wandering monsters are lowercase generic
 /// nouns. Attacking a player is a PK attempt, so only lowercase names
-/// are candidates.
+/// are candidates — and the TRAILING noun must be lowercase too:
+/// adjective-prefixed named NPCs render like "thin Templar" (slice-8
+/// seedy corpus), where the first word is a lowercase adjective but the
+/// targeting noun is a capitalised name.
 fn is_attackable(name: &str) -> bool {
-    strip_status(name)
-        .chars()
-        .next()
-        .is_some_and(char::is_lowercase)
+    let name = strip_status(name);
+    let first_lower = name.chars().next().is_some_and(char::is_lowercase);
+    let noun_lower = name
+        .split_whitespace()
+        .last()
+        .and_then(|w| w.chars().next())
+        .is_some_and(char::is_lowercase);
+    first_lower && noun_lower
 }
 
 /// Drop a leading "(Resting) " style status marker.
