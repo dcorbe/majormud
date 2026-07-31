@@ -240,6 +240,40 @@ fn world_with_prose_death() -> Content {
     content
 }
 
+/// A stop holding THREE monsters at once.
+///
+/// Every other fixture room holds exactly one, and that is precisely why
+/// the runner shipped a bug that walked out of a room with three things
+/// still standing in it: a kill was followed by a prompt, the prompt
+/// count ran out, and the stop ended. With one monster per room the stop
+/// was legitimately finished after the only kill, so no test could tell
+/// the difference.
+///
+/// `room_type` 3 boot-fills to the cap before the first player connects,
+/// and the long respawn delay keeps anything from refilling mid-test —
+/// so exactly three deaths are available and no more.
+fn world_with_three_monsters() -> Content {
+    let mut content = world();
+    let mut yard = room(
+        YARD,
+        "Training Yard",
+        &[
+            (Direction::North, ALLEY),
+            (Direction::South, GATES),
+            (Direction::East, CELLAR),
+        ],
+    );
+    yard.room_type = 3;
+    yard.spawn_zone = 7;
+    yard.spawn_cap = 3;
+    yard.min_level = 1;
+    yard.max_level = 5;
+    yard.forced_monster = Some(RAT);
+    yard.respawn_delay = 9999;
+    content.add_room(yard);
+    content
+}
+
 /// The client-side graph mirroring the server world.
 fn client_graph() -> RoomGraph {
     let mk = |id: RoomId, name: &str, exits: &[(Direction, RoomId)]| {
@@ -712,5 +746,52 @@ async fn a_prose_death_line_does_not_wedge_the_stop() {
     assert_eq!(
         stats.kills, 1,
         "a prose death paid experience but was not counted: {stats:?}"
+    );
+}
+
+/// The multi-monster stop: three in the room, respawn blocked, so the
+/// runner has to stay until all three are dead.
+///
+/// Every other fixture room holds exactly ONE monster. That is why the
+/// runner could ship a bug that walked out of a room with three things
+/// still standing in it — with one per room the stop really was finished
+/// after the only kill, and no test could tell a correct stop from one
+/// that left early.
+///
+/// Honest about what this does and does not prove: it passes on the
+/// pre-refactor runner too, verified by restoring it. That symptom had
+/// already been patched, by the fourth patch in the series that led
+/// here. So this is a guard against the class coming back, not a
+/// demonstration of a live bug — it closes the coverage gap that let the
+/// bug ship, and it is the reason the next such patch would be caught.
+#[tokio::test]
+async fn it_does_not_walk_out_on_a_room_it_never_saw_empty() {
+    let server = start_with(world_with_three_monsters()).await;
+    let session = logged_in(server.local_addr(), "Thorough").await;
+
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 0,
+        ..BotConfig::default()
+    };
+    let (end, stats) = tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(
+            &session,
+            Arc::new(client_graph()),
+            &FarmPlan::build(&farm_config(&["1/2"], 1), &Arc::new(client_graph())).expect("plan"),
+            &bot,
+            &farm_config(&["1/2"], 1),
+            None,
+        ),
+    )
+    .await
+    .expect("the stop never ended")
+    .expect("farm run");
+
+    assert_eq!(end, FarmEnd::LoopsDone);
+    assert_eq!(
+        stats.kills, 3,
+        "left the stop with monsters still listed under \"Also here:\": {stats:?}"
     );
 }
