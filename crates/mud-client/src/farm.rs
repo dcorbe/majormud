@@ -39,16 +39,28 @@ use crate::graph::RoomGraph;
 /// would wedge the runner on any line the board answers silently.
 pub const ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// How many times to try lighting a dark stop before writing it off.
+/// How many times to try lighting a dark stop, per visit, before writing
+/// it off and moving on.
 ///
-/// A cast is a roll, not a command that either works or is wrong ("You
-/// attempt to cast starlight, but fail."), so one failure is worth
-/// another go. The retry used to be unbounded — every failure re-armed it
+/// **One.** The retry used to be unbounded — every "but fail" re-armed it
 /// — and was held in check only by the prompt counter that ended the stop
-/// regardless. With the stop ending on evidence instead, that accidental
-/// bound is gone and the retry needs a real one, or a character with mana
-/// to burn stands in the dark casting forever.
-const MAX_LIGHT_ATTEMPTS: u32 = 3;
+/// regardless. Removing that counter meant the retry needed a real bound,
+/// and three looked like a reasonable roll-again allowance.
+///
+/// Measured on the live board, three was wrong. The Newhaven dungeon legs
+/// are dark, and each attempt costs a `cast` AND the `look` that checks
+/// it: a 300s run made 9-10 casts against the pre-refactor client's 2, at
+/// 1.2s a command. Every one of those looks is a room block still in
+/// flight when the runner walks out of the stop, and they arrive while
+/// the navigator is verifying its next step — two runs out of two died at
+/// ~80s on `expected "Dungeon, Entrance", saw "Newhaven, Arena"`, where
+/// the old client ran the full 300s.
+///
+/// Retrying was near-worthless anyway. The common reason a light fails is
+/// no mana (`MA=7` in both failed runs), and mana does not come back
+/// inside a stop visit — so attempts two and three buy nothing and cost
+/// four commands. The stop is revisited every lap, which is the retry.
+const MAX_LIGHT_ATTEMPTS: u32 = 1;
 
 /// `"1/860"` -> map 1, room 860. The `mmc path` argument syntax.
 pub fn parse_room_id(s: &str) -> Option<RoomId> {
