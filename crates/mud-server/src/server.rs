@@ -9,6 +9,7 @@ use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 
 use mud_core::content::Content;
+use mud_core::cp437;
 use mud_core::game::{AccountProfile, Core, CoreConfig, Event, Gender, Player, SessionId};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -27,6 +28,10 @@ const WILL: u8 = 251;
 const WONT: u8 = 252;
 const OPT_ECHO: u8 = 1;
 const OPT_SGA: u8 = 3;
+
+/// Line editing bytes.
+const BS: u8 = 0x08;
+const DEL: u8 = 0x7f;
 
 /// Messages into the game-core thread.
 enum CoreMsg {
@@ -388,6 +393,16 @@ impl TelnetReader {
                         self.buf.remove(0);
                         return Some(self.take_line());
                     }
+                    // A caller correcting a typo. One CP437 byte is one
+                    // character, so erasing a byte erases a character.
+                    // The board edits per keystroke because it echoes per
+                    // keystroke; we edit the line before reading it,
+                    // which is the same simplification our line-level
+                    // receipt echo already makes.
+                    BS | DEL => {
+                        self.buf.remove(0);
+                        self.line.pop();
+                    }
                     b => {
                         self.buf.remove(0);
                         self.line.push(b);
@@ -421,16 +436,18 @@ impl TelnetReader {
     }
 
     fn take_line(&mut self) -> String {
-        let line = String::from_utf8_lossy(&self.line).into_owned();
+        let line = cp437::decode(&self.line);
         self.line.clear();
         line
     }
 }
 
+/// The one place game text becomes wire bytes: bare LF becomes CRLF (the
+/// core writes `\n` throughout) and the result is encoded as CP437, which
+/// is what a period client reads no matter what we meant to send.
 async fn write_text(writer: &mut BufWriter<OwnedWriteHalf>, text: &str) -> io::Result<()> {
-    writer
-        .write_all(text.replace('\n', "\r\n").as_bytes())
-        .await?;
+    let bytes = cp437::encode(&text.replace('\n', "\r\n"));
+    writer.write_all(&bytes).await?;
     writer.flush().await
 }
 

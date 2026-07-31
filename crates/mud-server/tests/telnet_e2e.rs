@@ -283,6 +283,76 @@ async fn negotiates_echo_around_the_creation_password() {
     );
 }
 
+/// A caller who mistypes and backspaces sends the correction as bytes;
+/// 0x08 used to land in the command text and make the verb unrecognizable.
+/// Both DEL and BS erase, and neither eats past the start of the line.
+#[tokio::test]
+async fn backspace_edits_the_line_before_the_command_is_read() {
+    let state = StateDb::open_in_memory().expect("state db");
+    let server = Server::start(world(), test_config(), state, "127.0.0.1:0")
+        .await
+        .expect("start server");
+
+    let mut stream = TcpStream::connect(server.local_addr())
+        .await
+        .expect("connect");
+    let mut raw = Vec::new();
+    create_and_enter_raw(&mut stream, &mut raw, "Hilda").await;
+
+    for typed in [
+        &b"lokk\x08\x08ok\r\n"[..],  // backspace
+        &b"lokk\x7f\x7fok\r\n"[..],  // DEL
+        &b"\x08\x08look\r\n"[..],    // nothing to erase yet
+    ] {
+        raw.clear();
+        stream.write_all(typed).await.expect("write");
+        read_raw_until(&mut stream, &mut raw, b"Obvious exits: north").await;
+        assert!(
+            find(&raw, b"look\r\n").is_some(),
+            "the corrected command reaches the core: {}",
+            String::from_utf8_lossy(&raw)
+        );
+        assert!(
+            find(&raw, b"You say").is_none(),
+            "an edited line must not fall through to SAY: {}",
+            String::from_utf8_lossy(&raw)
+        );
+    }
+}
+
+/// The board is a DOS program talking to DOS terminals: every byte on
+/// the wire is CP437, not UTF-8. Decoding input as UTF-8 turned the high
+/// half into replacement characters.
+#[tokio::test]
+async fn high_bytes_are_cp437_in_both_directions() {
+    let state = StateDb::open_in_memory().expect("state db");
+    let server = Server::start(world(), test_config(), state, "127.0.0.1:0")
+        .await
+        .expect("start server");
+
+    let mut stream = TcpStream::connect(server.local_addr())
+        .await
+        .expect("connect");
+    let mut raw = Vec::new();
+    create_and_enter_raw(&mut stream, &mut raw, "Gwen").await;
+    raw.clear();
+
+    // 0x82 is é in CP437; as UTF-8 it is not a character at all.
+    stream
+        .write_all(b"say caf\x82\r\n")
+        .await
+        .expect("write");
+    read_raw_until(&mut stream, &mut raw, b"You say").await;
+    assert!(
+        find(&raw, b"caf\x82").is_some(),
+        "the accented byte comes back as itself: {raw:?}"
+    );
+    assert!(
+        find(&raw, "café".as_bytes()).is_none(),
+        "and never as UTF-8: {raw:?}"
+    );
+}
+
 /// Now that we negotiate, clients answer — and their answers can land
 /// split across packets, mid-command. A half-arrived IAC sequence must
 /// wait for the rest of itself instead of leaking option bytes into the

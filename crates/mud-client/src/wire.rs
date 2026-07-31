@@ -95,33 +95,10 @@ impl Default for TelnetFilter {
     }
 }
 
-/// CP437 upper half (0x80-0xFF): box drawing, accented letters, symbols.
-const CP437_HIGH: [char; 128] = [
-    'Ç', 'ü', 'é', 'â', 'ä', 'à', 'å', 'ç', 'ê', 'ë', 'è', 'ï', 'î', 'ì', 'Ä', 'Å', //
-    'É', 'æ', 'Æ', 'ô', 'ö', 'ò', 'û', 'ù', 'ÿ', 'Ö', 'Ü', '¢', '£', '¥', '₧', 'ƒ', //
-    'á', 'í', 'ó', 'ú', 'ñ', 'Ñ', 'ª', 'º', '¿', '⌐', '¬', '½', '¼', '¡', '«', '»', //
-    '░', '▒', '▓', '│', '┤', '╡', '╢', '╖', '╕', '╣', '║', '╗', '╝', '╜', '╛', '┐', //
-    '└', '┴', '┬', '├', '─', '┼', '╞', '╟', '╚', '╔', '╩', '╦', '╠', '═', '╬', '╧', //
-    '╨', '╤', '╥', '╙', '╘', '╒', '╓', '╫', '╪', '┘', '┌', '█', '▄', '▌', '▐', '▀', //
-    'α', 'ß', 'Γ', 'π', 'Σ', 'σ', 'µ', 'τ', 'Φ', 'Θ', 'Ω', 'δ', '∞', 'φ', 'ε', '∩', //
-    '≡', '±', '≥', '≤', '⌠', '⌡', '÷', '≈', '°', '∙', '·', '√', 'ⁿ', '²', '■', '\u{A0}',
-];
-
-/// Decode CP437 (DOS codepage) bytes to a String. Bytes 0x00-0x7F map to
-/// their ASCII identities (matching Python's cp437 codec); the high half
-/// maps to box drawing, accented letters, and symbols.
-pub fn cp437_to_string(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|&b| {
-            if b < 0x80 {
-                b as char
-            } else {
-                CP437_HIGH[(b - 0x80) as usize]
-            }
-        })
-        .collect()
-}
+/// Decode CP437 (DOS codepage) bytes to a String. The table lives in
+/// `mud_core::cp437` — the server encodes with the same one, so the two
+/// ends of a fixture run cannot drift apart.
+pub use mud_core::cp437::decode as cp437_to_string;
 
 /// Apply backspace semantics: each 0x08 removes the preceding character.
 /// The live board hides junk-char+backspace pairs inside words as an
