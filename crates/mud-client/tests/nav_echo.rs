@@ -212,3 +212,50 @@ async fn a_look_refusal_wording_provokes_no_door_handling() {
     assert!(result.is_err(), "{result:?}");
     assert_eq!(opens.load(Ordering::SeqCst), 0, "no open/bash for a look refusal");
 }
+
+/// The same-named-twin hazard: 1/2151 and 1/2146 are BOTH "Newhaven,
+/// Narrow Road", adjacent (~51k such pairs world-wide). When a step is
+/// REFUSED and the recovery look answers with the room's own name, the
+/// walk knows it did not move — that answer must never read as an
+/// arrival at the same-named destination, or `current` drifts a room
+/// ahead while the character stands still.
+#[tokio::test]
+async fn a_refused_step_between_same_named_twins_does_not_drift() {
+    let mut here = GraphRoom {
+        name: "Newhaven, Narrow Road".into(),
+        exits: Default::default(),
+    };
+    here.exits[Direction::North as usize] = Some(ExitEdge { dest: THERE, exit_type: 0 });
+    let mut there = GraphRoom {
+        name: "Newhaven, Narrow Road".into(),
+        exits: Default::default(),
+    };
+    there.exits[Direction::South as usize] = Some(ExitEdge { dest: HERE, exit_type: 0 });
+    let twins = Arc::new(RoomGraph::from_rooms(vec![(HERE, here), (THERE, there)]));
+
+    let (addr, _) = scripted_board(vec![
+        (
+            "n",
+            "\r\nn\r\nThere is no exit in that direction!\r\n[HP=30/MA=0]:".to_string(),
+        ),
+        (
+            "look",
+            format!("\r\nlook{}", room_block("Newhaven, Narrow Road", "north")),
+        ),
+    ])
+    .await;
+    let session = session_for(addr).await;
+    let n = nav(twins);
+
+    let err = tokio::time::timeout(
+        Duration::from_secs(10),
+        n.goto(&session, HERE, THERE, &mut NoGuard),
+    )
+    .await
+    .expect("goto should not hang")
+    .expect_err("the board refuses this exit; the walk cannot arrive");
+    assert_eq!(
+        err.at, HERE,
+        "recorded an arrival that never happened: {err:?}"
+    );
+}

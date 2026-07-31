@@ -616,8 +616,15 @@ impl StopState {
     /// hook [`HealWatch::on_sent`] uses — with the send id the session
     /// allocated, which is what the answer will carry.
     pub fn on_sent(&mut self, line: &str, id: crate::correlate::CmdId) {
-        if line.trim().eq_ignore_ascii_case("look") {
+        let line = line.trim();
+        if line.eq_ignore_ascii_case("look") {
             self.pending_look = Some((id, Instant::now()));
+        } else if crate::correlate::is_movement(&line.to_lowercase()) {
+            // Our own move (a flee) is about to change the room: any
+            // in-flight answer predates it — the symmetric hole to the
+            // mid-render race. What we saw goes too; the block we may
+            // yet believe must postdate our own displacement.
+            self.invalidate();
         }
     }
 
@@ -1216,12 +1223,14 @@ pub async fn go_to_finish(
     let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone());
     let mut events = session.events();
     crate::session::drain(&mut events, |_| {});
-    session.send("look");
+    let ask = session.send("look");
     // A dark room answers `look` with "you can't see anything" and no
     // room block at all, so a walk home that insisted on one could never
     // start from the very rooms most likely to strand a character. Light
-    // it first if we can, then ask again.
-    let seen = match next_room_view(&mut events, Duration::from_secs(15)).await {
+    // it first if we can, then ask again. No sleep between the light and
+    // the second look: the board answers in send order, so the look's
+    // attributed answer necessarily postdates the light taking effect.
+    let seen = match next_room_view(&mut events, ask, Duration::from_secs(15)).await {
         Some(room) => room,
         None => {
             let Some(cmd) = light else {
@@ -1231,9 +1240,8 @@ pub async fn go_to_finish(
                 });
             };
             session.send(cmd);
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            session.send("look");
-            next_room_view(&mut events, Duration::from_secs(15))
+            let again = session.send("look");
+            next_room_view(&mut events, again, Duration::from_secs(15))
                 .await
                 .ok_or(FarmError::NotAtStart {
                     expected: "a room block answering the finish walk's look".into(),
@@ -1263,12 +1271,17 @@ pub async fn go_to_finish(
 /// The next room block in full, not just its name.
 async fn next_room_view(
     events: &mut tokio::sync::broadcast::Receiver<Correlated>,
+    answering: crate::correlate::CmdId,
     within: Duration,
 ) -> Option<crate::events::RoomView> {
     let deadline = tokio::time::Instant::now() + within;
     loop {
         match tokio::time::timeout_at(deadline, events.recv()).await {
-            Ok(Ok(Correlated { event: Event::RoomSeen(room), .. })) => return Some(room),
+            Ok(Ok(Correlated { event: Event::RoomSeen(room), answers }))
+                if answers == Some(answering) =>
+            {
+                return Some(room);
+            }
             Ok(Ok(_)) => continue,
             Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
             Ok(Err(_)) | Err(_) => return None,
@@ -1326,28 +1339,15 @@ async fn verify_start(
         .unwrap_or_default();
     let mut events = session.events();
     crate::session::drain(&mut events, |_| {});
-    session.send("look");
-    let saw = next_room(session, &mut events, Duration::from_secs(15)).await;
+    let ask = session.send("look");
+    // Attributed: a login-banner render or anybody's stale block can
+    // never satisfy start verification.
+    let saw = next_room_view(&mut events, ask, Duration::from_secs(15))
+        .await
+        .map(|r| r.name);
     match saw {
         Some(name) if name == expected => Ok(()),
         saw => Err(FarmError::NotAtStart { expected, saw }),
-    }
-}
-
-/// The next room block, or `None` if the board did not print one in time.
-async fn next_room(
-    _session: &crate::session::Session,
-    events: &mut tokio::sync::broadcast::Receiver<Correlated>,
-    within: Duration,
-) -> Option<String> {
-    let deadline = tokio::time::Instant::now() + within;
-    loop {
-        match tokio::time::timeout_at(deadline, events.recv()).await {
-            Ok(Ok(Correlated { event: Event::RoomSeen(room), .. })) => return Some(room.name),
-            Ok(Ok(_)) => continue,
-            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
-            Ok(Err(_)) | Err(_) => return None,
-        }
     }
 }
 
@@ -1729,7 +1729,15 @@ async fn farm_stop(
             bot.rearm();
         }
 
-        for crate::bot::BotAction::Send(cmd) in bot.on_event(ev) {
+        // The bot is attribution-blind by design (a pure Event core),
+        // so the pump curates: an UNSOLICITED render — somebody else's
+        // block, a stale answer — must not touch its latches. It used
+        // to clear `engaged` mid-fight when a pre-arrival block lacked
+        // the target, then duplicate the attack on the re-ask. Async
+        // truths (combat, arrivals, prompts) pass through untouched.
+        let bot_sees = !matches!(ev, Event::RoomSeen(_)) || cor.answers.is_some();
+        let actions = if bot_sees { bot.on_event(ev) } else { Vec::new() };
+        for crate::bot::BotAction::Send(cmd) in actions {
             // The heal command is the only way to tell resting from
             // simply standing about; the bot's own debounce is private.
             if cmd == bot_config.heal_command {

@@ -134,6 +134,18 @@ impl Default for NavConfig {
 /// Verification failures tolerated before a walk aborts.
 const MAX_FAILURES: u32 = 3;
 
+/// What one resolved step actually established. `Arrived` carries the
+/// name of a room the character MOVED into; `StayedPut` carries the name
+/// answering the recovery `look` after a refusal — the walk knows it did
+/// not move, and that knowledge must survive: ~51k adjacent room pairs
+/// share a name (1/2151 and 1/2146 are both "Newhaven, Narrow Road"),
+/// so a refusal's look-answer treated as an arrival drifts `current`
+/// into the same-named twin while the character stands still.
+enum StepOutcome {
+    Arrived(String),
+    StayedPut(String),
+}
+
 /// Exit types that are a door or gate you can open (`theft.md` §8.1:
 /// "pickable types are 2, 7, 0xb"). Deliberately not 6 (hidden), 9/0x18
 /// (traps), 0x10 (timed), 0x14 (alignment) or 0x16/0x17 (spell/ability
@@ -390,16 +402,38 @@ impl Navigator {
                         return Err(NavError { at: current, kind });
                     }
                 };
-                if seen == expected_name {
-                    current = expected_id;
-                    if let Some(interrupt) = armed.take() {
-                        return Err(NavError {
-                            at: current,
-                            kind: NavErrorKind::Interrupted(interrupt),
-                        });
+                let seen = match seen {
+                    StepOutcome::Arrived(name) if name == expected_name => {
+                        current = expected_id;
+                        if let Some(interrupt) = armed.take() {
+                            return Err(NavError {
+                                at: current,
+                                kind: NavErrorKind::Interrupted(interrupt),
+                            });
+                        }
+                        continue;
                     }
-                    continue;
-                }
+                    // The walk KNOWS it did not move (a refused step's
+                    // recovery look answered with this room's own name),
+                    // and that knowledge must outrank name matching:
+                    // with a same-named twin next door, localize would
+                    // confidently relocate a character that never went
+                    // anywhere. Re-plan from where we still stand.
+                    StepOutcome::StayedPut(name) if name == here_name => {
+                        failures += 1;
+                        if failures > MAX_FAILURES {
+                            return Err(NavError {
+                                at: current,
+                                kind: NavErrorKind::Desync {
+                                    expected: expected_name.clone(),
+                                    saw: name,
+                                },
+                            });
+                        }
+                        continue 'replan;
+                    }
+                    StepOutcome::Arrived(name) | StepOutcome::StayedPut(name) => name,
+                };
                 failures += 1;
                 let desync = |at| NavError {
                     at,
@@ -574,16 +608,17 @@ impl Navigator {
         events: &mut tokio::sync::broadcast::Receiver<crate::correlate::Correlated>,
         guard: &mut impl TravelGuard,
         armed: &mut Option<Interrupt>,
-    ) -> Result<String, NavErrorKind> {
+    ) -> Result<StepOutcome, NavErrorKind> {
         let dir = dir_word(step);
         match self.wait_room(events, guard, armed, sent).await? {
-            StepEvent::Arrived(name) => return Ok(name),
+            StepEvent::Arrived(name) => return Ok(StepOutcome::Arrived(name)),
             // A direction was just sent, so dark is the destination
             // reporting itself; the name comes from the graph edge we
             // chose, not from a guess that movement generally works.
             StepEvent::Blind => {
-                return Ok(Navigator::blind_position(BlindContext::AfterMove, expected, here)
-                    .to_string());
+                return Ok(StepOutcome::Arrived(
+                    Navigator::blind_position(BlindContext::AfterMove, expected, here).to_string(),
+                ));
             }
             // The graph says there is an exit and the board says there is
             // not, so the walk is not where it believes. Ask the room and
@@ -593,8 +628,10 @@ impl Navigator {
             // of a whole step deadline.
             StepEvent::NoSuchExit => {
                 let ask = session.send("look");
-                return self.arrival(here, expected, BlindContext::AfterLook, events, guard, armed, ask)
-                    .await;
+                return self
+                    .arrival(here, expected, BlindContext::AfterLook, events, guard, armed, ask)
+                    .await
+                    .map(StepOutcome::StayedPut);
             }
             // Hand straight back so the caller can fight: no deadline is
             // going to produce a room block while this is true.
@@ -606,8 +643,10 @@ impl Navigator {
             StepEvent::DoorYielded => {
                 // Someone else's door, or one that swung on its own.
                 let again = session.send(dir);
-                return self.arrival(here, expected, BlindContext::AfterMove, events, guard, armed, again)
-                    .await;
+                return self
+                    .arrival(here, expected, BlindContext::AfterMove, events, guard, armed, again)
+                    .await
+                    .map(StepOutcome::Arrived);
             }
             StepEvent::DoorBlocked if !is_door(exit_type) => {
                 // The graph says there is no door here, so we have no
@@ -624,15 +663,18 @@ impl Navigator {
         match self.wait_room(events, guard, armed, opened).await? {
             // Unreachable under the reply grammar (a block never
             // attributes to an open); kept for match completeness.
-            StepEvent::Arrived(name) => return Ok(name),
+            StepEvent::Arrived(name) => return Ok(StepOutcome::Arrived(name)),
             StepEvent::Blind => {
-                return Ok(Navigator::blind_position(BlindContext::AfterMove, expected, here)
-                    .to_string());
+                return Ok(StepOutcome::Arrived(
+                    Navigator::blind_position(BlindContext::AfterMove, expected, here).to_string(),
+                ));
             }
             StepEvent::NoSuchExit => {
                 let ask = session.send("look");
-                return self.arrival(here, expected, BlindContext::AfterLook, events, guard, armed, ask)
-                    .await;
+                return self
+                    .arrival(here, expected, BlindContext::AfterLook, events, guard, armed, ask)
+                    .await
+                    .map(StepOutcome::StayedPut);
             }
             StepEvent::CombatBlocked => {
                 return Err(NavErrorKind::Interrupted(Interrupt::Attacked {
@@ -641,8 +683,10 @@ impl Navigator {
             }
             StepEvent::DoorYielded => {
                 let again = session.send(dir);
-                return self.arrival(here, expected, BlindContext::AfterMove, events, guard, armed, again)
-                    .await;
+                return self
+                    .arrival(here, expected, BlindContext::AfterMove, events, guard, armed, again)
+                    .await
+                    .map(StepOutcome::Arrived);
             }
             StepEvent::DoorBlocked => {}
         }
@@ -657,14 +701,15 @@ impl Navigator {
         let bashed = session.send(&format!("bash {dir}"));
         match self.wait_room(events, guard, armed, bashed).await? {
             // The bash carried us through the doorway.
-            StepEvent::Arrived(name) => Ok(name),
-            StepEvent::Blind => {
-                Ok(Navigator::blind_position(BlindContext::AfterMove, expected, here).to_string())
-            }
+            StepEvent::Arrived(name) => Ok(StepOutcome::Arrived(name)),
+            StepEvent::Blind => Ok(StepOutcome::Arrived(
+                Navigator::blind_position(BlindContext::AfterMove, expected, here).to_string(),
+            )),
             StepEvent::NoSuchExit => {
                 let ask = session.send("look");
                 self.arrival(here, expected, BlindContext::AfterLook, events, guard, armed, ask)
                     .await
+                    .map(StepOutcome::StayedPut)
             }
             // It only opened it; the step is still owed.
             StepEvent::CombatBlocked => Err(NavErrorKind::Interrupted(Interrupt::Attacked {
@@ -674,6 +719,7 @@ impl Navigator {
                 let again = session.send(dir);
                 self.arrival(here, expected, BlindContext::AfterMove, events, guard, armed, again)
                     .await
+                    .map(StepOutcome::Arrived)
             }
         }
     }

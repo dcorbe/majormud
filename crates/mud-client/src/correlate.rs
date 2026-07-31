@@ -135,6 +135,12 @@ enum Kind {
     Opaque,
 }
 
+/// Is this command a bare movement? The flee and travel vocabulary —
+/// consumers use it to know their own send is about to change the room.
+pub fn is_movement(cmd: &str) -> bool {
+    matches!(kind_of(cmd), Kind::Move)
+}
+
 fn kind_of(cmd: &str) -> Kind {
     const DIRS: [&str; 20] = [
         "n", "s", "e", "w", "ne", "nw", "se", "sw", "u", "d", "north", "south", "east", "west",

@@ -1393,3 +1393,23 @@ fn an_owed_look_outranks_blind() {
     feed_answer(&mut stop, &mut bot, &block(&[]), t0);
     assert_eq!(stop.verdict(&bot, t0), Verdict::Empty);
 }
+
+/// Our own movement — a flee — is about to change the room, so any
+/// in-flight answer predates it: the symmetric hole to the mid-render
+/// race. A pre-flee block must not be believed after the flee went out.
+#[test]
+fn our_own_movement_invalidates_the_stop() {
+    let t0 = Instant::now();
+    let mut bot = combat_bot();
+    let mut stop = stop_state(0);
+    stop.on_sent("look", LOOK_ID);
+    // The flee direction goes out while the look's answer is in flight.
+    stop.on_sent("n", CmdId(78));
+    // The pre-flee block arrives, genuinely answering the look.
+    feed_answer(&mut stop, &mut bot, &block(&[]), t0);
+    assert_ne!(
+        stop.verdict(&bot, t0),
+        Verdict::Empty,
+        "believed a room block that predates our own flee"
+    );
+}
