@@ -7658,9 +7658,9 @@ impl Core {
             // — but NO caster-side engagement (no *Combat Engaged*
             // MEASURED §8.13 on debuff-only payloads; ORACLE-VERIFY for
             // damaging sweeps — fixture-only today; the area path's
-            // ability-52 evil charge is the still-open gap logged at
-            // `offensive_cast_attempt`'s fail arm, 16 learnable match-12
-            // carriers). The AREA damage twins (40370-40385 and 40601-40614)
+            // ability-52 evil charge landed with the M7 close-out, up in
+            // this function ahead of the roll). The AREA damage twins
+            // (40370-40385 and 40601-40614)
             // consult the charmed bit exactly as much as the
             // single-target one does — not at all. Unlike 43752 they gate
             // on the INSTANCE roam class with no null-template clause;
@@ -7682,13 +7682,16 @@ impl Core {
         }
     }
 
-    /// Everything a SUCCESSFUL benign cast does after its costs are paid
-    /// — shared by the self-cast command path (`target == session`), the
-    /// player-target path (`benign_target_cast`) and the mode-2 forced
-    /// cast (`forced_cast`): the dispel pre-pass, the instant apply loop
-    /// or duration slot entry, then the success lines. Every effect —
-    /// dispel, hard-write, apply loop, slot entry — lands on the TARGET;
-    /// only the fan-out geometry involves the caster.
+    /// Everything a SUCCESSFUL user-target cast does after its costs are
+    /// paid — shared by the self-cast command path (`target == session`),
+    /// the player-target path (`benign_target_cast`) and the mode-2
+    /// forced cast (`forced_cast`, BOTH arms: the quest VM's 17 trap
+    /// spells are offensive match-1 self-casts and land here too — the
+    /// Damage/DamageMR arms below are their case-1/0x11 match-1/2/6
+    /// legs): the dispel pre-pass, the instant apply loop or duration
+    /// slot entry, then the success lines. Every effect — dispel,
+    /// hard-write, apply loop, slot entry — lands on the TARGET; only
+    /// the fan-out geometry involves the caster.
     fn benign_success_effects(
         &mut self,
         session: SessionId,
@@ -7781,6 +7784,27 @@ impl Core {
             // the costs stay paid (the roll already succeeded).
             return;
         }
+        // The offensive-arm inputs (Damage 1 / DamageMR 17 — the forced
+        // trap legs): caster-side AlterSpDmg boost, target-side MR and
+        // AntiMagic, all read before the loop borrow. Zero-cost when the
+        // spell carries neither.
+        let has_damage_arms = spell
+            .abilities
+            .iter()
+            .any(|(a, _)| matches!(a, Ability::Damage | Ability::DamageMR));
+        let (boost, target_mr, target_anti_magic) = if has_damage_arms {
+            let boost = self.ability_bag(self.player(session)).value(Ability::AlterSpDmg);
+            let anti = self.ability_bag(self.player(target_id)).value(Ability::AntiMagic) != 0;
+            let mr = match self.sessions.get(&target_id) {
+                Some(Session::InGame { derived, .. }) => derived.magic_resist,
+                _ => 0,
+            };
+            (boost, mr, anti)
+        } else {
+            (0, 0, false)
+        };
+        let mut damage_dealt = 0i32;
+        let mut was_up = true;
         // Summon(12) and TextBlock(148) rows collected in the instant
         // loop; executed after the session borrow drops.
         let mut summons: Vec<i32> = Vec::new();
@@ -7795,6 +7819,7 @@ impl Core {
             else {
                 return;
             };
+            was_up = player.current_hp >= 1;
             for (ability, value) in &spell.abilities {
                 let amount = match *value {
                     0 => magnitude,
@@ -7804,6 +7829,27 @@ impl Core {
                     // Heal (18): HP += V, capped at the derived max.
                     Ability::Heal => {
                         player.current_hp = (player.current_hp + amount).min(max_hp);
+                    }
+                    // Damage (1), the case-1 match-1/2/6 leg (39613-
+                    // 39650): the AlterSpDmg-boosted amount straight off
+                    // hp. Shipped reach: the quest VM's forced traps
+                    // (match-1 self-casts — the victim is the caster).
+                    // Kill check and the drops pair run AFTER the
+                    // success display, below.
+                    Ability::Damage => {
+                        let dealt = alter_sp_dmg(amount, boost);
+                        player.current_hp -= dealt;
+                        damage_dealt += dealt;
+                    }
+                    // Damage(-MR) (17), the case-0x11 match-1/2/6 leg
+                    // (40137-40198): boosted, then scaled against the
+                    // TARGET's own MR with the AntiMagic(0x33) branch —
+                    // on a forced trap that is the caster's own MR.
+                    Ability::DamageMR => {
+                        let dealt =
+                            damage_mr(alter_sp_dmg(amount, boost), target_mr, target_anti_magic);
+                        player.current_hp -= dealt;
+                        damage_dealt += dealt;
                     }
                     // EnergyLevel (11): round pool += V, capped at max.
                     Ability::EnergyLevel => {
@@ -7972,7 +8018,30 @@ impl Core {
                 );
             }
         }
+        // A damage arm displays its DEALT number (case 1/0x11 pass
+        // local_78 — the post-boost, post-MR value — to
+        // display_spell_success), not the raw slot/magnitude.
+        let display_damage = if damage_dealt > 0 { damage_dealt } else { display_damage };
         self.emit_cast_success_lines(session, target_id, spell, display_damage, everyone_target);
+        // check_kill_user then the drops pair (39639-39649), both AFTER
+        // the success display — the DLL prints the damage line first.
+        // check_kill_user's self-kill distribute_experience call
+        // (killer == victim) awards nothing observable; player_killed
+        // owns the death path.
+        if damage_dealt > 0 {
+            let (hp, name, room) = {
+                let Some(Session::InGame { player, .. }) = self.sessions.get(&target_id) else {
+                    return;
+                };
+                (player.current_hp, player.name.clone(), player.location)
+            };
+            if hp <= DEATH_FLOOR {
+                self.player_killed(target_id);
+            } else if was_up && hp < 1 {
+                self.output_line(target_id, &text::drops_to_ground(&name));
+                self.broadcast_to_room(room, Some(target_id), &text::drops_to_ground(&name));
+            }
+        }
     }
 
     /// `cast_item_target` (decompile 0x49232), scoped to the LEARNABLE
@@ -8348,26 +8417,43 @@ impl Core {
     ///   pathological negative mana_cost the DLL would grant mana, we
     ///   refuse; unreachable with shipped data).
     ///
-    /// Scope: benign self-cast only — no shipped EndCast chain is
-    /// reachable by a player cast (48 duration spells carry EndCast 151;
-    /// none is named by any LearnSp scroll). The offensive arm gained a
-    /// reachable trigger with M7 slice 6 (the quest VM's `cast` verb
-    /// names 17 trap spells) and carries the PENDING marker below.
+    /// Scope: both arms of the shared body. The benign arm has no
+    /// shipped EndCast trigger (48 duration spells carry EndCast 151;
+    /// none is named by any LearnSp scroll); the OFFENSIVE arm is the
+    /// quest VM's `cast` verb — 17 shipped trap spells (spelltype 0:
+    /// spear/venom/fire traps, chest triggers), every one match 1, so
+    /// the victim IS the caster and the whole cast routes through the
+    /// same self-target apply body as the benign arm (case 1/0x11
+    /// match-1/2/6 legs, 39613-39650 and 40137-40198).
     /// Returns whether the cast landed — the quest VM's `cast` verb
     /// fail-stops on a 0 return from cast_no_target (69650-69656).
     fn forced_cast(&mut self, session: SessionId, spell_id: SpellId) -> bool {
         let Some(spell) = self.content.spells.get(&spell_id).cloned() else {
             return false;
         };
-        if spell.target_mode.is_offensive() {
-            // M7 PENDING(slice-6): the offensive forced-cast now HAS
-            // shipped triggers — the quest VM's `cast` verb names 17
-            // trap spells (spelltype 0: spear/venom/fire traps etc.,
-            // fired by chest/search blocks) into cast_no_target's
-            // offensive machinery (39200-39500). Unported; a silent
-            // no-op that keeps the block chain alive. The EndCast-chain
-            // trigger remains dead (all 48 carriers unlearnable).
-            return true;
+        let Some(Session::InGame { player, .. }) = self.sessions.get(&session) else {
+            return false;
+        };
+        let room = player.location;
+        let round_cost = i32::from(spell.round_cost);
+        let mana_cost = i32::from(spell.mana_cost);
+        // Room protection FIRST (39164-39184, ahead of the class gate at
+        // 39235): the gate keys on `spelltype < 3 ||
+        // spell_has_ability(0x34)` and is NOT mode-gated — a forced trap
+        // cast in a protected room guilt-refuses like any other. Round
+        // cost charged when affordable, mana untouched (the area twin's
+        // shape); the 0 return fail-stops the block chain.
+        if (spell.target_mode.is_offensive()
+            || spell.abilities.iter().any(|(a, _)| *a == Ability::EvilInCombat))
+            && self.content.rooms.get(&room).is_some_and(|r| r.protected())
+        {
+            if let Some(Session::InGame { energy, .. }) = self.sessions.get_mut(&session)
+                && *energy >= round_cost
+            {
+                *energy -= round_cost;
+            }
+            self.output_line(session, text::CAST_GUILT);
+            return false;
         }
         let Some(Session::InGame { player, energy, .. }) = self.sessions.get(&session) else {
             return false;
@@ -8376,8 +8462,6 @@ impl Core {
         if self.spell_gate(player, &spell) == SpellGate::WrongClass {
             return false;
         }
-        let round_cost = i32::from(spell.round_cost);
-        let mana_cost = i32::from(spell.mana_cost);
         // The unconditional triple gate (39253), refusal lines in the
         // decompile's order (39264-39281): round energy prints the
         // already-cast line, then mana, then level-vs-required-power.
