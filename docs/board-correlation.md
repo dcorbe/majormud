@@ -4,8 +4,23 @@ How to tell, on a MajorMUD board, which reply belongs to which command —
 and why the client currently cannot, which is the root cause of the
 position desyncs that end farm runs.
 
-Status: **investigated and measured, not yet implemented.** The two fixes
-in `7ddfd17` remove contributing causes; they do not address this.
+Status: **IMPLEMENTED and accepted, 2026-07-31.** The session owns a
+`Correlator` (`correlate.rs`): the writer task registers each send in
+wire order, the reader attributes every parsed event, and
+`Correlated::answers` rides inside the broadcast. Gate, Navigator, and
+StopState stopped guessing by having zero of them correlate — they match
+their own send ids by equality. The acceptance below passed five
+consecutive times on the live board (accept-run1..5 in `re/oracle`),
+board restarted before each run, zero `NavError`, the 1/2150 door
+opened by the walk itself, the dark rooms lit and confirmed lit.
+
+The shape below was amended in the building — the live captures
+disproved parts of the original sketch (a busy board echoes a command
+TWICE, receipt then execution; replies are strictly FIFO; the board's
+unsolicited din must complete nothing, so retirement runs on a closed
+reply grammar keyed by our own send vocabulary; wrong-vs-missed decides
+every ambiguity). The as-built rules live in `correlate.rs`'s module
+doc and its transcribed run5/6/7 fixtures.
 
 ## The failure
 
@@ -130,7 +145,7 @@ the live captures as the board's general line redraw (the same mechanism
 `wire.rs` resolves as anti-bot backspacing). Only the full
 Reset→Back→Erase→Colour signature marks a render.
 
-## Shape of a permanent fix
+## Shape of a permanent fix (original sketch; see Status for as-built)
 
 Not implemented; recorded so it can be planned rather than guessed at.
 

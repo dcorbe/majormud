@@ -289,7 +289,8 @@ fn emissions_flow_one_per_ack_and_never_wedge() {
             );
         }
     }
-    assert_eq!(total, 1857, "corpus gate throughput changed");
+    // 1857 -> 1947 when the five acceptance runs joined the corpus.
+    assert_eq!(total, 1947, "corpus gate throughput changed");
 }
 
 /// The gate invents nothing. Everything it emits was either a bot
