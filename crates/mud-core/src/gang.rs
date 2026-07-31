@@ -40,6 +40,30 @@ pub const GF_ROSTER_ONLINE_ONLY: u16 = 0x0008;
 /// real board; the shipped default is a compile-time constant here.
 pub const GANG_DEED_EXP: u32 = 1000 * 10000;
 
+/// One gang-shop shelf slot (gangs.md §3.1). Gang shops use ten
+/// player-stocked slots (`shop+0xd8[10]`), each with its own price
+/// (`+0x178`) and denomination (`+0x1a0`, 0=copper..4=runic); counts
+/// cap at 20 and a sold-out or unstocked-empty slot is REMOVED from
+/// the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GangShopSlot {
+    pub item: Option<crate::content::ItemId>,
+    pub count: i16,
+    pub price: u16,
+    pub denom: i16,
+}
+
+/// A gang shop's runtime state, persisted in state.sqlite (the DLL
+/// keeps it on the shop record's overloaded fields). `last_stocker` is
+/// the bank-8 deposit target — the LAST player to stock, each STOCK
+/// overwrites it (gangs.md §2.2/§7).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GangShopState {
+    pub slots: [GangShopSlot; 10],
+    pub last_stocker: String,
+    pub markup: u16,
+}
+
 /// One gang — the WCCGANG2 record (gangs.md §0), persisted in the
 /// state.sqlite `gang` table.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -225,6 +225,29 @@ const TABLES: &[TableDef] = &[
         ],
         constraint: "PRIMARY KEY (name, slot)",
     },
+    // M7 slice 7: gang-shop runtime shelves (gangs.md §3.1 — the DLL
+    // overloads the shop record; ours persist here).
+    TableDef {
+        name: "gang_shop",
+        columns: &[
+            ("shop", "INTEGER PRIMARY KEY"),
+            ("last_stocker", "TEXT NOT NULL"),
+            ("markup", "INTEGER NOT NULL"),
+        ],
+        constraint: "",
+    },
+    TableDef {
+        name: "gang_shop_slot",
+        columns: &[
+            ("shop", "INTEGER NOT NULL"),
+            ("slot", "INTEGER NOT NULL"),
+            ("item", "INTEGER NOT NULL"),
+            ("count", "INTEGER NOT NULL"),
+            ("price", "INTEGER NOT NULL"),
+            ("denom", "INTEGER NOT NULL"),
+        ],
+        constraint: "PRIMARY KEY (shop, slot)",
+    },
     // M6 slice 5: limited-population kill stamps (knmsr+0xb4/+0xb6).
     // `killed_at` is wall-clock seconds since the Unix epoch; the boot
     // path hands the CORE the elapsed seconds.
@@ -709,6 +732,91 @@ impl StateDb {
         self.conn.execute(
             "UPDATE player SET gang = '', gang_flags = gang_flags & ?2 WHERE name = ?1",
             params![name, clear],
+        )?;
+        Ok(())
+    }
+
+    /// Upserts a gang shop's runtime shelves (gangs.md §3.1).
+    pub fn save_gang_shop(
+        &self,
+        shop: u16,
+        state: &mud_core::gang::GangShopState,
+    ) -> Result<(), StateError> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT OR REPLACE INTO gang_shop (shop, last_stocker, markup)
+             VALUES (?1, ?2, ?3)",
+            params![shop, state.last_stocker, state.markup],
+        )?;
+        tx.execute("DELETE FROM gang_shop_slot WHERE shop = ?1", params![shop])?;
+        for (i, slot) in state.slots.iter().enumerate() {
+            let Some(item) = slot.item else { continue };
+            tx.execute(
+                "INSERT INTO gang_shop_slot (shop, slot, item, count, price, denom)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![shop, i as i64, item.0, slot.count, slot.price, slot.denom],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every persisted gang-shop state, for `Core::restore_gang_shops`.
+    pub fn load_gang_shops(
+        &self,
+    ) -> Result<Vec<(u16, mud_core::gang::GangShopState)>, StateError> {
+        use mud_core::gang::GangShopState;
+        let mut out: std::collections::BTreeMap<u16, GangShopState> = self
+            .conn
+            .prepare("SELECT shop, last_stocker, markup FROM gang_shop")?
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, u16>(0)?,
+                    GangShopState {
+                        last_stocker: r.get(1)?,
+                        markup: r.get(2)?,
+                        ..GangShopState::default()
+                    },
+                ))
+            })?
+            .collect::<Result<_, _>>()?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT shop, slot, item, count, price, denom FROM gang_shop_slot")?;
+        let rows = stmt.query_map([], |r| {
+            let slot = r.get::<_, usize>(1)?;
+            if slot >= 10 {
+                return Err(rusqlite::Error::IntegralValueOutOfRange(1, slot as i64));
+            }
+            Ok((
+                r.get::<_, u16>(0)?,
+                slot,
+                r.get::<_, u16>(2)?,
+                r.get::<_, i16>(3)?,
+                r.get::<_, u16>(4)?,
+                r.get::<_, i16>(5)?,
+            ))
+        })?;
+        for row in rows {
+            let (shop, slot, item, count, price, denom) = row?;
+            let state = out.entry(shop).or_default();
+            state.slots[slot] = mud_core::gang::GangShopSlot {
+                item: Some(mud_core::content::ItemId(item)),
+                count,
+                price,
+                denom,
+            };
+        }
+        Ok(out.into_iter().collect())
+    }
+
+    /// The offline bank-8 credit (deposit_gangleaders_account): upsert
+    /// the stocker's bankbook row.
+    pub fn deposit_gang_gold(&self, stocker: &str, copper: u64) -> Result<(), StateError> {
+        self.conn.execute(
+            "INSERT INTO bankbook (name, shop, balance) VALUES (?1, 8, ?2)
+             ON CONFLICT (name, shop) DO UPDATE SET balance = balance + excluded.balance",
+            params![stocker, copper as i64],
         )?;
         Ok(())
     }

@@ -182,6 +182,16 @@ fn core_thread(
             }
             Err(e) => eprintln!("failed to load shop stock: {e}"),
         }
+        match db.load_gang_shops() {
+            Ok(rows) => {
+                let rows: Vec<_> = rows
+                    .into_iter()
+                    .map(|(shop, state)| (mud_core::content::ShopId(shop), state))
+                    .collect();
+                core.restore_gang_shops(&rows);
+            }
+            Err(e) => eprintln!("failed to load gang shops: {e}"),
+        }
     }
     for (id, map, room) in spawns {
         use mud_core::content::{MonsterId, RoomId};
@@ -257,6 +267,18 @@ fn core_thread(
                     };
                     if let Err(e) = result {
                         eprintln!("failed offline gang write for {name}: {e}");
+                    }
+                }
+                Event::PersistGangShop { shop, state: shelves } => {
+                    let db = state.lock().expect("state db lock");
+                    if let Err(e) = db.save_gang_shop(shop.0, &shelves) {
+                        eprintln!("failed to persist gang shop {}: {e}", shop.0);
+                    }
+                }
+                Event::DepositGangGold { stocker, copper } => {
+                    let db = state.lock().expect("state db lock");
+                    if let Err(e) = db.deposit_gang_gold(&stocker, copper) {
+                        eprintln!("failed gang deposit for {stocker}: {e}");
                     }
                 }
                 Event::DeleteCharacter { name, fame } => {

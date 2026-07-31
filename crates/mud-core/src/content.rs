@@ -190,6 +190,10 @@ pub struct Room {
     /// cmd_look (50208) / cmd_buy (51177, 51204) / cmd_use (58990)
     /// failure paths. 810 shipped rooms carry one.
     pub command_block: Option<TextBlockId>,
+    /// `room+0x46e` — the gang-house number (1..10, 0 = none; gangs.md
+    /// §3.2). The gang-shop STOCK/UNSTOCK controller gate compares the
+    /// carried GShopItem's value against it.
+    pub gang_house: i16,
 }
 
 impl Room {

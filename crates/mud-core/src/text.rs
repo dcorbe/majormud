@@ -842,6 +842,41 @@ pub const GANG_DEED_PAPERWORK_1: &str =
 pub const GANG_DEED_PAPERWORK_2: &str = "property today. Please call back tomorrow!";
 pub const GANG_SHOP_NO_SELL: &str = "You may not sell items to a gang shop.";
 
+// The gang stock shop (cmd_stock 0x52b1e / cmd_unstock 0x5326b /
+// cmd_markup 0x53715, gangs.md §3.1).
+pub const SYNTAX_STOCK: &str = "Syntax: STOCK {item} {price} {currency}";
+pub const SYNTAX_UNSTOCK: &str = "Syntax: UNSTOCK {item}";
+pub const SYNTAX_MARKUP: &str = "Syntax: MARKUP {percentage value}";
+pub const STOCK_NOT_IN_SHOP: &str = "You cannot STOCK if you are not in your gangs shop!";
+pub const UNSTOCK_NOT_IN_SHOP: &str = "You cannot UNSTOCK if you are not in your gangs shop!";
+pub const MARKUP_NOT_IN_SHOP: &str = "You cannot MARKUP if you are not in your gangs shop!";
+pub const NOT_A_GANG_SHOP: &str = "This is not a gang owned shop.";
+pub const STOCK_WRONG_KEY: &str = "You do not have the correct item to stock this shop.";
+pub const UNSTOCK_WRONG_KEY: &str = "You do not have the correct item to unstock this shop.";
+pub const MARKUP_WRONG_KEY: &str =
+    "You do not have the correct item to set the markup value for this shop.";
+pub const STOCK_NO_LIMITED: &str = "You may not stock limited items!";
+pub const STOCK_NOT_THAT: &str = "You may not stock that item!";
+pub const STOCK_SHELVES_FULL: &str = "No more new items may be stocked in this shop.";
+pub fn stock_added(item: &str) -> String {
+    format!("You add the {item} to your shops stock.")
+}
+pub fn stock_added_room(who: &str, item: &str) -> String {
+    format!("You see {who} add a {item} to the shops stock.")
+}
+pub fn unstock_removed(item: &str) -> String {
+    format!("You remove {item} from the shops stock.")
+}
+pub fn unstock_removed_room(who: &str, item: &str) -> String {
+    format!("You see {who} remove a {item} from the shops stock.")
+}
+pub fn unstock_all_room(who: &str) -> String {
+    format!("You see {who} remove all items from the gang shop and place them on the floor.")
+}
+pub fn markup_set(pct: u16) -> String {
+    format!("New gang shop markup value set to {pct} percent.")
+}
+
 // TOP n GANGS (gangs.md §5.1; display_top_gangs 0x339dc,
 // display_top_gang_header 0x3423b, display_a_top_gang 0x34314). The
 // DLL's `\x1b[[…]` prf color idiom reduces to plain ANSI at the wire;

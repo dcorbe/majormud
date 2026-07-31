@@ -865,6 +865,16 @@ pub enum Event {
         and_mask: u16,
         clear_gang: bool,
     },
+    /// A gang shop's runtime shelf changed (STOCK/UNSTOCK/MARKUP/sale)
+    /// — the shop dirty byte for the overloaded gang fields.
+    PersistGangShop {
+        shop: crate::content::ShopId,
+        state: crate::gang::GangShopState,
+    },
+    /// A gang-shop sale by an OFFLINE stocker: credit their bank-8
+    /// bankbook row directly (deposit_gangleaders_account 0x73680; an
+    /// online stocker is credited in-session instead).
+    DepositGangGold { stocker: String, copper: u64 },
     Disconnect(SessionId),
 }
 
@@ -1342,6 +1352,9 @@ pub struct Core {
     /// Sessions holding the DISBAND yes/no continuation (input state
     /// 0x88, gangs.md §1.4) — the next line is the answer.
     pending_disband: BTreeSet<SessionId>,
+    /// Gang-shop runtime shelves (gangs.md §3.1: the DLL overloads the
+    /// shop record; ours live here and persist via PersistGangShop).
+    gang_shops: BTreeMap<crate::content::ShopId, crate::gang::GangShopState>,
 }
 
 /// Per-template population state (monsters.md §2 step 3).
@@ -1413,6 +1426,7 @@ impl Core {
             gang_invites: BTreeSet::new(),
             gang_members: BTreeMap::new(),
             pending_disband: BTreeSet::new(),
+            gang_shops: BTreeMap::new(),
         };
         // First run of the world: every shelf full, and each timed slot's
         // first event lands at genrdn(1, max(2, interval)) minutes so the
@@ -9327,16 +9341,354 @@ impl Core {
         Resolution::Handled
     }
 
-    fn stock_command(&mut self, _session: SessionId, _args: &str) -> Resolution {
-        Resolution::FallThrough // guild-house task
+    /// The shared gang-shop entry gates (storefront → type 0xb →
+    /// controller key whose GShopItem value matches the room's
+    /// gang-house number). Returns the shop id, or None after printing
+    /// the verb-specific refusal.
+    fn gang_shop_gate(
+        &mut self,
+        session: SessionId,
+        not_in_shop: &'static str,
+        wrong_key: &'static str,
+    ) -> Option<crate::content::ShopId> {
+        let player = self.player(session);
+        let room = &self.content.rooms[&player.location];
+        let (shop_id, house) = match (room.room_type == 1, room.shop) {
+            (true, Some(id)) => (id, room.gang_house),
+            _ => {
+                self.output_line(session, not_in_shop);
+                return None;
+            }
+        };
+        if self.content.shops[&shop_id].shop_type != 11 {
+            self.output_line(session, text::NOT_A_GANG_SHOP);
+            return None;
+        }
+        let controller = Ability::from_id(184).expect("GShopItem in the enum");
+        let has_key = self.player(session).inventory.iter().any(|(id, _)| {
+            self.content.items.get(id).is_some_and(|i| {
+                i.abilities
+                    .iter()
+                    .any(|(a, v)| *a == controller && i16::from(*v) == house)
+            })
+        });
+        if !has_key {
+            self.output_line(session, wrong_key);
+            return None;
+        }
+        Some(shop_id)
     }
 
-    fn unstock_command(&mut self, _session: SessionId, _args: &str) -> Resolution {
-        Resolution::FallThrough // guild-house task
+    fn persist_gang_shop(&mut self, shop: crate::content::ShopId) {
+        let state = self.gang_shops.entry(shop).or_default().clone();
+        self.events.push(Event::PersistGangShop { shop, state });
     }
 
-    fn markup_command(&mut self, _session: SessionId, _args: &str) -> Resolution {
-        Resolution::FallThrough // guild-house task
+    /// `stock {item} [price] [currency]` (cmd_stock 0x52b1e). Existing
+    /// slot with room (< 20) gets count++; else the first empty of the
+    /// TEN gang slots is claimed. Price/denomination default to the
+    /// item's own cost fields; explicit price caps at 9999. Every stock
+    /// overwrites last_stocker with the stocker (the bank-8 deposit
+    /// target). Unported gates, M7 PENDING: the limited-item and
+    /// worn-second-copy refusals (fields unmodeled).
+    fn stock_command(&mut self, session: SessionId, args: &str) -> Resolution {
+        if args.trim().is_empty() {
+            self.output_line(session, text::SYNTAX_STOCK);
+            return Resolution::Handled;
+        }
+        let Some(shop_id) =
+            self.gang_shop_gate(session, text::STOCK_NOT_IN_SHOP, text::STOCK_WRONG_KEY)
+        else {
+            return Resolution::Handled;
+        };
+        // Trailing [price] [currency] peel off the argument tail.
+        let mut words: Vec<&str> = args.split_whitespace().collect();
+        let mut denom: Option<i16> = None;
+        let mut price: Option<u16> = None;
+        const COINS: [&str; 5] = ["copper", "silver", "gold", "platinum", "runic"];
+        if let Some(last) = words.last()
+            && let Some(d) = COINS.iter().position(|c| c.eq_ignore_ascii_case(last))
+        {
+            denom = Some(d as i16);
+            words.pop();
+        }
+        if words.len() > 1
+            && let Some(last) = words.last()
+            && let Ok(p) = last.parse::<u32>()
+        {
+            price = Some(p.min(9999) as u16);
+            words.pop();
+        }
+        let want = words.join(" ").to_ascii_lowercase();
+        let pos = {
+            let player = self.player(session);
+            player.inventory.iter().position(|(id, _)| {
+                self.content
+                    .items
+                    .get(id)
+                    .is_some_and(|i| word_prefix_match(&i.name, &want))
+            })
+        };
+        let Some(pos) = pos else {
+            return Resolution::Handled; // find_item_in_inventory's silent miss
+        };
+        let (item_id, _) = self.player(session).inventory[pos];
+        let item = self.content.items[&item_id].clone();
+        let loyal = Ability::from_id(100).expect("LoyalItem in the enum");
+        if item.abilities.iter().any(|(a, _)| *a == loyal) {
+            self.output_line(session, text::STOCK_NOT_THAT);
+            return Resolution::Handled;
+        }
+        let stocker = self.player(session).name.clone();
+        let room = self.player(session).location;
+        let state = self.gang_shops.entry(shop_id).or_default();
+        let slot = state
+            .slots
+            .iter()
+            .position(|s| s.item == Some(item_id) && s.count < 20)
+            .or_else(|| state.slots.iter().position(|s| s.item.is_none()));
+        let Some(slot) = slot else {
+            self.output_line(session, text::STOCK_SHELVES_FULL);
+            return Resolution::Handled;
+        };
+        let entry = &mut state.slots[slot];
+        if entry.item.is_none() {
+            entry.item = Some(item_id);
+            entry.count = 1;
+        } else {
+            entry.count += 1;
+        }
+        // Every stock rewrites the slot pricing: explicit args win,
+        // else the item's own cost fields (+0x322/+0x429).
+        entry.price = price.unwrap_or(item.cost.clamp(0, 9999) as u16);
+        entry.denom = denom.unwrap_or(item.cost_denomination);
+        state.last_stocker = stocker.clone();
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+            player.inventory.remove(pos);
+        }
+        let line = text::stock_added(&item.name);
+        self.output_line(session, &line);
+        let room_line = text::stock_added_room(&stocker, &item.name);
+        self.broadcast_to_room_except(room, &[session], &room_line);
+        self.persist_gang_shop(shop_id);
+        Resolution::Handled
+    }
+
+    /// `unstock {item}` (cmd_unstock 0x5326b): pulls one unit back from
+    /// the LOWEST-count matching slot; an emptied slot is cleared from
+    /// the list. The ALL form drops every stocked unit to the floor.
+    fn unstock_command(&mut self, session: SessionId, args: &str) -> Resolution {
+        if args.trim().is_empty() {
+            self.output_line(session, text::SYNTAX_UNSTOCK);
+            return Resolution::Handled;
+        }
+        let Some(shop_id) =
+            self.gang_shop_gate(session, text::UNSTOCK_NOT_IN_SHOP, text::UNSTOCK_WRONG_KEY)
+        else {
+            return Resolution::Handled;
+        };
+        let actor = self.player(session).name.clone();
+        let room = self.player(session).location;
+        if args.trim().eq_ignore_ascii_case("all") {
+            let state = self.gang_shops.entry(shop_id).or_default();
+            let mut dropped: Vec<(crate::content::ItemId, i16)> = Vec::new();
+            for slot in state.slots.iter_mut() {
+                if let Some(item) = slot.item {
+                    for _ in 0..slot.count.max(0) {
+                        dropped.push((item, -1));
+                    }
+                }
+                *slot = crate::gang::GangShopSlot::default();
+            }
+            for (item, uses) in dropped {
+                let uses = self.content.items.get(&item).map_or(uses, |i| i.uses);
+                self.room_items.entry(room).or_default().push((item, uses));
+            }
+            let line = text::unstock_all_room(&actor);
+            self.broadcast_to_room_except(room, &[session], &line);
+            self.persist_gang_shop(shop_id);
+            return Resolution::Handled;
+        }
+        let want = args.trim().to_ascii_lowercase();
+        let state = self.gang_shops.entry(shop_id).or_default();
+        let slot = state
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| {
+                s.count > 0
+                    && s.item.is_some_and(|id| {
+                        self.content
+                            .items
+                            .get(&id)
+                            .is_some_and(|i| word_prefix_match(&i.name, &want))
+                    })
+            })
+            .min_by_key(|(_, s)| s.count)
+            .map(|(i, _)| i);
+        let Some(slot) = slot else {
+            return Resolution::Handled; // silent miss like the DLL's null find
+        };
+        let item_id = state.slots[slot].item.expect("matched");
+        state.slots[slot].count -= 1;
+        if state.slots[slot].count == 0 {
+            state.slots[slot] = crate::gang::GangShopSlot::default();
+        }
+        let uses = self.content.items.get(&item_id).map_or(-1, |i| i.uses);
+        let name = self.content.items[&item_id].name.clone();
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+            player.inventory.push((item_id, uses));
+        }
+        let line = text::unstock_removed(&name);
+        self.output_line(session, &line);
+        let room_line = text::unstock_removed_room(&actor, &name);
+        self.broadcast_to_room_except(room, &[session], &room_line);
+        self.persist_gang_shop(shop_id);
+        Resolution::Handled
+    }
+
+    /// `markup {pct}` (cmd_markup 0x53715): sets the gang shop's own
+    /// markup percentage (the buy formula's `+0xd2`). Range cap
+    /// ORACLE-VERIFY — 9999 like the stock price.
+    fn markup_command(&mut self, session: SessionId, args: &str) -> Resolution {
+        if args.trim().is_empty() {
+            self.output_line(session, text::SYNTAX_MARKUP);
+            return Resolution::Handled;
+        }
+        let Some(shop_id) =
+            self.gang_shop_gate(session, text::MARKUP_NOT_IN_SHOP, text::MARKUP_WRONG_KEY)
+        else {
+            return Resolution::Handled;
+        };
+        let pct = args
+            .trim()
+            .parse::<u32>()
+            .unwrap_or(0)
+            .min(9999) as u16;
+        self.gang_shops.entry(shop_id).or_default().markup = pct;
+        let line = text::markup_set(pct);
+        self.output_line(session, &line);
+        self.persist_gang_shop(shop_id);
+        Resolution::Handled
+    }
+
+    /// The type-0xb purchase (buy_item 14520-14650): slot price in its
+    /// denomination → copper, the DLL's >100000 precision-scaling
+    /// quirk, the gang-shop markup and charm factor, payment, count--
+    /// with sold-out DELISTING, and the full price deposited to the
+    /// last stocker's bank-8 book (in-session if online, else the
+    /// offline event; the DLL's u32 skip-on-overflow guard is
+    /// unreachable under u64 balances — documented).
+    fn buy_from_gang_shop(
+        &mut self,
+        session: SessionId,
+        shop_id: crate::content::ShopId,
+        want: &str,
+        raw_target: &str,
+    ) -> Resolution {
+        let state = self.gang_shops.entry(shop_id).or_default().clone();
+        let slot = state.slots.iter().enumerate().find(|(_, s)| {
+            s.count > 0
+                && s.item.is_some_and(|id| {
+                    self.content
+                        .items
+                        .get(&id)
+                        .is_some_and(|i| word_prefix_match(&i.name, want))
+                })
+        });
+        let Some((idx, slot)) = slot else {
+            self.output_line(session, &text::not_known_item(raw_target.trim()));
+            return Resolution::Handled;
+        };
+        let item_id = slot.item.expect("matched");
+        let item = self.content.items[&item_id].clone();
+        let ratios = self.config.coin_ratios;
+        let mut base: i64 = i64::from(slot.price);
+        for r in ratios.iter().take(slot.denom.clamp(0, 4) as usize) {
+            base *= *r as i64;
+        }
+        // The DLL's overflow dance: >100000 copper computes at 1/100
+        // precision (a real, observable rounding on expensive stock).
+        let scaled = base > 100_000;
+        if scaled {
+            base /= 100;
+        }
+        let charm = i64::from(self.player(session).stats.charm);
+        let markup = i64::from(state.markup);
+        let mut price = (110 - charm / 5) * ((markup + 100) * base / 100) / 100;
+        if scaled {
+            price *= 100;
+        }
+        if price > 0
+            && self.player(session).coins.total_copper(ratios) < price as u64
+        {
+            self.output_line(session, &text::cannot_afford(&item.name));
+            return Resolution::Handled;
+        }
+        let state = self.gang_shops.entry(shop_id).or_default();
+        state.slots[idx].count -= 1;
+        if state.slots[idx].count == 0 {
+            // "REMOVING ITEM FROM STOCK LIST": sold out = delisted.
+            state.slots[idx] = crate::gang::GangShopSlot::default();
+        }
+        let stocker = state.last_stocker.clone();
+        let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+            return Resolution::FallThrough;
+        };
+        let spent = if price > 0 {
+            player.coins.deduct_copper(price as u64, ratios)
+        } else {
+            Coins::default()
+        };
+        player.inventory.push((item_id, item.uses));
+        let msg = if price == 0 {
+            text::bought_free(&item.name)
+        } else {
+            let listing = text::coin_listing([
+                spent.copper,
+                spent.silver,
+                spent.gold,
+                spent.platinum,
+                spent.runic,
+            ])
+            .unwrap_or_else(|| text::copper_amount(price as u64));
+            text::bought_for(&item.name, &listing)
+        };
+        self.output_line(session, &msg);
+        // deposit_gangleaders_account: the FULL price to bank 8.
+        if price > 0 && !stocker.is_empty() {
+            let online = self
+                .in_game_sessions()
+                .find(|(_, p)| p.name.eq_ignore_ascii_case(&stocker))
+                .map(|(id, _)| id);
+            if let Some(sid) = online {
+                if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&sid) {
+                    match player.bankbooks.iter_mut().find(|(shop, _)| *shop == 8) {
+                        Some((_, balance)) => *balance += price as u64,
+                        None => player.bankbooks.push((8, price as u64)),
+                    }
+                    let snapshot = player.clone();
+                    self.events.push(Event::Persist(snapshot));
+                }
+            } else {
+                self.events.push(Event::DepositGangGold {
+                    stocker,
+                    copper: price as u64,
+                });
+            }
+        }
+        self.persist_gang_shop(shop_id);
+        Resolution::Handled
+    }
+
+    /// Boot restore for the gang-shop shelves (the state.sqlite rows).
+    pub fn restore_gang_shops(
+        &mut self,
+        rows: &[(crate::content::ShopId, crate::gang::GangShopState)],
+    ) {
+        for (shop, state) in rows {
+            self.gang_shops.insert(*shop, state.clone());
+        }
     }
 
     /// Test/inspection: the runtime hidden byte (`+0x5f6`).
@@ -11340,6 +11692,12 @@ impl Core {
                 self.output_line(session, text::GANG_DEED_POOL_SHORT);
                 return Resolution::Handled;
             }
+        }
+        // The gang stock shop (type 0xb, gangs.md §3.1): player-stocked
+        // shelves with per-slot pricing, the gang-shop markup, and the
+        // bank-8 deposit to the LAST stocker.
+        if shop.shop_type == 11 {
+            return self.buy_from_gang_shop(session, shop_id, &want, target);
         }
         let slot = shop.stock.iter().enumerate().find(|(_, s)| {
             s.item.is_some_and(|id| {

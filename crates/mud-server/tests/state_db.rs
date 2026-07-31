@@ -535,3 +535,54 @@ fn negative_and_zero_fame_bank_as_zero() {
     let p = db.verify_login("Pious", "pw").unwrap().unwrap();
     assert_eq!(p.saved_evil, 0, "good standing does not follow the account");
 }
+
+#[test]
+fn gang_shop_roundtrip() {
+    use mud_core::content::ItemId;
+    use mud_core::gang::{GangShopSlot, GangShopState};
+    let db = db();
+    assert!(db.load_gang_shops().expect("load").is_empty());
+    let mut state = GangShopState {
+        last_stocker: "Salad".into(),
+        markup: 50,
+        ..GangShopState::default()
+    };
+    state.slots[0] = GangShopSlot {
+        item: Some(ItemId(68)),
+        count: 3,
+        price: 25,
+        denom: 1,
+    };
+    state.slots[7] = GangShopSlot {
+        item: Some(ItemId(844)),
+        count: 1,
+        price: 9999,
+        denom: 4,
+    };
+    db.save_gang_shop(136, &state).expect("save");
+    let loaded = db.load_gang_shops().expect("load");
+    assert_eq!(loaded, vec![(136, state.clone())]);
+
+    // Upsert clears stale slots.
+    state.slots[7] = GangShopSlot::default();
+    db.save_gang_shop(136, &state).expect("resave");
+    let loaded = db.load_gang_shops().expect("load");
+    assert_eq!(loaded[0].1.slots[7], GangShopSlot::default());
+
+    // The offline deposit upserts and accumulates bank-8 rows even
+    // with no player row (the book is keyed by name alone).
+    db.deposit_gang_gold("Salad", 45).expect("deposit");
+    db.deposit_gang_gold("Salad", 5).expect("deposit");
+    let mut p = player("Salad");
+    db.save_player(&p).expect("save");
+    let loaded = db.load_player("Salad").expect("query").expect("found");
+    assert_eq!(
+        loaded.bankbooks, vec![],
+        "CAVEAT (dll-shaped): a later save_player REPLACES the name's \
+         bankbook rows — an online stocker must be credited in-session, \
+         which is exactly what buy_from_gang_shop does"
+    );
+    db.deposit_gang_gold("Salad", 45).expect("deposit");
+    p.bankbooks = db.load_player("Salad").expect("query").expect("found").bankbooks;
+    assert_eq!(p.bankbooks, vec![(8, 45)]);
+}
