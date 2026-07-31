@@ -664,10 +664,13 @@ impl Navigator {
             // Unreachable under the reply grammar (a block never
             // attributes to an open); kept for match completeness.
             StepEvent::Arrived(name) => return Ok(StepOutcome::Arrived(name)),
+            // An `open` never moves the character, so a dark line
+            // attributed to it says nothing about arrival — treating it
+            // as AfterMove would advance `current` a room while the
+            // character stands still, on the acceptance circuit's exact
+            // terrain (doors into dark).
             StepEvent::Blind => {
-                return Ok(StepOutcome::Arrived(
-                    Navigator::blind_position(BlindContext::AfterMove, expected, here).to_string(),
-                ));
+                return Ok(StepOutcome::StayedPut(here.to_string()));
             }
             StepEvent::NoSuchExit => {
                 let ask = session.send("look");

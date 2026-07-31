@@ -1304,6 +1304,11 @@ async fn read_light_plan(session: &crate::session::Session) -> Option<String> {
 }
 
 /// Send a listing command and collect what comes back.
+/// Deliberately NOT attribution-filtered: this collects a multi-line
+/// listing from an Opaque-kind command (inventory, spells), and the
+/// correlator attributes no line of it — filtering would return nothing.
+/// Transcript-style collection bounded by `until` and the deadline is
+/// the honest tool here.
 async fn ask(session: &crate::session::Session, cmd: &str, until: &str) -> String {
     let mut events = session.events();
     crate::session::drain(&mut events, |_| {});
@@ -1503,6 +1508,9 @@ async fn wait_for_departure_health(
             Ok(Ok(())) => {}
             Ok(Err(_)) => return,
             Err(_) => {
+                // The poke exists only to provoke a prompt that carries
+                // HP into GameState; its own answer is irrelevant, so no
+                // attribution is needed (and none is read).
                 session.send("look");
             }
         }
