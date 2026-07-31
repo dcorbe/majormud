@@ -1037,6 +1037,11 @@ pub async fn run_farm(
 
     verify_start(session, &graph, plan.start).await?;
 
+    // One refusal set for the whole run. Learning that the board will not
+    // let us hit a template is worth exactly one refused swing, not one
+    // per stop per lap.
+    let refusals = crate::bot::Refusals::default();
+
     let mut current = plan.start;
     loop {
         for &stop in &plan.circuit {
@@ -1053,6 +1058,7 @@ pub async fn run_farm(
                     cfg,
                     &bot_config,
                     &threat,
+                    &refusals,
                     light.as_ref(),
                     started,
                     &mut stats,
@@ -1073,6 +1079,7 @@ pub async fn run_farm(
                 stop,
                 &bot_config,
                 &threat,
+                &refusals,
                 light.as_ref(),
                 cfg,
                 started,
@@ -1290,6 +1297,7 @@ async fn travel(
     cfg: &FarmConfig,
     bot_config: &crate::bot::BotConfig,
     threat: &std::sync::Arc<crate::bot::ThreatTable>,
+    refusals: &crate::bot::Refusals,
     light: Option<&String>,
     started: Instant,
     stats: &mut FarmStats,
@@ -1358,6 +1366,7 @@ async fn travel(
                     err.at,
                     bot_config,
                     threat,
+                    refusals,
                     light,
                     cfg,
                     started,
@@ -1437,6 +1446,10 @@ async fn farm_stop(
     stop: RoomId,
     bot_config: &crate::bot::BotConfig,
     threat: &std::sync::Arc<crate::bot::ThreatTable>,
+    // Kept by the RUN, not the stop: a bot is rebuilt per stop and on
+    // every lag and recovery, and a forgotten refusal is a refused swing
+    // repeated -- a crime-system interaction on the live board.
+    refusals: &crate::bot::Refusals,
     light: Option<&String>,
     cfg: &FarmConfig,
     started: Instant,
@@ -1460,7 +1473,7 @@ async fn farm_stop(
     let mut events = session.events();
     crate::session::drain(&mut events, |_| {});
 
-    let mut bot = crate::bot::Bot::with_threat(bot_config.clone(), threat.clone());
+    let mut bot = crate::bot::Bot::with_refusals(bot_config.clone(), threat.clone(), refusals.clone());
     let mut gate = Gate::new(backoff);
     let mut heal = HealWatch::new(bot_config, cfg);
     let mut seen = StopState::new(stop_name.clone(), cfg);
@@ -1558,7 +1571,7 @@ async fn farm_stop(
             // carrying a stale "nothing here" across would walk out on
             // everything still standing in it.
             Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {
-                bot = crate::bot::Bot::with_threat(bot_config.clone(), threat.clone());
+                bot = crate::bot::Bot::with_refusals(bot_config.clone(), threat.clone(), refusals.clone());
                 gate = Gate::new(backoff);
                 seen.reset();
                 None
@@ -1619,7 +1632,7 @@ async fn farm_stop(
             // Back at the stop with a clean slate. Nothing observed
             // before the flee describes the room we are standing in now.
             events = session.events();
-            bot = crate::bot::Bot::with_threat(bot_config.clone(), threat.clone());
+            bot = crate::bot::Bot::with_refusals(bot_config.clone(), threat.clone(), refusals.clone());
             gate = Gate::new(backoff);
             heal = HealWatch::new(bot_config, cfg);
             seen = StopState::new(stop_name.clone(), cfg);

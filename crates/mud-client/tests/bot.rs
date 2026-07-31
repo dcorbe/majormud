@@ -763,3 +763,44 @@ fn a_decorated_latch_still_clears_when_the_room_empties() {
     bot.on_event(&room(&[]));
     assert_eq!(bot.engaged(), None, "latched on a monster that is gone");
 }
+
+/// The farm runner builds a fresh bot for every stop, and again on every
+/// lagged broadcast and every flee recovery. A refusal learned in one of
+/// those lifetimes has to outlive it: otherwise the next bot re-engages
+/// the same monster, is refused again, and the swing is repeated once per
+/// monster per stop per lap. On the live board that is a crime-system
+/// interaction, not a free no-op.
+#[test]
+fn a_refusal_outlives_the_bot_that_learned_it() {
+    let refusals = mud_client::bot::Refusals::default();
+    let threat = std::sync::Arc::new(mud_client::bot::ThreatTable::new());
+
+    let mut first = Bot::with_refusals(
+        BotConfig {
+            auto_combat: true,
+            ..BotConfig::default()
+        },
+        threat.clone(),
+        refusals.clone(),
+    );
+    first.on_event(&room(&["kobold thief"]));
+    first.on_event(&Event::Line(
+        mud_core::crime::WARN_ON_EVIL_REFUSAL.to_string(),
+    ));
+
+    // The runner throws that bot away and builds another.
+    let mut next = Bot::with_refusals(
+        BotConfig {
+            auto_combat: true,
+            ..BotConfig::default()
+        },
+        threat,
+        refusals,
+    );
+    let actions = next.on_event(&room(&["kobold thief"]));
+    assert!(
+        actions.is_empty(),
+        "a rebuilt bot re-attacked a target the board had already refused: {actions:?}"
+    );
+    assert!(!next.has_target(&view(&["kobold thief"])));
+}

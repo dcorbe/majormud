@@ -192,8 +192,18 @@ pub struct Bot {
     /// template, so every rolled variant ("fat kobold thief") is covered
     /// by the one entry. Without this the cleared latch would simply
     /// re-engage on the next room block and be refused again forever.
-    refused: HashSet<String>,
+    ///
+    /// Shared rather than owned, because the farm runner builds a fresh
+    /// bot for every stop and again on every lag and recovery. A refusal
+    /// forgotten is a refused swing repeated, once per monster per stop
+    /// per lap — and on the live board a refused swing is a crime-system
+    /// interaction, not a free no-op.
+    refused: Refusals,
 }
+
+/// The set of targets the board has refused, shared across every bot a
+/// run builds. See [`Bot::refused`].
+pub type Refusals = std::sync::Arc<std::sync::Mutex<HashSet<String>>>;
 
 impl Bot {
     pub fn new(config: BotConfig) -> Self {
@@ -202,6 +212,16 @@ impl Bot {
 
     /// As [`Bot::new`], but able to tell a cave bear from a giant rat.
     pub fn with_threat(config: BotConfig, threat: std::sync::Arc<ThreatTable>) -> Self {
+        Bot::with_refusals(config, threat, Refusals::default())
+    }
+
+    /// As [`Bot::with_threat`], but inheriting refusals already learned.
+    /// A run keeps one set and hands it to every bot it builds.
+    pub fn with_refusals(
+        config: BotConfig,
+        threat: std::sync::Arc<ThreatTable>,
+        refused: Refusals,
+    ) -> Self {
         Bot {
             config,
             threat,
@@ -210,7 +230,7 @@ impl Bot {
             healing: false,
             fled: false,
             quiet_prompts: 0,
-            refused: HashSet::new(),
+            refused,
         }
     }
 
@@ -228,6 +248,16 @@ impl Bot {
     /// quiet room from an unfinished fight.
     pub fn engaged(&self) -> Option<&str> {
         self.engaged.as_deref()
+    }
+
+    /// Has the board already refused to let us attack this?
+    fn is_refused(&self, noun: &str) -> bool {
+        self.refused.lock().expect("refusals").contains(noun)
+    }
+
+    /// The shared refusal set, for handing to the next bot a run builds.
+    pub fn refusals(&self) -> Refusals {
+        self.refused.clone()
     }
 
     /// A flee has been decided and no room block has arrived since, so
@@ -355,7 +385,7 @@ impl Bot {
     fn would_attack(&self, name: &str) -> bool {
         self.config.auto_combat
             && is_attackable(name)
-            && !self.refused.contains(target_word(name))
+            && !self.is_refused(target_word(name))
             && !self.config.ignore.iter().any(|i| name.contains(i.as_str()))
     }
 
@@ -453,7 +483,10 @@ impl Bot {
         if ATTACK_REFUSALS.iter().any(|r| line.contains(r))
             && let Some(name) = self.engaged.take()
         {
-            self.refused.insert(target_word(&name).to_string());
+            self.refused
+                .lock()
+                .expect("refusals")
+                .insert(target_word(&name).to_string());
         }
         if !self.config.auto_get {
             return Vec::new();
