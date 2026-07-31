@@ -366,7 +366,7 @@ fn farm_command(
         // Skipped only for a death, which cannot walk anywhere.
         let died = matches!(outcome, Some(Ok((FarmEnd::Died, _))));
         if !died && plan.finish.is_some() {
-            match go_to_finish(&session, graph.clone(), &plan, &farm_config, None).await {
+            match go_to_finish(&session, graph.clone(), &plan, &farm_config).await {
                 Ok(()) => println!("walked to the finish room"),
                 // Worth saying loudly: the character is still out there.
                 Err(e) => eprintln!("could not walk to the finish room: {e}"),

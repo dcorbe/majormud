@@ -607,11 +607,16 @@ impl StopState {
 
     /// Something happened that could have changed who is standing here.
     /// What we saw is discarded outright, and so is the outstanding ask:
-    /// its answer predates this and must not be believed.
+    /// its answer predates this and must not be believed. `blind` goes
+    /// too — with the ask dropped, nothing else would ever clear it, and
+    /// a stale Blind verdict fires `source_died` against a source that
+    /// just lit, silently poisoning the light plan for the run. The cost
+    /// of forgetting is one honest re-look.
     fn invalidate(&mut self) {
         self.seen = None;
         self.empty_since = None;
         self.pending_look = None;
+        self.blind = false;
     }
 
     /// Fold one attributed event. Call AFTER
@@ -1192,7 +1197,6 @@ pub async fn go_to_finish(
     graph: std::sync::Arc<RoomGraph>,
     plan: &FarmPlan,
     cfg: &FarmConfig,
-    light: Option<&String>,
 ) -> Result<(), FarmError> {
     let Some(finish) = plan.finish else {
         return Ok(());
@@ -1210,13 +1214,17 @@ pub async fn go_to_finish(
     let seen = match next_room_view(&mut events, ask, Duration::from_secs(15)).await {
         Some(room) => room,
         None => {
-            let Some(cmd) = light else {
+            // Re-derived HERE, not carried in: the commonest way a farm
+            // ends is Ctrl-C, which cancels run_farm and drops its
+            // LightState outright — a parameter could never cover the
+            // exit route that matters most.
+            let Some(cmd) = read_light_plan(session).await else {
                 return Err(FarmError::NotAtStart {
                     expected: "a room block answering the finish walk's look".into(),
                     saw: None,
                 });
             };
-            session.send(cmd);
+            session.send(&cmd);
             let again = session.send("look");
             next_room_view(&mut events, again, Duration::from_secs(15))
                 .await

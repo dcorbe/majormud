@@ -1518,3 +1518,72 @@ fn an_unattributed_outcome_is_ignored() {
     l.on_event(&answering(Event::Line("You lit the torch.".into()), LIGHT_ID));
     assert!(l.lit());
 }
+
+#[test]
+fn light_state_edges_are_pinned() {
+    // source_died on an UNLIT state is a no-op — it runs on every Blind
+    // verdict, including the first at an unlit stop, and must not eat
+    // the plan.
+    let mut l = lit_state("light torch");
+    l.source_died();
+    assert_eq!(l.attempt(), Some("light torch".to_string()));
+
+    // A non-plan release neither arms the outcome watch nor burns the
+    // visit budget.
+    let mut l = lit_state("light torch");
+    l.on_sent("look", CmdId(5));
+    assert_eq!(l.attempt(), Some("light torch".to_string()));
+
+    // A refused item stays refused across visits.
+    let mut l = lit_state("light rock");
+    l.attempt();
+    l.on_sent("light rock", LIGHT_ID);
+    l.on_event(&answering(
+        Event::Line("You may not light that item!".into()),
+        LIGHT_ID,
+    ));
+    l.new_visit();
+    assert_eq!(l.attempt(), None);
+
+    // A lost outcome does not wedge the run: the next visit re-arms.
+    let mut l = lit_state("light torch");
+    l.attempt();
+    l.on_sent("light torch", LIGHT_ID);
+    assert_eq!(l.attempt(), None, "outcome owed");
+    l.new_visit();
+    assert_eq!(l.attempt(), Some("light torch".to_string()));
+}
+
+/// The stale-Blind poisoning: the light took, then an arrival
+/// invalidated the ask before its block landed. With `blind` surviving
+/// invalidation, the next verdict was Blind-with-lit and source_died ate
+/// a burning torch. Invalidation forgets blind along with the rest; the
+/// cost is one honest re-look.
+#[test]
+fn an_arrival_during_light_recovery_does_not_poison_the_plan() {
+    let t0 = Instant::now();
+    let mut bot = combat_bot();
+    let mut stop = stop_state(0);
+    stop.on_sent("look", LOOK_ID);
+    feed_answer(
+        &mut stop,
+        &mut bot,
+        &Event::Line(mud_client::sheet::TOO_DARK.to_string()),
+        t0,
+    );
+    assert_eq!(stop.verdict(&bot, t0), Verdict::Blind);
+    // Light + look go out; the look is owed...
+    stop.on_sent("look", LOOK_ID);
+    // ...and a monster walks in before its block lands.
+    feed(
+        &mut stop,
+        &mut bot,
+        &Event::ActorEntered { name: "giant rat".into(), from: Some("north".into()) },
+        t0,
+    );
+    assert_ne!(
+        stop.verdict(&bot, t0),
+        Verdict::Blind,
+        "a stale Blind verdict would kill the just-lit source"
+    );
+}

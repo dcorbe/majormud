@@ -243,9 +243,14 @@ impl LightState {
         self.plan.as_ref()
     }
 
-    /// A fresh stop visit: the per-visit attempt budget resets.
+    /// A fresh stop visit: the per-visit attempt budget resets, and so
+    /// does the outcome watch — an outcome that never arrived (a lost
+    /// wording, a lag resubscribe) must not wedge lighting for the rest
+    /// of the run. The worst case self-corrects with one "You already
+    /// have something lit!" round trip.
     pub fn new_visit(&mut self) {
         self.spent = 0;
+        self.pending = None;
     }
 
     /// The command worth sending now, if any attempt can work: none

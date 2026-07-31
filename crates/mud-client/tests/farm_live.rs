@@ -718,7 +718,7 @@ async fn the_run_walks_home_when_it_finishes() {
     .expect("farm run");
     assert_eq!(end, FarmEnd::LoopsDone);
 
-    mud_client::farm::go_to_finish(&session, graph, &plan, &cfg, None)
+    mud_client::farm::go_to_finish(&session, graph, &plan, &cfg)
         .await
         .expect("should have walked home");
 
