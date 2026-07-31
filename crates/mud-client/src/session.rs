@@ -154,9 +154,12 @@ enum Cmd {
 /// How long the correlator waits on an unanswered command before its
 /// late answers read as unsolicited. Sliding with queue progress; the
 /// absolute cap is 4x this (see `correlate::Correlator`). Generous
-/// against the measured worst case: ~3s of round-timer wait per queued
-/// command, at pipeline depths the client never exceeds.
-const CORRELATE_TTL: Duration = Duration::from_secs(10);
+/// against the measured worst case (~3s of round-timer wait per queued
+/// command), and deliberately LONGER than the navigator's 15s step
+/// timeout: with TTL below it, any answer landing in the (TTL,
+/// step_timeout] band was guaranteed to arrive unattributed — a
+/// systematic loss class, not a tail case.
+const CORRELATE_TTL: Duration = Duration::from_secs(20);
 
 struct TimingLog {
     file: Mutex<File>,

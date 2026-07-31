@@ -333,10 +333,11 @@ impl Navigator {
                         kind: NavErrorKind::NoRoute,
                     })?;
 
-                // Stale room blocks (a prior look, an earlier step's
-                // echo) must not satisfy this step's verification. The
-                // guard still sees them: nothing is in flight yet, so a
-                // trip here is honoured before the step goes out at all.
+                // Attribution is what keeps stale blocks from
+                // satisfying the step now; this drain remains for the
+                // guard (a death in the discarded window still counts)
+                // and to keep the receiver from lagging. A trip here is
+                // honoured before the step goes out at all.
                 crate::session::drain(&mut events, |ev| {
                     armed = armed.take().or_else(|| guard.on_event(&ev.event));
                 });
@@ -621,7 +622,8 @@ impl Navigator {
 
         let opened = session.send(&format!("open {dir}"));
         match self.wait_room(events, guard, armed, opened).await? {
-            // Some boards walk you through on the open itself.
+            // Unreachable under the reply grammar (a block never
+            // attributes to an open); kept for match completeness.
             StepEvent::Arrived(name) => return Ok(name),
             StepEvent::Blind => {
                 return Ok(Navigator::blind_position(BlindContext::AfterMove, expected, here)
@@ -719,9 +721,10 @@ impl Navigator {
     /// else's re-render — used to satisfy the step and silently drift
     /// `current` a room ahead of the character, which is the desync that
     /// ended live runs. It now goes past like any other noise; if the
-    /// step's real answer never arrives, the deadline hands the failure
-    /// to `goto`'s re-localize machinery, which is honest about not
-    /// knowing rather than confidently wrong.
+    /// step's real answer never arrives, the deadline surfaces as an
+    /// error and the leg ends at the last VERIFIED position — honest
+    /// about not knowing rather than confidently wrong. (Re-localize
+    /// runs only on a mismatched arrival, not on a timeout.)
     async fn wait_room(
         &self,
         events: &mut tokio::sync::broadcast::Receiver<crate::correlate::Correlated>,
