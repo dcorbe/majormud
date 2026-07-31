@@ -34,6 +34,12 @@ pub const GF_PAPERWORK: u16 = 0x4000;
 /// Roster view online-only (clear = all members); toggled by SET (§0).
 pub const GF_ROSTER_ONLINE_ONLY: u16 = 0x0008;
 
+/// The deed-purchase exp threshold: GANGEXP (WCCMMUD.MSG option 66,
+/// default 1000) × 10000 (gangs.md §3.1 — the ×10000 is the code's;
+/// the MSG help prose saying ×1000 is stale). Sysop-configurable on a
+/// real board; the shipped default is a compile-time constant here.
+pub const GANG_DEED_EXP: u32 = 1000 * 10000;
+
 /// One gang — the WCCGANG2 record (gangs.md §0), persisted in the
 /// state.sqlite `gang` table.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -830,6 +830,18 @@ pub fn gang_left_room(name: &str, gang: &str) -> String {
     format!("{name} has left {gang}.")
 }
 
+// The Realm Deed Shop refusals (buy_item type-0xc branch, gangs.md
+// §3.1; codes 6/5/7 — code 4's "You are already the owner of a gang
+// house." is DEAD in WG3-NT: the pool check clobbers it to 5).
+pub const GANG_DEED_NEEDS_LEADER: &str =
+    "You must be a gang leader to purchase a gang house deed.";
+pub const GANG_DEED_POOL_SHORT: &str =
+    "Your gang does not have enough experience for you to purchase a gang house now.";
+pub const GANG_DEED_PAPERWORK_1: &str =
+    "Due to outstanding paper-work we are unable to provide you with another";
+pub const GANG_DEED_PAPERWORK_2: &str = "property today. Please call back tomorrow!";
+pub const GANG_SHOP_NO_SELL: &str = "You may not sell items to a gang shop.";
+
 // TOP n GANGS (gangs.md §5.1; display_top_gangs 0x339dc,
 // display_top_gang_header 0x3423b, display_a_top_gang 0x34314). The
 // DLL's `\x1b[[…]` prf color idiom reduces to plain ANSI at the wire;

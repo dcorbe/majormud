@@ -11302,6 +11302,45 @@ impl Core {
         if shop.shop_type == 5 {
             return self.buy_healer_service(session, &want);
         }
+        // The Realm Deed Shop (type 0xc, gangs.md §3.1). Final refusal
+        // precedence per the compiled codes: 6 (leader) beats all, 7
+        // (paperwork) overrides 5, and the owner scan's code 4 is
+        // clobbered to 5 unconditionally (14435) — the already-owner
+        // string is dead in WG3-NT (ORACLE-VERIFY). The pool is a gate,
+        // never debited; a saturated pool auto-passes unless the owner
+        // scan hit.
+        if shop.shop_type == 12 {
+            let player = self.player(session);
+            let key = player.gang.to_uppercase();
+            let is_leader = !player.gang.is_empty()
+                && self
+                    .gangs
+                    .get(&key)
+                    .is_some_and(|g| g.is_leader(&player.name));
+            if !is_leader {
+                self.output_line(session, text::GANG_DEED_NEEDS_LEADER);
+                return Resolution::Handled;
+            }
+            if self.player(session).gang_flags & crate::gang::GF_PAPERWORK != 0 {
+                self.output_line(session, text::GANG_DEED_PAPERWORK_1);
+                self.output_line(session, text::GANG_DEED_PAPERWORK_2);
+                return Resolution::Handled;
+            }
+            let deed_ability = Ability::from_id(181).expect("GHouseDeed in the enum");
+            let owns_deed = self.player(session).inventory.iter().any(|(id, _)| {
+                self.content
+                    .items
+                    .get(id)
+                    .is_some_and(|i| i.abilities.iter().any(|(a, _)| *a == deed_ability))
+            });
+            let gang = &self.gangs[&key];
+            let pool_ok = !owns_deed
+                && (gang.is_saturated() || gang.exp_pool >= crate::gang::GANG_DEED_EXP);
+            if !pool_ok {
+                self.output_line(session, text::GANG_DEED_POOL_SHORT);
+                return Resolution::Handled;
+            }
+        }
         let slot = shop.stock.iter().enumerate().find(|(_, s)| {
             s.item.is_some_and(|id| {
                 self.content
@@ -11490,6 +11529,11 @@ impl Core {
         let item_id = player.inventory[pos].0;
         let item = self.content.items[&item_id].clone();
         let shop = self.content.shops[&shop_id].clone();
+        // Gang stock shops buy nothing (sell_item, gangs.md §3.1).
+        if shop.shop_type == 11 {
+            self.output_line(session, text::GANG_SHOP_NO_SELL);
+            return Resolution::Handled;
+        }
         let slot_idx = shop
             .stock
             .iter()
@@ -11508,10 +11552,21 @@ impl Core {
         };
         player.inventory.remove(pos);
         player.coins.add_copper_and_mint(price.max(0) as u64, ratios);
-        let counts = self.shop_stock.entry(shop_id).or_default();
-        if counts[slot_idx] < shop.stock[slot_idx].max {
-            counts[slot_idx] += 1;
-            self.persist_shop_stock(shop_id);
+        if shop.shop_type == 12 {
+            // Selling a deed-shop item back files the paperwork that
+            // blocks another purchase (the 0x4000 setter, 14740) —
+            // cleared only by the unported tax/cleanup lifecycle (§8,
+            // M8 PENDING). No restock either (the DLL's 0xc arm skips
+            // the shelf increment).
+            player.gang_flags |= crate::gang::GF_PAPERWORK;
+            let snapshot = player.clone();
+            self.events.push(Event::Persist(snapshot));
+        } else {
+            let counts = self.shop_stock.entry(shop_id).or_default();
+            if counts[slot_idx] < shop.stock[slot_idx].max {
+                counts[slot_idx] += 1;
+                self.persist_shop_stock(shop_id);
+            }
         }
         self.output_line(
             session,
