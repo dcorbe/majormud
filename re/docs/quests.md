@@ -401,9 +401,11 @@ decompile line numbers cited are `WCCMMUD_decompiled.c`'s.
   derives elsewhere.
 - giveitem's failure condition is the 100-slot cap; the DLL's weight
   and add-logical gates are unmodeled engine-wide.
-- `M7 PENDING` survivors from this slice, both cited in code: the
-  offensive trap-cast arm (17 shipped `cast` carriers, spelltype 0)
-  and remoteaction's type-9/0x18 force-move arm (≤2 ambiguous uses).
+- Slice-6 survivors, dispositioned at the M7 close-out (slice 8): the
+  offensive trap-cast arm LANDED (17 shipped `cast` carriers, all
+  match-1 self-casts — Damage/DamageMR legs, guilt gate, death path;
+  six pins in `quest_vm.rs`); remoteaction's type-9/0x18 force-move
+  arm (≤2 ambiguous uses, none exercised) rehomed `M8 PENDING`.
 - The look/buy/use cmdtext hook sites reduce to the fall-through
   funnel: measured 2026-07-30, zero shipped `buy` triggers sit in shop
   rooms and none of the trigger census requires the pre-refusal form.

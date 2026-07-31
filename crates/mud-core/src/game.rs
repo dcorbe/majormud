@@ -3301,10 +3301,11 @@ impl Core {
                 match exit.exit_type {
                     6 => self.remote_lever(target, d, &exit, action),
                     7 | 0xb => self.remote_gate_toggle(target, d, &exit),
-                    // M7 PENDING(slice-6): the type-9/0x18 arm
+                    // M8 PENDING (quests.md §7.2): the type-9/0x18 arm
                     // (66119-66150) force-moves every player and monster
                     // in the target room through the exit (move_user
-                    // mode 7); at most two ambiguous shipped uses.
+                    // mode 7); at most two ambiguous shipped uses, none
+                    // exercised — rehomed at the M7 close-out.
                     _ => {}
                 }
                 CONTINUE
@@ -8659,7 +8660,7 @@ impl Core {
 
     /// `top [n] [gangs]` (cmd_topten 0x58891, gangs.md §5.1). The gangs
     /// arm ships; every player-ranking form stays the pre-slice-7 stub
-    /// (M7 PENDING: needs board-wide account data — M8). Forms: bare
+    /// (M8 PENDING, gangs.md §10: needs board-wide account data). Forms: bare
     /// GANGS = 10; `<n> GANGS` / `GANGS <n>` capped at MAXTOP (30,
     /// MSG-option default) for unprivileged viewers.
     fn top_command(&mut self, session: SessionId, args: &str) {
@@ -9510,8 +9511,8 @@ impl Core {
     /// TEN gang slots is claimed. Price/denomination default to the
     /// item's own cost fields; explicit price caps at 9999. Every stock
     /// overwrites last_stocker with the stocker (the bank-8 deposit
-    /// target). Unported gates, M7 PENDING: the limited-item and
-    /// worn-second-copy refusals (fields unmodeled).
+    /// target). Unported gates, M8 PENDING (gangs.md §10): the
+    /// limited-item and worn-second-copy refusals (fields unmodeled).
     fn stock_command(&mut self, session: SessionId, args: &str) -> Resolution {
         if args.trim().is_empty() {
             self.output_line(session, text::SYNTAX_STOCK);
