@@ -186,9 +186,21 @@ fn is_door(exit_type: i64) -> bool {
 /// look refusal; _cmd_look's "The door is closed in that direction!"
 /// never reaches this classifier because it can only be attributed to a
 /// `look <dir>` the walk never sends. The bangs keep the two apart.
-const DOOR_BLOCKED: [&str; 5] = [
+/// Both terminators, for the same reason `correlate::completes` carries
+/// both (b26afe5): stock's `_move_user` prints the bang, and foreign
+/// reimplementations soften it to a full stop ("The door is closed.",
+/// cwrun2.raw 2026-08-01 — 7 occurrences, never a bang). The correlator
+/// learned that and the navigator did not, so the step was retired
+/// without ever being read as a blocked door: no `open`, no bash, just
+/// `n` into a shut door again until the leg timed out.
+///
+/// The period cannot collide with `_cmd_look`'s refusal — that wording
+/// continues "...in that direction!" and never carries a stop here.
+const DOOR_BLOCKED: [&str; 7] = [
     "the door is closed!",
+    "the door is closed.",
     "the gate is closed!",
+    "the gate is closed.",
     "closed door in that direction",
     "the door is locked",
     "the gate is locked",

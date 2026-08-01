@@ -48,6 +48,17 @@ fn room_block(name: &str, exits: &str) -> String {
 /// `locked` means `open` will not shift it and only a bash will, which
 /// is the case that must not silently give up.
 async fn door_board(locked: bool) -> (std::net::SocketAddr, Arc<DoorLog>) {
+    door_board_worded(locked, "The door is closed!").await
+}
+
+/// The same board, but saying `refusal` when a shut door turns the step
+/// back. Stock prints the bang; foreign reimplementations soften it, and
+/// the navigator has to recognise a blocked door either way or it never
+/// reaches for `open`.
+async fn door_board_worded(
+    locked: bool,
+    refusal: &'static str,
+) -> (std::net::SocketAddr, Arc<DoorLog>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let log = Arc::new(DoorLog::default());
@@ -74,7 +85,7 @@ async fn door_board(locked: bool) -> (std::net::SocketAddr, Arc<DoorLog>) {
                     if open {
                         room_block("Inner Ward", "open door south")
                     } else {
-                        "\r\nThe door is closed!\r\n[HP=30/MA=0]:".to_string()
+                        format!("\r\n{refusal}\r\n[HP=30/MA=0]:")
                     }
                 }
                 "open n" | "open north" => {
@@ -585,5 +596,40 @@ async fn a_whiff_during_door_work_stops_the_walk() {
         bashes.load(Ordering::SeqCst) <= 2,
         "kept bashing under fire: {} rolls",
         bashes.load(Ordering::SeqCst)
+    );
+}
+
+/// A foreign board softens the refusal to a full stop: "The door is
+/// closed." — 7 occurrences in cwrun2.raw (cwgaming, 2026-08-01) and
+/// never once a bang.
+///
+/// `correlate.rs` learned both terminators in b26afe5, so the move was
+/// correctly RETIRED; the navigator's own table was not, so the same
+/// line was never classified as a blocked door. The walk therefore never
+/// reached for `open` or `bash` — it just sent `n` into a shut door
+/// again on the next attempt, live, until the leg timed out.
+///
+/// Adding the full stop cannot collide with `_cmd_look`'s refusal: that
+/// wording continues "...in that direction!" and never carries a period
+/// at this position.
+#[tokio::test]
+async fn a_softened_door_refusal_is_still_a_blocked_door() {
+    let (addr, log) = door_board_worded(false, "The door is closed.").await;
+    let session = session_for(addr).await;
+    let n = nav(graph_with_exit(7));
+
+    let at = tokio::time::timeout(
+        Duration::from_secs(10),
+        n.goto(&session, HERE, THERE, &mut NoGuard),
+    )
+    .await
+    .expect("goto should not hang")
+    .expect("a softened refusal must still open the door");
+
+    assert_eq!(at, THERE);
+    assert_eq!(
+        log.opens.load(Ordering::SeqCst),
+        1,
+        "the refusal was never read as a blocked door, so `open` never went out"
     );
 }
