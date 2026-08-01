@@ -301,7 +301,11 @@ fn emissions_flow_one_per_ack_and_never_wedge() {
     // standing, and the bot now re-engages after each break instead of
     // sitting latched on a fight the board had declared over. Audited
     // the same way.
-    assert_eq!(total, 2135, "corpus gate throughput changed");
+    // -> 2036 when rest-safety landed: the replay bot no longer rests
+    // mid-fight or beside a listed target. The per-file delta was
+    // audited to be EXCLUSIVELY `rest` emissions — 99 of them, in the
+    // occupied rooms where the live spiral happened.
+    assert_eq!(total, 2036, "corpus gate throughput changed");
 }
 
 /// The gate invents nothing. Everything it emits was either a bot

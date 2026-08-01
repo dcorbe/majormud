@@ -176,6 +176,102 @@ fn heals_below_threshold() {
     assert_eq!(actions, vec![BotAction::Send("rest".into())]);
 }
 
+/// Combat bot with healing armed — the shape that produced tonight's
+/// death spiral (2026-08-01 run3): HP 21/52 beside a cave bear, `rest`
+/// disengages combat, the Combat Off un-latch frees the bot, the next
+/// block re-engages, the engage breaks the rest — forever, taking bear
+/// swings every ~5s round while neither resting nor fighting. In an
+/// occupied room the coherent choices are fight or flee; rest is for
+/// cleared rooms.
+fn healing_fighter() -> Bot {
+    Bot::new(BotConfig {
+        auto_combat: true,
+        auto_heal: true,
+        heal_at_percent: 50,
+        max_hp: 52,
+        ..BotConfig::default()
+    })
+}
+
+#[test]
+fn does_not_rest_while_the_room_lists_a_monster() {
+    let mut bot = healing_fighter();
+    // The block engages the bear; the low prompt must fight on, not rest.
+    assert_eq!(bot.on_event(&room(&["cave bear"])).len(), 1);
+    assert!(
+        bot.on_event(&Event::Prompt { hp: 21, mana: None }).is_empty(),
+        "resting mid-fight is the spiral"
+    );
+}
+
+/// The exact spiral: the fight ends (rest disengaged it, or the bear
+/// died in prose under the XP cap), the latch clears — but the room
+/// STILL lists the bear. Resting now just gets broken by the re-engage.
+#[test]
+fn does_not_rest_after_combat_off_while_the_room_still_has_work() {
+    let mut bot = healing_fighter();
+    bot.on_event(&room(&["cave bear"]));
+    bot.on_event(&Event::Line("*Combat Off*".into()));
+    assert!(
+        bot.on_event(&Event::Prompt { hp: 21, mana: None }).is_empty(),
+        "the room was never proven clear"
+    );
+}
+
+/// The other side: suppression must not latch. The moment a block
+/// proves the room clear, the very next low prompt rests.
+#[test]
+fn rests_once_the_room_is_proven_clear() {
+    let mut bot = healing_fighter();
+    bot.on_event(&room(&["cave bear"]));
+    bot.on_event(&Event::Line("*Combat Off*".into()));
+    assert!(bot.on_event(&Event::Prompt { hp: 21, mana: None }).is_empty());
+    bot.on_event(&room(&[]));
+    assert_eq!(
+        bot.on_event(&Event::Prompt { hp: 21, mana: None }),
+        vec![BotAction::Send("rest".into())]
+    );
+}
+
+/// A walk-in makes resting wrong again, before any block re-lists it.
+#[test]
+fn a_walk_in_makes_resting_wrong_again() {
+    let mut bot = healing_fighter();
+    bot.on_event(&room(&[]));
+    assert_eq!(bot.on_event(&Event::Prompt { hp: 21, mana: None }).len(), 1);
+    // HP recovers past the threshold: the heal debounce releases.
+    bot.on_event(&Event::Prompt { hp: 40, mana: None });
+    // A rat walks in (and is engaged); dropping low again must not rest.
+    bot.on_event(&Event::ActorEntered {
+        name: "giant rat".into(),
+        from: None,
+    });
+    assert!(
+        bot.on_event(&Event::Prompt { hp: 21, mana: None }).is_empty(),
+        "an arrival is work; rest would be broken by the fight"
+    );
+}
+
+/// Occupants the bot would never swing at do not block resting — the
+/// bit follows would_attack (ignore list, case rule, refusals), not raw
+/// occupancy.
+#[test]
+fn an_ignored_occupant_does_not_block_resting() {
+    let mut bot = Bot::new(BotConfig {
+        auto_combat: true,
+        auto_heal: true,
+        heal_at_percent: 50,
+        max_hp: 52,
+        ignore: vec!["town guard".into()],
+        ..BotConfig::default()
+    });
+    bot.on_event(&room(&["town guard"]));
+    assert_eq!(
+        bot.on_event(&Event::Prompt { hp: 21, mana: None }),
+        vec![BotAction::Send("rest".into())]
+    );
+}
+
 #[test]
 fn heal_requires_known_max_hp() {
     let mut bot = Bot::new(BotConfig {

@@ -1532,12 +1532,15 @@ async fn travel(
     // expired, unkillable, or refused mid-fight — and stopping again
     // would loop, so the leg walks on past sightings from then on.
     let mut last_sighted: Option<RoomId> = None;
+    // Predicate-only, like the guard's sighting bot: judges whether the
+    // departure gate is standing beside work (never fed events).
+    let sight = crate::bot::Bot::with_refusals(bot_config.clone(), threat.clone(), refusals.clone());
 
     loop {
         if time_up(started, cfg).is_some() {
             return Ok(LegEnd::TimeUp);
         }
-        wait_for_departure_health(session, cfg, bot_config).await;
+        wait_for_departure_health(session, cfg, bot_config, &sight).await;
     set_phase(phase, Phase::Travelling { to: stop });
 
         let err = match nav.goto(session, *current, stop, &mut guard).await {
@@ -1646,6 +1649,9 @@ async fn wait_for_departure_health(
     session: &crate::session::Session,
     cfg: &FarmConfig,
     bot_config: &crate::bot::BotConfig,
+    // Judges whether the room we are standing in holds work; the same
+    // predicate-only role the sighting guard's bot plays.
+    sight: &crate::bot::Bot,
 ) {
     if cfg.depart_at_percent == 0 || bot_config.max_hp <= 0 {
         return;
@@ -1653,6 +1659,22 @@ async fn wait_for_departure_health(
     let target = bot_config.max_hp * cfg.depart_at_percent as i32 / 100;
     let mut state = session.state();
     if state.borrow().hp >= target {
+        return;
+    }
+    // Never rest beside a monster: the travel path can land here right
+    // after a defend that ended on the deadline with monsters still
+    // standing, and a rest there is disengaged by the board and broken
+    // by the next fight — the same incoherence the bot's own rest rule
+    // suppresses. GameState.room is unattributed, so this is a
+    // heuristic gate on a best-effort send; the bot-internal rule is
+    // the load-bearing one. Departing wounded is what the travel guard
+    // exists for.
+    if state
+        .borrow()
+        .room
+        .as_ref()
+        .is_some_and(|room| sight.has_target(room))
+    {
         return;
     }
     // Actually REST, and actually look.

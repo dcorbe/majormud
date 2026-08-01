@@ -202,6 +202,17 @@ pub struct Bot {
     fled: bool,
     /// Prompts seen since the last blow involving the engaged target.
     quiet_prompts: u32,
+    /// The last room view this bot was shown listed something it would
+    /// attack (the pump only shows it ATTRIBUTED blocks), or something
+    /// attackable walked in since. Consulted before healing: in an
+    /// occupied room the coherent choices are fight or flee — a rest is
+    /// disengaged by the board and re-broken by the next engage, which
+    /// was the live death spiral (2026-08-01, HP 21/52 vs a cave bear,
+    /// rest/attack alternating every round). Deliberately NOT cleared
+    /// by kill lines, ActorLeft or Combat Off: one death does not prove
+    /// a room empty, and the stop machinery re-looks after every such
+    /// event, so the next attributed block recomputes it honestly.
+    room_has_work: bool,
     /// Targets the board refused to let us attack, keyed by the same
     /// trailing noun the attack command uses — the refusal applies to the
     /// template, so every rolled variant ("fat kobold thief") is covered
@@ -245,6 +256,7 @@ impl Bot {
             healing: false,
             fled: false,
             quiet_prompts: 0,
+            room_has_work: false,
             refused,
         }
     }
@@ -318,6 +330,10 @@ impl Bot {
                 // Ties keep the board's order, which `max_by_key` alone
                 // would invert: it yields the LAST maximum, so equal
                 // scores would pick the last name listed.
+                // Judged with would_attack, not attackable: a fight in
+                // progress is still work, and work is what makes
+                // resting incoherent.
+                self.room_has_work = room.also_here.iter().any(|name| self.would_attack(name));
                 let target = room
                     .also_here
                     .iter()
@@ -330,7 +346,12 @@ impl Bot {
                     .into_iter()
                     .collect()
             }
-            Event::ActorEntered { name, .. } => self.engage(name).into_iter().collect(),
+            Event::ActorEntered { name, .. } => {
+                if self.would_attack(name) {
+                    self.room_has_work = true;
+                }
+                self.engage(name).into_iter().collect()
+            }
             Event::ActorLeft { name, .. } => {
                 if self.engaged.as_deref() == Some(name.as_str()) {
                     self.engaged = None;
@@ -477,7 +498,19 @@ impl Bot {
         }
         if percent >= self.config.heal_at_percent as i32 {
             self.healing = false;
-        } else if self.config.auto_heal && !self.healing {
+        } else if self.config.auto_heal
+            && !self.healing
+            // Never rest in a room that holds a fight or work: the board
+            // disengages combat to rest, the un-latch frees the bot, the
+            // next block re-engages and breaks the rest — the live death
+            // spiral (2026-08-01, HP 21/52 vs a cave bear, rest/attack
+            // alternating every ~5s round). Fight or flee are the
+            // occupied-room choices; flee is checked above and already
+            // outranks. No latch is spent on the suppressed path, so the
+            // first prompt after the room is proven clear heals.
+            && self.engaged.is_none()
+            && !self.room_has_work
+        {
             self.healing = true;
             return vec![BotAction::Send(self.config.heal_command.clone())];
         }

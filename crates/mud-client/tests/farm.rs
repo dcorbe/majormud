@@ -1273,6 +1273,25 @@ fn combat_off_invalidates_the_room_block() {
     );
 }
 
+/// The rest-safety interaction contract: a heal the bot SUPPRESSED (an
+/// occupied room) never reaches the gate, so the watch never arms and
+/// the "heal never landed → rearm" loop cannot trip on a heal that was
+/// never sent. The watch's whole lifecycle keys on on_sent.
+#[test]
+fn a_heal_the_bot_never_sent_does_not_arm_the_heal_watch() {
+    let bot_cfg = BotConfig {
+        heal_command: "rest".into(),
+        ..BotConfig::default()
+    };
+    let mut watch = HealWatch::new(&bot_cfg, &FarmConfig::default());
+    for _ in 0..50 {
+        assert!(
+            !watch.on_event(&prompt(10)),
+            "armed without a heal ever going out"
+        );
+    }
+}
+
 /// Our attack falling through to SAY means the room changed under the
 /// block that prompted the swing: the target is gone, and whatever else
 /// the block listed cannot be trusted either. The runner would
