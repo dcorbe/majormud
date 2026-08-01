@@ -330,3 +330,91 @@ async fn ctrl_f_still_takes_the_keyboard_back() {
         KeyOutcome::Quit
     ));
 }
+
+// ---------------------------------------------------------------------
+// The assist's reply to one correlated event. The farm's pump re-looks
+// after every fight; playing by hand, the assist must poke its own —
+// a fight's end says nothing about who else is standing in the room,
+// and without the poke the assist killed one monster and stopped
+// (live, cwgaming board, 2026-08-01).
+// ---------------------------------------------------------------------
+
+use mud_client::bot::{Bot, BotConfig};
+use mud_client::correlate::{CmdId, Correlated};
+use mud_client::events::Event;
+use mud_client::tui::assist_actions;
+
+fn assist_bot() -> Bot {
+    Bot::new(BotConfig {
+        auto_combat: true,
+        ..BotConfig::default()
+    })
+}
+
+fn attributed(event: Event) -> Correlated {
+    Correlated {
+        event,
+        answers: Some(CmdId(1)),
+    }
+}
+
+fn unsolicited(event: Event) -> Correlated {
+    Correlated {
+        event,
+        answers: None,
+    }
+}
+
+#[test]
+fn a_fight_ending_pokes_a_look_so_the_next_monster_is_seen() {
+    let mut bot = assist_bot();
+    let room = RoomView {
+        name: "Dungeon, Entrance".into(),
+        also_here: vec!["giant rat".into(), "kobold thief".into()],
+        ..RoomView::default()
+    };
+    assert_eq!(
+        assist_actions(&mut bot, &attributed(Event::RoomSeen(room.clone()))),
+        vec!["a rat".to_string()]
+    );
+    assert_eq!(
+        assist_actions(
+            &mut bot,
+            &unsolicited(Event::Line(
+                "The giant rat falls to the ground with a tortured squeak.".into()
+            ))
+        ),
+        Vec::<String>::new()
+    );
+    // The board's own fight-over announcement is the poke's trigger.
+    assert_eq!(
+        assist_actions(&mut bot, &unsolicited(Event::Line("*Combat Off*".into()))),
+        vec!["look".to_string()]
+    );
+    // The poke's answer names the survivor and the assist engages it.
+    let survivor = RoomView {
+        name: "Dungeon, Entrance".into(),
+        also_here: vec!["kobold thief".into()],
+        ..RoomView::default()
+    };
+    assert_eq!(
+        assist_actions(&mut bot, &attributed(Event::RoomSeen(survivor))),
+        vec!["a thief".to_string()]
+    );
+}
+
+/// The runner's own believing rule: an unattributed block — somebody
+/// else's render, a stale answer — must not start a swing.
+#[test]
+fn an_unattributed_block_starts_nothing() {
+    let mut bot = assist_bot();
+    let room = RoomView {
+        name: "Dungeon, Entrance".into(),
+        also_here: vec!["giant rat".into()],
+        ..RoomView::default()
+    };
+    assert_eq!(
+        assist_actions(&mut bot, &unsolicited(Event::RoomSeen(room))),
+        Vec::<String>::new()
+    );
+}

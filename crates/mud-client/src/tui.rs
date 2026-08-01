@@ -221,21 +221,12 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                         }
                     }
                     // While a farm runs it owns the connection outright;
-                    // the assist only drives a hand-played session. Room
-                    // blocks are believed under the runner's own rule
-                    // (farm.rs `bot_sees`): only a block that answers a
-                    // command — the operator's look or step included —
-                    // reaches the bot, so a stale or foreign render
-                    // cannot clear a latch or start a swing.
+                    // the assist only drives a hand-played session.
                     if farm.is_none()
                         && let Some(bot) = assist.as_mut()
                     {
-                        let sees = !matches!(cor.event, crate::events::Event::RoomSeen(_))
-                            || cor.answers.is_some();
-                        if sees {
-                            for crate::bot::BotAction::Send(cmd) in bot.on_event(&cor.event) {
-                                session.send(&cmd);
-                            }
+                        for cmd in assist_actions(bot, cor) {
+                            session.send(&cmd);
                         }
                     }
                 }
@@ -466,6 +457,39 @@ pub fn handle_key(
         _ => {}
     }
     KeyOutcome::Continue
+}
+
+/// The assist's reply to one correlated event: the bot's own decisions,
+/// plus the re-look the farm's pump would have made for it.
+///
+/// Room blocks are believed under the runner's own rule (farm.rs
+/// `bot_sees`): only a block that answers a command — the operator's
+/// look or step included — reaches the bot, so a stale or foreign
+/// render cannot clear a latch or start a swing. And the board's own
+/// fight-over announcement pokes a `look`: a fight's end says nothing
+/// about who else is standing in the room, and an assist without the
+/// poke killed one monster of a pack and stopped (live, 2026-08-01).
+/// The poke's answer is attributed, names the survivors, and the next
+/// engage comes off it — never off the fight chatter.
+pub fn assist_actions(
+    bot: &mut crate::bot::Bot,
+    cor: &crate::correlate::Correlated,
+) -> Vec<String> {
+    let sees = !matches!(cor.event, crate::events::Event::RoomSeen(_)) || cor.answers.is_some();
+    let mut out: Vec<String> = if sees {
+        bot.on_event(&cor.event)
+            .into_iter()
+            .map(|crate::bot::BotAction::Send(cmd)| cmd)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if let crate::events::Event::Line(line) = &cor.event
+        && crate::bot::is_combat_off(line)
+    {
+        out.push("look".into());
+    }
+    out
 }
 
 fn setup_region(out: &mut impl std::io::Write, rows: u16) -> std::io::Result<()> {

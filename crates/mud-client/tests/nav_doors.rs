@@ -520,3 +520,70 @@ async fn a_guard_interrupt_breaks_the_bash_loop() {
         log.bashes.load(Ordering::SeqCst)
     );
 }
+
+/// Door work under fire (live shape, cwgaming 2026-08-01: three mobs
+/// whiffing at the character through four bash rolls). A whiff at us is
+/// an Attacked interrupt everywhere else on a fighting walk; the bash
+/// loop hears the guard between rolls and must hand back instead of
+/// standing there rolling while something swings.
+#[tokio::test]
+async fn a_whiff_during_door_work_stops_the_walk() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let bashes = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&bashes);
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        sock.write_all(room_block("Guard Post", "closed door north").as_bytes())
+            .await
+            .unwrap();
+        let mut buf = [0u8; 512];
+        while let Ok(n) = sock.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            let line = String::from_utf8_lossy(&buf[..n]).trim().to_lowercase();
+            let echo = format!("\r\n{line}");
+            let reply = match line.as_str() {
+                "n" => "\r\nThe door is closed!\r\n[HP=30/MA=0]:".to_string(),
+                "open n" | "open north" => "\r\nThe door is locked.\r\n[HP=30/MA=0]:".to_string(),
+                "bash n" | "bash north" => {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    // The failed roll, with the room's occupant swinging
+                    // at us in the same burst.
+                    "\r\nYour attempts to bash through fail!\r\nThe nasty giant rat lunges at you!\r\n[HP=30/MA=0]:"
+                        .to_string()
+                }
+                other => format!("\r\nYou say \"{other}\"\r\n[HP=30/MA=0]:"),
+            };
+            sock.write_all(format!("{echo}{reply}").as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = session_for(addr).await;
+    let n = nav(graph_with_exit(7));
+    let mut guard = mud_client::farm::FarmGuard::new(30, 25, "Farmer");
+
+    let err = tokio::time::timeout(
+        Duration::from_secs(10),
+        n.goto(&session, HERE, THERE, &mut guard),
+    )
+    .await
+    .expect("goto should not hang")
+    .expect_err("the whiff must stop the door work");
+    assert!(
+        matches!(
+            err.kind,
+            mud_client::nav::NavErrorKind::Interrupted(mud_client::nav::Interrupt::Attacked {
+                ..
+            })
+        ),
+        "expected Attacked, got {:?}",
+        err.kind
+    );
+    assert!(
+        bashes.load(Ordering::SeqCst) <= 2,
+        "kept bashing under fire: {} rolls",
+        bashes.load(Ordering::SeqCst)
+    );
+}
