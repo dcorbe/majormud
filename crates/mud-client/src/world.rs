@@ -518,6 +518,23 @@ impl Here {
         }
     }
 
+    /// The owner resolved which room the character is standing in.
+    ///
+    /// This outranks the printed name, and it has to: identity by name
+    /// cannot tell twins apart (Newhaven 1/2146 and 1/2151 share one,
+    /// and the sewers run hundreds of blocks under "Sewer Tunnel"), so a
+    /// step between them reads as a re-render and every occupant of the
+    /// room behind us reports as an overclaim. Callers that cannot
+    /// resolve an id simply never call this and keep the name guard.
+    ///
+    /// Noting the SAME room again is a no-op — owners call it per block.
+    pub fn note_room(&mut self, id: mud_core::content::RoomId) {
+        if self.room != Some(id) {
+            self.reset();
+            self.room = Some(id);
+        }
+    }
+
     /// Everything observed is dropped — a lagged broadcast, a flee.
     pub fn reset(&mut self) {
         self.room = None;

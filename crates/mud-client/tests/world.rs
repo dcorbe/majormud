@@ -624,3 +624,45 @@ fn a_death_only_the_lexicon_knows_still_empties_the_room() {
     here.on_event(&answering(Event::RoomSeen(view(&[])), ASK), now);
     assert_eq!(here.reconcile.count(DivergenceKind::OccupantExtra), 0);
 }
+
+/// Room identity by NAME cannot tell two rooms apart when the board
+/// prints the same name for both — Newhaven has twins at 1/2146 and
+/// 1/2151, and the sewers run 528 blocks under one name
+/// ("Sewer Tunnel", oracle_engage_lock_emptysweep). A step between them
+/// then reads as a re-render and every occupant of the room behind us
+/// reports as an overclaim.
+///
+/// An owner that can resolve the id says so, and that outranks the name.
+#[test]
+fn a_resolved_room_id_outranks_a_shared_room_name() {
+    use mud_core::content::RoomId;
+    let now = Instant::now();
+    let mut here = Here::default();
+    here.note_room(RoomId { map: 1, room: 2146 });
+    here.on_event(&answering(Event::RoomSeen(view(&["cave bear"])), ASK), now);
+    assert_eq!(here.occupants.len(), 1);
+
+    // Same printed name, different room.
+    here.note_room(RoomId { map: 1, room: 2151 });
+    here.on_event(&answering(Event::RoomSeen(view(&["giant rat"])), ASK), now);
+    assert_eq!(
+        here.reconcile.total(),
+        0,
+        "a step between same-named rooms is not a divergence"
+    );
+    assert_eq!(here.occupants.len(), 1);
+    assert_eq!(here.occupants[0].name, "giant rat");
+}
+
+/// Re-noting the SAME room must not wipe what we know — the owner calls
+/// this on every block it resolves.
+#[test]
+fn re_noting_the_same_room_keeps_the_beliefs() {
+    use mud_core::content::RoomId;
+    let now = Instant::now();
+    let mut here = Here::default();
+    here.note_room(RoomId { map: 1, room: 2146 });
+    here.on_event(&answering(Event::RoomSeen(view(&["cave bear"])), ASK), now);
+    here.note_room(RoomId { map: 1, room: 2146 });
+    assert_eq!(here.occupants.len(), 1, "same room, same beliefs");
+}

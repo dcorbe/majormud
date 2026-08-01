@@ -9,6 +9,11 @@ use crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyM
 
 use crate::session::{GameState, Session};
 
+/// How often the client asks the board where it stands against the next
+/// level. Slow on purpose: the answer changes by one kill at a time, and
+/// the command costs a round-trip on a connection a farm may be driving.
+const LEVEL_POLL: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Local line editor with history. Pure logic; the terminal loop feeds
 /// it key events and repaints from `line()`/`cursor()`.
 pub struct InputEditor {
@@ -187,6 +192,13 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     // read fires every single lap, and the interesting fact is that it
     // happened at all, not how often.
     let mut noted: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // The board's own answer to `exp`, refreshed on its own timer. The
+    // kill-by-kill rate already jitters; a time-to-level that jittered
+    // with it would be unreadable, so this is deliberately a slow tick.
+    let mut level: Option<crate::progress::LevelProgress> = None;
+    let mut level_tick = tokio::time::interval(LEVEL_POLL);
+    // The first tick of a tokio interval completes immediately, which is
+    // what asks the board once at startup rather than after a minute.
     let started = std::time::Instant::now();
     let nav = locator(session.profile());
 
@@ -202,7 +214,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
 
     let mut out = std::io::stdout();
     setup_region(&mut out, rows)?;
-    repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), &editor, cols, rows)?;
+    repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), level, &editor, cols, rows)?;
 
     let result = loop {
         tokio::select! {
@@ -213,7 +225,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                     out.write_all(b"\x1b8")?;
                     out.write_all(&bytes)?;
                     out.write_all(b"\x1b7")?;
-                    repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), &editor, cols, rows)?;
+                    repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), level, &editor, cols, rows)?;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(_) => break Ok(()), // disconnected
@@ -223,11 +235,14 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                 // rendered here — only the counters and the assist.
                 if let Ok(cor) = &ev {
                     if let crate::events::Event::Line(line) = &cor.event {
+                        if let Some(p) = crate::progress::level_progress(line) {
+                            level = Some(p);
+                        }
                         let before = exp.total();
                         exp.observe(line);
                         if exp.total() != before {
                             repaint(&mut out, &state_rx, target, farm.as_ref(), here,
-                                    exp.per_minute(started.elapsed()), &editor, cols, rows)?;
+                                    exp.per_minute(started.elapsed()), level, &editor, cols, rows)?;
                         }
                     }
                     // While a farm runs it owns the connection outright;
@@ -261,8 +276,16 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                 if changed.is_err() { break Ok(()); }
                 if let (Some(nav), Some(room)) = (nav.as_ref(), state_rx.borrow().room.clone()) {
                     here = track(nav, here, &room).or(here);
+                    // The shadow model keys identity on the printed name
+                    // unless somebody can do better, and here somebody
+                    // can: the locator already resolved this block to an
+                    // id for the status bar. Without it, walking between
+                    // Newhaven's twin Narrow Roads reads as a re-render.
+                    if let Some(id) = here {
+                        model.note_room(id);
+                    }
                 }
-                repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), &editor, cols, rows)?;
+                repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), level, &editor, cols, rows)?;
             }
             // The bar must follow the runner, not just HP: travelling and
             // fighting can pass without a single point of damage.
@@ -287,7 +310,14 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                     session.set_pace(std::time::Duration::ZERO);
                     note(&mut out, &format!("-- farm ended: {why} --"))?;
                 }
-                repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), &editor, cols, rows)?;
+                repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), level, &editor, cols, rows)?;
+            }
+            _ = level_tick.tick() => {
+                // Unattributed by design: the correlator has no reply
+                // grammar for `exp` (it is Opaque), so it simply expires.
+                // The answer is recognised by its own wording, whoever
+                // asked, which also picks up an `exp` the operator types.
+                session.send("exp");
             }
             ev = key_rx.recv() => {
                 let Some(ev) = ev else { break Ok(()) };
@@ -296,7 +326,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                         cols = w;
                         rows = h;
                         setup_region(&mut out, rows)?;
-                        repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), &editor, cols, rows)?;
+                        repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), level, &editor, cols, rows)?;
                     }
                     TermEvent::Key(key) if key.kind != KeyEventKind::Release => {
                         let was = passthrough;
@@ -353,7 +383,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                             out.write_all(note.as_bytes())?;
                             out.write_all(b"\x1b7")?;
                         }
-                        repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), &editor, cols, rows)?;
+                        repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), level, &editor, cols, rows)?;
                     }
                     _ => {}
                 }
@@ -546,13 +576,14 @@ fn redraw_bottom(
     phase: Option<&crate::farm::Phase>,
     room_id: Option<mud_core::content::RoomId>,
     exp_per_min: Option<i64>,
+    level: Option<crate::progress::LevelProgress>,
     editor: &InputEditor,
     cols: u16,
     rows: u16,
 ) -> std::io::Result<()> {
     let status_row = rows.saturating_sub(1).max(1);
     let input_row = rows.max(1);
-    let status = render_status(state, target, phase, room_id, exp_per_min, cols as usize);
+    let status = render_status(state, target, phase, room_id, exp_per_min, level, cols as usize);
     let line = editor.line();
     let cursor_col = 3 + editor.cursor() as u16;
     out.write_all(
@@ -579,6 +610,7 @@ pub fn render_status(
     phase: Option<&crate::farm::Phase>,
     room_id: Option<mud_core::content::RoomId>,
     exp_per_min: Option<i64>,
+    level: Option<crate::progress::LevelProgress>,
     width: usize,
 ) -> String {
     let mut s = String::new();
@@ -597,6 +629,16 @@ pub fn render_status(
     }
     if let Some(rate) = exp_per_min {
         s.push_str(&format!(" | {rate} xp/min"));
+    }
+    // How long until the next level, at the rate we are actually
+    // earning. Refreshed on its own timer, so it goes stale between
+    // ticks rather than jittering with every kill.
+    if let Some(p) = level {
+        s.push_str(&format!(
+            " | L{} {}",
+            p.level,
+            crate::progress::eta_label(p.needed, exp_per_min)
+        ));
     }
     s.push_str(&format!(" | {target}"));
     // Defence in depth: nothing painted into a fixed row may contain a
@@ -724,6 +766,7 @@ fn repaint(
     farm: Option<&FarmSession>,
     here: Option<mud_core::content::RoomId>,
     exp_per_min: Option<i64>,
+    level: Option<crate::progress::LevelProgress>,
     editor: &InputEditor,
     cols: u16,
     rows: u16,
@@ -741,6 +784,7 @@ fn repaint(
         phase.as_ref(),
         room_id,
         exp_per_min,
+        level,
         editor,
         cols,
         rows,

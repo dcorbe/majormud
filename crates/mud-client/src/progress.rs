@@ -14,6 +14,10 @@
 //! character is, what it is fighting, what it killed, what its HP is
 //! doing — and `watch` is the firehose, every line the board sent.
 
+use std::sync::LazyLock;
+
+use regex::Regex;
+
 use crate::events::{Actor, Event};
 
 /// Lines that are worth showing even in the quiet feed, because each one
@@ -178,5 +182,68 @@ impl ExpMeter {
             return None;
         }
         Some((self.total as f64 * 60.0 / secs).round() as i64)
+    }
+}
+
+/// The board's own answer to `exp`, which is where "how long to level"
+/// comes from.
+///
+/// Nothing here reimplements the experience curve. It is class- and
+/// race-seeded (`seed = 10 * (base + 100)` with a 26-entry ratio table,
+/// `re/docs/records.md`), it needs the character's class, race and level
+/// — none of which the client parses — and the board already computes
+/// it exactly. Asking is cheaper and cannot drift from the server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LevelProgress {
+    pub exp: i64,
+    pub level: i32,
+    /// Experience still owed before the next level can be trained. Zero
+    /// means the character can train right now.
+    pub needed: i64,
+}
+
+static EXP_REPORT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"Exp:\s*([\d,]+)\s+Level:\s*(\d+)\s+Exp needed for next level:\s*([\d,]+)",
+    )
+    .unwrap()
+});
+
+fn count(s: &str) -> Option<i64> {
+    s.replace(',', "").parse().ok()
+}
+
+/// VERIFIED against the live board (mbbs, 2026-08-01):
+/// `Exp: 57209 Level: 3 Exp needed for next level: 0 (10083) [572%]`
+pub fn level_progress(line: &str) -> Option<LevelProgress> {
+    let c = EXP_REPORT_RE.captures(line)?;
+    Some(LevelProgress {
+        exp: count(&c[1])?,
+        level: c[2].parse().ok()?,
+        needed: count(&c[3])?,
+    })
+}
+
+/// How long at the current rate, short enough for the status bar.
+///
+/// Honest about what it does not know: no rate yet (the first minute of
+/// any run, and after every death resets the meter) gives `?` rather
+/// than a fabricated number, and a crawl is capped rather than printed
+/// to false precision.
+pub fn eta_label(needed: i64, per_minute: Option<i64>) -> String {
+    if needed <= 0 {
+        return "ready".to_string();
+    }
+    let Some(rate) = per_minute.filter(|r| *r > 0) else {
+        return "?".to_string();
+    };
+    let mins = needed / rate;
+    if mins >= 99 * 60 {
+        return ">99h".to_string();
+    }
+    if mins >= 60 {
+        format!("{}h{}m", mins / 60, mins % 60)
+    } else {
+        format!("{mins}m")
     }
 }

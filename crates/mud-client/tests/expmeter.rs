@@ -53,3 +53,66 @@ fn a_grouped_number_still_counts() {
     m.observe("You gain 1,250 experience.");
     assert_eq!(m.total(), 1250);
 }
+
+// ---------------------------------------------------------------------
+// Time to level. The board does the hard part: `exp` reports the total,
+// the level, and how much more is needed, so nothing here reimplements
+// the experience curve (which is class- and race-seeded — records.md).
+// ---------------------------------------------------------------------
+
+use mud_client::progress::{eta_label, level_progress};
+
+/// Verbatim from the live board (mbbs, 2026-08-01).
+const LINE: &str = "Exp: 57209 Level: 3 Exp needed for next level: 0 (10083) [572%]";
+
+#[test]
+fn reads_the_boards_experience_report() {
+    let p = level_progress(LINE).expect("should parse");
+    assert_eq!(p.exp, 57209);
+    assert_eq!(p.level, 3);
+    assert_eq!(p.needed, 0);
+}
+
+#[test]
+fn a_line_that_is_not_the_report_parses_to_nothing() {
+    assert!(level_progress("You gain 6 experience.").is_none());
+}
+
+/// Big numbers wear thousands separators on some boards; the count is
+/// the point, not the punctuation.
+#[test]
+fn thousands_separators_do_not_defeat_it() {
+    let p = level_progress("Exp: 1,234,567 Level: 24 Exp needed for next level: 89,000 (1,300,000) [94%]")
+        .expect("should parse");
+    assert_eq!(p.exp, 1_234_567);
+    assert_eq!(p.needed, 89_000);
+}
+
+/// Nothing left to earn: the character can train now, and a duration
+/// would be a lie.
+#[test]
+fn no_experience_needed_reads_as_ready() {
+    assert_eq!(eta_label(0, Some(500)), "ready");
+}
+
+/// A rate of nothing gives no estimate rather than infinity. This is the
+/// common case for the first minute of a run and after every death.
+#[test]
+fn without_a_rate_there_is_no_estimate() {
+    assert_eq!(eta_label(10_000, None), "?");
+    assert_eq!(eta_label(10_000, Some(0)), "?");
+}
+
+#[test]
+fn an_estimate_reads_in_hours_and_minutes() {
+    assert_eq!(eta_label(6_000, Some(100)), "1h0m");
+    assert_eq!(eta_label(4_500, Some(100)), "45m");
+    assert_eq!(eta_label(7_200, Some(100)), "1h12m");
+}
+
+/// A crawl must not print a number that implies precision it has not
+/// got, and must not overflow the bar.
+#[test]
+fn an_absurd_estimate_is_capped() {
+    assert_eq!(eta_label(10_000_000, Some(1)), ">99h");
+}
