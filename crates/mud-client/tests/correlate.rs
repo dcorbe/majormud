@@ -854,3 +854,33 @@ fn an_empty_send_never_matches_and_never_evicts() {
     assert_eq!(ans(&mut c, line("n"), t), Some(CmdId(1)));
     assert_eq!(ans(&mut c, room("Dungeon, Entrance"), t), Some(CmdId(1)));
 }
+
+/// Live incident (cwgaming board, 2026-08-01): the operator's
+/// hand-typed `n` mid-door-work was answered "The door is closed." —
+/// a PERIOD, where stock's move refusal carries a bang — so the entry
+/// never retired, lingered at the head of the FIFO, and claimed the
+/// navigator's arrival block. The walk then discarded its own arrival
+/// as somebody else's answer and timed out a room behind itself.
+/// Foreign reimplementations soften wordings; the refusal family
+/// accepts both terminators.
+#[test]
+fn a_door_refusal_with_a_period_retires_the_move() {
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+
+    c.sent(CmdId(1), "n", t); // the operator's own n
+    assert_eq!(ans(&mut c, line("n"), t), Some(CmdId(1)));
+    assert_eq!(
+        ans(&mut c, line("The door is closed."), t),
+        Some(CmdId(1)),
+        "the softened refusal must retire the move"
+    );
+
+    c.sent(CmdId(2), "n", t); // the navigator's step
+    assert_eq!(ans(&mut c, line("n"), t), Some(CmdId(2)));
+    assert_eq!(
+        ans(&mut c, room("Dungeon, Entrance"), t),
+        Some(CmdId(2)),
+        "the block belongs to the step, not to a stale refusal"
+    );
+}

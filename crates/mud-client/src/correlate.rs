@@ -215,8 +215,17 @@ fn completes(kind: Kind, ev: &Event) -> bool {
         Kind::Move => {
             has(DARK)
                 || has("no exit in that direction")
+                // Both terminators: stock's _move_user prints the bang;
+                // foreign reimplementations soften it to a period (live,
+                // cwgaming 2026-08-01 — the unretired move then claimed
+                // the navigator's arrival block and the walk timed out a
+                // room behind itself). The period variant cannot collide
+                // with the LOOK refusal: that wording continues "...in
+                // that direction!" and never carries the period.
                 || has("the door is closed!")
+                || has("the door is closed.")
                 || has("the gate is closed!")
+                || has("the gate is closed.")
                 || has("closed door in that direction")
                 || has("may not enter that room while in combat")
                 || has("may not enter that room during a retaliation")
