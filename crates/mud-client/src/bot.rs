@@ -512,6 +512,16 @@ impl Bot {
         room.also_here.iter().any(|name| self.would_attack(name))
     }
 
+    /// Does this room list cash the policy would sweep? Coins only — an
+    /// item wearing a denomination word has no leading count. Predicate
+    /// only, like [`Bot::has_target`]: the travel guard asks it about
+    /// arrival blocks, and the acting bot's once-per-visit memo is not
+    /// consulted — whether a pile is worth STOPPING for and whether this
+    /// instance already tried it are different questions.
+    pub fn has_loot(&self, room: &crate::events::RoomView) -> bool {
+        self.config.auto_get && room.items.iter().any(|entry| COIN_PILE_RE.is_match(entry))
+    }
+
     /// Would we swing at this name at all? The toggle, the case rule that
     /// tells a monster from a player, the ignore list, and the set of
     /// targets the board has already refused.

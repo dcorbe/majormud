@@ -1167,7 +1167,11 @@ impl crate::nav::TravelGuard for FarmGuard {
 
     fn on_room(&mut self, room: &crate::events::RoomView) -> Option<crate::nav::Interrupt> {
         let bot = self.sight.as_ref()?;
-        bot.has_target(room)
+        // A listed coin pile is work exactly like a listed monster: the
+        // defence pump this trips sweeps it (fight first if both), and
+        // the pile's own listing is what proves it was worth stopping.
+        // Walking past left money on the floor for whoever came next.
+        (bot.has_target(room) || bot.has_loot(room))
             .then(|| crate::nav::Interrupt::Sighted { room: room.clone() })
     }
 }

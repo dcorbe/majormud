@@ -45,6 +45,15 @@ fn room_block_hp(name: &str, also_here: Option<&str>, exits: &str, hp: i32) -> S
     format!("\r\n\x1b[1;36m{name}\r\n{also}Obvious exits: {exits}\r\n[HP={hp}/MA=0]:")
 }
 
+/// A block with floor loot: the "You notice ... here." line rides
+/// inside the render, before the exits, as the live captures show.
+fn room_block_items(name: &str, items: &[&str], exits: &str) -> String {
+    format!(
+        "\r\n\x1b[1;36m{name}\r\nYou notice {} here.\r\nObvious exits: {exits}\r\n[HP=30/MA=0]:",
+        items.join(", ")
+    )
+}
+
 /// Guard Post -> Inner Ward -> Keep, one straight corridor. The entry
 /// happens at Inner Ward — mid-leg, not at the stop — so the defence
 /// has to fire from the walk, not from the stop pump.
@@ -391,5 +400,92 @@ async fn a_rest_contested_by_an_arrival_defends_instead_of_dozing() {
     assert!(
         rest < attack && attack < depart,
         "defence out of order: {log:?}"
+    );
+}
+
+/// Money on a travel leg: the arrival block lists a pile, the walk
+/// stops exactly as it would for a monster, the defence pump sweeps the
+/// coins, and the lap finishes. Coins never spend the emergency budget.
+#[tokio::test]
+async fn a_pile_on_a_travel_leg_is_swept_without_losing_the_lap() {
+    let (addr, received) = scripted_board(vec![
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        (
+            "look",
+            format!("\r\nlook{}", room_block("Guard Post", None, "north")),
+        ),
+        // The leg's first step arrives on a room with cash on the floor.
+        (
+            "n",
+            format!(
+                "\r\nn{}",
+                room_block_items("Inner Ward", &["49 copper farthings"], "north south")
+            ),
+        ),
+        (
+            "get copper",
+            "\r\nget copper\r\nYou picked up 49 copper farthings\r\n[HP=30/MA=0]:".into(),
+        ),
+        // No re-look scripted: the seeded arrival block already proves
+        // the room holds no work, so the pump ends the moment the sweep
+        // is queued and the leg resumes directly.
+        ("n", format!("\r\nn{}", room_block("Keep", None, "south"))),
+        ("look", format!("\r\nlook{}", room_block("Keep", None, "south"))),
+    ])
+    .await;
+    let session = session_for(addr).await;
+
+    let graph = corridor();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/3".into()],
+        loops: 1,
+        idle_poke_ms: 500,
+        depart_at_percent: 0,
+        travel_interrupts: 0,
+        ..FarmConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig {
+        auto_combat: true,
+        auto_get: true,
+        max_hp: 30,
+        ..BotConfig::default()
+    };
+
+    let (end, stats) = match tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, &bot, &cfg, None),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    {
+        Ok(out) => out,
+        Err(e) => panic!(
+            "the run must survive the pile: {e:?}\nboard received: {:?}",
+            received.lock().unwrap()
+        ),
+    };
+
+    assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
+    assert_eq!(
+        stats.interrupts, 0,
+        "loot must never spend the emergency budget: {stats:?}"
+    );
+
+    let log = received.lock().unwrap();
+    let first_n = log.iter().position(|l| l == "n").expect("first step");
+    let get = log
+        .iter()
+        .position(|l| l == "get copper")
+        .unwrap_or_else(|| panic!("the pile was swept: {log:?}"));
+    let second_n = log.iter().rposition(|l| l == "n").expect("the leg resumed");
+    assert!(
+        first_n < get && get < second_n,
+        "sweep out of order: {log:?}"
     );
 }

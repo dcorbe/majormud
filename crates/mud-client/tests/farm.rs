@@ -2138,3 +2138,41 @@ fn burn_out_wordings_and_the_extinguish_command() {
     assert!(l.lit());
     assert_eq!(l.extinguish(), None);
 }
+
+/// Cash on the way is work on the way: a leg that walks past a listed
+/// pile leaves money on the floor for whoever comes next. A pile trips
+/// the sighting guard exactly like a monster, and the same defence pump
+/// sweeps it — coins only, and only when the policy actually loots
+/// (auto_get, and a sighting bot attached at all).
+#[test]
+fn a_coin_pile_on_the_way_trips_a_sighting_guard() {
+    let mut g = guard(100, 50).sighting(Bot::new(BotConfig {
+        auto_combat: true,
+        auto_get: true,
+        ..BotConfig::default()
+    }));
+    let pile = RoomView {
+        name: "Newhaven, Arena".into(),
+        items: vec!["11 silver nobles".into(), "49 copper farthings".into()],
+        ..RoomView::default()
+    };
+    match g.on_room(&pile) {
+        Some(Interrupt::Sighted { room }) => assert_eq!(room, pile),
+        other => panic!("expected Sighted, got {other:?}"),
+    }
+    // An item wearing a coin name has no count and is somebody's gear.
+    let gear = RoomView {
+        name: "Newhaven, Arena".into(),
+        items: vec!["silver holy amulet".into()],
+        ..RoomView::default()
+    };
+    assert_eq!(g.on_room(&gear), None);
+    // auto_get off: the pile is not this policy's business.
+    let mut no_loot = guard(100, 50).sighting(Bot::new(BotConfig {
+        auto_combat: true,
+        ..BotConfig::default()
+    }));
+    assert_eq!(no_loot.on_room(&pile), None);
+    // No predicate attached (recover, the walk home): inert.
+    assert_eq!(guard(100, 50).on_room(&pile), None);
+}
