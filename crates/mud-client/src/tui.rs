@@ -218,7 +218,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
 
     let mut out = std::io::stdout();
     setup_region(&mut out, rows)?;
-    repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), level, &editor, cols, rows)?;
+    repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
 
     let result = loop {
         tokio::select! {
@@ -229,7 +229,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                     out.write_all(b"\x1b8")?;
                     out.write_all(&bytes)?;
                     out.write_all(b"\x1b7")?;
-                    repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), level, &editor, cols, rows)?;
+                    repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(_) => break Ok(()), // disconnected
@@ -255,7 +255,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                         exp.observe(line);
                         if exp.total() != before {
                             repaint(&mut out, &state_rx, target, farm.as_ref(), here,
-                                    exp.per_minute(started.elapsed()), level, &editor, cols, rows)?;
+                                    exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
                         }
                     }
                     // While a farm runs it owns the connection outright;
@@ -298,7 +298,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                         model.note_room(id);
                     }
                 }
-                repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), level, &editor, cols, rows)?;
+                repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
             }
             // The bar must follow the runner, not just HP: travelling and
             // fighting can pass without a single point of damage.
@@ -323,7 +323,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                     session.set_pace(std::time::Duration::ZERO);
                     note(&mut out, &format!("-- farm ended: {why} --"))?;
                 }
-                repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), level, &editor, cols, rows)?;
+                repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
             }
             _ = level_tick.tick() => {
                 // Only while a game is actually running — see `in_realm`.
@@ -342,7 +342,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                         cols = w;
                         rows = h;
                         setup_region(&mut out, rows)?;
-                        repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), level, &editor, cols, rows)?;
+                        repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
                     }
                     TermEvent::Key(key) if key.kind != KeyEventKind::Release => {
                         let was = passthrough;
@@ -399,7 +399,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                             out.write_all(note.as_bytes())?;
                             out.write_all(b"\x1b7")?;
                         }
-                        repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), level, &editor, cols, rows)?;
+                        repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
                     }
                     _ => {}
                 }
@@ -593,13 +593,14 @@ fn redraw_bottom(
     room_id: Option<mud_core::content::RoomId>,
     exp_per_min: Option<i64>,
     level: Option<crate::progress::LevelProgress>,
+    assist: bool,
     editor: &InputEditor,
     cols: u16,
     rows: u16,
 ) -> std::io::Result<()> {
     let status_row = rows.saturating_sub(1).max(1);
     let input_row = rows.max(1);
-    let status = render_status(state, target, phase, room_id, exp_per_min, level, cols as usize);
+    let status = render_status(state, target, phase, room_id, exp_per_min, level, assist, cols as usize);
     let line = editor.line();
     let cursor_col = 3 + editor.cursor() as u16;
     out.write_all(
@@ -620,6 +621,10 @@ fn redraw_bottom(
 /// are optional and simply absent when a person is driving: there is no
 /// activity to report, and no room id, because the board only ever prints
 /// a room's NAME — the number comes from the runner or the graph.
+// Every field is an independent fact about the session and the bar is
+// the one place they meet; grouping them into a struct would exist only
+// to satisfy the lint. Same call as `repaint` and `redraw_bottom` above.
+#[allow(clippy::too_many_arguments)]
 pub fn render_status(
     state: &GameState,
     target: &str,
@@ -627,11 +632,20 @@ pub fn render_status(
     room_id: Option<mud_core::content::RoomId>,
     exp_per_min: Option<i64>,
     level: Option<crate::progress::LevelProgress>,
+    assist: bool,
     width: usize,
 ) -> String {
     let mut s = String::new();
+    // Who is driving the character. A farm outranks the assist because
+    // it owns the connection outright while it runs; the assist only
+    // acts when no farm does. Saying nothing when the assist is on is
+    // what made a self-ended farm indistinguishable from a running one,
+    // and sent the operator hunting a Ctrl-F regression that was not
+    // there (2026-08-01).
     if let Some(phase) = phase {
         s.push_str(&format!("{} | ", phase.label()));
+    } else if assist {
+        s.push_str("assist | ");
     }
     s.push_str(&format!("HP {}", state.hp));
     if let Some(ma) = state.mana {
@@ -651,8 +665,9 @@ pub fn render_status(
     // ticks rather than jittering with every kill.
     if let Some(p) = level {
         s.push_str(&format!(
-            " | L{} {}",
+            " | L{}->{} {}",
             p.level,
+            p.level + 1,
             crate::progress::eta_label(p.needed, exp_per_min)
         ));
     }
@@ -783,6 +798,7 @@ fn repaint(
     here: Option<mud_core::content::RoomId>,
     exp_per_min: Option<i64>,
     level: Option<crate::progress::LevelProgress>,
+    assist: bool,
     editor: &InputEditor,
     cols: u16,
     rows: u16,
@@ -801,6 +817,7 @@ fn repaint(
         room_id,
         exp_per_min,
         level,
+        assist,
         editor,
         cols,
         rows,

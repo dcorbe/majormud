@@ -298,6 +298,9 @@ fn farm_command(
                             // the bar is a progress feed, not a session
                             // the operator is sitting in front of.
                             None,
+                            // Headless: the runner IS the driver, and
+                            // its phase already says so.
+                            false,
                             cols,
                         )
                     };
