@@ -27,6 +27,28 @@ pub fn says(name: &str, what: &str) -> String {
 /// VERIFIED (DLL): moving where no exit exists.
 pub const NO_EXIT: &str = "There is no exit in that direction!";
 
+/// `_CAN_SEE`'s refusal (0xDF37E) — VERIFIED; NO trailing period. `%s`
+/// is the light band the level falls in. Colors ORACLE-OPEN: emitted
+/// plain, like [`NO_EXIT`].
+pub fn room_too_dark(band: &str) -> String {
+    format!("The room is {band} - you can't see anything")
+}
+
+/// The light-band descriptor table (strings 0xBDFD6..0xBE01B, VERIFIED),
+/// fenceposts from `_GET_LIGHT_LEVEL`'s band walk (-0xc9/-0x97/-0x65/
+/// -1/199/899). Levels arrive capped at 900; the >= 900 too-bright band
+/// is ORACLE-OPEN and unreachable under the cap.
+pub fn light_band(level: i32) -> &'static str {
+    match level {
+        ..=-201 => "pitch black",
+        -200..=-151 => "very dark",
+        -150..=-101 => "barely visible",
+        -100..=-1 => "dimly lit",
+        0..=199 => "Regular Light",
+        _ => "Daylight",
+    }
+}
+
 /// VERIFIED (DLL): the exits-line prefix and empty-exits marker.
 pub const OBVIOUS_EXITS: &str = "Obvious exits: ";
 pub const NO_EXITS: &str = "NONE!!!";

@@ -10085,6 +10085,11 @@ impl Core {
     /// `cmd_hide` with no argument (theft.md §11.2): the self-hide.
     /// No PerStealth shortcut here, unlike SNEAK.
     fn hide_command(&mut self, session: SessionId) {
+        // _CMD_HIDE (63822) is a _CAN_SEE gated caller; checked before
+        // the being-fought fake failure (ordering ORACLE-OPEN).
+        if !self.check_can_see(session) {
+            return;
+        }
         // Same unported `monster_could_attack` gate as `sneak_command`
         // (the 62023 caller) — see the note there for the full
         // four-caller inventory and the pet exemption that rides along.
@@ -10236,6 +10241,12 @@ impl Core {
     /// nothing. Hidden type-6 exit reveal rides the DISARM/trap-state
     /// pass. Non-directions are refused.
     fn search_command(&mut self, session: SessionId, args: &str) {
+        // _CMD_SEARCH (51201) is a _CAN_SEE gated caller. Gated before
+        // the delay and the room broadcast — a searcher who cannot see
+        // announces nothing (ordering ORACLE-OPEN).
+        if !self.check_can_see(session) {
+            return;
+        }
         self.add_delay(session, 1);
         let word = args.trim().to_ascii_lowercase();
         if word.is_empty() {
@@ -10912,6 +10923,10 @@ impl Core {
     /// The DLL's worn-single-copy rule is unreachable here (our worn
     /// gear lives outside the inventory vec).
     fn hide_stash_command(&mut self, session: SessionId, args: &str) {
+        // The stash arm of _CMD_HIDE (63822) shares its _CAN_SEE gate.
+        if !self.check_can_see(session) {
+            return;
+        }
         if self.delay_blocked(session) {
             return;
         }
@@ -16612,8 +16627,50 @@ impl Core {
         }
     }
 
+    /// `_GET_LIGHT_LEVEL` (1008:d672, decompile 8088): the room's
+    /// ambient light, plus the viewer's own Illu, plus — from EVERY
+    /// player standing in the room — their lit-item light (char+0xcc,
+    /// arrives with the `light` command) and their dynamic RoomIllu
+    /// (char+0x6ad). The +0x6ad wiring is INFERRED (jump table 39598
+    /// unrecoverable): here it is derived live from the ability query,
+    /// whose value-0 rule already yields a spell slot's rolled
+    /// magnitude. Capped at 900; BlindingLight (0x35) adds AFTER the
+    /// cap — ORACLE-OPEN, skipped.
+    fn light_level(&self, session: SessionId) -> i32 {
+        let player = self.player(session);
+        let here = player.location;
+        let mut level = i32::from(self.content.rooms[&here].light);
+        level += self.quest_ability_value(session, Ability::Illu);
+        let occupants: Vec<SessionId> = self
+            .in_game_sessions()
+            .filter(|(_, p)| p.location == here)
+            .map(|(id, _)| id)
+            .collect();
+        for occupant in occupants {
+            level += self.quest_ability_value(occupant, Ability::RoomIllu);
+        }
+        level.min(900)
+    }
+
+    /// `_CAN_SEE` (decompile 66340): below -150 the viewer is told
+    /// "The room is %s - you can't see anything" and refused. Gates
+    /// room display, look, exits, search and hide — NOT movement,
+    /// attack or get: dark rooms are walked blind.
+    fn check_can_see(&mut self, session: SessionId) -> bool {
+        let level = self.light_level(session);
+        if level >= -150 {
+            return true;
+        }
+        let line = text::room_too_dark(text::light_band(level));
+        self.output_line(session, &line);
+        false
+    }
+
     /// The `exits` command: just the obvious-exits line (oracle).
     fn show_exits_line(&mut self, session: SessionId) {
+        if !self.check_can_see(session) {
+            return;
+        }
         let player = self.player(session);
         let room_id = player.location;
         let room = &self.content.rooms[&room_id];
@@ -16652,6 +16709,17 @@ impl Core {
             && let Some(Session::InGame { at_prompt, .. }) = self.sessions.get_mut(&session)
         {
             *at_prompt = false;
+        }
+
+        // The _CAN_SEE gate on _DISPLAY_ROOM_DESC (34796): the preamble
+        // above is still emitted — the screen step-off happens either
+        // way — but the room itself is replaced by the refusal.
+        let level = self.light_level(session);
+        if level < -150 {
+            out.push_str(&text::room_too_dark(text::light_band(level)));
+            out.push('\n');
+            self.output(session, &out);
+            return;
         }
 
         let player = self.player(session);
