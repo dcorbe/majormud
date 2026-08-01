@@ -157,6 +157,13 @@ impl Parser {
     }
 
     fn classify(&mut self, text_line: &str, opening: Option<&str>, events: &mut Vec<Event>) {
+        // A bare carriage return is a redraw, not text: foreign boards
+        // overwrite the dangling prompt with `\r` + erase-line where
+        // stock uses a newline (cwrun2.raw, cwgaming 2026-08-01), and
+        // the CR then rides at the head of the redrawn segment where it
+        // breaks every ^-anchored rule. No legitimate line starts with
+        // one.
+        let text_line = text_line.trim_start_matches('\r');
         // Room name: a 1;36-opened line starts (or restarts) a block.
         // Banner art also paints 1;36; the last name line before the
         // exits line wins.

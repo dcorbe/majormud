@@ -682,3 +682,26 @@ fn a_room_name_glued_to_a_redrawn_prompt_still_opens_the_block() {
         "the glued room block dissolved: {ev:?}"
     );
 }
+
+/// A foreign board's redraw (cwrun2.raw, mud.cwgaming.com 2026-08-01):
+/// the dangling prompt is overwritten with a bare `\r` + erase-line
+/// instead of stock's newline, so the redrawn text reaches the
+/// classifier with a leading carriage return — and every ^-anchored
+/// rule missed it. Live cost: NO ActorEntered ever fired on that board;
+/// mob entries during stops went unseen (the at-you whiff rule survived
+/// only because it anchors on the tail).
+#[test]
+fn a_line_redrawn_over_the_prompt_with_a_bare_cr_still_classifies() {
+    let mut p = Parser::new();
+    let mut ev = p.push(
+        "\x1b[0;37m[HP=\x1b[0;37m38\x1b[0;37m/MA=\x1b[0;37m8\x1b[0;37m]:\r\x1b[2K\x1b[79D\x1b[K\x1b[0;36mA small carrion beast creeps in the room from nowhere.\x1b[0m\r\n",
+    );
+    ev.extend(p.finish());
+    assert!(
+        ev.iter().any(|e| matches!(
+            e,
+            Event::ActorEntered { name, .. } if name == "small carrion beast"
+        )),
+        "{ev:?}"
+    );
+}
