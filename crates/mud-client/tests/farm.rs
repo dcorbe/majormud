@@ -682,6 +682,59 @@ fn the_guard_keeps_no_memory_between_trips() {
     assert_eq!(g.on_event(&prompt(20)), Some(Interrupt::Hurt { hp: 20 }));
 }
 
+/// The sighting predicate is the bot's own would-attack policy — the
+/// case rule, the ignore list, the auto_combat toggle — consulted
+/// through an attached Bot. Without one attached (recover, the walk
+/// home), a guard sights nothing whatever the block lists.
+#[test]
+fn a_sighting_guard_trips_only_for_something_the_bot_would_attack() {
+    let mut g = guard(100, 50).sighting(Bot::new(BotConfig {
+        auto_combat: true,
+        ..BotConfig::default()
+    }));
+    let rat = RoomView {
+        name: "Dungeon, Entrance".into(),
+        also_here: vec!["thin giant rat".into()],
+        ..RoomView::default()
+    };
+    match g.on_room(&rat) {
+        Some(Interrupt::Sighted { room }) => assert_eq!(room, rat),
+        other => panic!("expected Sighted, got {other:?}"),
+    }
+    // Players are capitalised; sighting one is not a fight we start.
+    let player = RoomView {
+        name: "Dungeon, Entrance".into(),
+        also_here: vec!["Kaimon".into()],
+        ..RoomView::default()
+    };
+    assert_eq!(g.on_room(&player), None);
+    // No predicate attached: structurally inert.
+    assert_eq!(guard(100, 50).on_room(&rat), None);
+}
+
+/// A template the board refused stops tripping for the whole run — the
+/// Refusals set is shared, so the guard learns it the moment the stop
+/// does, and the leg walks past instead of stopping to be refused again.
+#[test]
+fn a_refused_template_no_longer_trips_the_sighting_guard() {
+    let refused = mud_client::bot::Refusals::default();
+    refused.lock().unwrap().insert("rat".into());
+    let mut g = guard(100, 50).sighting(Bot::with_refusals(
+        BotConfig {
+            auto_combat: true,
+            ..BotConfig::default()
+        },
+        std::sync::Arc::new(mud_client::bot::ThreatTable::new()),
+        refused,
+    ));
+    let rat = RoomView {
+        name: "Dungeon, Entrance".into(),
+        also_here: vec!["thin giant rat".into()],
+        ..RoomView::default()
+    };
+    assert_eq!(g.on_room(&rat), None);
+}
+
 // ---------------------------------------------------------------------
 // The two travel thresholds have to agree, and the plan is where that
 // gets settled — before the client connects.
@@ -868,13 +921,17 @@ fn combat_bot() -> Bot {
     })
 }
 
-fn block_named(name: &str, also_here: &[&str]) -> Event {
-    Event::RoomSeen(RoomView {
+fn view_named(name: &str, also_here: &[&str]) -> RoomView {
+    RoomView {
         name: name.into(),
         exits: vec!["north".into()],
         also_here: also_here.iter().map(|s| s.to_string()).collect(),
         items: vec![],
-    })
+    }
+}
+
+fn block_named(name: &str, also_here: &[&str]) -> Event {
+    Event::RoomSeen(view_named(name, also_here))
 }
 
 fn block(also_here: &[&str]) -> Event {
@@ -1101,6 +1158,55 @@ fn being_hit_invalidates_the_room_block_but_swinging_does_not() {
         t0,
     );
     assert_eq!(stop.verdict(&bot, t0), Verdict::Ask, "something hit us");
+}
+
+/// The leg's final step already earned an attributed block describing
+/// the stop. Seeding it means the first swing goes out without the
+/// opening look — the live run spent a full round-trip re-asking for
+/// what the arrival render had just said.
+#[test]
+fn a_seeded_stop_needs_no_opening_look() {
+    let t0 = Instant::now();
+    let mut bot = combat_bot();
+    let mut stop = stop_state(0);
+    stop.seed(
+        view_named(STOP, &["giant rat"]),
+        &bot,
+        t0,
+    );
+    assert_eq!(
+        stop.verdict(&bot, t0),
+        Verdict::Busy,
+        "the seeded block lists a target; nothing needs asking"
+    );
+
+    // And a seeded EMPTY room needs no look either: with no linger the
+    // verdict is Empty on the evidence the traveller brought.
+    let mut stop = stop_state(0);
+    stop.seed(view_named(STOP, &[]), &bot, t0);
+    assert_eq!(stop.verdict(&bot, t0), Verdict::Empty);
+
+    // The pump's ordering contract: the bot is shown the block BEFORE
+    // the state folds it, so `engaged` reflects it — same as on_event.
+    let mut stop = stop_state(0);
+    bot.on_event(&block(&["giant rat"]));
+    stop.seed(view_named(STOP, &["giant rat"]), &bot, t0);
+    assert_eq!(stop.verdict(&bot, t0), Verdict::Busy);
+}
+
+/// Same discipline as pending_look: a block naming somewhere else
+/// describes somewhere else, however it arrived.
+#[test]
+fn a_seed_naming_somewhere_else_is_not_believed() {
+    let t0 = Instant::now();
+    let bot = combat_bot();
+    let mut stop = stop_state(0);
+    stop.seed(view_named("Somewhere Else", &["giant rat"]), &bot, t0);
+    assert_eq!(
+        stop.verdict(&bot, t0),
+        Verdict::Ask,
+        "a foreign block seeded nothing; the stop still has to ask"
+    );
 }
 
 /// A monster whiffing at us proves occupancy exactly like a blow landing:

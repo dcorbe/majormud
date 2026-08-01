@@ -448,6 +448,145 @@ async fn an_unarmed_guard_changes_nothing() {
     assert_eq!(at, RoomId { map: 1, room: 3 });
 }
 
+/// Sights a named room, but ONLY through the attributed-arrival hook —
+/// `on_event` stays quiet, which is the whole point of the split: the
+/// unfiltered stream is full of stale and foreign renders.
+struct SightsRoom(&'static str);
+
+impl TravelGuard for SightsRoom {
+    fn on_event(&mut self, _ev: &Event) -> Option<Interrupt> {
+        None
+    }
+    fn on_room(&mut self, room: &RoomView) -> Option<Interrupt> {
+        (room.name == self.0).then(|| Interrupt::Sighted { room: room.clone() })
+    }
+}
+
+/// The live incident this pins: a leg walked through "Also here: angry
+/// kobold thief, thin giant rat, large kobold thief." and kept sending
+/// steps while they attacked. A sighting must hand the walk back AT the
+/// room the block described, with the block carried in the interrupt so
+/// the caller can act on the evidence it already has.
+#[tokio::test]
+async fn a_sighted_room_is_reported_at_the_room_the_block_described() {
+    let server = start().await;
+    let session = logged_in_session(server.local_addr()).await;
+    let nav = Navigator::new(Arc::new(client_graph("Market Street")), NavConfig::default());
+
+    let err = nav
+        .goto(
+            &session,
+            RoomId { map: 1, room: 1 },
+            RoomId { map: 1, room: 3 },
+            &mut SightsRoom("Town Square"),
+        )
+        .await
+        .expect_err("the guard sighted something");
+
+    match &err.kind {
+        NavErrorKind::Interrupted(Interrupt::Sighted { room }) => {
+            assert_eq!(room.name, "Town Square");
+        }
+        other => panic!("expected Sighted, got {other:?}"),
+    }
+    assert_eq!(err.at, RoomId { map: 1, room: 2 });
+    let state = session.state().borrow().clone();
+    assert_eq!(
+        state.room.as_ref().map(|r| r.name.as_str()),
+        Some("Town Square"),
+        "the walk must stop where it sighted, not carry on"
+    );
+}
+
+/// A sighting at the destination is the stop's own arrival: the walk
+/// still hands back (with `at` = the target), so the caller can start
+/// the stop from the block instead of re-asking.
+#[tokio::test]
+async fn a_sighting_on_the_last_step_still_hands_back() {
+    let server = start().await;
+    let session = logged_in_session(server.local_addr()).await;
+    let nav = Navigator::new(Arc::new(client_graph("Market Street")), NavConfig::default());
+
+    let err = nav
+        .goto(
+            &session,
+            RoomId { map: 1, room: 1 },
+            RoomId { map: 1, room: 3 },
+            &mut SightsRoom("Market Street"),
+        )
+        .await
+        .expect_err("the guard sighted at the destination");
+
+    assert!(matches!(
+        err.kind,
+        NavErrorKind::Interrupted(Interrupt::Sighted { .. })
+    ));
+    assert_eq!(err.at, RoomId { map: 1, room: 3 });
+}
+
+/// The attribution pin. An answer to a command the walk is NOT waiting
+/// on — here a look sent before the walk began — must never reach the
+/// sighting hook, however truthfully it names a room. Every desync this
+/// family ever had came from believing somebody else's render.
+#[tokio::test]
+async fn a_stale_attributed_answer_is_not_a_sighting() {
+    let server = start().await;
+    let session = logged_in_session(server.local_addr()).await;
+    let nav = Navigator::new(Arc::new(client_graph("Market Street")), NavConfig::default());
+
+    // The board will answer this look with a Town Gates block while the
+    // first step is in flight; its answer carries the look's own id.
+    session.send("look");
+
+    let at = nav
+        .goto(
+            &session,
+            RoomId { map: 1, room: 1 },
+            RoomId { map: 1, room: 3 },
+            &mut SightsRoom("Town Gates"),
+        )
+        .await
+        .expect("a stale answer must not sight");
+    assert_eq!(at, RoomId { map: 1, room: 3 });
+}
+
+/// A recovery look (phantom exit -> "no exit" -> re-ask) answers with
+/// the room we are still standing in. If the guard sights there, the
+/// hand-back must name where we STAND — re-localization matched the
+/// block to `current` before the arming was honoured.
+#[tokio::test]
+async fn a_sighting_on_a_recovery_look_reports_where_we_stand() {
+    let server = start().await;
+    let session = logged_in_session(server.local_addr()).await;
+    let nav = Navigator::new(
+        Arc::new(graph_with_a_phantom_exit()),
+        NavConfig {
+            step_timeout_ms: 200,
+            ..NavConfig::default()
+        },
+    );
+
+    let err = nav
+        .goto(
+            &session,
+            RoomId { map: 1, room: 1 },
+            RoomId { map: 1, room: 3 },
+            &mut SightsRoom("Town Gates"),
+        )
+        .await
+        .expect_err("the recovery look names the sighted room");
+
+    assert!(
+        matches!(
+            err.kind,
+            NavErrorKind::Interrupted(Interrupt::Sighted { .. })
+        ),
+        "expected Sighted, got {:?}",
+        err.kind
+    );
+    assert_eq!(err.at, RoomId { map: 1, room: 1 });
+}
+
 // ---------------------------------------------------------------------
 // localize: which room is this, given where we were?
 //

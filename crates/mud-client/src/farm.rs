@@ -619,6 +619,29 @@ impl StopState {
         self.blind = false;
     }
 
+    /// Accept a block the traveller already earned: the answer to the
+    /// leg's final step, attributed to OUR command — the same discipline
+    /// `pending_look` enforces, settled before the stop opened. Without
+    /// this the stop re-asked the board for what the arrival render had
+    /// just said, one full round-trip before the first swing.
+    ///
+    /// Mirrors the `answers_look` acceptance arm field-for-field, and
+    /// like [`StopState::on_event`] it is called AFTER the bot has been
+    /// shown the same block. A block naming somewhere else seeds
+    /// nothing — however it arrived, it describes somewhere else.
+    pub fn seed(&mut self, room: crate::events::RoomView, bot: &crate::bot::Bot, now: Instant) {
+        if room.name != self.stop_name {
+            return;
+        }
+        self.blind = false;
+        if bot.has_target(&room) {
+            self.empty_since = None;
+        } else {
+            self.empty_since.get_or_insert(now);
+        }
+        self.seen = Some(Seen { room, at: now });
+    }
+
     /// Fold one attributed event. Call AFTER
     /// [`crate::bot::Bot::on_event`], so `engaged` and `has_target`
     /// already account for it.
@@ -930,6 +953,10 @@ pub struct FarmStats {
     pub slowdowns: u32,
     /// Legs stopped part-way by the travel guard.
     pub interrupts: u32,
+    /// Fights picked mid-leg because the arrival block listed a target.
+    /// Not emergencies: they never touch `travel_interrupts` and cannot
+    /// end a run TooHurt.
+    pub sightings: u32,
 }
 
 #[derive(Debug)]
@@ -984,6 +1011,10 @@ pub fn is_player_death(line: &str, username: &str) -> bool {
 /// Pure and stateless — events in, an interrupt or nothing out, no
 /// latches. The runner hands the same guard to a resumed leg, so a
 /// character that is still wounded has to be able to stop it again.
+/// The optional sighting bot is a PREDICATE, not a participant: it is
+/// consulted through [`crate::bot::Bot::has_target`] and never fed
+/// `on_event` (feeding it events while suppressing its commands would
+/// leave it believing it had swung — see [`run_farm`]'s travel notes).
 pub struct FarmGuard {
     max_hp: i32,
     hurt_at_percent: u32,
@@ -991,6 +1022,9 @@ pub struct FarmGuard {
     /// Stop and fight when something swings at us, rather than walking on
     /// while it does. On unless the caller explicitly wants to run.
     fight_back: bool,
+    /// Stop for rooms this bot would fight in. None (recover, the walk
+    /// home, `fight_while_travelling = false`) sights nothing.
+    sight: Option<crate::bot::Bot>,
 }
 
 impl FarmGuard {
@@ -1000,7 +1034,26 @@ impl FarmGuard {
             hurt_at_percent,
             username: username.to_string(),
             fight_back: true,
+            sight: None,
         }
+    }
+
+    /// Stop for rooms this bot would fight in — the live incident was a
+    /// leg walking straight through "Also here: angry kobold thief, thin
+    /// giant rat, large kobold thief." while they attacked. The bot is
+    /// consulted through `has_target` only, so the case rule, the ignore
+    /// list, `auto_combat`, and the run's learned refusals all apply.
+    pub fn sighting(mut self, bot: crate::bot::Bot) -> Self {
+        self.sight = Some(bot);
+        self
+    }
+
+    /// Walk past sightings for the rest of this leg. The runner calls
+    /// this when a room it already defended is still listed — deadline
+    /// expired, unkillable, or refused after the first swing — so the
+    /// leg moves on instead of looping.
+    pub fn stop_sighting(&mut self) {
+        self.sight = None;
     }
 
     /// As [`FarmGuard::new`], but walk past a fight instead of taking it.
@@ -1056,6 +1109,12 @@ impl crate::nav::TravelGuard for FarmGuard {
             } if self.fight_back => Some(Interrupt::Attacked { by: name.clone() }),
             _ => None,
         }
+    }
+
+    fn on_room(&mut self, room: &crate::events::RoomView) -> Option<crate::nav::Interrupt> {
+        let bot = self.sight.as_ref()?;
+        bot.has_target(room)
+            .then(|| crate::nav::Interrupt::Sighted { room: room.clone() })
     }
 }
 
@@ -1153,6 +1212,10 @@ async fn farm_loop(
             if let Some(end) = time_up(started, cfg) {
                 return Ok((end, stats));
             }
+            // The leg's final step may have carried the stop's own block
+            // out with it; the stop then starts from that evidence
+            // instead of re-asking the board.
+            let mut arrival = None;
             if current != stop {
                 match travel(
                     session,
@@ -1171,7 +1234,7 @@ async fn farm_loop(
                 )
                 .await?
                 {
-                    LegEnd::Arrived => {}
+                    LegEnd::Arrived { seen } => arrival = seen,
                     LegEnd::Died => return Ok((FarmEnd::Died, stats)),
                     LegEnd::TimeUp => return Ok((FarmEnd::TimeUp, stats)),
                     LegEnd::TooHurt => return Ok((FarmEnd::TooHurt, stats)),
@@ -1189,6 +1252,7 @@ async fn farm_loop(
                 cfg,
                 started,
                 None,
+                arrival,
                 &mut stats,
                 phase,
             )
@@ -1390,7 +1454,11 @@ async fn verify_start(
 
 /// How a leg ended.
 enum LegEnd {
-    Arrived,
+    /// At the stop. `seen` is the attributed arrival block when the
+    /// final step both described the stop and listed something worth
+    /// fighting — evidence the stop pump can start from instead of
+    /// re-asking the board.
+    Arrived { seen: Option<crate::events::RoomView> },
     Died,
     TimeUp,
     TooHurt,
@@ -1425,11 +1493,21 @@ async fn travel(
     set_phase(phase, Phase::WaitingToDepart);
 
     let mut guard = if cfg.fight_while_travelling {
+        // Sighting rides the same intent switch: "take fights on the
+        // way" covers a monster the arrival block LISTS, not only one
+        // that has already drawn blood. The bot is a predicate — never
+        // fed events — and shares the run's refusals, so a template the
+        // board refused stops tripping legs run-wide.
         FarmGuard::new(
             bot_config.max_hp,
             cfg.interrupt_at_percent,
             &session.profile().username,
         )
+        .sighting(crate::bot::Bot::with_refusals(
+            bot_config.clone(),
+            threat.clone(),
+            refusals.clone(),
+        ))
     } else {
         FarmGuard::running(
             bot_config.max_hp,
@@ -1438,6 +1516,11 @@ async fn travel(
         )
     };
     let mut budget = cfg.travel_interrupts;
+    // The one room this leg already defended on a sighting. A second
+    // sighting there means the defence did not clear it — deadline
+    // expired, unkillable, or refused mid-fight — and stopping again
+    // would loop, so the leg walks on past sightings from then on.
+    let mut last_sighted: Option<RoomId> = None;
 
     loop {
         if time_up(started, cfg).is_some() {
@@ -1449,7 +1532,7 @@ async fn travel(
         let err = match nav.goto(session, *current, stop, &mut guard).await {
             Ok(at) => {
                 *current = at;
-                return Ok(LegEnd::Arrived);
+                return Ok(LegEnd::Arrived { seen: None });
             }
             Err(e) => e,
         };
@@ -1461,6 +1544,46 @@ async fn travel(
 
         match err.kind {
             NavErrorKind::Interrupted(Interrupt::Died) => return Ok(LegEnd::Died),
+            // The arrival block listed something worth fighting. NOT an
+            // emergency: it never touches the interrupt budget and can
+            // never end a run TooHurt — it is the farm noticing work,
+            // where Hurt/Attacked are the farm noticing danger.
+            NavErrorKind::Interrupted(Interrupt::Sighted { room }) => {
+                // The destination itself: this IS the stop. Hand the
+                // evidence up so the stop starts from it.
+                if err.at == stop {
+                    return Ok(LegEnd::Arrived { seen: Some(room) });
+                }
+                if last_sighted == Some(err.at) {
+                    guard.stop_sighting();
+                    continue;
+                }
+                last_sighted = Some(err.at);
+                stats.sightings += 1;
+                let until = Instant::now() + Duration::from_secs(cfg.defend_seconds);
+                match farm_stop(
+                    session,
+                    nav,
+                    graph,
+                    err.at,
+                    bot_config,
+                    threat,
+                    refusals,
+                    light,
+                    cfg,
+                    started,
+                    Some(until),
+                    Some(room),
+                    stats,
+                    phase,
+                )
+                .await?
+                {
+                    StopEnd::Dwelt => continue,
+                    StopEnd::Died => return Ok(LegEnd::Died),
+                    StopEnd::TimeUp => return Ok(LegEnd::TimeUp),
+                }
+            }
             // Being swung at is handled exactly like being hurt: stop,
             // clear the room with the pump that already knows how to
             // fight, then resume the leg from where we stand.
@@ -1489,6 +1612,7 @@ async fn travel(
                     cfg,
                     started,
                     Some(until),
+                    None,
                     stats,
                     phase,
                 )
@@ -1578,6 +1702,10 @@ async fn farm_stop(
     started: Instant,
     // Hard cap on this stop, or None to stay until it goes quiet.
     until: Option<Instant>,
+    // The attributed block the leg's final step carried in, when it
+    // described this stop. Seeds the evidence so the first swing goes
+    // out without an opening look.
+    arrival: Option<crate::events::RoomView>,
     stats: &mut FarmStats,
     phase: PhaseSink<'_>,
 ) -> Result<StopEnd, FarmError> {
@@ -1600,6 +1728,21 @@ async fn farm_stop(
     let mut gate = Gate::new(backoff);
     let mut heal = HealWatch::new(bot_config, cfg);
     let mut seen = StopState::new(stop_name.clone(), cfg);
+
+    // The traveller's arrival block, believed under the same rule the
+    // pump applies at farm.rs's bot_sees: it was ATTRIBUTED — to the
+    // leg's final step rather than to a look — so the bot is shown it
+    // (engaging anything listed) and the state accepts it as evidence.
+    // Bot first, then state, matching on_event's contract. The window
+    // between goto accepting the block and the subscribe above can drop
+    // an ActorEntered — the same race the opening look always had — and
+    // the `recheck` shelf life forces the re-ask that bounds it.
+    if let Some(room) = arrival {
+        for crate::bot::BotAction::Send(cmd) in bot.on_event(&Event::RoomSeen(room.clone())) {
+            gate.push(cmd);
+        }
+        seen.seed(room, &bot, Instant::now());
+    }
 
     loop {
         if time_up(started, cfg).is_some() {
