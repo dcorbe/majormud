@@ -1100,3 +1100,110 @@ fn the_cooldown_does_not_hide_the_room_s_work() {
     bot.on_event(&room(&["thin giant rat"]));
     assert!(bot.has_target(&view(&["thin giant rat"])));
 }
+
+// ---------------------------------------------------------------------
+// Floor cash. The room render's "You notice ... here." line is the only
+// announcement money already on the ground ever gets — the drop line
+// exists only for a kill the bot just watched. Real board wordings
+// (oracle captures): "You notice 11 silver nobles, 49 copper farthings
+// here.", "You notice 24 platinum pieces, 43 gold crowns, silver holy
+// amulet here." — note the amulet: an ITEM wearing a denomination word.
+// ---------------------------------------------------------------------
+
+fn view_with_items(also_here: &[&str], items: &[&str]) -> RoomView {
+    RoomView {
+        items: items.iter().map(|s| s.to_string()).collect(),
+        ..view(also_here)
+    }
+}
+
+fn get_bot() -> Bot {
+    Bot::new(BotConfig {
+        auto_combat: true,
+        auto_get: true,
+        ..BotConfig::default()
+    })
+}
+
+#[test]
+fn sweeps_floor_coins_listed_by_the_room() {
+    let mut bot = get_bot();
+    let actions = bot.on_event(&Event::RoomSeen(view_with_items(
+        &[],
+        &["11 silver nobles", "49 copper farthings"],
+    )));
+    assert_eq!(
+        actions,
+        vec![
+            BotAction::Send("get silver".into()),
+            BotAction::Send("get copper".into()),
+        ]
+    );
+}
+
+/// Coins only. An item that merely starts with a denomination word
+/// ("silver holy amulet") has no count; an item is not ours to sweep —
+/// on somebody else's board that is somebody else's dropped gear.
+#[test]
+fn an_item_wearing_a_coin_name_is_not_cash() {
+    let mut bot = get_bot();
+    let actions = bot.on_event(&Event::RoomSeen(view_with_items(
+        &[],
+        &["silver holy amulet", "wooden hammer"],
+    )));
+    assert!(actions.is_empty(), "{actions:?}");
+}
+
+/// Fight first, loot after: a room with work engages and leaves the
+/// pile alone — the post-kill block lists it again, and THAT sweep is
+/// safe to stand still for.
+#[test]
+fn fights_before_looting() {
+    let mut bot = get_bot();
+    let actions = bot.on_event(&Event::RoomSeen(view_with_items(
+        &["giant rat"],
+        &["2968 copper farthings"],
+    )));
+    assert_eq!(actions, vec![BotAction::Send("a rat".into())]);
+}
+
+#[test]
+fn auto_get_off_leaves_the_floor_alone() {
+    let mut bot = combat_bot(); // auto_get defaults off
+    let actions = bot.on_event(&Event::RoomSeen(view_with_items(
+        &[],
+        &["2000 gold crowns"],
+    )));
+    assert!(actions.is_empty(), "{actions:?}");
+}
+
+/// One sweep per denomination per visit. A pile the character cannot
+/// carry (encumbrance refusal) stays listed in every subsequent block,
+/// and a bot that re-swept per block would `get` at the pacer floor
+/// forever. Leaving and coming back is a new visit and a new try; a
+/// fresh pile mid-stay is the drop line's job, which already pays once.
+#[test]
+fn sweeps_a_pile_once_per_visit() {
+    let mut bot = get_bot();
+    let heavy = || {
+        Event::RoomSeen(RoomView {
+            name: "Vault".into(),
+            items: vec!["2000 gold crowns".into()],
+            ..RoomView::default()
+        })
+    };
+    assert_eq!(
+        bot.on_event(&heavy()),
+        vec![BotAction::Send("get gold".into())]
+    );
+    assert!(bot.on_event(&heavy()).is_empty(), "re-swept a standing pile");
+    // Somewhere else and back: the visit ended, try again.
+    bot.on_event(&Event::RoomSeen(RoomView {
+        name: "Corridor".into(),
+        ..RoomView::default()
+    }));
+    assert_eq!(
+        bot.on_event(&heavy()),
+        vec![BotAction::Send("get gold".into())]
+    );
+}

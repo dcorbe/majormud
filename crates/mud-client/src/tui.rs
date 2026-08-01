@@ -156,6 +156,27 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     // whole session, not just while a farm is attached: a hand-played
     // stretch is worth measuring too.
     let mut exp = crate::progress::ExpMeter::default();
+    // The assist: a bot that fights and loots BESIDE the operator while
+    // no farm runs. Never heals or flees — movement and rest belong to
+    // the person holding the keyboard. `/bot` toggles it; the profile's
+    // `assist_play` starts it on. Rebuilt on every toggle-on so its
+    // latches start clean.
+    let mut assist: Option<crate::bot::Bot> = None;
+    let assist_config = {
+        let mut cfg = session.profile().bot.clone().unwrap_or(crate::bot::BotConfig {
+            // A profile without a [bot] table still gets a useful
+            // assist: attack and loot are the whole point of asking.
+            auto_combat: true,
+            auto_get: true,
+            ..Default::default()
+        });
+        cfg.auto_heal = false;
+        cfg.auto_flee = false;
+        cfg
+    };
+    if assist_config.assist_play {
+        assist = Some(crate::bot::Bot::new(assist_config.clone()));
+    }
     let started = std::time::Instant::now();
     let nav = locator(session.profile());
 
@@ -188,14 +209,34 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                 Err(_) => break Ok(()), // disconnected
             },
             ev = events.recv() => {
-                // Only for the counters; the display comes from raw
-                // passthrough, so nothing is rendered here.
-                if let Ok(crate::correlate::Correlated { event: crate::events::Event::Line(line), .. }) = &ev {
-                    let before = exp.total();
-                    exp.observe(line);
-                    if exp.total() != before {
-                        repaint(&mut out, &state_rx, target, farm.as_ref(), here,
-                                exp.per_minute(started.elapsed()), &editor, cols, rows)?;
+                // The display comes from raw passthrough, so nothing is
+                // rendered here — only the counters and the assist.
+                if let Ok(cor) = &ev {
+                    if let crate::events::Event::Line(line) = &cor.event {
+                        let before = exp.total();
+                        exp.observe(line);
+                        if exp.total() != before {
+                            repaint(&mut out, &state_rx, target, farm.as_ref(), here,
+                                    exp.per_minute(started.elapsed()), &editor, cols, rows)?;
+                        }
+                    }
+                    // While a farm runs it owns the connection outright;
+                    // the assist only drives a hand-played session. Room
+                    // blocks are believed under the runner's own rule
+                    // (farm.rs `bot_sees`): only a block that answers a
+                    // command — the operator's look or step included —
+                    // reaches the bot, so a stale or foreign render
+                    // cannot clear a latch or start a swing.
+                    if farm.is_none()
+                        && let Some(bot) = assist.as_mut()
+                    {
+                        let sees = !matches!(cor.event, crate::events::Event::RoomSeen(_))
+                            || cor.answers.is_some();
+                        if sees {
+                            for crate::bot::BotAction::Send(cmd) in bot.on_event(&cor.event) {
+                                session.send(&cmd);
+                            }
+                        }
                     }
                 }
             }
@@ -251,6 +292,17 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                     // flood control back off.
                                     session.set_pace(std::time::Duration::ZERO);
                                     note(&mut out, "-- farm stopped; you have the keyboard --")?;
+                                }
+                            }
+                            KeyOutcome::ToggleAssist => {
+                                if assist.take().is_none() {
+                                    // Fresh on every start: latches from
+                                    // an earlier stretch describe fights
+                                    // that are over.
+                                    assist = Some(crate::bot::Bot::new(assist_config.clone()));
+                                    note(&mut out, "-- bot assist on: fighting and looting beside you (/bot to stop) --")?;
+                                } else {
+                                    note(&mut out, "-- bot assist off --")?;
                                 }
                             }
                             KeyOutcome::Continue => {}
@@ -335,6 +387,7 @@ pub enum KeyOutcome {
     Quit,
     StartFarm,
     StopFarm,
+    ToggleAssist,
 }
 
 fn handle_key(
@@ -392,6 +445,7 @@ fn handle_key(
             match line.trim() {
                 "/quit" => return KeyOutcome::Quit,
                 "/farm" => return KeyOutcome::StartFarm,
+                "/bot" => return KeyOutcome::ToggleAssist,
                 _ => {
                     session.send(&line);
                 }

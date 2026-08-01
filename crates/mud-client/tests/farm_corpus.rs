@@ -313,7 +313,16 @@ fn emissions_flow_one_per_ack_and_never_wedge() {
     // the run4 wander-out shape), 6 of them re-emitted one block later
     // by the second-block expiry. Live, the stop keeps asking while the
     // monster stays listed, so a standing monster costs one extra look.
-    assert_eq!(total, 1969, "corpus gate throughput changed");
+    // -> 2040 when floor-cash sweeping landed: blocks whose notice line
+    // lists coin piles ("You notice 2968 copper farthings here.", all
+    // through the charm-lifecycle captures) now earn a `get <denom>`,
+    // once per denomination per room visit — the once-per-visit memo is
+    // what keeps an uncarryable pile from re-emitting per block. The
+    // sweep is the only emission source added since the 1969 pin (the
+    // departure-rest fix ran this suite clean at 1969, and the play
+    // assist lives in the TUI, which this replay never exercises), and
+    // it can emit nothing but gets by construction.
+    assert_eq!(total, 2040, "corpus gate throughput changed");
 }
 
 /// The gate invents nothing. Everything it emits was either a bot

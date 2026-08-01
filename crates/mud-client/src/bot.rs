@@ -16,6 +16,17 @@ use crate::events::Event;
 static COIN_DROP_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\d+ (\w+) drop to the ground\.$").unwrap());
 
+/// A coin pile as the room's "You notice ... here." line names one:
+/// "11 silver nobles", "2968 copper farthings". The leading count is the
+/// discriminator — an ITEM can wear a denomination word ("silver holy
+/// amulet", live in oracle_charm_lifecycle) but never a count. Items are
+/// deliberately not swept: on somebody else's board that is somebody
+/// else's dropped gear.
+static COIN_PILE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\d+ (copper|silver|gold|platinum|runic) (?:farthing|noble|crown|piece|coin)s?$")
+        .unwrap()
+});
+
 /// Tail shared by every monster death line ("The kobold thief falls to
 /// the ground with a shrill cry."); the wording after it is per-template.
 /// A player's death reads "<name> is dead." and is deliberately not
@@ -61,8 +72,10 @@ const ATTACK_REFUSALS: [&str; 3] = [
 pub struct BotConfig {
     pub auto_combat: bool,
     pub auto_heal: bool,
-    /// Pick up dropped coins. Floor *items* are not covered: the board
-    /// drops carried loot silently, so nothing announces them.
+    /// Pick up coins: piles announced by a kill's drop line, and piles
+    /// the room render's "You notice ... here." line lists. Floor
+    /// *items* are never taken — the board drops carried loot silently,
+    /// and on a shared board a listed item is somebody's gear.
     pub auto_get: bool,
     pub auto_flee: bool,
     /// Heal when hp% drops below this (needs `max_hp`).
@@ -105,6 +118,12 @@ pub struct BotConfig {
     /// What is left for this to cover is the case where no room block is
     /// coming at all — a dark room being the obvious one.
     pub combat_idle_prompts: u32,
+    /// Start `mmc play` with the assist bot already on. The assist is
+    /// the TUI's, not this struct's: it fights and loots beside the
+    /// operator while no farm runs (`/bot` toggles it live), and it
+    /// never heals or flees — movement and rest belong to the person
+    /// holding the keyboard.
+    pub assist_play: bool,
 }
 
 impl Default for BotConfig {
@@ -120,6 +139,7 @@ impl Default for BotConfig {
             ignore: Vec::new(),
             max_hp: 0,
             combat_idle_prompts: 12,
+            assist_play: false,
         }
     }
 }
@@ -237,6 +257,14 @@ pub struct Bot {
     /// listed blocks — a monster still there after two looks is not
     /// leaving, it is standing there.
     cooling: Option<(String, u32)>,
+    /// Coin denominations already swept this visit, keyed by the room
+    /// name the block carried. A pile the character cannot carry
+    /// (encumbrance refusal) stays listed in every block, and a bot
+    /// that re-swept per block would `get` at the pacer floor forever.
+    /// One try per denomination per visit; a fresh pile mid-stay is the
+    /// drop line's job. Name-keyed, so the same-named-twin hazard costs
+    /// a missed pile, never a loop.
+    swept: (String, HashSet<String>),
 }
 
 /// The set of targets the board has refused, shared across every bot a
@@ -271,6 +299,7 @@ impl Bot {
             room_has_work: false,
             refused,
             cooling: None,
+            swept: (String::new(), HashSet::new()),
         }
     }
 
@@ -368,10 +397,28 @@ impl Bot {
                     .filter(|(_, name)| self.attackable(name))
                     .max_by_key(|(i, name)| (self.threat_of(name), std::cmp::Reverse(*i)))
                     .map(|(_, name)| name.clone());
-                target
+                let mut actions: Vec<BotAction> = target
                     .and_then(|name| self.engage(&name))
                     .into_iter()
-                    .collect()
+                    .collect();
+                // Floor cash rides the same toggle as drop pickup. Only
+                // in a room with no work: standing over a pile mid-fight
+                // is how loot gets a character killed, and the post-kill
+                // block lists the pile again anyway.
+                if self.swept.0 != room.name {
+                    self.swept = (room.name.clone(), HashSet::new());
+                }
+                if self.config.auto_get && !self.room_has_work {
+                    for entry in &room.items {
+                        if let Some(c) = COIN_PILE_RE.captures(entry) {
+                            let denom = c[1].to_string();
+                            if self.swept.1.insert(denom.clone()) {
+                                actions.push(BotAction::Send(format!("get {denom}")));
+                            }
+                        }
+                    }
+                }
+                actions
             }
             Event::ActorEntered { name, .. } => {
                 // An arrival is affirmative evidence: a NEW instance
