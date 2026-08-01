@@ -1679,6 +1679,17 @@ async fn travel(
     }
 }
 
+/// The recast coherence rule, pure for testing: a faded light waits
+/// while the room holds a monster the bot would fight. Same policy as
+/// rest-safety — an occupied room gets the fight first (fighting blind
+/// is already the state we are in, and a mid-melee cast would be
+/// refused anyway); light comes when the room is cleared.
+pub fn recast_waits_for(bot: &crate::bot::Bot, here: &crate::world::Here) -> bool {
+    here.occupants
+        .iter()
+        .any(|o| matches!(o.kind, crate::world::OccupantKind::Monster) && bot.would_attack(&o.name))
+}
+
 /// Does this leg cross (or end in) a room the graph marks dark? Decided
 /// from the same route goto will compute (BFS is deterministic), so the
 /// walk can light up BEFORE stepping into darkness — standing still,
@@ -1868,6 +1879,11 @@ async fn farm_stop(
     let mut gate = Gate::new(backoff);
     let mut heal = HealWatch::new(bot_config, cfg);
     let mut seen = StopState::new(stop_name.clone(), cfg);
+    // The maintained room state — fed the same stream, one fold. Its
+    // first consumer is the recast coherence gate; StopState keeps its
+    // own hard-won evidence rules untouched until Here earns collapse.
+    let mut here = crate::world::Here::default();
+    here.room = Some(stop);
 
     // The traveller's arrival block, believed under the same rule the
     // pump applies at farm.rs's bot_sees: it was ATTRIBUTED — to the
@@ -1963,6 +1979,7 @@ async fn farm_stop(
             && gate.is_idle()
             && light.wants_recast()
             && (graph.dark(stop) || was_blind_this_visit)
+            && !recast_waits_for(&bot, &here)
             && let crate::sheet::LightAttempt::Send(cmd) = light.attempt(now, clock)
         {
             gate.push(cmd);
@@ -2017,6 +2034,8 @@ async fn farm_stop(
                 bot = crate::bot::Bot::with_refusals(bot_config.clone(), threat.clone(), refusals.clone());
                 gate = Gate::new(backoff);
                 seen.reset();
+                here.reset();
+                here.room = Some(stop);
                 None
             }
             Ok(Err(_)) => return Err(FarmError::Disconnected),
@@ -2085,6 +2104,8 @@ async fn farm_stop(
             gate = Gate::new(backoff);
             heal = HealWatch::new(bot_config, cfg);
             seen = StopState::new(stop_name.clone(), cfg);
+            here.reset();
+            here.room = Some(stop);
             continue;
         }
 
@@ -2113,6 +2134,7 @@ async fn farm_stop(
         // Folded last, so `engaged` and `has_target` already account for
         // this event when the next iteration asks for a verdict.
         seen.on_event(&cor, &bot, Instant::now());
+        here.on_event(&cor, Instant::now());
     }
 }
 

@@ -427,8 +427,10 @@ impl Bot {
     /// Says nothing about whether we are *already busy* — that is
     /// [`Bot::attackable`]. The split exists because "is this room worth
     /// staying in" and "should I attack this now" are different questions
-    /// and only the second one cares about the current fight.
-    fn would_attack(&self, name: &str) -> bool {
+    /// and only the second one cares about the current fight. Public
+    /// because the world-state consumers (the recast coherence gate) ask
+    /// the same question about maintained occupants.
+    pub fn would_attack(&self, name: &str) -> bool {
         self.config.auto_combat
             && is_attackable(name)
             && !self.is_refused(target_word(name))
