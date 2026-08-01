@@ -608,3 +608,190 @@ fn a_retained_light_survives_its_burn_out() {
         "survived at 0 uses: {shown:?}"
     );
 }
+
+// ---- Slice 5: starlight (spell 26) end to end ----
+
+use mud_core::content::{
+    Class, Element, MatchType, SaveClass, ScalePair, Spell, SpellId, TargetMode,
+};
+
+/// Record 26 mirrored: mana 4, spelltype 3 (benign self), duration 80 +
+/// durincrease(1,1) = 81 ticks at L1, (RoomIllu, 0) rolled at
+/// min=max=175, (DescMsg, 2092). base_chance 200 replaces the record's
+/// difficulty 0 for seed-proof success — the fizzle twin below keeps
+/// the record's rollability.
+fn starlight(id: SpellId, base_chance: i16) -> Spell {
+    Spell {
+        id,
+        name: "starlight".into(),
+        short_name: "star".into(),
+        cast_msg_a: None,
+        cast_msg_b: Some(MessageId(8249)),
+        abilities: vec![
+            (Ability::RoomIllu, 0),
+            (Ability::DescMsg, 2092),
+        ],
+        level_cap: 32,
+        round_cost: 0,
+        required_power: 1,
+        min_base: 175,
+        max_base: 175,
+        target_mode: TargetMode::Benign,
+        save_class: SaveClass::None,
+        base_chance,
+        duration_per_level: 0,
+        match_type: MatchType::Single0,
+        duration: 80,
+        element: Element::Magic,
+        class_gate_group: 1,
+        mana_cost: 4,
+        max_increase: ScalePair::NONE,
+        required_class_level: 1,
+        min_increase: ScalePair::NONE,
+        duration_increase: ScalePair { per: 1, levels: 1 },
+        msg_style: 32,
+    }
+}
+
+fn star_world() -> Content {
+    let mut content = lit_world();
+    content.add_spell(starlight(SpellId(26), 200));
+    content.add_message(Message {
+        id: MessageId(8249),
+        lines: vec![
+            "You cast %s!".into(),
+            "%s casts %s!".into(),
+            "%s casts %s!".into(),
+        ],
+    });
+    content.add_message(Message {
+        id: MessageId(2092),
+        lines: vec![
+            "Your starlight spell fades away.".into(),
+            String::new(),
+            "You are surrounded by a shimmering light!".into(),
+        ],
+    });
+    // A casting class; the Warrior (caster_group 0) stays for the
+    // deterministic-fizzle trick.
+    content.add_class(Class {
+        id: ClassId(2),
+        name: "Mystic".into(),
+        abilities: vec![],
+        hp_per_level: 4,
+        hp_seed: 4,
+        caster_group: 1,
+        casting_factor: 3,
+        exp_base: 0,
+        combat_factor: 2,
+        weapon_code: 1,
+        armour_code: 1,
+    });
+    content
+}
+
+fn caster_at(name: &str, room: u16) -> Player {
+    let mut p = player_at(name, room);
+    p.class = ClassId(2);
+    p.current_mana = 12;
+    p.spellbook.insert(SpellId(26), false);
+    p
+}
+
+/// 81 medium ticks of glow, at 3 core ticks each.
+const GLOW_TICKS: u64 = 81 * 3;
+
+/// Cast lights the dark room: -200 + 175 = -25, visible — and not just
+/// to the caster. The DescMsg's line 3 prints at cast time.
+#[test]
+fn starlight_lights_the_dark_room_for_everyone() {
+    let mut core = Core::new(star_world(), CoreConfig::default());
+    let alice = core.attach_player(caster_at("Alice", 2));
+    let bob = core.attach_player(player_at("Bob", 2));
+    core.drain_events();
+    core.input(alice, "cast star");
+    let events = core.drain_events();
+    let to_alice = text_to(&events, alice);
+    assert!(to_alice.contains("You cast starlight!"), "got: {to_alice:?}");
+    assert!(
+        to_alice.contains("You are surrounded by a shimmering light!"),
+        "got: {to_alice:?}"
+    );
+    core.input(alice, "look");
+    core.input(bob, "look");
+    let events = core.drain_events();
+    assert!(text_to(&events, alice).contains("Black Cave"));
+    assert!(
+        text_to(&events, bob).contains("Black Cave"),
+        "the glow is the room's, not the caster's"
+    );
+}
+
+/// The glow dies with the slot: fade line via the DescMsg, dark again.
+#[test]
+fn starlight_fades_after_81_ticks_and_the_dark_returns() {
+    let mut core = Core::new(star_world(), CoreConfig::default());
+    let alice = core.attach_player(caster_at("Alice", 2));
+    core.drain_events();
+    core.input(alice, "cast star");
+    core.drain_events();
+    ticks(&mut core, GLOW_TICKS - 3);
+    core.drain_events();
+    core.input(alice, "look");
+    let shown = text_to(&core.drain_events(), alice);
+    assert!(shown.contains("Black Cave"), "still lit at 80: {shown:?}");
+    ticks(&mut core, 3);
+    let shown = text_to(&core.drain_events(), alice);
+    assert!(
+        shown.contains("Your starlight spell fades away."),
+        "got: {shown:?}"
+    );
+    core.input(alice, "look");
+    let shown = text_to(&core.drain_events(), alice);
+    assert!(shown.contains(VERY_DARK), "dark again: {shown:?}");
+}
+
+/// The record's own difficulty is 0: through a caster_group-0 class the
+/// roll can never pass (the cast.rs Grunt trick), and a fizzle charges
+/// HALF mana — starlight's 4 becomes 2.
+#[test]
+fn a_starlight_fizzle_charges_half_mana() {
+    let mut content = star_world();
+    content.add_spell(starlight(SpellId(27), 0));
+    let mut core = Core::new(content, CoreConfig::default());
+    let mut grunt = player_at("Grunt", 2);
+    grunt.current_mana = 12;
+    grunt.spellbook.insert(SpellId(27), false);
+    let s = core.attach_player(grunt);
+    core.drain_events();
+    core.input(s, "cast star");
+    let shown = text_to(&core.drain_events(), s);
+    assert!(
+        shown.contains("You attempt to cast starlight, but fail."),
+        "got: {shown:?}"
+    );
+    assert_eq!(core.current_mana(s), 10, "half of mana 4 charged");
+}
+
+/// A recast mid-glow refreshes the slot rather than stacking: the glow
+/// outlives the FIRST cast's 81 ticks and dies 81 after the second.
+#[test]
+fn recast_mid_glow_refreshes_the_duration() {
+    let mut core = Core::new(star_world(), CoreConfig::default());
+    let alice = core.attach_player(caster_at("Alice", 2));
+    core.drain_events();
+    core.input(alice, "cast star");
+    core.drain_events();
+    ticks(&mut core, 120); // 40 glow ticks in
+    core.drain_events();
+    core.input(alice, "cast star");
+    core.drain_events();
+    ticks(&mut core, 180); // 100 ticks after the FIRST cast
+    core.drain_events();
+    core.input(alice, "look");
+    let shown = text_to(&core.drain_events(), alice);
+    assert!(
+        shown.contains("Black Cave"),
+        "refreshed past the first cast's span: {shown:?}"
+    );
+}
