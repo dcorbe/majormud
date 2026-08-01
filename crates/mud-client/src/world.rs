@@ -590,6 +590,17 @@ impl Here {
         self.seeded.is_some()
     }
 
+    /// A pile still worth a `get`: on the floor, and under the attempt
+    /// cap.
+    ///
+    /// Derived, never queued. Work that lives in a `Vec<WorkItem>` has
+    /// to be kept in step with the world by whoever mutates it, and the
+    /// floor is already modelled — asking it a question costs nothing
+    /// and cannot go stale on its own.
+    pub fn unswept(&self, cap: u32) -> Option<&Pile> {
+        self.piles.iter().find(|p| p.tries < cap)
+    }
+
     /// Record that a `get` went out for this denomination. Called by
     /// whoever sends it, so the try cap counts ATTEMPTS rather than
     /// blocks — an encumbrance refusal produces neither an

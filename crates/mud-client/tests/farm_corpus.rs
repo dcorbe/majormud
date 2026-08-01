@@ -196,6 +196,11 @@ fn drive(path: &std::path::Path) -> Run {
                 last_block = None;
                 contradicted = false;
             }
+            // The transcripts are RX-only, so a `get` this pump decided
+            // on has no echo to retire it. Spend the attempt and move
+            // on: the throughput assertions below count what the BOT
+            // decided, and inventing sweeps would rewrite them.
+            Verdict::Loot { denom } => here.note_get_attempt(&denom),
             Verdict::Busy | Verdict::Waiting { .. } => {}
         }
 

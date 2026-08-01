@@ -527,6 +527,15 @@ impl Gate {
     }
 }
 
+/// How many `get`s one pile is worth before the stop gives up on it.
+///
+/// A pile the character cannot carry (an encumbrance refusal) is listed
+/// by every block forever and acknowledged by none, so neither the
+/// render nor the acknowledgement can end the attempt — only a count of
+/// the attempts themselves. Not a config knob: nobody would tune it,
+/// and one more thing to remember is one more thing to get wrong.
+pub const LOOT_TRIES: u32 = 3;
+
 /// What the stop's own evidence says to do next.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
@@ -538,6 +547,9 @@ pub enum Verdict {
     Busy,
     /// Proven empty, held open for a respawn until this instant.
     Waiting { until: Instant },
+    /// Nothing left to fight, but this denomination is still on the
+    /// floor. Sweep it before considering the stop finished.
+    Loot { denom: String },
     /// Proven empty for the whole respawn budget. Done here.
     Empty,
     /// The board answered a `look` with "you can't see anything". No room
@@ -927,6 +939,17 @@ impl StopState {
             && now.duration_since(at) < self.recheck
         {
             return Verdict::Waiting { until: at + self.recheck };
+        }
+        // Work left on the FLOOR, ahead of `Empty` so the two cannot be
+        // confused. Departing with money still lying there used to be
+        // possible: the only thing in the way was `gate.is_idle()`, a
+        // check that the send queue is empty standing in for a check
+        // that the work is done, and a `get` nobody had decided on yet
+        // makes an idle gate.
+        if let Some(pile) = here.unswept(LOOT_TRIES) {
+            return Verdict::Loot {
+                denom: pile.denom.clone(),
+            };
         }
         match self.empty_since {
             Some(since) if now.duration_since(since) >= self.linger => Verdict::Empty,
@@ -2175,7 +2198,23 @@ async fn farm_stop(
     let mut events = session.events();
     crate::session::drain(&mut events, |_| {});
 
-    let mut bot = crate::bot::Bot::with_refusals(bot_config.clone(), threat.clone(), refusals.clone());
+    // One loot owner per path. `Here` models the floor at a stop and
+    // `Verdict::Loot` is what sweeps it, so the stop's bot must not
+    // also react to drop lines -- two owners means two `get`s for one
+    // pile, and the second is a wasted command with no acknowledgement
+    // to retire it.
+    //
+    // Deliberately NOT the shared `bot_config`: the travel guard's
+    // sighting bot reads `auto_get` through `Bot::has_loot` to decide
+    // whether a listed pile is worth STOPPING for, and clearing it
+    // there would silently walk legs past money again. `Bot` also keeps
+    // its own sweeping for the TUI assist, which has no `Here` at all.
+    let stop_config = crate::bot::BotConfig {
+        auto_get: false,
+        ..bot_config.clone()
+    };
+    let mut bot =
+        crate::bot::Bot::with_refusals(stop_config.clone(), threat.clone(), refusals.clone());
     let mut gate = Gate::new(backoff);
     let mut heal = HealWatch::new(bot_config, cfg);
     let mut seen = StopState::new(stop_name.clone(), cfg);
@@ -2244,8 +2283,18 @@ async fn farm_stop(
                     gate.push("look".into());
                 }
             }
-            // Never while we still owe the board something: the `get` for
-            // the coins the last kill dropped is what would be lost.
+            // The floor before the door. The attempt is counted HERE,
+            // where it is spent, so a refusal the board never words
+            // still drains the budget — the model cannot see a `get`
+            // that was decided somewhere else.
+            Verdict::Loot { denom } => {
+                if gate.is_idle() {
+                    gate.push(format!("get {denom}"));
+                    here.note_get_attempt(denom);
+                }
+            }
+            // Never while we still owe the board something: an
+            // acknowledgement still in flight is evidence in flight.
             Verdict::Empty => {
                 if gate.is_idle() {
                     return Ok(StopEnd::Dwelt);
@@ -2348,7 +2397,8 @@ async fn farm_stop(
             // carrying a stale "nothing here" across would walk out on
             // everything still standing in it.
             Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {
-                bot = crate::bot::Bot::with_refusals(bot_config.clone(), threat.clone(), refusals.clone());
+                bot =
+                    crate::bot::Bot::with_refusals(stop_config.clone(), threat.clone(), refusals.clone());
                 gate = Gate::new(backoff);
                 seen.reset();
                 here.reset();
@@ -2417,7 +2467,8 @@ async fn farm_stop(
             // Back at the stop with a clean slate. Nothing observed
             // before the flee describes the room we are standing in now.
             events = session.events();
-            bot = crate::bot::Bot::with_refusals(bot_config.clone(), threat.clone(), refusals.clone());
+            bot =
+                crate::bot::Bot::with_refusals(stop_config.clone(), threat.clone(), refusals.clone());
             gate = Gate::new(backoff);
             heal = HealWatch::new(bot_config, cfg);
             seen = StopState::new(stop_name.clone(), cfg);

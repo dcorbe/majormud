@@ -9,8 +9,8 @@ use mud_client::bot::{Bot, BotConfig};
 use mud_client::correlate::{CmdId, Correlated};
 use mud_client::events::{Actor, Event, RoomView};
 use mud_client::farm::{
-    ACK_TIMEOUT, FarmConfig, FarmGuard, FarmPlan, FarmStats, Gate, HealWatch, StopState, Verdict,
-    is_player_death, parse_health, parse_room_id,
+    ACK_TIMEOUT, FarmConfig, FarmGuard, FarmPlan, FarmStats, Gate, HealWatch, LOOT_TRIES,
+    StopState, Verdict, is_player_death, parse_health, parse_room_id,
 };
 use mud_client::nav::{Interrupt, TravelGuard};
 use mud_client::graph::{ExitEdge, GraphRoom, RoomGraph};
@@ -1391,6 +1391,63 @@ fn a_kill_that_never_reports_combat_off_still_releases_the_stop() {
         Verdict::Busy,
         "a kill nobody ever closed held the stop open forever"
     );
+}
+
+/// Departure with money still on the floor used to be possible, and the
+/// only thing standing in the way was `gate.is_idle()` — a check that
+/// the SEND QUEUE is empty, standing in for a check that the WORK is
+/// done. A `get` that was never decided on makes an idle gate.
+///
+/// `Verdict::Loot` is that check said properly, and it sits ahead of
+/// `Empty` so the two cannot be confused again.
+#[test]
+fn a_stop_does_not_end_on_an_unswept_floor() {
+    let t0 = Instant::now();
+    let mut w = Stop::new(combat_bot(), 0);
+    w.look_and_see(&block(&["giant rat"]), t0);
+    w.feed(
+        &Event::Line("The giant rat falls to the ground, dead.".into()),
+        t0,
+    );
+    // The kill drops coins BEFORE any block re-renders. Waiting for the
+    // next look to learn about them is the round-trip stage 2 removes.
+    w.feed(&Event::Line("11 silver drop to the ground.".into()), t0);
+    w.feed(&Event::Line("*Combat Off*".into()), t0);
+    assert_eq!(
+        w.verdict(t0),
+        Verdict::Loot {
+            denom: "silver".into()
+        },
+        "the room is clear but the floor is not"
+    );
+
+    w.feed(
+        &Event::Line("You picked up 11 silver nobles".into()),
+        t0,
+    );
+    assert_eq!(w.verdict(t0), Verdict::Empty, "swept, and now finished");
+}
+
+/// A pile the character cannot carry is listed by every block forever.
+/// The attempts are what the cap counts, because neither the render nor
+/// an acknowledgement ever changes for a refusal — counting either
+/// would never terminate, and the stop would never end.
+#[test]
+fn a_pile_at_the_try_cap_releases_the_stop() {
+    let t0 = Instant::now();
+    let mut w = Stop::new(combat_bot(), 0);
+    w.look_and_see(&block(&[]), t0);
+    w.feed(&Event::Line("11 silver drop to the ground.".into()), t0);
+    for _ in 0..LOOT_TRIES {
+        assert_eq!(
+            w.verdict(t0),
+            Verdict::Loot {
+                denom: "silver".into()
+            }
+        );
+        w.here.note_get_attempt("silver");
+    }
+    assert_eq!(w.verdict(t0), Verdict::Empty, "the budget drained");
 }
 
 /// The other half of `is_kill_line` names nobody, so the model cannot

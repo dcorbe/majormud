@@ -747,6 +747,49 @@ fn another_players_sweep_clears_the_floor() {
     assert!(here.piles.is_empty(), "the floor is somebody else's now");
 }
 
+/// Work remaining is DERIVED, never queued: a pile is unswept if it is
+/// on the floor and the attempts spent on it are under the cap.
+#[test]
+fn an_unswept_pile_is_work_until_the_cap() {
+    let now = Instant::now();
+    let mut here = Here::default();
+    assert!(here.unswept(2).is_none(), "a bare floor is no work");
+    here.on_event(
+        &unsolicited(Event::Line("11 silver drop to the ground.".into())),
+        now,
+    );
+    assert_eq!(here.unswept(2).map(|p| p.denom.as_str()), Some("silver"));
+
+    // A `get` the board neither acknowledged nor refused visibly: the
+    // pile is listed by every block and the count never terminates, so
+    // the ATTEMPTS do.
+    here.note_get_attempt("silver");
+    assert!(here.unswept(2).is_some(), "one try of two");
+    here.note_get_attempt("silver");
+    assert!(
+        here.unswept(2).is_none(),
+        "a pile the character cannot carry must stop being work"
+    );
+}
+
+/// The acknowledgement takes it off the floor outright, whatever the
+/// attempt count says.
+#[test]
+fn a_swept_pile_is_no_longer_work() {
+    let now = Instant::now();
+    let mut here = Here::default();
+    here.on_event(
+        &unsolicited(Event::Line("11 silver drop to the ground.".into())),
+        now,
+    );
+    here.note_get_attempt("silver");
+    here.on_event(
+        &unsolicited(Event::Line("You picked up 11 silver nobles".into())),
+        now,
+    );
+    assert!(here.unswept(2).is_none());
+}
+
 /// Room identity by NAME cannot tell two rooms apart when the board
 /// prints the same name for both — Newhaven has twins at 1/2146 and
 /// 1/2151, and the sewers run 528 blocks under one name
