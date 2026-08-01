@@ -772,7 +772,7 @@ fn start_farm(session: Arc<Session>) -> Result<FarmSession, String> {
         let end = match crate::farm::run_farm(&session, graph, &plan, &bot, &cfg, Some(&tx)).await {
             Ok((end, stats)) => crate::farm::Phase::Done {
                 why: format!(
-                    "{} ({} kills, {} loops)",
+                    "{} ({} kills, {} loops{})",
                     match end {
                         crate::farm::FarmEnd::LoopsDone => "loops walked",
                         crate::farm::FarmEnd::TimeUp => "time up",
@@ -781,7 +781,14 @@ fn start_farm(session: Arc<Session>) -> Result<FarmSession, String> {
                             "too hurt: travel interrupt budget spent",
                     },
                     stats.kills,
-                    stats.loops
+                    stats.loops,
+                    // The room model runs in shadow, and this is the only
+                    // place a `/farm` run can report what it measured.
+                    // Silent when it never disagreed.
+                    stats
+                        .divergence_summary()
+                        .map(|d| format!("; room model: {d}"))
+                        .unwrap_or_default(),
                 ),
             },
             Err(e) => crate::farm::Phase::Failed { why: e.to_string() },

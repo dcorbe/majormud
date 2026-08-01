@@ -1028,6 +1028,22 @@ pub struct FarmStats {
 const DIVERGENT_NAME_CAP: usize = 32;
 
 impl FarmStats {
+    /// What the room model did this run, or `None` if it never once
+    /// disagreed with the board.
+    ///
+    /// Stage 1 is a measurement, and a measurement nothing reports is
+    /// not a measurement: the runner counted these all run while the
+    /// TUI's end message said only kills and loops, so the `/farm`
+    /// workflow produced no gate data at all.
+    pub fn divergence_summary(&self) -> Option<String> {
+        (self.model_overclaims > 0 || self.model_surprises > 0).then(|| {
+            format!(
+                "{} overclaims, {} surprises",
+                self.model_overclaims, self.model_surprises
+            )
+        })
+    }
+
     /// Fold every divergence recorded after `since_total` into the run's
     /// tally. The pump calls this per event, so it must count only what
     /// is new — re-counting would multiply each divergence by the number

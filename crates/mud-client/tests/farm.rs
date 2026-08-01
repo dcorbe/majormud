@@ -2274,3 +2274,40 @@ fn only_divergences_since_the_last_fold_are_counted() {
     stats.note_divergences(&here.reconcile, seen_so_far);
     assert_eq!(stats.model_overclaims, 1);
 }
+
+/// A finished run has to SAY what the model did, or the measurement is
+/// collected and thrown away — which is exactly what happened to the
+/// `/farm`-in-TUI path: the runner counted divergences all run and the
+/// end message reported only kills and loops.
+#[test]
+fn a_clean_run_summarises_no_divergence() {
+    let stats = FarmStats::default();
+    assert_eq!(stats.divergence_summary(), None);
+}
+
+#[test]
+fn a_diverging_run_summarises_both_directions() {
+    let stats = FarmStats {
+        model_overclaims: 13,
+        model_surprises: 2,
+        ..FarmStats::default()
+    };
+    assert_eq!(
+        stats.divergence_summary().as_deref(),
+        Some("13 overclaims, 2 surprises")
+    );
+}
+
+/// The two directions mean different things, so a run that only ever
+/// surprised the model must not read as one that overclaimed.
+#[test]
+fn a_surprise_only_run_does_not_read_as_an_overclaim() {
+    let stats = FarmStats {
+        model_surprises: 4,
+        ..FarmStats::default()
+    };
+    assert_eq!(
+        stats.divergence_summary().as_deref(),
+        Some("0 overclaims, 4 surprises")
+    );
+}

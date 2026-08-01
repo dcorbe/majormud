@@ -367,11 +367,8 @@ fn farm_command(
                 // The room model runs in shadow: it decides nothing, and
                 // this is the evidence that says whether it could. A
                 // clean run prints nothing at all.
-                if stats.model_overclaims > 0 || stats.model_surprises > 0 {
-                    println!(
-                        "room model: {} overclaims, {} surprises",
-                        stats.model_overclaims, stats.model_surprises
-                    );
+                if let Some(summary) = stats.divergence_summary() {
+                    println!("room model: {summary}");
                     for name in &stats.divergent_names {
                         println!("  {name}");
                     }
