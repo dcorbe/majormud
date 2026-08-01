@@ -825,14 +825,23 @@ fn a_player_or_refused_entry_does_not_trip() {
 /// run5's kobold thief lunged across three rooms without connecting
 /// once, so a guard waiting for CombatHit never fired. No attacker name
 /// can be trusted out of per-monster whiff wording, so none is claimed.
+///
+/// NON-emergency, deliberately: no damage has landed, so this is the
+/// farm noticing work, not danger — an `Entered`, not an `Attacked`.
+/// The first cut spent the interrupt budget on whiffs and a shared
+/// swarm room ended a healthy run TooHurt in minutes (cwgaming,
+/// 2026-08-01: another player kept the spawner hot and every leg out
+/// of the Arena was whiffed at three times). Landed damage still
+/// spends budget via the CombatHit arm; the hp gate still guards real
+/// danger.
 #[test]
 fn a_whiff_at_us_stops_a_fighting_walk() {
     let whiff = Event::CombatMiss {
         line: "The fat kobold thief lunges at you with their shortsword!".into(),
     };
     match guard(100, 50).on_event(&whiff) {
-        Some(Interrupt::Attacked { .. }) => {}
-        other => panic!("expected Attacked, got {other:?}"),
+        Some(Interrupt::Entered { .. }) => {}
+        other => panic!("expected Entered, got {other:?}"),
     }
     // The walk home does not fight back, hit or miss alike.
     assert_eq!(FarmGuard::running(100, 50, "Farmer").on_event(&whiff), None);

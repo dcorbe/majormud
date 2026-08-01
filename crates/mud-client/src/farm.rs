@@ -343,7 +343,13 @@ pub enum Phase {
         to: RoomId,
     },
     WalkingHome,
-    Done,
+    /// The run ended on its own terms — and says WHICH terms. A bare
+    /// "done" hid a TooHurt ending from the operator watching a healthy
+    /// character stand idle (cwgaming, 2026-08-01); the reason rides in
+    /// the phase for exactly the reason Failed's does.
+    Done {
+        why: String,
+    },
     /// The run ended badly. Carried in the phase rather than logged and
     /// dropped, because the operator watching the status bar is exactly
     /// the person who needs to know WHY it stopped — "done" for a run
@@ -365,7 +371,7 @@ impl Phase {
             Phase::Resting { .. } => "resting".into(),
             Phase::Recovering { to } => format!("recovering to {}/{}", to.map, to.room),
             Phase::WalkingHome => "walking home".into(),
-            Phase::Done => "done".into(),
+            Phase::Done { why } => format!("done: {why}"),
             // First line only. A NavError's Display carries a multi-line
             // `tail:` of raw board output, and the bar is one row.
             Phase::Failed { why } => {
@@ -1158,9 +1164,17 @@ impl crate::nav::TravelGuard for FarmGuard {
             // rooms without connecting once, and a guard waiting for
             // CombatHit never fired. Whiff wordings are per-monster
             // data, so no attacker name is claimed out of them.
+            //
+            // NON-emergency, deliberately: no damage has landed, so
+            // this is work noticed, not danger — an Entered, never an
+            // Attacked. The first cut spent the interrupt budget here
+            // and a shared swarm room ended a healthy run TooHurt in
+            // minutes (cwgaming, 2026-08-01: every leg out of the
+            // Arena was whiffed at three times). Landed damage still
+            // spends budget via the CombatHit arm above.
             Event::CombatMiss { line } if self.fight_back && whiff_at_us(line) => {
-                Some(Interrupt::Attacked {
-                    by: "something unseen".into(),
+                Some(Interrupt::Entered {
+                    name: "something unseen".into(),
                 })
             }
             // Something walked in mid-step. The name is only a

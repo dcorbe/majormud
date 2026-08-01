@@ -240,14 +240,27 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
             }
             // The bar must follow the runner, not just HP: travelling and
             // fighting can pass without a single point of damage.
-            _ = async {
+            changed = async {
                 match phase_rx.as_mut() {
-                    Some(rx) => {
-                        let _ = rx.changed().await;
-                    }
-                    None => std::future::pending::<()>().await,
+                    Some(rx) => rx.changed().await.is_ok(),
+                    None => std::future::pending::<bool>().await,
                 }
             } => {
+                // A closed watch means the farm task ENDED. Erroring
+                // here forever was a busy loop — changed() on a dead
+                // sender returns instantly, and the discarded Err
+                // repainted the bar in a tight spin (the "flashing"
+                // status bar, live 2026-08-01). Retire the run: say why
+                // it ended, give the keyboard and the assist back.
+                if !changed {
+                    let why = phase_rx
+                        .take()
+                        .map(|rx| rx.borrow().label())
+                        .unwrap_or_else(|| "done".into());
+                    farm = None;
+                    session.set_pace(std::time::Duration::ZERO);
+                    note(&mut out, &format!("-- farm ended: {why} --"))?;
+                }
                 repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), &editor, cols, rows)?;
             }
             ev = key_rx.recv() => {
@@ -731,7 +744,20 @@ fn start_farm(session: Arc<Session>) -> Result<FarmSession, String> {
     let (tx, rx) = tokio::sync::watch::channel(crate::farm::Phase::default());
     let handle = tokio::spawn(async move {
         let end = match crate::farm::run_farm(&session, graph, &plan, &bot, &cfg, Some(&tx)).await {
-            Ok(_) => crate::farm::Phase::Done,
+            Ok((end, stats)) => crate::farm::Phase::Done {
+                why: format!(
+                    "{} ({} kills, {} loops)",
+                    match end {
+                        crate::farm::FarmEnd::LoopsDone => "loops walked",
+                        crate::farm::FarmEnd::TimeUp => "time up",
+                        crate::farm::FarmEnd::Died => "died",
+                        crate::farm::FarmEnd::TooHurt =>
+                            "too hurt: travel interrupt budget spent",
+                    },
+                    stats.kills,
+                    stats.loops
+                ),
+            },
             Err(e) => crate::farm::Phase::Failed { why: e.to_string() },
         };
         let _ = tx.send(end);

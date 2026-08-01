@@ -418,3 +418,15 @@ fn an_unattributed_block_starts_nothing() {
         Vec::<String>::new()
     );
 }
+
+/// "done" alone hid WHY a run ended — a healthy character standing in
+/// the Arena with a "done" bar and no explanation (live, cwgaming
+/// 2026-08-01: the run had ended TooHurt on whiff-spent budget, and
+/// nothing said so). The end now rides in the phase like Failed's why.
+#[test]
+fn the_done_phase_carries_the_reason() {
+    let phase = mud_client::farm::Phase::Done {
+        why: "too hurt: travel interrupt budget spent".into(),
+    };
+    assert_eq!(phase.label(), "done: too hurt: travel interrupt budget spent");
+}

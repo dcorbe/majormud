@@ -356,7 +356,10 @@ async fn a_mob_entering_behind_the_echo_interrupts_before_the_next_step() {
 
 /// A whiff aimed at us mid-step stops a fighting walk exactly like a
 /// landed blow — run5's kobold thief never connected once across three
-/// rooms, and a guard waiting for CombatHit never fired.
+/// rooms, and a guard waiting for CombatHit never fired. It hands back
+/// as `Entered` (work, no budget), not `Attacked`: whiff-storms in a
+/// shared swarm room were spending the whole interrupt budget on a
+/// healthy character (cwgaming, 2026-08-01).
 #[tokio::test]
 async fn a_whiff_behind_the_echo_interrupts_a_fighting_walk() {
     let (addr, _, received) = scripted_board(vec![(
@@ -382,11 +385,11 @@ async fn a_whiff_behind_the_echo_interrupts_a_fighting_walk() {
     assert!(
         matches!(
             err.kind,
-            mud_client::nav::NavErrorKind::Interrupted(mud_client::nav::Interrupt::Attacked {
+            mud_client::nav::NavErrorKind::Interrupted(mud_client::nav::Interrupt::Entered {
                 ..
             })
         ),
-        "expected Attacked, got {:?}",
+        "expected Entered, got {:?}",
         err.kind
     );
     let steps = received.lock().unwrap().iter().filter(|l| *l == "n").count();

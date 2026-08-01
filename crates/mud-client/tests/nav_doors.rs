@@ -574,11 +574,11 @@ async fn a_whiff_during_door_work_stops_the_walk() {
     assert!(
         matches!(
             err.kind,
-            mud_client::nav::NavErrorKind::Interrupted(mud_client::nav::Interrupt::Attacked {
+            mud_client::nav::NavErrorKind::Interrupted(mud_client::nav::Interrupt::Entered {
                 ..
             })
         ),
-        "expected Attacked, got {:?}",
+        "expected Entered, got {:?}",
         err.kind
     );
     assert!(
