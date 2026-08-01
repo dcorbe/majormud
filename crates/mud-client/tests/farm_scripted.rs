@@ -32,11 +32,17 @@ const MIDWAY: RoomId = RoomId { map: 1, room: 2 };
 const STOP: RoomId = RoomId { map: 1, room: 3 };
 
 fn room_block(name: &str, also_here: Option<&str>, exits: &str) -> String {
+    room_block_hp(name, also_here, exits, 30)
+}
+
+/// The prompt after a block is how HP reaches the client, so scenarios
+/// about the departure gate pick the number each block carries.
+fn room_block_hp(name: &str, also_here: Option<&str>, exits: &str, hp: i32) -> String {
     let also = match also_here {
         Some(names) => format!("Also here: {names}.\r\n"),
         None => String::new(),
     };
-    format!("\r\n\x1b[1;36m{name}\r\n{also}Obvious exits: {exits}\r\n[HP=30/MA=0]:")
+    format!("\r\n\x1b[1;36m{name}\r\n{also}Obvious exits: {exits}\r\n[HP={hp}/MA=0]:")
 }
 
 /// Guard Post -> Inner Ward -> Keep, one straight corridor. The entry
@@ -261,6 +267,129 @@ async fn a_monster_entering_mid_leg_is_fought_where_it_stands() {
     let second_n = log.iter().rposition(|l| l == "n").expect("the leg resumed");
     assert!(
         first_n < attack && attack < second_n,
+        "defence out of order: {log:?}"
+    );
+}
+
+/// The run6 departure-gate incident, mechanized: the character rests
+/// below the depart threshold, a rat walks in mid-rest, and the runner
+/// must notice — the pokes that carry HP also carry the room — defend
+/// where it stands, and only then leave fit. The blind version rested
+/// through the bites until `max_rest_seconds` expired (observed live at
+/// 12 HP beside a giant rat, and 37→22 under a three-mob swarm).
+#[tokio::test]
+async fn a_rest_contested_by_an_arrival_defends_instead_of_dozing() {
+    let (addr, received) = scripted_board(vec![
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=20/MA=0]:"
+                .into(),
+        ),
+        // verify_start: wounded, alone — resting here is correct.
+        (
+            "look",
+            format!("\r\nlook{}", room_block_hp("Guard Post", None, "north", 20)),
+        ),
+        (
+            "rest",
+            "\r\nrest\r\nYou are now resting.\r\n[HP=20/MA=0]:".into(),
+        ),
+        // The gate's HP poke answers with the rat that walked in.
+        (
+            "look",
+            format!(
+                "\r\nlook{}",
+                room_block_hp("Guard Post", Some("giant rat"), "north", 20)
+            ),
+        ),
+        // The defence's own opening ask sees it too.
+        (
+            "look",
+            format!(
+                "\r\nlook{}",
+                room_block_hp("Guard Post", Some("giant rat"), "north", 20)
+            ),
+        ),
+        (
+            "a rat",
+            "\r\na rat\r\nYou smack giant rat for 12 damage!\r\nThe giant rat falls to the ground with a tortured squeak.\r\nYou gain 25 experience.\r\n*Combat Off*\r\n[HP=26/MA=0]:"
+                .into(),
+        ),
+        // Post-kill look: clear, and the fight's rounds carried HP back
+        // over the gate — the leg may depart.
+        (
+            "look",
+            format!("\r\nlook{}", room_block_hp("Guard Post", None, "north", 26)),
+        ),
+        ("n", format!("\r\nn{}", room_block_hp("Inner Ward", None, "north south", 26))),
+        ("n", format!("\r\nn{}", room_block_hp("Keep", None, "south", 26))),
+        ("look", format!("\r\nlook{}", room_block_hp("Keep", None, "south", 26))),
+    ])
+    .await;
+    let session = session_for(addr).await;
+
+    let graph = corridor();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/3".into()],
+        loops: 1,
+        idle_poke_ms: 500,
+        // The gate is ON: 80% of 30 = 24, and the character sits at 20.
+        depart_at_percent: 80,
+        // Short leash so the BLIND failure mode (rest to the deadline,
+        // then depart wounded past the rat) fails fast instead of
+        // hanging the suite.
+        max_rest_seconds: 5,
+        // The hard pin again: a contested rest is the farm noticing
+        // work, never an emergency.
+        travel_interrupts: 0,
+        ..FarmConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 30,
+        ..BotConfig::default()
+    };
+
+    let (end, stats) = match tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, &bot, &cfg, None),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    {
+        Ok(out) => out,
+        Err(e) => panic!(
+            "the run must survive the contested rest: {e:?}\nboard received: {:?}",
+            received.lock().unwrap()
+        ),
+    };
+
+    assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
+    assert!(
+        stats.kills >= 1,
+        "the rat interrupting the rest should have died: {stats:?}\nboard received: {:?}",
+        received.lock().unwrap()
+    );
+    assert_eq!(
+        stats.interrupts, 0,
+        "a contested rest must never spend the emergency budget: {stats:?}"
+    );
+
+    // The story in order: rested, noticed, fought, and only then left.
+    let log = received.lock().unwrap();
+    let rest = log
+        .iter()
+        .position(|l| l == "rest")
+        .expect("the gate rested");
+    let attack = log
+        .iter()
+        .position(|l| l == "a rat")
+        .expect("the rat was fought");
+    let depart = log.iter().position(|l| l == "n").expect("the leg departed");
+    assert!(
+        rest < attack && attack < depart,
         "defence out of order: {log:?}"
     );
 }

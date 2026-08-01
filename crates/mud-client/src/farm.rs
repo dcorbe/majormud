@@ -1594,7 +1594,33 @@ async fn travel(
         if time_up(started, cfg).is_some() {
             return Ok(LegEnd::TimeUp);
         }
-        wait_for_departure_health(session, cfg, bot_config, &sight).await;
+        // A rest interrupted by an arrival defends where it stands, with
+        // the same non-emergency machinery as a mid-step entry: the pump
+        // clears the room, and the loop re-enters the wait to rest in
+        // the quiet it made. The `last_sighted` memo breaks the cycle
+        // when the defence cannot clear it (unkillable, refused): the
+        // leg then departs wounded, which is what the travel guard is
+        // for. A leg that walks past fights on purpose
+        // (`fight_while_travelling = false`) departs wounded directly.
+        if let DepartureWait::Contested =
+            wait_for_departure_health(session, cfg, bot_config, &sight).await
+            && cfg.fight_while_travelling
+            && last_sighted != Some(*current)
+        {
+            last_sighted = Some(*current);
+            stats.sightings += 1;
+            let until = Instant::now() + Duration::from_secs(cfg.defend_seconds);
+            match farm_stop(
+                session, nav, graph, *current, bot_config, threat, refusals, light, clock, cfg,
+                started, Some(until), None, stats, phase,
+            )
+            .await?
+            {
+                StopEnd::Dwelt => continue,
+                StopEnd::Died => return Ok(LegEnd::Died),
+                StopEnd::TimeUp => return Ok(LegEnd::TimeUp),
+            }
+        }
         // Light up BEFORE stepping into known darkness, standing still
         // where the outcome is verifiable. On failure the walk proceeds
         // blind — today's behavior, now the explicit fallback. A fade
@@ -1793,6 +1819,14 @@ async fn ensure_lit(
     }
 }
 
+/// How the departure wait ended: fit to walk (or past caring — the
+/// deadline expired), or standing beside work that has to be dealt
+/// with before resting can mean anything.
+enum DepartureWait {
+    Fit,
+    Contested,
+}
+
 /// Hold at the stop until HP is fit to travel. The bot is not driving
 /// while the navigator walks, so setting off wounded means relying on
 /// the travel guard to stop the leg part-way — cheaper to leave fit.
@@ -1803,54 +1837,69 @@ async fn wait_for_departure_health(
     // Judges whether the room we are standing in holds work; the same
     // predicate-only role the sighting guard's bot plays.
     sight: &crate::bot::Bot,
-) {
+) -> DepartureWait {
     if cfg.depart_at_percent == 0 || bot_config.max_hp <= 0 {
-        return;
+        return DepartureWait::Fit;
     }
     let target = bot_config.max_hp * cfg.depart_at_percent as i32 / 100;
     let mut state = session.state();
-    if state.borrow().hp >= target {
-        return;
-    }
-    // Never rest beside a monster: the travel path can land here right
-    // after a defend that ended on the deadline with monsters still
-    // standing, and a rest there is disengaged by the board and broken
-    // by the next fight — the same incoherence the bot's own rest rule
-    // suppresses. GameState.room is unattributed, so this is a
-    // heuristic gate on a best-effort send; the bot-internal rule is
-    // the load-bearing one. Departing wounded is what the travel guard
-    // exists for.
-    if state
-        .borrow()
-        .room
-        .as_ref()
-        .is_some_and(|room| sight.has_target(room))
-    {
-        return;
-    }
-    // Actually REST, and actually look.
-    //
-    // This used to watch `hp` and wait. Two things made that useless on a
-    // live board: nothing asked the character to heal, and an idle board
-    // sends no prompts at all — so GameState never changed and the watch
-    // could not observe recovery even if it happened. It was a 120-second
-    // sleep that then departed at whatever HP it started with.
-    session.send(&bot_config.heal_command);
+    // Never rest beside a monster — and keep never doing it for the
+    // whole wait, not only at its door. The one-shot version of this
+    // check rested a live character at 12 HP beside a giant rat (run6,
+    // 2026-08-01): the rat's block landed one beat after the check, and
+    // the loop below then watched nothing but the HP number for up to
+    // `max_rest_seconds` while the room chewed on it — the more damage
+    // landed, the longer it stayed. No phase consumes events here, but
+    // none is needed: the HP pokes keep `GameState.room` fresh, so the
+    // occupancy answer is already in hand on every pass. Unattributed,
+    // so it is a heuristic gate on a best-effort send — the caller's
+    // defence, not this check, is what actually clears the room.
+    let mut sent_heal = false;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(cfg.max_rest_seconds);
     let poke = Duration::from_millis(cfg.idle_poke_ms.max(1000));
-    while state.borrow().hp < target {
+    loop {
+        let (hp, contested) = {
+            let s = state.borrow();
+            (
+                s.hp,
+                s.room.as_ref().is_some_and(|room| sight.has_target(room)),
+            )
+        };
+        // A downed character cannot rest its way back over the gate;
+        // hand it to the defence pump, whose death handling is the one
+        // that knows what a negative HP prompt means.
+        if contested || hp <= 0 {
+            return DepartureWait::Contested;
+        }
+        if hp >= target {
+            return DepartureWait::Fit;
+        }
         if tokio::time::Instant::now() >= deadline {
-            return;
+            return DepartureWait::Fit;
+        }
+        // Actually REST, and actually look.
+        //
+        // This used to watch `hp` and wait. Two things made that
+        // useless on a live board: nothing asked the character to heal,
+        // and an idle board sends no prompts at all — so GameState
+        // never changed and the watch could not observe recovery even
+        // if it happened. It was a 120-second sleep that then departed
+        // at whatever HP it started with.
+        if !sent_heal {
+            session.send(&bot_config.heal_command);
+            sent_heal = true;
         }
         // A poke is what produces the prompt that carries HP; without one
         // there is nothing to observe.
         match tokio::time::timeout(poke, state.changed()).await {
             Ok(Ok(())) => {}
-            Ok(Err(_)) => return,
+            Ok(Err(_)) => return DepartureWait::Fit,
             Err(_) => {
                 // The poke exists only to provoke a prompt that carries
                 // HP into GameState; its own answer is irrelevant, so no
-                // attribution is needed (and none is read).
+                // attribution is needed (and none is read). That the
+                // answer ALSO refreshes the room is what feeds the
+                // occupancy check above.
                 session.send("look");
             }
         }
