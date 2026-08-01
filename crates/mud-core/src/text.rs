@@ -76,6 +76,13 @@ pub fn light_went_out(who: &str, item: &str) -> String {
     format!("{who}'s {item} just went out.")
 }
 
+/// The generic burn-out's second line (0xBD121, VERIFIED — "It's" is
+/// the DLL's own apostrophe). Order against [`no_longer_lit`] is
+/// ORACLE-OPEN.
+pub fn uses_gone(item: &str) -> String {
+    format!("It's uses gone, {item} disappears from your inventory!")
+}
+
 /// REMOVE of an unlit light: the refusal at `_REMOVE_ARMOUR` 0x19d3.
 /// Wording UNRECOVERED — ORACLE-VERIFY placeholder.
 pub const CANNOT_REMOVE_UNLIT_LIGHT: &str = "You cannot remove that!";

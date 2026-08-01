@@ -4151,6 +4151,7 @@ impl Core {
         }
         for id in sessions {
             self.upkeep_player(id);
+            self.burn_light(id);
         }
         // `medium_update_monsters` (0x21b31) resets the wander fairness
         // counter (DAT_0047fb90) once per pass, then each monster runs
@@ -4160,6 +4161,68 @@ impl Core {
         for id in monsters {
             self.upkeep_monster(id);
             self.wander_monster(id);
+        }
+    }
+
+    /// The lit-light burn (`_MEDIUM_UPDATE_CHARACTER` 19368-19427):
+    /// one use per medium tick, unconditionally while lit. At 0 uses:
+    /// the item's destruct message (line 1 to the holder, line 2 — if
+    /// any — to the room), or the generic pair plus the room's
+    /// "just went out." line; then destroy unless `retain_after_uses`,
+    /// and clear the lit slot either way.
+    fn burn_light(&mut self, session: SessionId) {
+        let Some(lit) = self.lit_item(session) else {
+            return;
+        };
+        let uses_left = {
+            let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session)
+            else {
+                return;
+            };
+            let Some(entry) = player.inventory.iter_mut().find(|(i, _)| *i == lit) else {
+                return;
+            };
+            entry.1 -= 1;
+            entry.1
+        };
+        if uses_left != 0 {
+            return;
+        }
+        let (name, destruct, retain) = {
+            let item = &self.content.items[&lit];
+            (item.name.clone(), item.destruct_msg, item.retain_after_uses)
+        };
+        let (who, room) = {
+            let p = self.player(session);
+            (p.name.clone(), p.location)
+        };
+        match destruct.and_then(|m| self.content.messages.get(&m)).cloned() {
+            Some(msg) => {
+                if let Some(line1) = msg.lines.first().filter(|l| !l.is_empty()) {
+                    self.output_line(session, line1);
+                }
+                if let Some(line2) = msg.lines.get(1).filter(|l| !l.is_empty()) {
+                    self.broadcast_to_room(room, Some(session), line2);
+                }
+            }
+            None => {
+                // Pair order ORACLE-OPEN.
+                self.output_line(session, &text::no_longer_lit(&name));
+                self.output_line(session, &text::uses_gone(&name));
+                self.broadcast_to_room(
+                    room,
+                    Some(session),
+                    &text::light_went_out(&who, &name),
+                );
+            }
+        }
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+            player.lit = None;
+            if retain == 0
+                && let Some(pos) = player.inventory.iter().position(|(i, _)| *i == lit)
+            {
+                player.inventory.remove(pos);
+            }
         }
     }
 

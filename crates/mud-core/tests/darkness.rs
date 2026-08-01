@@ -441,3 +441,170 @@ fn removing_an_unlit_light_is_refused() {
     );
     assert!(!shown.contains("not wearing"), "got: {shown:?}");
 }
+
+// ---- Slice 4: the burn tick (_MEDIUM_UPDATE_CHARACTER 19368-19427) ----
+
+use mud_core::content::{Message, MessageId};
+
+/// The torch with its real destruct message wired (8603, one line, no
+/// room half), and a messageless light for the generic-pair path.
+fn burn_world() -> Content {
+    let mut content = lit_world();
+    content.items.get_mut(&ItemId(175)).unwrap().destruct_msg = Some(MessageId(8603));
+    content.add_message(Message {
+        id: MessageId(8603),
+        lines: vec!["Your torch flickers and goes out.".into()],
+    });
+    // Mirrors the scaled lantern (1233): the one shipped light with no
+    // destruct record.
+    content.add_item(Item {
+        id: ItemId(1233),
+        name: "scaled lantern".into(),
+        item_type: 6,
+        uses: 6000,
+        abilities: vec![(Ability::IlluTarget, 200)],
+        ..Default::default()
+    });
+    // A rechargeable light: retain_after_uses survives the burn-out.
+    content.add_item(Item {
+        id: ItemId(500),
+        name: "everlamp".into(),
+        item_type: 6,
+        uses: 100,
+        retain_after_uses: 1,
+        abilities: vec![(Ability::IlluTarget, 175)],
+        ..Default::default()
+    });
+    content
+}
+
+fn ticks(core: &mut Core, n: u64) {
+    for _ in 0..n {
+        core.tick();
+    }
+}
+
+/// One use per 3s medium tick while lit: a 2-use torch survives the
+/// first tick and dies on the second.
+#[test]
+fn burn_is_one_use_per_medium_tick() {
+    let mut core = Core::new(burn_world(), CoreConfig::default());
+    let mut holder = player_at("Alice", 2);
+    holder.inventory.push((ItemId(175), 2));
+    let alice = core.attach_player(holder);
+    core.drain_events();
+    core.input(alice, "light torch");
+    core.drain_events();
+    ticks(&mut core, 3);
+    let shown = text_to(&core.drain_events(), alice);
+    assert!(
+        !shown.contains("flickers"),
+        "one use left after the first tick: {shown:?}"
+    );
+    ticks(&mut core, 3);
+    let shown = text_to(&core.drain_events(), alice);
+    assert!(
+        shown.contains("Your torch flickers and goes out."),
+        "got: {shown:?}"
+    );
+}
+
+/// An unlit light never burns: after nine idle ticks it still lights.
+#[test]
+fn an_unlit_light_never_burns() {
+    let mut core = Core::new(burn_world(), CoreConfig::default());
+    let mut holder = player_at("Alice", 1);
+    holder.inventory.push((ItemId(175), 1));
+    let alice = core.attach_player(holder);
+    core.drain_events();
+    ticks(&mut core, 9);
+    core.drain_events();
+    core.input(alice, "light torch");
+    let shown = text_to(&core.drain_events(), alice);
+    assert!(shown.contains("You lit the torch."), "got: {shown:?}");
+}
+
+/// The destruct-message path: line 1 to the user, no line 2 shipped for
+/// the torch so the room hears NOTHING; the shipped torch retains
+/// nothing, so it is destroyed and the room is dark again.
+#[test]
+fn flicker_out_destroys_the_torch_and_darkens_the_room() {
+    let mut core = Core::new(burn_world(), CoreConfig::default());
+    let mut holder = player_at("Alice", 2);
+    holder.inventory.push((ItemId(175), 1));
+    let alice = core.attach_player(holder);
+    let bob = core.attach_player(player_at("Bob", 2));
+    core.drain_events();
+    core.input(alice, "light torch");
+    core.drain_events();
+    ticks(&mut core, 3);
+    let events = core.drain_events();
+    let to_alice = text_to(&events, alice);
+    assert!(
+        to_alice.contains("Your torch flickers and goes out."),
+        "got: {to_alice:?}"
+    );
+    let to_bob = text_to(&events, bob);
+    assert!(
+        !to_bob.contains("just went out"),
+        "8603 has no room half: {to_bob:?}"
+    );
+    core.input(alice, "look");
+    let shown = text_to(&core.drain_events(), alice);
+    assert!(shown.contains(VERY_DARK), "destroyed and dark: {shown:?}");
+    // Gone from the inventory entirely: lighting it again says instead.
+    core.input(alice, "light torch");
+    let shown = text_to(&core.drain_events(), alice);
+    assert!(shown.contains("You say"), "got: {shown:?}");
+}
+
+/// The generic-pair path (no destruct record): both user lines (order
+/// ORACLE-OPEN), and the room DOES hear this one.
+#[test]
+fn a_messageless_light_burns_out_with_the_generic_pair() {
+    let mut core = Core::new(burn_world(), CoreConfig::default());
+    let mut holder = player_at("Alice", 2);
+    holder.inventory.push((ItemId(1233), 1));
+    let alice = core.attach_player(holder);
+    let bob = core.attach_player(player_at("Bob", 2));
+    core.drain_events();
+    core.input(alice, "light scaled lantern");
+    core.drain_events();
+    ticks(&mut core, 3);
+    let events = core.drain_events();
+    let to_alice = text_to(&events, alice);
+    assert!(
+        to_alice.contains("scaled lantern is no longer lit!"),
+        "got: {to_alice:?}"
+    );
+    assert!(
+        to_alice.contains("It's uses gone, scaled lantern disappears from your inventory!"),
+        "got: {to_alice:?}"
+    );
+    let to_bob = text_to(&events, bob);
+    assert!(
+        to_bob.contains("Alice's scaled lantern just went out."),
+        "got: {to_bob:?}"
+    );
+}
+
+/// retain_after_uses keeps the husk: burned out, extinguished, but
+/// still carried — and the recharge rung now answers for it.
+#[test]
+fn a_retained_light_survives_its_burn_out() {
+    let mut core = Core::new(burn_world(), CoreConfig::default());
+    let mut holder = player_at("Alice", 2);
+    holder.inventory.push((ItemId(500), 1));
+    let alice = core.attach_player(holder);
+    core.drain_events();
+    core.input(alice, "light everlamp");
+    core.drain_events();
+    ticks(&mut core, 3);
+    core.drain_events();
+    core.input(alice, "light everlamp");
+    let shown = text_to(&core.drain_events(), alice);
+    assert!(
+        shown.contains("You must recharge that before you may light it again."),
+        "survived at 0 uses: {shown:?}"
+    );
+}
