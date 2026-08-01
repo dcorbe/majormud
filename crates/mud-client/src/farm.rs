@@ -545,14 +545,6 @@ pub enum Verdict {
     Blind,
 }
 
-/// One room block, accepted as describing this stop. Anything that
-/// changes the room deletes it (see [`StopState::invalidate`]).
-struct Seen {
-    room: crate::events::RoomView,
-    /// When it arrived, for the staleness bound.
-    at: Instant,
-}
-
 /// What the runner has actually SEEN at this stop, and what that implies
 /// about leaving it.
 ///
@@ -585,8 +577,14 @@ pub struct StopState {
     linger: Duration,
     /// How stale an accepted block may get before it must be re-asked.
     recheck: Duration,
-    /// The last block accepted as describing this stop.
-    seen: Option<Seen>,
+    /// When this stop was last described by a block we believed.
+    ///
+    /// The block itself is gone. It used to be kept because occupancy
+    /// was read off it; [`crate::world::Here`] answers that now, and
+    /// what is left is the one question a snapshot could always answer
+    /// honestly — how long ago. `None` is "never observed, or observed
+    /// and since invalidated", which is what makes `Ask` the floor.
+    observed: Option<Instant>,
     /// When the room was FIRST proven empty. The respawn budget runs from
     /// here, so re-asking does not restart it; anything that makes the
     /// room untrue clears it.
@@ -619,7 +617,7 @@ impl StopState {
             stop_name,
             linger: Duration::from_secs(cfg.dwell_empty_seconds),
             recheck: Duration::from_millis(cfg.idle_poke_ms),
-            seen: None,
+            observed: None,
             pending_look: None,
             empty_since: None,
             blind: false,
@@ -650,7 +648,7 @@ impl StopState {
     /// just lit, silently poisoning the light plan for the run. The cost
     /// of forgetting is one honest re-look.
     fn invalidate(&mut self) {
-        self.seen = None;
+        self.observed = None;
         self.empty_since = None;
         self.pending_look = None;
         self.blind = false;
@@ -666,26 +664,55 @@ impl StopState {
     /// like [`StopState::on_event`] it is called AFTER the bot has been
     /// shown the same block. A block naming somewhere else seeds
     /// nothing — however it arrived, it describes somewhere else.
-    pub fn seed(&mut self, room: crate::events::RoomView, bot: &crate::bot::Bot, now: Instant) {
+    pub fn seed(
+        &mut self,
+        room: crate::events::RoomView,
+        bot: &crate::bot::Bot,
+        here: &crate::world::Here,
+        now: Instant,
+    ) {
         if room.name != self.stop_name {
             return;
         }
         self.blind = false;
-        if bot.has_target(&room) {
+        self.observed = Some(now);
+        self.note_occupancy(bot, here, now);
+    }
+
+    /// Start, hold or clear the respawn budget, from the MAINTAINED
+    /// occupant list rather than from the block that happens to be in
+    /// hand.
+    ///
+    /// The distinction is the whole of stage 2. A block is a snapshot
+    /// with a shelf life; [`crate::world::Here`] has the kills,
+    /// arrivals and departures since it folded in. Reading the snapshot
+    /// meant a kill could only be learned from another `look`, so every
+    /// kill in a pack cost a round-trip before the next swing.
+    ///
+    /// Both guards are load-bearing. Without an observation in hand
+    /// there is nothing to be empty OF — `verdict` returns `Ask`
+    /// anyway, and starting the budget there would have it run while
+    /// the room is unknown. And an unseeded model reports an empty
+    /// occupant list, which is not the same answer as an empty room.
+    fn note_occupancy(&mut self, bot: &crate::bot::Bot, here: &crate::world::Here, now: Instant) {
+        if self.observed.is_none() || !here.seeded() {
+            return;
+        }
+        if bot.has_target_among(here.names()) {
             self.empty_since = None;
         } else {
             self.empty_since.get_or_insert(now);
         }
-        self.seen = Some(Seen { room, at: now });
     }
 
-    /// Fold one attributed event. Call AFTER
-    /// [`crate::bot::Bot::on_event`], so `engaged` and `has_target`
-    /// already account for it.
+    /// Fold one attributed event. Call AFTER [`crate::bot::Bot::on_event`]
+    /// and AFTER [`crate::world::Here::on_event`], so `engaged` and the
+    /// occupant list already account for it.
     pub fn on_event(
         &mut self,
         cor: &crate::correlate::Correlated,
         bot: &crate::bot::Bot,
+        here: &crate::world::Here,
         now: Instant,
     ) {
         // Does this event answer OUR outstanding look? An unsolicited
@@ -707,15 +734,7 @@ impl StopState {
                     self.pending_look = None;
                     if room.name == self.stop_name {
                         self.blind = false;
-                        if bot.has_target(room) {
-                            self.empty_since = None;
-                        } else {
-                            self.empty_since.get_or_insert(now);
-                        }
-                        self.seen = Some(Seen {
-                            room: room.clone(),
-                            at: now,
-                        });
+                        self.observed = Some(now);
                     }
                 }
             }
@@ -759,6 +778,11 @@ impl StopState {
             }
             _ => {}
         }
+        // Every fold, not just the ones carrying a block. A kill that
+        // empties the room announces itself in a death line and nothing
+        // else — under stage 2 no `look` follows it, so this is the only
+        // place the respawn budget can start.
+        self.note_occupancy(bot, here, now);
     }
 
     /// Everything observed is dropped: a lagged broadcast, or a walk back
@@ -768,7 +792,7 @@ impl StopState {
     /// overflows the channel — so it is precisely the busy room where
     /// carrying a stale "empty" across would walk out immediately.
     pub fn reset(&mut self) {
-        self.seen = None;
+        self.observed = None;
         // Anything already in flight predates the reset.
         self.pending_look = None;
         self.empty_since = None;
@@ -780,7 +804,12 @@ impl StopState {
     /// Asked once per pump iteration, INCLUDING the iterations where no
     /// event arrived — that is where a respawn budget expires, so folding
     /// this into `on_event` would make it unreachable.
-    pub fn verdict(&self, bot: &crate::bot::Bot, now: Instant) -> Verdict {
+    pub fn verdict(
+        &self,
+        bot: &crate::bot::Bot,
+        here: &crate::world::Here,
+        now: Instant,
+    ) -> Verdict {
         // An unfinished fight outranks everything. A block that raced the
         // blow which started the fight is not evidence it is over.
         if bot.engaged().is_some() {
@@ -816,20 +845,24 @@ impl StopState {
         if self.blind {
             return Verdict::Blind;
         }
-        let Some(seen) = &self.seen else {
+        let Some(observed) = self.observed else {
             return Verdict::Ask;
         };
-        // Staleness is settled BEFORE occupancy, and the order is
-        // load-bearing. Invalidation now DELETES the observation (the
-        // kill that emptied the room lands as `seen = None` -> `Ask`),
-        // so what is left here is pure shelf life: nothing announces a
-        // respawn, so an old block must be re-asked, not trusted.
-        if now.duration_since(seen.at) >= self.recheck {
+        // Pure shelf life, and it is the one thing the model cannot
+        // replace: nothing announces a respawn — `generate_monster`
+        // simply puts a monster in the room — so silence is never proof
+        // the model is still true, however well it folds what the board
+        // does say. An old observation is re-asked, not trusted.
+        if now.duration_since(observed) >= self.recheck {
             return Verdict::Ask;
         }
-        // Judged against the CURRENT bot, not as of when the block
-        // arrived: a target refused since then no longer holds the stop.
-        if bot.has_target(&seen.room) {
+        // Asked of the MODEL, not of the block: `seen` above is only
+        // the proof that this stop has been observed at all and how
+        // long ago. Who is standing here now is `Here`'s answer, and it
+        // has the kills, arrivals and departures since that block in
+        // it. Judged against the CURRENT bot too — a target refused
+        // since then no longer holds the stop.
+        if bot.has_target_among(here.names()) {
             return Verdict::Busy;
         }
         match self.empty_since {
@@ -2098,10 +2131,24 @@ async fn farm_stop(
     // an ActorEntered — the same race the opening look always had — and
     // the `recheck` shelf life forces the re-ask that bounds it.
     if let Some(room) = arrival {
+        let now = Instant::now();
         for crate::bot::BotAction::Send(cmd) in bot.on_event(&Event::RoomSeen(room.clone())) {
             gate.push(cmd);
         }
-        seen.seed(room, &bot, Instant::now());
+        // The model is seeded from the arrival too, and must be before
+        // the state reads it. It was ATTRIBUTED (to the leg's final
+        // step), which is exactly what `Here` believes; leaving it out
+        // left the model unseeded until the first look came back, and
+        // an unseeded model answers "no evidence" to every question the
+        // arrival block had already settled.
+        here.on_event(
+            &crate::correlate::Correlated {
+                event: Event::RoomSeen(room.clone()),
+                answers: Some(crate::correlate::CmdId(0)),
+            },
+            now,
+        );
+        seen.seed(room, &bot, &here, now);
     }
 
     loop {
@@ -2120,7 +2167,7 @@ async fn farm_stop(
         // and where an unanswered `look` gets asked again. The opening
         // `look` that seeds the bot is just the first `Ask`.
         let now = Instant::now();
-        let verdict = seen.verdict(&bot, now);
+        let verdict = seen.verdict(&bot, &here, now);
         let mut hold_until = None;
         match &verdict {
             // The bot is driving; nothing for the runner to decide.
@@ -2335,15 +2382,17 @@ async fn farm_stop(
             gate.push(cmd);
         }
         light.on_event(&cor);
-        // Folded last, so `engaged` and `has_target` already account for
-        // this event when the next iteration asks for a verdict.
-        seen.on_event(&cor, &bot, Instant::now());
-        // Shadow accounting only: nothing below reads `here` to decide
-        // anything yet. The tally is what earns it that right — see
-        // FarmStats::model_overclaims.
+        // The model folds BEFORE the stop state, because the stop state
+        // now decides occupancy by asking it. The tally still runs —
+        // the counters that earned `Here` this job are what would catch
+        // it losing them.
         let seen_divergences = here.reconcile.total();
         here.on_event(&cor, Instant::now());
         stats.note_divergences(&here.reconcile, seen_divergences);
+        // Folded last, so `engaged` and the occupant list already
+        // account for this event when the next iteration asks for a
+        // verdict.
+        seen.on_event(&cor, &bot, &here, Instant::now());
     }
 }
 

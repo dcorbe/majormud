@@ -135,6 +135,9 @@ fn drive(path: &std::path::Path) -> Run {
         })
         .unwrap_or_default();
     let mut stop = StopState::new(stop_name.clone(), &FarmConfig::default());
+    // The room model the verdict now reads occupancy from, fed the same
+    // stream in the same order the pump uses.
+    let mut here = mud_client::world::Here::default();
     // The last block the board rendered for this stop, tracked straight
     // off the event stream so the check does not lean on StopState's own
     // bookkeeping to audit StopState.
@@ -151,7 +154,7 @@ fn drive(path: &std::path::Path) -> Run {
 
         // Pump like farm_stop: the verdict drives the looks, and the
         // corpus supplies the answers the operator's own looks recorded.
-        match stop.verdict(&bot, now) {
+        match stop.verdict(&bot, &here, now) {
             // The runner's `look` is deliberately NOT pushed through
             // `gate`: that gate is what the assertions below audit, and
             // injecting commands the bot never decided would rewrite what
@@ -174,6 +177,7 @@ fn drive(path: &std::path::Path) -> Run {
                 // A real runner would leave; keep replaying so one
                 // transcript can exercise more than a single stop.
                 stop = StopState::new(stop_name.clone(), &FarmConfig::default());
+                here.reset();
                 last_block = None;
             }
             Verdict::Busy | Verdict::Waiting { .. } => {}
@@ -213,7 +217,8 @@ fn drive(path: &std::path::Path) -> Run {
             pending_acks.push(Event::Line(cmd.clone()));
             run.emitted.push((i, cmd));
         }
-        stop.on_event(&cor, &bot, now);
+        here.on_event(&cor, now);
+        stop.on_event(&cor, &bot, &here, now);
     }
     let after = t0 + TICK * (events.len() as u32) + BACKOFF * 2;
     while let Some(cmd) = gate.poll(after) {

@@ -571,6 +571,25 @@ impl Here {
         }
     }
 
+    /// Who the model believes is standing here, for
+    /// [`crate::bot::Bot::has_target_among`]. More current than any
+    /// block by construction: the kills, arrivals and departures since
+    /// the last render are already folded in.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.occupants.iter().map(|o| o.name.as_str())
+    }
+
+    /// Does the model hold beliefs worth deciding on?
+    ///
+    /// False before the first block at a stop and after a
+    /// [`Here::reset`] — and an empty occupant list means those two
+    /// cases and "the room is empty" would otherwise be the same
+    /// answer. They are opposite answers: one is no evidence, the other
+    /// is evidence of nothing.
+    pub fn seeded(&self) -> bool {
+        self.seeded.is_some()
+    }
+
     /// Record that a `get` went out for this denomination. Called by
     /// whoever sends it, so the try cap counts ATTEMPTS rather than
     /// blocks — an encumbrance refusal produces neither an

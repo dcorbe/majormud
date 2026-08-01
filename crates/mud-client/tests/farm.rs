@@ -1116,25 +1116,88 @@ fn block(also_here: &[&str]) -> Event {
 /// accepted answer, so reusing one id across sequential asks is safe.
 const LOOK_ID: CmdId = CmdId(77);
 
-/// The runner's order: the bot folds the event first, then the stop
-/// state, so `engaged` and `has_target` already reflect it. Events fed
-/// this way are UNSOLICITED (`answers: None`).
-fn feed(stop: &mut StopState, bot: &mut Bot, ev: &Event, now: Instant) {
-    bot.on_event(ev);
-    stop.on_event(&unsolicited(ev.clone()), bot, now);
+/// The three models a stop decides from, driven together.
+///
+/// `verdict` asks the bot what it would fight, `Here` who is standing
+/// there, and `StopState` how long ago the room was observed. The
+/// runner feeds all three from one event stream, so a test that drove
+/// only one of them would be asserting against a third of a client —
+/// and would go on passing while the rest rotted.
+struct Stop {
+    state: StopState,
+    here: mud_client::world::Here,
+    bot: Bot,
 }
 
-/// Feed an event ATTRIBUTED to the outstanding look.
-fn feed_answer(stop: &mut StopState, bot: &mut Bot, ev: &Event, now: Instant) {
-    bot.on_event(ev);
-    stop.on_event(&answering(ev.clone(), LOOK_ID), bot, now);
-}
+impl Stop {
+    fn new(bot: Bot, linger_secs: u64) -> Self {
+        Stop {
+            state: stop_state(linger_secs),
+            here: mud_client::world::Here::default(),
+            bot,
+        }
+    }
 
-/// Ask, and answer -- the only request/response pair the runner has.
-/// The answer arrives ATTRIBUTED to the ask, as the session guarantees.
-fn look_and_see(stop: &mut StopState, bot: &mut Bot, ev: &Event, now: Instant) {
-    stop.on_sent("look", LOOK_ID);
-    feed_answer(stop, bot, ev, now);
+    /// The runner's order: the bot folds first, then the model, then
+    /// the stop state — so `engaged` and the occupant list already
+    /// reflect the event when the verdict is asked.
+    fn fold(&mut self, cor: Correlated, now: Instant) {
+        self.bot.on_event(&cor.event);
+        self.here.on_event(&cor, now);
+        self.state.on_event(&cor, &self.bot, &self.here, now);
+    }
+
+    /// An UNSOLICITED event (`answers: None`) — somebody else's render,
+    /// or one of the async truths that ride in regardless.
+    fn feed(&mut self, ev: &Event, now: Instant) {
+        self.fold(unsolicited(ev.clone()), now);
+    }
+
+    /// An event ATTRIBUTED to the outstanding look.
+    fn feed_answer(&mut self, ev: &Event, now: Instant) {
+        self.fold(answering(ev.clone(), LOOK_ID), now);
+    }
+
+    /// Ask, and answer -- the only request/response pair the runner
+    /// has. The answer arrives ATTRIBUTED to the ask, as the session
+    /// guarantees.
+    fn look_and_see(&mut self, ev: &Event, now: Instant) {
+        self.state.on_sent("look", LOOK_ID);
+        self.feed_answer(ev, now);
+    }
+
+    /// Fold into the two models the RUNNER keeps, without showing the
+    /// bot. Only for pinning `verdict`'s priority order: an attributed
+    /// block that omits the target clears `engaged`, so a test asking
+    /// "does a live fight outrank an empty room" has to withhold it or
+    /// it has nothing left to ask.
+    fn feed_behind_the_bot(&mut self, cor: Correlated, now: Instant) {
+        self.here.on_event(&cor, now);
+        self.state.on_event(&cor, &self.bot, &self.here, now);
+    }
+
+    fn sent(&mut self, line: &str, id: CmdId) {
+        self.state.on_sent(line, id);
+    }
+
+    /// The traveller's arrival block: attributed by construction, so
+    /// the model believes it and the state seeds from it — the pump's
+    /// own opening sequence.
+    fn seed(&mut self, room: RoomView, now: Instant) {
+        self.bot.on_event(&Event::RoomSeen(room.clone()));
+        self.here
+            .on_event(&answering(Event::RoomSeen(room.clone()), LOOK_ID), now);
+        self.state.seed(room, &self.bot, &self.here, now);
+    }
+
+    fn reset(&mut self) {
+        self.state.reset();
+        self.here.reset();
+    }
+
+    fn verdict(&self, now: Instant) -> Verdict {
+        self.state.verdict(&self.bot, &self.here, now)
+    }
 }
 
 /// THE regression test for the whole bug class. Prompts say the board is
@@ -1143,12 +1206,11 @@ fn look_and_see(stop: &mut StopState, bot: &mut Bot, ev: &Event, now: Instant) {
 #[test]
 fn prompts_do_not_end_a_stop() {
     let t0 = Instant::now();
-    let mut bot = combat_bot();
-    let mut stop = stop_state(0);
+    let mut w = Stop::new(combat_bot(), 0);
     for i in 0..100 {
-        feed(&mut stop, &mut bot, &prompt(30), t0);
+        w.feed(&prompt(30), t0);
         assert_eq!(
-            stop.verdict(&bot, t0),
+            w.verdict(t0),
             Verdict::Ask,
             "prompt {i} ended a stop the runner had never looked at"
         );
@@ -1160,18 +1222,14 @@ fn prompts_do_not_end_a_stop() {
 #[test]
 fn a_room_block_listing_a_monster_is_never_empty() {
     let t0 = Instant::now();
-    let mut bot = combat_bot();
-    let mut stop = stop_state(0);
-    look_and_see(
-        &mut stop,
-        &mut bot,
-        &block(&["filthbug", "giant rat", "fat giant rat"]),
+    let mut w = Stop::new(combat_bot(), 0);
+    w.look_and_see(&block(&["filthbug", "giant rat", "fat giant rat"]),
         t0,
     );
     for i in 0..20 {
-        feed(&mut stop, &mut bot, &prompt(30), t0);
+        w.feed(&prompt(30), t0);
         assert_eq!(
-            stop.verdict(&bot, t0),
+            w.verdict(t0),
             Verdict::Busy,
             "prompt {i} called a room with three monsters in it empty"
         );
@@ -1181,11 +1239,10 @@ fn a_room_block_listing_a_monster_is_never_empty() {
 #[test]
 fn zero_linger_leaves_the_moment_the_room_is_proven_empty() {
     let t0 = Instant::now();
-    let mut bot = combat_bot();
-    let mut stop = stop_state(0);
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Ask, "nothing seen yet");
-    look_and_see(&mut stop, &mut bot, &block(&[]), t0);
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Empty);
+    let mut w = Stop::new(combat_bot(), 0);
+    assert_eq!(w.verdict(t0), Verdict::Ask, "nothing seen yet");
+    w.look_and_see(&block(&[]), t0);
+    assert_eq!(w.verdict(t0), Verdict::Empty);
 }
 
 /// With a respawn budget configured, proving the room empty starts the
@@ -1193,11 +1250,10 @@ fn zero_linger_leaves_the_moment_the_room_is_proven_empty() {
 #[test]
 fn an_empty_room_block_is_not_enough_on_its_own() {
     let t0 = Instant::now();
-    let mut bot = combat_bot();
-    let mut stop = stop_state(15);
-    look_and_see(&mut stop, &mut bot, &block(&[]), t0);
+    let mut w = Stop::new(combat_bot(), 15);
+    w.look_and_see(&block(&[]), t0);
     assert_eq!(
-        stop.verdict(&bot, t0),
+        w.verdict(t0),
         Verdict::Waiting {
             until: t0 + Duration::from_secs(15)
         }
@@ -1208,9 +1264,9 @@ fn an_empty_room_block_is_not_enough_on_its_own() {
     // nothing is here. Leaving on a 15-second-old look is exactly the
     // kind of guess this type exists to stop making.
     let t1 = t0 + Duration::from_secs(15);
-    assert_eq!(stop.verdict(&bot, t1), Verdict::Ask, "the block went stale");
-    look_and_see(&mut stop, &mut bot, &block(&[]), t1);
-    assert_eq!(stop.verdict(&bot, t1), Verdict::Empty);
+    assert_eq!(w.verdict(t1), Verdict::Ask, "the block went stale");
+    w.look_and_see(&block(&[]), t1);
+    assert_eq!(w.verdict(t1), Verdict::Empty);
 }
 
 /// The race the correlation counter exists for. A `look` goes out, a rat
@@ -1219,14 +1275,10 @@ fn an_empty_room_block_is_not_enough_on_its_own() {
 #[test]
 fn a_room_block_that_raced_a_new_arrival_is_not_believed() {
     let t0 = Instant::now();
-    let mut bot = combat_bot();
-    let mut stop = stop_state(0);
+    let mut w = Stop::new(combat_bot(), 0);
 
-    stop.on_sent("look", LOOK_ID);
-    feed(
-        &mut stop,
-        &mut bot,
-        &Event::ActorEntered {
+    w.sent("look", LOOK_ID);
+    w.feed(&Event::ActorEntered {
             name: "giant rat".into(),
             from: Some("north".into()),
         },
@@ -1236,16 +1288,16 @@ fn a_room_block_that_raced_a_new_arrival_is_not_believed() {
     // know the room changed mid-render; only invalidate() forgetting the
     // ask keeps it from being believed. (Mutation-tested: deleting the
     // pending clear from invalidate() must fail here.)
-    feed_answer(&mut stop, &mut bot, &block(&[]), t0);
+    w.feed_answer(&block(&[]), t0);
     assert_ne!(
-        stop.verdict(&bot, t0),
+        w.verdict(t0),
         Verdict::Empty,
         "believed a room block that predated the arrival"
     );
 
     // Asked again after things settled, the same answer is trustworthy.
-    look_and_see(&mut stop, &mut bot, &block(&[]), t0);
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Empty);
+    w.look_and_see(&block(&[]), t0);
+    assert_eq!(w.verdict(t0), Verdict::Empty);
 }
 
 /// An unfinished fight outranks everything. A block that raced the blow
@@ -1253,53 +1305,44 @@ fn a_room_block_that_raced_a_new_arrival_is_not_believed() {
 #[test]
 fn an_unfinished_fight_outranks_an_empty_block() {
     let t0 = Instant::now();
-    let mut bot = combat_bot();
-    let mut stop = stop_state(0);
-    look_and_see(&mut stop, &mut bot, &block(&["cave bear"]), t0);
-    assert!(bot.engaged().is_some(), "test needs a live fight");
-    stop.on_sent("look", LOOK_ID);
-    stop.on_event(&answering(block(&[]), LOOK_ID), &bot, t0);
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Busy);
+    let mut w = Stop::new(combat_bot(), 0);
+    w.look_and_see(&block(&["cave bear"]), t0);
+    assert!(w.bot.engaged().is_some(), "test needs a live fight");
+    w.sent("look", LOOK_ID);
+    w.feed_behind_the_bot(answering(block(&[]), LOOK_ID), t0);
+    assert_eq!(w.verdict(t0), Verdict::Busy);
 }
 
 #[test]
 fn a_kill_invalidates_the_room_block() {
     let t0 = Instant::now();
-    let mut bot = combat_bot();
-    let mut stop = stop_state(0);
-    look_and_see(&mut stop, &mut bot, &block(&["giant rat", "filthbug"]), t0);
-    feed(
-        &mut stop,
-        &mut bot,
-        &Event::Line("You gain 16 experience.".into()),
+    let mut w = Stop::new(combat_bot(), 0);
+    w.look_and_see(&block(&["giant rat", "filthbug"]), t0);
+    w.feed(&Event::Line("You gain 16 experience.".into()),
         t0,
     );
     assert_eq!(
-        stop.verdict(&bot, t0),
+        w.verdict(t0),
         Verdict::Ask,
         "kept trusting a room block taken before the kill"
     );
-    look_and_see(&mut stop, &mut bot, &block(&["filthbug"]), t0);
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Busy);
+    w.look_and_see(&block(&["filthbug"]), t0);
+    assert_eq!(w.verdict(t0), Verdict::Busy);
 }
 
 #[test]
 fn a_monster_that_walks_in_invalidates_the_room_block() {
     let t0 = Instant::now();
-    let mut bot = combat_bot();
-    let mut stop = stop_state(0);
-    look_and_see(&mut stop, &mut bot, &block(&[]), t0);
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Empty);
-    feed(
-        &mut stop,
-        &mut bot,
-        &Event::ActorEntered {
+    let mut w = Stop::new(combat_bot(), 0);
+    w.look_and_see(&block(&[]), t0);
+    assert_eq!(w.verdict(t0), Verdict::Empty);
+    w.feed(&Event::ActorEntered {
             name: "giant rat".into(),
             from: None,
         },
         t0,
     );
-    assert_ne!(stop.verdict(&bot, t0), Verdict::Empty);
+    assert_ne!(w.verdict(t0), Verdict::Empty);
 }
 
 /// A blow landing on US proves something is here that the block may not
@@ -1307,31 +1350,28 @@ fn a_monster_that_walks_in_invalidates_the_room_block() {
 #[test]
 fn being_hit_invalidates_the_room_block_but_swinging_does_not() {
     let t0 = Instant::now();
-    let mut bot = combat_bot();
-    let mut stop = stop_state(0);
+    let mut w = Stop::new(combat_bot(), 0);
 
-    look_and_see(&mut stop, &mut bot, &block(&[]), t0);
-    stop.on_event(
-        &unsolicited(Event::CombatHit {
+    w.look_and_see(&block(&[]), t0);
+    w.feed(
+        &Event::CombatHit {
             attacker: Actor::You,
             target: Actor::Other("giant rat".into()),
             damage: 3,
-        }),
-        &bot,
+        },
         t0,
     );
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Empty, "our own swing");
+    assert_eq!(w.verdict(t0), Verdict::Empty, "our own swing");
 
-    stop.on_event(
-        &unsolicited(Event::CombatHit {
+    w.feed(
+        &Event::CombatHit {
             attacker: Actor::Other("giant rat".into()),
             target: Actor::You,
             damage: 7,
-        }),
-        &bot,
+        },
         t0,
     );
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Ask, "something hit us");
+    assert_eq!(w.verdict(t0), Verdict::Ask, "something hit us");
 }
 
 /// The leg's final step already earned an attributed block describing
@@ -1341,43 +1381,41 @@ fn being_hit_invalidates_the_room_block_but_swinging_does_not() {
 #[test]
 fn a_seeded_stop_needs_no_opening_look() {
     let t0 = Instant::now();
-    let mut bot = combat_bot();
-    let mut stop = stop_state(0);
-    stop.seed(
-        view_named(STOP, &["giant rat"]),
-        &bot,
-        t0,
+    let mut w = Stop::new(combat_bot(), 0);
+    w.seed(view_named(STOP, &["giant rat"]), t0,
     );
     assert_eq!(
-        stop.verdict(&bot, t0),
+        w.verdict(t0),
         Verdict::Busy,
         "the seeded block lists a target; nothing needs asking"
     );
 
     // And a seeded EMPTY room needs no look either: with no linger the
     // verdict is Empty on the evidence the traveller brought.
-    let mut stop = stop_state(0);
-    stop.seed(view_named(STOP, &[]), &bot, t0);
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Empty);
+    w.seed(view_named(STOP, &[]), t0);
+    assert_eq!(w.verdict(t0), Verdict::Empty);
 
     // The pump's ordering contract: the bot is shown the block BEFORE
     // the state folds it, so `engaged` reflects it — same as on_event.
-    let mut stop = stop_state(0);
-    bot.on_event(&block(&["giant rat"]));
-    stop.seed(view_named(STOP, &["giant rat"]), &bot, t0);
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Busy);
+    w.bot.on_event(&block(&["giant rat"]));
+    w.seed(view_named(STOP, &["giant rat"]), t0);
+    assert_eq!(w.verdict(t0), Verdict::Busy);
 }
 
 /// Same discipline as pending_look: a block naming somewhere else
 /// describes somewhere else, however it arrived.
+///
+/// Asked with combat off so the verdict answers about the SEED and
+/// nothing else. Had the state believed the foreign block, `observed`
+/// would be set and an unfightable room reads `Empty` at zero linger —
+/// so `Ask` is the discriminating answer here, not the default one.
 #[test]
 fn a_seed_naming_somewhere_else_is_not_believed() {
     let t0 = Instant::now();
-    let bot = combat_bot();
-    let mut stop = stop_state(0);
-    stop.seed(view_named("Somewhere Else", &["giant rat"]), &bot, t0);
+    let mut w = Stop::new(Bot::new(BotConfig::default()), 0);
+    w.seed(view_named("Somewhere Else", &["giant rat"]), t0);
     assert_eq!(
-        stop.verdict(&bot, t0),
+        w.verdict(t0),
         Verdict::Ask,
         "a foreign block seeded nothing; the stop still has to ask"
     );
@@ -1392,34 +1430,27 @@ fn a_seed_naming_somewhere_else_is_not_believed() {
 #[test]
 fn a_whiff_at_us_invalidates_the_room_block() {
     let t0 = Instant::now();
-    let mut bot = combat_bot();
-    let mut stop = stop_state(0);
-    look_and_see(&mut stop, &mut bot, &block(&[]), t0);
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Empty);
-    feed(
-        &mut stop,
-        &mut bot,
-        &Event::CombatMiss {
+    let mut w = Stop::new(combat_bot(), 0);
+    w.look_and_see(&block(&[]), t0);
+    assert_eq!(w.verdict(t0), Verdict::Empty);
+    w.feed(&Event::CombatMiss {
             line: "The thin giant rat lunges at you!".into(),
         },
         t0,
     );
     assert_eq!(
-        stop.verdict(&bot, t0),
+        w.verdict(t0),
         Verdict::Ask,
         "a monster is swinging at us and the runner still called the room empty"
     );
 
-    look_and_see(&mut stop, &mut bot, &block(&[]), t0);
-    feed(
-        &mut stop,
-        &mut bot,
-        &Event::CombatMiss {
+    w.look_and_see(&block(&[]), t0);
+    w.feed(&Event::CombatMiss {
             line: "You swing at giant rat!".into(),
         },
         t0,
     );
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Empty, "our own whiff");
+    assert_eq!(w.verdict(t0), Verdict::Empty, "our own whiff");
 }
 
 /// "*Combat Off*" ends a fight whatever the death wording said — the
@@ -1430,18 +1461,14 @@ fn a_whiff_at_us_invalidates_the_room_block() {
 #[test]
 fn combat_off_invalidates_the_room_block() {
     let t0 = Instant::now();
-    let mut bot = combat_bot();
-    let mut stop = stop_state(0);
-    look_and_see(&mut stop, &mut bot, &block(&["acid slime"]), t0);
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Busy);
-    feed(
-        &mut stop,
-        &mut bot,
-        &Event::Line("*Combat Off*".into()),
+    let mut w = Stop::new(combat_bot(), 0);
+    w.look_and_see(&block(&["acid slime"]), t0);
+    assert_eq!(w.verdict(t0), Verdict::Busy);
+    w.feed(&Event::Line("*Combat Off*".into()),
         t0,
     );
     assert_eq!(
-        stop.verdict(&bot, t0),
+        w.verdict(t0),
         Verdict::Ask,
         "the fight is over and the pre-fight block cannot be trusted"
     );
@@ -1475,23 +1502,16 @@ fn a_heal_the_bot_never_sent_does_not_arm_the_heal_watch() {
 #[test]
 fn a_say_fallthrough_invalidates_the_room_block() {
     let t0 = Instant::now();
-    let mut bot = combat_bot();
-    let mut stop = stop_state(0);
-    look_and_see(
-        &mut stop,
-        &mut bot,
-        &block(&["carrion beast", "kobold thief"]),
+    let mut w = Stop::new(combat_bot(), 0);
+    w.look_and_see(&block(&["carrion beast", "kobold thief"]),
         t0,
     );
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Busy);
-    feed(
-        &mut stop,
-        &mut bot,
-        &Event::Line("You say \"a beast\"".into()),
+    assert_eq!(w.verdict(t0), Verdict::Busy);
+    w.feed(&Event::Line("You say \"a beast\"".into()),
         t0,
     );
     assert_eq!(
-        stop.verdict(&bot, t0),
+        w.verdict(t0),
         Verdict::Ask,
         "the swing never started; the block that prompted it is stale"
     );
@@ -1503,21 +1523,20 @@ fn a_say_fallthrough_invalidates_the_room_block() {
 #[test]
 fn an_aged_room_block_has_to_be_asked_again() {
     let t0 = Instant::now();
-    let mut bot = combat_bot();
-    let mut stop = stop_state(60);
-    look_and_see(&mut stop, &mut bot, &block(&[]), t0);
+    let mut w = Stop::new(combat_bot(), 60);
+    w.look_and_see(&block(&[]), t0);
     let poke = Duration::from_millis(POKE_MS);
     assert!(matches!(
-        stop.verdict(&bot, t0 + poke - Duration::from_millis(1)),
+        w.verdict(t0 + poke - Duration::from_millis(1)),
         Verdict::Waiting { .. }
     ));
-    assert_eq!(stop.verdict(&bot, t0 + poke), Verdict::Ask);
+    assert_eq!(w.verdict(t0 + poke), Verdict::Ask);
 
     // Re-answered, the respawn budget keeps running from when the room
     // was FIRST proven empty -- a re-look is not a fresh start.
-    look_and_see(&mut stop, &mut bot, &block(&[]), t0 + poke);
+    w.look_and_see(&block(&[]), t0 + poke);
     assert_eq!(
-        stop.verdict(&bot, t0 + poke),
+        w.verdict(t0 + poke),
         Verdict::Waiting {
             until: t0 + Duration::from_secs(60)
         }
@@ -1527,22 +1546,18 @@ fn an_aged_room_block_has_to_be_asked_again() {
 #[test]
 fn the_respawn_budget_restarts_when_something_arrives() {
     let t0 = Instant::now();
-    let mut bot = combat_bot();
-    let mut stop = stop_state(60);
-    look_and_see(&mut stop, &mut bot, &block(&[]), t0);
+    let mut w = Stop::new(combat_bot(), 60);
+    w.look_and_see(&block(&[]), t0);
     let t1 = t0 + Duration::from_secs(30);
-    feed(
-        &mut stop,
-        &mut bot,
-        &Event::ActorLeft {
+    w.feed(&Event::ActorLeft {
             name: "Vexil".into(),
             to: None,
         },
         t1,
     );
-    look_and_see(&mut stop, &mut bot, &block(&[]), t1);
+    w.look_and_see(&block(&[]), t1);
     assert_eq!(
-        stop.verdict(&bot, t1),
+        w.verdict(t1),
         Verdict::Waiting {
             until: t1 + Duration::from_secs(60)
         },
@@ -1556,19 +1571,15 @@ fn the_respawn_budget_restarts_when_something_arrives() {
 #[test]
 fn a_refused_monster_does_not_hold_the_stop() {
     let t0 = Instant::now();
-    let mut bot = combat_bot();
-    let mut stop = stop_state(0);
-    look_and_see(&mut stop, &mut bot, &block(&["kobold thief"]), t0);
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Busy);
-    feed(
-        &mut stop,
-        &mut bot,
-        &Event::Line(mud_core::crime::WARN_ON_EVIL_REFUSAL.to_string()),
+    let mut w = Stop::new(combat_bot(), 0);
+    w.look_and_see(&block(&["kobold thief"]), t0);
+    assert_eq!(w.verdict(t0), Verdict::Busy);
+    w.feed(&Event::Line(mud_core::crime::WARN_ON_EVIL_REFUSAL.to_string()),
         t0,
     );
-    look_and_see(&mut stop, &mut bot, &block(&["kobold thief"]), t0);
+    w.look_and_see(&block(&["kobold thief"]), t0);
     assert_eq!(
-        stop.verdict(&bot, t0),
+        w.verdict(t0),
         Verdict::Empty,
         "a monster the board will not let us attack held the stop open"
     );
@@ -1577,10 +1588,9 @@ fn a_refused_monster_does_not_hold_the_stop() {
 #[test]
 fn ignored_names_and_players_do_not_hold_the_stop() {
     let t0 = Instant::now();
-    let mut bot = combat_bot();
-    let mut stop = stop_state(0);
-    look_and_see(&mut stop, &mut bot, &block(&["town guard", "Vexil"]), t0);
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Empty);
+    let mut w = Stop::new(combat_bot(), 0);
+    w.look_and_see(&block(&["town guard", "Vexil"]), t0);
+    assert_eq!(w.verdict(t0), Verdict::Empty);
 }
 
 /// A dark room answers `look` with "you can't see anything" and NEVER
@@ -1589,32 +1599,24 @@ fn ignored_names_and_players_do_not_hold_the_stop() {
 #[test]
 fn a_dark_room_is_blind_not_empty() {
     let t0 = Instant::now();
-    let mut bot = combat_bot();
-    let mut stop = stop_state(0);
-    stop.on_sent("look", LOOK_ID);
-    feed_answer(
-        &mut stop,
-        &mut bot,
-        &Event::Line(format!("  {}!", mud_client::sheet::TOO_DARK)),
+    let mut w = Stop::new(combat_bot(), 0);
+    w.sent("look", LOOK_ID);
+    w.feed_answer(&Event::Line(format!("  {}!", mud_client::sheet::TOO_DARK)),
         t0,
     );
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Blind);
+    assert_eq!(w.verdict(t0), Verdict::Blind);
 }
 
 #[test]
 fn a_room_block_after_lighting_clears_blind() {
     let t0 = Instant::now();
-    let mut bot = combat_bot();
-    let mut stop = stop_state(0);
-    stop.on_sent("look", LOOK_ID);
-    feed_answer(
-        &mut stop,
-        &mut bot,
-        &Event::Line(mud_client::sheet::TOO_DARK.to_string()),
+    let mut w = Stop::new(combat_bot(), 0);
+    w.sent("look", LOOK_ID);
+    w.feed_answer(&Event::Line(mud_client::sheet::TOO_DARK.to_string()),
         t0,
     );
-    look_and_see(&mut stop, &mut bot, &block(&["giant rat"]), t0);
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Busy);
+    w.look_and_see(&block(&["giant rat"]), t0);
+    assert_eq!(w.verdict(t0), Verdict::Busy);
 }
 
 /// A lagged broadcast happens exactly when a lot is going on, i.e. in a
@@ -1622,12 +1624,11 @@ fn a_room_block_after_lighting_clears_blind() {
 #[test]
 fn a_lag_forgets_everything() {
     let t0 = Instant::now();
-    let mut bot = combat_bot();
-    let mut stop = stop_state(0);
-    look_and_see(&mut stop, &mut bot, &block(&[]), t0);
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Empty);
-    stop.reset();
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Ask);
+    let mut w = Stop::new(combat_bot(), 0);
+    w.look_and_see(&block(&[]), t0);
+    assert_eq!(w.verdict(t0), Verdict::Empty);
+    w.reset();
+    assert_eq!(w.verdict(t0), Verdict::Ask);
 }
 
 /// A block naming somewhere else describes somewhere else. The runner
@@ -1635,11 +1636,10 @@ fn a_lag_forgets_everything() {
 #[test]
 fn a_room_block_for_somewhere_else_is_not_this_stop() {
     let t0 = Instant::now();
-    let bot = combat_bot();
-    let mut stop = stop_state(0);
-    stop.on_sent("look", LOOK_ID);
-    stop.on_event(&answering(block_named("Narrow Road", &[]), LOOK_ID), &bot, t0);
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Ask);
+    let mut w = Stop::new(combat_bot(), 0);
+    w.sent("look", LOOK_ID);
+    w.feed_answer(&block_named("Narrow Road", &[]), t0);
+    assert_eq!(w.verdict(t0), Verdict::Ask);
 }
 
 #[test]
@@ -1666,29 +1666,29 @@ fn an_idle_gate_owes_the_board_nothing() {
 #[test]
 fn a_stop_does_not_end_while_a_flee_is_outstanding() {
     let t0 = Instant::now();
-    let mut bot = Bot::new(BotConfig {
+    let bot = Bot::new(BotConfig {
         auto_flee: true,
         flee_at_percent: 101,
         max_hp: 30,
         ..BotConfig::default()
     });
-    let mut stop = stop_state(0);
+    let mut w = Stop::new(bot, 0);
 
-    look_and_see(&mut stop, &mut bot, &block(&[]), t0);
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Empty, "nothing here yet");
+    w.look_and_see(&block(&[]), t0);
+    assert_eq!(w.verdict(t0), Verdict::Empty, "nothing here yet");
 
     // Any prompt looks like an emergency at 101%, so this flees.
-    feed(&mut stop, &mut bot, &prompt(30), t0);
-    assert!(bot.fled(), "test needs an outstanding flee");
+    w.feed(&prompt(30), t0);
+    assert!(w.bot.fled(), "test needs an outstanding flee");
     assert_eq!(
-        stop.verdict(&bot, t0),
+        w.verdict(t0),
         Verdict::Ask,
         "ended the stop while the character was in transit"
     );
 
     // The next block settles it, whichever room it names.
-    look_and_see(&mut stop, &mut bot, &block(&[]), t0);
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Empty);
+    w.look_and_see(&block(&[]), t0);
+    assert_eq!(w.verdict(t0), Verdict::Empty);
 }
 
 /// Leaving a stop hands the connection to the navigator, which verifies
@@ -1706,29 +1706,28 @@ fn a_stop_does_not_end_while_a_flee_is_outstanding() {
 #[test]
 fn a_stop_does_not_end_while_a_look_is_unanswered() {
     let t0 = Instant::now();
-    let mut bot = combat_bot();
-    let mut stop = stop_state(0);
+    let mut w = Stop::new(combat_bot(), 0);
 
-    look_and_see(&mut stop, &mut bot, &block(&[]), t0);
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Empty, "proven empty");
+    w.look_and_see(&block(&[]), t0);
+    assert_eq!(w.verdict(t0), Verdict::Empty, "proven empty");
 
     // A fresh look goes out — the runner's idle poke, say — and has not
     // been answered yet.
-    stop.on_sent("look", LOOK_ID);
+    w.sent("look", LOOK_ID);
     assert_ne!(
-        stop.verdict(&bot, t0),
+        w.verdict(t0),
         Verdict::Empty,
         "left the stop owing a room block to a look already sent"
     );
 
     // A block that answers NOBODY — somebody else's render — settles
     // nothing: the ask is still owed.
-    feed(&mut stop, &mut bot, &block(&[]), t0);
-    assert_ne!(stop.verdict(&bot, t0), Verdict::Empty, "unsolicited block settled the look");
+    w.feed(&block(&[]), t0);
+    assert_ne!(w.verdict(t0), Verdict::Empty, "unsolicited block settled the look");
 
     // Its real answer settles it.
-    feed_answer(&mut stop, &mut bot, &block(&[]), t0);
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Empty);
+    w.feed_answer(&block(&[]), t0);
+    assert_eq!(w.verdict(t0), Verdict::Empty);
 }
 
 /// A dark room answers a look with "you can't see anything" and never
@@ -1737,25 +1736,18 @@ fn a_stop_does_not_end_while_a_look_is_unanswered() {
 #[test]
 fn a_dark_answer_settles_an_outstanding_look() {
     let t0 = Instant::now();
-    let mut bot = combat_bot();
-    let mut stop = stop_state(0);
-    stop.on_sent("look", LOOK_ID);
+    let mut w = Stop::new(combat_bot(), 0);
+    w.sent("look", LOOK_ID);
     // A STALE dark line answering nobody proves nothing about now.
-    feed(
-        &mut stop,
-        &mut bot,
-        &Event::Line(mud_client::sheet::TOO_DARK.to_string()),
+    w.feed(&Event::Line(mud_client::sheet::TOO_DARK.to_string()),
         t0,
     );
-    assert_ne!(stop.verdict(&bot, t0), Verdict::Blind, "a stale dark line settled the look");
+    assert_ne!(w.verdict(t0), Verdict::Blind, "a stale dark line settled the look");
     // The one answering OUR look is the answer.
-    feed_answer(
-        &mut stop,
-        &mut bot,
-        &Event::Line(mud_client::sheet::TOO_DARK.to_string()),
+    w.feed_answer(&Event::Line(mud_client::sheet::TOO_DARK.to_string()),
         t0,
     );
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Blind);
+    assert_eq!(w.verdict(t0), Verdict::Blind);
 }
 
 /// The light-recovery flow: `light` + `look` go out, and the gate is
@@ -1765,28 +1757,24 @@ fn a_dark_answer_settles_an_outstanding_look() {
 #[test]
 fn an_owed_look_outranks_blind() {
     let t0 = Instant::now();
-    let mut bot = combat_bot();
-    let mut stop = stop_state(0);
-    stop.on_sent("look", LOOK_ID);
-    feed_answer(
-        &mut stop,
-        &mut bot,
-        &Event::Line(mud_client::sheet::TOO_DARK.to_string()),
+    let mut w = Stop::new(combat_bot(), 0);
+    w.sent("look", LOOK_ID);
+    w.feed_answer(&Event::Line(mud_client::sheet::TOO_DARK.to_string()),
         t0,
     );
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Blind);
+    assert_eq!(w.verdict(t0), Verdict::Blind);
 
     // The runner lit the room and asked again.
-    stop.on_sent("look", LOOK_ID);
+    w.sent("look", LOOK_ID);
     assert!(
-        matches!(stop.verdict(&bot, t0), Verdict::Waiting { .. }),
+        matches!(w.verdict(t0), Verdict::Waiting { .. }),
         "left (or re-lit) while the lit room's block was still owed: {:?}",
-        stop.verdict(&bot, t0)
+        w.verdict(t0)
     );
 
     // The answer arrives: sighted again.
-    feed_answer(&mut stop, &mut bot, &block(&[]), t0);
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Empty);
+    w.feed_answer(&block(&[]), t0);
+    assert_eq!(w.verdict(t0), Verdict::Empty);
 }
 
 /// Our own movement — a flee — is about to change the room, so any
@@ -1795,15 +1783,14 @@ fn an_owed_look_outranks_blind() {
 #[test]
 fn our_own_movement_invalidates_the_stop() {
     let t0 = Instant::now();
-    let mut bot = combat_bot();
-    let mut stop = stop_state(0);
-    stop.on_sent("look", LOOK_ID);
+    let mut w = Stop::new(combat_bot(), 0);
+    w.sent("look", LOOK_ID);
     // The flee direction goes out while the look's answer is in flight.
-    stop.on_sent("n", CmdId(78));
+    w.sent("n", CmdId(78));
     // The pre-flee block arrives, genuinely answering the look.
-    feed_answer(&mut stop, &mut bot, &block(&[]), t0);
+    w.feed_answer(&block(&[]), t0);
     assert_ne!(
-        stop.verdict(&bot, t0),
+        w.verdict(t0),
         Verdict::Empty,
         "believed a room block that predates our own flee"
     );
@@ -2086,27 +2073,20 @@ fn light_state_edges_are_pinned() {
 #[test]
 fn an_arrival_during_light_recovery_does_not_poison_the_plan() {
     let t0 = Instant::now();
-    let mut bot = combat_bot();
-    let mut stop = stop_state(0);
-    stop.on_sent("look", LOOK_ID);
-    feed_answer(
-        &mut stop,
-        &mut bot,
-        &Event::Line(mud_client::sheet::TOO_DARK.to_string()),
+    let mut w = Stop::new(combat_bot(), 0);
+    w.sent("look", LOOK_ID);
+    w.feed_answer(&Event::Line(mud_client::sheet::TOO_DARK.to_string()),
         t0,
     );
-    assert_eq!(stop.verdict(&bot, t0), Verdict::Blind);
+    assert_eq!(w.verdict(t0), Verdict::Blind);
     // Light + look go out; the look is owed...
-    stop.on_sent("look", LOOK_ID);
+    w.sent("look", LOOK_ID);
     // ...and a monster walks in before its block lands.
-    feed(
-        &mut stop,
-        &mut bot,
-        &Event::ActorEntered { name: "giant rat".into(), from: Some("north".into()) },
+    w.feed(&Event::ActorEntered { name: "giant rat".into(), from: Some("north".into()) },
         t0,
     );
     assert_ne!(
-        stop.verdict(&bot, t0),
+        w.verdict(t0),
         Verdict::Blind,
         "a stale Blind verdict would kill the just-lit source"
     );
