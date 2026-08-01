@@ -224,3 +224,109 @@ fn the_bar_never_contains_a_control_character() {
     );
     assert_eq!(s.chars().count(), 120);
 }
+
+// ---------------------------------------------------------------------
+// The keyboard during a farm run. The runner's beliefs are protected by
+// attribution — a typed command's answer is attributed to the typed
+// command, never to a farm step or look — so the operator may speak
+// while the runner drives. What the farming branch must still own is
+// Ctrl-F, the take-over.
+// ---------------------------------------------------------------------
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use mud_client::tui::{KeyOutcome, handle_key};
+
+async fn capture_board() -> (
+    std::net::SocketAddr,
+    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = std::sync::Arc::clone(&received);
+    tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut pending = String::new();
+        let mut buf = [0u8; 512];
+        while let Ok(n) = sock.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            pending.push_str(&String::from_utf8_lossy(&buf[..n]));
+            while let Some(nl) = pending.find('\n') {
+                let line: String = pending.drain(..=nl).collect();
+                log.lock().unwrap().push(line.trim().to_string());
+            }
+        }
+    });
+    (addr, received)
+}
+
+async fn session_to(addr: std::net::SocketAddr) -> mud_client::session::Session {
+    let profile = mud_client::profile::Profile {
+        target: mud_client::dialect::Target::MbbsEmu,
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        username: "testuser".into(),
+        password: "testpass".into(),
+        pace_ms: Some(0),
+        disable_evil_warnings: false,
+        bot: None,
+        farm: None,
+    };
+    mud_client::session::Session::connect(&profile, None)
+        .await
+        .unwrap()
+}
+
+fn key(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+fn ctrl(c: char) -> KeyEvent {
+    KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+}
+
+#[tokio::test]
+async fn typing_reaches_the_board_during_a_farm_run() {
+    let (addr, received) = capture_board().await;
+    let session = session_to(addr).await;
+    let mut editor = InputEditor::new();
+    let mut passthrough = false;
+
+    for c in "gossip hello".chars() {
+        handle_key(&key(KeyCode::Char(c)), &mut editor, &session, &mut passthrough, true);
+    }
+    assert_eq!(editor.line(), "gossip hello", "keys must reach the editor while farming");
+    handle_key(&key(KeyCode::Enter), &mut editor, &session, &mut passthrough, true);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if received.lock().unwrap().iter().any(|l| l == "gossip hello") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "typed line never reached the board: {:?}",
+            received.lock().unwrap()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn ctrl_f_still_takes_the_keyboard_back() {
+    let (addr, _) = capture_board().await;
+    let session = session_to(addr).await;
+    let mut editor = InputEditor::new();
+    let mut passthrough = false;
+    assert!(matches!(
+        handle_key(&ctrl('f'), &mut editor, &session, &mut passthrough, true),
+        KeyOutcome::StopFarm
+    ));
+    assert!(matches!(
+        handle_key(&ctrl('q'), &mut editor, &session, &mut passthrough, true),
+        KeyOutcome::Quit
+    ));
+}

@@ -275,13 +275,19 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                         match outcome {
                             KeyOutcome::Quit => break Ok(()),
                             KeyOutcome::StartFarm => {
-                                match start_farm(session.clone()) {
-                                    Ok(started) => {
-                                        note(&mut out, "-- farm running (Ctrl-F to take over) --")?;
-                                        phase_rx = Some(started.phase.clone());
-                                        farm = Some(started);
+                                // Reachable mid-run now that the editor
+                                // works while farming: one runner only.
+                                if farm.is_some() {
+                                    note(&mut out, "-- farm already running (Ctrl-F to take over) --")?;
+                                } else {
+                                    match start_farm(session.clone()) {
+                                        Ok(started) => {
+                                            note(&mut out, "-- farm running (Ctrl-F to take over) --")?;
+                                            phase_rx = Some(started.phase.clone());
+                                            farm = Some(started);
+                                        }
+                                        Err(e) => note(&mut out, &format!("-- {e} --"))?,
                                     }
-                                    Err(e) => note(&mut out, &format!("-- {e} --"))?,
                                 }
                             }
                             KeyOutcome::StopFarm => {
@@ -390,17 +396,26 @@ pub enum KeyOutcome {
     ToggleAssist,
 }
 
-fn handle_key(
+/// One keystroke against the session. Public for the keyboard-contract
+/// tests: what farming swallows, what the editor keeps, what goes out.
+pub fn handle_key(
     key: &KeyEvent,
     editor: &mut InputEditor,
     session: &Session,
     passthrough: &mut bool,
     farming: bool,
 ) -> KeyOutcome {
-    // While the runner drives, the keyboard is a passenger: two senders on
-    // one connection would interleave, and the Gate's one-command-in-flight
-    // contract is what verified navigation rests on. Only stopping and
-    // quitting get through.
+    // While the runner drives, the keyboard still works: composing costs
+    // nothing (the editor is local), and a line sent on Enter is safe
+    // beside the runner because ATTRIBUTION is — the typed command's
+    // echo anchors its own answer, so a farm step's block can never be
+    // claimed by it nor it by a step. The runner keeps sending while the
+    // operator types; the two interleave FIFO on the one paced writer.
+    // What stays reserved: Ctrl-F takes the keyboard back outright, and
+    // Ctrl-P passthrough is refused — raw keys have no echo to anchor,
+    // and an FSD screen mid-run would fight the runner for the parser.
+    // Typing a MOVEMENT command is the operator desyncing the navigator
+    // on purpose; recovery handles it like any other flee.
     if farming {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return match key.code {
@@ -409,7 +424,6 @@ fn handle_key(
                 _ => KeyOutcome::Continue,
             };
         }
-        return KeyOutcome::Continue;
     }
     // Ctrl-P swaps between typing commands and driving a full-screen
     // board screen. Both are needed: the line editor wants the arrows for
