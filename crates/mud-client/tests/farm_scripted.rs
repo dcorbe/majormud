@@ -489,3 +489,88 @@ async fn a_pile_on_a_travel_leg_is_swept_without_losing_the_lap() {
         "sweep out of order: {log:?}"
     );
 }
+
+/// The Arena standoff, mechanized: a delay-0 respawn room shared with
+/// another player never proves empty — every look lists a fresh rat —
+/// so the evidence rule holds the stop open forever. `stop_seconds`
+/// caps it: the lap moves on, and the room gets its next chance when
+/// the circuit comes round.
+#[tokio::test]
+async fn an_endless_stop_is_left_when_its_cap_expires() {
+    let (addr, received) = scripted_board(vec![
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        (
+            "look",
+            format!("\r\nlook{}", room_block("Guard Post", None, "north")),
+        ),
+        // Arriving on the stop finds it occupied — and the sticky
+        // replays below keep it occupied forever: every re-look lists
+        // the rat again (the respawn), every attack kills one.
+        (
+            "n",
+            format!(
+                "\r\nn{}",
+                room_block("Inner Ward", Some("giant rat"), "north south")
+            ),
+        ),
+        (
+            "a rat",
+            "\r\na rat\r\nYou smack giant rat for 12 damage!\r\nThe giant rat falls to the ground with a tortured squeak.\r\nYou gain 25 experience.\r\n*Combat Off*\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        (
+            "look",
+            format!(
+                "\r\nlook{}",
+                room_block("Inner Ward", Some("giant rat"), "north south")
+            ),
+        ),
+    ])
+    .await;
+    let session = session_for(addr).await;
+
+    let graph = corridor();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/2".into()],
+        loops: 1,
+        idle_poke_ms: 500,
+        depart_at_percent: 0,
+        // The knob under test: without it this run never ends.
+        stop_seconds: 2,
+        ..FarmConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 30,
+        ..BotConfig::default()
+    };
+
+    let (end, stats) = match tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, &bot, &cfg, None),
+    )
+    .await
+    .expect("the cap must end a stop that cannot go quiet")
+    {
+        Ok(out) => out,
+        Err(e) => panic!(
+            "the run must end by cap, not error: {e:?}\nboard received: {:?}",
+            received.lock().unwrap()
+        ),
+    };
+
+    assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
+    assert!(stats.kills >= 1, "the respawn loop ran: {stats:?}");
+    let attacks = received.lock().unwrap().iter().filter(|l| *l == "a rat").count();
+    assert!(
+        attacks >= 2,
+        "the stop should have fought the respawns until the cap: {:?}",
+        received.lock().unwrap()
+    );
+}

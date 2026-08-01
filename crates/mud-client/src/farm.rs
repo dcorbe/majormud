@@ -73,6 +73,19 @@ pub struct FarmConfig {
     pub loops: u32,
     /// Wall-clock cap; 0 = unlimited.
     pub max_seconds: u64,
+    /// Hard cap on one circuit stop, in seconds; 0 = stay until the
+    /// room proves quiet (the old behaviour, and the default).
+    ///
+    /// A stop normally ends on evidence — the room block proves the
+    /// room empty. A delay-0 respawn room shared with another player
+    /// never proves it: somebody's kill is always mid-respawn, so the
+    /// evidence rule holds the stop open forever (live: the Arena
+    /// standoff south of the door, 2026-08-01). The cap ends the stop
+    /// anyway, mid-fight included, and the lap moves on — the room gets
+    /// its next chance when the circuit comes round. Pursuers are the
+    /// travel guard's problem, exactly as when a defence deadline
+    /// expires.
+    pub stop_seconds: u64,
     /// How long to hold a stop open once the room block has PROVEN it
     /// empty, waiting for a respawn. 0 leaves the moment it is proven.
     ///
@@ -179,6 +192,7 @@ impl Default for FarmConfig {
             finish_at: None,
             loops: 0,
             max_seconds: 0,
+            stop_seconds: 0,
             dwell_empty_seconds: 0,
             depart_at_percent: 80,
             fight_while_travelling: true,
@@ -1305,6 +1319,10 @@ async fn farm_loop(
                     LegEnd::TooHurt => return Ok((FarmEnd::TooHurt, stats)),
                 }
             }
+            // A circuit stop normally runs on evidence alone; the cap is
+            // for rooms that can never prove quiet — see stop_seconds.
+            let until = (cfg.stop_seconds != 0)
+                .then(|| Instant::now() + Duration::from_secs(cfg.stop_seconds));
             match farm_stop(
                 session,
                 &nav,
@@ -1317,7 +1335,8 @@ async fn farm_loop(
                 clock,
                 cfg,
                 started,
-                None,
+                until,
+                false,
                 arrival,
                 &mut stats,
                 phase,
@@ -1616,7 +1635,7 @@ async fn travel(
             let until = Instant::now() + Duration::from_secs(cfg.defend_seconds);
             match farm_stop(
                 session, nav, graph, *current, bot_config, threat, refusals, light, clock, cfg,
-                started, Some(until), None, stats, phase,
+                started, Some(until), true, None, stats, phase,
             )
             .await?
             {
@@ -1691,6 +1710,7 @@ async fn travel(
                     cfg,
                     started,
                     Some(until),
+                    true,
                     room,
                     stats,
                     phase,
@@ -1731,6 +1751,7 @@ async fn travel(
                     cfg,
                     started,
                     Some(until),
+                    true,
                     None,
                     stats,
                     phase,
@@ -1869,14 +1890,18 @@ async fn wait_for_departure_health(
                 s.room.as_ref().is_some_and(|room| sight.has_target(room)),
             )
         };
+        // Fit first: a healthy character standing in a room it just
+        // decided to leave (a capped stop that never went quiet) walks
+        // out — re-defending there would un-make the cap's decision.
+        // The travel guard covers whatever follows it out.
+        if hp >= target && hp > 0 {
+            return DepartureWait::Fit;
+        }
         // A downed character cannot rest its way back over the gate;
         // hand it to the defence pump, whose death handling is the one
         // that knows what a negative HP prompt means.
         if contested || hp <= 0 {
             return DepartureWait::Contested;
-        }
-        if hp >= target {
-            return DepartureWait::Fit;
         }
         if tokio::time::Instant::now() >= deadline {
             return DepartureWait::Fit;
@@ -1940,6 +1965,12 @@ async fn farm_stop(
     started: Instant,
     // Hard cap on this stop, or None to stay until it goes quiet.
     until: Option<Instant>,
+    // A defence (travel interrupt) rather than a circuit stop. A blind
+    // defence waits out its deadline — walking on would leave whatever
+    // is hitting us behind us — where a blind circuit stop leaves at
+    // once. Used to key on `until.is_none()`, which stopped meaning
+    // "circuit stop" the day circuit stops could carry a cap.
+    defending: bool,
     // The attributed block the leg's final step carried in, when it
     // described this stop. Seeds the evidence so the first swing goes
     // out without an opening look.
@@ -2051,7 +2082,7 @@ async fn farm_stop(
                     // Defending is the exception: there the deadline
                     // governs, or we walk on and leave whatever is
                     // hitting us behind.
-                    crate::sheet::LightAttempt::Nothing if until.is_none() && gate.is_idle() => {
+                    crate::sheet::LightAttempt::Nothing if !defending && gate.is_idle() => {
                         return Ok(StopEnd::Dwelt);
                     }
                     _ => {}

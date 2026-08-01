@@ -416,14 +416,12 @@ pub fn handle_key(
     // and an FSD screen mid-run would fight the runner for the parser.
     // Typing a MOVEMENT command is the operator desyncing the navigator
     // on purpose; recovery handles it like any other flee.
-    if farming {
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
-            return match key.code {
-                KeyCode::Char('f') => KeyOutcome::StopFarm,
-                KeyCode::Char('q') => KeyOutcome::Quit,
-                _ => KeyOutcome::Continue,
-            };
-        }
+    if farming && key.modifiers.contains(KeyModifiers::CONTROL) {
+        return match key.code {
+            KeyCode::Char('f') => KeyOutcome::StopFarm,
+            KeyCode::Char('q') => KeyOutcome::Quit,
+            _ => KeyOutcome::Continue,
+        };
     }
     // Ctrl-P swaps between typing commands and driving a full-screen
     // board screen. Both are needed: the line editor wants the arrows for
