@@ -208,11 +208,8 @@ async fn a_monster_entering_mid_leg_is_fought_where_it_stands() {
             "\r\na rat\r\nYou smack giant rat for 12 damage!\r\nThe giant rat falls to the ground with a tortured squeak.\r\nYou gain 25 experience.\r\n*Combat Off*\r\n[HP=30/MA=0]:"
                 .into(),
         ),
-        // The post-kill look proves the room clear; the leg resumes.
-        (
-            "look",
-            format!("\r\nlook{}", room_block("Inner Ward", None, "north south")),
-        ),
+        // No post-kill look: the model subtracted the corpse the death
+        // line named, so the leg resumes on evidence it already had.
         ("n", format!("\r\nn{}", room_block("Keep", None, "south"))),
         // The stop's own look: empty, dwell 0, lap done.
         ("look", format!("\r\nlook{}", room_block("Keep", None, "south"))),
@@ -324,12 +321,8 @@ async fn a_rest_contested_by_an_arrival_defends_instead_of_dozing() {
             "\r\na rat\r\nYou smack giant rat for 12 damage!\r\nThe giant rat falls to the ground with a tortured squeak.\r\nYou gain 25 experience.\r\n*Combat Off*\r\n[HP=26/MA=0]:"
                 .into(),
         ),
-        // Post-kill look: clear, and the fight's rounds carried HP back
-        // over the gate — the leg may depart.
-        (
-            "look",
-            format!("\r\nlook{}", room_block_hp("Guard Post", None, "north", 26)),
-        ),
+        // No post-kill look. The kill's own prompt carried HP back over
+        // the gate, and the model knows the room is clear.
         ("n", format!("\r\nn{}", room_block_hp("Inner Ward", None, "north south", 26))),
         ("n", format!("\r\nn{}", room_block_hp("Keep", None, "south", 26))),
         ("look", format!("\r\nlook{}", room_block_hp("Keep", None, "south", 26))),
@@ -540,6 +533,12 @@ async fn an_endless_stop_is_left_when_its_cap_expires() {
         loops: 1,
         idle_poke_ms: 500,
         depart_at_percent: 0,
+        // The standoff needs a respawn budget to BE a standoff. Every
+        // kill now empties the model outright, so with no budget the
+        // stop would simply end -- correctly, on a farm that was told
+        // not to wait for respawns. Told to wait, it can never satisfy
+        // the budget here, and that is the deadlock under test.
+        dwell_empty_seconds: 5,
         // The knob under test: without it this run never ends.
         stop_seconds: 2,
         ..FarmConfig::default()

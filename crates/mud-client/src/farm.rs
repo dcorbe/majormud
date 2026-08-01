@@ -609,6 +609,26 @@ pub struct StopState {
     /// first), the answer predates reality and must be re-asked, not
     /// believed.
     pending_look: Option<(crate::correlate::CmdId, Instant)>,
+    /// When a death line landed that the board has not finished
+    /// narrating.
+    ///
+    /// A kill is a SEQUENCE, not a line. `check_kill_monster` drops the
+    /// corpse's carry, splits the experience and only then breaks
+    /// combat, so the coin drop, the award and "*Combat Off*" all
+    /// arrive after the wording that announced the death. Leaving on
+    /// the first of them walks out on the rest — the live in-process
+    /// circuit finished a lap having killed the rat and never seen the
+    /// experience for it.
+    ///
+    /// This used to be covered by accident: a kill invalidated the
+    /// observation, the re-`look` that followed left the gate busy, and
+    /// `Empty` is guarded on an idle gate. Stage 2 removed the re-look,
+    /// so the wait has to be said out loud.
+    ///
+    /// Cleared by "*Combat Off*" — the board's own full stop — and
+    /// bounded by `recheck`, because somebody else's kill never earns
+    /// us one.
+    resolving: Option<Instant>,
 }
 
 impl StopState {
@@ -618,6 +638,7 @@ impl StopState {
             linger: Duration::from_secs(cfg.dwell_empty_seconds),
             recheck: Duration::from_millis(cfg.idle_poke_ms),
             observed: None,
+            resolving: None,
             pending_look: None,
             empty_since: None,
             blind: false,
@@ -652,6 +673,7 @@ impl StopState {
         self.empty_since = None;
         self.pending_look = None;
         self.blind = false;
+        self.resolving = None;
     }
 
     /// Accept a block the traveller already earned: the answer to the
@@ -738,10 +760,18 @@ impl StopState {
                     }
                 }
             }
-            // No name matching here on purpose: the parser has been seen
-            // gluing the player's "(Resting)" marker onto an actor name,
-            // and marking the room stale is immune to that.
-            Event::ActorEntered { .. } | Event::ActorLeft { .. } => self.invalidate(),
+            // An arrival is the ADDITIVE surprise, and it stays
+            // conservative. Parse classifies async lines inside an
+            // accumulating block, so a block's content can predate an
+            // arrival that was EMITTED first (farm.rs's mid-render
+            // race); reseeding from that block would drop the newcomer,
+            // and no name matching would help — the parser has been
+            // seen gluing a "(Resting)" marker onto an actor name.
+            //
+            // A DEPARTURE is subtractive, and the model takes the
+            // leaver out of the occupant list without asking anyone.
+            // Nothing else here is stale because of it.
+            Event::ActorEntered { .. } => self.invalidate(),
             // A blow landing on US proves something is here that the block
             // may not have listed. Our own swings prove nothing.
             Event::CombatHit {
@@ -755,12 +785,36 @@ impl StopState {
             // can be trusted out of them — but the swing itself is
             // enough to re-ask.
             Event::CombatMiss { line } if whiff_at_us(line) => self.invalidate(),
-            Event::Line(line) if crate::bot::is_kill_line(line) => self.invalidate(),
-            // The board's own fight-over announcement. A kill can hide
-            // both recognised end signals at once (prose death + the
-            // untrained-XP cap eating the award), and the pre-fight
-            // block then held a Busy verdict on a corpse for 29s live.
-            Event::Line(line) if crate::bot::is_combat_off(line) => self.invalidate(),
+            // A kill and the board's own fight-over announcement are
+            // both SUBTRACTIVE, and neither is re-asked any more.
+            //
+            // `Here` takes the named corpse out of the occupant list —
+            // once per kill, without a round-trip, where this used to
+            // delete the whole observation and buy a `look` before the
+            // next swing. A pack fight is nothing but kills, so that
+            // was the round-trip being paid most often.
+            //
+            // What the model cannot subtract from is the experience
+            // award, which names nobody. It is bounded rather than
+            // handled: `recheck` is the shelf life on every observation
+            // and no model error outlives one poke. That bound was
+            // never optional — nothing announces a respawn either.
+            //
+            // What a death line DOES start is the board narrating the
+            // outcome — see `resolving`.
+            Event::Line(line)
+                if crate::bot::is_kill_line(line) || crate::deaths::killed(line).is_some() =>
+            {
+                self.resolving.get_or_insert(now);
+            }
+            // "*Combat Off*" needs no invalidation of its own. It is
+            // about the FIGHT, and it unlatches the thing that was
+            // stuck: `Bot::engaged`, which outranks every other clause
+            // in `verdict` and is what sat Busy on a corpse for 29s
+            // live when a prose death and the untrained-XP cap hid both
+            // end signals at once. Here it is the board's full stop:
+            // the kill is narrated out and the stop may end.
+            Event::Line(line) if crate::bot::is_combat_off(line) => self.resolving = None,
             // Our attack echoed back as SPEECH: the target left in the
             // race between the block and the swing, so the block that
             // prompted it describes a room that no longer exists. The
@@ -793,6 +847,7 @@ impl StopState {
     /// carrying a stale "empty" across would walk out immediately.
     pub fn reset(&mut self) {
         self.observed = None;
+        self.resolving = None;
         // Anything already in flight predates the reset.
         self.pending_look = None;
         self.empty_since = None;
@@ -864,6 +919,14 @@ impl StopState {
         // since then no longer holds the stop.
         if bot.has_target_among(here.names()) {
             return Verdict::Busy;
+        }
+        // Nothing left to fight, but the board may still be saying what
+        // the last kill dropped. Below `has_target` on purpose: a live
+        // monster outranks a finished one's paperwork.
+        if let Some(at) = self.resolving
+            && now.duration_since(at) < self.recheck
+        {
+            return Verdict::Waiting { until: at + self.recheck };
         }
         match self.empty_since {
             Some(since) if now.duration_since(since) >= self.linger => Verdict::Empty,
@@ -2168,6 +2231,9 @@ async fn farm_stop(
         // `look` that seeds the bot is just the first `Ask`.
         let now = Instant::now();
         let verdict = seen.verdict(&bot, &here, now);
+        if std::env::var("MMC_TRACE").is_ok() {
+            eprintln!("TRACE stop={stop:?} verdict={verdict:?} engaged={:?} model={:?} seeded={}", bot.engaged(), here.names().collect::<Vec<_>>(), here.seeded());
+        }
         let mut hold_until = None;
         match &verdict {
             // The bot is driving; nothing for the runner to decide.

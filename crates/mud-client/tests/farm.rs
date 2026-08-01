@@ -1314,20 +1314,109 @@ fn an_unfinished_fight_outranks_an_empty_block() {
 }
 
 #[test]
-fn a_kill_invalidates_the_room_block() {
+fn a_named_kill_costs_no_round_trip() {
     let t0 = Instant::now();
     let mut w = Stop::new(combat_bot(), 0);
     w.look_and_see(&block(&["giant rat", "filthbug"]), t0);
-    w.feed(&Event::Line("You gain 16 experience.".into()),
+    // The board names the template it killed, and the model subtracts
+    // it. Before stage 2 this deleted the observation outright and the
+    // stop paid a `look` before the next swing -- once per kill, and a
+    // pack is nothing but kills.
+    w.feed(
+        &Event::Line("The giant rat falls to the ground, dead.".into()),
         t0,
     );
     assert_eq!(
         w.verdict(t0),
-        Verdict::Ask,
-        "kept trusting a room block taken before the kill"
+        Verdict::Busy,
+        "the filthbug is still standing there; nothing needs asking"
     );
-    w.look_and_see(&block(&["filthbug"]), t0);
-    assert_eq!(w.verdict(t0), Verdict::Busy);
+    w.feed(
+        &Event::Line("The filthbug falls to the ground, dead.".into()),
+        t0,
+    );
+    w.feed(&Event::Line("*Combat Off*".into()), t0);
+    assert_eq!(
+        w.verdict(t0),
+        Verdict::Empty,
+        "the model emptied the room without a single look"
+    );
+}
+
+/// A death line is the START of the board narrating a kill, not the end
+/// of it. `check_kill_monster` drops the corpse's loot, splits the
+/// experience and only then breaks combat, so the coin drop, the award
+/// and "*Combat Off*" all arrive AFTER the wording that says it died.
+///
+/// The old invalidate-and-re-look covered this by accident: the `look`
+/// it forced left the gate busy, and `Empty` is guarded on an idle
+/// gate. Take the re-look away and the stop walks out mid-sentence —
+/// caught live by the in-process circuit, which finished a lap having
+/// killed the rat and never seen the experience for it.
+#[test]
+fn a_stop_does_not_leave_while_the_board_is_still_narrating_the_kill() {
+    let t0 = Instant::now();
+    let mut w = Stop::new(combat_bot(), 0);
+    w.look_and_see(&block(&["giant rat"]), t0);
+    w.feed(
+        &Event::Line("The giant rat falls to the ground, dead.".into()),
+        t0,
+    );
+    assert_ne!(
+        w.verdict(t0),
+        Verdict::Empty,
+        "left before the board had finished saying what the kill dropped"
+    );
+    // The board's own full stop on the fight.
+    w.feed(&Event::Line("*Combat Off*".into()), t0);
+    assert_eq!(w.verdict(t0), Verdict::Empty);
+}
+
+/// Somebody else's kill never earns us a "*Combat Off*", so the wait
+/// above needs a bound that does not depend on one arriving. The same
+/// shelf life that bounds every other model error does it.
+#[test]
+fn a_kill_that_never_reports_combat_off_still_releases_the_stop() {
+    let t0 = Instant::now();
+    let t1 = t0 + Duration::from_millis(POKE_MS);
+    let mut w = Stop::new(combat_bot(), 0);
+    w.look_and_see(&block(&["giant rat"]), t0);
+    w.feed(
+        &Event::Line("The giant rat falls to the ground, dead.".into()),
+        t0,
+    );
+    assert_ne!(w.verdict(t0), Verdict::Empty);
+    assert_ne!(
+        w.verdict(t1),
+        Verdict::Busy,
+        "a kill nobody ever closed held the stop open forever"
+    );
+}
+
+/// The other half of `is_kill_line` names nobody, so the model cannot
+/// subtract from it and keeps listing a monster that may be a corpse.
+///
+/// That is bounded, not ignored: `recheck` is the shelf life on every
+/// observation and the reason a model error can never outlive one poke.
+/// Nothing announces a respawn either, so this bound was always going
+/// to be paid — stage 2 only stops paying it TWICE.
+#[test]
+fn an_award_names_nobody_and_the_shelf_life_is_what_corrects_it() {
+    let t0 = Instant::now();
+    let t1 = t0 + Duration::from_millis(POKE_MS);
+    let mut w = Stop::new(combat_bot(), 0);
+    w.look_and_see(&block(&["giant rat"]), t0);
+    w.feed(&Event::Line("You gain 16 experience.".into()), t0);
+    assert_eq!(
+        w.verdict(t0),
+        Verdict::Busy,
+        "the model still lists it, and nothing said otherwise"
+    );
+    assert_eq!(
+        w.verdict(t1),
+        Verdict::Ask,
+        "the observation went stale, which is the backstop for every model error"
+    );
 }
 
 #[test]
@@ -1453,24 +1542,33 @@ fn a_whiff_at_us_invalidates_the_room_block() {
     assert_eq!(w.verdict(t0), Verdict::Empty, "our own whiff");
 }
 
-/// "*Combat Off*" ends a fight whatever the death wording said — the
-/// live stall this pins had a prose death AND the untrained-XP cap
-/// suppressing the award, so no recognised end signal arrived at all
-/// and the stop sat Busy on a corpse for 29 seconds. The board's own
-/// announcement invalidates the block exactly like a recognised kill.
+/// THE 29-second stall: a prose death AND the untrained-XP cap eating
+/// the award, so neither signal `Bot` recognises arrived and it sat
+/// latched on a corpse. "*Combat Off*" is the board's own fight-over
+/// announcement and unlatches it whatever the wording said.
+///
+/// It needs no invalidation of its own any more. `engaged` outranks
+/// every other clause in `verdict`, so unlatching the bot IS the fix;
+/// the room itself was settled one line earlier, when the model
+/// subtracted the corpse the death line named.
 #[test]
-fn combat_off_invalidates_the_room_block() {
+fn combat_off_unlatches_the_bot_without_costing_a_look() {
     let t0 = Instant::now();
     let mut w = Stop::new(combat_bot(), 0);
     w.look_and_see(&block(&["acid slime"]), t0);
     assert_eq!(w.verdict(t0), Verdict::Busy);
-    w.feed(&Event::Line("*Combat Off*".into()),
+    assert!(w.bot.engaged().is_some(), "test needs a live fight");
+
+    w.feed(
+        &Event::Line("The acid slime falls to the ground, dead.".into()),
         t0,
     );
+    w.feed(&Event::Line("*Combat Off*".into()), t0);
+    assert!(w.bot.engaged().is_none(), "the latch is what stalled");
     assert_eq!(
         w.verdict(t0),
-        Verdict::Ask,
-        "the fight is over and the pre-fight block cannot be trusted"
+        Verdict::Empty,
+        "the fight is over and the room is empty; nothing is left to ask"
     );
 }
 
@@ -1549,9 +1647,10 @@ fn the_respawn_budget_restarts_when_something_arrives() {
     let mut w = Stop::new(combat_bot(), 60);
     w.look_and_see(&block(&[]), t0);
     let t1 = t0 + Duration::from_secs(30);
-    w.feed(&Event::ActorLeft {
+    w.feed(
+        &Event::ActorEntered {
             name: "Vexil".into(),
-            to: None,
+            from: None,
         },
         t1,
     );
@@ -1562,6 +1661,34 @@ fn the_respawn_budget_restarts_when_something_arrives() {
             until: t1 + Duration::from_secs(60)
         },
         "the budget carried over from before the room changed"
+    );
+}
+
+/// A departure is the opposite fact and the budget must NOT restart on
+/// it. The room did not become worth waiting in again because somebody
+/// walked out of it — that is the arrival's job, and treating the two
+/// alike is what the old invalidate-everything sledgehammer did.
+#[test]
+fn a_departure_does_not_restart_the_respawn_budget() {
+    let t0 = Instant::now();
+    let mut w = Stop::new(combat_bot(), 60);
+    w.look_and_see(&block(&["Vexil"]), t0);
+    // Inside the shelf life, so the answer is about the departure and
+    // not about the observation ageing out.
+    let t1 = t0 + Duration::from_millis(POKE_MS / 2);
+    w.feed(
+        &Event::ActorLeft {
+            name: "Vexil".into(),
+            to: None,
+        },
+        t1,
+    );
+    assert_eq!(
+        w.verdict(t1),
+        Verdict::Waiting {
+            until: t0 + Duration::from_secs(60)
+        },
+        "the budget runs from when the room was first proven empty, not from the walk-out"
     );
 }
 

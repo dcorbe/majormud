@@ -141,7 +141,20 @@ fn drive(path: &std::path::Path) -> Run {
     // The last block the board rendered for this stop, tracked straight
     // off the event stream so the check does not lean on StopState's own
     // bookkeeping to audit StopState.
+    //
     let mut last_block: Option<mud_client::events::RoomView> = None;
+    // Has the board itself contradicted that snapshot since? A departure
+    // or a death says it no longer describes the room, and an audit that
+    // kept reading it would accuse the runner of walking out on a
+    // monster the board had just said walked out — which is what it did
+    // to three transcripts the moment the model began subtracting
+    // departures instead of re-looking. Kept apart from `last_block`,
+    // which answers the different question of whether the stop was ever
+    // looked at AT ALL: a contradicted block is still a block.
+    //
+    // Dumb and independent on purpose — it re-arms on the next block and
+    // nowhere else, so it audits the model rather than agreeing with it.
+    let mut contradicted = false;
 
     for (i, ev) in events.iter().enumerate() {
         let now = t0 + TICK * (i as u32);
@@ -171,7 +184,9 @@ fn drive(path: &std::path::Path) -> Run {
             Verdict::Empty => {
                 match &last_block {
                     None => run.left_without_ever_looking += 1,
-                    Some(room) if bot.has_target(room) => run.left_with_a_target_listed += 1,
+                    Some(room) if !contradicted && bot.has_target(room) => {
+                        run.left_with_a_target_listed += 1
+                    }
                     Some(_) => {}
                 }
                 // A real runner would leave; keep replaying so one
@@ -179,10 +194,16 @@ fn drive(path: &std::path::Path) -> Run {
                 stop = StopState::new(stop_name.clone(), &FarmConfig::default());
                 here.reset();
                 last_block = None;
+                contradicted = false;
             }
             Verdict::Busy | Verdict::Waiting { .. } => {}
         }
 
+        if matches!(ev, Event::ActorLeft { .. })
+            || matches!(ev, Event::Line(l) if mud_client::bot::is_kill_line(l))
+        {
+            contradicted = true;
+        }
         if let Event::RoomSeen(room) = ev
             && room.name == stop_name
         {
@@ -190,6 +211,7 @@ fn drive(path: &std::path::Path) -> Run {
                 run.blocks_with_a_target += 1;
             }
             last_block = Some(room.clone());
+            contradicted = false;
         }
 
         if matches!(ev, Event::SlowDown) {
