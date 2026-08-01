@@ -93,6 +93,9 @@ pub enum Command {
     Use(String),
     /// `read <item>` — like `use`, plus the unowned-item description path.
     Read(String),
+    /// `light [<item>]` — bare reports the level; with a target, the
+    /// `_CMD_LIGHT` refusal ladder (darkness plan).
+    Light(String),
     /// `broadgang [message]` — args = the gang broadcast (cmd_broadgang
     /// 0x585cc, "%s gangpaths: %s" MEASURED slice8_gang1b.raw), bare =
     /// the §1.6 roster (ORACLE-VERIFY: bare form unprobed live; the
@@ -175,7 +178,7 @@ enum Verb {
 /// All direction minimums are ORACLE-verified (oracle_directions.raw):
 /// north/south/west = full word, east = 3 (eat blocks 2), down = 3,
 /// up = 2, diagonals = 6. Hand-authored asymmetry is the original's.
-const VERBS: [(&str, usize, Verb); 67] = [
+const VERBS: [(&str, usize, Verb); 68] = [
     ("north", 5, Verb::Plain(|| Command::Move(Direction::North))),
     ("south", 5, Verb::Plain(|| Command::Move(Direction::South))),
     ("east", 3, Verb::Plain(|| Command::Move(Direction::East))),
@@ -221,6 +224,9 @@ const VERBS: [(&str, usize, Verb); 67] = [
     // instead of printing READY's syntax line; ready lands with its
     // system (M8 candidate).
     ("read", 4, Verb::WithArgs(Command::Read)),
+    // ORACLE-OPEN min abbrev: unmeasured; the full word until a capture
+    // says otherwise ("li" belongs to list).
+    ("light", 5, Verb::WithArgs(Command::Light)),
     ("list", 2, Verb::Plain(|| Command::List)),
     ("buy", 2, Verb::WithArgs(Command::Buy)),
     ("sell", 3, Verb::WithArgs(Command::Sell)),

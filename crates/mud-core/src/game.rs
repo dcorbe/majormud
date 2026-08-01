@@ -235,6 +235,12 @@ pub struct Player {
     /// Creation sets it ON (create_player ~53795); `SET WARNING ON|OFF`
     /// sets it either way.
     pub warn_on_evil: bool,
+    /// `+0x6ab` — the lit light source, by item id rather than the DLL's
+    /// inventory index (self-healing: a lit id no longer in the inventory
+    /// reads as unlit, mirroring `_REMOVE_ITEM_FROM_INVENTORY`'s silent
+    /// clear at 4494-4497). Set by `light`, cleared by `remove`, burn-out
+    /// and any other departure of the item. Persisted.
+    pub lit: Option<crate::content::ItemId>,
     /// `+0x5f6` — the HIDDEN byte (theft.md §11.2). Runtime only, never
     /// persisted; cleared by non-sneak movement and combat engagement.
     pub hidden: bool,
@@ -5787,6 +5793,11 @@ impl Core {
                     self.fall_through(session, line);
                 }
             }
+            Command::Light(target) => {
+                if self.light_command(session, &target) == Resolution::FallThrough {
+                    self.fall_through(session, line);
+                }
+            }
             Command::Use(target) => {
                 if self.use_command(session, &target, false) == Resolution::FallThrough {
                     self.fall_through(session, line);
@@ -6485,10 +6496,127 @@ impl Core {
     }
 
     /// `remove`: worn armor back to the pack.
+    /// The session's lit item, validated against the inventory. A lit
+    /// item that LEFT the inventory (dropped, sold, given, destroyed)
+    /// was extinguished silently — `_REMOVE_ITEM_FROM_INVENTORY`
+    /// 4494-4497 — and this is where that self-heal lands.
+    fn lit_item(&mut self, session: SessionId) -> Option<crate::content::ItemId> {
+        let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
+            return None;
+        };
+        if let Some(id) = player.lit
+            && !player.inventory.iter().any(|(i, _)| *i == id)
+        {
+            player.lit = None;
+        }
+        player.lit
+    }
+
+    /// `_CMD_LIGHT` (10b0:7071, decompile 63864) — the refusal ladder in
+    /// the DLL's own order: no-args level report, not-found (falls
+    /// through to say-aloud, ORACLE-OPEN), burned-out recharge,
+    /// USER_CAN_USE, non-light type, already-lit, success.
+    fn light_command(&mut self, session: SessionId, target: &str) -> Resolution {
+        let want = target.trim().to_ascii_lowercase();
+        if want.is_empty() {
+            let level = self.light_level(session);
+            let line = text::current_light_level(text::light_band(level));
+            self.output_line(session, &line);
+            return Resolution::Handled;
+        }
+        let found = {
+            let player = self.player(session);
+            player
+                .inventory
+                .iter()
+                .find(|(id, _)| {
+                    self.content
+                        .items
+                        .get(id)
+                        .is_some_and(|i| word_prefix_match(&i.name, &want))
+                })
+                .copied()
+        };
+        let Some((item_id, uses)) = found else {
+            return Resolution::FallThrough;
+        };
+        let (item_type, name, usable) = {
+            let item = &self.content.items[&item_id];
+            (
+                item.item_type,
+                item.name.clone(),
+                self.user_can_use(self.player(session), item),
+            )
+        };
+        if item_type == 6 && uses == 0 {
+            self.output_line(session, text::RECHARGE_BEFORE_LIGHTING);
+            return Resolution::Handled;
+        }
+        if !usable {
+            self.output_line(session, text::MAY_NOT_LIGHT);
+            return Resolution::Handled;
+        }
+        if item_type != 6 {
+            self.output_line(session, &text::cannot_light(&name));
+            return Resolution::Handled;
+        }
+        if self.lit_item(session).is_some() {
+            self.output_line(session, text::ALREADY_LIT);
+            return Resolution::Handled;
+        }
+        if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+            player.lit = Some(item_id);
+        }
+        self.output_line(session, &text::you_lit(&name));
+        let (who, room) = {
+            let p = self.player(session);
+            (p.name.clone(), p.location)
+        };
+        self.broadcast_to_room(room, Some(session), &text::lights_room(&who, &name));
+        Resolution::Handled
+    }
+
     fn remove_command(&mut self, session: SessionId, target: &str) -> Resolution {
         let want = target.trim().to_ascii_lowercase();
         if want.is_empty() {
             return Resolution::FallThrough;
+        }
+        // `_REMOVE_ARMOUR`'s type-6 pre-branch (5835-5854): REMOVE of a
+        // carried light extinguishes it before the worn table is ever
+        // searched. An unlit light hits the 0x19d3 refusal instead.
+        let carried_light = {
+            let player = self.player(session);
+            player
+                .inventory
+                .iter()
+                .find(|(id, _)| {
+                    self.content.items.get(id).is_some_and(|i| {
+                        i.item_type == 6 && word_prefix_match(&i.name, &want)
+                    })
+                })
+                .map(|&(id, _)| id)
+        };
+        if let Some(id) = carried_light {
+            if self.lit_item(session) == Some(id) {
+                if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session)
+                {
+                    player.lit = None;
+                }
+                let name = self.content.items[&id].name.clone();
+                self.output_line(session, &text::no_longer_lit(&name));
+                let (who, room) = {
+                    let p = self.player(session);
+                    (p.name.clone(), p.location)
+                };
+                self.broadcast_to_room(
+                    room,
+                    Some(session),
+                    &text::light_went_out(&who, &name),
+                );
+            } else {
+                self.output_line(session, text::CANNOT_REMOVE_UNLIT_LIGHT);
+            }
+            return Resolution::Handled;
         }
         let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) else {
             return Resolution::FallThrough;
@@ -16229,6 +16357,7 @@ impl Core {
             gender: profile.gender,
             race,
             class,
+            lit: None,
             level: 1,
             stats: template.base_stats,
             base_stats: template.base_stats,
@@ -16648,6 +16777,21 @@ impl Core {
             .collect();
         for occupant in occupants {
             level += self.quest_ability_value(occupant, Ability::RoomIllu);
+            // The lit-item term (char+0xcc): the IlluTarget the `light`
+            // command added. Derived live from the lit item, which also
+            // makes a dropped/burned torch go dark with no bookkeeping.
+            let p = self.player(occupant);
+            if let Some(id) = p.lit
+                && p.inventory.iter().any(|(i, _)| *i == id)
+                && let Some(item) = self.content.items.get(&id)
+            {
+                level += item
+                    .abilities
+                    .iter()
+                    .filter(|(a, _)| *a == Ability::IlluTarget)
+                    .map(|(_, v)| i32::from(*v))
+                    .sum::<i32>();
+            }
         }
         level.min(900)
     }

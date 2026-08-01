@@ -586,3 +586,17 @@ fn gang_shop_roundtrip() {
     p.bankbooks = db.load_player("Salad").expect("query").expect("found").bankbooks;
     assert_eq!(p.bankbooks, vec![(8, 45)]);
 }
+
+/// The lit slot survives a restart: a character who saved with a torch
+/// burning comes back with it burning (slice 3 of the darkness plan).
+#[test]
+fn lit_light_roundtrips() {
+    let db = db();
+    let mut p = player("Torchbearer");
+    p.inventory.push((mud_core::content::ItemId(175), 3));
+    p.lit = Some(mud_core::content::ItemId(175));
+    db.save_player(&p).unwrap();
+    let loaded = db.load_player("Torchbearer").unwrap().unwrap();
+    assert_eq!(loaded.lit, Some(mud_core::content::ItemId(175)));
+    assert_eq!(loaded, p);
+}

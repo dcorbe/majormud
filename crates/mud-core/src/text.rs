@@ -34,6 +34,52 @@ pub fn room_too_dark(band: &str) -> String {
     format!("The room is {band} - you can't see anything")
 }
 
+/// `_CMD_LIGHT`'s no-args report (0xDB4B8, VERIFIED).
+pub fn current_light_level(band: &str) -> String {
+    format!("The current light level is {band}")
+}
+
+/// `_CMD_LIGHT`'s USER_CAN_USE refusal (0xDB4EE, VERIFIED).
+pub const MAY_NOT_LIGHT: &str = "You may not light that item!";
+
+/// `_CMD_LIGHT`'s type refusal (0xDB550, VERIFIED).
+pub fn cannot_light(name: &str) -> String {
+    format!("You cannot light {name}!")
+}
+
+/// `_CMD_LIGHT`'s already-lit refusal (0xDB50C, VERIFIED).
+pub const ALREADY_LIT: &str = "You already have something lit!";
+
+/// `_CMD_LIGHT`'s burned-out refusal (0xDB568, VERIFIED).
+pub const RECHARGE_BEFORE_LIGHTING: &str =
+    "You must recharge that before you may light it again.";
+
+/// `_CMD_LIGHT`'s success line (0xDB52D, VERIFIED).
+pub fn you_lit(name: &str) -> String {
+    format!("You lit the {name}.")
+}
+
+/// The room's view of a lighting, "%s lights %s %s." (0xDB53E). The
+/// middle slot is ORACLE-VERIFY: an article is assumed ("Alice lights a
+/// torch."), a gender possessive would also fit the format.
+pub fn lights_room(who: &str, item: &str) -> String {
+    format!("{who} lights a {item}.")
+}
+
+/// "%s is no longer lit!" (0xC781E, VERIFIED) — extinguish and burn-out.
+pub fn no_longer_lit(item: &str) -> String {
+    format!("{item} is no longer lit!")
+}
+
+/// The room's view, "%s's %s just went out." (0xC7834, VERIFIED).
+pub fn light_went_out(who: &str, item: &str) -> String {
+    format!("{who}'s {item} just went out.")
+}
+
+/// REMOVE of an unlit light: the refusal at `_REMOVE_ARMOUR` 0x19d3.
+/// Wording UNRECOVERED — ORACLE-VERIFY placeholder.
+pub const CANNOT_REMOVE_UNLIT_LIGHT: &str = "You cannot remove that!";
+
 /// The light-band descriptor table (strings 0xBDFD6..0xBE01B, VERIFIED),
 /// fenceposts from `_GET_LIGHT_LEVEL`'s band walk (-0xc9/-0x97/-0x65/
 /// -1/199/899). Levels arrive capped at 900; the >= 900 too-bright band

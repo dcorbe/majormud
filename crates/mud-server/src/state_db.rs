@@ -136,6 +136,9 @@ const TABLES: &[TableDef] = &[
             // not exist.
             ("gang", "TEXT NOT NULL"),
             ("gang_flags", "INTEGER NOT NULL"),
+            // Darkness slice 3: the lit light source's item id (0 =
+            // nothing lit); pre-darkness rows backfill unlit.
+            ("lit", "INTEGER NOT NULL"),
         ],
         constraint: "",
     },
@@ -593,11 +596,11 @@ impl StateDb {
                  runic, platinum, gold, silver, copper, lawful,
                  cp_unspent, cp_lifetime, lives, experience, map, room,
                  poison, ansi, fame, warn_on_evil, quest_flags, gang,
-                 gang_flags)
+                 gang_flags, lit)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
                  ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
                  ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37,
-                 ?38, ?39, ?40, ?41)",
+                 ?38, ?39, ?40, ?41, ?42)",
             params![
                 player.name,
                 gender_str(player.gender),
@@ -640,6 +643,7 @@ impl StateDb {
                 player.quest_flags as i64,
                 player.gang,
                 player.gang_flags,
+                player.lit.map_or(0, |i| i64::from(i.0)),
             ],
         )?;
         tx.commit()?;
@@ -1006,7 +1010,7 @@ impl StateDb {
                      runic, platinum, gold, silver, copper, lawful,
                      cp_unspent, cp_lifetime, lives, experience, map, room,
                      poison, ansi, fame, warn_on_evil, quest_flags, gang,
-                     gang_flags
+                     gang_flags, lit
                  FROM player WHERE name = ?1",
                 params![name],
                 |r| {
@@ -1066,6 +1070,10 @@ impl StateDb {
                         quest_flags: r.get::<_, i64>(38)? as u64,
                         gang: r.get(39)?,
                         gang_flags: r.get(40)?,
+                        lit: match r.get::<_, i64>(41)? {
+                            0 => None,
+                            id => Some(ItemId(id as u16)),
+                        },
                         // Runtime stealth flags — never persisted.
                         hidden: false,
                         sneak_armed: false,

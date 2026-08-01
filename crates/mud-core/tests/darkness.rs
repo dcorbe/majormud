@@ -226,3 +226,218 @@ fn personal_illumination_lets_the_viewer_see() {
     let blind = text_to(&events, bob);
     assert!(blind.contains(VERY_DARK), "got: {blind:?}");
 }
+
+// ---- Slice 3: the `light` command (_CMD_LIGHT, decompile 63864) ----
+
+use mud_core::content::{Item, ItemId};
+
+/// The shipped torch shape: type 6, IlluTarget 100. Instance charge
+/// counts live on the inventory tuple, so `uses` here is the default.
+fn torch() -> Item {
+    Item {
+        id: ItemId(175),
+        name: "torch".into(),
+        item_type: 6,
+        uses: 800,
+        abilities: vec![(Ability::IlluTarget, 100)],
+        ..Default::default()
+    }
+}
+
+fn lantern() -> Item {
+    Item {
+        id: ItemId(176),
+        name: "lantern".into(),
+        item_type: 6,
+        uses: 2400,
+        abilities: vec![(Ability::IlluTarget, 175)],
+        ..Default::default()
+    }
+}
+
+fn sword() -> Item {
+    Item {
+        id: ItemId(300),
+        name: "longsword".into(),
+        item_type: 1,
+        ..Default::default()
+    }
+}
+
+fn lit_world() -> Content {
+    use mud_core::content::Class;
+    let mut content = dark_world();
+    content.add_item(torch());
+    content.add_item(lantern());
+    content.add_item(sword());
+    // USER_CAN_USE fails closed on an unregistered class; the ladder
+    // needs a real one to reach its later rungs.
+    content.add_class(Class {
+        id: ClassId(1),
+        name: "Warrior".into(),
+        abilities: vec![],
+        hp_per_level: 6,
+        hp_seed: 4,
+        caster_group: 0,
+        casting_factor: 0,
+        exp_base: 0,
+        combat_factor: 6,
+        weapon_code: 8,
+        armour_code: 9,
+    });
+    content
+}
+
+/// Success rung: lit slot set, IlluTarget joins the room sum — for
+/// EVERYONE standing there, not just the holder — and the render gate
+/// opens. "You lit the %s." (0xDB52D) to the holder, "%s lights %s %s."
+/// (0xDB53E) to the room.
+#[test]
+fn lighting_the_torch_lights_the_dark_room_for_everyone() {
+    let mut core = Core::new(lit_world(), CoreConfig::default());
+    let mut holder = player_at("Alice", 2);
+    holder.inventory.push((ItemId(175), 3));
+    let alice = core.attach_player(holder);
+    let bob = core.attach_player(player_at("Bob", 2));
+    core.drain_events();
+    core.input(alice, "light torch");
+    let events = core.drain_events();
+    let to_alice = text_to(&events, alice);
+    assert!(to_alice.contains("You lit the torch."), "got: {to_alice:?}");
+    let to_bob = text_to(&events, bob);
+    assert!(
+        to_bob.contains("Alice lights a torch."),
+        "got: {to_bob:?}"
+    );
+    core.input(alice, "look");
+    core.input(bob, "look");
+    let events = core.drain_events();
+    // -200 + 100 = -100: dimly lit, visible — to both of them.
+    assert!(text_to(&events, alice).contains("Black Cave"));
+    assert!(text_to(&events, bob).contains("Black Cave"));
+}
+
+/// No-args rung: "The current light level is %s" (0xDB4B8).
+#[test]
+fn bare_light_reports_the_current_band() {
+    let mut core = Core::new(lit_world(), CoreConfig::default());
+    let alice = core.attach_player(player_at("Alice", 2));
+    core.drain_events();
+    core.input(alice, "light");
+    let shown = text_to(&core.drain_events(), alice);
+    assert!(
+        shown.contains("The current light level is very dark"),
+        "got: {shown:?}"
+    );
+}
+
+/// Already-lit rung (char+0x6ab != -1): "You already have something lit!"
+#[test]
+fn a_second_light_is_refused() {
+    let mut core = Core::new(lit_world(), CoreConfig::default());
+    let mut holder = player_at("Alice", 2);
+    holder.inventory.push((ItemId(175), 3));
+    holder.inventory.push((ItemId(176), 3));
+    let alice = core.attach_player(holder);
+    core.drain_events();
+    core.input(alice, "light torch");
+    core.drain_events();
+    core.input(alice, "light lantern");
+    let shown = text_to(&core.drain_events(), alice);
+    assert!(
+        shown.contains("You already have something lit!"),
+        "got: {shown:?}"
+    );
+}
+
+/// Type rung: "You cannot light %s!" (0xDB550).
+#[test]
+fn a_non_light_is_refused() {
+    let mut core = Core::new(lit_world(), CoreConfig::default());
+    let mut holder = player_at("Alice", 1);
+    holder.inventory.push((ItemId(300), -1));
+    let alice = core.attach_player(holder);
+    core.drain_events();
+    core.input(alice, "light longsword");
+    let shown = text_to(&core.drain_events(), alice);
+    assert!(
+        shown.contains("You cannot light longsword!"),
+        "got: {shown:?}"
+    );
+}
+
+/// Burned-out rung: a type-6 with 0 uses left asks for a recharge
+/// (0xDB568) rather than lighting.
+#[test]
+fn a_burned_out_light_asks_for_a_recharge() {
+    let mut core = Core::new(lit_world(), CoreConfig::default());
+    let mut holder = player_at("Alice", 1);
+    holder.inventory.push((ItemId(175), 0));
+    let alice = core.attach_player(holder);
+    core.drain_events();
+    core.input(alice, "light torch");
+    let shown = text_to(&core.drain_events(), alice);
+    assert!(
+        shown.contains("You must recharge that before you may light it again."),
+        "got: {shown:?}"
+    );
+}
+
+/// Not-found rung: _CMD_LIGHT falls through to say-aloud (ORACLE-OPEN).
+#[test]
+fn light_of_nothing_falls_through_to_say() {
+    let mut core = Core::new(lit_world(), CoreConfig::default());
+    let alice = core.attach_player(player_at("Alice", 1));
+    core.drain_events();
+    core.input(alice, "light banana");
+    let shown = text_to(&core.drain_events(), alice);
+    assert!(shown.contains("You say"), "got: {shown:?}");
+}
+
+/// Extinguish: REMOVE's type-6 pre-branch (5835-5854) clears the lit
+/// slot, prints "%s is no longer lit!" + room "%s's %s just went out.",
+/// and the room goes dark again.
+#[test]
+fn removing_the_lit_torch_extinguishes_it() {
+    let mut core = Core::new(lit_world(), CoreConfig::default());
+    let mut holder = player_at("Alice", 2);
+    holder.inventory.push((ItemId(175), 3));
+    let alice = core.attach_player(holder);
+    let bob = core.attach_player(player_at("Bob", 2));
+    core.drain_events();
+    core.input(alice, "light torch");
+    core.drain_events();
+    core.input(alice, "remove torch");
+    let events = core.drain_events();
+    let to_alice = text_to(&events, alice);
+    assert!(
+        to_alice.contains("torch is no longer lit!"),
+        "got: {to_alice:?}"
+    );
+    let to_bob = text_to(&events, bob);
+    assert!(
+        to_bob.contains("Alice's torch just went out."),
+        "got: {to_bob:?}"
+    );
+    core.input(alice, "look");
+    let shown = text_to(&core.drain_events(), alice);
+    assert!(shown.contains(VERY_DARK), "dark again: {shown:?}");
+}
+
+/// REMOVE of an unlit light hits the 0x19d3 refusal (wording
+/// unrecovered — ORACLE-VERIFY placeholder), NOT the not-wearing line.
+#[test]
+fn removing_an_unlit_light_is_refused() {
+    let mut core = Core::new(lit_world(), CoreConfig::default());
+    let mut holder = player_at("Alice", 1);
+    holder.inventory.push((ItemId(175), 3));
+    let alice = core.attach_player(holder);
+    core.drain_events();
+    core.input(alice, "remove torch");
+    let shown = text_to(&core.drain_events(), alice);
+    assert!(
+        shown.contains("You cannot remove that!"),
+        "got: {shown:?}"
+    );
+    assert!(!shown.contains("not wearing"), "got: {shown:?}");
+}
