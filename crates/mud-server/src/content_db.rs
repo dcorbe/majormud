@@ -135,7 +135,7 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
     let mut stmt = db.prepare(&format!(
         "SELECT mapnumber, roomnumber, name, shopnum, {descs}, {exits}, {placed}, type, attributes, \
          monstertype, maxregen, minindex, maxindex, delay, permnpc, bynumber, controlroom, maxarea, \
-         cmdtext, ganghousenumber FROM room"
+         cmdtext, ganghousenumber, light FROM room"
     ))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
@@ -211,6 +211,7 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
             // pinned against the manifest's ganghouse# column). The
             // GShopItem controller gate compares against it.
             gang_house: to_i16("room", "ganghousenumber", row.get(117)?)?,
+            light: to_i16("room", "light", row.get(118)?)?,
         };
         for d in 0..10 {
             let dest: i64 = row.get(11 + d * 6)?;
@@ -425,7 +426,7 @@ fn load_items(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
          class_8, class_9, class_10, race_1, race_2, race_3, race_4, \
          race_5, race_6, race_7, race_8, race_9, race_10, \
          desc1, desc2, desc3, desc4, desc5, desc6, desc7, desc8, desc9, \
-         robable \
+         robable, distructmsg \
          FROM item"
     ))?;
     let mut rows = stmt.query([])?;
@@ -493,6 +494,7 @@ fn load_items(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
             destroy_on_death: to_i16("item", "destroyondeath", row.get(base + 20)?)?,
             // robable trails the desc columns (base+50).
             robable: to_i16("item", "robable", row.get(base + 50)?)?,
+            destruct_msg: opt_message("item", "distructmsg", row.get(base + 51)?)?,
         });
     }
     Ok(())

@@ -446,3 +446,36 @@ fn text_blocks_load_and_pin() {
     // allowlisted).
     assert_eq!(content.validate(), vec![]);
 }
+
+/// room+0x468 (`light` column) — the room's ambient light level, the
+/// base term of _GET_LIGHT_LEVEL (decompile 8088). Small Cavern is the
+/// farm circuit's dark room and the value the client's graph already
+/// loads; 0 is the overwhelming default, so a dropped column reads as
+/// "never dark" and every darkness test would pass vacuously.
+#[test]
+fn small_cavern_loads_its_light_value() {
+    let content = content_db::load(&db_path()).expect("load content db");
+    let cavern = &content.rooms[&RoomId { map: 1, room: 2156 }];
+    assert_eq!(cavern.name, "Small Cavern");
+    assert_eq!(cavern.light, -200);
+    // The default really is 0 — the Narrow Road login room.
+    assert_eq!(content.rooms[&RoomId { map: 1, room: 2146 }].light, 0);
+}
+
+/// item `distructmsg` — the message pair printed when a lit light burns
+/// its last use (_MEDIUM_UPDATE_CHARACTER 19368-19427). The torch's is
+/// 8603 "Your torch flickers and goes out."; most items carry none.
+#[test]
+fn the_torch_loads_its_destruct_message() {
+    use mud_core::content::{ItemId, MessageId};
+    let content = content_db::load(&db_path()).expect("load content db");
+    let torch = &content.items[&ItemId(175)];
+    assert_eq!(torch.name, "torch");
+    assert_eq!(torch.item_type, 6);
+    assert_eq!(torch.uses, 800);
+    assert_eq!(torch.retain_after_uses, 0);
+    assert_eq!(torch.destruct_msg, Some(MessageId(8603)));
+    // The scaled lantern (1233) is the one shipped light with NO record
+    // — the generic-pair fallback path.
+    assert_eq!(content.items[&ItemId(1233)].destruct_msg, None);
+}

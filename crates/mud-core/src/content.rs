@@ -200,6 +200,11 @@ pub struct Room {
     /// §3.2). The gang-shop STOCK/UNSTOCK controller gate compares the
     /// carried GShopItem's value against it.
     pub gang_house: i16,
+    /// `room+0x468` (`light` column) — ambient light, the base term of
+    /// `_GET_LIGHT_LEVEL` (decompile 8088). 0 for most rooms; 17,432
+    /// shipped rooms are negative and 1,443 are pitch black (<= -201).
+    /// `_CAN_SEE` refuses sight below -150.
+    pub light: i16,
 }
 
 impl Room {
@@ -430,6 +435,11 @@ pub struct Item {
     pub not_droppable: i16,
     pub retain_after_uses: i16,
     pub destroy_on_death: i16,
+    /// `distructmsg` — printed when a lit light burns its last use
+    /// (`_MEDIUM_UPDATE_CHARACTER` 19368-19427): line 1 to the user,
+    /// line 2 (if any) to the room. `None` falls back to the generic
+    /// "%s is no longer lit!" pair.
+    pub destruct_msg: Option<MessageId>,
 }
 
 /// Damage element (`spell+0xd0`, `typeofattack`). Resistance keying per
