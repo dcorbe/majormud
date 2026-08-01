@@ -37,7 +37,13 @@ fn events(path: &std::path::Path) -> Vec<Event> {
 /// Replay one transcript into a fresh model. Room blocks are attributed
 /// (see the module note); everything else rides in unsolicited, which is
 /// what the live client does with async truths anyway.
+fn with_deaths() {
+    let db = concat!(env!("CARGO_MANIFEST_DIR"), "/../../re/mmud_wgnt.sqlite");
+    let _ = mud_client::deaths::init(std::path::Path::new(db));
+}
+
 fn replay(path: &std::path::Path) -> Here {
+    with_deaths();
     let mut here = Here::default();
     let start = std::time::Instant::now();
     for (i, event) in events(path).into_iter().enumerate() {
@@ -88,6 +94,17 @@ fn measure_the_corpus() {
     println!("{:<44} {te:>7} {tm:>9}  <- TOTAL", format!("({} captures)", rows.len()));
 }
 
+/// The same stretch with the death lexicon NOT loaded — the control for
+/// the measurement above. Run it alone (`--ignored` with this exact
+/// name) so the process-wide lexicon stays empty; running the whole file
+/// initialises it and this becomes a duplicate of the other test.
+#[test]
+#[ignore = "control for measure_a_stationary_shared_room; must run alone"]
+fn measure_a_stationary_shared_room_without_the_lexicon() {
+    let (blocks, extra, missing) = stationary_arena(false);
+    println!("\nNO LEXICON  blocks {blocks}  extra {extra}  missing {missing}");
+}
+
 /// The shared-room question, measured where it can be measured.
 ///
 /// The corpus replay above is only sound while the character stays put:
@@ -103,10 +120,21 @@ fn measure_the_corpus() {
 #[test]
 #[ignore = "measurement instrument, not an assertion: run with --ignored --nocapture"]
 fn measure_a_stationary_shared_room() {
-    let path = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../cwrun2.raw"));
+    let (blocks, extra, missing) = stationary_arena(true);
+    println!("\nWITH LEXICON  blocks {blocks}  extra {extra}  missing {missing}");
+}
+
+fn stationary_arena(lexicon: bool) -> (usize, u32, u32) {
+    if lexicon {
+        with_deaths();
+    }
+    let capture = std::env::var("MMC_CAPTURE").unwrap_or_else(|_| {
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../cwrun2.raw").to_string()
+    });
+    let path = std::path::Path::new(&capture);
     if !path.exists() {
-        println!("cwrun2.raw absent (gitignored capture); skipping");
-        return;
+        println!("{} absent (gitignored capture); set MMC_CAPTURE", path.display());
+        return (0, 0, 0);
     }
     let mut here = Here::default();
     let start = std::time::Instant::now();
@@ -125,19 +153,9 @@ fn measure_a_stationary_shared_room() {
             start + std::time::Duration::from_millis(i as u64),
         );
     }
-    println!("\nArena blocks replayed: {blocks}");
-    for (kind, n) in here.reconcile.tally() {
-        println!("  {:<18} {n}", kind.label());
-    }
-    let mut names: Vec<String> = here
-        .reconcile
-        .recent()
-        .iter()
-        .map(|d| format!("{} {}", d.kind.label(), d.name))
-        .collect();
-    names.sort();
-    names.dedup();
-    for n in &names {
-        println!("    {n}");
-    }
+    (
+        blocks,
+        here.reconcile.count(DivergenceKind::OccupantExtra),
+        here.reconcile.count(DivergenceKind::OccupantMissing),
+    )
 }

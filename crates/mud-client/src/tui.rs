@@ -810,6 +810,9 @@ fn locator(profile: &crate::profile::Profile) -> Option<crate::nav::Navigator> {
         .as_ref()
         .map(|f| f.content.clone())
         .unwrap_or_else(|| std::path::PathBuf::from("re/mmud_wgnt.sqlite"));
+    // The hand-played session keeps its own room model, and it needs the
+    // death wordings as much as the farm does — more, on a shared board.
+    let _ = crate::deaths::init(&db);
     let graph = crate::graph::RoomGraph::load(&db).ok()?;
     Some(crate::nav::Navigator::new(
         Arc::new(graph),

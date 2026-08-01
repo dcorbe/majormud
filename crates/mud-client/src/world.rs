@@ -471,7 +471,16 @@ impl Here {
                     self.piles.retain(|p| p.denom != denom);
                     return;
                 }
-                if crate::bot::is_kill_line(line) {
+                // Two different questions, deliberately kept apart.
+                // `is_kill_line` asks "did OUR fight end" and leans on
+                // the experience award, which only fires for a kill we
+                // landed; the lexicon asks "did ANY monster die here"
+                // and reads the board's own per-monster wording. The
+                // model needs the second — a corpse another player made
+                // is still a corpse — while `Bot` must keep using the
+                // first, or somebody else's kill would unlatch it from
+                // a fight that is still going.
+                if crate::bot::is_kill_line(line) || crate::deaths::killed(line).is_some() {
                     // Death lines name the TEMPLATE; a rolled adjective
                     // still matches on the trailing noun, the same word
                     // the attack command uses. The award-only form

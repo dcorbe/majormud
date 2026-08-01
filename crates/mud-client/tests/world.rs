@@ -591,3 +591,36 @@ fn a_kill_before_the_step_does_not_blame_the_room_behind_us() {
     assert!(here.occupants.is_empty());
     assert!(here.piles.is_empty());
 }
+
+/// Another player's kill: no experience award (it was not ours) and a
+/// wording `is_kill_line`'s single phrase does not carry. Before the
+/// death lexicon the corpse stayed in the model forever — 10 overclaims
+/// across 27 blocks of a shared Arena (tests/world_corpus.rs), which is
+/// what failed the stage-1 gate.
+#[test]
+fn a_death_only_the_lexicon_knows_still_empties_the_room() {
+    mud_client::deaths::init_with(mud_client::deaths::DeathLexicon::from_pairs([(
+        "acid slime".to_string(),
+        "The acid slime dissolves into a puddle of bluish goo.".to_string(),
+    )]));
+    let now = Instant::now();
+    let mut here = Here::default();
+    here.on_event(
+        &answering(Event::RoomSeen(view(&["large acid slime"])), ASK),
+        now,
+    );
+    assert_eq!(here.occupants.len(), 1);
+    here.on_event(
+        &unsolicited(Event::Line(
+            "The acid slime dissolves into a puddle of bluish goo.".into(),
+        )),
+        now,
+    );
+    assert!(
+        here.occupants.is_empty(),
+        "the rolled instance died with its template"
+    );
+    // ...and the next block agrees, so nothing is reported as a defect.
+    here.on_event(&answering(Event::RoomSeen(view(&[])), ASK), now);
+    assert_eq!(here.reconcile.count(DivergenceKind::OccupantExtra), 0);
+}

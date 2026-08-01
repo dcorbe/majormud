@@ -1296,6 +1296,12 @@ pub async fn run_farm(
     cfg: &FarmConfig,
     phase: PhaseSink<'_>,
 ) -> Result<(FarmEnd, FarmStats), FarmError> {
+    // The board's own per-monster death wordings, so the room model can
+    // see a kill somebody ELSE landed. Best effort: without it the model
+    // falls back to the award-and-one-phrase test it always had.
+    if let Err(e) = crate::deaths::init(&cfg.content) {
+        eprintln!("death wordings unavailable ({e}); shared-room kills will be missed");
+    }
     let mut light = crate::sheet::LightState::new(read_light_sources(session).await);
     if let Some(cmd) = light.first_command() {
         eprintln!("dark rooms will be handled with `{cmd}`");

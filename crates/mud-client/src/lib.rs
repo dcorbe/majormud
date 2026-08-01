@@ -8,6 +8,7 @@
 pub mod bot;
 pub mod cli;
 pub mod correlate;
+pub mod deaths;
 pub mod dialect;
 pub mod events;
 pub mod farm;
