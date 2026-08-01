@@ -272,6 +272,23 @@ impl FarmPlan {
             }
         }
 
+        // Dark stops WARN rather than refuse: build runs before the
+        // connection exists, so it cannot know the character's kit
+        // (light sources are probed at run start), refusing would brick
+        // mixed circuits that farm their lit stops perfectly well, and
+        // the threshold is bracketed evidence, not proven. The runtime
+        // complement is the graph-aware lighting in travel/farm_stop.
+        for &stop in circuit.iter().chain(finish.iter()) {
+            if let Some(room) = graph.room(stop)
+                && room.light < 0
+            {
+                eprintln!(
+                    "note: {}/{} ({}) is dark (light {}); it needs a working light source",
+                    stop.map, stop.room, room.name, room.light
+                );
+            }
+        }
+
         Ok(FarmPlan {
             start,
             circuit,
@@ -1159,11 +1176,15 @@ pub async fn run_farm(
     cfg: &FarmConfig,
     phase: PhaseSink<'_>,
 ) -> Result<(FarmEnd, FarmStats), FarmError> {
-    let mut light = crate::sheet::LightState::new(read_light_plan(session).await);
-    if let Some(cmd) = light.plan() {
+    let mut light = crate::sheet::LightState::new(read_light_sources(session).await);
+    if let Some(cmd) = light.first_command() {
         eprintln!("dark rooms will be handled with `{cmd}`");
     }
-    let out = farm_loop(session, graph, plan, bot_config, cfg, phase, &mut light).await;
+    let mut clock = crate::world::RoundClock::new();
+    let out = farm_loop(
+        session, graph, plan, bot_config, cfg, phase, &mut light, &mut clock,
+    )
+    .await;
     // A lit source burns one use per 3s medium tick whether anything
     // needs the light or not; walked away from, it spends the run's
     // whole burn budget on idle time. Best effort — a dead character
@@ -1176,6 +1197,7 @@ pub async fn run_farm(
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn farm_loop(
     session: &crate::session::Session,
     graph: std::sync::Arc<RoomGraph>,
@@ -1184,6 +1206,7 @@ async fn farm_loop(
     cfg: &FarmConfig,
     phase: PhaseSink<'_>,
     light: &mut crate::sheet::LightState,
+    clock: &mut crate::world::RoundClock,
 ) -> Result<(FarmEnd, FarmStats), FarmError> {
     let started = Instant::now();
     let mut stats = FarmStats::default();
@@ -1239,6 +1262,7 @@ async fn farm_loop(
                     &threat,
                     &refusals,
                     light,
+                    clock,
                     started,
                     &mut stats,
                     phase,
@@ -1260,6 +1284,7 @@ async fn farm_loop(
                 &threat,
                 &refusals,
                 light,
+                clock,
                 cfg,
                 started,
                 None,
@@ -1328,7 +1353,8 @@ pub async fn go_to_finish(
             // ends is Ctrl-C, which cancels run_farm and drops its
             // LightState outright — a parameter could never cover the
             // exit route that matters most.
-            let Some(cmd) = read_light_plan(session).await else {
+            let sources = read_light_sources(session).await;
+            let Some(cmd) = sources.first().map(|s| s.command().to_string()) else {
                 return Err(FarmError::NotAtStart {
                     expected: "a room block answering the finish walk's look".into(),
                     saw: None,
@@ -1384,18 +1410,18 @@ async fn next_room_view(
     }
 }
 
-/// Ask the board for the inventory and the spellbook, and work out how
-/// this character would light a dark room.
+/// Ask the board for the inventory and the spellbook, and work out
+/// every way this character could light a dark room.
 ///
-/// `None` means it cannot, which is worth knowing up front rather than
+/// Empty means it cannot, which is worth knowing up front rather than
 /// discovering at the mouth of an unlit room.
-async fn read_light_plan(session: &crate::session::Session) -> Option<String> {
+async fn read_light_sources(session: &crate::session::Session) -> Vec<crate::sheet::LightSource> {
     let inventory = ask(session, "inventory", "Encumbrance:").await;
     // No terminal wording is pinned for the spell listing, so the
     // collection is bounded by a short deadline instead of the full 10s
     // — this runs at every farm start and on dark finish walks.
     let spells = ask_for(session, "spells", "", Duration::from_secs(3)).await;
-    crate::sheet::light_plan(
+    crate::sheet::light_sources(
         &crate::sheet::Inventory::parse(&inventory),
         &crate::sheet::Spellbook::parse(&spells),
     )
@@ -1496,6 +1522,7 @@ async fn travel(
     threat: &std::sync::Arc<crate::bot::ThreatTable>,
     refusals: &crate::bot::Refusals,
     light: &mut crate::sheet::LightState,
+    clock: &mut crate::world::RoundClock,
     started: Instant,
     stats: &mut FarmStats,
     phase: PhaseSink<'_>,
@@ -1541,6 +1568,14 @@ async fn travel(
             return Ok(LegEnd::TimeUp);
         }
         wait_for_departure_health(session, cfg, bot_config, &sight).await;
+        // Light up BEFORE stepping into known darkness, standing still
+        // where the outcome is verifiable. On failure the walk proceeds
+        // blind — today's behavior, now the explicit fallback. A fade
+        // mid-leg still walks the remaining dark steps blind and is
+        // caught at the stop by the Blind verdict + recast.
+        if !light.lit() && leg_needs_light(graph, *current, stop) {
+            ensure_lit(session, light, clock).await;
+        }
     set_phase(phase, Phase::Travelling { to: stop });
 
         let err = match nav.goto(session, *current, stop, &mut guard).await {
@@ -1584,6 +1619,7 @@ async fn travel(
                     threat,
                     refusals,
                     light,
+                    clock,
                     cfg,
                     started,
                     Some(until),
@@ -1623,6 +1659,7 @@ async fn travel(
                     threat,
                     refusals,
                     light,
+                    clock,
                     cfg,
                     started,
                     Some(until),
@@ -1638,6 +1675,71 @@ async fn travel(
                 }
             }
             _ => Err(FarmError::Nav(err))?,
+        }
+    }
+}
+
+/// Does this leg cross (or end in) a room the graph marks dark? Decided
+/// from the same route goto will compute (BFS is deterministic), so the
+/// walk can light up BEFORE stepping into darkness — standing still,
+/// where the cast outcome is verifiable — instead of bouncing out of
+/// the dark and retrying blind, which was the live lap's shape.
+pub fn leg_needs_light(graph: &RoomGraph, from: RoomId, to: RoomId) -> bool {
+    let Some(route) = graph.route(from, to) else {
+        return false;
+    };
+    let mut at = from;
+    for d in route {
+        let Some(next) = graph
+            .room(at)
+            .and_then(|r| r.exits[d as usize].as_ref())
+            .map(|e| e.dest)
+        else {
+            return false;
+        };
+        if graph.dark(next) {
+            return true;
+        }
+        at = next;
+    }
+    false
+}
+
+/// Light up before a dark leg, standing still. Runs the attempt/outcome
+/// cycle directly (no gate: the walk does not own the connection yet),
+/// retrying fizzles on the round and giving up honestly when nothing
+/// can work — proceeding blind is then the explicit fallback, exactly
+/// today's behavior. Bounded by a hard deadline so a lost outcome can
+/// never wedge a leg.
+async fn ensure_lit(
+    session: &crate::session::Session,
+    light: &mut crate::sheet::LightState,
+    clock: &crate::world::RoundClock,
+) {
+    if light.lit() {
+        return;
+    }
+    let mut events = session.events();
+    crate::session::drain(&mut events, |_| {});
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        if light.lit() || tokio::time::Instant::now() >= deadline {
+            return;
+        }
+        match light.attempt(Instant::now(), clock) {
+            crate::sheet::LightAttempt::Send(cmd) => {
+                let id = session.send(&cmd);
+                light.on_sent(&cmd, id);
+            }
+            crate::sheet::LightAttempt::Hold(_) => {}
+            crate::sheet::LightAttempt::Nothing if !light.in_flight() => return,
+            crate::sheet::LightAttempt::Nothing => {}
+        }
+        match tokio::time::timeout(Duration::from_millis(300), events.recv()).await {
+            Ok(Ok(cor)) => light.on_event(&cor),
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+            Ok(Err(_)) => return,
+            Err(_) => {}
         }
     }
 }
@@ -1731,6 +1833,7 @@ async fn farm_stop(
     // repeated -- a crime-system interaction on the live board.
     refusals: &crate::bot::Refusals,
     light: &mut crate::sheet::LightState,
+    clock: &mut crate::world::RoundClock,
     cfg: &FarmConfig,
     started: Instant,
     // Hard cap on this stop, or None to stay until it goes quiet.
@@ -1744,6 +1847,10 @@ async fn farm_stop(
 ) -> Result<StopEnd, FarmError> {
     let stop_name = graph.room(stop).map(|r| r.name.clone()).unwrap_or_default();
     let mut resting = false;
+    // The stop went blind at least once this visit: the room needs
+    // light whatever the graph believes, which arms the recast gate for
+    // rooms the graph mislabels.
+    let mut was_blind_this_visit = false;
     light.new_visit();
     let username = session.profile().username.clone();
     let backoff = Duration::from_millis(cfg.slowdown_backoff_ms);
@@ -1813,26 +1920,52 @@ async fn farm_stop(
             }
             Verdict::Blind => {
                 // Blind again while a source was believed burning: it
-                // burned out. The burn-out wordings arrive unsolicited
-                // and LightState reads them directly; the darkness
-                // returning is the backstop for one that was missed.
+                // burned out (item) or faded unnoticed (spell). The
+                // wordings arrive unsolicited and LightState reads them
+                // directly; the darkness returning is the backstop for
+                // one that was missed.
                 light.source_died();
-                match light.attempt() {
-                    Some(cmd) if gate.is_idle() => {
+                was_blind_this_visit = true;
+                match light.attempt(now, clock) {
+                    crate::sheet::LightAttempt::Send(cmd) if gate.is_idle() => {
                         gate.push(cmd);
                         gate.push("look".into());
+                    }
+                    // An attempt was spent this round; a second cast
+                    // inside one is refused anyway. Wait it out — this
+                    // is what turns "Blind + no attempt = dead end"
+                    // into "Blind + Hold = retry next round", the live
+                    // 15-dark-encounters-3-casts bug.
+                    crate::sheet::LightAttempt::Hold(next) => {
+                        hold_until = Some(hold_until.map_or(next, |h: Instant| h.min(next)));
                     }
                     // A stop we cannot see is a stop we cannot farm, and
                     // fighting in the dark is heavily penalised anyway.
                     // Defending is the exception: there the deadline
                     // governs, or we walk on and leave whatever is
                     // hitting us behind.
-                    None if until.is_none() && gate.is_idle() => {
+                    crate::sheet::LightAttempt::Nothing if until.is_none() && gate.is_idle() => {
                         return Ok(StopEnd::Dwelt);
                     }
                     _ => {}
                 }
             }
+        }
+
+        // A fade is an indicator to RECAST, not bookkeeping (operator
+        // directive): it arrives unsolicited mid-anything, and waiting
+        // for the next look to come back "too dark" costs a blind
+        // round-trip. Priority: combat > recast > look — a recast never
+        // preempts a fight (the board refuses casts mid-round anyway),
+        // and it needs no look after it: the fade does not stale the
+        // room evidence. A fade in a naturally lit room needs no action.
+        if bot.engaged().is_none()
+            && gate.is_idle()
+            && light.wants_recast()
+            && (graph.dark(stop) || was_blind_this_visit)
+            && let crate::sheet::LightAttempt::Send(cmd) = light.attempt(now, clock)
+        {
+            gate.push(cmd);
         }
 
         set_phase(
@@ -1896,6 +2029,11 @@ async fn farm_stop(
 
         if let Event::SlowDown = ev {
             stats.slowdowns += 1;
+        }
+        // Combat lines arrive in bursts on round boundaries; every one
+        // phase-locks the clock the lighting retries pace themselves by.
+        if matches!(ev, Event::CombatHit { .. } | Event::CombatMiss { .. }) {
+            clock.observe(Instant::now());
         }
         if let Event::Line(line) = &ev {
             if is_player_death(line, &username) {

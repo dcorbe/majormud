@@ -307,6 +307,7 @@ fn client_graph() -> RoomGraph {
         let mut r = GraphRoom {
             name: name.into(),
             exits: Default::default(),
+            light: 0,
         };
         for (d, dest) in exits {
             r.exits[*d as usize] = Some(ExitEdge {

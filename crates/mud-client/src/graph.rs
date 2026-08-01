@@ -33,6 +33,14 @@ pub struct ExitEdge {
 pub struct GraphRoom {
     pub name: String,
     pub exits: [Option<ExitEdge>; 10],
+    /// The room table's `light` column: 0 is normal, negatives need a
+    /// light source (Small Cavern 1/2156 = -200; ~17k shipped rooms are
+    /// negative). The exact cutoff is ORACLE-OPEN — the bracketing
+    /// evidence is that 0 renders (Arena, Dungeon Entrance) and -175 /
+    /// -200 are dark (live captures 2026-07-31) — so `light < 0` is
+    /// read as "assume dark": a false positive costs one cheap
+    /// pre-light, a false negative costs a blind fight.
+    pub light: i64,
 }
 
 pub struct RoomGraph {
@@ -56,6 +64,7 @@ impl RoomGraph {
         for i in 1..=10 {
             cols.push(format!("para1_{i}"));
         }
+        cols.push("light".into());
         let sql = format!("SELECT {} FROM room", cols.join(","));
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
@@ -67,9 +76,11 @@ impl RoomGraph {
                 continue;
             }
             let name: Option<String> = row.get(2).map_err(|e| e.to_string())?;
+            let light: i64 = row.get(33).unwrap_or(0);
             let mut graph_room = GraphRoom {
                 name: name.unwrap_or_default(),
                 exits: Default::default(),
+                light,
             };
             for d in 0..10 {
                 let dest: i64 = row.get(3 + d).map_err(|e| e.to_string())?;
@@ -159,6 +170,13 @@ impl RoomGraph {
 
     pub fn room(&self, id: RoomId) -> Option<&GraphRoom> {
         self.rooms.get(&id)
+    }
+
+    /// Does the graph mark this room as needing a light source? See
+    /// [`GraphRoom::light`] for the threshold's evidence and its
+    /// ORACLE-OPEN status. Unknown rooms are not assumed dark.
+    pub fn dark(&self, id: RoomId) -> bool {
+        self.rooms.get(&id).is_some_and(|r| r.light < 0)
     }
 
     /// Every room carrying this exact name.

@@ -21,3 +21,4 @@ pub mod session;
 pub mod sheet;
 pub mod tui;
 pub mod wire;
+pub mod world;

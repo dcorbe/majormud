@@ -26,11 +26,13 @@ fn graph(exit_type: i64) -> Arc<RoomGraph> {
     let mut here = GraphRoom {
         name: "Guard Post".into(),
         exits: Default::default(),
+        light: 0,
     };
     here.exits[Direction::North as usize] = Some(ExitEdge { dest: THERE, exit_type });
     let mut there = GraphRoom {
         name: "Inner Ward".into(),
         exits: Default::default(),
+        light: 0,
     };
     there.exits[Direction::South as usize] = Some(ExitEdge { dest: HERE, exit_type });
     Arc::new(RoomGraph::from_rooms(vec![(HERE, here), (THERE, there)]))
@@ -224,11 +226,13 @@ async fn a_refused_step_between_same_named_twins_does_not_drift() {
     let mut here = GraphRoom {
         name: "Newhaven, Narrow Road".into(),
         exits: Default::default(),
+        light: 0,
     };
     here.exits[Direction::North as usize] = Some(ExitEdge { dest: THERE, exit_type: 0 });
     let mut there = GraphRoom {
         name: "Newhaven, Narrow Road".into(),
         exits: Default::default(),
+        light: 0,
     };
     there.exits[Direction::South as usize] = Some(ExitEdge { dest: HERE, exit_type: 0 });
     let twins = Arc::new(RoomGraph::from_rooms(vec![(HERE, here), (THERE, there)]));
