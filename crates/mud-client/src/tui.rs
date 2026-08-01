@@ -247,6 +247,9 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                 if let Some(f) = farm.take() {
                                     f.handle.abort();
                                     phase_rx = None;
+                                    // The keyboard is a person again:
+                                    // flood control back off.
+                                    session.set_pace(std::time::Duration::ZERO);
                                     note(&mut out, "-- farm stopped; you have the keyboard --")?;
                                 }
                             }
@@ -630,6 +633,11 @@ fn start_farm(session: Arc<Session>) -> Result<FarmSession, String> {
     let graph = Arc::new(crate::graph::RoomGraph::load(&cfg.content)?);
     let plan = crate::farm::FarmPlan::build(&cfg, &graph)?;
     let bot = profile.bot.clone().unwrap_or_default();
+    // Automation goes back under flood control. `play` unpaced this
+    // session for the operator's keystrokes; the runner it is about to
+    // hand the connection to cycled at loopback echo speed without this
+    // (~40 look+attack commands in 400ms, run4 2026-08-01).
+    session.set_pace(profile.pace());
     let (tx, rx) = tokio::sync::watch::channel(crate::farm::Phase::default());
     let handle = tokio::spawn(async move {
         let end = match crate::farm::run_farm(&session, graph, &plan, &bot, &cfg, Some(&tx)).await {

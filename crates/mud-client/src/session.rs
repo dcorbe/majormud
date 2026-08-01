@@ -43,6 +43,15 @@ impl Pacer {
         }
     }
 
+    /// Change the interval mid-stream. One session serves both a person
+    /// and a farm — `mmc play` types unpaced, `/farm` hands the same
+    /// connection to automation — and only the automation needs flood
+    /// control. Already-reserved slots are not served out after a drop
+    /// to zero: the operator taking the keyboard is not a burst.
+    pub fn set_min(&mut self, min: Duration) {
+        self.min = min;
+    }
+
     /// Delay to wait before sending at `now`; reserves the slot.
     pub fn delay_for(&mut self, now: Instant) -> Duration {
         if self.min.is_zero() {
@@ -184,6 +193,9 @@ pub struct Session {
     state_rx: watch::Receiver<GameState>,
     profile: Profile,
     next_id: AtomicU64,
+    /// Current send-pacing interval in ms, shared with the writer task.
+    /// See [`Session::set_pace`].
+    pace_ms: Arc<AtomicU64>,
 }
 
 impl Session {
@@ -222,15 +234,22 @@ impl Session {
         let correlator = Arc::new(Mutex::new(Correlator::new(CORRELATE_TTL)));
 
         // Writer task: paced lines + unpaced negotiation replies.
+        let pace_ms = Arc::new(AtomicU64::new(profile.pace().as_millis() as u64));
         {
-            let pace = profile.pace();
+            let pace_ms = Arc::clone(&pace_ms);
             let timing = timing.clone();
             let correlator = Arc::clone(&correlator);
             tokio::spawn(async move {
-                let mut pacer = Pacer::new(pace);
+                let mut pacer = Pacer::new(Duration::ZERO);
                 while let Some(cmd) = cmd_rx.recv().await {
                     match cmd {
                         Cmd::Line(id, line) => {
+                            // Re-read per send: `set_pace` retunes a live
+                            // session when `/farm` takes it over or hands
+                            // it back.
+                            pacer.set_min(Duration::from_millis(
+                                pace_ms.load(std::sync::atomic::Ordering::Relaxed),
+                            ));
                             let delay = pacer.delay_for(Instant::now());
                             if !delay.is_zero() {
                                 tokio::time::sleep(delay).await;
@@ -346,12 +365,24 @@ impl Session {
             state_rx,
             profile: profile.clone(),
             next_id: AtomicU64::new(1),
+            pace_ms,
         })
     }
 
     /// The profile this session was opened with.
     pub fn profile(&self) -> &Profile {
         &self.profile
+    }
+
+    /// Retune send pacing on a live session. Takes effect from the next
+    /// queued line. Pacing is flood control, which is for automation:
+    /// `mmc play` runs a person's keystrokes unpaced, and `/farm` puts
+    /// the same connection back under the profile's pace while the
+    /// runner drives — the unpaced TUI farm is what cycled the gate at
+    /// loopback echo speed (~40 commands in 400ms, run4 2026-08-01).
+    pub fn set_pace(&self, pace: Duration) {
+        self.pace_ms
+            .store(pace.as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Queue a line for sending (CRLF appended); pacing applies. The

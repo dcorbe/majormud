@@ -216,45 +216,10 @@ fn evil_warning_toggle_defaults_off_and_parses() {
     assert_eq!(opted_in, back);
 }
 
-/// Flood control exists to stop an automated burst hammering the board.
-/// A person typing is their own rate limiter, and applying a farm-tuned
-/// pace to them makes every command after the first in a burst wait the
-/// full interval -- 2.5s per step when walking, which is unusable.
-#[test]
-fn interactive_use_drops_the_send_pacing() {
-    let farm: Profile = toml::from_str(
-        r#"
-        target = "mbbs"
-        host = "127.0.0.1"
-        port = 2327
-        username = "u"
-        password = "p"
-        pace_ms = 2500
-        "#,
-    )
-    .unwrap();
-    assert_eq!(farm.pace(), std::time::Duration::from_millis(2500));
-    assert_eq!(farm.interactive().pace(), std::time::Duration::ZERO);
-
-    // Everything else about the profile is untouched.
-    assert_eq!(farm.interactive().username, farm.username);
-    assert_eq!(farm.interactive().target, farm.target);
-}
-
-/// The live board's default is 1500ms even with nothing configured, so
-/// the override has to apply there too, not just to an explicit value.
-#[test]
-fn interactive_use_drops_the_default_pacing_too() {
-    let bare: Profile = toml::from_str(
-        r#"
-        target = "mbbs"
-        host = "127.0.0.1"
-        port = 2327
-        username = "u"
-        password = "p"
-        "#,
-    )
-    .unwrap();
-    assert_eq!(bare.pace(), std::time::Duration::from_millis(1500));
-    assert_eq!(bare.interactive().pace(), std::time::Duration::ZERO);
-}
+// `Profile::interactive()` is gone: a person typing is their own rate
+// limiter, but stripping the pace out of the PROFILE destroyed the value
+// `/farm` needed when it put the same session back under automation —
+// the unpaced-TUI-farm spin (run4, 2026-08-01). Unpacing is now the
+// session's business: `mmc play` calls `Session::set_pace(ZERO)` after
+// connecting, and `/farm` restores `profile.pace()`. See tests/pacing.rs
+// for the mid-stream retune behaviour.

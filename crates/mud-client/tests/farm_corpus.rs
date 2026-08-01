@@ -305,7 +305,15 @@ fn emissions_flow_one_per_ack_and_never_wedge() {
     // mid-fight or beside a listed target. The per-file delta was
     // audited to be EXCLUSIVELY `rest` emissions — 99 of them, in the
     // occupied rooms where the live spiral happened.
-    assert_eq!(total, 2036, "corpus gate throughput changed");
+    // -> 1969 when the wander-out cooldown landed: a targetless
+    // *Combat Off* now debounces same-noun re-engagement until absence,
+    // a leave/arrival event, or a second listed block. The per-file
+    // delta was audited to be EXCLUSIVELY `a <noun>` attacks — 73
+    // immediate re-engages suppressed (the dodge-parry break-offs and
+    // the run4 wander-out shape), 6 of them re-emitted one block later
+    // by the second-block expiry. Live, the stop keeps asking while the
+    // monster stays listed, so a standing monster costs one extra look.
+    assert_eq!(total, 1969, "corpus gate throughput changed");
 }
 
 /// The gate invents nothing. Everything it emits was either a bot
@@ -378,4 +386,20 @@ fn the_corpus_shows_the_bot_occupied_rooms() {
          intended, update the number — but check the stop assertions \
          above are still doing work"
     );
+}
+
+/// Not an assertion: dumps every emission to `target/audit/emissions.txt`
+/// for the per-file diff that accompanies any gate-pin move. Run with
+/// `cargo test -p mud-client --test farm_corpus dump_emissions -- --ignored`.
+#[test]
+#[ignore]
+fn dump_emissions() {
+    let mut out = String::new();
+    for (path, run) in runs() {
+        for (i, cmd) in &run.emitted {
+            out.push_str(&format!("{} {} {}\n", path.display(), i, cmd));
+        }
+    }
+    std::fs::create_dir_all("target/audit").unwrap();
+    std::fs::write("target/audit/emissions.txt", out).unwrap();
 }

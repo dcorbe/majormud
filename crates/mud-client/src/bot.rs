@@ -225,6 +225,18 @@ pub struct Bot {
     /// per lap — and on the live board a refused swing is a crime-system
     /// interaction, not a free no-op.
     refused: Refusals,
+    /// A noun we must not re-engage yet, and how many blocks have listed
+    /// it since. Set by a TARGETLESS *Combat Off* — the un-latch firing
+    /// while we still believed we were engaged, which is the signature of
+    /// the target wandering out mid-fight (a kill un-latches on the death
+    /// line first). The board keeps listing a leaver for the length of
+    /// its leave transition, so the freed bot re-engaged it off the next
+    /// block and the board flipped Engaged/Off — ~40 cycles in 400ms live
+    /// (run4, 2026-08-01). Cleared by absence from a block, by the leave
+    /// or arrival event that settles the question, or by surviving two
+    /// listed blocks — a monster still there after two looks is not
+    /// leaving, it is standing there.
+    cooling: Option<(String, u32)>,
 }
 
 /// The set of targets the board has refused, shared across every bot a
@@ -258,6 +270,7 @@ impl Bot {
             quiet_prompts: 0,
             room_has_work: false,
             refused,
+            cooling: None,
         }
     }
 
@@ -306,6 +319,20 @@ impl Bot {
                 self.exits = room.exits.clone();
                 // Somewhere new: running away is allowed again.
                 self.fled = false;
+                // Settle the wander-out cooldown before choosing a
+                // target: absence means the leave completed; presence in
+                // a SECOND block means it never was leaving, and this
+                // very block engages it.
+                if let Some((noun, listed)) = &mut self.cooling {
+                    let present = room
+                        .also_here
+                        .iter()
+                        .any(|name| target_word(name) == noun);
+                    *listed += 1;
+                    if !present || *listed >= 2 {
+                        self.cooling = None;
+                    }
+                }
                 // Compared through `strip_status`, not by exact string.
                 // A monster that sits down mid-fight re-renders with a
                 // "(Resting) " decoration spliced in (DLL 0xe06f6), and
@@ -347,6 +374,15 @@ impl Bot {
                     .collect()
             }
             Event::ActorEntered { name, .. } => {
+                // An arrival is affirmative evidence: a NEW instance
+                // walked in, whatever noun it shares with the leaver.
+                if self
+                    .cooling
+                    .as_ref()
+                    .is_some_and(|(noun, _)| target_word(name) == noun)
+                {
+                    self.cooling = None;
+                }
                 if self.would_attack(name) {
                     self.room_has_work = true;
                 }
@@ -355,6 +391,15 @@ impl Bot {
             Event::ActorLeft { name, .. } => {
                 if self.engaged.as_deref() == Some(name.as_str()) {
                     self.engaged = None;
+                }
+                // The leave line is the transition COMPLETING — the very
+                // thing the cooldown was waiting out.
+                if self
+                    .cooling
+                    .as_ref()
+                    .is_some_and(|(noun, _)| target_word(name) == noun)
+                {
+                    self.cooling = None;
                 }
                 Vec::new()
             }
@@ -441,7 +486,16 @@ impl Bot {
     /// [`Bot::engage`] so candidates can be ranked before one is chosen,
     /// rather than the first acceptable name winning by position.
     fn attackable(&self, name: &str) -> bool {
-        self.engaged.is_none() && self.would_attack(name)
+        self.engaged.is_none()
+            && self.would_attack(name)
+            // Not while its wander-out is in question — see `cooling`.
+            // Only here, NOT in `would_attack`: the leaver still counts
+            // as the room's work, so the stop waits and nobody rests
+            // beside a transition.
+            && !self
+                .cooling
+                .as_ref()
+                .is_some_and(|(noun, _)| target_word(name) == noun)
     }
 
     /// How dangerous `name` is.
@@ -538,6 +592,16 @@ impl Bot {
         // prose death under the untrained-XP cap produces neither a
         // death mark nor an award, and the latch then held for 29s live.
         if is_kill_line(line) || is_combat_off(line) {
+            // A Combat Off that still finds the latch held is TARGETLESS:
+            // no death line or award preceded it, so the fight ended some
+            // way we did not see — the wander-out. Start the same-noun
+            // cooldown. A kill's Combat Off finds the latch already
+            // cleared and starts nothing.
+            if is_combat_off(line)
+                && let Some(target) = &self.engaged
+            {
+                self.cooling = Some((target_word(target).to_string(), 0));
+            }
             self.engaged = None;
             self.quiet_prompts = 0;
         }

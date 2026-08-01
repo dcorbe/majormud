@@ -986,3 +986,117 @@ fn a_refusal_outlives_the_bot_that_learned_it() {
     );
     assert!(!next.has_target(&view(&["kobold thief"])));
 }
+
+// ---- The wander-out re-engage debounce (run4, 2026-08-01) ----
+//
+// A monster wandering out mid-fight prints *Combat Off* while the room
+// block still lists it for the length of the leave transition. The
+// un-latch freed the bot, the re-look's block re-engaged the leaver, the
+// board flipped Engaged/Off again — ~40 look+attack cycles in 400ms
+// live. A targetless Combat Off (the un-latch fired while we still
+// believed we were engaged) must therefore start a same-noun cooldown:
+// blocks stop re-engaging that noun until the board settles the question.
+
+/// The run4 shape itself: Combat Off mid-fight, then a block still
+/// listing the leaver. Re-attacking it is the spin.
+#[test]
+fn combat_off_mid_fight_does_not_reengage_the_leaver_from_the_next_block() {
+    let mut bot = combat_bot();
+    bot.on_event(&room(&["thin giant rat"]));
+    bot.on_event(&Event::Line("*Combat Off*".into()));
+    let actions = bot.on_event(&room(&["thin giant rat"]));
+    assert!(
+        actions.is_empty(),
+        "re-engaged the leaver during its transition: {actions:?}"
+    );
+}
+
+/// The cooldown must not outlive the question it answers: a monster
+/// still listed two blocks after the Combat Off is not leaving — it is
+/// standing there, and standing monsters get fought.
+#[test]
+fn a_monster_still_present_two_blocks_later_is_reengaged() {
+    let mut bot = combat_bot();
+    bot.on_event(&room(&["thin giant rat"]));
+    bot.on_event(&Event::Line("*Combat Off*".into()));
+    assert!(bot.on_event(&room(&["thin giant rat"])).is_empty());
+    let actions = bot.on_event(&room(&["thin giant rat"]));
+    assert_eq!(actions, vec![BotAction::Send("a rat".into())]);
+}
+
+/// Absence settles it: once a block omits the leaver, the transition is
+/// over, and the next same-noun sighting is a new instance.
+#[test]
+fn absence_ends_the_cooldown_and_the_next_sighting_engages() {
+    let mut bot = combat_bot();
+    bot.on_event(&room(&["thin giant rat"]));
+    bot.on_event(&Event::Line("*Combat Off*".into()));
+    assert!(bot.on_event(&room(&[])).is_empty());
+    let actions = bot.on_event(&room(&["giant rat"]));
+    assert_eq!(actions, vec![BotAction::Send("a rat".into())]);
+}
+
+/// An arrival is affirmative evidence — a new instance walked in, and
+/// waiting out a cooldown against it would let it hit first.
+#[test]
+fn an_arrival_event_overrides_the_cooldown() {
+    let mut bot = combat_bot();
+    bot.on_event(&room(&["thin giant rat"]));
+    bot.on_event(&Event::Line("*Combat Off*".into()));
+    let actions = bot.on_event(&Event::ActorEntered {
+        name: "giant rat".into(),
+        from: None,
+    });
+    assert_eq!(actions, vec![BotAction::Send("a rat".into())]);
+}
+
+/// The leave line is the transition completing. After it, a same-noun
+/// listing is a different rat.
+#[test]
+fn the_leave_line_ends_the_cooldown() {
+    let mut bot = combat_bot();
+    bot.on_event(&room(&["thin giant rat"]));
+    bot.on_event(&Event::Line("*Combat Off*".into()));
+    bot.on_event(&Event::ActorLeft {
+        name: "thin giant rat".into(),
+        to: Some("west".into()),
+    });
+    let actions = bot.on_event(&room(&["giant rat"]));
+    assert_eq!(actions, vec![BotAction::Send("a rat".into())]);
+}
+
+/// The cooldown is per-noun, not a combat holiday: everything else in
+/// the block still gets engaged.
+#[test]
+fn other_names_still_engage_during_the_cooldown() {
+    let mut bot = combat_bot();
+    bot.on_event(&room(&["thin giant rat"]));
+    bot.on_event(&Event::Line("*Combat Off*".into()));
+    let actions = bot.on_event(&room(&["cave bear", "thin giant rat"]));
+    assert_eq!(actions, vec![BotAction::Send("a bear".into())]);
+}
+
+/// A normal kill is NOT targetless: the death line un-latched before the
+/// Combat Off arrived, so no cooldown starts and a silent respawn of the
+/// same template is engaged without delay.
+#[test]
+fn a_kill_then_combat_off_starts_no_cooldown() {
+    let mut bot = combat_bot();
+    bot.on_event(&room(&["thin giant rat"]));
+    bot.on_event(&Event::Line("The thin giant rat falls to the ground.".into()));
+    bot.on_event(&Event::Line("*Combat Off*".into()));
+    let actions = bot.on_event(&room(&["giant rat"]));
+    assert_eq!(actions, vec![BotAction::Send("a rat".into())]);
+}
+
+/// The cooldown must not make the stop look finished: a leaver mid-
+/// transition is still work-in-question, and declaring the room clear
+/// would re-enable resting beside it.
+#[test]
+fn the_cooldown_does_not_hide_the_room_s_work() {
+    let mut bot = combat_bot();
+    bot.on_event(&room(&["thin giant rat"]));
+    bot.on_event(&Event::Line("*Combat Off*".into()));
+    bot.on_event(&room(&["thin giant rat"]));
+    assert!(bot.has_target(&view(&["thin giant rat"])));
+}

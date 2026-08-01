@@ -38,11 +38,6 @@ fn play_command(profile_path: &std::path::Path, capture: Option<&std::path::Path
             return ExitCode::FAILURE;
         }
     };
-    // Interactive play is not paced. `pace_ms` is flood control, which is
-    // for automation; applied to a person it delays every command after
-    // the first in a burst by the full interval, so a farm-tuned profile
-    // makes walking cost 2.5s a step.
-    let profile = profile.interactive();
     let capture = capture.map(|base| Capture {
         raw: base.with_extension("raw"),
         timing: Some(append_to_stem(base, "_timing.log")),
@@ -62,6 +57,12 @@ fn play_command(profile_path: &std::path::Path, capture: Option<&std::path::Path
                 return ExitCode::FAILURE;
             }
         };
+        // Interactive play is not paced. `pace_ms` is flood control,
+        // which is for automation; applied to a person it delays every
+        // command after the first in a burst by the full interval, so a
+        // farm-tuned profile makes walking cost 2.5s a step. The session
+        // keeps the REAL profile, so `/farm` can put its pace back.
+        session.set_pace(std::time::Duration::ZERO);
         match mud_client::tui::play(session).await {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
