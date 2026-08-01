@@ -10,11 +10,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::events::Event;
 
-// Coins print "5 copper drop to the ground.". The leading count is what
-// separates loot from a downed actor's "Vexil drops to the ground!";
-// the plural verb and the full stop corroborate it.
+// Coins print "5 copper drop to the ground." — and "1 silver drops to
+// the ground." when there is only one, because the verb agrees with the
+// coins. The LEADING COUNT is what separates loot from a downed actor's
+// "Vexil drops to the ground!"; the verb never was, and pinning it to
+// the plural silently dropped every single-coin pile (7 in one Arena
+// session, cwrun2.raw — the whole `pile-missing` count).
 static COIN_DROP_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(\d+) (\w+) drop to the ground\.$").unwrap());
+    LazyLock::new(|| Regex::new(r"^(\d+) (\w+) drops? to the ground\.$").unwrap());
 
 /// Did a kill just drop coins, and how many of what?
 ///
@@ -62,6 +65,21 @@ static PICKED_UP_RE: LazyLock<Regex> = LazyLock::new(|| {
 pub fn picked_up(line: &str) -> Option<(u32, String)> {
     let c = PICKED_UP_RE.captures(line)?;
     Some((c[1].parse().ok()?, c[2].to_string()))
+}
+
+/// Somebody ELSE swept the floor: "Mystic picked up some coins."
+/// (VERIFIED, cwrun2.raw — 35 of them in one shared Arena session).
+///
+/// The board tells us neither how much nor of what, which is the whole
+/// character of the fact: it says the floor changed and refuses to say
+/// how. Named separately from [`picked_up`] because the two return
+/// different things — one a pile, the other only the news.
+static SWEPT_BY_OTHER_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\S+ picked up some coins\.$").unwrap());
+
+/// Did another player just take coins off this floor?
+pub fn swept_by_other(line: &str) -> bool {
+    SWEPT_BY_OTHER_RE.is_match(line)
 }
 
 /// A coin pile as the room's "You notice ... here." line names one:
@@ -202,7 +220,11 @@ pub enum BotAction {
 /// the *template* name a word at a time, so the full display name is
 /// too long to match and would be said aloud instead of swung. The
 /// trailing noun always matches, and is what operators type.
-fn target_word(name: &str) -> &str {
+///
+/// `pub(crate)` because [`crate::world::Here`] picks a death line's
+/// victim by the same word, and two copies of "which word names this
+/// monster" would drift.
+pub(crate) fn target_word(name: &str) -> &str {
     let name = strip_status(name);
     name.split_whitespace().last().unwrap_or(name)
 }

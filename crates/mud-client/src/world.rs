@@ -130,7 +130,9 @@ pub enum DivergenceKind {
 }
 
 impl DivergenceKind {
-    const ALL: [DivergenceKind; 4] = [
+    /// Every kind, in reading order: the defect signal first, then the
+    /// ambiguous one, then the same pair for the floor.
+    pub const ALL: [DivergenceKind; 4] = [
         DivergenceKind::OccupantExtra,
         DivergenceKind::OccupantMissing,
         DivergenceKind::PileExtra,
@@ -244,6 +246,62 @@ pub struct Occupant {
     /// When this name was first seen here — preserved across reseeding
     /// blocks, so "how long has that been standing there" is answerable.
     pub since: Instant,
+}
+
+/// Split a board line into the words a monster name could be matched
+/// against: lowercased, stripped of the sentence's punctuation, hyphens
+/// kept (`wererat plague-crafter`).
+fn words(line: &str) -> Vec<&str> {
+    line.split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '-'))
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// Which occupant did this death line take?
+///
+/// **Exactly one, or none.** A pack renders as separately rolled
+/// instances of one template — "angry kobold thief", "thin kobold
+/// thief" — and every instance shares the template's trailing noun.
+/// Removing every occupant that matched therefore buried the whole pack
+/// on its first casualty: `occupant-missing` went 6 -> 35 across the
+/// shared Arena stretch the moment the death lexicon made this fire on
+/// anyone's kill, against 10 -> 5 on the overclaims it was fixing.
+///
+/// Two namings, in order of how much they guess:
+///
+/// 1. The lexicon knows the wording and answers with the TEMPLATE
+///    ("kobold thief"). Nothing is inferred from the prose at all.
+/// 2. [`crate::bot::is_kill_line`]'s phrase half ("falls to the
+///    ground") carries the name inside the sentence, so a word of the
+///    line that IS an occupant's targeting noun names the victim. Its
+///    award half ("You gain 412 experience.") names nobody, and this
+///    finds nobody — a model that picked an occupant off a line with no
+///    name in it would be inventing the answer.
+///
+/// Matching is by whole word, never by substring: "The wererat squeals
+/// in agony, and dies!" carries "rat" and used to take the giant rat
+/// with it.
+fn victim(occupants: &[Occupant], line: &str) -> Option<usize> {
+    let noun = match crate::deaths::killed(line) {
+        Some(template) => crate::bot::target_word(template).to_lowercase(),
+        None => {
+            let said = words(line);
+            occupants
+                .iter()
+                .map(|o| crate::bot::target_word(&o.name).to_lowercase())
+                .find(|noun| said.iter().any(|w| w.eq_ignore_ascii_case(noun)))?
+        }
+    };
+    // Longest-standing first: instances are interchangeable to every
+    // consumer, so the tie needs a rule only to keep the fold
+    // deterministic.
+    occupants
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| crate::bot::target_word(&o.name).eq_ignore_ascii_case(&noun))
+        .min_by_key(|(_, o)| o.since)
+        .map(|(i, _)| i)
 }
 
 fn kind_of(name: &str) -> OccupantKind {
@@ -471,6 +529,16 @@ impl Here {
                     self.piles.retain(|p| p.denom != denom);
                     return;
                 }
+                // Somebody else's sweep names no denomination, so the
+                // whole floor goes. Conservative in the only direction
+                // that is cheap: what survived is relisted by the next
+                // block, at worst one `recheck` later, whereas KEEPING a
+                // pile nobody can take spends the `get` budget on
+                // coins already in another player's pack.
+                if crate::bot::swept_by_other(line) {
+                    self.piles.clear();
+                    return;
+                }
                 // Two different questions, deliberately kept apart.
                 // `is_kill_line` asks "did OUR fight end" and leans on
                 // the experience award, which only fires for a kill we
@@ -481,17 +549,13 @@ impl Here {
                 // first, or somebody else's kill would unlatch it from
                 // a fight that is still going.
                 if crate::bot::is_kill_line(line) || crate::deaths::killed(line).is_some() {
-                    // Death lines name the TEMPLATE; a rolled adjective
-                    // still matches on the trailing noun, the same word
-                    // the attack command uses. The award-only form
-                    // names nobody and removes nobody; the view goes
-                    // stale either way — something died out of it.
-                    self.occupants.retain(|o| {
-                        !o.name
-                            .split_whitespace()
-                            .last()
-                            .is_some_and(|noun| line.contains(noun))
-                    });
+                    // ONE death, one corpse. The view goes stale either
+                    // way — something died out of it — but which
+                    // occupant left is a question with a single answer,
+                    // and `victim` is where it is asked.
+                    if let Some(i) = victim(&self.occupants, line) {
+                        self.occupants.remove(i);
+                    }
                     self.view = None;
                 } else if crate::bot::is_combat_off(line) || line.starts_with("You say \"") {
                     // The fight's end (or a swing that fell through to

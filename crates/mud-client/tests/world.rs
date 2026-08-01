@@ -592,6 +592,27 @@ fn a_kill_before_the_step_does_not_blame_the_room_behind_us() {
     assert!(here.piles.is_empty());
 }
 
+/// The lexicon is a process-wide `OnceLock` and the first caller wins,
+/// so every test in this binary that needs one installs the SAME
+/// superset. Installing per-test wordings would make the suite depend on
+/// which test the harness happened to run first.
+fn lexicon() {
+    mud_client::deaths::init_with(mud_client::deaths::DeathLexicon::from_pairs([
+        (
+            "acid slime".to_string(),
+            "The acid slime dissolves into a puddle of bluish goo.".to_string(),
+        ),
+        (
+            "kobold thief".to_string(),
+            "The kobold thief falls to the ground with a shrill cry.".to_string(),
+        ),
+        (
+            "wererat".to_string(),
+            "The wererat squeals in agony, and dies!".to_string(),
+        ),
+    ]));
+}
+
 /// Another player's kill: no experience award (it was not ours) and a
 /// wording `is_kill_line`'s single phrase does not carry. Before the
 /// death lexicon the corpse stayed in the model forever — 10 overclaims
@@ -599,10 +620,7 @@ fn a_kill_before_the_step_does_not_blame_the_room_behind_us() {
 /// what failed the stage-1 gate.
 #[test]
 fn a_death_only_the_lexicon_knows_still_empties_the_room() {
-    mud_client::deaths::init_with(mud_client::deaths::DeathLexicon::from_pairs([(
-        "acid slime".to_string(),
-        "The acid slime dissolves into a puddle of bluish goo.".to_string(),
-    )]));
+    lexicon();
     let now = Instant::now();
     let mut here = Here::default();
     here.on_event(
@@ -623,6 +641,110 @@ fn a_death_only_the_lexicon_knows_still_empties_the_room() {
     // ...and the next block agrees, so nothing is reported as a defect.
     here.on_event(&answering(Event::RoomSeen(view(&[])), ASK), now);
     assert_eq!(here.reconcile.count(DivergenceKind::OccupantExtra), 0);
+}
+
+/// A death line announces ONE death. The board renders a pack as
+/// separately rolled instances of one template — "angry kobold thief",
+/// "thin kobold thief" — and every one of them shares the template's
+/// trailing noun, so removing by noun removed the whole pack on the
+/// first casualty. Measured: `occupant-missing` 6 -> 35 on the shared
+/// Arena stretch the moment the lexicon made this arm fire on anyone's
+/// kill (tests/world_corpus.rs, 2026-08-01).
+#[test]
+fn one_death_line_kills_one_monster() {
+    lexicon();
+    let now = Instant::now();
+    let mut here = Here::default();
+    here.on_event(
+        &answering(
+            Event::RoomSeen(view(&["angry kobold thief", "thin kobold thief", "kobold thief"])),
+            ASK,
+        ),
+        now,
+    );
+    here.on_event(
+        &unsolicited(Event::Line(
+            "The kobold thief falls to the ground with a shrill cry.".into(),
+        )),
+        now,
+    );
+    assert_eq!(
+        here.occupants.len(),
+        2,
+        "one thief died; the other two are still standing there"
+    );
+}
+
+/// The other half of the same bug: the noun test was `str::contains`, so
+/// "The wererat squeals in agony, and dies!" carried the substring "rat"
+/// and took the giant rat with it. A template noun matches a word, never
+/// a fragment of one.
+#[test]
+fn a_wererat_death_leaves_the_giant_rat_standing() {
+    lexicon();
+    let now = Instant::now();
+    let mut here = Here::default();
+    here.on_event(
+        &answering(Event::RoomSeen(view(&["wererat", "giant rat"])), ASK),
+        now,
+    );
+    here.on_event(
+        &unsolicited(Event::Line("The wererat squeals in agony, and dies!".into())),
+        now,
+    );
+    let names: Vec<_> = here.occupants.iter().map(|o| o.name.as_str()).collect();
+    assert_eq!(names, vec!["giant rat"]);
+}
+
+/// The experience award is the half of `is_kill_line` that fires for
+/// every kill of ours whatever the wording — and it names nobody. It
+/// stales the render, because something did die out of it, but a model
+/// that guessed WHICH occupant off a line with no name in it would be
+/// inventing the answer.
+#[test]
+fn an_experience_award_alone_removes_nobody() {
+    lexicon();
+    let now = Instant::now();
+    let mut here = Here::default();
+    here.on_event(
+        &answering(Event::RoomSeen(view(&["cave bear", "giant rat"])), ASK),
+        now,
+    );
+    here.on_event(
+        &unsolicited(Event::Line("You gain 412 experience.".into())),
+        now,
+    );
+    assert_eq!(here.occupants.len(), 2, "the award named nobody");
+    assert!(here.view.is_none(), "but something died out of the render");
+}
+
+/// Somebody else swept the floor. The board announces it without a
+/// denomination — "Mystic picked up some coins." — so the honest fold is
+/// to drop the whole floor: what is left of it is a question only the
+/// next block can answer.
+///
+/// Erring this way costs at most one `recheck` before a block relists
+/// what is still there. Erring the other way is what the reconciler
+/// measured: 35 of these went unmodelled in one Arena session, and every
+/// one left a pile in the model that nothing would ever remove — 27
+/// `pile-extra`, each of which would spend the `get` budget on coins
+/// that were already in somebody else's pack.
+#[test]
+fn another_players_sweep_clears_the_floor() {
+    let now = Instant::now();
+    let mut here = Here::default();
+    let floor = RoomView {
+        name: "Small Cavern".into(),
+        items: vec!["11 silver nobles".into(), "7 copper farthings".into()],
+        ..RoomView::default()
+    };
+    here.on_event(&answering(Event::RoomSeen(floor), ASK), now);
+    assert_eq!(here.piles.len(), 2);
+    here.on_event(
+        &unsolicited(Event::Line("Mystic picked up some coins.".into())),
+        now,
+    );
+    assert!(here.piles.is_empty(), "the floor is somebody else's now");
 }
 
 /// Room identity by NAME cannot tell two rooms apart when the board

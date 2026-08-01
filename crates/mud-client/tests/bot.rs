@@ -420,6 +420,22 @@ fn does_not_mistake_a_coin_drop_for_a_pickup() {
     assert_eq!(picked_up("12 silver drop to the ground."), None);
 }
 
+/// A single coin takes the singular verb — "1 silver drops to the
+/// ground." — and the plural-only pattern read it as no drop at all.
+/// Seven live drops missed across one Arena session (cwrun2.raw), which
+/// is the whole of the `pile-missing` count the reconciler reported.
+/// The LEADING COUNT is what tells loot from a downed actor; the verb
+/// never was.
+#[test]
+fn grabs_a_single_dropped_coin() {
+    let mut bot = Bot::new(BotConfig {
+        auto_get: true,
+        ..BotConfig::default()
+    });
+    let actions = bot.on_event(&Event::Line("1 silver drops to the ground.".into()));
+    assert_eq!(actions, vec![BotAction::Send("get silver".into())]);
+}
+
 #[test]
 fn does_not_mistake_a_collapsing_actor_for_coins() {
     let mut bot = Bot::new(BotConfig {

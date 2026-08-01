@@ -101,9 +101,37 @@ fn measure_the_corpus() {
 #[test]
 #[ignore = "control for measure_a_stationary_shared_room; must run alone"]
 fn measure_a_stationary_shared_room_without_the_lexicon() {
-    let (blocks, extra, missing) = stationary_arena(false);
-    println!("\nNO LEXICON  blocks {blocks}  extra {extra}  missing {missing}");
+    report("NO LEXICON", stationary_arena(false));
 }
+
+/// All four counters, not just the occupant pair. The pile directions
+/// answer a different question — whether the floor model is sound — and
+/// an instrument that cannot show them cannot gate on them.
+fn report(label: &str, (blocks, counts, recent): Measured) {
+    print!("\n{label}  blocks {blocks}");
+    for (kind, n) in DivergenceKind::ALL.into_iter().zip(counts) {
+        print!("  {} {n}", kind.label());
+    }
+    println!();
+    // Which names, not just how many — "it will have told you exactly
+    // which line caused it" is the whole promise of the counters, and a
+    // bare total cannot keep it. A sample: the ring is bounded.
+    for kind in DivergenceKind::ALL {
+        let mut names: Vec<&str> = recent
+            .iter()
+            .filter(|d| d.kind == kind)
+            .map(|d| d.name.as_str())
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        if !names.is_empty() {
+            println!("  {:<17} {}", kind.label(), names.join(", "));
+        }
+    }
+}
+
+/// Blocks replayed, the four counts, and a sample of the disagreements.
+type Measured = (usize, [u32; 4], Vec<mud_client::world::Divergence>);
 
 /// The shared-room question, measured where it can be measured.
 ///
@@ -120,11 +148,10 @@ fn measure_a_stationary_shared_room_without_the_lexicon() {
 #[test]
 #[ignore = "measurement instrument, not an assertion: run with --ignored --nocapture"]
 fn measure_a_stationary_shared_room() {
-    let (blocks, extra, missing) = stationary_arena(true);
-    println!("\nWITH LEXICON  blocks {blocks}  extra {extra}  missing {missing}");
+    report("WITH LEXICON", stationary_arena(true));
 }
 
-fn stationary_arena(lexicon: bool) -> (usize, u32, u32) {
+fn stationary_arena(lexicon: bool) -> Measured {
     if lexicon {
         with_deaths();
     }
@@ -134,7 +161,7 @@ fn stationary_arena(lexicon: bool) -> (usize, u32, u32) {
     let path = std::path::Path::new(&capture);
     if !path.exists() {
         println!("{} absent (gitignored capture); set MMC_CAPTURE", path.display());
-        return (0, 0, 0);
+        return (0, [0; 4], Vec::new());
     }
     let mut here = Here::default();
     let start = std::time::Instant::now();
@@ -155,7 +182,7 @@ fn stationary_arena(lexicon: bool) -> (usize, u32, u32) {
     }
     (
         blocks,
-        here.reconcile.count(DivergenceKind::OccupantExtra),
-        here.reconcile.count(DivergenceKind::OccupantMissing),
+        DivergenceKind::ALL.map(|k| here.reconcile.count(k)),
+        here.reconcile.recent().iter().cloned().collect(),
     )
 }
