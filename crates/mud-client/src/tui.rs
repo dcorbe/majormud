@@ -197,8 +197,12 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     // with it would be unreadable, so this is deliberately a slow tick.
     let mut level: Option<crate::progress::LevelProgress> = None;
     let mut level_tick = tokio::time::interval(LEVEL_POLL);
-    // The first tick of a tokio interval completes immediately, which is
-    // what asks the board once at startup rather than after a minute.
+    // Whether the character is standing in the realm at all. A tokio
+    // interval's FIRST tick completes immediately, so without this the
+    // very first `exp` went out into the username prompt the instant the
+    // socket opened (live, 2026-08-01). Nothing sent on a timer may
+    // assume a game is running.
+    let mut in_realm = false;
     let started = std::time::Instant::now();
     let nav = locator(session.profile());
 
@@ -234,6 +238,15 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                 // The display comes from raw passthrough, so nothing is
                 // rendered here — only the counters and the assist.
                 if let Ok(cor) = &ev {
+                    if let Some(present) = crate::dialect::realm_presence(&cor.event) {
+                        // Entering is worth asking about straight away;
+                        // waiting out the full period would leave the bar
+                        // blank for the first minute of every session.
+                        if present && !in_realm {
+                            session.send("exp");
+                        }
+                        in_realm = present;
+                    }
                     if let crate::events::Event::Line(line) = &cor.event {
                         if let Some(p) = crate::progress::level_progress(line) {
                             level = Some(p);
@@ -313,11 +326,14 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                 repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), level, &editor, cols, rows)?;
             }
             _ = level_tick.tick() => {
+                // Only while a game is actually running — see `in_realm`.
                 // Unattributed by design: the correlator has no reply
                 // grammar for `exp` (it is Opaque), so it simply expires.
                 // The answer is recognised by its own wording, whoever
                 // asked, which also picks up an `exp` the operator types.
-                session.send("exp");
+                if in_realm {
+                    session.send("exp");
+                }
             }
             ev = key_rx.recv() => {
                 let Some(ev) = ev else { break Ok(()) };

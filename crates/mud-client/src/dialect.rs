@@ -132,3 +132,28 @@ pub async fn login(session: &Session, profile: &Profile) -> Result<LoginOutcome,
         }
     }
 }
+
+/// Did this event settle whether the character is standing in the realm?
+///
+/// `Some(true)` = in the game, `Some(false)` = at the module menu,
+/// `None` = says nothing either way, which is almost everything.
+///
+/// Anything the client sends on a TIMER needs this. A command typed at
+/// the login prompt is a username, and one typed at `[MAJORMUD]:` is a
+/// menu key — the level poll shipped without the check and fired its
+/// first `exp` the moment the socket opened (live, 2026-08-01).
+///
+/// The game prompt is the right positive signal because it is the exact
+/// evidence [`login`] already waits for (`expect("[HP=")`), so the two
+/// cannot disagree about what "in the realm" means.
+pub fn realm_presence(ev: &crate::events::Event) -> Option<bool> {
+    match ev {
+        crate::events::Event::Prompt { .. } => Some(true),
+        crate::events::Event::Line(l)
+            if l.contains("[MAJORMUD]:") || l.contains("Make your selection") =>
+        {
+            Some(false)
+        }
+        _ => None,
+    }
+}

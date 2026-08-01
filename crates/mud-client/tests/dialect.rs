@@ -214,3 +214,49 @@ async fn evil_warnings_are_untouched_when_the_profile_says_nothing() {
     assert_eq!(log.set_warning.load(Ordering::SeqCst), 0, "must not touch the character");
     assert_eq!(log.unrecognised.load(Ordering::SeqCst), 0);
 }
+
+// ---------------------------------------------------------------------
+// Realm presence: is the character standing in the game, or in front of
+// a login prompt / the module menu?
+//
+// Anything the client sends on a timer has to know this. The level poll
+// shipped without it and fired its first `exp` the instant the socket
+// opened — into the username prompt (live, 2026-08-01).
+// ---------------------------------------------------------------------
+
+use mud_client::dialect::realm_presence;
+use mud_client::events::Event;
+
+/// A game prompt is the proof `dialect::login` itself waits for.
+#[test]
+fn a_game_prompt_means_we_are_in_the_realm() {
+    assert_eq!(
+        realm_presence(&Event::Prompt { hp: 43, mana: Some(10) }),
+        Some(true)
+    );
+}
+
+/// The module menu is NOT the game. A command typed here is read as a
+/// menu key, which is how an `exp` becomes an unintended selection.
+#[test]
+fn the_module_menu_means_we_are_not() {
+    assert_eq!(
+        realm_presence(&Event::Line("[MAJORMUD]:".into())),
+        Some(false)
+    );
+    assert_eq!(
+        realm_presence(&Event::Line("Make your selection".into())),
+        Some(false)
+    );
+}
+
+/// Most traffic settles nothing, and must not be read as either — a
+/// silent stretch of combat does not mean we left.
+#[test]
+fn ordinary_traffic_settles_nothing() {
+    assert_eq!(
+        realm_presence(&Event::Line("The cave bear bites you for 14 damage!".into())),
+        None
+    );
+    assert_eq!(realm_presence(&Event::Line("Username:".into())), None);
+}
