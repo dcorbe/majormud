@@ -290,8 +290,22 @@ fn emissions_flow_one_per_ack_and_never_wedge() {
         }
     }
     // 1857 -> 1947 when the five acceptance runs joined the corpus;
-    // -> 1962 when the merge brought slice-8's 13 expedition raws in.
-    assert_eq!(total, 1962, "corpus gate throughput changed");
+    // -> 1962 when the merge brought slice-8's 13 expedition raws in;
+    // -> 2008 when the movemsg arrival families started parsing: spawns
+    // and custom-verb walk-ins ("A margoyle stalks in from the west!")
+    // now engage instead of sleeping until the next look. Every added
+    // emission is an attack on a real monster noun — verified against
+    // the per-file diff when the pin moved.
+    // -> 2135 when "*Combat Off*" became an un-latch: the dodge-parry
+    // captures break off combat dozens of times with the monster still
+    // standing, and the bot now re-engages after each break instead of
+    // sitting latched on a fight the board had declared over. Audited
+    // the same way.
+    // -> 2036 when rest-safety landed: the replay bot no longer rests
+    // mid-fight or beside a listed target. The per-file delta was
+    // audited to be EXCLUSIVELY `rest` emissions — 99 of them, in the
+    // occupied rooms where the live spiral happened.
+    assert_eq!(total, 2036, "corpus gate throughput changed");
 }
 
 /// The gate invents nothing. Everything it emits was either a bot

@@ -272,6 +272,23 @@ impl FarmPlan {
             }
         }
 
+        // Dark stops WARN rather than refuse: build runs before the
+        // connection exists, so it cannot know the character's kit
+        // (light sources are probed at run start), refusing would brick
+        // mixed circuits that farm their lit stops perfectly well, and
+        // the threshold is bracketed evidence, not proven. The runtime
+        // complement is the graph-aware lighting in travel/farm_stop.
+        for &stop in circuit.iter().chain(finish.iter()) {
+            if let Some(room) = graph.room(stop)
+                && room.light < 0
+            {
+                eprintln!(
+                    "note: {}/{} ({}) is dark (light {}); it needs a working light source",
+                    stop.map, stop.room, room.name, room.light
+                );
+            }
+        }
+
         Ok(FarmPlan {
             start,
             circuit,
@@ -619,6 +636,29 @@ impl StopState {
         self.blind = false;
     }
 
+    /// Accept a block the traveller already earned: the answer to the
+    /// leg's final step, attributed to OUR command — the same discipline
+    /// `pending_look` enforces, settled before the stop opened. Without
+    /// this the stop re-asked the board for what the arrival render had
+    /// just said, one full round-trip before the first swing.
+    ///
+    /// Mirrors the `answers_look` acceptance arm field-for-field, and
+    /// like [`StopState::on_event`] it is called AFTER the bot has been
+    /// shown the same block. A block naming somewhere else seeds
+    /// nothing — however it arrived, it describes somewhere else.
+    pub fn seed(&mut self, room: crate::events::RoomView, bot: &crate::bot::Bot, now: Instant) {
+        if room.name != self.stop_name {
+            return;
+        }
+        self.blind = false;
+        if bot.has_target(&room) {
+            self.empty_since = None;
+        } else {
+            self.empty_since.get_or_insert(now);
+        }
+        self.seen = Some(Seen { room, at: now });
+    }
+
     /// Fold one attributed event. Call AFTER
     /// [`crate::bot::Bot::on_event`], so `engaged` and `has_target`
     /// already account for it.
@@ -669,7 +709,25 @@ impl StopState {
                 target: crate::events::Actor::You,
                 ..
             } => self.invalidate(),
+            // A whiff aimed at us proves occupancy exactly like a landed
+            // blow: the live rat behind this lunged twenty times without
+            // connecting while the runner sat on a proven-empty verdict.
+            // Whiff wordings are per-monster data, so no attacker name
+            // can be trusted out of them — but the swing itself is
+            // enough to re-ask.
+            Event::CombatMiss { line } if whiff_at_us(line) => self.invalidate(),
             Event::Line(line) if crate::bot::is_kill_line(line) => self.invalidate(),
+            // The board's own fight-over announcement. A kill can hide
+            // both recognised end signals at once (prose death + the
+            // untrained-XP cap eating the award), and the pre-fight
+            // block then held a Busy verdict on a corpse for 29s live.
+            Event::Line(line) if crate::bot::is_combat_off(line) => self.invalidate(),
+            // Our attack echoed back as SPEECH: the target left in the
+            // race between the block and the swing, so the block that
+            // prompted it describes a room that no longer exists. The
+            // bot never speaks during a run, so any say echo is a
+            // fallthrough.
+            Event::Line(line) if line.starts_with("You say \"") => self.invalidate(),
             Event::Line(line)
                 if line.contains(crate::sheet::TOO_DARK) && answers_look =>
             {
@@ -762,6 +820,13 @@ impl StopState {
             None => Verdict::Ask,
         }
     }
+}
+
+/// Is this whiff a monster swinging at US? Our own whiffs start with
+/// "You" and prove nothing about occupancy; a bystander's fight ("Poop
+/// swipes at kobold thief!") mentions neither "you" nor "your".
+fn whiff_at_us(line: &str) -> bool {
+    !line.starts_with("You") && crate::events::mentions_you(line)
 }
 
 /// Decides when a heal has plainly failed, so the runner can call
@@ -916,6 +981,10 @@ pub struct FarmStats {
     pub slowdowns: u32,
     /// Legs stopped part-way by the travel guard.
     pub interrupts: u32,
+    /// Fights picked mid-leg because the arrival block listed a target.
+    /// Not emergencies: they never touch `travel_interrupts` and cannot
+    /// end a run TooHurt.
+    pub sightings: u32,
 }
 
 #[derive(Debug)]
@@ -970,6 +1039,10 @@ pub fn is_player_death(line: &str, username: &str) -> bool {
 /// Pure and stateless — events in, an interrupt or nothing out, no
 /// latches. The runner hands the same guard to a resumed leg, so a
 /// character that is still wounded has to be able to stop it again.
+/// The optional sighting bot is a PREDICATE, not a participant: it is
+/// consulted through [`crate::bot::Bot::has_target`] and never fed
+/// `on_event` (feeding it events while suppressing its commands would
+/// leave it believing it had swung — see [`run_farm`]'s travel notes).
 pub struct FarmGuard {
     max_hp: i32,
     hurt_at_percent: u32,
@@ -977,6 +1050,9 @@ pub struct FarmGuard {
     /// Stop and fight when something swings at us, rather than walking on
     /// while it does. On unless the caller explicitly wants to run.
     fight_back: bool,
+    /// Stop for rooms this bot would fight in. None (recover, the walk
+    /// home, `fight_while_travelling = false`) sights nothing.
+    sight: Option<crate::bot::Bot>,
 }
 
 impl FarmGuard {
@@ -986,7 +1062,26 @@ impl FarmGuard {
             hurt_at_percent,
             username: username.to_string(),
             fight_back: true,
+            sight: None,
         }
+    }
+
+    /// Stop for rooms this bot would fight in — the live incident was a
+    /// leg walking straight through "Also here: angry kobold thief, thin
+    /// giant rat, large kobold thief." while they attacked. The bot is
+    /// consulted through `has_target` only, so the case rule, the ignore
+    /// list, `auto_combat`, and the run's learned refusals all apply.
+    pub fn sighting(mut self, bot: crate::bot::Bot) -> Self {
+        self.sight = Some(bot);
+        self
+    }
+
+    /// Walk past sightings for the rest of this leg. The runner calls
+    /// this when a room it already defended is still listed — deadline
+    /// expired, unkillable, or refused after the first swing — so the
+    /// leg moves on instead of looping.
+    pub fn stop_sighting(&mut self) {
+        self.sight = None;
     }
 
     /// As [`FarmGuard::new`], but walk past a fight instead of taking it.
@@ -1043,6 +1138,12 @@ impl crate::nav::TravelGuard for FarmGuard {
             _ => None,
         }
     }
+
+    fn on_room(&mut self, room: &crate::events::RoomView) -> Option<crate::nav::Interrupt> {
+        let bot = self.sight.as_ref()?;
+        bot.has_target(room)
+            .then(|| crate::nav::Interrupt::Sighted { room: room.clone() })
+    }
 }
 
 /// Run the patrol.
@@ -1075,11 +1176,15 @@ pub async fn run_farm(
     cfg: &FarmConfig,
     phase: PhaseSink<'_>,
 ) -> Result<(FarmEnd, FarmStats), FarmError> {
-    let mut light = crate::sheet::LightState::new(read_light_plan(session).await);
-    if let Some(cmd) = light.plan() {
+    let mut light = crate::sheet::LightState::new(read_light_sources(session).await);
+    if let Some(cmd) = light.first_command() {
         eprintln!("dark rooms will be handled with `{cmd}`");
     }
-    let out = farm_loop(session, graph, plan, bot_config, cfg, phase, &mut light).await;
+    let mut clock = crate::world::RoundClock::new();
+    let out = farm_loop(
+        session, graph, plan, bot_config, cfg, phase, &mut light, &mut clock,
+    )
+    .await;
     // A lit source burns one use per 3s medium tick whether anything
     // needs the light or not; walked away from, it spends the run's
     // whole burn budget on idle time. Best effort — a dead character
@@ -1092,6 +1197,7 @@ pub async fn run_farm(
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn farm_loop(
     session: &crate::session::Session,
     graph: std::sync::Arc<RoomGraph>,
@@ -1100,6 +1206,7 @@ async fn farm_loop(
     cfg: &FarmConfig,
     phase: PhaseSink<'_>,
     light: &mut crate::sheet::LightState,
+    clock: &mut crate::world::RoundClock,
 ) -> Result<(FarmEnd, FarmStats), FarmError> {
     let started = Instant::now();
     let mut stats = FarmStats::default();
@@ -1139,6 +1246,10 @@ async fn farm_loop(
             if let Some(end) = time_up(started, cfg) {
                 return Ok((end, stats));
             }
+            // The leg's final step may have carried the stop's own block
+            // out with it; the stop then starts from that evidence
+            // instead of re-asking the board.
+            let mut arrival = None;
             if current != stop {
                 match travel(
                     session,
@@ -1151,13 +1262,14 @@ async fn farm_loop(
                     &threat,
                     &refusals,
                     light,
+                    clock,
                     started,
                     &mut stats,
                     phase,
                 )
                 .await?
                 {
-                    LegEnd::Arrived => {}
+                    LegEnd::Arrived { seen } => arrival = seen,
                     LegEnd::Died => return Ok((FarmEnd::Died, stats)),
                     LegEnd::TimeUp => return Ok((FarmEnd::TimeUp, stats)),
                     LegEnd::TooHurt => return Ok((FarmEnd::TooHurt, stats)),
@@ -1172,9 +1284,11 @@ async fn farm_loop(
                 &threat,
                 &refusals,
                 light,
+                clock,
                 cfg,
                 started,
                 None,
+                arrival,
                 &mut stats,
                 phase,
             )
@@ -1239,7 +1353,8 @@ pub async fn go_to_finish(
             // ends is Ctrl-C, which cancels run_farm and drops its
             // LightState outright — a parameter could never cover the
             // exit route that matters most.
-            let Some(cmd) = read_light_plan(session).await else {
+            let sources = read_light_sources(session).await;
+            let Some(cmd) = sources.first().map(|s| s.command().to_string()) else {
                 return Err(FarmError::NotAtStart {
                     expected: "a room block answering the finish walk's look".into(),
                     saw: None,
@@ -1295,18 +1410,18 @@ async fn next_room_view(
     }
 }
 
-/// Ask the board for the inventory and the spellbook, and work out how
-/// this character would light a dark room.
+/// Ask the board for the inventory and the spellbook, and work out
+/// every way this character could light a dark room.
 ///
-/// `None` means it cannot, which is worth knowing up front rather than
+/// Empty means it cannot, which is worth knowing up front rather than
 /// discovering at the mouth of an unlit room.
-async fn read_light_plan(session: &crate::session::Session) -> Option<String> {
+async fn read_light_sources(session: &crate::session::Session) -> Vec<crate::sheet::LightSource> {
     let inventory = ask(session, "inventory", "Encumbrance:").await;
     // No terminal wording is pinned for the spell listing, so the
     // collection is bounded by a short deadline instead of the full 10s
     // — this runs at every farm start and on dark finish walks.
     let spells = ask_for(session, "spells", "", Duration::from_secs(3)).await;
-    crate::sheet::light_plan(
+    crate::sheet::light_sources(
         &crate::sheet::Inventory::parse(&inventory),
         &crate::sheet::Spellbook::parse(&spells),
     )
@@ -1376,7 +1491,11 @@ async fn verify_start(
 
 /// How a leg ended.
 enum LegEnd {
-    Arrived,
+    /// At the stop. `seen` is the attributed arrival block when the
+    /// final step both described the stop and listed something worth
+    /// fighting — evidence the stop pump can start from instead of
+    /// re-asking the board.
+    Arrived { seen: Option<crate::events::RoomView> },
     Died,
     TimeUp,
     TooHurt,
@@ -1403,6 +1522,7 @@ async fn travel(
     threat: &std::sync::Arc<crate::bot::ThreatTable>,
     refusals: &crate::bot::Refusals,
     light: &mut crate::sheet::LightState,
+    clock: &mut crate::world::RoundClock,
     started: Instant,
     stats: &mut FarmStats,
     phase: PhaseSink<'_>,
@@ -1411,11 +1531,21 @@ async fn travel(
     set_phase(phase, Phase::WaitingToDepart);
 
     let mut guard = if cfg.fight_while_travelling {
+        // Sighting rides the same intent switch: "take fights on the
+        // way" covers a monster the arrival block LISTS, not only one
+        // that has already drawn blood. The bot is a predicate — never
+        // fed events — and shares the run's refusals, so a template the
+        // board refused stops tripping legs run-wide.
         FarmGuard::new(
             bot_config.max_hp,
             cfg.interrupt_at_percent,
             &session.profile().username,
         )
+        .sighting(crate::bot::Bot::with_refusals(
+            bot_config.clone(),
+            threat.clone(),
+            refusals.clone(),
+        ))
     } else {
         FarmGuard::running(
             bot_config.max_hp,
@@ -1424,18 +1554,34 @@ async fn travel(
         )
     };
     let mut budget = cfg.travel_interrupts;
+    // The one room this leg already defended on a sighting. A second
+    // sighting there means the defence did not clear it — deadline
+    // expired, unkillable, or refused mid-fight — and stopping again
+    // would loop, so the leg walks on past sightings from then on.
+    let mut last_sighted: Option<RoomId> = None;
+    // Predicate-only, like the guard's sighting bot: judges whether the
+    // departure gate is standing beside work (never fed events).
+    let sight = crate::bot::Bot::with_refusals(bot_config.clone(), threat.clone(), refusals.clone());
 
     loop {
         if time_up(started, cfg).is_some() {
             return Ok(LegEnd::TimeUp);
         }
-        wait_for_departure_health(session, cfg, bot_config).await;
+        wait_for_departure_health(session, cfg, bot_config, &sight).await;
+        // Light up BEFORE stepping into known darkness, standing still
+        // where the outcome is verifiable. On failure the walk proceeds
+        // blind — today's behavior, now the explicit fallback. A fade
+        // mid-leg still walks the remaining dark steps blind and is
+        // caught at the stop by the Blind verdict + recast.
+        if !light.lit() && leg_needs_light(graph, *current, stop) {
+            ensure_lit(session, light, clock).await;
+        }
     set_phase(phase, Phase::Travelling { to: stop });
 
         let err = match nav.goto(session, *current, stop, &mut guard).await {
             Ok(at) => {
                 *current = at;
-                return Ok(LegEnd::Arrived);
+                return Ok(LegEnd::Arrived { seen: None });
             }
             Err(e) => e,
         };
@@ -1447,6 +1593,47 @@ async fn travel(
 
         match err.kind {
             NavErrorKind::Interrupted(Interrupt::Died) => return Ok(LegEnd::Died),
+            // The arrival block listed something worth fighting. NOT an
+            // emergency: it never touches the interrupt budget and can
+            // never end a run TooHurt — it is the farm noticing work,
+            // where Hurt/Attacked are the farm noticing danger.
+            NavErrorKind::Interrupted(Interrupt::Sighted { room }) => {
+                // The destination itself: this IS the stop. Hand the
+                // evidence up so the stop starts from it.
+                if err.at == stop {
+                    return Ok(LegEnd::Arrived { seen: Some(room) });
+                }
+                if last_sighted == Some(err.at) {
+                    guard.stop_sighting();
+                    continue;
+                }
+                last_sighted = Some(err.at);
+                stats.sightings += 1;
+                let until = Instant::now() + Duration::from_secs(cfg.defend_seconds);
+                match farm_stop(
+                    session,
+                    nav,
+                    graph,
+                    err.at,
+                    bot_config,
+                    threat,
+                    refusals,
+                    light,
+                    clock,
+                    cfg,
+                    started,
+                    Some(until),
+                    Some(room),
+                    stats,
+                    phase,
+                )
+                .await?
+                {
+                    StopEnd::Dwelt => continue,
+                    StopEnd::Died => return Ok(LegEnd::Died),
+                    StopEnd::TimeUp => return Ok(LegEnd::TimeUp),
+                }
+            }
             // Being swung at is handled exactly like being hurt: stop,
             // clear the room with the pump that already knows how to
             // fight, then resume the leg from where we stand.
@@ -1472,9 +1659,11 @@ async fn travel(
                     threat,
                     refusals,
                     light,
+                    clock,
                     cfg,
                     started,
                     Some(until),
+                    None,
                     stats,
                     phase,
                 )
@@ -1490,6 +1679,82 @@ async fn travel(
     }
 }
 
+/// The recast coherence rule, pure for testing: a faded light waits
+/// while the room holds a monster the bot would fight. Same policy as
+/// rest-safety — an occupied room gets the fight first (fighting blind
+/// is already the state we are in, and a mid-melee cast would be
+/// refused anyway); light comes when the room is cleared.
+pub fn recast_waits_for(bot: &crate::bot::Bot, here: &crate::world::Here) -> bool {
+    here.occupants
+        .iter()
+        .any(|o| matches!(o.kind, crate::world::OccupantKind::Monster) && bot.would_attack(&o.name))
+}
+
+/// Does this leg cross (or end in) a room the graph marks dark? Decided
+/// from the same route goto will compute (BFS is deterministic), so the
+/// walk can light up BEFORE stepping into darkness — standing still,
+/// where the cast outcome is verifiable — instead of bouncing out of
+/// the dark and retrying blind, which was the live lap's shape.
+pub fn leg_needs_light(graph: &RoomGraph, from: RoomId, to: RoomId) -> bool {
+    let Some(route) = graph.route(from, to) else {
+        return false;
+    };
+    let mut at = from;
+    for d in route {
+        let Some(next) = graph
+            .room(at)
+            .and_then(|r| r.exits[d as usize].as_ref())
+            .map(|e| e.dest)
+        else {
+            return false;
+        };
+        if graph.dark(next) {
+            return true;
+        }
+        at = next;
+    }
+    false
+}
+
+/// Light up before a dark leg, standing still. Runs the attempt/outcome
+/// cycle directly (no gate: the walk does not own the connection yet),
+/// retrying fizzles on the round and giving up honestly when nothing
+/// can work — proceeding blind is then the explicit fallback, exactly
+/// today's behavior. Bounded by a hard deadline so a lost outcome can
+/// never wedge a leg.
+async fn ensure_lit(
+    session: &crate::session::Session,
+    light: &mut crate::sheet::LightState,
+    clock: &crate::world::RoundClock,
+) {
+    if light.lit() {
+        return;
+    }
+    let mut events = session.events();
+    crate::session::drain(&mut events, |_| {});
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        if light.lit() || tokio::time::Instant::now() >= deadline {
+            return;
+        }
+        match light.attempt(Instant::now(), clock) {
+            crate::sheet::LightAttempt::Send(cmd) => {
+                let id = session.send(&cmd);
+                light.on_sent(&cmd, id);
+            }
+            crate::sheet::LightAttempt::Hold(_) => {}
+            crate::sheet::LightAttempt::Nothing if !light.in_flight() => return,
+            crate::sheet::LightAttempt::Nothing => {}
+        }
+        match tokio::time::timeout(Duration::from_millis(300), events.recv()).await {
+            Ok(Ok(cor)) => light.on_event(&cor),
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+            Ok(Err(_)) => return,
+            Err(_) => {}
+        }
+    }
+}
+
 /// Hold at the stop until HP is fit to travel. The bot is not driving
 /// while the navigator walks, so setting off wounded means relying on
 /// the travel guard to stop the leg part-way — cheaper to leave fit.
@@ -1497,6 +1762,9 @@ async fn wait_for_departure_health(
     session: &crate::session::Session,
     cfg: &FarmConfig,
     bot_config: &crate::bot::BotConfig,
+    // Judges whether the room we are standing in holds work; the same
+    // predicate-only role the sighting guard's bot plays.
+    sight: &crate::bot::Bot,
 ) {
     if cfg.depart_at_percent == 0 || bot_config.max_hp <= 0 {
         return;
@@ -1504,6 +1772,22 @@ async fn wait_for_departure_health(
     let target = bot_config.max_hp * cfg.depart_at_percent as i32 / 100;
     let mut state = session.state();
     if state.borrow().hp >= target {
+        return;
+    }
+    // Never rest beside a monster: the travel path can land here right
+    // after a defend that ended on the deadline with monsters still
+    // standing, and a rest there is disengaged by the board and broken
+    // by the next fight — the same incoherence the bot's own rest rule
+    // suppresses. GameState.room is unattributed, so this is a
+    // heuristic gate on a best-effort send; the bot-internal rule is
+    // the load-bearing one. Departing wounded is what the travel guard
+    // exists for.
+    if state
+        .borrow()
+        .room
+        .as_ref()
+        .is_some_and(|room| sight.has_target(room))
+    {
         return;
     }
     // Actually REST, and actually look.
@@ -1560,15 +1844,24 @@ async fn farm_stop(
     // repeated -- a crime-system interaction on the live board.
     refusals: &crate::bot::Refusals,
     light: &mut crate::sheet::LightState,
+    clock: &mut crate::world::RoundClock,
     cfg: &FarmConfig,
     started: Instant,
     // Hard cap on this stop, or None to stay until it goes quiet.
     until: Option<Instant>,
+    // The attributed block the leg's final step carried in, when it
+    // described this stop. Seeds the evidence so the first swing goes
+    // out without an opening look.
+    arrival: Option<crate::events::RoomView>,
     stats: &mut FarmStats,
     phase: PhaseSink<'_>,
 ) -> Result<StopEnd, FarmError> {
     let stop_name = graph.room(stop).map(|r| r.name.clone()).unwrap_or_default();
     let mut resting = false;
+    // The stop went blind at least once this visit: the room needs
+    // light whatever the graph believes, which arms the recast gate for
+    // rooms the graph mislabels.
+    let mut was_blind_this_visit = false;
     light.new_visit();
     let username = session.profile().username.clone();
     let backoff = Duration::from_millis(cfg.slowdown_backoff_ms);
@@ -1586,6 +1879,26 @@ async fn farm_stop(
     let mut gate = Gate::new(backoff);
     let mut heal = HealWatch::new(bot_config, cfg);
     let mut seen = StopState::new(stop_name.clone(), cfg);
+    // The maintained room state — fed the same stream, one fold. Its
+    // first consumer is the recast coherence gate; StopState keeps its
+    // own hard-won evidence rules untouched until Here earns collapse.
+    let mut here = crate::world::Here::default();
+    here.room = Some(stop);
+
+    // The traveller's arrival block, believed under the same rule the
+    // pump applies at farm.rs's bot_sees: it was ATTRIBUTED — to the
+    // leg's final step rather than to a look — so the bot is shown it
+    // (engaging anything listed) and the state accepts it as evidence.
+    // Bot first, then state, matching on_event's contract. The window
+    // between goto accepting the block and the subscribe above can drop
+    // an ActorEntered — the same race the opening look always had — and
+    // the `recheck` shelf life forces the re-ask that bounds it.
+    if let Some(room) = arrival {
+        for crate::bot::BotAction::Send(cmd) in bot.on_event(&Event::RoomSeen(room.clone())) {
+            gate.push(cmd);
+        }
+        seen.seed(room, &bot, Instant::now());
+    }
 
     loop {
         if time_up(started, cfg).is_some() {
@@ -1623,26 +1936,53 @@ async fn farm_stop(
             }
             Verdict::Blind => {
                 // Blind again while a source was believed burning: it
-                // burned out. The burn-out wordings arrive unsolicited
-                // and LightState reads them directly; the darkness
-                // returning is the backstop for one that was missed.
+                // burned out (item) or faded unnoticed (spell). The
+                // wordings arrive unsolicited and LightState reads them
+                // directly; the darkness returning is the backstop for
+                // one that was missed.
                 light.source_died();
-                match light.attempt() {
-                    Some(cmd) if gate.is_idle() => {
+                was_blind_this_visit = true;
+                match light.attempt(now, clock) {
+                    crate::sheet::LightAttempt::Send(cmd) if gate.is_idle() => {
                         gate.push(cmd);
                         gate.push("look".into());
+                    }
+                    // An attempt was spent this round; a second cast
+                    // inside one is refused anyway. Wait it out — this
+                    // is what turns "Blind + no attempt = dead end"
+                    // into "Blind + Hold = retry next round", the live
+                    // 15-dark-encounters-3-casts bug.
+                    crate::sheet::LightAttempt::Hold(next) => {
+                        hold_until = Some(hold_until.map_or(next, |h: Instant| h.min(next)));
                     }
                     // A stop we cannot see is a stop we cannot farm, and
                     // fighting in the dark is heavily penalised anyway.
                     // Defending is the exception: there the deadline
                     // governs, or we walk on and leave whatever is
                     // hitting us behind.
-                    None if until.is_none() && gate.is_idle() => {
+                    crate::sheet::LightAttempt::Nothing if until.is_none() && gate.is_idle() => {
                         return Ok(StopEnd::Dwelt);
                     }
                     _ => {}
                 }
             }
+        }
+
+        // A fade is an indicator to RECAST, not bookkeeping (operator
+        // directive): it arrives unsolicited mid-anything, and waiting
+        // for the next look to come back "too dark" costs a blind
+        // round-trip. Priority: combat > recast > look — a recast never
+        // preempts a fight (the board refuses casts mid-round anyway),
+        // and it needs no look after it: the fade does not stale the
+        // room evidence. A fade in a naturally lit room needs no action.
+        if bot.engaged().is_none()
+            && gate.is_idle()
+            && light.wants_recast()
+            && (graph.dark(stop) || was_blind_this_visit)
+            && !recast_waits_for(&bot, &here)
+            && let crate::sheet::LightAttempt::Send(cmd) = light.attempt(now, clock)
+        {
+            gate.push(cmd);
         }
 
         set_phase(
@@ -1694,6 +2034,8 @@ async fn farm_stop(
                 bot = crate::bot::Bot::with_refusals(bot_config.clone(), threat.clone(), refusals.clone());
                 gate = Gate::new(backoff);
                 seen.reset();
+                here.reset();
+                here.room = Some(stop);
                 None
             }
             Ok(Err(_)) => return Err(FarmError::Disconnected),
@@ -1706,6 +2048,11 @@ async fn farm_stop(
 
         if let Event::SlowDown = ev {
             stats.slowdowns += 1;
+        }
+        // Combat lines arrive in bursts on round boundaries; every one
+        // phase-locks the clock the lighting retries pace themselves by.
+        if matches!(ev, Event::CombatHit { .. } | Event::CombatMiss { .. }) {
+            clock.observe(Instant::now());
         }
         if let Event::Line(line) = &ev {
             if is_player_death(line, &username) {
@@ -1757,6 +2104,8 @@ async fn farm_stop(
             gate = Gate::new(backoff);
             heal = HealWatch::new(bot_config, cfg);
             seen = StopState::new(stop_name.clone(), cfg);
+            here.reset();
+            here.room = Some(stop);
             continue;
         }
 
@@ -1785,6 +2134,7 @@ async fn farm_stop(
         // Folded last, so `engaged` and `has_target` already account for
         // this event when the next iteration asks for a verdict.
         seen.on_event(&cor, &bot, Instant::now());
+        here.on_event(&cor, Instant::now());
     }
 }
 

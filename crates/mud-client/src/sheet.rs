@@ -87,16 +87,20 @@ impl Inventory {
         inv
     }
 
-    /// The first carried thing that would light a dark room, named as the
-    /// board would want it referred to.
-    pub fn light_source(&self) -> Option<String> {
-        self.items.iter().find_map(|item| {
-            let noun = item.split_whitespace().next_back()?.to_lowercase();
-            LIGHT_ITEMS
-                .iter()
-                .find(|l| noun == **l)
-                .map(|l| (*l).to_string())
-        })
+    /// EVERY carried thing that would light a dark room, in carry
+    /// order. The single-Option shape was exactly why one burn-out went
+    /// dead-for-the-run while a second torch sat in the pack.
+    fn light_items(&self) -> Vec<String> {
+        self.items
+            .iter()
+            .filter_map(|item| {
+                let noun = item.split_whitespace().next_back()?.to_lowercase();
+                LIGHT_ITEMS
+                    .iter()
+                    .find(|l| noun == **l)
+                    .map(|l| (*l).to_string())
+            })
+            .collect()
     }
 }
 
@@ -156,38 +160,84 @@ impl Spellbook {
         book
     }
 
-    /// The short name of a spell that would light a dark room.
-    pub fn light_spell(&self) -> Option<String> {
+    /// The spell that would light a dark room, with the book's mana
+    /// cost — the caster's mana floor comes from here, not from
+    /// configuration.
+    fn light_spell_with_cost(&self) -> Option<(String, i16)> {
         self.spells
             .iter()
             .find(|s| LIGHT_SPELLS.contains(&s.name.to_lowercase().as_str()))
-            .map(|s| s.short.clone())
+            .map(|s| (s.short.clone(), s.mana))
     }
 }
 
-/// The command that would light the current room, or `None` when the
-/// character has no way to.
-///
-/// A carried light wins over a spell: it costs no mana — which is wanted
-/// for whatever the dark room is hiding — and once lit it keeps burning,
-/// where a spell has a duration. Both verbs are the board's own:
-/// `light <item>` (DLL 0xdb07a, "You lit the %s." at 0xdb52d) and
-/// `cast <short>` ("Syntax: CAST {spell} [{target}]", 0xd984f).
-///
-/// `None` is a real answer and must not be papered over with a guess: an
-/// unrecognised command is SAID OUT LOUD by the board, so inventing one
-/// would broadcast it to the room and leave the character still blind.
-pub fn light_plan(inventory: &Inventory, spellbook: &Spellbook) -> Option<String> {
-    if let Some(item) = inventory.light_source() {
-        return Some(format!("light {item}"));
+/// One way the character can light a dark room. The KINDS matter
+/// because their failure modes differ completely: a spell fizzles
+/// (random cast roll — retry), fades ("Your starlight spell fades
+/// away.", live 2026-08-01 — recast) and costs mana; an item is
+/// deterministic but burns one use per 3s tick while lit and dies for
+/// good at zero ("is no longer lit" — advance to the NEXT source).
+/// Collapsing both into one string plan was why a fizzle got one try
+/// per visit and a fade poisoned the spell for the whole run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LightSource {
+    Spell { cmd: String, mana_cost: i32 },
+    Item {
+        light_cmd: String,
+        remove_cmd: String,
+    },
+}
+
+impl LightSource {
+    /// The command that lights via this source.
+    pub fn command(&self) -> &str {
+        match self {
+            LightSource::Spell { cmd, .. } => cmd,
+            LightSource::Item { light_cmd, .. } => light_cmd,
+        }
     }
-    spellbook.light_spell().map(|short| format!("cast {short}"))
+}
+
+/// Every way the character can light a room, in preference order:
+/// items first (no mana, keep burning), the spell last (survives any
+/// number of burn-outs). Empty is a real answer — an unrecognised
+/// command is SAID OUT LOUD by the board, so nothing is invented.
+pub fn light_sources(inventory: &Inventory, spellbook: &Spellbook) -> Vec<LightSource> {
+    let mut sources: Vec<LightSource> = inventory
+        .light_items()
+        .into_iter()
+        .map(|item| LightSource::Item {
+            light_cmd: format!("light {item}"),
+            remove_cmd: format!("remove {item}"),
+        })
+        .collect();
+    if let Some((short, mana)) = spellbook.light_spell_with_cost() {
+        sources.push(LightSource::Spell {
+            cmd: format!("cast {short}"),
+            mana_cost: mana as i32,
+        });
+    }
+    sources
 }
 
 /// The board's reply on entering a room too dark to see in — "The room is
 /// %s - you can't see anything" (DLL 0xdf37e). The descriptor varies, so
 /// the tail is what is matched.
 pub const TOO_DARK: &str = "you can't see anything";
+
+/// What lighting is worth doing right now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LightAttempt {
+    /// Send this command.
+    Send(String),
+    /// An attempt was made this round; the board refuses a second cast
+    /// inside one ("You have already cast a spell this round!"), so
+    /// wait until this instant and ask again.
+    Hold(std::time::Instant),
+    /// Nothing can work: lit already, an outcome owed, mana below the
+    /// cost, or every source dead.
+    Nothing,
+}
 
 /// Light the room, CONFIRM it from the board, and only give up when
 /// nothing can work. Walking a dark room blind is the LAST resort.
@@ -196,50 +246,59 @@ pub const TOO_DARK: &str = "you can't see anything";
 /// to OUR light command by the session's correlation — a stale or
 /// somebody-else's outcome line proves nothing:
 ///
-/// - "You lit the %s." (DLL 0xdb52d) and "You already have something
-///   lit!" mean a source is burning.
-/// - "You may not light that item!" means the plan is wrong outright and
-///   is never retried.
-/// - A failed cast ("...but fail.", resist, no mana) spends this VISIT's
-///   attempt: mana does not come back inside a stop visit (measured live
-///   — extra attempts bought nothing and cost four commands each), and
-///   the stop is revisited every lap, which is the retry.
-/// - Burn-out HAS wordings — "%s is no longer lit!" and "It's uses
-///   gone, %s disappears from your inventory!" (_MEDIUM_UPDATE_CHARACTER
-///   decrements one use per 3s medium tick, unconditionally while lit;
-///   800 uses = 40 minutes of total lit time on a torch). They arrive
-///   UNSOLICITED — no command of ours asks for them — so they are read
-///   unattributed; the wording is unambiguous and it decides lighting,
-///   never position. The darkness returning is the backstop for a
-///   wording missed ([`LightState::source_died`]); either way a dead
-///   source is not retried.
+/// - "You lit the %s." (DLL 0xdb52d), "You already have something
+///   lit!" and the cast success "You cast starlight!" (live 2026-08-01
+///   run2 — the old code knew no spell success wording at all, so a
+///   spell plan never became lit) mean a source is burning.
+/// - "You may not light that item!" kills THAT source and the next one
+///   is tried.
+/// - A fizzle ("...but fail.", resist, no mana, already-cast) is a
+///   random cast roll: retried on the NEXT ROUND while mana covers the
+///   book's cost. The old one-attempt-per-visit budget produced the
+///   live 15-dark-encounters-3-casts run with MA 11 in hand.
+/// - "Your starlight spell fades away." (unsolicited, live run2/run3)
+///   is an INDICATOR TO RECAST: lit drops, the source stays healthy.
+/// - Burn-out wordings — "%s is no longer lit!", "It's uses gone, %s
+///   disappears from your inventory!" (_MEDIUM_UPDATE_CHARACTER burns
+///   one use per 3s medium tick while lit; 800 uses = 40 minutes) —
+///   arrive UNSOLICITED and kill the current source only when it IS an
+///   item: they are item wordings, and a bystander's torch dying must
+///   not kill a spell plan. The darkness returning is the backstop for
+///   a missed wording ([`LightState::source_died`]), with the same
+///   kind-split: a burned-out item is dead, a faded spell is recast.
 pub struct LightState {
-    /// The command that lights, from [`light_plan`]; None means nothing
-    /// on the character can light a room.
-    plan: Option<String>,
+    /// Every way this character can light a room, preference-ordered
+    /// ([`light_sources`]). Empty means it cannot.
+    sources: Vec<LightSource>,
+    /// Sources the board refused or that burned out: dead for the run.
+    dead: Vec<bool>,
     /// The board confirmed a burning source and nothing has gone dark
     /// since.
     lit: bool,
     /// A light command is out; its outcome will carry this id.
     pending: Option<crate::correlate::CmdId>,
-    /// Attempts spent at the current stop visit.
-    spent: u32,
-    /// Plans the board refused or that burned out: dead for the run.
-    /// The plan is derived once at run start and never re-derived
-    /// mid-run, so a second carried torch is NOT tried after a burn-out
-    /// — a deliberate retreat from the sketch, sized to a torch that
-    /// outlives any 300s run; `go_to_finish` re-derives independently.
-    exhausted: Vec<String>,
+    /// Last mana seen on a prompt; None until one arrives. The caster's
+    /// floor is the book's cost — no configuration involved.
+    mana: Option<i32>,
+    /// When the last attempt was released, for round pacing.
+    last_attempt: Option<std::time::Instant>,
+    /// A fade was seen (or inferred by darkness) while the spell was
+    /// believed burning: the operator's directive is that this means
+    /// RECAST, proactively, not on the next blind look.
+    faded: bool,
 }
 
 impl LightState {
-    pub fn new(plan: Option<String>) -> Self {
+    pub fn new(sources: Vec<LightSource>) -> Self {
+        let dead = vec![false; sources.len()];
         LightState {
-            plan,
+            sources,
+            dead,
             lit: false,
             pending: None,
-            spent: 0,
-            exhausted: Vec::new(),
+            mana: None,
+            last_attempt: None,
+            faded: false,
         }
     }
 
@@ -247,56 +306,118 @@ impl LightState {
         self.lit
     }
 
-    /// The current plan, for flows that fire one attempt themselves
-    /// (the finish walk).
-    pub fn plan(&self) -> Option<&String> {
-        self.plan.as_ref()
+    /// The first live source's command, for flows that fire one attempt
+    /// themselves (the finish walk, the startup announcement).
+    pub fn first_command(&self) -> Option<&str> {
+        self.current().map(|s| s.command())
     }
 
-    /// A fresh stop visit: the per-visit attempt budget resets, and so
-    /// does the outcome watch — an outcome that never arrived (a lost
-    /// wording, a lag resubscribe) must not wedge lighting for the rest
-    /// of the run. The worst case self-corrects with one "You already
-    /// have something lit!" round trip.
+    /// A fade arrived while the light was relied on; a recast is wanted
+    /// at the next sensible opportunity, not at the next blind look.
+    pub fn wants_recast(&self) -> bool {
+        self.faded && !self.lit
+    }
+
+    /// A light command is out and its outcome has not arrived.
+    pub fn in_flight(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    fn current(&self) -> Option<&LightSource> {
+        self.sources
+            .iter()
+            .zip(&self.dead)
+            .find(|(_, dead)| !**dead)
+            .map(|(s, _)| s)
+    }
+
+    fn kill_current(&mut self) {
+        if let Some(i) = self.dead.iter().position(|d| !*d) {
+            self.dead[i] = true;
+        }
+    }
+
+    /// A fresh stop visit resets the outcome watch — an outcome that
+    /// never arrived (a lost wording, a lag resubscribe) must not wedge
+    /// lighting for the rest of the run. The worst case self-corrects
+    /// with one "You already have something lit!" round trip. There is
+    /// no per-visit attempt budget any more: retries are bounded by
+    /// mana and paced by the round.
     pub fn new_visit(&mut self) {
-        self.spent = 0;
         self.pending = None;
+        // Round pacing is a within-visit discipline; getting here took a
+        // leg, which is longer than any round.
+        self.last_attempt = None;
     }
 
-    /// The command worth sending now, if any attempt can work: none
-    /// while an outcome is owed, a source is already burning, the visit
-    /// budget is spent, or the plan is exhausted.
-    pub fn attempt(&mut self) -> Option<String> {
-        if self.lit || self.pending.is_some() || self.spent >= 1 {
-            return None;
+    /// What lighting is worth doing at `now`.
+    pub fn attempt(
+        &mut self,
+        now: std::time::Instant,
+        clock: &crate::world::RoundClock,
+    ) -> LightAttempt {
+        if self.lit || self.pending.is_some() {
+            return LightAttempt::Nothing;
         }
-        let plan = self.plan.as_ref()?;
-        if self.exhausted.contains(plan) {
-            return None;
+        let Some(source) = self.current() else {
+            return LightAttempt::Nothing;
+        };
+        let cmd = source.command().to_string();
+        let mana_floor = match source {
+            LightSource::Spell { mana_cost, .. } => Some(*mana_cost),
+            LightSource::Item { .. } => None,
+        };
+        if let Some(cost) = mana_floor
+            && self.mana.is_some_and(|m| m < cost)
+        {
+            // Below the floor the CASTING stops, never the plan: mana
+            // regens ~1/round and the lap revisits, which is the retry.
+            return LightAttempt::Nothing;
         }
-        Some(plan.clone())
+        if let Some(at) = self.last_attempt {
+            let next = clock.next_round_after(at);
+            if now < next {
+                return LightAttempt::Hold(next);
+            }
+        }
+        self.last_attempt = Some(now);
+        LightAttempt::Send(cmd)
     }
 
     /// Called for every command the gate releases, like the other
-    /// watchers: only our own plan's send arms the outcome watch.
+    /// watchers: only our own source's send arms the outcome watch.
     pub fn on_sent(&mut self, line: &str, id: crate::correlate::CmdId) {
-        if Some(line) == self.plan.as_deref() {
+        if Some(line) == self.current().map(|s| s.command()) {
             self.pending = Some(id);
-            self.spent += 1;
         }
     }
 
-    /// Fold one attributed event; only the outcome answering OUR light
-    /// command moves the state.
+    /// Fold one event. Outcomes answering OUR light command move the
+    /// source state; fades and burn-outs arrive unsolicited and are
+    /// read by wording; prompts carry the mana the cast floor needs.
     pub fn on_event(&mut self, cor: &crate::correlate::Correlated) {
-        // Burn-out announces itself unsolicited; the wording is
-        // unambiguous and decides lighting, never position.
+        if let crate::events::Event::Prompt {
+            mana: Some(mana), ..
+        } = &cor.event
+        {
+            self.mana = Some(*mana);
+        }
         if let crate::events::Event::Line(line) = &cor.event {
             let l = line.to_lowercase();
             if l.contains("is no longer lit") || l.contains("uses gone") {
-                self.lit = false;
-                if let Some(plan) = self.plan.take() {
-                    self.exhausted.push(plan);
+                // Item wordings: they kill the current source only when
+                // it IS an item — a bystander's burn-out must not kill
+                // a spell plan.
+                if matches!(self.current(), Some(LightSource::Item { .. })) {
+                    self.lit = false;
+                    self.kill_current();
+                }
+                return;
+            }
+            if l.contains("spell fades away") {
+                if self.lit {
+                    self.lit = false;
+                    self.faded = true;
                 }
                 return;
             }
@@ -309,47 +430,56 @@ impl LightState {
             return;
         };
         let line = line.to_lowercase();
-        if line.contains("you lit the") || line.contains("already have something lit") {
+        if line.contains("you lit the")
+            || line.contains("already have something lit")
+            || line.starts_with("you cast ")
+        {
             self.pending = None;
             self.lit = true;
+            self.faded = false;
         } else if line.contains("may not light that item") {
             self.pending = None;
-            if let Some(plan) = &self.plan {
-                self.exhausted.push(plan.clone());
-            }
+            self.kill_current();
         } else if line.contains("but fail")
             || line.contains("spell is resisted")
             || line.contains("resists your spell")
             || line.contains("enough mana to cast")
             || line.contains("already cast a spell")
         {
-            // Recoverable: the visit's attempt is spent, the next visit
-            // may try again.
+            // A fizzle: retry next round, mana permitting.
             self.pending = None;
         }
     }
 
-    /// The `remove` that extinguishes the burning item, when the plan
-    /// is an item and the board confirmed it lit. One use burns every 3s
-    /// medium tick while lit — dark room or not — so a run that walks
-    /// away burning spends the acceptance budget on idle time.
+    /// The `remove` that extinguishes the burning item, when the
+    /// current source is an item and the board confirmed it lit. One
+    /// use burns every 3s medium tick while lit — dark room or not —
+    /// so a run that walks away burning spends the whole burn budget
+    /// on idle time.
     pub fn extinguish(&self) -> Option<String> {
         if !self.lit {
             return None;
         }
-        let item = self.plan.as_ref()?.strip_prefix("light ")?;
-        Some(format!("remove {item}"))
+        match self.current()? {
+            LightSource::Item { remove_cmd, .. } => Some(remove_cmd.clone()),
+            LightSource::Spell { .. } => None,
+        }
     }
 
-    /// The stop went Blind while a source was believed burning: it
-    /// burned out (the backstop for a missed burn-out wording — the
-    /// darkness is also the message), and a dead source is not retried.
+    /// The stop went Blind while a source was believed burning — the
+    /// backstop for a missed wording; the darkness is also the message.
+    /// The kinds diverge: a burned-out item is dead and the next source
+    /// is tried; a spell that faded unnoticed is RECAST — killing it
+    /// for the run was the live "never recasts again" bug.
     pub fn source_died(&mut self) {
-        if self.lit {
-            self.lit = false;
-            if let Some(plan) = self.plan.take() {
-                self.exhausted.push(plan);
-            }
+        if !self.lit {
+            return;
+        }
+        self.lit = false;
+        match self.current() {
+            Some(LightSource::Item { .. }) => self.kill_current(),
+            Some(LightSource::Spell { .. }) => self.faded = true,
+            None => {}
         }
     }
 }

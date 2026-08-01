@@ -34,6 +34,17 @@ pub fn is_kill_line(line: &str) -> bool {
     line.contains(DEATH_MARK) || crate::progress::is_exp_award(line)
 }
 
+/// The board's own combat-mode announcement, printed whenever OUR fight
+/// ends — whatever ended it and however the death was worded. This is
+/// the general un-latch the engaged-forever family kept asking for: a
+/// kill can hide BOTH recognised end signals at once (a prose death
+/// line while the untrained-XP cap suppresses the award), and the
+/// latched bot then ignored fresh spawns for ~29s live (2026-08-01
+/// arena run) until the quiet-prompt backstop expired.
+pub fn is_combat_off(line: &str) -> bool {
+    line.contains("*Combat Off*")
+}
+
 /// The board's three ways of refusing an attack outright (crime.md §3,
 /// all present verbatim in the shipped DLL). A refusal aborts the swing,
 /// so unlike a real fight it is never followed by a death line, an
@@ -191,6 +202,17 @@ pub struct Bot {
     fled: bool,
     /// Prompts seen since the last blow involving the engaged target.
     quiet_prompts: u32,
+    /// The last room view this bot was shown listed something it would
+    /// attack (the pump only shows it ATTRIBUTED blocks), or something
+    /// attackable walked in since. Consulted before healing: in an
+    /// occupied room the coherent choices are fight or flee — a rest is
+    /// disengaged by the board and re-broken by the next engage, which
+    /// was the live death spiral (2026-08-01, HP 21/52 vs a cave bear,
+    /// rest/attack alternating every round). Deliberately NOT cleared
+    /// by kill lines, ActorLeft or Combat Off: one death does not prove
+    /// a room empty, and the stop machinery re-looks after every such
+    /// event, so the next attributed block recomputes it honestly.
+    room_has_work: bool,
     /// Targets the board refused to let us attack, keyed by the same
     /// trailing noun the attack command uses — the refusal applies to the
     /// template, so every rolled variant ("fat kobold thief") is covered
@@ -234,6 +256,7 @@ impl Bot {
             healing: false,
             fled: false,
             quiet_prompts: 0,
+            room_has_work: false,
             refused,
         }
     }
@@ -307,6 +330,10 @@ impl Bot {
                 // Ties keep the board's order, which `max_by_key` alone
                 // would invert: it yields the LAST maximum, so equal
                 // scores would pick the last name listed.
+                // Judged with would_attack, not attackable: a fight in
+                // progress is still work, and work is what makes
+                // resting incoherent.
+                self.room_has_work = room.also_here.iter().any(|name| self.would_attack(name));
                 let target = room
                     .also_here
                     .iter()
@@ -319,7 +346,12 @@ impl Bot {
                     .into_iter()
                     .collect()
             }
-            Event::ActorEntered { name, .. } => self.engage(name).into_iter().collect(),
+            Event::ActorEntered { name, .. } => {
+                if self.would_attack(name) {
+                    self.room_has_work = true;
+                }
+                self.engage(name).into_iter().collect()
+            }
             Event::ActorLeft { name, .. } => {
                 if self.engaged.as_deref() == Some(name.as_str()) {
                     self.engaged = None;
@@ -348,6 +380,16 @@ impl Bot {
                 {
                     self.quiet_prompts = 0;
                 }
+                // Deliberately NO counter-attack here. The attacker slot
+                // of a hit line cannot be split out reliably: the attack
+                // verb is per-monster data and can be multi-word — "The
+                // fierce orc trainee all-out slashes you for 37 damage!"
+                // (live, oracle_charm_lifecycle5.raw) parses its attacker
+                // as "...trainee all-out", and a counter would have sent
+                // "a all-out". Being hit by something unlisted is instead
+                // answered by the farm's re-look (StopState invalidates
+                // on a blow landing on us), where the room block names
+                // the attacker properly and THIS bot engages from it.
                 Vec::new()
             }
             Event::CombatMiss { line } => {
@@ -385,8 +427,10 @@ impl Bot {
     /// Says nothing about whether we are *already busy* — that is
     /// [`Bot::attackable`]. The split exists because "is this room worth
     /// staying in" and "should I attack this now" are different questions
-    /// and only the second one cares about the current fight.
-    fn would_attack(&self, name: &str) -> bool {
+    /// and only the second one cares about the current fight. Public
+    /// because the world-state consumers (the recast coherence gate) ask
+    /// the same question about maintained occupants.
+    pub fn would_attack(&self, name: &str) -> bool {
         self.config.auto_combat
             && is_attackable(name)
             && !self.is_refused(target_word(name))
@@ -456,7 +500,19 @@ impl Bot {
         }
         if percent >= self.config.heal_at_percent as i32 {
             self.healing = false;
-        } else if self.config.auto_heal && !self.healing {
+        } else if self.config.auto_heal
+            && !self.healing
+            // Never rest in a room that holds a fight or work: the board
+            // disengages combat to rest, the un-latch frees the bot, the
+            // next block re-engages and breaks the rest — the live death
+            // spiral (2026-08-01, HP 21/52 vs a cave bear, rest/attack
+            // alternating every ~5s round). Fight or flee are the
+            // occupied-room choices; flee is checked above and already
+            // outranks. No latch is spent on the suppressed path, so the
+            // first prompt after the room is proven clear heals.
+            && self.engaged.is_none()
+            && !self.room_has_work
+        {
             self.healing = true;
             return vec![BotAction::Send(self.config.heal_command.clone())];
         }
@@ -477,8 +533,22 @@ impl Bot {
         // The fight ended: re-arm so the next arrival is engaged. Death
         // lines name the template, not the rolled instance, so any death
         // clears — a redundant re-attack is harmless, a permanent latch
-        // on a corpse is not.
-        if is_kill_line(line) {
+        // on a corpse is not. "*Combat Off*" is the board's own
+        // announcement and covers the endings the other signals miss: a
+        // prose death under the untrained-XP cap produces neither a
+        // death mark nor an award, and the latch then held for 29s live.
+        if is_kill_line(line) || is_combat_off(line) {
+            self.engaged = None;
+            self.quiet_prompts = 0;
+        }
+        // Our attack echoed back as SPEECH: the target resolved to
+        // nobody (it left in the race between the block and the swing),
+        // the fight never started, and nothing that ends a fight will
+        // ever arrive. Only the echo of the exact attack we have in
+        // flight counts — anything else said is just words.
+        if let Some(noun) = self.engaged.as_deref().map(target_word)
+            && line == format!("You say \"a {noun}\"")
+        {
             self.engaged = None;
             self.quiet_prompts = 0;
         }

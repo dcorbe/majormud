@@ -25,11 +25,44 @@ static LEFT_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(.+) just left (?:to the (\w+)|(upwards)|(downwards))\.$").unwrap()
 });
 static ENTER_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(.+?) (?:walks|moves) into the room from (?:the (\w+)|(above)|(below))\.$")
-        .unwrap()
+    Regex::new(
+        r"^(.+?) (?:walks|moves) into the room from (?:the (\w+)|(above)|(below)|nowhere)\.$",
+    )
+    .unwrap()
 });
 static ARRIVED_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(.+) just arrived from (?:(nowhere)|the (\w+))\.$").unwrap());
+// Monster movement wordings are DATA, not grammar: each monster's
+// movemsg record holds free-form enter/leave/follow templates ("A %s
+// creeps into the room from %s.", "The %s slithers out to %s!") — the
+// verb is per-monster, the article belongs to the template, and a
+// spawn's origin renders as "nowhere". These patterns cover every
+// grammatical family in the shipped template dump (re/mmud_wgnt.sqlite,
+// message table); the pattern-less remainder ("A dark storm
+// approaches!") names nobody and is left to the combat backstops. The
+// lowercase-name anchor keeps player lines and prose out; "(?:the )*"
+// absorbs the doubled article produced when a template hardcoding "the"
+// has %s filled with "the west".
+static MOB_ENTER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^(?:(?:A|An|The) )?([a-z][a-z' -]*?) [a-z]+(?: (?:into the room|in the room|into the area|the room|the area|down|in))? from (?:the )*([a-z]+)[.!]$",
+    )
+    .unwrap()
+});
+static MOB_ENTER_BARE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:(?:A|An|The) )?([a-z][a-z' -]*?) [a-z]+ (?:into the (?:room|area)|in the room)[.!]$")
+        .unwrap()
+});
+static MOB_FOLLOW_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:(?:A|An|The) )?([a-z][a-z' -]*?) [a-z]+ (?:in|into the room) after you[.!]$")
+        .unwrap()
+});
+static MOB_LEAVE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^(?:(?:A|An|The) )?([a-z][a-z' -]*?) [a-z]+(?: (?:out of the room|out|off))? to (?:the )*([a-z]+)[.!]$",
+    )
+    .unwrap()
+});
 
 /// Streaming parser. Push decoded chunks in any sizes; complete lines
 /// and end-of-buffer prompts are classified as they appear.
@@ -238,10 +271,25 @@ fn classify_line(t: &str, opening: Option<&str>) -> Option<Event> {
     // transcripts every cyan "You ...!" line is a miss or a parry (84, no
     // exceptions). Monster whiffs are recognized by their fixed tails
     // (mud_core::text MONSTER_*_TPL family).
+    // Monster whiff wordings are per-monster data too (attackmissmsg /
+    // attackdodgemsg templates), so the tails are matched loosely: "but
+    // you dodge" covers "but you dodge!", "...out of the way!" and
+    // "...out of its way!"; "your armour deflects" covers the bare and
+    // "the blow!" endings; " at you" anchors the plain attack text
+    // ("The thin giant rat lunges at you!"). The long tail ("reaches
+    // out for you!", "slashes you with their scimitar!") shares one
+    // signature across all 61 shipped miss templates: the whiff cyan
+    // with "you" in it, on a line that is not ours. A bystander's fight
+    // names no "you" and stays a plain line; a cyan notice aimed at us
+    // misclassifying as a whiff costs one redundant look.
     if (opening == Some(color::YOUR_MISS) && t.starts_with("You") && t.ends_with('!'))
-        || t.ends_with("but you dodge!")
-        || t.contains("your armour deflects.")
+        || t.contains("but you dodge")
+        || t.contains("your armour deflects")
         || t.contains("glances off")
+        || (!t.starts_with("You")
+            && (t.ends_with(" at you!")
+                || t.contains(" at you,")
+                || (opening == Some(color::YOUR_MISS) && crate::events::mentions_you(t))))
     {
         return Some(Event::CombatMiss {
             line: t.to_string(),
@@ -258,6 +306,44 @@ fn classify_line(t: &str, opening: Option<&str>) -> Option<Event> {
             to,
         });
     }
+    // ARRIVED_RE runs before the free-verb movemsg families: "kobold
+    // thief just arrived from nowhere." would otherwise parse with
+    // "just" swallowed into the name and "arrived" taken as the verb.
+    if let Some(c) = ARRIVED_RE.captures(t) {
+        let from = c.get(3).map(|m| m.as_str().to_string());
+        return Some(Event::ActorEntered {
+            name: c[1].to_string(),
+            from,
+        });
+    }
+    // The movemsg families run before ENTER_RE: a custom template using
+    // "walks" ("An %s walks into the room from %s.") would otherwise be
+    // captured with the article glued onto the name, which defeats the
+    // player/monster case rule downstream.
+    if let Some(c) = MOB_FOLLOW_RE.captures(t) {
+        return Some(Event::ActorEntered {
+            name: c[1].to_string(),
+            from: None,
+        });
+    }
+    if let Some(c) = MOB_ENTER_RE.captures(t) {
+        return Some(Event::ActorEntered {
+            name: c[1].to_string(),
+            from: dir_word(&c[2]),
+        });
+    }
+    if let Some(c) = MOB_ENTER_BARE_RE.captures(t) {
+        return Some(Event::ActorEntered {
+            name: c[1].to_string(),
+            from: None,
+        });
+    }
+    if let Some(c) = MOB_LEAVE_RE.captures(t) {
+        return Some(Event::ActorLeft {
+            name: c[1].to_string(),
+            to: dir_word(&c[2]),
+        });
+    }
     if let Some(c) = ENTER_RE.captures(t) {
         let from = c
             .get(2)
@@ -269,12 +355,16 @@ fn classify_line(t: &str, opening: Option<&str>) -> Option<Event> {
             from,
         });
     }
-    if let Some(c) = ARRIVED_RE.captures(t) {
-        let from = c.get(3).map(|m| m.as_str().to_string());
-        return Some(Event::ActorEntered {
-            name: c[1].to_string(),
-            from,
-        });
-    }
     None
+}
+
+/// Origin/destination word from a movemsg line -> the event's direction.
+/// "nowhere" is a spawn, not a place.
+fn dir_word(w: &str) -> Option<String> {
+    match w {
+        "nowhere" => None,
+        "above" => Some("up".to_string()),
+        "below" => Some("down".to_string()),
+        d => Some(d.to_string()),
+    }
 }

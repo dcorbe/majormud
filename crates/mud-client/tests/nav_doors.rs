@@ -105,6 +105,7 @@ fn graph_with_exit(exit_type: i64) -> Arc<RoomGraph> {
     let mut here = GraphRoom {
         name: "Guard Post".into(),
         exits: Default::default(),
+        light: 0,
     };
     here.exits[Direction::North as usize] = Some(ExitEdge {
         dest: THERE,
@@ -113,6 +114,7 @@ fn graph_with_exit(exit_type: i64) -> Arc<RoomGraph> {
     let mut there = GraphRoom {
         name: "Inner Ward".into(),
         exits: Default::default(),
+        light: 0,
     };
     there.exits[Direction::South as usize] = Some(ExitEdge {
         dest: HERE,

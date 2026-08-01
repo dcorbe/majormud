@@ -61,6 +61,92 @@ fn attacks_monster_that_walks_in() {
     assert_eq!(actions, vec![BotAction::Send("a thief".into())]);
 }
 
+/// A hit on us is deliberately NOT blind-countered. The attacker slot of
+/// a hit line cannot be split out reliably — the attack verb is
+/// per-monster data and can be multi-word: "The fierce orc trainee
+/// all-out slashes you for 37 damage!" (live, oracle_charm_lifecycle5)
+/// parses its attacker as "...trainee all-out", and a counter would have
+/// sent "a all-out". Being hit by something unlisted is answered by the
+/// farm's re-look instead (see tests/farm.rs,
+/// `being_hit_invalidates_the_room_block_but_swinging_does_not`), where
+/// the room block names the attacker properly and the bot engages from
+/// it.
+#[test]
+fn a_hit_on_us_is_not_blindly_countered() {
+    let mut bot = combat_bot();
+    let actions = bot.on_event(&Event::CombatHit {
+        attacker: Actor::Other("The fierce orc trainee all-out".into()),
+        target: Actor::You,
+        damage: 37,
+    });
+    assert!(actions.is_empty());
+}
+
+/// The general un-latch this family kept asking for. A kill can hide
+/// BOTH known end signals at once — a prose death line ("The acid slime
+/// dissolves into a puddle of bluish goo.") while the untrained-XP cap
+/// suppresses the experience award — and the latched bot then ignored a
+/// fresh spawn for 29 seconds live (2026-08-01 arena run) until the
+/// quiet-prompt backstop expired. The board announces the end itself:
+/// "*Combat Off*". Believe it.
+#[test]
+fn combat_off_clears_the_latch() {
+    let mut bot = combat_bot();
+    assert_eq!(bot.on_event(&room(&["acid slime"])).len(), 1);
+    // Prose death + XP cap: neither a death mark nor an award arrives.
+    assert!(
+        bot.on_event(&Event::Line(
+            "The acid slime dissolves into a puddle of bluish goo.".into()
+        ))
+        .is_empty()
+    );
+    let actions = bot.on_event(&Event::Line("*Combat Off*".into()));
+    assert!(actions.is_empty());
+    // The next spawn must be engaged, not ignored by a corpse latch.
+    let actions = bot.on_event(&Event::ActorEntered {
+        name: "thin giant rat".into(),
+        from: None,
+    });
+    assert_eq!(actions, vec![BotAction::Send("a rat".into())]);
+}
+
+/// An attack that resolves NO target falls through to SAY — the board
+/// answers `You say "a beast"` instead of `*Combat Engaged*`. Live
+/// (2026-08-01): the carrion beast left south in the same instant the
+/// sighting attack went out, its departure line arrived corrupted by
+/// our own command echo ("a becarrion beast just left...") so ActorLeft
+/// could not match, and the bot sat latched on a phantom for 20 seconds
+/// while two thieves whiffed at it. The say echo of our own attack
+/// command IS the board saying the swing never started.
+#[test]
+fn a_say_fallthrough_clears_the_latch() {
+    let mut bot = combat_bot();
+    assert_eq!(
+        bot.on_event(&room(&["carrion beast"])),
+        vec![BotAction::Send("a beast".into())]
+    );
+    assert!(
+        bot.on_event(&Event::Line("You say \"a beast\"".into()))
+            .is_empty()
+    );
+    let actions = bot.on_event(&Event::ActorEntered {
+        name: "kobold thief".into(),
+        from: None,
+    });
+    assert_eq!(actions, vec![BotAction::Send("a thief".into())]);
+}
+
+/// Somebody ELSE's speech — or our own words that are not the attack we
+/// have in flight — proves nothing about the fight.
+#[test]
+fn unrelated_speech_does_not_clear_the_latch() {
+    let mut bot = combat_bot();
+    assert_eq!(bot.on_event(&room(&["carrion beast"])).len(), 1);
+    bot.on_event(&Event::Line("You say \"hello there\"".into()));
+    // Still latched: the same room block must not re-engage.
+    assert!(bot.on_event(&room(&["carrion beast"])).is_empty());
+}
+
 #[test]
 fn does_not_spam_attack_same_target() {
     let mut bot = combat_bot();
@@ -88,6 +174,102 @@ fn heals_below_threshold() {
     );
     let actions = bot.on_event(&Event::Prompt { hp: 19, mana: None });
     assert_eq!(actions, vec![BotAction::Send("rest".into())]);
+}
+
+/// Combat bot with healing armed — the shape that produced tonight's
+/// death spiral (2026-08-01 run3): HP 21/52 beside a cave bear, `rest`
+/// disengages combat, the Combat Off un-latch frees the bot, the next
+/// block re-engages, the engage breaks the rest — forever, taking bear
+/// swings every ~5s round while neither resting nor fighting. In an
+/// occupied room the coherent choices are fight or flee; rest is for
+/// cleared rooms.
+fn healing_fighter() -> Bot {
+    Bot::new(BotConfig {
+        auto_combat: true,
+        auto_heal: true,
+        heal_at_percent: 50,
+        max_hp: 52,
+        ..BotConfig::default()
+    })
+}
+
+#[test]
+fn does_not_rest_while_the_room_lists_a_monster() {
+    let mut bot = healing_fighter();
+    // The block engages the bear; the low prompt must fight on, not rest.
+    assert_eq!(bot.on_event(&room(&["cave bear"])).len(), 1);
+    assert!(
+        bot.on_event(&Event::Prompt { hp: 21, mana: None }).is_empty(),
+        "resting mid-fight is the spiral"
+    );
+}
+
+/// The exact spiral: the fight ends (rest disengaged it, or the bear
+/// died in prose under the XP cap), the latch clears — but the room
+/// STILL lists the bear. Resting now just gets broken by the re-engage.
+#[test]
+fn does_not_rest_after_combat_off_while_the_room_still_has_work() {
+    let mut bot = healing_fighter();
+    bot.on_event(&room(&["cave bear"]));
+    bot.on_event(&Event::Line("*Combat Off*".into()));
+    assert!(
+        bot.on_event(&Event::Prompt { hp: 21, mana: None }).is_empty(),
+        "the room was never proven clear"
+    );
+}
+
+/// The other side: suppression must not latch. The moment a block
+/// proves the room clear, the very next low prompt rests.
+#[test]
+fn rests_once_the_room_is_proven_clear() {
+    let mut bot = healing_fighter();
+    bot.on_event(&room(&["cave bear"]));
+    bot.on_event(&Event::Line("*Combat Off*".into()));
+    assert!(bot.on_event(&Event::Prompt { hp: 21, mana: None }).is_empty());
+    bot.on_event(&room(&[]));
+    assert_eq!(
+        bot.on_event(&Event::Prompt { hp: 21, mana: None }),
+        vec![BotAction::Send("rest".into())]
+    );
+}
+
+/// A walk-in makes resting wrong again, before any block re-lists it.
+#[test]
+fn a_walk_in_makes_resting_wrong_again() {
+    let mut bot = healing_fighter();
+    bot.on_event(&room(&[]));
+    assert_eq!(bot.on_event(&Event::Prompt { hp: 21, mana: None }).len(), 1);
+    // HP recovers past the threshold: the heal debounce releases.
+    bot.on_event(&Event::Prompt { hp: 40, mana: None });
+    // A rat walks in (and is engaged); dropping low again must not rest.
+    bot.on_event(&Event::ActorEntered {
+        name: "giant rat".into(),
+        from: None,
+    });
+    assert!(
+        bot.on_event(&Event::Prompt { hp: 21, mana: None }).is_empty(),
+        "an arrival is work; rest would be broken by the fight"
+    );
+}
+
+/// Occupants the bot would never swing at do not block resting — the
+/// bit follows would_attack (ignore list, case rule, refusals), not raw
+/// occupancy.
+#[test]
+fn an_ignored_occupant_does_not_block_resting() {
+    let mut bot = Bot::new(BotConfig {
+        auto_combat: true,
+        auto_heal: true,
+        heal_at_percent: 50,
+        max_hp: 52,
+        ignore: vec!["town guard".into()],
+        ..BotConfig::default()
+    });
+    bot.on_event(&room(&["town guard"]));
+    assert_eq!(
+        bot.on_event(&Event::Prompt { hp: 21, mana: None }),
+        vec![BotAction::Send("rest".into())]
+    );
 }
 
 #[test]

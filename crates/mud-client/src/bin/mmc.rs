@@ -354,8 +354,13 @@ fn farm_command(
         match &outcome {
             None => eprintln!("interrupted"),
             Some(Ok((end, stats))) => println!(
-                "{end:?}: {} kills, {} laps, {} flees, {} slowdowns, {} interrupts",
-                stats.kills, stats.loops, stats.flees, stats.slowdowns, stats.interrupts
+                "{end:?}: {} kills, {} laps, {} flees, {} slowdowns, {} interrupts, {} sightings",
+                stats.kills,
+                stats.loops,
+                stats.flees,
+                stats.slowdowns,
+                stats.interrupts,
+                stats.sightings
             ),
             Some(Err(e)) => eprintln!("farm: {e}"),
         }

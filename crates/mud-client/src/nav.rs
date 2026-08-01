@@ -63,6 +63,13 @@ pub enum Interrupt {
     /// that does not land. Waiting for the HP gate is too late, and
     /// sometimes never.
     Attacked { by: String },
+    /// The attributed arrival block listed something the caller's policy
+    /// wants to fight. Live incident (2026-07-31 arena run): a leg
+    /// walked through "Also here: angry kobold thief, thin giant rat,
+    /// large kobold thief." and kept sending steps while they attacked.
+    /// Carries the block itself so the defence can start from this
+    /// evidence instead of re-asking the board.
+    Sighted { room: crate::events::RoomView },
 }
 
 /// Watches the events a walk goes past and says when to stop walking.
@@ -72,6 +79,15 @@ pub enum Interrupt {
 /// for the whole walk and merely learns when to hand it back.
 pub trait TravelGuard {
     fn on_event(&mut self, ev: &crate::events::Event) -> Option<Interrupt>;
+
+    /// Consulted ONLY with a room block attributed to the step in
+    /// flight — never with the unfiltered stream `on_event` sees. That
+    /// is what keeps a stale look answer or a foreign render from being
+    /// read as an arrival: every desync this machinery ever had came
+    /// from believing somebody else's block.
+    fn on_room(&mut self, _room: &crate::events::RoomView) -> Option<Interrupt> {
+        None
+    }
 }
 
 /// Walk unprotected.
@@ -877,6 +893,15 @@ impl Navigator {
             }
             match cor.event {
                 crate::events::Event::RoomSeen(room) => {
+                    // The one place a block is both attributed and about
+                    // to become `current` — the only stream `on_room`
+                    // ever sees. ARM rather than return: `goto` advances
+                    // `current` before every `armed.take()`, so erring
+                    // here would report the room being left, not the
+                    // room this block described.
+                    if let Some(sighted) = guard.on_room(&room) {
+                        *armed = armed.take().or(Some(sighted));
+                    }
                     return Ok(StepEvent::Arrived(room.name));
                 }
                 crate::events::Event::Line(line) => {

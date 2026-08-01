@@ -10,7 +10,7 @@
 //!   level right-aligned in 3, mana in 4, four spaces, short name in 6,
 //!   spell name in 30.
 
-use mud_client::sheet::{Inventory, Spellbook};
+use mud_client::sheet::{Inventory, LightSource, Spellbook};
 
 #[test]
 fn inventory_reads_the_carried_list() {
@@ -62,17 +62,32 @@ fn an_empty_pack_is_not_an_error() {
 /// counts, and it must not fire on a torch-shaped word like "torchbug".
 #[test]
 fn inventory_finds_a_light_source() {
-    let torch = Inventory::parse("You are carrying a battered torch, 3 copper farthings\n");
-    assert_eq!(torch.light_source(), Some("torch".to_string()));
-
-    let lantern = Inventory::parse("You are carrying lantern\n");
-    assert_eq!(lantern.light_source(), Some("lantern".to_string()));
-
-    let none = Inventory::parse("You are carrying quarterstaff, 2 rations\n");
-    assert_eq!(none.light_source(), None);
-
-    let decoy = Inventory::parse("You are carrying a torchbug in a jar\n");
-    assert_eq!(decoy.light_source(), None, "not a light source");
+    let empty_book = Spellbook::parse("You have no spells.\n");
+    let first = |text: &str| {
+        mud_client::sheet::light_sources(&Inventory::parse(text), &empty_book)
+            .into_iter()
+            .next()
+    };
+    assert_eq!(
+        first("You are carrying a battered torch, 3 copper farthings\n"),
+        Some(LightSource::Item {
+            light_cmd: "light torch".into(),
+            remove_cmd: "remove torch".into(),
+        })
+    );
+    assert_eq!(
+        first("You are carrying lantern\n"),
+        Some(LightSource::Item {
+            light_cmd: "light lantern".into(),
+            remove_cmd: "remove lantern".into(),
+        })
+    );
+    assert_eq!(first("You are carrying quarterstaff, 2 rations\n"), None);
+    assert_eq!(
+        first("You are carrying a torchbug in a jar\n"),
+        None,
+        "not a light source"
+    );
 }
 
 #[test]
@@ -95,28 +110,33 @@ fn spellbook_reads_the_rows() {
 fn an_empty_spellbook_is_not_an_error() {
     let book = Spellbook::parse("You have no spells.\n");
     assert!(book.spells.is_empty());
-    assert_eq!(book.light_spell(), None);
 }
 
 /// The caster's answer to a dark room. Cast by SHORT name, which is what
 /// the board's cast command takes.
 #[test]
 fn spellbook_finds_a_light_spell() {
+    let no_items = Inventory::parse("You are carrying nothing.\n");
     let book = Spellbook::parse(
         "You have the following spells:\n\
          Level Mana Short Spell Name\n\
          \x20 1   2    star  starlight                     \n",
     );
-    assert_eq!(book.light_spell(), Some("star".to_string()));
+    assert_eq!(
+        mud_client::sheet::light_sources(&no_items, &book),
+        vec![LightSource::Spell {
+            cmd: "cast star".into(),
+            mana_cost: 2,
+        }]
+    );
 
     let dark = Spellbook::parse(
         "You have the following spells:\n\
          Level Mana Short Spell Name\n\
          \x20 1   4    lb    lightning bolt                \n",
     );
-    assert_eq!(
-        dark.light_spell(),
-        None,
+    assert!(
+        mud_client::sheet::light_sources(&no_items, &dark).is_empty(),
         "lightning bolt is not a light spell"
     );
 }
@@ -163,7 +183,10 @@ fn the_real_inventory_parses() {
     assert_eq!(inv.encumbrance, Some((525, 2400)));
     // No torch and no lantern: the item route to solving darkness is not
     // available to this character, which is the answer the caller needs.
-    assert_eq!(inv.light_source(), None);
+    assert!(
+        mud_client::sheet::light_sources(&inv, &Spellbook::default())
+            .is_empty()
+    );
 }
 
 #[test]
@@ -174,7 +197,13 @@ fn the_real_spellbook_parses_and_offers_a_light() {
     assert_eq!(book.spells[0].mana, 4);
     assert_eq!(book.spells[1].name, "vine strike");
     // The whole point: this character can light a dark room.
-    assert_eq!(book.light_spell(), Some("star".to_string()));
+    assert_eq!(
+        mud_client::sheet::light_sources(&Inventory::default(), &book),
+        vec![LightSource::Spell {
+            cmd: "cast star".into(),
+            mana_cost: 4,
+        }]
+    );
 }
 
 // --- deciding how to light a room --------------------------------------
@@ -186,14 +215,39 @@ fn the_real_spellbook_parses_and_offers_a_light() {
 #[test]
 fn a_carried_light_is_preferred_over_a_spell() {
     // An item costs no mana and, once lit, keeps burning -- mana is
-    // wanted for the fight the dark room is hiding.
+    // wanted for the fight the dark room is hiding. Items first, spell
+    // last; the spell survives any number of burn-outs.
     let inv = Inventory::parse("You are carrying a battered torch\n");
     let book = Spellbook::parse(
         "You have the following spells:\nLevel Mana Short Spell Name\n  1   4    star  starlight\n",
     );
     assert_eq!(
-        mud_client::sheet::light_plan(&inv, &book),
-        Some("light torch".to_string())
+        mud_client::sheet::light_sources(&inv, &book),
+        vec![
+            LightSource::Item {
+                light_cmd: "light torch".into(),
+                remove_cmd: "remove torch".into(),
+            },
+            LightSource::Spell {
+                cmd: "cast star".into(),
+                mana_cost: 4,
+            },
+        ]
+    );
+}
+
+/// EVERY carried light item is a source — the single-Option shape was
+/// exactly why one burn-out went dead-for-the-run while a second torch
+/// sat in the pack (there are two on the Small Cavern floor alone).
+#[test]
+fn every_carried_light_item_is_a_source() {
+    let inv = Inventory::parse("You are carrying a battered torch, brass lantern, torch\n");
+    let book = Spellbook::parse("You have no spells.\n");
+    let sources = mud_client::sheet::light_sources(&inv, &book);
+    assert_eq!(sources.len(), 3, "{sources:?}");
+    assert!(matches!(&sources[0], LightSource::Item { light_cmd, .. } if light_cmd == "light torch"));
+    assert!(
+        matches!(&sources[1], LightSource::Item { light_cmd, .. } if light_cmd == "light lantern")
     );
 }
 
@@ -204,27 +258,35 @@ fn a_caster_with_no_torch_casts() {
         "You have the following spells:\nLevel Mana Short Spell Name\n  1   4    star  starlight\n",
     );
     assert_eq!(
-        mud_client::sheet::light_plan(&inv, &book),
-        Some("cast star".to_string())
+        mud_client::sheet::light_sources(&inv, &book),
+        vec![LightSource::Spell {
+            cmd: "cast star".into(),
+            mana_cost: 4,
+        }]
     );
 }
 
 /// Neither: say so rather than send something that will be spoken aloud.
 #[test]
-fn with_neither_there_is_no_plan() {
+fn with_neither_there_are_no_sources() {
     let inv = Inventory::parse("You are carrying quarterstaff\n");
     let book = Spellbook::parse("You have no spells.\n");
-    assert_eq!(mud_client::sheet::light_plan(&inv, &book), None);
+    assert!(mud_client::sheet::light_sources(&inv, &book).is_empty());
 }
 
-/// Salad's real kit: no torch, but starlight in the book.
+/// Salad's real kit: no torch, but starlight in the book — one Spell
+/// source whose mana cost comes from the book, which is the mana floor
+/// the caster respects (no config key involved).
 #[test]
-fn the_real_character_lights_the_room_by_casting() {
+fn the_real_character_derives_a_single_spell_source() {
     assert_eq!(
-        mud_client::sheet::light_plan(
+        mud_client::sheet::light_sources(
             &Inventory::parse(REAL_INVENTORY),
             &Spellbook::parse(REAL_SPELLBOOK)
         ),
-        Some("cast star".to_string())
+        vec![LightSource::Spell {
+            cmd: "cast star".into(),
+            mana_cost: 4,
+        }]
     );
 }

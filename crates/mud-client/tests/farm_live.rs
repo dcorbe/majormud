@@ -201,6 +201,33 @@ fn world_with_refused_monster() -> Content {
     content
 }
 
+/// The refused beetle standing ON THE WAY instead of at the stop: the
+/// Training Yard spawns it, the cellar is plain. A leg passing through
+/// must sight it, learn the refusal during the defence, and then walk
+/// past — never loop on the room and never burn the interrupt budget.
+fn world_with_a_refused_monster_on_the_way() -> Content {
+    let mut content = world_with_refused_monster();
+    let mut yard = room(
+        YARD,
+        "Training Yard",
+        &[
+            (Direction::North, ALLEY),
+            (Direction::South, GATES),
+            (Direction::East, CELLAR),
+        ],
+    );
+    yard.room_type = 3;
+    yard.spawn_zone = 7;
+    yard.spawn_cap = 1;
+    yard.min_level = 1;
+    yard.max_level = 5;
+    yard.forced_monster = Some(BEETLE);
+    yard.respawn_delay = 9999;
+    content.add_room(yard);
+    content.add_room(room(CELLAR, "Rat Cellar", &[(Direction::West, YARD)]));
+    content
+}
+
 /// The fixture world with a monster whose death line does NOT contain
 /// "falls to the ground" — which is the normal case, not the exception:
 /// of the 1085 shipped monsters carrying a death record, 1018 word it
@@ -280,6 +307,7 @@ fn client_graph() -> RoomGraph {
         let mut r = GraphRoom {
             name: name.into(),
             exits: Default::default(),
+            light: 0,
         };
         for (d, dest) in exits {
             r.exits[*d as usize] = Some(ExitEdge {
@@ -608,6 +636,119 @@ async fn the_interrupt_budget_ends_the_run() {
     assert_eq!(stats.loops, 0, "it never finished a lap");
 }
 
+/// The live incident this whole feature pins: a leg walked through a
+/// room whose arrival render listed three monsters and kept sending
+/// steps while they attacked. The Yard rat stands on the way to the
+/// cellar; the leg must stop, fight it, and still finish the lap.
+/// `travel_interrupts: 0` in the same breath proves a sighting is not
+/// an emergency — if it touched the budget, this run would end TooHurt.
+#[tokio::test]
+async fn a_monster_on_the_way_is_fought_not_walked_past() {
+    let server = start().await;
+    let session = logged_in(server.local_addr(), "Sighter").await;
+
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 0,
+        ..BotConfig::default()
+    };
+    let cfg = FarmConfig {
+        travel_interrupts: 0,
+        ..farm_config(&["1/3"], 1)
+    };
+    let (end, stats) = farm(&session, bot, cfg).await.expect("farm run");
+
+    assert_eq!(end, FarmEnd::LoopsDone);
+    assert!(
+        stats.kills >= 1,
+        "the rat on the way should have died: {stats:?}"
+    );
+    assert!(
+        stats.sightings >= 1,
+        "the fight should have been a sighting: {stats:?}"
+    );
+    assert_eq!(
+        stats.interrupts, 0,
+        "a sighting is work, not an emergency: {stats:?}"
+    );
+    assert_eq!(
+        session
+            .state()
+            .borrow()
+            .room
+            .as_ref()
+            .map(|r| r.name.clone()),
+        Some("Rat Cellar".into()),
+        "the leg has to be finished after the fight, not abandoned"
+    );
+}
+
+/// A sighting the defence cannot clear — the crime gate refuses the
+/// beetle — must be walked past, not looped on. Honest about scope: it
+/// passes pre-change too (the leg was simply blind), so what it pins is
+/// the new machinery's failure modes — a naive implementation that
+/// re-trips forever hangs the 30s harness, and one that spends the
+/// budget ends TooHurt. The refusal learned during the defence is
+/// shared with the guard, which is what stops the re-trip.
+#[tokio::test]
+async fn an_unkillable_sighting_is_walked_past_on_the_retry() {
+    let server = start_with(world_with_a_refused_monster_on_the_way()).await;
+    let session = logged_in(server.local_addr(), "Passer").await;
+
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 0,
+        ..BotConfig::default()
+    };
+    let cfg = FarmConfig {
+        travel_interrupts: 0,
+        ..farm_config(&["1/3"], 1)
+    };
+    let (end, stats) = farm(&session, bot, cfg).await.expect("farm run");
+
+    assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
+    assert_eq!(
+        stats.kills, 0,
+        "nothing here is killable; a kill means the crime gate stopped refusing: {stats:?}"
+    );
+    assert_eq!(
+        session
+            .state()
+            .borrow()
+            .room
+            .as_ref()
+            .map(|r| r.name.clone()),
+        Some("Rat Cellar".into()),
+        "the leg must end at the stop with the beetle behind it"
+    );
+}
+
+/// The gate: `fight_while_travelling = false` means get there without
+/// swinging, and a listed monster is walked past exactly like before.
+#[tokio::test]
+async fn no_sighting_when_fight_while_travelling_is_off() {
+    let server = start().await;
+    let session = logged_in(server.local_addr(), "Runner").await;
+
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 0,
+        ..BotConfig::default()
+    };
+    let cfg = FarmConfig {
+        fight_while_travelling: false,
+        ..farm_config(&["1/3"], 1)
+    };
+    let (end, stats) = farm(&session, bot, cfg).await.expect("farm run");
+
+    assert_eq!(end, FarmEnd::LoopsDone);
+    assert_eq!(stats.sightings, 0, "{stats:?}");
+    assert_eq!(
+        stats.kills, 0,
+        "running past means the rat is still alive: {stats:?}"
+    );
+}
+
 /// Before relying on the refusal, prove the world produces it: a fresh
 /// character swinging at the behaviour-0 beetle is turned down, and the
 /// wording is the one `bot.rs` matches on.
@@ -649,7 +790,13 @@ async fn a_refused_monster_does_not_hang_the_stop() {
         max_hp: 0,
         ..BotConfig::default()
     };
-    let run = farm(&session, bot, farm_config(&["1/3"], 1));
+    // The subject is the refused beetle AT THE STOP; sighting off keeps
+    // the Yard rat out of the kill count (the leg fights it otherwise).
+    let cfg = FarmConfig {
+        fight_while_travelling: false,
+        ..farm_config(&["1/3"], 1)
+    };
+    let run = farm(&session, bot, cfg);
     let (end, stats) = tokio::time::timeout(Duration::from_secs(30), run)
         .await
         .expect("the stop hung on a refused attack")
@@ -750,7 +897,12 @@ async fn a_prose_death_line_does_not_wedge_the_stop() {
         max_hp: 0,
         ..BotConfig::default()
     };
-    let cfg = farm_config(&["1/3"], 1);
+    // The subject is the prose-death filthbug at the stop; sighting off
+    // keeps the Yard rat's ordinary death out of the exact kill count.
+    let cfg = FarmConfig {
+        fight_while_travelling: false,
+        ..farm_config(&["1/3"], 1)
+    };
     let graph = Arc::new(client_graph());
     let plan = FarmPlan::build(&cfg, &graph).expect("plan");
 
