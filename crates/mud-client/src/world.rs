@@ -290,11 +290,21 @@ pub struct Here {
     pub piles: Vec<Pile>,
     /// How often the model disagreed with the board that seeded it.
     pub reconcile: Reconcile,
-    /// Has an attributed block ever landed here? The first one has
-    /// nothing to disagree with — `Here` is built fresh per stop
-    /// (`farm.rs`), so reconciling the seed would report every occupant
-    /// of every room the run visits.
-    seeded: bool,
+    /// The room name the model is currently seeded from, or `None` when
+    /// it holds no beliefs worth comparing against.
+    ///
+    /// Two jobs, and it must be a field of its own for both. It marks
+    /// the first block at a room as a SEED — `Here` is built fresh per
+    /// stop (`farm.rs`), so reconciling that one would report every
+    /// occupant of every room the run visits. And it is what tells a
+    /// step apart from a re-render.
+    ///
+    /// Deliberately NOT derived from `view`: the kill and combat-off
+    /// arms null that on purpose, and a fight is exactly what precedes
+    /// walking out of a room — which made the model blame the room
+    /// behind the character for the contents of the one ahead (live,
+    /// cwgaming 2026-08-01).
+    seeded: Option<String>,
 }
 
 impl Here {
@@ -358,23 +368,20 @@ impl Here {
                 // and without this every step would report the room
                 // behind them as an overclaim. Beliefs about the old
                 // room are dropped rather than compared.
-                let moved = self
-                    .view
-                    .as_ref()
-                    .is_some_and(|v| v.value.name != room.name);
+                let moved = self.seeded.as_deref().is_some_and(|n| n != room.name);
                 if moved {
                     self.occupants.clear();
                     self.piles.clear();
-                    self.seeded = false;
+                    self.seeded = None;
                 }
                 // Reconcile BEFORE the reseed below overwrites the
                 // model with the block: this is the only instant the
                 // two beliefs coexist. Disjoint field borrows, so the
                 // comparison reads the model while the tally is written.
-                if self.seeded {
+                if self.seeded.is_some() {
                     Self::compare(&mut self.reconcile, &self.occupants, &self.piles, room, now);
                 }
-                self.seeded = true;
+                self.seeded = Some(room.name.clone());
                 self.blind = false;
                 let old = std::mem::take(&mut self.occupants);
                 self.occupants = room
@@ -512,6 +519,6 @@ impl Here {
         // Beliefs go; the measurement stays. Clearing the tally here
         // would discard exactly the evidence a bad run produces, and the
         // next block seeds rather than indicts an emptied model.
-        self.seeded = false;
+        self.seeded = None;
     }
 }

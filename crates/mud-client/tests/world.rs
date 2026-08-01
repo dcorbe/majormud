@@ -549,3 +549,45 @@ fn a_block_from_another_room_reseeds_rather_than_indicts() {
     assert_eq!(here.occupants.len(), 1);
     assert_eq!(here.occupants[0].name, "Mystic");
 }
+
+/// The room-identity guard cannot hang off `view`: the kill and
+/// combat-off arms NULL it on purpose ("something died out of that
+/// render"), and a fight is exactly what precedes walking out of a room.
+///
+/// Live (cwgaming, 2026-08-01): a kill in Newhaven Arena, a step to
+/// Narrow Road, and the model then reported the Arena's occupant and the
+/// Arena's coins as divergences of Narrow Road — telling the operator
+/// about the contents of a room they had already left.
+#[test]
+fn a_kill_before_the_step_does_not_blame_the_room_behind_us() {
+    let now = Instant::now();
+    let mut here = Here::default();
+    let arena = RoomView {
+        name: "Newhaven, Arena".into(),
+        also_here: vec!["Mystic".into()],
+        items: vec!["7 copper farthings".into()],
+        ..RoomView::default()
+    };
+    here.on_event(&answering(Event::RoomSeen(arena), ASK), now);
+    // A kill stales the render — this is what defeated the old guard.
+    here.on_event(
+        &unsolicited(Event::Line(
+            "The filthbug falls to the ground with a yelp.".into(),
+        )),
+        now,
+    );
+    assert!(here.view.is_none(), "the kill staled the render");
+
+    let narrow_road = RoomView {
+        name: "Newhaven, Narrow Road".into(),
+        ..RoomView::default()
+    };
+    here.on_event(&answering(Event::RoomSeen(narrow_road), ASK), now);
+    assert_eq!(
+        here.reconcile.total(),
+        0,
+        "the room we walked out of is not a divergence of the one we walked into"
+    );
+    assert!(here.occupants.is_empty());
+    assert!(here.piles.is_empty());
+}
