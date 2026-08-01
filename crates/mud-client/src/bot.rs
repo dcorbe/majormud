@@ -34,6 +34,17 @@ pub fn is_kill_line(line: &str) -> bool {
     line.contains(DEATH_MARK) || crate::progress::is_exp_award(line)
 }
 
+/// The board's own combat-mode announcement, printed whenever OUR fight
+/// ends — whatever ended it and however the death was worded. This is
+/// the general un-latch the engaged-forever family kept asking for: a
+/// kill can hide BOTH recognised end signals at once (a prose death
+/// line while the untrained-XP cap suppresses the award), and the
+/// latched bot then ignored fresh spawns for ~29s live (2026-08-01
+/// arena run) until the quiet-prompt backstop expired.
+pub fn is_combat_off(line: &str) -> bool {
+    line.contains("*Combat Off*")
+}
+
 /// The board's three ways of refusing an attack outright (crime.md §3,
 /// all present verbatim in the shipped DLL). A refusal aborts the swing,
 /// so unlike a real fight it is never followed by a death line, an
@@ -487,8 +498,22 @@ impl Bot {
         // The fight ended: re-arm so the next arrival is engaged. Death
         // lines name the template, not the rolled instance, so any death
         // clears — a redundant re-attack is harmless, a permanent latch
-        // on a corpse is not.
-        if is_kill_line(line) {
+        // on a corpse is not. "*Combat Off*" is the board's own
+        // announcement and covers the endings the other signals miss: a
+        // prose death under the untrained-XP cap produces neither a
+        // death mark nor an award, and the latch then held for 29s live.
+        if is_kill_line(line) || is_combat_off(line) {
+            self.engaged = None;
+            self.quiet_prompts = 0;
+        }
+        // Our attack echoed back as SPEECH: the target resolved to
+        // nobody (it left in the race between the block and the swing),
+        // the fight never started, and nothing that ends a fight will
+        // ever arrive. Only the echo of the exact attack we have in
+        // flight counts — anything else said is just words.
+        if let Some(noun) = self.engaged.as_deref().map(target_word)
+            && line == format!("You say \"a {noun}\"")
+        {
             self.engaged = None;
             self.quiet_prompts = 0;
         }

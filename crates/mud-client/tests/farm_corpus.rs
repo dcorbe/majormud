@@ -296,7 +296,12 @@ fn emissions_flow_one_per_ack_and_never_wedge() {
     // now engage instead of sleeping until the next look. Every added
     // emission is an attack on a real monster noun — verified against
     // the per-file diff when the pin moved.
-    assert_eq!(total, 2008, "corpus gate throughput changed");
+    // -> 2135 when "*Combat Off*" became an un-latch: the dodge-parry
+    // captures break off combat dozens of times with the monster still
+    // standing, and the bot now re-engages after each break instead of
+    // sitting latched on a fight the board had declared over. Audited
+    // the same way.
+    assert_eq!(total, 2135, "corpus gate throughput changed");
 }
 
 /// The gate invents nothing. Everything it emits was either a bot

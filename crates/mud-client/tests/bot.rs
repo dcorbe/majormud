@@ -82,6 +82,71 @@ fn a_hit_on_us_is_not_blindly_countered() {
     assert!(actions.is_empty());
 }
 
+/// The general un-latch this family kept asking for. A kill can hide
+/// BOTH known end signals at once — a prose death line ("The acid slime
+/// dissolves into a puddle of bluish goo.") while the untrained-XP cap
+/// suppresses the experience award — and the latched bot then ignored a
+/// fresh spawn for 29 seconds live (2026-08-01 arena run) until the
+/// quiet-prompt backstop expired. The board announces the end itself:
+/// "*Combat Off*". Believe it.
+#[test]
+fn combat_off_clears_the_latch() {
+    let mut bot = combat_bot();
+    assert_eq!(bot.on_event(&room(&["acid slime"])).len(), 1);
+    // Prose death + XP cap: neither a death mark nor an award arrives.
+    assert!(
+        bot.on_event(&Event::Line(
+            "The acid slime dissolves into a puddle of bluish goo.".into()
+        ))
+        .is_empty()
+    );
+    let actions = bot.on_event(&Event::Line("*Combat Off*".into()));
+    assert!(actions.is_empty());
+    // The next spawn must be engaged, not ignored by a corpse latch.
+    let actions = bot.on_event(&Event::ActorEntered {
+        name: "thin giant rat".into(),
+        from: None,
+    });
+    assert_eq!(actions, vec![BotAction::Send("a rat".into())]);
+}
+
+/// An attack that resolves NO target falls through to SAY — the board
+/// answers `You say "a beast"` instead of `*Combat Engaged*`. Live
+/// (2026-08-01): the carrion beast left south in the same instant the
+/// sighting attack went out, its departure line arrived corrupted by
+/// our own command echo ("a becarrion beast just left...") so ActorLeft
+/// could not match, and the bot sat latched on a phantom for 20 seconds
+/// while two thieves whiffed at it. The say echo of our own attack
+/// command IS the board saying the swing never started.
+#[test]
+fn a_say_fallthrough_clears_the_latch() {
+    let mut bot = combat_bot();
+    assert_eq!(
+        bot.on_event(&room(&["carrion beast"])),
+        vec![BotAction::Send("a beast".into())]
+    );
+    assert!(
+        bot.on_event(&Event::Line("You say \"a beast\"".into()))
+            .is_empty()
+    );
+    let actions = bot.on_event(&Event::ActorEntered {
+        name: "kobold thief".into(),
+        from: None,
+    });
+    assert_eq!(actions, vec![BotAction::Send("a thief".into())]);
+}
+
+/// Somebody ELSE's speech — or our own words that are not the attack we
+/// have in flight — proves nothing about the fight.
+#[test]
+fn unrelated_speech_does_not_clear_the_latch() {
+    let mut bot = combat_bot();
+    assert_eq!(bot.on_event(&room(&["carrion beast"])).len(), 1);
+    bot.on_event(&Event::Line("You say \"hello there\"".into()));
+    // Still latched: the same room block must not re-engage.
+    assert!(bot.on_event(&room(&["carrion beast"])).is_empty());
+}
+
 #[test]
 fn does_not_spam_attack_same_target() {
     let mut bot = combat_bot();

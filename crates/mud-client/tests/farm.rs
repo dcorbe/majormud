@@ -1248,6 +1248,62 @@ fn a_whiff_at_us_invalidates_the_room_block() {
     assert_eq!(stop.verdict(&bot, t0), Verdict::Empty, "our own whiff");
 }
 
+/// "*Combat Off*" ends a fight whatever the death wording said — the
+/// live stall this pins had a prose death AND the untrained-XP cap
+/// suppressing the award, so no recognised end signal arrived at all
+/// and the stop sat Busy on a corpse for 29 seconds. The board's own
+/// announcement invalidates the block exactly like a recognised kill.
+#[test]
+fn combat_off_invalidates_the_room_block() {
+    let t0 = Instant::now();
+    let mut bot = combat_bot();
+    let mut stop = stop_state(0);
+    look_and_see(&mut stop, &mut bot, &block(&["acid slime"]), t0);
+    assert_eq!(stop.verdict(&bot, t0), Verdict::Busy);
+    feed(
+        &mut stop,
+        &mut bot,
+        &Event::Line("*Combat Off*".into()),
+        t0,
+    );
+    assert_eq!(
+        stop.verdict(&bot, t0),
+        Verdict::Ask,
+        "the fight is over and the pre-fight block cannot be trusted"
+    );
+}
+
+/// Our attack falling through to SAY means the room changed under the
+/// block that prompted the swing: the target is gone, and whatever else
+/// the block listed cannot be trusted either. The runner would
+/// otherwise sit Busy on the stale listing until the shelf life ran
+/// out. (During a run, the only SAY the character produces is a
+/// fallthrough — the bot never speaks.)
+#[test]
+fn a_say_fallthrough_invalidates_the_room_block() {
+    let t0 = Instant::now();
+    let mut bot = combat_bot();
+    let mut stop = stop_state(0);
+    look_and_see(
+        &mut stop,
+        &mut bot,
+        &block(&["carrion beast", "kobold thief"]),
+        t0,
+    );
+    assert_eq!(stop.verdict(&bot, t0), Verdict::Busy);
+    feed(
+        &mut stop,
+        &mut bot,
+        &Event::Line("You say \"a beast\"".into()),
+        t0,
+    );
+    assert_eq!(
+        stop.verdict(&bot, t0),
+        Verdict::Ask,
+        "the swing never started; the block that prompted it is stale"
+    );
+}
+
 /// NOTHING announces a respawn -- the board simply puts a monster in the
 /// room. Silence is not proof the room is unchanged, so an accepted block
 /// has a shelf life and must be re-asked.

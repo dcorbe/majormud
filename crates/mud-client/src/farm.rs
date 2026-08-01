@@ -700,6 +700,17 @@ impl StopState {
             // enough to re-ask.
             Event::CombatMiss { line } if whiff_at_us(line) => self.invalidate(),
             Event::Line(line) if crate::bot::is_kill_line(line) => self.invalidate(),
+            // The board's own fight-over announcement. A kill can hide
+            // both recognised end signals at once (prose death + the
+            // untrained-XP cap eating the award), and the pre-fight
+            // block then held a Busy verdict on a corpse for 29s live.
+            Event::Line(line) if crate::bot::is_combat_off(line) => self.invalidate(),
+            // Our attack echoed back as SPEECH: the target left in the
+            // race between the block and the swing, so the block that
+            // prompted it describes a room that no longer exists. The
+            // bot never speaks during a run, so any say echo is a
+            // fallthrough.
+            Event::Line(line) if line.starts_with("You say \"") => self.invalidate(),
             Event::Line(line)
                 if line.contains(crate::sheet::TOO_DARK) && answers_look =>
             {
