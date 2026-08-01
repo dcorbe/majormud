@@ -177,6 +177,16 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     if assist_config.assist_play {
         assist = Some(crate::bot::Bot::new(assist_config.clone()));
     }
+    // The maintained room model, running in SHADOW: it decides nothing
+    // here, it only records where it and the board disagree. The farm
+    // builds its own per stop (`farm.rs`), so this one exists for the
+    // hand-played sessions a farm never touches — which on a foreign
+    // board is where the unparsed wordings actually show up.
+    let mut model = crate::world::Here::default();
+    // One note per distinct disagreement. A wording the parser cannot
+    // read fires every single lap, and the interesting fact is that it
+    // happened at all, not how often.
+    let mut noted: std::collections::HashSet<String> = std::collections::HashSet::new();
     let started = std::time::Instant::now();
     let nav = locator(session.profile());
 
@@ -227,6 +237,22 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                     {
                         for cmd in assist_actions(bot, cor) {
                             session.send(&cmd);
+                        }
+                    }
+                    // Shadow bookkeeping, farm-free sessions only: while
+                    // a farm runs it keeps its own model and counts its
+                    // own divergences, and folding here too would double
+                    // them.
+                    if farm.is_none() {
+                        let before = model.reconcile.total();
+                        model.on_event(cor, std::time::Instant::now());
+                        if model.reconcile.total() != before {
+                            for d in model.reconcile.recent() {
+                                let entry = format!("{} {}", d.kind.label(), d.name);
+                                if noted.insert(entry.clone()) {
+                                    note(&mut out, &format!("-- room model: {entry} --"))?;
+                                }
+                            }
                         }
                     }
                 }

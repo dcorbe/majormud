@@ -9,7 +9,7 @@ use mud_client::bot::{Bot, BotConfig};
 use mud_client::correlate::{CmdId, Correlated};
 use mud_client::events::{Actor, Event, RoomView};
 use mud_client::farm::{
-    ACK_TIMEOUT, FarmConfig, FarmGuard, FarmPlan, Gate, HealWatch, StopState, Verdict,
+    ACK_TIMEOUT, FarmConfig, FarmGuard, FarmPlan, FarmStats, Gate, HealWatch, StopState, Verdict,
     is_player_death, parse_health, parse_room_id,
 };
 use mud_client::nav::{Interrupt, TravelGuard};
@@ -2184,4 +2184,93 @@ fn a_coin_pile_on_the_way_trips_a_sighting_guard() {
     assert_eq!(no_loot.on_room(&pile), None);
     // No predicate attached (recover, the walk home): inert.
     assert_eq!(guard(100, 50).on_room(&pile), None);
+}
+
+/// A block naming the divergence suite's stop.
+fn dview(also_here: &[&str]) -> RoomView {
+    RoomView {
+        name: "Small Cavern".into(),
+        also_here: also_here.iter().map(|s| s.to_string()).collect(),
+        ..RoomView::default()
+    }
+}
+
+// ---------------------------------------------------------------------
+// Divergence accounting: the Stage-1 trust gate.
+//
+// The maintained room model (`world::Here`) is shadow state until these
+// numbers say it can be believed. A poll is self-correcting and a model
+// is not, so "the model claimed somebody the board did not list" is the
+// number that decides whether decisions may run off it.
+// ---------------------------------------------------------------------
+
+#[test]
+fn a_clean_run_records_no_divergence() {
+    let now = Instant::now();
+    let mut here = mud_client::world::Here::default();
+    let mut stats = FarmStats::default();
+    here.on_event(&answering(Event::RoomSeen(dview(&["cave bear"])), CmdId(1)), now);
+    here.on_event(&answering(Event::RoomSeen(dview(&["cave bear"])), CmdId(2)), now);
+    stats.note_divergences(&here.reconcile, 0);
+    assert_eq!(stats.model_overclaims, 0);
+    assert_eq!(stats.model_surprises, 0);
+    assert!(stats.divergent_names.is_empty());
+}
+
+/// The two directions are counted apart on purpose: only the overclaim
+/// direction indicts the model, because a silent respawn produces the
+/// other one every time it happens.
+#[test]
+fn the_two_divergence_directions_are_counted_apart() {
+    let now = Instant::now();
+    let mut here = mud_client::world::Here::default();
+    let mut stats = FarmStats::default();
+    here.on_event(&answering(Event::RoomSeen(dview(&["cave bear"])), CmdId(1)), now);
+    // The board no longer lists the bear: the model overclaimed.
+    here.on_event(&answering(Event::RoomSeen(dview(&[])), CmdId(2)), now);
+    // ...and now lists a rat nobody announced: a respawn, or a wording.
+    here.on_event(&answering(Event::RoomSeen(dview(&["giant rat"])), CmdId(3)), now);
+    stats.note_divergences(&here.reconcile, 0);
+    assert_eq!(stats.model_overclaims, 1);
+    assert_eq!(stats.model_surprises, 1);
+}
+
+/// The names are the actionable half: on a foreign board an unexplained
+/// name IS the wording the parser could not read. Deduplicated, because
+/// one bad wording fires every lap.
+#[test]
+fn divergent_names_are_recorded_once_each() {
+    let now = Instant::now();
+    let mut here = mud_client::world::Here::default();
+    let mut stats = FarmStats::default();
+    here.on_event(&answering(Event::RoomSeen(dview(&["cave bear"])), CmdId(1)), now);
+    for id in 2..8 {
+        here.on_event(&answering(Event::RoomSeen(dview(&[])), CmdId(id)), now);
+        here.on_event(&answering(Event::RoomSeen(dview(&["cave bear"])), CmdId(id)), now);
+    }
+    stats.note_divergences(&here.reconcile, 0);
+    assert!(stats.model_overclaims > 1, "it recurred every lap");
+    assert_eq!(
+        stats.divergent_names.iter().filter(|n| n.contains("cave bear")).count(),
+        2,
+        "one entry per (kind, name), not per occurrence"
+    );
+}
+
+/// Only what arrived since the last fold is counted — the pump calls
+/// this per event, and a re-count would multiply every divergence by the
+/// number of events that followed it.
+#[test]
+fn only_divergences_since_the_last_fold_are_counted() {
+    let now = Instant::now();
+    let mut here = mud_client::world::Here::default();
+    let mut stats = FarmStats::default();
+    here.on_event(&answering(Event::RoomSeen(dview(&["cave bear"])), CmdId(1)), now);
+    here.on_event(&answering(Event::RoomSeen(dview(&[])), CmdId(2)), now);
+    let seen_so_far = here.reconcile.total();
+    stats.note_divergences(&here.reconcile, 0);
+    assert_eq!(stats.model_overclaims, 1);
+    // Nothing new happened; folding again must add nothing.
+    stats.note_divergences(&here.reconcile, seen_so_far);
+    assert_eq!(stats.model_overclaims, 1);
 }

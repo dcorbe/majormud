@@ -2,7 +2,7 @@
 //! commands the bot decides to send. The decision core is pure — no
 //! sockets, no timing.
 
-use mud_client::bot::{Bot, BotAction, BotConfig};
+use mud_client::bot::{Bot, BotAction, BotConfig, picked_up};
 use mud_client::events::{Actor, Event, RoomView};
 
 // The Blood Pit's exits are "closed door north, up" verbatim — see the
@@ -378,6 +378,46 @@ fn grabs_dropped_coins() {
     });
     let actions = bot.on_event(&Event::Line("12 silver drop to the ground.".into()));
     assert_eq!(actions, vec![BotAction::Send("get silver".into())]);
+}
+
+/// The board's acknowledgement of a `get`, verbatim from the oracle
+/// corpus ("You picked up 11 silver nobles", oracle_bank.raw, no
+/// trailing period). This is the ONLY positive proof a pile left the
+/// floor — `get` is otherwise fire-and-forget, and the client has never
+/// been able to tell a successful sweep from an encumbrance refusal.
+#[test]
+fn reads_the_pickup_acknowledgement() {
+    assert_eq!(
+        picked_up("You picked up 11 silver nobles"),
+        Some((11, "silver".to_string()))
+    );
+}
+
+/// A single coin drops the plural. The count is what `Here` reconciles
+/// against, so the singular form must not read as "no pile taken".
+#[test]
+fn reads_a_singular_pickup() {
+    assert_eq!(
+        picked_up("You picked up 1 silver noble"),
+        Some((1, "silver".to_string()))
+    );
+}
+
+/// Items wear denomination words ("silver holy amulet", live in
+/// oracle_charm_lifecycle) and the board announces taking them the same
+/// way. Only the five minted denominations name a PILE; anything else
+/// would retire a coin pile that is still sitting on the floor.
+#[test]
+fn does_not_read_an_item_pickup_as_coins() {
+    assert_eq!(picked_up("You picked up a silver holy amulet"), None);
+}
+
+/// The drop line and the pickup line are opposite facts about the same
+/// pile. Confusing them would have `Here` delete a pile at the moment it
+/// appears.
+#[test]
+fn does_not_mistake_a_coin_drop_for_a_pickup() {
+    assert_eq!(picked_up("12 silver drop to the ground."), None);
 }
 
 #[test]

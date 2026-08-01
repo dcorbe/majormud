@@ -1006,6 +1006,52 @@ pub struct FarmStats {
     /// they never touch `travel_interrupts` and cannot end a run
     /// TooHurt.
     pub sightings: u32,
+    /// Times the maintained room model ([`crate::world::Here`]) claimed
+    /// something the board did not list. **The Stage-1 trust gate**: a
+    /// poll is self-correcting and a model is not, so decisions may only
+    /// be moved onto the model once a full run leaves this at (or very
+    /// near) zero. No respawn can produce it.
+    pub model_overclaims: u32,
+    /// Times the board listed something the model had never heard of.
+    /// Deliberately NOT a defect signal on its own — a silent respawn
+    /// produces exactly this, and so does an unparsed movemsg wording.
+    /// Only the trend, read against `model_overclaims`, means anything.
+    pub model_surprises: u32,
+    /// The distinct `kind name` pairs behind those counts, bounded. The
+    /// actionable half: on a foreign board an unexplained name here IS a
+    /// wording the parser cannot read.
+    pub divergent_names: Vec<String>,
+}
+
+/// Enough to name the offenders without letting an hour-long run on a
+/// badly-diverging board grow this without bound.
+const DIVERGENT_NAME_CAP: usize = 32;
+
+impl FarmStats {
+    /// Fold every divergence recorded after `since_total` into the run's
+    /// tally. The pump calls this per event, so it must count only what
+    /// is new — re-counting would multiply each divergence by the number
+    /// of events that happened to follow it.
+    pub fn note_divergences(&mut self, rec: &crate::world::Reconcile, since_total: u32) {
+        use crate::world::DivergenceKind::*;
+        let fresh = rec.total().saturating_sub(since_total) as usize;
+        if fresh == 0 {
+            return;
+        }
+        let ring = rec.recent();
+        for d in ring.iter().skip(ring.len().saturating_sub(fresh)) {
+            match d.kind {
+                OccupantExtra | PileExtra => self.model_overclaims += 1,
+                OccupantMissing | PileMissing => self.model_surprises += 1,
+            }
+            let entry = format!("{} {}", d.kind.label(), d.name);
+            if !self.divergent_names.contains(&entry)
+                && self.divergent_names.len() < DIVERGENT_NAME_CAP
+            {
+                self.divergent_names.push(entry);
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -2270,7 +2316,12 @@ async fn farm_stop(
         // Folded last, so `engaged` and `has_target` already account for
         // this event when the next iteration asks for a verdict.
         seen.on_event(&cor, &bot, Instant::now());
+        // Shadow accounting only: nothing below reads `here` to decide
+        // anything yet. The tally is what earns it that right — see
+        // FarmStats::model_overclaims.
+        let seen_divergences = here.reconcile.total();
         here.on_event(&cor, Instant::now());
+        stats.note_divergences(&here.reconcile, seen_divergences);
     }
 }
 

@@ -354,15 +354,29 @@ fn farm_command(
         // "interrupted" look like it was the walk that got interrupted.
         match &outcome {
             None => eprintln!("interrupted"),
-            Some(Ok((end, stats))) => println!(
-                "{end:?}: {} kills, {} laps, {} flees, {} slowdowns, {} interrupts, {} sightings",
-                stats.kills,
-                stats.loops,
-                stats.flees,
-                stats.slowdowns,
-                stats.interrupts,
-                stats.sightings
-            ),
+            Some(Ok((end, stats))) => {
+                println!(
+                    "{end:?}: {} kills, {} laps, {} flees, {} slowdowns, {} interrupts, {} sightings",
+                    stats.kills,
+                    stats.loops,
+                    stats.flees,
+                    stats.slowdowns,
+                    stats.interrupts,
+                    stats.sightings
+                );
+                // The room model runs in shadow: it decides nothing, and
+                // this is the evidence that says whether it could. A
+                // clean run prints nothing at all.
+                if stats.model_overclaims > 0 || stats.model_surprises > 0 {
+                    println!(
+                        "room model: {} overclaims, {} surprises",
+                        stats.model_overclaims, stats.model_surprises
+                    );
+                    for name in &stats.divergent_names {
+                        println!("  {name}");
+                    }
+                }
+            }
             Some(Err(e)) => eprintln!("farm: {e}"),
         }
 

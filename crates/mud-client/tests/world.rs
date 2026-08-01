@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use mud_client::correlate::{CmdId, Correlated};
 use mud_client::events::{Event, RoomView};
-use mud_client::world::{Here, OccupantKind, ROUND, RoundClock};
+use mud_client::world::{DivergenceKind, Here, OccupantKind, ROUND, RoundClock};
 
 fn unsolicited(ev: Event) -> Correlated {
     Correlated {
@@ -244,4 +244,308 @@ fn a_recast_waits_until_the_room_is_cleared() {
 
     here.on_event(&answering(Event::RoomSeen(view(&[])), ASK), now);
     assert!(!mud_client::farm::recast_waits_for(&bot, &here));
+}
+
+// ---------------------------------------------------------------------
+// Here: what is lying on the floor.
+//
+// `get` was fire-and-forget — nothing ever told the client whether a
+// sweep worked — so an encumbrance refusal and a successful pickup were
+// indistinguishable, and the only record of a pile was whatever the last
+// room block happened to list. The farm's departure gate is send-queue
+// emptiness, not work-completeness, so a stop could end over its own
+// loot.
+// ---------------------------------------------------------------------
+
+fn view_with_loot(items: &[&str]) -> RoomView {
+    RoomView {
+        items: items.iter().map(|s| s.to_string()).collect(),
+        ..view(&[])
+    }
+}
+
+#[test]
+fn a_block_seeds_the_floor_from_the_notice_line() {
+    let now = Instant::now();
+    let mut here = Here::default();
+    here.on_event(
+        &answering(
+            Event::RoomSeen(view_with_loot(&["11 silver nobles", "a rusty dagger"])),
+            ASK,
+        ),
+        now,
+    );
+    // Coins only: the dagger is somebody's dropped gear, not our work.
+    assert_eq!(here.piles.len(), 1);
+    assert_eq!(here.piles[0].denom, "silver");
+    assert_eq!(here.piles[0].count, 11);
+}
+
+/// A kill drops coins before any block re-renders. Waiting for the next
+/// `look` to learn about them is the round-trip this whole model exists
+/// to remove.
+#[test]
+fn a_drop_line_puts_a_fresh_pile_on_the_floor() {
+    let now = Instant::now();
+    let mut here = Here::default();
+    here.on_event(&answering(Event::RoomSeen(view(&[])), ASK), now);
+    here.on_event(
+        &unsolicited(Event::Line("12 silver drop to the ground.".into())),
+        now,
+    );
+    assert_eq!(here.piles.len(), 1);
+    assert_eq!(here.piles[0].denom, "silver");
+    assert_eq!(here.piles[0].count, 12);
+}
+
+#[test]
+fn the_pickup_acknowledgement_takes_the_pile_off_the_floor() {
+    let now = Instant::now();
+    let mut here = Here::default();
+    here.on_event(
+        &answering(Event::RoomSeen(view_with_loot(&["11 silver nobles"])), ASK),
+        now,
+    );
+    here.on_event(
+        &unsolicited(Event::Line("You picked up 11 silver nobles".into())),
+        now,
+    );
+    assert!(here.piles.is_empty(), "the pile was taken, not still owed");
+}
+
+/// The kill arm nulls `view` — something died out of the render. It must
+/// not null the FLOOR: a kill is what creates piles, and clearing them
+/// here would forget the loot at the instant it appeared.
+#[test]
+fn a_kill_does_not_sweep_the_floor() {
+    let now = Instant::now();
+    let mut here = Here::default();
+    here.on_event(&answering(Event::RoomSeen(view(&["cave bear"])), ASK), now);
+    here.on_event(
+        &unsolicited(Event::Line("12 silver drop to the ground.".into())),
+        now,
+    );
+    here.on_event(
+        &unsolicited(Event::Line(
+            "The cave bear falls to the ground with a shrill cry.".into(),
+        )),
+        now,
+    );
+    assert!(here.view.is_none(), "the render is stale — something died");
+    assert!(here.occupants.is_empty(), "the bear left the occupant list");
+    assert_eq!(here.piles.len(), 1, "the coins it dropped are still there");
+}
+
+/// A pile the character cannot carry stays listed in every block. The
+/// attempts already spent must survive the reseed or the try cap can
+/// never be reached and the stop would `get` forever.
+#[test]
+fn a_reseed_preserves_the_attempts_already_spent() {
+    let now = Instant::now();
+    let mut here = Here::default();
+    here.on_event(
+        &answering(Event::RoomSeen(view_with_loot(&["11 silver nobles"])), ASK),
+        now,
+    );
+    here.note_get_attempt("silver");
+    here.on_event(
+        &answering(Event::RoomSeen(view_with_loot(&["11 silver nobles"])), ASK),
+        now,
+    );
+    assert_eq!(here.piles.len(), 1);
+    assert_eq!(here.piles[0].tries, 1);
+}
+
+/// A flee or a lagged broadcast drops everything observed. The floor is
+/// an observation like any other: coins believed after the character has
+/// been moved out from under them belong to a room it is no longer
+/// standing in.
+#[test]
+fn a_reset_clears_the_floor_too() {
+    let now = Instant::now();
+    let mut here = Here::default();
+    here.on_event(
+        &answering(Event::RoomSeen(view_with_loot(&["11 silver nobles"])), ASK),
+        now,
+    );
+    assert_eq!(here.piles.len(), 1);
+    here.reset();
+    assert!(here.piles.is_empty());
+}
+
+// ---------------------------------------------------------------------
+// Reconciliation: does the maintained model still agree with the board?
+//
+// A poll is self-correcting and a model is not. Today a missed wording
+// costs one redundant `look`; once decisions run off `Here` the same
+// miss becomes a lie the bot acts on. These counters are what earns the
+// model that trust — and on a foreign board they are a live
+// dialect-divergence detector, since an occupant only the block lists,
+// in a room where nothing respawned, is a movemsg wording we cannot
+// parse.
+// ---------------------------------------------------------------------
+
+/// `Here` is built fresh per stop, so its first attributed block has
+/// nothing to disagree with. Counting that as divergence would report
+/// every occupant of every room the run visits.
+#[test]
+fn the_seeding_block_reconciles_nothing() {
+    let now = Instant::now();
+    let mut here = Here::default();
+    here.on_event(
+        &answering(Event::RoomSeen(view(&["cave bear", "giant rat"])), ASK),
+        now,
+    );
+    assert_eq!(here.reconcile.count(DivergenceKind::OccupantMissing), 0);
+    assert_eq!(here.reconcile.count(DivergenceKind::OccupantExtra), 0);
+}
+
+#[test]
+fn a_block_that_agrees_with_the_model_records_nothing() {
+    let now = Instant::now();
+    let mut here = Here::default();
+    here.on_event(&answering(Event::RoomSeen(view(&["cave bear"])), ASK), now);
+    here.on_event(&answering(Event::RoomSeen(view(&["cave bear"])), ASK), now);
+    assert!(here.reconcile.recent().is_empty());
+}
+
+/// The defect direction: the model believes somebody the board does not
+/// list. Nothing about a respawn can produce it — it means a death or a
+/// departure went unparsed, and it is what makes a bot swing at a ghost
+/// or hold a stop `Busy` forever.
+#[test]
+fn an_occupant_the_block_omits_is_recorded_as_extra() {
+    let now = Instant::now();
+    let mut here = Here::default();
+    here.on_event(&answering(Event::RoomSeen(view(&["cave bear"])), ASK), now);
+    here.on_event(&answering(Event::RoomSeen(view(&[])), ASK), now);
+    assert_eq!(here.reconcile.count(DivergenceKind::OccupantExtra), 1);
+    assert_eq!(here.reconcile.recent()[0].name, "cave bear");
+}
+
+/// The ambiguous direction: a silent respawn produces exactly this, and
+/// so does a movemsg wording the parser cannot read. Counted separately
+/// and never read as a defect on its own.
+#[test]
+fn an_occupant_only_the_block_lists_is_recorded_as_missing() {
+    let now = Instant::now();
+    let mut here = Here::default();
+    here.on_event(&answering(Event::RoomSeen(view(&[])), ASK), now);
+    here.on_event(&answering(Event::RoomSeen(view(&["cave bear"])), ASK), now);
+    assert_eq!(here.reconcile.count(DivergenceKind::OccupantMissing), 1);
+    assert_eq!(here.reconcile.count(DivergenceKind::OccupantExtra), 0);
+}
+
+/// Somebody else's render says nothing about our beliefs, and it never
+/// seeds the model — so it must never be allowed to indict it either.
+#[test]
+fn an_unsolicited_block_reconciles_nothing() {
+    let now = Instant::now();
+    let mut here = Here::default();
+    here.on_event(&answering(Event::RoomSeen(view(&["cave bear"])), ASK), now);
+    here.on_event(&unsolicited(Event::RoomSeen(view(&[]))), now);
+    assert!(here.reconcile.recent().is_empty());
+}
+
+/// Another player swept the pile out from under us.
+#[test]
+fn a_pile_the_block_omits_is_recorded_as_extra() {
+    let now = Instant::now();
+    let mut here = Here::default();
+    here.on_event(
+        &answering(Event::RoomSeen(view_with_loot(&["11 silver nobles"])), ASK),
+        now,
+    );
+    here.on_event(&answering(Event::RoomSeen(view_with_loot(&[])), ASK), now);
+    assert_eq!(here.reconcile.count(DivergenceKind::PileExtra), 1);
+}
+
+/// A drop wording we cannot parse: coins reached the floor and the model
+/// never heard about it.
+#[test]
+fn a_pile_only_the_block_lists_is_recorded_as_missing() {
+    let now = Instant::now();
+    let mut here = Here::default();
+    here.on_event(&answering(Event::RoomSeen(view_with_loot(&[])), ASK), now);
+    here.on_event(
+        &answering(Event::RoomSeen(view_with_loot(&["11 silver nobles"])), ASK),
+        now,
+    );
+    assert_eq!(here.reconcile.count(DivergenceKind::PileMissing), 1);
+}
+
+/// The ring is for reading the last few by hand; the counts are the
+/// metric. An hour-long run must not accumulate a divergence per block.
+#[test]
+fn the_recent_ring_is_bounded() {
+    let now = Instant::now();
+    let mut here = Here::default();
+    here.on_event(&answering(Event::RoomSeen(view(&[])), ASK), now);
+    for _ in 0..200 {
+        here.on_event(&answering(Event::RoomSeen(view(&["cave bear"])), ASK), now);
+        here.on_event(&answering(Event::RoomSeen(view(&[])), ASK), now);
+    }
+    assert!(here.reconcile.recent().len() <= 64);
+    // The counts are not bounded — they are the measurement.
+    assert_eq!(here.reconcile.count(DivergenceKind::OccupantExtra), 200);
+}
+
+/// A flee drops beliefs, not measurements. Clearing the counters there
+/// would quietly discard exactly the evidence a bad run produces.
+#[test]
+fn a_reset_drops_beliefs_but_keeps_the_measurement() {
+    let now = Instant::now();
+    let mut here = Here::default();
+    here.on_event(&answering(Event::RoomSeen(view(&["cave bear"])), ASK), now);
+    here.on_event(&answering(Event::RoomSeen(view(&[])), ASK), now);
+    assert_eq!(here.reconcile.count(DivergenceKind::OccupantExtra), 1);
+    here.reset();
+    assert_eq!(here.reconcile.count(DivergenceKind::OccupantExtra), 1);
+    // ...but the next block seeds again rather than indicting the model.
+    here.on_event(&answering(Event::RoomSeen(view(&["giant rat"])), ASK), now);
+    assert_eq!(here.reconcile.count(DivergenceKind::OccupantMissing), 0);
+}
+
+/// The run summary prints only what actually fired, so a clean run says
+/// nothing at all rather than four zeroes.
+#[test]
+fn the_tally_lists_only_the_kinds_that_fired() {
+    let now = Instant::now();
+    let mut here = Here::default();
+    assert_eq!(here.reconcile.total(), 0);
+    assert!(here.reconcile.tally().is_empty());
+
+    here.on_event(&answering(Event::RoomSeen(view(&["cave bear"])), ASK), now);
+    here.on_event(&answering(Event::RoomSeen(view(&[])), ASK), now);
+    assert_eq!(here.reconcile.total(), 1);
+    assert_eq!(
+        here.reconcile.tally(),
+        vec![(DivergenceKind::OccupantExtra, 1)]
+    );
+}
+
+/// `Here` is per-stop inside the farm, but the assist follows an
+/// operator who walks wherever they like. A block naming a DIFFERENT
+/// room describes a different floor and different occupants: it must
+/// reseed, not indict the model for having believed the last room.
+/// Without this every step the operator takes reports the room behind
+/// them as an overclaim.
+#[test]
+fn a_block_from_another_room_reseeds_rather_than_indicts() {
+    let now = Instant::now();
+    let mut here = Here::default();
+    here.on_event(&answering(Event::RoomSeen(view(&["cave bear"])), ASK), now);
+    let elsewhere = RoomView {
+        name: "Newhaven, Arena".into(),
+        also_here: vec!["Mystic".into()],
+        ..RoomView::default()
+    };
+    here.on_event(&answering(Event::RoomSeen(elsewhere), ASK), now);
+    assert_eq!(
+        here.reconcile.total(),
+        0,
+        "walking into a new room is not a divergence"
+    );
+    assert_eq!(here.occupants.len(), 1);
+    assert_eq!(here.occupants[0].name, "Mystic");
 }

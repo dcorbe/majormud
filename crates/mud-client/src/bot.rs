@@ -14,7 +14,55 @@ use crate::events::Event;
 // separates loot from a downed actor's "Vexil drops to the ground!";
 // the plural verb and the full stop corroborate it.
 static COIN_DROP_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\d+ (\w+) drop to the ground\.$").unwrap());
+    LazyLock::new(|| Regex::new(r"^(\d+) (\w+) drop to the ground\.$").unwrap());
+
+/// Did a kill just drop coins, and how many of what?
+///
+/// Deliberately NOT whitelisted to the five minted denominations, unlike
+/// [`coin_pile`]: the leading count already carries the exclusion the
+/// wording needs, and narrowing it here would change what the bot sweeps.
+pub fn coin_drop(line: &str) -> Option<(u32, String)> {
+    let c = COIN_DROP_RE.captures(line)?;
+    Some((c[1].parse().ok()?, c[2].to_string()))
+}
+
+/// Is this "You notice ..." entry a coin pile, and how many of what?
+pub fn coin_pile(entry: &str) -> Option<(u32, String)> {
+    let c = COIN_PILE_RE.captures(entry)?;
+    Some((c[1].parse().ok()?, c[2].to_string()))
+}
+
+/// The board's acknowledgement of a `get`: "You picked up 11 silver
+/// nobles" (VERIFIED, oracle_bank.raw — no trailing period, unlike the
+/// drop line).
+static PICKED_UP_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^You picked up (\d+) (copper|silver|gold|platinum|runic) (?:farthing|noble|crown|piece|coin)s?$",
+    )
+    .unwrap()
+});
+
+/// Did the board just confirm a pile left the floor, and which one?
+///
+/// `get` is otherwise fire-and-forget: nothing has ever told the client
+/// whether a sweep worked, so an encumbrance refusal and a successful
+/// pickup looked identical. Returns the count taken and the denomination
+/// as `get` takes it ("silver").
+///
+/// The denomination whitelist is load-bearing, not decoration: the board
+/// announces taking an ITEM the same way ("You picked up a silver holy
+/// amulet"), and reading that as a coin pile would retire a pile still
+/// sitting on the floor.
+///
+/// Public and predicate-shaped for the same reason as [`is_kill_line`]:
+/// [`crate::world::Here`] asks the same question of the same
+/// `Event::Line`, and the alternative — a new `Event` variant — would
+/// silently break `correlate::completes(Kind::Get, ..)`, which matches
+/// "you picked up" on `Event::Line` to retire the `get` that earned it.
+pub fn picked_up(line: &str) -> Option<(u32, String)> {
+    let c = PICKED_UP_RE.captures(line)?;
+    Some((c[1].parse().ok()?, c[2].to_string()))
+}
 
 /// A coin pile as the room's "You notice ... here." line names one:
 /// "11 silver nobles", "2968 copper farthings". The leading count is the
@@ -23,7 +71,7 @@ static COIN_DROP_RE: LazyLock<Regex> =
 /// deliberately not swept: on somebody else's board that is somebody
 /// else's dropped gear.
 static COIN_PILE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\d+ (copper|silver|gold|platinum|runic) (?:farthing|noble|crown|piece|coin)s?$")
+    Regex::new(r"^(\d+) (copper|silver|gold|platinum|runic) (?:farthing|noble|crown|piece|coin)s?$")
         .unwrap()
 });
 
@@ -410,11 +458,10 @@ impl Bot {
                 }
                 if self.config.auto_get && !self.room_has_work {
                     for entry in &room.items {
-                        if let Some(c) = COIN_PILE_RE.captures(entry) {
-                            let denom = c[1].to_string();
-                            if self.swept.1.insert(denom.clone()) {
-                                actions.push(BotAction::Send(format!("get {denom}")));
-                            }
+                        if let Some((_, denom)) = coin_pile(entry)
+                            && self.swept.1.insert(denom.clone())
+                        {
+                            actions.push(BotAction::Send(format!("get {denom}")));
                         }
                     }
                 }
@@ -686,9 +733,8 @@ impl Bot {
         if !self.config.auto_get {
             return Vec::new();
         }
-        COIN_DROP_RE
-            .captures(line)
-            .map(|c| vec![BotAction::Send(format!("get {}", &c[1]))])
+        coin_drop(line)
+            .map(|(_, denom)| vec![BotAction::Send(format!("get {denom}"))])
             .unwrap_or_default()
     }
 }
