@@ -556,7 +556,18 @@ impl Bot {
     /// [`Bot::attackable`] instead would report an empty room in the
     /// middle of a fight, and the runner would walk out of it.
     pub fn has_target(&self, room: &crate::events::RoomView) -> bool {
-        room.also_here.iter().any(|name| self.would_attack(name))
+        self.has_target_among(room.also_here.iter().map(String::as_str))
+    }
+
+    /// The same question asked of any names at all, not just the ones a
+    /// block happened to carry.
+    ///
+    /// [`crate::world::Here`] maintains an occupant list across kills,
+    /// arrivals and departures, and it is more current than the last
+    /// block by construction. Both forms route here so the two ways of
+    /// asking cannot drift apart.
+    pub fn has_target_among<'a>(&self, names: impl Iterator<Item = &'a str>) -> bool {
+        names.into_iter().any(|name| self.would_attack(name))
     }
 
     /// Does this room list cash the policy would sweep? Coins only — an

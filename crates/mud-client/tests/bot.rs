@@ -1247,3 +1247,29 @@ fn sweeps_a_pile_once_per_visit() {
         vec![BotAction::Send("get gold".into())]
     );
 }
+
+/// Stage 2 needs "is there work here" answered against the MAINTAINED
+/// occupant list rather than whatever the last room block happened to
+/// say, so the question has to be askable of any names at all.
+#[test]
+fn work_can_be_judged_from_maintained_names_not_just_a_block() {
+    let bot = combat_bot();
+    assert!(bot.has_target_among(["cave bear"].into_iter()));
+    // Players are company, not work.
+    assert!(!bot.has_target_among(["Vexil"].into_iter()));
+    // The ignore list still applies, whoever is asking.
+    assert!(!bot.has_target_among(["town guard"].into_iter()));
+    assert!(!bot.has_target_among(std::iter::empty()));
+}
+
+/// The block-shaped question must be exactly the name-shaped question,
+/// or the two ways of asking could disagree mid-migration.
+#[test]
+fn the_block_form_and_the_name_form_agree() {
+    let bot = combat_bot();
+    let r = view(&["Vexil", "cave bear"]);
+    assert_eq!(
+        bot.has_target(&r),
+        bot.has_target_among(r.also_here.iter().map(String::as_str))
+    );
+}
