@@ -121,6 +121,64 @@ derives the sibling).
 Output: plain text to stdout, mmc's existing eprintln/println conventions.
 No JSON (YAGNI until something consumes it).
 
+## Review findings (2026-08-01, before implementation)
+
+Three corrections to the design above. The first blocks section 1, the
+second is a disclosure bug, the third removes the riskiest part.
+
+1. **`correlate.rs` cannot be "reused as-is".** Section 1 wants "entries
+   retired by TTL/cap rather than by a grammar wording", and that is not
+   observable from outside the `Correlator`: `expire()` silently
+   `retain()`s, and `Correlated::answers` returns `Some(id)` identically
+   for echo acceptance, the DUPLICATE execution echo, a confirm, and a
+   grammar completion. "Saw the id twice ⇒ it completed" is therefore
+   wrong on exactly the busy, double-echoing board the tool exists for.
+   Two small additive changes are required: a drain for expired entries,
+   and a way to tell `Kind::Opaque` from modelled kinds (`Kind` and
+   `kind_of` are private; only `is_movement` is exported). Without the
+   second, every `inventory`/`health`/attack TX lands in the grammar-gap
+   section as a false positive, because Opaque commands are DESIGNED to
+   expire. Note also that `expire()` runs only from `sent()` and
+   `on_event()`, so a capture's trailing commands never expire — the
+   replay needs a final drain.
+
+2. **The report as specified prints the account password.** `login`
+   sends it via `session.send()`, and session.rs writes every `Cmd::Line`
+   to the timing log as `TX`; it is an Opaque command, so it is never
+   retired by grammar and lands at the TOP of section 1 on the first real
+   run. The prose rule ("never quote TX login lines") has to be a code
+   rule: suppress Opaque from section 1 (see 1), and redact TX before the
+   first in-game prompt.
+
+3. **The alignment does not need to be heuristic.** "Forward scan with
+   skip tolerance" is the riskiest part of the plan and everything in
+   sections 1 and 3 rests on it. The timing log's RX lines are written
+   from `AnsiStripper` output (session.rs), so the audit can run the same
+   `TelnetFilter → AnsiStripper` alongside its parser and COUNT lines:
+   TX record *k* sits after RX line *m*, so inject it once the stripper
+   has emitted its *m*-th line. Exact, and it reuses the code path that
+   wrote the log. (Room blocks still flush late because the parser
+   buffers to the exits line — inherent, and it matches what the live
+   correlator sees.) Minor: an `Instant` cannot be built from an epoch
+   stamp; use `base + Duration::from_secs_f64(t - t0)`.
+
+**Suggested sequencing.** Section 2 needs only the `.raw` — no timing
+log, no alignment, no correlator change — and would have caught two of
+the three divergences that motivated this plan (the CR-redraw, which
+fired zero `ActorEntered` all evening, and the "creeps in" wording). So
+ship **Stage A** = section 2 + the `re/oracle` zero-findings pin + the
+subcommand, and gate **Stage B** = alignment, correlator observability,
+sections 1 and 3 on Stage A actually surfacing something. Also note step
+5's "assert the cwrun captures by hand" cannot become a committed test:
+those captures are gitignored and hold the password.
+
+**Overlap with the room model.** `world::Reconcile` (commit `1fc7f0d`)
+now finds the same class of parser gap from LIVE play rather than from
+captures: an occupant the board lists that the model never heard about
+is a movemsg wording we cannot read. It is not a substitute — it says
+nothing about the correlator layer, which is sections 1 and 3 — but it
+lowers the urgency of section 2.
+
 ### Heuristic tuning rule
 
 The suspicion heuristics MUST report zero findings across the stock corpus
