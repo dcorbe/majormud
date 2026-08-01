@@ -981,9 +981,10 @@ pub struct FarmStats {
     pub slowdowns: u32,
     /// Legs stopped part-way by the travel guard.
     pub interrupts: u32,
-    /// Fights picked mid-leg because the arrival block listed a target.
-    /// Not emergencies: they never touch `travel_interrupts` and cannot
-    /// end a run TooHurt.
+    /// Fights picked mid-leg: the arrival block listed a target, or
+    /// something the policy would fight walked in. Not emergencies:
+    /// they never touch `travel_interrupts` and cannot end a run
+    /// TooHurt.
     pub sightings: u32,
 }
 
@@ -1040,9 +1041,10 @@ pub fn is_player_death(line: &str, username: &str) -> bool {
 /// latches. The runner hands the same guard to a resumed leg, so a
 /// character that is still wounded has to be able to stop it again.
 /// The optional sighting bot is a PREDICATE, not a participant: it is
-/// consulted through [`crate::bot::Bot::has_target`] and never fed
-/// `on_event` (feeding it events while suppressing its commands would
-/// leave it believing it had swung — see [`run_farm`]'s travel notes).
+/// consulted through [`crate::bot::Bot::has_target`] and
+/// [`crate::bot::Bot::would_attack`] and never fed `on_event` (feeding
+/// it events while suppressing its commands would leave it believing it
+/// had swung — see [`run_farm`]'s travel notes).
 pub struct FarmGuard {
     max_hp: i32,
     hurt_at_percent: u32,
@@ -1135,6 +1137,30 @@ impl crate::nav::TravelGuard for FarmGuard {
                 target: crate::events::Actor::You,
                 ..
             } if self.fight_back => Some(Interrupt::Attacked { by: name.clone() }),
+            // A whiff aimed at us proves occupancy exactly like a landed
+            // blow — the stop pump already lives by that rule (see
+            // `StopState::on_event`), and run5 (2026-08-01) showed why
+            // the walk must agree: a kobold thief lunged across three
+            // rooms without connecting once, and a guard waiting for
+            // CombatHit never fired. Whiff wordings are per-monster
+            // data, so no attacker name is claimed out of them.
+            Event::CombatMiss { line } if self.fight_back && whiff_at_us(line) => {
+                Some(Interrupt::Attacked {
+                    by: "something unseen".into(),
+                })
+            }
+            // Something walked in mid-step. The name is only a
+            // pre-filter through the same policy a sighting uses —
+            // players are capitalised, refusals are shared run-wide —
+            // and the defence decides off its own look, never off entry
+            // wording. No sighting bot, no trip: the recovery walk and
+            // the walk home keep walking, exactly as they ignore what
+            // an arrival block lists.
+            Event::ActorEntered { name, .. }
+                if self.sight.as_ref().is_some_and(|b| b.would_attack(name)) =>
+            {
+                Some(Interrupt::Entered { name: name.clone() })
+            }
             _ => None,
         }
     }
@@ -1554,10 +1580,11 @@ async fn travel(
         )
     };
     let mut budget = cfg.travel_interrupts;
-    // The one room this leg already defended on a sighting. A second
-    // sighting there means the defence did not clear it — deadline
+    // The one room this leg already defended on a sighting or an entry.
+    // A second trip there means the defence did not clear it — deadline
     // expired, unkillable, or refused mid-fight — and stopping again
-    // would loop, so the leg walks on past sightings from then on.
+    // would loop, so the leg walks on from then on: `stop_sighting`
+    // clears the predicate bot, which mutes entry arming too.
     let mut last_sighted: Option<RoomId> = None;
     // Predicate-only, like the guard's sighting bot: judges whether the
     // departure gate is standing beside work (never fed events).
@@ -1593,15 +1620,26 @@ async fn travel(
 
         match err.kind {
             NavErrorKind::Interrupted(Interrupt::Died) => return Ok(LegEnd::Died),
-            // The arrival block listed something worth fighting. NOT an
-            // emergency: it never touches the interrupt budget and can
-            // never end a run TooHurt — it is the farm noticing work,
-            // where Hurt/Attacked are the farm noticing danger.
-            NavErrorKind::Interrupted(Interrupt::Sighted { room }) => {
+            // The arrival block listed something worth fighting, or
+            // something the policy would fight walked in mid-step. NOT
+            // an emergency: it never touches the interrupt budget and
+            // can never end a run TooHurt — it is the farm noticing
+            // work, where Hurt/Attacked are the farm noticing danger.
+            NavErrorKind::Interrupted(
+                int @ (Interrupt::Sighted { .. } | Interrupt::Entered { .. }),
+            ) => {
+                // Sighted carries the attributed block that tripped it;
+                // an entry carries none (its wording is per-monster
+                // data), so the defence below opens by asking the board
+                // where it stands.
+                let room = match int {
+                    Interrupt::Sighted { room } => Some(room),
+                    _ => None,
+                };
                 // The destination itself: this IS the stop. Hand the
                 // evidence up so the stop starts from it.
                 if err.at == stop {
-                    return Ok(LegEnd::Arrived { seen: Some(room) });
+                    return Ok(LegEnd::Arrived { seen: room });
                 }
                 if last_sighted == Some(err.at) {
                     guard.stop_sighting();
@@ -1623,7 +1661,7 @@ async fn travel(
                     cfg,
                     started,
                     Some(until),
-                    Some(room),
+                    room,
                     stats,
                     phase,
                 )

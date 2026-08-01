@@ -70,6 +70,15 @@ pub enum Interrupt {
     /// Carries the block itself so the defence can start from this
     /// evidence instead of re-asking the board.
     Sighted { room: crate::events::RoomView },
+    /// Something the caller's policy would fight walked in mid-step.
+    /// Live incident (run5, 2026-08-01): "acid slime moves into the
+    /// room from the north." during a leg, then whiffs only — no blow
+    /// landed, so nothing stopped the walk, and the slime chased the
+    /// character across three rooms. Unlike [`Interrupt::Sighted`]
+    /// there is no attributed block to carry: entry wording is
+    /// per-monster data, so the name is display-only and the defence
+    /// starts by asking the board where it stands.
+    Entered { name: String },
 }
 
 /// Watches the events a walk goes past and says when to stop walking.

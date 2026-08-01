@@ -65,14 +65,21 @@ fn nav(g: Arc<RoomGraph>) -> Navigator {
 
 /// A board driven by a per-line script: `(matcher, reply)` where the
 /// reply is raw bytes already containing whatever echo the scenario
-/// wants. Unmatched lines echo + say back.
+/// wants. Unmatched lines echo + say back. Every line received is
+/// logged, so a test can assert what was — and was NOT — sent.
 async fn scripted_board(
     script: Vec<(&'static str, String)>,
-) -> (std::net::SocketAddr, Arc<AtomicUsize>) {
+) -> (
+    std::net::SocketAddr,
+    Arc<AtomicUsize>,
+    Arc<std::sync::Mutex<Vec<String>>>,
+) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let opens = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&opens);
+    let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = Arc::clone(&received);
     tokio::spawn(async move {
         let (mut sock, _) = listener.accept().await.unwrap();
         sock.write_all(room_block("Guard Post", "north").as_bytes())
@@ -89,6 +96,7 @@ async fn scripted_board(
             while let Some(nl) = pending.find('\n') {
                 let line: String = pending.drain(..=nl).collect();
                 let line = line.trim().to_lowercase();
+                log.lock().unwrap().push(line.clone());
                 if line.starts_with("open") || line.starts_with("bash") {
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
@@ -107,7 +115,7 @@ async fn scripted_board(
             }
         }
     });
-    (addr, opens)
+    (addr, opens, received)
 }
 
 /// The desync that ended live runs, mechanized: the board front-runs the
@@ -116,7 +124,7 @@ async fn scripted_board(
 /// block that follows ITS echo.
 #[tokio::test]
 async fn a_stale_render_before_the_echo_does_not_satisfy_the_step() {
-    let (addr, _) = scripted_board(vec![(
+    let (addr, _, _) = scripted_board(vec![(
         "n",
         format!(
             "{}\r\nn{}",
@@ -143,7 +151,7 @@ async fn a_stale_render_before_the_echo_does_not_satisfy_the_step() {
 /// never advance — the walk sees one answer and takes one step.
 #[tokio::test]
 async fn a_double_echoed_step_lands_once() {
-    let (addr, _) = scripted_board(vec![(
+    let (addr, _, _) = scripted_board(vec![(
         "n",
         format!(
             "\r\nn\r\n[HP=30/MA=0]:n{}",
@@ -169,7 +177,7 @@ async fn a_double_echoed_step_lands_once() {
 /// machinery instead of silently drifting position.
 #[tokio::test]
 async fn an_echoless_render_never_satisfies_a_step() {
-    let (addr, _) = scripted_board(vec![(
+    let (addr, _, _) = scripted_board(vec![(
         "n",
         room_block("Inner Ward", "south"), // no echo anywhere
     )])
@@ -197,7 +205,7 @@ async fn an_echoless_render_never_satisfies_a_step() {
 /// command the walk never sent.
 #[tokio::test]
 async fn a_look_refusal_wording_provokes_no_door_handling() {
-    let (addr, opens) = scripted_board(vec![(
+    let (addr, opens, _) = scripted_board(vec![(
         "n",
         "\r\nn\r\nThe door is closed in that direction!\r\n[HP=30/MA=0]:".to_string(),
     )])
@@ -237,7 +245,7 @@ async fn a_refused_step_between_same_named_twins_does_not_drift() {
     there.exits[Direction::South as usize] = Some(ExitEdge { dest: HERE, exit_type: 0 });
     let twins = Arc::new(RoomGraph::from_rooms(vec![(HERE, here), (THERE, there)]));
 
-    let (addr, _) = scripted_board(vec![
+    let (addr, _, _) = scripted_board(vec![
         (
             "n",
             "\r\nn\r\nThere is no exit in that direction!\r\n[HP=30/MA=0]:".to_string(),
@@ -262,4 +270,155 @@ async fn a_refused_step_between_same_named_twins_does_not_drift() {
         err.at, HERE,
         "recorded an arrival that never happened: {err:?}"
     );
+}
+
+// ---------------------------------------------------------------------
+// The run5 mid-leg entry (2026-08-01): monsters walked in during travel
+// legs and whiffed, and the walk kept sending steps. These pin the veto
+// at the nav layer: the guard arms mid-step, and goto hands back before
+// the next step goes out.
+// ---------------------------------------------------------------------
+
+const FAR: RoomId = RoomId { map: 1, room: 3 };
+
+/// Guard Post -> Inner Ward -> Keep, so there is a NEXT step to veto.
+fn corridor() -> Arc<RoomGraph> {
+    let mut here = GraphRoom {
+        name: "Guard Post".into(),
+        exits: Default::default(),
+        light: 0,
+    };
+    here.exits[Direction::North as usize] = Some(ExitEdge { dest: THERE, exit_type: 0 });
+    let mut there = GraphRoom {
+        name: "Inner Ward".into(),
+        exits: Default::default(),
+        light: 0,
+    };
+    there.exits[Direction::North as usize] = Some(ExitEdge { dest: FAR, exit_type: 0 });
+    there.exits[Direction::South as usize] = Some(ExitEdge { dest: HERE, exit_type: 0 });
+    let mut far = GraphRoom {
+        name: "Keep".into(),
+        exits: Default::default(),
+        light: 0,
+    };
+    far.exits[Direction::South as usize] = Some(ExitEdge { dest: THERE, exit_type: 0 });
+    Arc::new(RoomGraph::from_rooms(vec![
+        (HERE, here),
+        (THERE, there),
+        (FAR, far),
+    ]))
+}
+
+fn fighting_guard() -> mud_client::farm::FarmGuard {
+    mud_client::farm::FarmGuard::new(30, 25, "Farmer").sighting(mud_client::bot::Bot::new(
+        mud_client::bot::BotConfig {
+            auto_combat: true,
+            ..mud_client::bot::BotConfig::default()
+        },
+    ))
+}
+
+/// The entry lands between the step's echo and its arrival block. The
+/// guard arms mid-step, the block completes the step honestly, and the
+/// walk hands back at the room it verified — before the next step goes
+/// out. The board must see exactly one "n".
+#[tokio::test]
+async fn a_mob_entering_behind_the_echo_interrupts_before_the_next_step() {
+    let (addr, _, received) = scripted_board(vec![(
+        "n",
+        format!(
+            "\r\nn\r\nA giant rat creeps into the room from nowhere.{}",
+            room_block("Inner Ward", "north south")
+        ),
+    )])
+    .await;
+    let session = session_for(addr).await;
+    let n = nav(corridor());
+    let mut guard = fighting_guard();
+
+    let err = tokio::time::timeout(
+        Duration::from_secs(10),
+        n.goto(&session, HERE, FAR, &mut guard),
+    )
+    .await
+    .expect("goto should not hang")
+    .expect_err("the entry must stop the walk");
+    assert_eq!(err.at, THERE, "hand back where the walk verified");
+    match err.kind {
+        mud_client::nav::NavErrorKind::Interrupted(mud_client::nav::Interrupt::Entered {
+            ref name,
+        }) => assert_eq!(name, "giant rat"),
+        ref other => panic!("expected Entered, got {other:?}"),
+    }
+    let steps = received.lock().unwrap().iter().filter(|l| *l == "n").count();
+    assert_eq!(steps, 1, "the queued second step must never go out");
+}
+
+/// A whiff aimed at us mid-step stops a fighting walk exactly like a
+/// landed blow — run5's kobold thief never connected once across three
+/// rooms, and a guard waiting for CombatHit never fired.
+#[tokio::test]
+async fn a_whiff_behind_the_echo_interrupts_a_fighting_walk() {
+    let (addr, _, received) = scripted_board(vec![(
+        "n",
+        format!(
+            "\r\nn\r\nThe thin giant rat lunges at you!{}",
+            room_block("Inner Ward", "north south")
+        ),
+    )])
+    .await;
+    let session = session_for(addr).await;
+    let n = nav(corridor());
+    let mut guard = mud_client::farm::FarmGuard::new(30, 25, "Farmer");
+
+    let err = tokio::time::timeout(
+        Duration::from_secs(10),
+        n.goto(&session, HERE, FAR, &mut guard),
+    )
+    .await
+    .expect("goto should not hang")
+    .expect_err("the whiff must stop the walk");
+    assert_eq!(err.at, THERE);
+    assert!(
+        matches!(
+            err.kind,
+            mud_client::nav::NavErrorKind::Interrupted(mud_client::nav::Interrupt::Attacked {
+                ..
+            })
+        ),
+        "expected Attacked, got {:?}",
+        err.kind
+    );
+    let steps = received.lock().unwrap().iter().filter(|l| *l == "n").count();
+    assert_eq!(steps, 1);
+}
+
+/// A player walking in is not work: the case rule filters the entry and
+/// the walk completes. Pins the composed behaviour — the parser's
+/// lowercase anchor and the guard's would-attack policy both protect it.
+#[tokio::test]
+async fn a_players_arrival_does_not_interrupt() {
+    let (addr, _, _) = scripted_board(vec![
+        (
+            "n",
+            format!(
+                "\r\nn\r\nKaimon walks into the room from the east.{}",
+                room_block("Inner Ward", "north south")
+            ),
+        ),
+        ("n", format!("\r\nn{}", room_block("Keep", "south"))),
+    ])
+    .await;
+    let session = session_for(addr).await;
+    let n = nav(corridor());
+    let mut guard = fighting_guard();
+
+    let at = tokio::time::timeout(
+        Duration::from_secs(10),
+        n.goto(&session, HERE, FAR, &mut guard),
+    )
+    .await
+    .expect("goto should not hang")
+    .expect("a player's arrival must not stop the walk");
+    assert_eq!(at, FAR);
 }

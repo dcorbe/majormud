@@ -715,19 +715,127 @@ fn a_zero_threshold_never_trips_on_hp() {
 fn nothing_else_is_an_emergency() {
     let mut g = guard(100, 50);
     assert_eq!(g.on_event(&Event::SlowDown), None);
+    // Our own whiff is the defence the walk asked for, not an attack.
     assert_eq!(
         g.on_event(&Event::CombatMiss {
             line: "You swing and miss.".into()
         }),
         None
     );
+    // A bystander's fight names neither "you" nor "your".
+    assert_eq!(
+        g.on_event(&Event::CombatMiss {
+            line: "Poop swipes at kobold thief!".into()
+        }),
+        None
+    );
+    // An entry only matters to a guard that carries the sighting
+    // predicate — without one (recover, the walk home), it is news.
     assert_eq!(
         g.on_event(&Event::ActorEntered {
-            name: "a giant rat".into(),
+            name: "giant rat".into(),
             from: Some("east".into()),
         }),
         None
     );
+}
+
+/// Live incident (run5, 2026-08-01): "acid slime moves into the room
+/// from the north." mid-leg, whiffs only, and the walk kept sending
+/// steps — three rooms of "lunges at you" before the slime gave up.
+/// An entry the bot's own policy would fight has to stop the leg.
+#[test]
+fn a_monster_entering_mid_walk_trips_a_sighting_guard() {
+    let mut g = guard(100, 50).sighting(Bot::new(BotConfig {
+        auto_combat: true,
+        ..BotConfig::default()
+    }));
+    assert_eq!(
+        g.on_event(&Event::ActorEntered {
+            name: "giant rat".into(),
+            from: Some("north".into()),
+        }),
+        Some(Interrupt::Entered {
+            name: "giant rat".into()
+        })
+    );
+    // A spawn ("...from nowhere.") enters with no direction and is just
+    // as much in the room.
+    assert_eq!(
+        g.on_event(&Event::ActorEntered {
+            name: "fat kobold thief".into(),
+            from: None,
+        }),
+        Some(Interrupt::Entered {
+            name: "fat kobold thief".into()
+        })
+    );
+}
+
+/// `fight_while_travelling = false`, the recovery walk, and the walk
+/// home all carry no sighting bot — and must keep walking, exactly as
+/// they ignore what an arrival block lists.
+#[test]
+fn an_entry_without_the_sighting_predicate_changes_nothing() {
+    let entered = Event::ActorEntered {
+        name: "giant rat".into(),
+        from: Some("north".into()),
+    };
+    assert_eq!(guard(100, 50).on_event(&entered), None);
+    assert_eq!(FarmGuard::running(100, 50, "Farmer").on_event(&entered), None);
+}
+
+/// The entry name goes through the same would-attack policy as a
+/// sighted block: players (capitalised) and refused templates are not
+/// fights we start.
+#[test]
+fn a_player_or_refused_entry_does_not_trip() {
+    let mut g = guard(100, 50).sighting(Bot::new(BotConfig {
+        auto_combat: true,
+        ..BotConfig::default()
+    }));
+    assert_eq!(
+        g.on_event(&Event::ActorEntered {
+            name: "Kaimon".into(),
+            from: Some("east".into()),
+        }),
+        None
+    );
+    let refused = mud_client::bot::Refusals::default();
+    refused.lock().unwrap().insert("rat".into());
+    let mut g = guard(100, 50).sighting(Bot::with_refusals(
+        BotConfig {
+            auto_combat: true,
+            ..BotConfig::default()
+        },
+        std::sync::Arc::new(mud_client::bot::ThreatTable::new()),
+        refused,
+    ));
+    assert_eq!(
+        g.on_event(&Event::ActorEntered {
+            name: "thin giant rat".into(),
+            from: Some("east".into()),
+        }),
+        None
+    );
+}
+
+/// A whiff aimed at us proves occupancy exactly like a landed blow —
+/// the stop pump already lives by that rule, and the walk has to agree:
+/// run5's kobold thief lunged across three rooms without connecting
+/// once, so a guard waiting for CombatHit never fired. No attacker name
+/// can be trusted out of per-monster whiff wording, so none is claimed.
+#[test]
+fn a_whiff_at_us_stops_a_fighting_walk() {
+    let whiff = Event::CombatMiss {
+        line: "The fat kobold thief lunges at you with their shortsword!".into(),
+    };
+    match guard(100, 50).on_event(&whiff) {
+        Some(Interrupt::Attacked { .. }) => {}
+        other => panic!("expected Attacked, got {other:?}"),
+    }
+    // The walk home does not fight back, hit or miss alike.
+    assert_eq!(FarmGuard::running(100, 50, "Farmer").on_event(&whiff), None);
 }
 
 /// No latches. The runner may hand the same guard to a resumed leg, and
