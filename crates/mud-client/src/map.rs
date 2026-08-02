@@ -453,8 +453,13 @@ pub struct Marks {
 const ON_ROUTE: &str = "43";
 /// A loop stop: white behind, dark in front.
 const STOP: &str = "47;30";
-/// Where the character stands.
-const HERE: &str = "42";
+/// Where the character stands: a bright green FOREGROUND on whatever the
+/// shell's background already is.
+///
+/// Not a filled background like the other marks. `@` is a unique glyph
+/// and needs no block of colour to be found, and the one cell you look at
+/// most should not be the ugliest thing on the screen.
+const HERE: &str = "1;32";
 
 /// Paint the viewport.
 ///
@@ -536,11 +541,18 @@ struct Ink {
 }
 
 fn ink(fg: &'static str, id: RoomId, marks: &Marks) -> Ink {
+    // Where you stand outranks everything, the warning included. You
+    // already know you are there; red is for rooms you might walk into.
+    if marks.here == Some(id) {
+        return Ink {
+            fg: HERE,
+            bg: "",
+            cursor: false,
+        };
+    }
     Ink {
         fg,
-        bg: if marks.here == Some(id) {
-            HERE
-        } else if marks.stops.contains(&id) {
+        bg: if marks.stops.contains(&id) {
             STOP
         } else if marks.route.contains(&id) {
             ON_ROUTE

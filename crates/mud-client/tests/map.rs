@@ -498,3 +498,58 @@ fn the_cursor_still_marks_a_room_it_stands_on() {
         1
     );
 }
+
+/// "You are here" is a bright foreground on the shell's own background,
+/// not white-on-green. `@` is already a unique glyph, so it needs no
+/// block of colour behind it to be found — and a filled background makes
+/// the one cell you look at most the ugliest thing on the screen.
+#[test]
+fn the_you_are_here_marker_is_a_foreground_not_a_background() {
+    let plane = spokes(&[Direction::East]);
+    let styles = styles(&plane, graph(), spawns(), Paint::Terrain, &PaintCtx::default());
+    let here = plane.room_at((0, 0)).expect("the hub");
+    let marks = Marks {
+        here: Some(here),
+        ..Default::default()
+    };
+    let out = render(&plane, &styles, (-2, -2), (30, 12), Zoom::Normal, &marks);
+    let row = out
+        .iter()
+        .find(|l| mud_client::map::strip_sgr(l).contains('@'))
+        .expect("the marker is drawn");
+    assert!(row.contains("1;32"), "bright green foreground: {row:?}");
+    for bg in ["40", "41", "42", "43", "44", "45", "46", "47"] {
+        assert!(
+            !row.contains(&format!(";{bg}m")) && !row.contains(&format!("[{bg}m")),
+            "no background colour behind the marker ({bg}): {row:?}"
+        );
+    }
+}
+
+/// Standing in a room the palette would otherwise warn about must not
+/// hide you. You already know you are there; the red is for rooms you
+/// might walk into.
+#[test]
+fn the_marker_outranks_even_the_warning() {
+    let plane = layout(graph(), SMALL_CAVERN);
+    let ctx = PaintCtx {
+        no_light_source: true,
+        ..Default::default()
+    };
+    let styles = styles(&plane, graph(), spawns(), Paint::Terrain, &ctx);
+    assert_eq!(
+        styles.get(&SMALL_CAVERN).expect("styled").sgr,
+        "1;31",
+        "the room itself is a warning"
+    );
+    let marks = Marks {
+        here: Some(SMALL_CAVERN),
+        ..Default::default()
+    };
+    let out = render(&plane, &styles, (-2, -2), (30, 12), Zoom::Normal, &marks);
+    let row = out
+        .iter()
+        .find(|l| mud_client::map::strip_sgr(l).contains('@'))
+        .expect("the marker is drawn");
+    assert!(row.contains("1;32"), "still green: {row:?}");
+}
