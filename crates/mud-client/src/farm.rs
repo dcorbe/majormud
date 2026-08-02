@@ -923,6 +923,31 @@ impl StopState {
         if now.duration_since(observed) >= self.recheck {
             return Verdict::Ask;
         }
+        // Money on the floor is swept BEFORE the next fight is picked.
+        //
+        // It used to sit below `has_target`, on the reasoning that a
+        // live monster outranks a finished one's paperwork. That is the
+        // right call for throughput and the wrong one for a character
+        // who is farming to buy something: a kill drops coins, the next
+        // monster is already standing there, and the lap moves on with
+        // the pile still on the floor — or the character dies on the
+        // next fight and the coins die with it.
+        //
+        // An ONGOING fight still outranks this: `engaged` returns Busy
+        // at the top of this function, so nothing here interrupts a
+        // swing already traded. What this reorders is only the choice of
+        // the NEXT target.
+        //
+        // The cost is honest and bounded: one `get` per denomination
+        // while something that has not engaged us is in the room, so a
+        // monster that would have taken a swing gets a round of grace
+        // instead. `LOOT_TRIES` caps the attempts, so a refused sweep
+        // (encumbrance) cannot hold the stop.
+        if let Some(pile) = here.unswept(LOOT_TRIES) {
+            return Verdict::Loot {
+                denom: pile.denom.clone(),
+            };
+        }
         // Asked of the MODEL, not of the block: `seen` above is only
         // the proof that this stop has been observed at all and how
         // long ago. Who is standing here now is `Here`'s answer, and it
@@ -932,24 +957,15 @@ impl StopState {
         if bot.has_target_among(here.aggressive_names()) {
             return Verdict::Busy;
         }
-        // Nothing left to fight, but the board may still be saying what
-        // the last kill dropped. Below `has_target` on purpose: a live
-        // monster outranks a finished one's paperwork.
+        // Nothing left to fight, and the board may still be saying what
+        // the last kill dropped. Below the sweep, above `Empty`: a pile
+        // the model has ALREADY recorded is swept above; this is the
+        // window where the drop line has not landed yet, and leaving on
+        // it would leave money behind.
         if let Some(at) = self.resolving
             && now.duration_since(at) < self.recheck
         {
             return Verdict::Waiting { until: at + self.recheck };
-        }
-        // Work left on the FLOOR, ahead of `Empty` so the two cannot be
-        // confused. Departing with money still lying there used to be
-        // possible: the only thing in the way was `gate.is_idle()`, a
-        // check that the send queue is empty standing in for a check
-        // that the work is done, and a `get` nobody had decided on yet
-        // makes an idle gate.
-        if let Some(pile) = here.unswept(LOOT_TRIES) {
-            return Verdict::Loot {
-                denom: pile.denom.clone(),
-            };
         }
         match self.empty_since {
             Some(since) if now.duration_since(since) >= self.linger => Verdict::Empty,

@@ -2479,3 +2479,57 @@ fn a_surprise_only_run_does_not_read_as_an_overclaim() {
         Some("0 overclaims, 4 surprises")
     );
 }
+
+/// A sweep is scheduled BEFORE the next fight is picked.
+///
+/// The ordering used to be the other way round, on the reasoning that a
+/// live monster outranks a finished one's paperwork. That is right for
+/// throughput and wrong for a character farming to buy something: the
+/// kill drops coins, the next monster is already standing there, and the
+/// lap moves on with the pile still on the floor — or the character dies
+/// on the next fight and the coins die with it.
+#[test]
+fn a_pile_is_swept_before_the_next_target_is_engaged() {
+    let t0 = Instant::now();
+    let mut w = Stop::new(combat_bot(), 0);
+    // Two rats. Kill one; it drops, and the survivor is still listed.
+    w.look_and_see(&block(&["giant rat", "kobold thief"]), t0);
+    w.feed(
+        &Event::Line("The giant rat falls to the ground, dead.".into()),
+        t0,
+    );
+    w.feed(&Event::Line("11 silver drop to the ground.".into()), t0);
+    w.feed(&Event::Line("*Combat Off*".into()), t0);
+
+    assert_eq!(
+        w.verdict(t0),
+        Verdict::Loot {
+            denom: "silver".into()
+        },
+        "the coins come first; the thief is still there and will keep"
+    );
+
+    w.feed(&Event::Line("You picked up 11 silver nobles".into()), t0);
+    assert_eq!(
+        w.verdict(t0),
+        Verdict::Busy,
+        "swept, so now take the fight"
+    );
+}
+
+/// The reorder must not reach into a fight already in progress: a swing
+/// traded is not interrupted to pick up money.
+#[test]
+fn an_ongoing_fight_still_outranks_the_floor() {
+    let t0 = Instant::now();
+    let mut w = Stop::new(combat_bot(), 0);
+    w.look_and_see(&block(&["giant rat"]), t0);
+    // Engaged, and coins are lying there from something earlier.
+    w.feed(&Event::Line("11 silver drop to the ground.".into()), t0);
+    assert!(w.bot.engaged().is_some(), "the bot took the fight");
+    assert_eq!(
+        w.verdict(t0),
+        Verdict::Busy,
+        "money never interrupts a swing already traded"
+    );
+}
