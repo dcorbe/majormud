@@ -1,0 +1,273 @@
+# Interactive map, room dossiers, and a portable loop format — design (2026-08-02)
+
+Base: `main` at 466fc86. Client-only; no `mud-core` or `mud-server` changes.
+
+`/go` proved that the client knowing the world graph is worth a lot: you type a room
+name and the navigator walks you there. Everything *above* that — deciding **where** to
+farm, **what** lives there, **which circuit** to walk — still happens in the operator's
+head and lands in the profile as a hand-typed `[farm].circuit` of `map/room` strings.
+There is no way to see the world, no way to see what a room spawns without querying
+sqlite by hand, and no way to keep a library of routes.
+
+This adds a room **dossier**, an **interactive map** you scroll around to pick stops
+with the route drawn in, and a **loop file format** that is hand-editable, mmc-first,
+and can import MegaMud `.mp` paths.
+
+## Evidence
+
+Both findings were verified against `re/mmud_wgnt.sqlite` while planning.
+
+### 1. "What spawns here" is a static query
+
+The room row carries `monstertype` (spawn region), `minindex`/`maxindex` (level band),
+`bynumber` (forced monster) and `type` (spawn behaviour). The candidate list is:
+
+```sql
+SELECT * FROM monster
+ WHERE "group" = room.monstertype
+   AND "index" BETWEEN room.minindex AND room.maxindex
+```
+
+Checked: `1/2156 Small Cavern` (monstertype 6, band 66..66) → `cave bear` (group 6,
+index 66). `1/1072 Slum Entrance` (monstertype 5, band 1..1) → `guardsman`.
+
+Field meanings from `re/docs/monsters.md` §1 — `room+0x560` region, `+0x462`/`+0x464`
+level band, `+0x468` forced monster, `+0x43c` spawn type (0 = timed ~4 % per 5 s kick,
+2 = timed ~89 %, 3 = swarm, 1 = boot-fill only). Aggression is the `follow` column, a
+0–100 rating (`mon+0x108`, §4 table at line 266); guardsman 90, kobold slave 10, kobold
+thief 20. The behaviour mode is `something3` (`mon+0x12c`), where 0 and 4 are unprovoked
+and everything else initiates.
+
+**ORACLE-OPEN:** the behaviour-mode reading is from the decompile, not from live play.
+Guardsman comes out as mode 1 = "initiates" although guardsmen only attack criminals, so
+the mode almost certainly gates on fame or legal status somewhere untraced. The danger
+palette below is therefore provisional until live-checked.
+
+### 2. MegaMud's room ID is a checksum, not an identity
+
+`docs/mirrors/gitlab-beckersource-OmegaMUD/src/mega/OMUD_MEGA.java` specifies it: 3 hex
+digits of a room-name hash (Σ char × 1-based position, last 3 hex digits of the sum)
+followed by 5 nibbles of exit signature (`u_d`, `se_sw`, `ne_nw`, `e_w`, `n_s`; first
+direction of each pair = 1, second = 4, doubled for a door).
+
+Computed over all 26k rooms and tested against the 156 mirrored `.mp` files in
+`docs/mirrors/megamud.net/www.megamud.net/paths/`. On a sample of 18 loops:
+
+| outcome | count |
+|---|---|
+| start room resolves uniquely | 10 |
+| walks end-to-end on our graph | 6 |
+| every step hash also matches | 1 |
+
+`A0700050` alone matches 38 rooms; 8,312 distinct IDs cover 26k rooms. The failures are
+not parser bugs — `delfcity.mp`, `elfloop.mp`, `madwloop.mp` start in rooms that do not
+exist in stock 1.11p, because those are other realms' custom maps.
+
+So the importable core of a `.mp` is **"start here, then walk these directions"**, and
+the per-step hashes are a *verification* signal saying where a foreign path diverges
+from our world. The divergence report is the feature.
+
+### 3. Plane sizes
+
+Splitting the world at vertical exits gives **1,207 planes, median 8 rooms**; the
+largest is **4,490 rooms in a 166 × 152 cell extent with 26–66 coordinate conflicts**
+(~1 %). Grid layout from the exit graph is sound — `re/slum_map.py` already closes 160
+slum rooms with zero conflicts. A whole-plane BFS is microseconds, so the layout is not
+radius-bounded; a radius would put a wall in the middle of the thing being scrolled.
+
+## Decisions
+
+| Decision | Choice |
+|---|---|
+| Where the map lives | In-client, full alternate screen, entered with `/map` |
+| Interaction | Scroll a cursor around, mark stops, route drawn in gold |
+| Loop model | Stops, routed by the existing `route()`, with optional `via` to force a leg |
+| Loop storage | `~/.config/mmc/loops/<name>.toml`, one loop per file; profile never rewritten |
+| Deferred | `/where <monster>` reverse lookup |
+
+Full-screen means being blind to the board while planning, so the view bounces out on a
+death or an HP-gate trip, and Ctrl-Q still quits. Board bytes are buffered while the map
+is up and flushed into the scroll region on exit.
+
+## Loop file format
+
+One loop per file at `~/.config/mmc/loops/<name>.toml`. A directory rather than one
+library file, because importing somebody's path pack means dropping files in.
+
+```toml
+name   = "slum-sweep"
+note   = "guardsmen, lvl 5+"
+world  = "mmud-1.11p"
+origin = "mmc"                 # or "megamud:slm2loop.mp"
+
+[[stop]]
+at   = "1/1076"
+name = "Slum Street, Crossroads"
+
+[[stop]]
+at   = "1/1123"
+name = "Slum Street, Intersection"
+rest = false                   # don't rest here
+
+[[stop]]
+at    = "1/1195"
+name  = "Dark Alley"
+light = true                   # needs a light source
+via   = "w w s"                # force this leg instead of routing it
+
+finish = "1/1072"              # park here when the run stops
+```
+
+`name` on a stop is a real optional key rather than a trailing comment: a comment
+cannot survive a TOML round-trip and cannot be verified, a key can. On load a `name`
+that disagrees with the graph is a loud warning naming both — that is what catches a
+loop written against a different realm. Omitting it is legal.
+
+`rest`, `light`, `fight` are the MegaMud step flags mmc can act on (`0002`/`0004` rest,
+`0001`/`0009` dark, `0040` don't-attack). Flags it cannot act on (stash point, disarm
+trap, pick lock, re-learn) are **not** stored — they would be dead fields — but the
+import summary lists every one it dropped.
+
+## Slices
+
+### 1. Spawn dossier — `spawn.rs` (new), `/room`
+
+- `SpawnTable::load(&Path)` reads `monster` once into `group → index → Vec<Template>`,
+  same shape and read-only-open style as `RoomGraph::load_threat` (`graph.rs:189`).
+- `GraphRoom` gains the spawn columns (`type`, `monstertype`, `minindex`, `maxindex`,
+  `bynumber`, `shopnum`), loaded in the existing single `SELECT` (`graph.rs:73`) —
+  extra columns there are free, a second query is not.
+- `Dossier::of(graph, spawns, id)`: name, id, light, spawn behaviour, level band,
+  candidates with exp/hp/level/alignment/`gamelimit`/aggression/initiates, exits
+  including `ExitEdge::command` phrases, shop number. One renderer,
+  `Dossier::lines()`, shared by `/room`, the map panel and the danger paint mode.
+- `/room [id|name]` in `tui::slash`, defaulting to `here`, resolving names through
+  `go::resolve` so ambiguity reporting is already solved.
+
+### 2. Layout engine — `map.rs` (new), non-interactive `/map`
+
+- `layout(graph, center) -> Plane`: BFS over the centre's plane, one grid cell per
+  compass exit. Returns cell→room, extent, and the conflict list.
+- Up/down and map-portals do not move the cursor in-plane. A plane is `(map, z)`; only
+  the centre's plane is drawn, and rooms with a vertical or cross-map exit carry a
+  marker.
+- A cell whose wanted position is occupied is **not placed**; the source room is marked
+  as having an undrawn link. Never silently overlap.
+- `render(plane, view, zoom, paint)` is viewport-clipped, so cost tracks the terminal.
+
+**Zoom** (`+`/`-`), cell footprint in characters:
+
+| zoom | cell | shows | 4,490-room plane |
+|---|---|---|---|
+| detail | 4 × 2 | glyph, `───` `│` `╲` `╱` connectors, door and vertical marks | 664 × 304 |
+| normal (default) | 2 × 1 | glyph plus one horizontal connector char | 332 × 152 |
+| overview | 1 × 1 | one coloured glyph per room | 166 × 152 |
+
+A half-block level (1 × ½, `▀` carrying two rooms per character row, 166 × 76) is
+deliberately out of scope until overview proves too tall.
+
+**Scrolling.** Arrows/`hjkl` move the cursor, viewport following at a two-cell margin;
+Shift-arrows/`HJKL` pan a screenful without moving the cursor; `Home` recentres; `/`
+searches by name. The panel shows `view (x,y) of WxH`.
+
+**Colour** (`m` cycles). Route, stop and you-are-here always override the mode.
+
+| mode | meaning |
+|---|---|
+| terrain (default) | `1;30` needs light, `1;36` shop, `0;37` otherwise |
+| danger | `1;35` spawns something that initiates, `0;35` unprovoked only, plain none |
+| band | spawn level band on green → cyan → yellow → red, relative to your level |
+
+Bright magenta is the exact SGR the board paints an aggressive monster in
+(`bot.rs:234`, `events.rs:45`), so "kill me" means the same thing in both places.
+Overlays: `1;33` gold on-route, bright white reverse for a stop, `1;32` for you.
+
+### 3. Interactive view — `mapview.rs` (new)
+
+`async fn run(...)` called from `play`'s `/map` arm; owns the terminal until it returns.
+
+- Alternate screen; on exit restore, `setup_region`, flush buffered board bytes,
+  repaint.
+- Keep draining `raw_rx` into a buffer (so the broadcast never lags) and `events` (so
+  the assist and exp meter keep working).
+- Beyond slice 2's keys: Tab jumps to the next room, `<`/`>` follow a vertical exit to
+  that plane, `g` leaves and starts a `/go` to the cursor room, `q`/Esc leave, Ctrl-Q
+  quits. Zoom, paint mode and viewport persist for the session.
+- Right panel is `Dossier::lines()` for the cursor room.
+- Bounce out and restore on a death event or an HP-gate trip.
+- `mmc map --content <db> --at <map/room>` in `cli.rs`: the view needs the graph, not a
+  connection, so offline planning between sessions is nearly free.
+
+### 4. Loop library — `loops.rs` (new)
+
+- `Loop`, `Stop` serde types; `load_dir`, `load`, `save`.
+- `Loop::to_farm(&self, base)` fills `circuit`/`finish_at`, then validates with the
+  existing `CircuitPlan::build` (`farm.rs:217`) so every leg is proven walkable before a
+  file is written. Failure is refused with the planner's own error.
+- Route highlight: for each consecutive stop pair plus the closing pair, `route()`, then
+  replay the directions marking every room passed. A leg leaving the visible plane is
+  marked at its departure room rather than drawn.
+- Map keys: Enter/Space toggles a stop, `c` clears, `s` names and saves.
+- `/loop list|show|load|drop`, `/farm <name>`. `[farm].circuit` stays the unnamed
+  default; nothing rewrites the profile.
+
+### 5. MegaMud import — `mega.rs` (new)
+
+- `room_id(name, exits)` per `OMUD_MEGA.java`, plus an `Index` from id → candidates.
+- `parse_mp`: tolerate CRLF, the optional `[name][author]` line, the optional
+  `[PREFIX:Group:Node]` lines, and the `start:end:count:-1:gold::` header. Real mirrored
+  files omit the group lines entirely.
+- `import(graph, mp) -> (Loop, Report)`: resolve the start by hash (unique → take it,
+  ambiguous → list candidates, unknown → fail naming the hash), replay the directions,
+  verify each step's hash. One stop per step with `via` = that direction, consecutive
+  duplicates collapsed.
+- `Report`: steps walked of steps present, where it diverged, hash mismatches, flags
+  dropped.
+- `/loop import <file>` and `mmc loop import <file>`.
+
+## Files
+
+New under `crates/mud-client/src/`: `spawn.rs`, `map.rs`, `mapview.rs`, `loops.rs`,
+`mega.rs`. Modified: `graph.rs` (spawn columns), `tui.rs` (slash verbs, the `/map` arm),
+`cli.rs` (subcommands), `lib.rs`. Unchanged on purpose: `farm.rs`, `nav.rs`, `go.rs` —
+this work consumes `travel`, `route`, `CircuitPlan` and `resolve` rather than growing
+parallel copies.
+
+## Verification
+
+Unit and corpus tests in `crates/mud-client/tests/`:
+
+- `spawn.rs` — `1/2156` → cave bear (100 exp, 50 hp, gamelimit 1), `1/1072` →
+  guardsman, a `bynumber` room, a room with no spawn.
+- `map.rs` — the Slum Entrance plane reports its conflicts rather than swallowing them;
+  the largest plane is 4,490 rooms in 166 × 152 (a guard on the layout rule itself); a
+  vertical exit consumes no grid cell; at every zoom the render never exceeds the
+  terminal and a viewport at the extent edge clips instead of panicking; danger paint
+  is `1;35` for an initiating spawn and dim magenta for unprovoked-only.
+- `loops.rs` — TOML round-trip; a `name` disagreeing with the graph warns; an
+  unwalkable stop list is refused by `CircuitPlan`.
+- `mega.rs` — corpus over the mirrored `.mp` files asserting the measured baseline
+  (`slm2loop.mp` start → `1/1076`; `rocsloop.mp` walks 72/72 with every hash matching;
+  `elfloop.mp` fails with "start room not in this world"). This locks in the honest
+  numbers rather than pretending import is total.
+
+Live, in the existing tmux session, on Salad:
+
+1. `/room` in a known room; check the dossier against what actually spawns.
+2. `/map`, zoom to overview, pan a screenful, zoom back and confirm the cursor held;
+   scroll to Small Cavern and confirm the vertical marker and plane hop.
+3. Danger paint in a slum street, checked against what actually attacks — this is the
+   test that settles the ORACLE-OPEN behaviour-mode reading above.
+4. Mark 3 slum stops, watch the gold route appear, save, read the file.
+5. `/farm slum-sweep` walks exactly those stops.
+6. `/loop import .../rocsloop.mp`, read the report, `/map` it and eyeball the route.
+7. The map bounces out on an HP-gate trip.
+
+Board etiquette: `board-safe-to-restart` before any restart, and the spawner drains in
+1–2 h, so restart immediately before a field run.
+
+## Follow-on, not in this plan
+
+`/where <monster|item>` — reverse index over the spawn table ranked by
+`RoomGraph::distances`, and the `/spots exp>N within M steps not-dark` filter it
+enables.
