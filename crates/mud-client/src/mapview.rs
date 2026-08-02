@@ -586,6 +586,15 @@ impl Screen {
             crossterm::terminal::EnterAlternateScreen,
             crossterm::cursor::Hide
         )?;
+        // Clear the scroll margins. The alternate screen INHERITS the
+        // DECSTBM region `tui::play` set for the board's passthrough, so
+        // without this every frame scrolls inside those margins and the
+        // top row is eaten (live, 2026-08-02 — invisible offline, where
+        // no margins are ever set). `play` re-establishes its own region
+        // when the map hands the terminal back.
+        let mut out = std::io::stdout();
+        std::io::Write::write_all(&mut out, b"\x1b[r")?;
+        std::io::Write::flush(&mut out)?;
         Ok(Screen)
     }
 }
