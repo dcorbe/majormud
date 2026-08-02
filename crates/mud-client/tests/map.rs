@@ -325,3 +325,122 @@ fn a_dark_room_warns_only_when_nothing_can_light_it() {
     let ok = styles(&p, graph(), spawns(), Paint::Terrain, &lit);
     assert_ne!(ok.get(&SMALL_CAVERN).expect("styled").sgr, "1;31");
 }
+
+// --- connectors must not lie, 2026-08-02 ------------------------------
+
+/// A hub with a neighbour in each of the given directions.
+fn spokes(dirs: &[Direction]) -> Plane {
+    use mud_client::graph::{ExitEdge, GraphRoom};
+    let centre = RoomId { map: 1, room: 100 };
+    let mut hub = GraphRoom {
+        name: "Hub".into(),
+        ..Default::default()
+    };
+    let mut rooms = Vec::new();
+    for (n, dir) in dirs.iter().enumerate() {
+        let id = RoomId {
+            map: 1,
+            room: n as u16 + 1,
+        };
+        hub.exits[*dir as usize] = Some(ExitEdge {
+            dest: id,
+            exit_type: 0,
+            command: None,
+        });
+        rooms.push((
+            id,
+            GraphRoom {
+                name: format!("Spoke {n}"),
+                ..Default::default()
+            },
+        ));
+    }
+    rooms.push((centre, hub));
+    layout(&RoomGraph::from_rooms(rooms), centre)
+}
+
+fn drawn(plane: &Plane, zoom: Zoom) -> String {
+    let styles = styles(plane, graph(), spawns(), Paint::Terrain, &PaintCtx::default());
+    render(plane, &styles, (-3, -3), (40, 20), zoom, &Marks::default())
+        .iter()
+        .map(|l| mud_client::map::strip_sgr(l))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Every compass link has to be visible at the zooms that draw
+/// connectors.
+///
+/// Normal used to be 2x1 — one row per cell — which left no row BETWEEN
+/// rows for a vertical to occupy, so north/south and all four diagonals
+/// were silently undrawable and every room appeared joined east-west
+/// only. A map that shows the wrong connections is worse than one that
+/// shows none (reported live, 2026-08-02).
+#[test]
+fn every_compass_direction_is_drawn_at_the_connector_zooms() {
+    for zoom in [Zoom::Detail, Zoom::Normal] {
+        for (dirs, glyph, what) in [
+            (vec![Direction::East], '\u{2500}', "east"),
+            (vec![Direction::West], '\u{2500}', "west"),
+            (vec![Direction::North], '\u{2502}', "north"),
+            (vec![Direction::South], '\u{2502}', "south"),
+            (vec![Direction::SouthEast], '\u{2572}', "south-east"),
+            (vec![Direction::NorthWest], '\u{2572}', "north-west"),
+            (vec![Direction::NorthEast], '\u{2571}', "north-east"),
+            (vec![Direction::SouthWest], '\u{2571}', "south-west"),
+        ] {
+            let frame = drawn(&spokes(&dirs), zoom);
+            assert!(
+                frame.contains(glyph),
+                "{zoom:?} drew no {what} connector:\n{frame}"
+            );
+        }
+    }
+}
+
+/// Both diagonals of a square share its centre character, so one used to
+/// overwrite the other and was invisible everywhere. Crossed is the
+/// honest answer.
+#[test]
+fn two_diagonals_through_one_cell_are_drawn_crossed() {
+    for zoom in [Zoom::Detail, Zoom::Normal] {
+        let frame = drawn(&spokes(&[Direction::SouthEast, Direction::East]), zoom);
+        // The hub's SE and the east neighbour's SW meet in one character.
+        assert!(
+            frame.contains('\u{2573}') || frame.contains('\u{2572}'),
+            "{zoom:?}:\n{frame}"
+        );
+        let all = drawn(
+            &spokes(&[
+                Direction::North,
+                Direction::South,
+                Direction::East,
+                Direction::West,
+                Direction::NorthEast,
+                Direction::NorthWest,
+                Direction::SouthEast,
+                Direction::SouthWest,
+            ]),
+            zoom,
+        );
+        assert!(all.contains('\u{2573}'), "{zoom:?} never crossed:\n{all}");
+    }
+}
+
+/// Overview is one character per room and draws no connectors at all.
+/// That is honest — it says nothing rather than something false.
+#[test]
+fn overview_draws_no_connectors_rather_than_misleading_ones() {
+    let frame = drawn(
+        &spokes(&[
+            Direction::North,
+            Direction::East,
+            Direction::SouthEast,
+            Direction::NorthWest,
+        ]),
+        Zoom::Overview,
+    );
+    for glyph in ['\u{2500}', '\u{2502}', '\u{2572}', '\u{2571}', '\u{2573}'] {
+        assert!(!frame.contains(glyph), "overview drew a connector:\n{frame}");
+    }
+}

@@ -391,7 +391,14 @@ fn warns(d: &Dossier, ctx: &PaintCtx) -> bool {
 pub enum Zoom {
     /// 4 x 2 characters per cell: glyphs, connectors and door marks.
     Detail,
-    /// 2 x 1: glyphs and a horizontal connector. The default.
+    /// 2 x 2: glyphs and every connector, at half Detail's width. The
+    /// default.
+    ///
+    /// Two rows per cell is not cosmetic. A one-row cell leaves no row
+    /// BETWEEN rows for a vertical to occupy, so north/south and all four
+    /// diagonals become undrawable and every room looks joined
+    /// east-west — which is what this zoom did until somebody opened it
+    /// on a real map and said so (2026-08-02).
     Normal,
     /// 1 x 1: one glyph per room. Fits the widest plane (166 cells) on
     /// any wide terminal.
@@ -402,7 +409,7 @@ impl Zoom {
     pub fn cell(self) -> (usize, usize) {
         match self {
             Zoom::Detail => (4, 2),
-            Zoom::Normal => (2, 1),
+            Zoom::Normal => (2, 2),
             Zoom::Overview => (1, 1),
         }
     }
@@ -542,6 +549,8 @@ fn connectors(
     fg: &'static str,
 ) {
     let (col, row) = at;
+    let (cw, ch) = zoom.cell();
+    let (cw, ch) = (cw as i64, ch as i64);
     // A connector belongs to the room it leaves, so it takes that room's
     // foreground and none of its marks: gold behind a stop must not bleed
     // down the street.
@@ -549,35 +558,56 @@ fn connectors(
         fg,
         ..Default::default()
     };
-    for (dir, step) in COMPASS {
+    // Geometry from the cell size rather than per-zoom arms: the rules
+    // are the same shape at every scale, and writing them twice is how
+    // one of them ends up missing a direction.
+    let half = cw / 2;
+    for (_dir, step) in COMPASS {
         if plane.room_at((cell.0 + step.0, cell.1 + step.1)).is_none() {
             continue;
         }
-        match (zoom, dir) {
-            // Normal has one row per cell, so only the horizontals fit.
-            (Zoom::Normal, Direction::East) => put(buf, col + 1, row, '\u{2500}', sgr),
-            (Zoom::Normal, Direction::West) => put(buf, col - 1, row, '\u{2500}', sgr),
-            (Zoom::Normal, _) => {}
-            (Zoom::Detail, Direction::East) => {
-                for dx in 1..4 {
-                    put(buf, col + dx, row, '\u{2500}', sgr);
+        let (dx, dy) = (step.0 as i64, step.1 as i64);
+        match (dx, dy) {
+            // Horizontal: fill the gap between the two glyphs.
+            (_, 0) => {
+                for n in 1..cw {
+                    link(buf, col + dx * n, row, '\u{2500}', sgr);
                 }
             }
-            (Zoom::Detail, Direction::West) => {
-                for dx in 1..4 {
-                    put(buf, col - dx, row, '\u{2500}', sgr);
-                }
+            // Vertical and diagonal both need a row between rows.
+            _ if ch < 2 => {}
+            (0, _) => link(buf, col, row + dy, '\u{2502}', sgr),
+            _ => {
+                // `╲` runs NW-SE, `╱` runs NE-SW.
+                let glyph = if dx == dy { '\u{2572}' } else { '\u{2571}' };
+                link(buf, col + dx * half, row + dy, glyph, sgr);
             }
-            (Zoom::Detail, Direction::South) => put(buf, col, row + 1, '\u{2502}', sgr),
-            (Zoom::Detail, Direction::North) => put(buf, col, row - 1, '\u{2502}', sgr),
-            (Zoom::Detail, Direction::SouthEast) => put(buf, col + 2, row + 1, '\u{2572}', sgr),
-            (Zoom::Detail, Direction::NorthWest) => put(buf, col - 2, row - 1, '\u{2572}', sgr),
-            (Zoom::Detail, Direction::SouthWest) => put(buf, col - 2, row + 1, '\u{2571}', sgr),
-            (Zoom::Detail, Direction::NorthEast) => put(buf, col + 2, row - 1, '\u{2571}', sgr),
-            (Zoom::Detail, _) => {}
-            (Zoom::Overview, _) => {}
         }
     }
+}
+
+/// Write a connector, crossing it with whatever is already there.
+///
+/// On a square grid the SE link out of one cell and the SW link out of
+/// its eastern neighbour land on the SAME character: both are the centre
+/// of the same square. Plain overwriting meant one diagonal always won
+/// and the other was invisible everywhere. `╳` says both are real.
+fn link(buf: &mut [Vec<(char, Ink)>], x: i64, y: i64, glyph: char, ink: Ink) {
+    let here = peek(buf, x, y);
+    let glyph = match (here, glyph) {
+        (Some('\u{2572}'), '\u{2571}') | (Some('\u{2571}'), '\u{2572}') => '\u{2573}',
+        (Some('\u{2573}'), _) => '\u{2573}',
+        _ => glyph,
+    };
+    put(buf, x, y, glyph, ink);
+}
+
+fn peek(buf: &[Vec<(char, Ink)>], x: i64, y: i64) -> Option<char> {
+    let (rows, cols) = (buf.len() as i64, buf.first().map_or(0, Vec::len) as i64);
+    if x < 0 || y < 0 || x >= cols || y >= rows {
+        return None;
+    }
+    Some(buf[y as usize][x as usize].0)
 }
 
 /// One buffer row as an escaped string, one SGR change per run.

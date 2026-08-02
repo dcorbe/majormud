@@ -204,9 +204,19 @@ import summary lists every one it dropped.
 
 | zoom | cell | shows | widest plane (160 × 157) |
 |---|---|---|---|
-| detail | 4 × 2 | glyph, `───` `│` `╲` `╱` connectors | 640 × 314 |
-| normal (default) | 2 × 1 | glyph plus one horizontal connector char | 320 × 157 |
-| overview | 1 × 1 | one coloured glyph per room | 160 × 157 |
+| detail | 4 × 2 | glyph and every connector, widely spaced | 640 × 314 |
+| normal (default) | 2 × 2 | glyph and every connector, compact | 320 × 314 |
+| overview | 1 × 1 | one coloured glyph per room, no connectors | 160 × 157 |
+
+**A cell must be two rows tall to draw connectors honestly.** Normal was 2 × 1 until
+a live look at the slums showed every room joined east-west and nothing else: with one
+row per cell there is no row *between* rows for a `│` to occupy, so north, south and all
+four diagonals were undrawable. Overview draws no connectors at all, which is honest —
+it says nothing rather than something false.
+
+Both diagonals of a square share its centre character (the SE link out of one cell and
+the SW link out of its eastern neighbour are the same position), so a crossing is drawn
+`╳` rather than letting one silently overwrite the other.
 
 Overview fits the widest plane on a 160-column terminal and still scrolls vertically. A
 half-block level (1 × ½, `▀` carrying two rooms per character row, 160 × 79) is
