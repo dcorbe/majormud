@@ -444,3 +444,57 @@ fn overview_draws_no_connectors_rather_than_misleading_ones() {
         assert!(!frame.contains(glyph), "overview drew a connector:\n{frame}");
     }
 }
+
+/// The cursor has to be visible even standing on nothing.
+///
+/// It used to be painted only as part of drawing a ROOM, and empty cells
+/// are skipped entirely — so cursoring off the rooms made the cursor
+/// disappear and there was no way to tell where it had got to. Moving
+/// across a gap between two streets is an ordinary thing to do
+/// (reported live, 2026-08-02).
+#[test]
+fn the_cursor_is_visible_on_an_empty_cell() {
+    let plane = spokes(&[Direction::East]);
+    let styles = styles(&plane, graph(), spawns(), Paint::Terrain, &PaintCtx::default());
+    // (0, -5) is well clear of the two rooms at (0,0) and (1,0).
+    let empty = (0, -5);
+    assert_eq!(plane.room_at(empty), None, "the test cell must be empty");
+    let marks = Marks {
+        cursor: Some(empty),
+        ..Default::default()
+    };
+    let out = render(&plane, &styles, (-2, -7), (30, 16), Zoom::Normal, &marks);
+    let reversed = out.iter().filter(|l| l.contains(";7m") || l.contains("[7m")).count();
+    assert_eq!(reversed, 1, "exactly one row carries the cursor:\n{out:#?}");
+
+    // And it is where the cursor actually is, not merely somewhere.
+    let (cw, ch) = Zoom::Normal.cell();
+    let row = ((empty.1 - -7) as usize) * ch;
+    let col = ((empty.0 - -2) as usize) * cw;
+    assert!(
+        out[row].contains(";7m") || out[row].contains("[7m"),
+        "row {row} should hold the cursor: {:?}",
+        out[row]
+    );
+    assert_eq!(
+        mud_client::map::strip_sgr(&out[row]).chars().count(),
+        col + 1,
+        "the cursor block is the last painted character on its row"
+    );
+}
+
+/// On a room it still reverses the room, as it always did.
+#[test]
+fn the_cursor_still_marks_a_room_it_stands_on() {
+    let plane = spokes(&[Direction::East]);
+    let styles = styles(&plane, graph(), spawns(), Paint::Terrain, &PaintCtx::default());
+    let marks = Marks {
+        cursor: Some((0, 0)),
+        ..Default::default()
+    };
+    let out = render(&plane, &styles, (-2, -2), (30, 12), Zoom::Normal, &marks);
+    assert_eq!(
+        out.iter().filter(|l| l.contains(";7m") || l.contains("[7m")).count(),
+        1
+    );
+}

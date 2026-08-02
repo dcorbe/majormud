@@ -504,8 +504,21 @@ pub fn render(
                     _ => style.glyph,
                 },
             };
-            put(&mut buf, col, row, glyph, ink(style.sgr, id, (gx, gy), marks));
+            put(&mut buf, col, row, glyph, ink(style.sgr, id, marks));
         }
+    }
+
+    // The cursor last, and unconditionally. It used to be painted only
+    // as part of drawing a room, and empty cells are skipped — so
+    // cursoring into the gap between two streets made it vanish with no
+    // way to tell where it had gone. Standing on nothing is an ordinary
+    // thing for a cursor to do, and it still has to be somewhere.
+    if let Some(cell) = marks.cursor {
+        let col = (cell.0 - view.0) as i64 * cw as i64;
+        let row = (cell.1 - view.1) as i64 * ch as i64;
+        let (glyph, mut ink) = read(&buf, col, row).unwrap_or((' ', Ink::default()));
+        ink.cursor = true;
+        put(&mut buf, col, row, glyph, ink);
     }
 
     buf.into_iter().map(emit).collect()
@@ -522,7 +535,7 @@ struct Ink {
     cursor: bool,
 }
 
-fn ink(fg: &'static str, id: RoomId, cell: Cell, marks: &Marks) -> Ink {
+fn ink(fg: &'static str, id: RoomId, marks: &Marks) -> Ink {
     Ink {
         fg,
         bg: if marks.here == Some(id) {
@@ -534,7 +547,9 @@ fn ink(fg: &'static str, id: RoomId, cell: Cell, marks: &Marks) -> Ink {
         } else {
             ""
         },
-        cursor: marks.cursor == Some(cell),
+        // Not the cursor: `render` paints that last, so that it lands on
+        // empty cells too.
+        cursor: false,
     }
 }
 
@@ -612,11 +627,15 @@ fn link(buf: &mut [Vec<(char, Ink)>], x: i64, y: i64, glyph: char, ink: Ink) {
 }
 
 fn peek(buf: &[Vec<(char, Ink)>], x: i64, y: i64) -> Option<char> {
+    read(buf, x, y).map(|(c, _)| c)
+}
+
+fn read(buf: &[Vec<(char, Ink)>], x: i64, y: i64) -> Option<(char, Ink)> {
     let (rows, cols) = (buf.len() as i64, buf.first().map_or(0, Vec::len) as i64);
     if x < 0 || y < 0 || x >= cols || y >= rows {
         return None;
     }
-    Some(buf[y as usize][x as usize].0)
+    Some(buf[y as usize][x as usize])
 }
 
 /// One buffer row as an escaped string, one SGR change per run.
