@@ -10,8 +10,9 @@ The automated MajorMUD client. One engine, four uses:
 | `mmc farm --profile P` | Walk a patrol circuit, farming each stop |
 
 `mmc play` is **never paced** — see [`pace_ms`](#pace_ms). It can also
-start a farm run on the session you are already sitting in: type
-**`/farm`**, and **Ctrl-F** takes the keyboard back. `mmc farm`
+drive the session you are already sitting in: type **`/farm`** to patrol
+or **`/go <room>`** to travel, and **Ctrl-F** takes the keyboard back.
+`mmc farm`
 prints a live feed by default — where the character is, what
 it is fighting, what it killed, and HP whenever it changes. The feed is the **full transcript** — everything the board sends;
 `--brief` cuts it to notable lines only (arrivals, combat, kills, flood
@@ -240,13 +241,63 @@ If you are ever stuck on one of these screens with no way to drive it,
 `player+0x6e2`/`+0x6fa` before the stat screen ever opens, so abandoning
 it loses nothing and `train stats` can be re-entered later.
 
-## Farming from inside `play`
+## Driving from inside `play`
 
 `/farm` starts the patrol on the session you are already connected to,
 and **Ctrl-F** stops it and hands the keyboard back. That is the reason
 to want it: when a run does something you dislike you take over in one
 keystroke, already connected and already where the character is, instead
 of killing the process and logging in again while it stands in a lair.
+
+### `/go <room>` — travel
+
+`/go` walks the character from wherever it is standing to any room, and
+Ctrl-F takes the keyboard back from it too. **There is one job slot**: a
+`/go` and a `/farm` cannot run at once, because each owns the connection
+outright (one sender, see below).
+
+The target is a room id or a room name:
+
+```
+/go 1/2324          the id, always unambiguous
+/go Grungy Shop     one match, so it walks
+/go Slum Street     152 matches, so it refuses and lists the nearest five
+```
+
+Names are matched exactly first (ignoring case), then as a substring —
+prefix matching would be useless here, because MajorMUD names are
+area-prefixed (`Newhaven, Narrow Road`) and the fragment anyone
+remembers is the tail. An ambiguous name is never a guess: `/go` prints
+the nearest candidates with their ids and step counts and waits to be
+asked again.
+
+**Walk versus run is the `/bot` toggle**, not a second command:
+
+| `/bot` | Behaviour |
+|---|---|
+| on | **Walk** — stops for anything the bot would attack or loot, clears the room, resumes |
+| off | **Run** — keeps moving, engages only when the board refuses the move |
+
+Run mode still fights, and has to: the board answers a move with *"You
+may not enter that room while in combat"*, so a walk that would never
+fight is a walk that stays stuck wherever something picked a fight. What
+`/bot off` buys is that whiffs, passing monsters and floor loot no longer
+stop the leg. After three interruptions the walk gives up and reports the
+room it is standing in.
+
+Two deliberate differences from `/farm`, both because this answers a
+keystroke rather than running unattended:
+
+- **No departure gate.** A farm rests to 80% before setting off; `/go`
+  leaves immediately. Inheriting that gate would make a post-death `/go`
+  sit silently resting for up to two minutes before its first step.
+- **No door bashing.** `open` is still tried and still free, so ordinary
+  closed doors are no obstacle; a *locked* one fails loudly instead of
+  grinding sixty failed bashes. Type `bash <dir>` yourself.
+
+`/go` needs the room database. The default path is **relative**
+(`re/mmud_wgnt.sqlite`), so a `play` started outside the repo root will
+refuse — and say which path it tried.
 
 While the runner drives, the line editor is **locked** except for Ctrl-F
 and Ctrl-Q. This is not politeness — `Gate` is built on being the only

@@ -316,14 +316,14 @@ async fn typing_reaches_the_board_during_a_farm_run() {
 }
 
 #[tokio::test]
-async fn ctrl_f_still_takes_the_keyboard_back() {
+async fn ctrl_f_takes_the_keyboard_back_from_any_job() {
     let (addr, _) = capture_board().await;
     let session = session_to(addr).await;
     let mut editor = InputEditor::new();
     let mut passthrough = false;
     assert!(matches!(
         handle_key(&ctrl('f'), &mut editor, &session, &mut passthrough, true),
-        KeyOutcome::StopFarm
+        KeyOutcome::TakeOver
     ));
     assert!(matches!(
         handle_key(&ctrl('q'), &mut editor, &session, &mut passthrough, true),
@@ -473,4 +473,103 @@ fn a_running_farm_outranks_the_assist_in_the_bar() {
     let phase = mud_client::farm::Phase::Done { why: "loops walked".into() };
     let s = render_status(&state, "mbbs", Some(&phase), None, None, None, true, 120);
     assert!(!s.contains("assist"), "got {s:?}");
+}
+
+// --- slash commands --------------------------------------------------
+//
+// The client claims a handful of verbs off the input line. Two things
+// have to be true and neither was asserted before `/go` existed: what
+// the client claims must NOT reach the board, and what it does not
+// claim must.
+
+use mud_client::tui::slash;
+
+#[test]
+fn go_carries_its_target_verbatim() {
+    assert_eq!(
+        slash("/go Grungy Shop"),
+        Some(KeyOutcome::Go {
+            target: "Grungy Shop".into()
+        })
+    );
+    assert_eq!(
+        slash("  /go   1/2324  "),
+        Some(KeyOutcome::Go {
+            target: "1/2324".into()
+        }),
+        "surrounding whitespace is the terminal's, not the operator's"
+    );
+}
+
+#[test]
+fn go_without_a_target_is_refused_locally() {
+    assert!(matches!(slash("/go"), Some(KeyOutcome::Refuse(_))));
+    assert!(matches!(slash("/go   "), Some(KeyOutcome::Refuse(_))));
+}
+
+#[test]
+fn the_known_verbs_are_claimed() {
+    assert_eq!(slash("/quit"), Some(KeyOutcome::Quit));
+    assert_eq!(slash("/farm"), Some(KeyOutcome::StartFarm));
+    assert_eq!(slash("/bot"), Some(KeyOutcome::ToggleAssist));
+}
+
+/// Deliberate: the board says unknown commands out loud rather than
+/// erroring, so swallowing every slash-prefixed line would silently eat
+/// board syntax nobody has audited.
+#[test]
+fn an_unknown_slash_command_still_reaches_the_board() {
+    assert_eq!(slash("/who"), None);
+    assert_eq!(slash("/gossip hi"), None);
+    assert_eq!(slash("north"), None);
+    assert_eq!(slash(""), None);
+}
+
+/// The absence assertion that matters, with a positive control: a bare
+/// "the board heard nothing" would pass just as well against a broken
+/// socket.
+#[tokio::test]
+async fn slash_commands_are_intercepted_not_sent_to_the_board() {
+    let (addr, received) = capture_board().await;
+    let session = session_to(addr).await;
+    let mut editor = InputEditor::new();
+    let mut passthrough = false;
+
+    for line in ["/bot", "/go Grungy Shop", "/go", "/farm"] {
+        for c in line.chars() {
+            handle_key(&key(KeyCode::Char(c)), &mut editor, &session, &mut passthrough, false);
+        }
+        handle_key(&key(KeyCode::Enter), &mut editor, &session, &mut passthrough, false);
+    }
+    // The positive control: one line the client does NOT claim.
+    for c in "gossip hi".chars() {
+        handle_key(&key(KeyCode::Char(c)), &mut editor, &session, &mut passthrough, false);
+    }
+    handle_key(&key(KeyCode::Enter), &mut editor, &session, &mut passthrough, false);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if received.lock().unwrap().iter().any(|l| l == "gossip hi") {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "board never heard the control line");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let log = received.lock().unwrap().clone();
+    assert_eq!(log, vec!["gossip hi"], "only the unclaimed line goes out");
+}
+
+/// `/go` reuses the farm's phase channel and therefore its status bar;
+/// this pins that there is not a second bar to keep in step.
+#[test]
+fn the_bar_shows_where_a_go_is_walking() {
+    let state = GameState::default();
+    let phase = mud_client::farm::Phase::Travelling {
+        to: RoomId {
+            map: 1,
+            room: 2324,
+        },
+    };
+    let bar = render_status(&state, "mbbs", Some(&phase), None, None, None, false, 100);
+    assert!(bar.contains("1/2324"), "{bar}");
 }

@@ -149,9 +149,9 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     let mut passthrough = false;
     // Set while the runner drives this session; carries its phase for the
     // status bar and the handle needed to call it off.
-    let mut farm: Option<FarmSession> = None;
-    // A clone of the runner's phase channel, kept separate so the select
-    // can await it without borrowing `farm` (which the repaint needs).
+    let mut job: Option<Job> = None;
+    // A clone of the job's phase channel, kept separate so the select
+    // can await it without borrowing `job` (which the repaint needs).
     let mut phase_rx: Option<tokio::sync::watch::Receiver<crate::farm::Phase>> = None;
     // Where the client believes the character is, tracked whoever is
     // driving. A room block is a room block: it says as much when the
@@ -204,7 +204,10 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     // assume a game is running.
     let mut in_realm = false;
     let started = std::time::Instant::now();
-    let nav = locator(session.profile());
+    let (graph, nav) = match locator(session.profile()) {
+        Some((g, n)) => (Some(g), Some(n)),
+        None => (None, None),
+    };
 
     // Key events come from a blocking reader thread.
     let (key_tx, mut key_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -218,7 +221,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
 
     let mut out = std::io::stdout();
     setup_region(&mut out, rows)?;
-    repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
+    repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
 
     let result = loop {
         tokio::select! {
@@ -229,7 +232,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                     out.write_all(b"\x1b8")?;
                     out.write_all(&bytes)?;
                     out.write_all(b"\x1b7")?;
-                    repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
+                    repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(_) => break Ok(()), // disconnected
@@ -254,13 +257,13 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                         let before = exp.total();
                         exp.observe(line);
                         if exp.total() != before {
-                            repaint(&mut out, &state_rx, target, farm.as_ref(), here,
+                            repaint(&mut out, &state_rx, target, job.as_ref(), here,
                                     exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
                         }
                     }
                     // While a farm runs it owns the connection outright;
                     // the assist only drives a hand-played session.
-                    if farm.is_none()
+                    if job.is_none()
                         && let Some(bot) = assist.as_mut()
                     {
                         for cmd in assist_actions(bot, cor) {
@@ -271,7 +274,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                     // a farm runs it keeps its own model and counts its
                     // own divergences, and folding here too would double
                     // them.
-                    if farm.is_none() {
+                    if job.is_none() {
                         let before = model.reconcile.total();
                         model.on_event(cor, std::time::Instant::now());
                         if model.reconcile.total() != before {
@@ -298,7 +301,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                         model.note_room(id);
                     }
                 }
-                repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
+                repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
             }
             // The bar must follow the runner, not just HP: travelling and
             // fighting can pass without a single point of damage.
@@ -319,11 +322,17 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                         .take()
                         .map(|rx| rx.borrow().label())
                         .unwrap_or_else(|| "done".into());
-                    farm = None;
+                    let what = job.take().map(|j| j.what).unwrap_or("job");
                     session.set_pace(std::time::Duration::ZERO);
-                    note(&mut out, &format!("-- farm ended: {why} --"))?;
+                    // Latches from the stretch the job just drove describe
+                    // fights that are over, so the assist starts clean for
+                    // the same reason `/bot` rebuilds it on every toggle-on.
+                    if assist.is_some() {
+                        assist = Some(crate::bot::Bot::new(assist_config.clone()));
+                    }
+                    note(&mut out, &format!("-- {what} ended: {why} --"))?;
                 }
-                repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
+                repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
             }
             _ = level_tick.tick() => {
                 // Only while a game is actually running — see `in_realm`.
@@ -342,38 +351,82 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                         cols = w;
                         rows = h;
                         setup_region(&mut out, rows)?;
-                        repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
+                        repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
                     }
                     TermEvent::Key(key) if key.kind != KeyEventKind::Release => {
                         let was = passthrough;
                         let outcome =
-                            handle_key(&key, &mut editor, &session, &mut passthrough, farm.is_some());
+                            handle_key(&key, &mut editor, &session, &mut passthrough, job.is_some());
                         match outcome {
                             KeyOutcome::Quit => break Ok(()),
                             KeyOutcome::StartFarm => {
                                 // Reachable mid-run now that the editor
-                                // works while farming: one runner only.
-                                if farm.is_some() {
-                                    note(&mut out, "-- farm already running (Ctrl-F to take over) --")?;
+                                // works while farming: one job only.
+                                if let Some(j) = job.as_ref() {
+                                    note(&mut out, &format!("-- {} already running (Ctrl-F to take over) --", j.what))?;
                                 } else {
                                     match start_farm(session.clone()) {
                                         Ok(started) => {
                                             note(&mut out, "-- farm running (Ctrl-F to take over) --")?;
                                             phase_rx = Some(started.phase.clone());
-                                            farm = Some(started);
+                                            job = Some(started);
                                         }
                                         Err(e) => note(&mut out, &format!("-- {e} --"))?,
                                     }
                                 }
                             }
-                            KeyOutcome::StopFarm => {
-                                if let Some(f) = farm.take() {
-                                    f.handle.abort();
+                            KeyOutcome::Go { target } => {
+                                if let Some(j) = job.as_ref() {
+                                    note(&mut out, &format!("-- {} already running (Ctrl-F to take over) --", j.what))?;
+                                } else {
+                                    match graph.as_ref() {
+                                        // Naming the path is the whole
+                                        // point: the default is relative,
+                                        // so the commonest cause of this
+                                        // is a working directory, and
+                                        // "unknown room" would send the
+                                        // operator hunting the wrong bug.
+                                        None => note(&mut out, &format!(
+                                            "-- go: no room database at {} --",
+                                            content_path(session.profile()).display()
+                                        ))?,
+                                        Some(g) => match crate::go::resolve(g, here, &target) {
+                                            Err(refusal) => note(&mut out, &refusal.lines().join("\n"))?,
+                                            Ok(to) => {
+                                                let name = g.room(to).map(|r| r.name.clone()).unwrap_or_default();
+                                                let steps = here
+                                                    .and_then(|f| g.route(f, to))
+                                                    .map(|r| format!(", {} steps", r.len()))
+                                                    .unwrap_or_default();
+                                                let how = if assist.is_some() { "walking" } else { "running" };
+                                                let started = start_go(
+                                                    session.clone(),
+                                                    g.clone(),
+                                                    here,
+                                                    to,
+                                                    assist_config.clone(),
+                                                    assist.is_some(),
+                                                );
+                                                note(&mut out, &format!(
+                                                    "-- {how} to {name} [{}/{}]{steps} (Ctrl-F to take over) --",
+                                                    to.map, to.room
+                                                ))?;
+                                                phase_rx = Some(started.phase.clone());
+                                                job = Some(started);
+                                            }
+                                        },
+                                    }
+                                }
+                            }
+                            KeyOutcome::Refuse(why) => note(&mut out, &format!("-- {why} --"))?,
+                            KeyOutcome::TakeOver => {
+                                if let Some(j) = job.take() {
+                                    j.handle.abort();
                                     phase_rx = None;
                                     // The keyboard is a person again:
                                     // flood control back off.
                                     session.set_pace(std::time::Duration::ZERO);
-                                    note(&mut out, "-- farm stopped; you have the keyboard --")?;
+                                    note(&mut out, &format!("-- {} stopped; you have the keyboard --", j.what))?;
                                 }
                             }
                             KeyOutcome::ToggleAssist => {
@@ -399,7 +452,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                             out.write_all(note.as_bytes())?;
                             out.write_all(b"\x1b7")?;
                         }
-                        repaint(&mut out, &state_rx, target, farm.as_ref(), here, exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
+                        repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
                     }
                     _ => {}
                 }
@@ -468,8 +521,44 @@ pub enum KeyOutcome {
     Continue,
     Quit,
     StartFarm,
-    StopFarm,
+    /// Take the keyboard back from whatever the client is driving.
+    TakeOver,
     ToggleAssist,
+    /// Walk to a room the operator named. Unparsed here on purpose: the
+    /// graph decides what a name means, and the key handler has none.
+    Go {
+        target: String,
+    },
+    /// One of ours, got wrong. Print this and send nothing.
+    Refuse(String),
+}
+
+/// What a submitted line asks the CLIENT to do, or `None` when it is the
+/// board's business.
+///
+/// Only the known verbs are claimed. An unrecognised `/x` still goes to
+/// the board, exactly as it did before this existed: the board says
+/// unknown commands out loud rather than erroring, which is a survivable
+/// answer, and swallowing every slash-prefixed line would silently eat
+/// board syntax nobody has audited.
+pub fn slash(line: &str) -> Option<KeyOutcome> {
+    let line = line.trim();
+    let (verb, rest) = match line.split_once(char::is_whitespace) {
+        Some((v, r)) => (v, r.trim()),
+        None => (line, ""),
+    };
+    match verb {
+        "/quit" => Some(KeyOutcome::Quit),
+        "/farm" => Some(KeyOutcome::StartFarm),
+        "/bot" => Some(KeyOutcome::ToggleAssist),
+        "/go" if rest.is_empty() => Some(KeyOutcome::Refuse(
+            "go: where? try `/go 1/2324` or `/go Grungy Shop`".into(),
+        )),
+        "/go" => Some(KeyOutcome::Go {
+            target: rest.to_string(),
+        }),
+        _ => None,
+    }
 }
 
 /// One keystroke against the session. Public for the keyboard-contract
@@ -494,7 +583,7 @@ pub fn handle_key(
     // on purpose; recovery handles it like any other flee.
     if farming && key.modifiers.contains(KeyModifiers::CONTROL) {
         return match key.code {
-            KeyCode::Char('f') => KeyOutcome::StopFarm,
+            KeyCode::Char('f') => KeyOutcome::TakeOver,
             KeyCode::Char('q') => KeyOutcome::Quit,
             _ => KeyOutcome::Continue,
         };
@@ -530,11 +619,9 @@ pub fn handle_key(
         KeyCode::Down => editor.history_next(),
         KeyCode::Enter => {
             let line = editor.take_line();
-            match line.trim() {
-                "/quit" => return KeyOutcome::Quit,
-                "/farm" => return KeyOutcome::StartFarm,
-                "/bot" => return KeyOutcome::ToggleAssist,
-                _ => {
+            match slash(&line) {
+                Some(outcome) => return outcome,
+                None => {
                     session.send(&line);
                 }
             }
@@ -773,17 +860,29 @@ impl Drop for StatusBar {
     }
 }
 
-/// A farm run driving this session from inside `play`.
-pub struct FarmSession {
+/// A client-side job driving this session from inside `play` — a farm
+/// run or a `/go` walk.
+///
+/// There is exactly one slot, because each owns the connection outright:
+/// the navigator and the bot both send movement and both read room
+/// blocks, so two of these at once would fight over the same events (see
+/// [`crate::farm::run_farm`]).
+pub struct Job {
     handle: tokio::task::JoinHandle<()>,
     phase: tokio::sync::watch::Receiver<crate::farm::Phase>,
+    /// "farm" or "go", for the retirement notice.
+    what: &'static str,
 }
 
 /// Print a one-off notice into the scrolling region without disturbing
 /// the board's cursor.
+///
+/// Newlines are translated, because the terminal is in raw mode: a bare
+/// `\n` drops a row without returning the carriage, so a multi-line
+/// notice would stairstep off the right edge.
 fn note(out: &mut impl std::io::Write, text: &str) -> std::io::Result<()> {
     out.write_all(b"\x1b8")?;
-    out.write_all(format!("\r\n{text}\r\n").as_bytes())?;
+    out.write_all(format!("\r\n{}\r\n", text.replace('\n', "\r\n")).as_bytes())?;
     out.write_all(b"\x1b7")?;
     Ok(())
 }
@@ -794,7 +893,7 @@ fn repaint(
     out: &mut impl std::io::Write,
     state_rx: &tokio::sync::watch::Receiver<GameState>,
     target: &str,
-    farm: Option<&FarmSession>,
+    job: Option<&Job>,
     here: Option<mud_core::content::RoomId>,
     exp_per_min: Option<i64>,
     level: Option<crate::progress::LevelProgress>,
@@ -803,7 +902,7 @@ fn repaint(
     cols: u16,
     rows: u16,
 ) -> std::io::Result<()> {
-    let phase = farm.map(|f| f.phase.borrow().clone());
+    let phase = job.map(|j| j.phase.borrow().clone());
     // The runner's own belief wins while it drives -- it knows which of
     // two same-named rooms it walked to -- and the client's tracking
     // covers everything else.
@@ -830,7 +929,7 @@ fn repaint(
 /// with, so `/farm` needs no arguments. Errors are the operator's to read,
 /// not a reason to drop the connection — being told "no [farm] table" and
 /// staying logged in is strictly better than being thrown out.
-fn start_farm(session: Arc<Session>) -> Result<FarmSession, String> {
+fn start_farm(session: Arc<Session>) -> Result<Job, String> {
     let profile = session.profile().clone();
     let cfg = profile
         .farm
@@ -872,29 +971,98 @@ fn start_farm(session: Arc<Session>) -> Result<FarmSession, String> {
         };
         let _ = tx.send(end);
     });
-    Ok(FarmSession { handle, phase: rx })
+    Ok(Job {
+        handle,
+        phase: rx,
+        what: "farm",
+    })
 }
 
-/// A navigator used only to work out where the character is.
+/// Walk to a room on an already-connected session.
 ///
-/// Best effort: the room database is how a name becomes a number, and
-/// without it the bar simply shows the name, as it always did. The path
-/// comes from `[farm].content` when the profile has one, else the same
-/// default `mmc path` uses.
-fn locator(profile: &crate::profile::Profile) -> Option<crate::nav::Navigator> {
-    let db = profile
+/// Walk versus run is `walking`, which is the `/bot` toggle read at the
+/// moment the command was typed. Toggling `/bot` mid-walk deliberately
+/// does not change a walk already in flight: the mode is captured here,
+/// and a walk that changed its mind halfway would be very hard to
+/// reason about from the keyboard.
+fn start_go(
+    session: Arc<Session>,
+    graph: Arc<crate::graph::RoomGraph>,
+    hint: Option<mud_core::content::RoomId>,
+    to: mud_core::content::RoomId,
+    bot: crate::bot::BotConfig,
+    walking: bool,
+) -> Job {
+    let profile = session.profile().clone();
+    let base = profile.farm.clone().unwrap_or_else(|| crate::farm::FarmConfig {
+        // A profile with no [farm] table still gets a working `/go`; it
+        // just needs to be told where the rooms live, and that is the
+        // same place the locator already looked.
+        content: content_path(&profile),
+        ..Default::default()
+    });
+    let cfg = crate::go::go_config(&base, walking);
+    // Automation goes back under flood control, exactly as a farm does:
+    // `play` unpaced this session for the operator's keystrokes.
+    session.set_pace(profile.pace());
+    let (tx, rx) = tokio::sync::watch::channel(crate::farm::Phase::default());
+    let handle = tokio::spawn(async move {
+        let end = match crate::go::run_go(&session, graph, hint, to, &bot, &cfg, Some(&tx)).await {
+            Ok(crate::go::GoEnd::Arrived(at)) => crate::farm::Phase::Done {
+                why: format!("arrived at {}/{}", at.map, at.room),
+            },
+            // Where it stands matters more than why it stopped: a bare
+            // "stopped" strands the operator worse than never trying.
+            Ok(crate::go::GoEnd::Stopped(at)) => crate::farm::Phase::Done {
+                why: format!(
+                    "stopped at {}/{}: travel interrupt budget spent",
+                    at.map, at.room
+                ),
+            },
+            Ok(crate::go::GoEnd::Died) => crate::farm::Phase::Done { why: "died".into() },
+            Err(e) => crate::farm::Phase::Failed { why: e.to_string() },
+        };
+        let _ = tx.send(end);
+    });
+    Job {
+        handle,
+        phase: rx,
+        what: "go",
+    }
+}
+
+/// The room database this profile uses: `[farm].content` when it has
+/// one, else the same default `mmc path` uses.
+///
+/// That default is RELATIVE, so a `play` started anywhere but the repo
+/// root finds nothing. Callers that refuse should say which path they
+/// tried — "unknown room" is a very confusing way to learn about a
+/// working directory.
+fn content_path(profile: &crate::profile::Profile) -> std::path::PathBuf {
+    profile
         .farm
         .as_ref()
         .map(|f| f.content.clone())
-        .unwrap_or_else(|| std::path::PathBuf::from("re/mmud_wgnt.sqlite"));
+        .unwrap_or_else(|| std::path::PathBuf::from("re/mmud_wgnt.sqlite"))
+}
+
+/// The room graph, and a navigator over it.
+///
+/// Best effort: the room database is how a name becomes a number, and
+/// without it the bar simply shows the name, as it always did. The graph
+/// is handed back alongside because `/go` needs to ask it questions the
+/// navigator does not answer — which rooms carry a name, and how far
+/// away they are.
+fn locator(
+    profile: &crate::profile::Profile,
+) -> Option<(Arc<crate::graph::RoomGraph>, crate::nav::Navigator)> {
+    let db = content_path(profile);
     // The hand-played session keeps its own room model, and it needs the
     // death wordings as much as the farm does — more, on a shared board.
     let _ = crate::deaths::init(&db);
-    let graph = crate::graph::RoomGraph::load(&db).ok()?;
-    Some(crate::nav::Navigator::new(
-        Arc::new(graph),
-        crate::nav::NavConfig::default(),
-    ))
+    let graph = Arc::new(crate::graph::RoomGraph::load(&db).ok()?);
+    let nav = crate::nav::Navigator::new(graph.clone(), crate::nav::NavConfig::default());
+    Some((graph, nav))
 }
 
 /// Resolve a room block to a room id, given where we thought we were.

@@ -12,6 +12,7 @@ pub mod deaths;
 pub mod dialect;
 pub mod events;
 pub mod farm;
+pub mod go;
 pub mod graph;
 pub mod nav;
 pub mod parse;

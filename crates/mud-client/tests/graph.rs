@@ -101,3 +101,46 @@ fn threat_ranks_the_dungeon_the_way_a_player_would() {
     assert!(get("kobold thief") > get("filthbug"));
     assert!(get("filthbug") > get("giant rat"));
 }
+
+/// `distances` duplicates `route`'s BFS skeleton on purpose — one
+/// early-exits and rebuilds a path, the other does neither — so the
+/// invariant that keeps them honest has to be asserted rather than
+/// assumed.
+#[test]
+fn distances_agree_with_route_lengths() {
+    let g = graph();
+    let from = RoomId { map: 1, room: 1 };
+    let d = g.distances(from);
+    assert_eq!(d.get(&from), Some(&0), "standing still costs nothing");
+    for to in [
+        RoomId { map: 1, room: 3 },
+        RoomId { map: 1, room: 1072 },
+        RoomId { map: 1, room: 2324 },
+        RoomId { map: 1, room: 2146 },
+    ] {
+        let steps = g.route(from, to).expect("reachable").len();
+        assert_eq!(d.get(&to), Some(&steps), "{to:?}");
+    }
+}
+
+#[test]
+fn distances_omit_unreachable_rooms() {
+    let g = graph();
+    let d = g.distances(RoomId { map: 1, room: 1 });
+    assert!(!d.contains_key(&RoomId { map: 999, room: 9999 }));
+    assert!(d.len() <= g.len());
+}
+
+/// A room that is not in the graph reaches nothing, rather than
+/// reporting itself at distance zero.
+#[test]
+fn distances_from_an_unknown_room_are_empty() {
+    assert!(
+        graph()
+            .distances(RoomId {
+                map: 999,
+                room: 9999
+            })
+            .is_empty()
+    );
+}
