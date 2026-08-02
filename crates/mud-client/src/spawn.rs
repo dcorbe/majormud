@@ -53,17 +53,24 @@ pub struct Template {
 impl Template {
     /// Will this monster start the fight?
     ///
-    /// Modes 0 and 4 are unprovoked, everything else initiates
-    /// (`re/docs/monsters.md` §4, and the note on
-    /// [`crate::profile::Profile::disable_evil_warnings`]).
+    /// **Aggression is the load-bearing half.** Target acquisition rolls
+    /// `genrdn(0, 100) < aggression` (`re/docs/monsters.md` §4), so a
+    /// rating of 0 can never come up true: such a monster never acquires
+    /// anybody and never initiates. 103 of the 1,100 templates are in
+    /// that group and they are exactly the healers, shopkeepers and
+    /// props.
     ///
-    /// **ORACLE-OPEN.** Read off the decompile, not off the board. A
-    /// guardsman comes out as mode 1 = initiates although guardsmen only
-    /// attack criminals, so the mode is near-certainly gated on fame or
-    /// legal status somewhere untraced. Treat a positive as "may attack
-    /// you", not "will".
+    /// The behaviour mode only rules things out on top of that. It is a
+    /// poor discriminator on its own — 916 templates share mode 1,
+    /// including the healer — which is how a first live `/room` came to
+    /// paint the Newhaven healer's room as hostile.
+    ///
+    /// **ORACLE-OPEN either way.** A guardsman reads as initiating at
+    /// aggression 90 though guardsmen only attack criminals, so there is
+    /// a fame or legal-status gate somewhere untraced. Read a positive as
+    /// "may attack you", never as "will".
     pub fn initiates(&self) -> bool {
-        !matches!(self.behaviour, 0 | 4)
+        self.aggression > 0 && !matches!(self.behaviour, 0 | 4)
     }
 }
 
@@ -134,7 +141,7 @@ impl SpawnTable {
         if let Some(number) = room.spawn.forced {
             return self.by_number(number).into_iter().collect();
         }
-        if room.spawn.region == 0 {
+        if !room.spawn.draws_from_region() {
             return Vec::new();
         }
         let (lo, hi) = room.spawn.band;
@@ -172,6 +179,8 @@ pub struct Dossier {
     pub dark: bool,
     pub shop: i64,
     pub spawn: Spawn,
+    /// The room's permanent occupant, if it has one.
+    pub resident: Option<Template>,
     pub candidates: Vec<Template>,
     /// Direction, where it goes, and the phrase that walks it when the
     /// exit is a command exit rather than a step.
@@ -201,6 +210,11 @@ impl Dossier {
             dark: graph.dark(id),
             shop: room.shop,
             spawn: room.spawn,
+            resident: room
+                .spawn
+                .resident
+                .and_then(|n| spawns.by_number(n))
+                .cloned(),
             candidates: spawns.candidates(room).into_iter().cloned().collect(),
             exits: room
                 .exits
@@ -213,14 +227,20 @@ impl Dossier {
         })
     }
 
+    /// Everything standing in or spawning into this room.
+    pub fn occupants(&self) -> impl Iterator<Item = &Template> {
+        self.resident.iter().chain(self.candidates.iter())
+    }
+
     pub fn threat(&self) -> Threat {
-        if self.candidates.is_empty() {
-            Threat::Nothing
-        } else if self.candidates.iter().any(Template::initiates) {
-            Threat::Aggressive
-        } else {
-            Threat::Passive
+        let mut any = false;
+        for t in self.occupants() {
+            any = true;
+            if t.initiates() {
+                return Threat::Aggressive;
+            }
         }
+        if any { Threat::Passive } else { Threat::Nothing }
     }
 
     /// The highest level this room can produce, for the map's warning
@@ -261,26 +281,19 @@ impl Dossier {
         });
         if self.spawn.forced.is_some() {
             out.push("  one fixed monster".to_string());
-        } else if self.spawn.region > 0 {
+        } else if self.spawn.draws_from_region() {
             let (lo, hi) = self.spawn.band;
-            out.push(format!("  region {} level {lo}-{hi}", self.spawn.region));
+            out.push(format!("  region {} band {lo}-{hi}", self.spawn.region));
         }
 
-        if self.candidates.is_empty() {
+        if let Some(t) = &self.resident {
+            out.push(format!("lives here: {}", describe(t)));
+        }
+        if self.candidates.is_empty() && self.resident.is_none() {
             out.push("  nothing".to_string());
         }
         for t in &self.candidates {
-            let mut note = format!(
-                "  {} - {} exp, {} hp, agg {}",
-                t.name, t.experience, t.hitpoints, t.aggression
-            );
-            if !t.initiates() {
-                note.push_str(", unprovoked");
-            }
-            if t.gamelimit > 0 {
-                note.push_str(&format!(", limit {}", t.gamelimit));
-            }
-            out.push(note);
+            out.push(format!("  {}", describe(t)));
         }
 
         let mut exits: Vec<String> = Vec::new();
@@ -299,6 +312,21 @@ impl Dossier {
         }
         out
     }
+}
+
+/// One monster on one line: name, what it is worth, what it takes.
+fn describe(t: &Template) -> String {
+    let mut note = format!(
+        "{} - {} exp, {} hp, agg {}",
+        t.name, t.experience, t.hitpoints, t.aggression
+    );
+    if !t.initiates() {
+        note.push_str(", unprovoked");
+    }
+    if t.gamelimit > 0 {
+        note.push_str(&format!(", limit {}", t.gamelimit));
+    }
+    note
 }
 
 fn short(dir: Direction) -> &'static str {

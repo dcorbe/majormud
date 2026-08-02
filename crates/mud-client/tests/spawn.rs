@@ -114,21 +114,6 @@ fn region_zero_is_a_sentinel_not_a_region() {
 }
 
 #[test]
-fn a_zero_band_still_selects_level_zero_monsters() {
-    // 1,354 rooms carry a region with a zero band and 205 monsters sit at
-    // index 0. Unlike region 0 this one is plausible, so it is kept.
-    let d = dossier(1, 109);
-    assert_eq!(d.name, "Darkwood Forest");
-    assert_eq!(d.spawn.region, 11);
-    assert_eq!(d.spawn.band, (0, 0));
-    let got = names(&d);
-    assert!(
-        got.contains(&"minotaur champion") && got.contains(&"spectral mage"),
-        "got {got:?}"
-    );
-}
-
-#[test]
 fn a_shop_room_reports_its_shop_and_spawns_nothing() {
     let d = dossier(1, 2324);
     assert_eq!(d.name, "Grungy Shop");
@@ -155,3 +140,76 @@ fn a_dossier_renders_without_control_characters() {
     }
 }
 
+
+// --- corrections from the first live check, 2026-08-02 -----------------
+
+/// The room's PERMANENT occupant, which is what a shop, a healer or a
+/// trainer actually contains. Missing this made `/room` at the healer
+/// list 33 quest NPCs and not the healer.
+#[test]
+fn a_permanent_npc_is_the_rooms_real_occupant() {
+    let d = dossier(1, 2190);
+    assert_eq!(d.name, "Newhaven, Healer");
+    let resident = d.resident.as_ref().expect("the healer lives here");
+    assert_eq!(resident.name, "healer");
+    assert_eq!(resident.number, 73);
+    assert_eq!(d.shop, 4);
+}
+
+/// A boot-fill room is skipped by the periodic spawner entirely
+/// (`re/docs/monsters.md` §1), so listing its region's roster as things
+/// that spawn there is simply false.
+#[test]
+fn a_boot_fill_room_draws_nothing_from_its_region() {
+    let d = dossier(1, 2190);
+    assert_eq!(d.spawn.kind, SpawnKind::BootFill);
+    assert!(
+        d.candidates.is_empty(),
+        "the healer's room spawns nothing; got {:?}",
+        names(&d)
+    );
+}
+
+/// A zero band is an unconfigured room, not a level-0 selector.
+///
+/// This reverses an earlier reading. The evidence for it was that
+/// Darkwood Forest's zero band resolved to monsters that looked
+/// plausible for the area; the evidence against is stronger. Every
+/// zero-band room in Newhaven is named "Blank" — they are dev
+/// placeholders — and the healer, which is one, contains exactly one NPC
+/// named by `permnpc` rather than the 33 its region would draw.
+#[test]
+fn a_zero_band_draws_nothing() {
+    for room in [109u16, 2178] {
+        let d = dossier(1, room);
+        assert_eq!(d.spawn.band, (0, 0));
+        assert!(
+            d.candidates.is_empty(),
+            "1/{room} ({}) has a zero band; got {:?}",
+            d.name,
+            names(&d)
+        );
+    }
+}
+
+/// The rooms that really do spawn must be untouched by all of that.
+#[test]
+fn a_configured_spawn_room_still_lists_its_roster() {
+    let arena = dossier(1, 2150);
+    assert_eq!(arena.name, "Newhaven, Arena");
+    assert_eq!(arena.spawn.kind, SpawnKind::Frequent);
+    assert_eq!(arena.spawn.band, (1, 3));
+    assert!(!arena.candidates.is_empty());
+    assert_eq!(names(&dossier(1, 2156)), ["cave bear"]);
+    assert_eq!(names(&dossier(1, 1072)), ["guardsman"]);
+}
+
+/// A shopkeeper standing in the room is something the room contains, so
+/// the map's danger paint has to see it.
+#[test]
+fn a_resident_counts_toward_the_rooms_threat() {
+    // The healer is unprovoked, so its room is not painted as hostile.
+    assert_eq!(dossier(1, 2190).threat(), Threat::Passive);
+    // And a room with neither resident nor spawn is still empty.
+    assert_eq!(dossier(1, 2151).threat(), Threat::Nothing);
+}

@@ -100,15 +100,45 @@ pub struct Spawn {
     /// read literally it has Town Gates spawning the group-0 scenery
     /// props (`ancient tapestry`, `mirror portal`).
     pub region: i64,
-    /// `minindex`..`maxindex` (`room+0x462`/`+0x464`): the level window a
-    /// candidate must fall inside. `(0, 0)` is a real window selecting
-    /// level-0 monsters — 1,354 rooms use it and 205 monsters sit there —
-    /// so unlike `region` it is not treated as a sentinel.
+    /// `minindex`..`maxindex` (`room+0x462`/`+0x464`): the selector window
+    /// a candidate must fall inside. `(0, 0)` means the room was never
+    /// configured — see [`Spawn::draws_from_region`].
     pub band: (i64, i64),
     /// `bynumber` (`room+0x468`): one specific monster, bypassing the
     /// region draw. Stored in the HIGH WORD — the column is a 32-bit read
     /// of a 16-bit field, and its low word is zero in all 26,720 rooms.
     pub forced: Option<i64>,
+    /// `permnpc`: the room's PERMANENT occupant, placed at boot and never
+    /// drawn from the region. This is what a shop, a healer or a trainer
+    /// actually contains — 475 rooms have one — and missing it is what
+    /// made `/room` at the Newhaven healer list 33 quest NPCs instead of
+    /// the healer (live, 2026-08-02).
+    pub resident: Option<i64>,
+}
+
+impl Spawn {
+    /// Does the periodic spawner draw from this room's region at all?
+    ///
+    /// Three ways for the answer to be no, the last two learned by
+    /// reading a dossier that was obviously wrong:
+    ///
+    /// * Region 0 is a sentinel, not a region.
+    /// * A boot-fill room is skipped by the spawner outright
+    ///   (`re/docs/monsters.md` §1), so its region says nothing about it.
+    /// * A zero band is an unconfigured room rather than a level-0
+    ///   selector. This reverses an earlier reading, which rested on
+    ///   Darkwood Forest's zero band resolving to monsters that looked
+    ///   plausible. The evidence against is stronger: every zero-band
+    ///   room in Newhaven is named "Blank" — they are dev placeholders —
+    ///   and the healer, which is one, holds exactly the single NPC its
+    ///   `permnpc` names rather than the 33 its region would draw.
+    pub fn draws_from_region(&self) -> bool {
+        matches!(
+            self.kind,
+            SpawnKind::Timed | SpawnKind::Frequent | SpawnKind::Swarm
+        ) && self.region > 0
+            && self.band.1 > 0
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -153,7 +183,15 @@ impl RoomGraph {
         // The spawn columns ride along in the one pass. An extra column
         // on a query that already reads every row is free; a second query
         // over 26k rows to answer "what lives here" is not.
-        for c in ["\"type\"", "monstertype", "minindex", "maxindex", "bynumber", "shopnum"] {
+        for c in [
+            "\"type\"",
+            "monstertype",
+            "minindex",
+            "maxindex",
+            "bynumber",
+            "shopnum",
+            "permnpc",
+        ] {
             cols.push(c.into());
         }
         // Command exits point at a MESSAGE for their phrase, so the
@@ -184,6 +222,10 @@ impl RoomGraph {
                     region,
                     band: (row.get(36).unwrap_or(0), row.get(37).unwrap_or(0)),
                     forced: (forced > 0).then_some(forced >> 16),
+                    resident: {
+                        let n: i64 = row.get(40).unwrap_or(0);
+                        (n > 0).then_some(n)
+                    },
                 },
                 light,
             };
