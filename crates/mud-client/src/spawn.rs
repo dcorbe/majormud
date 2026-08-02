@@ -36,54 +36,127 @@ pub struct Template {
     pub level: i64,
     pub experience: i64,
     pub hitpoints: i64,
-    pub alignment: i64,
     /// `gamelimit` — how many may exist in the world at once; 0 is
     /// unlimited. This is the mechanism behind rare monsters, and the
     /// reason a cave bear (limit 1) is worth planning a route around.
     pub gamelimit: i64,
-    /// `follow` — the 0-100 aggression rating (`mon+0x108`,
-    /// `re/docs/monsters.md` §4). Guardsman 90, kobold thief 20, kobold
-    /// slave 10. Governs how readily the monster acts, not whether it may.
+    /// `follow` — the 0-100 aggression rating (`mon+0x108`).
+    ///
+    /// **Not what decides whether it attacks you.** It is the LOCK roll
+    /// after a swing and the pursuit roll when chasing
+    /// (`re/docs/monsters.md` §4), i.e. how doggedly it sticks to a
+    /// target it already has. Newhaven's shopkeepers are rated 100.
     pub aggression: i64,
-    /// `something3` — the behaviour mode (`mon+0x12c`). See
-    /// [`Template::initiates`].
+    /// The behaviour mode, `mon+0x106` — which decides initiation.
+    ///
+    /// Read from the sqlite column named **`alignment`**. That is a
+    /// naming artifact of the rectype import and a documented trap
+    /// (`re/docs/monsters.md` §4, "COLUMN-NAME TRAP"): the column called
+    /// `type` is something else entirely and the one called `alignment`
+    /// is the mode. A cave bear is `type 3, alignment 1`, and it
+    /// initiates on sight exactly as mode 1 predicts.
     pub behaviour: i64,
-    /// `attackper_1` — how often the template's first attack fires. **0
-    /// means it has no attack table at all**, which is the thing that
-    /// actually separates a shopkeeper from a monster; see
-    /// [`Template::initiates`].
+    /// The ROAM class, `mon+0x12c` (sqlite `something3`). Class 5 is the
+    /// criminal-hunter branch; see [`Template::initiates_against`].
+    pub roam_class: i64,
+    /// `attackper_1` — how often its first attack fires. 0 means no
+    /// attack table at all, which is what shopkeepers, healers, trainers
+    /// and props have. Reported by the dossier; initiation is decided by
+    /// the mode alone, per the spec.
     pub attack_percent: i64,
 }
 
+/// Where you stand with the law, which is all a monster's initiation
+/// decision knows about you.
+///
+/// Only 19 of the 1,100 templates consult it — 15 fame-sparing and 4
+/// criminal-hunting — so the other 98% of the world is answerable with no
+/// knowledge of the character at all.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Standing {
+    /// Evil points, `player+0x542`: positive is evil, negative good
+    /// (`re/docs/crime.md` §1).
+    pub fame: i64,
+}
+
+impl Standing {
+    /// Fame ≥ 0x28, the one boundary both fame-dependent branches test.
+    /// It is the Outlaw tier and above.
+    pub fn notorious(&self) -> bool {
+        self.fame >= 0x28
+    }
+
+    /// Read from the legal-level word the board prints in a WHO listing.
+    ///
+    /// The exact number never appears in play, but the tier does, and the
+    /// tier is enough: every branch tests one threshold that falls on a
+    /// tier boundary. Unknown words are `None` rather than a guess.
+    pub fn from_legal_level(word: &str) -> Option<Standing> {
+        // Mid-range of each tier, since only the 0x28 boundary is tested
+        // and every tier sits wholly on one side of it.
+        let fame = match word.trim().to_ascii_lowercase().as_str() {
+            "saint" => -300,
+            "good" => -100,
+            "lawful" | "neutral" => 0,
+            "seedy" => 35,
+            "outlaw" => 60,
+            "criminal" => 100,
+            "villain" => 160,
+            "fiend" => 300,
+            _ => return None,
+        };
+        Some(Standing { fame })
+    }
+}
+
 impl Template {
-    /// Will this monster start the fight?
+    /// Will this monster start a fight with somebody of this standing?
     ///
-    /// **Having an attack table is the load-bearing half.** 124 of the
-    /// 1,100 templates have `attackper_1 == 0` — no attack routine
-    /// whatsoever — and they are exactly the shopkeepers, healers,
-    /// trainers and props. Something with no way to swing cannot open
-    /// hostilities, whatever else its record says.
+    /// Computed from the behaviour-mode taxonomy in
+    /// `re/docs/monsters.md` §4, reconstructed from the aggression driver
+    /// `FUN_00423863`, rather than inferred from the board's colours:
     ///
-    /// That correction cost two wrong guesses. The behaviour mode is a
-    /// poor discriminator (916 templates share mode 1, the healer
-    /// included). Aggression is worse than it looks: Newhaven's
-    /// shopkeepers — Nathaniel, Betram, Rayth, Corwyn — are all rated
-    /// **100**, because the figure describes how hard they fight once
-    /// provoked, not whether they start. Both were tried, both painted
-    /// every shop in town as hostile, and both were caught by looking at
-    /// the map rather than by any test.
+    /// | mode | behaviour |
+    /// |------|-----------|
+    /// | 0, 3, 4 | never initiates; fights back only once attacked |
+    /// | 6 | initiates EXCEPT against fame ≥ 0x28 — spares the famous |
+    /// | 1, 2, 5, other | initiates against any valid target |
     ///
-    /// Aggression and the mode still gate on top: acquisition rolls
-    /// `genrdn(0, 100) < aggression` (`re/docs/monsters.md` §4), so a 0
-    /// can never come up true, and modes 0 and 4 are documented as
-    /// unprovoked.
+    /// ROAM class 5 overrides the mode entirely: it is the
+    /// criminal-hunter branch and initiates ONLY against fame ≥ 0x28,
+    /// inverting to fame < 0x28 when the mode is also 6.
     ///
-    /// **ORACLE-OPEN.** A guardsman passes all three at aggression 90
-    /// though guardsmen only attack criminals, so a fame or legal-status
-    /// gate remains untraced. Read a positive as "may attack you", never
-    /// as "will".
-    pub fn initiates(&self) -> bool {
-        self.attack_percent > 0 && self.aggression > 0 && !matches!(self.behaviour, 0 | 4)
+    /// **Aggression is not part of this.** The per-round roll is
+    /// anti-pile-on (`50 - 5 × attackers`) and only chooses WHICH
+    /// eligible monster swings — "an eligible monster always attacks".
+    /// `follow` is the lock and pursuit roll instead.
+    ///
+    /// What this deliberately does NOT model, being per-encounter rather
+    /// than per-template: being hidden or sneaking (unless the monster
+    /// has see-hidden `0x39`), and the moved-this-round flag. Both
+    /// SUPPRESS an attack, so a positive here is an upper bound — "may
+    /// attack you", never "will".
+    pub fn initiates_against(&self, you: &Standing) -> bool {
+        // The hunter branch is decided before the mode, and is the only
+        // place a mode-6 reading flips.
+        if self.roam_class == 5 {
+            return if self.behaviour == 6 {
+                !you.notorious()
+            } else {
+                you.notorious()
+            };
+        }
+        match self.behaviour {
+            0 | 3 | 4 => false,
+            6 => !you.notorious(),
+            _ => true,
+        }
+    }
+
+    /// Whether it can fight at all. 124 templates have no attack table —
+    /// the shopkeepers, healers, trainers and props.
+    pub fn armed(&self) -> bool {
+        self.attack_percent > 0
     }
 }
 
@@ -117,10 +190,12 @@ impl SpawnTable {
                     level: row.get(3)?,
                     experience: row.get(4)?,
                     hitpoints: row.get(5)?,
-                    alignment: row.get(6)?,
+                    // Column `alignment` IS the behaviour mode; see the
+                    // field docs for the naming trap.
+                    behaviour: row.get(6)?,
                     gamelimit: row.get(7)?,
                     aggression: row.get(8)?,
-                    behaviour: row.get(9)?,
+                    roam_class: row.get(9)?,
                     attack_percent: row.get(10)?,
                 })
             })
@@ -258,8 +333,8 @@ impl Dossier {
     /// and counting them made every shop, healer and trainer light up on
     /// the danger map (live, 2026-08-02 — in Newhaven, where nothing
     /// spawns, the shops were the only colour on the screen).
-    pub fn threat(&self) -> Threat {
-        if self.occupants().any(Template::initiates) {
+    pub fn threat(&self, you: &Standing) -> Threat {
+        if self.occupants().any(|t| t.initiates_against(you)) {
             Threat::Aggressive
         } else if self.candidates.is_empty() {
             Threat::Nothing
@@ -345,8 +420,8 @@ fn describe(t: &Template) -> String {
         "{} - {} exp, {} hp, agg {}",
         t.name, t.experience, t.hitpoints, t.aggression
     );
-    if !t.initiates() {
-        note.push_str(", unprovoked");
+    if !t.armed() {
+        note.push_str(", unarmed");
     }
     if t.gamelimit > 0 {
         note.push_str(&format!(", limit {}", t.gamelimit));

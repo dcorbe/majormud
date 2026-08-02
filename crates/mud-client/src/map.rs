@@ -26,7 +26,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use mud_core::content::{Direction, RoomId};
 
 use crate::graph::RoomGraph;
-use crate::spawn::{Dossier, SpawnTable, Threat};
+use crate::spawn::{Dossier, SpawnTable, Standing, Threat};
 
 /// A position on the plane's grid. North is -y, east is +x.
 pub type Cell = (i32, i32);
@@ -270,6 +270,11 @@ pub struct PaintCtx {
     /// Warn at or above this experience value, for the case hitpoints
     /// miss: something soft that hits very hard. 0 = never.
     pub warn_above_exp: i64,
+    /// Where the character stands with the law. Only 19 of the 1,100
+    /// monster templates consult it — the fame-sparing and the
+    /// criminal-hunting — so the default of Neutral is right for almost
+    /// the whole world and wrong only for those.
+    pub standing: Standing,
     /// Set when the character is KNOWN to carry nothing that can light a
     /// room — a [`crate::sheet::LightState`] built from an empty source
     /// list. Darkness is then a warning rather than a shade of grey.
@@ -362,7 +367,7 @@ pub fn styles(
                         PLAIN
                     }
                 }
-                Paint::Danger => match d.threat() {
+                Paint::Danger => match d.threat(&ctx.standing) {
                     Threat::Aggressive => AGGRESSIVE,
                     Threat::Passive => PASSIVE_SGR,
                     Threat::Nothing => PLAIN,

@@ -230,11 +230,14 @@ fn the_anchor_is_drawn_where_the_layout_put_it() {
 fn danger_paint_uses_the_boards_own_magenta() {
     let p = slums();
     let s = painted(&p, Paint::Danger);
-    let entrance = s.get(&SLUM_ENTRANCE).expect("styled");
-    assert_eq!(
-        entrance.sgr, "1;35",
-        "the slum entrance spawns guardsmen, which initiate"
-    );
+    // Guardsmen are behaviour mode 4 and never initiate, so the slum
+    // entrance is a target, not a threat.
+    assert_eq!(s.get(&SLUM_ENTRANCE).expect("styled").sgr, "0;36");
+
+    // A cave bear is mode 1 and comes for you.
+    let cavern = layout(graph(), SMALL_CAVERN);
+    let s = styles(&cavern, graph(), spawns(), Paint::Danger, &PaintCtx::default());
+    assert_eq!(s.get(&SMALL_CAVERN).expect("styled").sgr, "1;35");
 
     let gates = layout(graph(), TOWN_GATES);
     let s = styles(&gates, graph(), spawns(), Paint::Danger, &PaintCtx::default());
@@ -559,9 +562,9 @@ fn the_marker_outranks_even_the_warning() {
 /// magenta read as "slightly less dangerous" instead.
 #[test]
 fn the_danger_states_are_told_apart_by_hue_not_brightness() {
-    let slum = layout(graph(), SLUM_ENTRANCE);
-    let s = styles(&slum, graph(), spawns(), Paint::Danger, &PaintCtx::default());
-    let aggressive = s.get(&SLUM_ENTRANCE).expect("guardsmen").sgr;
+    let cavern = layout(graph(), SMALL_CAVERN);
+    let s = styles(&cavern, graph(), spawns(), Paint::Danger, &PaintCtx::default());
+    let aggressive = s.get(&SMALL_CAVERN).expect("cave bear").sgr;
     assert_eq!(aggressive, "1;35");
 
     // A shop with a harmless resident and no spawns is plain, not magenta.
