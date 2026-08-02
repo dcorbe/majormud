@@ -299,6 +299,15 @@ const DARK: &str = "1;30";
 const SHOP: &str = "1;36";
 const PLAIN: &str = "0;37";
 
+/// An ordinary room. One constant, because it is both what `styles`
+/// hands out and what the overview zoom tests against to swap in a solid
+/// block — and a character duplicated across those two is a character
+/// that gets changed in one of them.
+pub const ROOM: char = '□';
+/// A room drawn at overview zoom, where a single cell cannot carry a
+/// connector and colour has to do the work.
+const ROOM_SOLID: char = '\u{2588}';
+
 /// Worth ramp, low to high. No red: see [`WARNING`].
 const WORTH: [(i64, &str); 4] = [
     (0, "0;32"),
@@ -330,7 +339,7 @@ pub fn styles(
         } else if d.shop > 0 {
             '$'
         } else {
-            '\u{00b7}' // ·
+            ROOM
         };
         let sgr = if warns(&d, ctx) {
             WARNING
@@ -479,7 +488,7 @@ pub fn render(
             let row = (gy - view.1) as i64 * ch as i64;
             let style = styles.get(&id).copied().unwrap_or(Style {
                 sgr: PLAIN,
-                glyph: '\u{00b7}',
+                glyph: ROOM,
             });
 
             if zoom != Zoom::Overview {
@@ -491,7 +500,7 @@ pub fn render(
                 _ => match zoom {
                     // A single cell cannot carry a connector, so the room
                     // itself is drawn solid and colour does the work.
-                    Zoom::Overview if style.glyph == '\u{00b7}' => '\u{2588}',
+                    Zoom::Overview if style.glyph == ROOM => ROOM_SOLID,
                     _ => style.glyph,
                 },
             };
