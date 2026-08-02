@@ -438,8 +438,84 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                     (Some(g), Some(s)) => match here_or(g, here, &target) {
                                         Err(refusal) => note(&mut out, &refusal.lines().join("\n"))?,
                                         Ok(id) => {
-                                            let drawn = draw_map(g, s, id, here, assist_config.max_hp.into(), cols, rows);
-                                            note(&mut out, &drawn.join("\n"))?;
+                                            let mut view = crate::mapview::MapView::new(
+                                                g.clone(),
+                                                s.clone(),
+                                                id,
+                                                here,
+                                                crate::map::PaintCtx {
+                                                    max_hp: assist_config.max_hp.into(),
+                                                    ..Default::default()
+                                                },
+                                                (cols as usize, rows as usize),
+                                            );
+                                            // Scoped so the borrows the map
+                                            // needs are gone before the exit
+                                            // is acted on.
+                                            let exit = {
+                                                // The session keeps running
+                                                // behind the map: going blind
+                                                // to plan a route must not
+                                                // also stop the assist
+                                                // fighting for you.
+                                                let mut on_event = |cor: &crate::correlate::Correlated| {
+                                                    if let crate::events::Event::Line(line) = &cor.event {
+                                                        exp.observe(line);
+                                                    }
+                                                    if job.is_none()
+                                                        && let Some(bot) = assist.as_mut()
+                                                    {
+                                                        for cmd in assist_actions(bot, cor) {
+                                                            session.send(&cmd);
+                                                        }
+                                                    }
+                                                };
+                                                crate::mapview::run(
+                                                    &session,
+                                                    &mut view,
+                                                    &mut key_rx,
+                                                    &mut raw_rx,
+                                                    &mut events,
+                                                    &mut on_event,
+                                                )
+                                                .await?
+                                            };
+                                            // Hand the terminal back exactly
+                                            // as `play` set it up, then replay
+                                            // everything the board said while
+                                            // it was not being watched.
+                                            setup_region(&mut out, rows)?;
+                                            out.write_all(b"\x1b8")?;
+                                            out.write_all(&exit.buffered)?;
+                                            out.write_all(b"\x1b7")?;
+                                            if let Some(why) = &exit.interrupted {
+                                                note(&mut out, &format!("-- {why} --"))?;
+                                            }
+                                            match exit.action {
+                                                crate::mapview::ViewAction::Quit => break Ok(()),
+                                                crate::mapview::ViewAction::Go(to) if job.is_some() => {
+                                                    note(&mut out, "-- something is already driving (Ctrl-F to take over) --")?;
+                                                    let _ = to;
+                                                }
+                                                crate::mapview::ViewAction::Go(to) => {
+                                                    let name = g.room(to).map(|r| r.name.clone()).unwrap_or_default();
+                                                    let started = start_go(
+                                                        session.clone(),
+                                                        g.clone(),
+                                                        here,
+                                                        to,
+                                                        assist_config.clone(),
+                                                        assist.is_some(),
+                                                    );
+                                                    note(&mut out, &format!(
+                                                        "-- walking to {name} [{}/{}] (Ctrl-F to take over) --",
+                                                        to.map, to.room
+                                                    ))?;
+                                                    phase_rx = Some(started.phase.clone());
+                                                    job = Some(started);
+                                                }
+                                                _ => {}
+                                            }
                                         }
                                     },
                                     _ => note(&mut out, &format!(
@@ -1119,65 +1195,6 @@ fn here_or(
             crate::go::GoRefusal::Unknown("where you are standing (walk a step first)".into())
         }),
     }
-}
-
-/// A plane drawn around `at`, centred and sized to the terminal.
-///
-/// Non-interactive: this is the same [`crate::map::render`] the
-/// interactive view uses, pointed at the scroll region instead of an
-/// alternate screen, so the layout and palette are proven before any
-/// keyboard handling exists.
-fn draw_map(
-    graph: &crate::graph::RoomGraph,
-    spawns: &crate::spawn::SpawnTable,
-    at: mud_core::content::RoomId,
-    here: Option<mud_core::content::RoomId>,
-    max_hp: i64,
-    cols: u16,
-    rows: u16,
-) -> Vec<String> {
-    use crate::map::{Marks, Paint, PaintCtx, Zoom};
-    let zoom = Zoom::Normal;
-    let plane = crate::map::layout(graph, at);
-    let ctx = PaintCtx {
-        max_hp,
-        ..Default::default()
-    };
-    let styles = crate::map::styles(&plane, graph, spawns, Paint::Terrain, &ctx);
-    // Two rows belong to the status bar and the input line; leave a few
-    // more for the header, so the map never scrolls its own caption off.
-    let (cw, ch) = zoom.cell();
-    let width = cols.max(1) as usize;
-    let height = rows.saturating_sub(6).max(3) as usize;
-    let cell = plane.cell_of(at).unwrap_or((0, 0));
-    let view = (
-        cell.0 - (width / cw / 2) as i32,
-        cell.1 - (height / ch / 2) as i32,
-    );
-    let marks = Marks {
-        here,
-        ..Default::default()
-    };
-
-    let name = graph.room(at).map(|r| r.name.as_str()).unwrap_or("?");
-    let e = plane.extent();
-    let mut out = vec![format!(
-        "-- {}/{} {name} | plane {} rooms, {}x{} cells{} --",
-        at.map,
-        at.room,
-        plane.len(),
-        e.width(),
-        e.height(),
-        match plane.conflicts().len() {
-            0 => String::new(),
-            n => format!(", {n} not placed"),
-        }
-    )];
-    out.extend(crate::map::render(
-        &plane, &styles, view, (width, height), zoom, &marks,
-    ));
-    out.push("-- @ you  + stairs or portal  $ shop --".into());
-    out
 }
 
 fn locator(

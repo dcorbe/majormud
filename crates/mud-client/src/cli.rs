@@ -47,6 +47,14 @@ pub enum Command {
         #[arg(long, default_value = "re/mmud_wgnt.sqlite")]
         content: PathBuf,
     },
+    /// Browse the world map without connecting to a board
+    Map {
+        /// Room to open on: `map/room` (e.g. 1/1076) or part of a name
+        at: String,
+        /// Room database (decoded WG3-NT sqlite)
+        #[arg(long, default_value = "re/mmud_wgnt.sqlite")]
+        content: PathBuf,
+    },
     /// Walk the profile's patrol circuit, farming each stop
     Farm {
         /// Character profile (TOML); needs a `[farm]` table

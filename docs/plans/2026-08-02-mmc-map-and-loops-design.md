@@ -254,10 +254,14 @@ on is a warning nobody reads.
   repaint.
 - Keep draining `raw_rx` into a buffer (so the broadcast never lags) and `events` (so
   the assist and exp meter keep working).
-- Beyond slice 2's keys: Tab jumps to the next room, `<`/`>` follow a vertical exit to
-  that plane, `g` leaves and starts a `/go` to the cursor room, `q`/Esc leave, Ctrl-Q
-  quits. Zoom, paint mode and viewport persist for the session.
-- Right panel is `Dossier::lines()` for the cursor room.
+- Beyond slice 2's keys: `>` follows a stairwell or portal under the cursor to that
+  plane and `<` walks back the way it came, `g` leaves and starts a `/go` to the cursor
+  room, `q`/Esc leave, Ctrl-Q quits. Esc closes a search rather than the map — one Esc,
+  one thing.
+- No Tab-to-next-room: the arrows move the cursor and `/` finds a room by name, and a
+  third way to move the cursor is a third thing to remember.
+- Right panel is `Dossier::lines()` for the cursor room, behind a ruled edge — the
+  map's own right margin is ragged and the panel read as part of it without one.
 - Bounce out and restore on a death event or an HP-gate trip.
 - `mmc map --content <db> --at <map/room>` in `cli.rs`: the view needs the graph, not a
   connection, so offline planning between sessions is nearly free.

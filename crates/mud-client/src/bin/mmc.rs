@@ -17,6 +17,7 @@ fn main() -> ExitCode {
             capture,
         } => run_command(&script, &profile, capture.as_deref()),
         Command::Path { from, to, content } => path_command(&from, &to, &content),
+        Command::Map { at, content } => map_command(&at, &content),
         Command::Farm {
             profile,
             capture,
@@ -177,6 +178,65 @@ fn path_command(from: &str, to: &str, content: &std::path::Path) -> ExitCode {
             println!("{}", words.join(" "));
             ExitCode::SUCCESS
         }
+    }
+}
+
+fn map_command(at: &str, content: &std::path::Path) -> ExitCode {
+    use mud_client::map::PaintCtx;
+    use mud_client::mapview::{MapView, ViewAction, run_offline};
+
+    let graph = match mud_client::graph::RoomGraph::load(content) {
+        Ok(g) => Arc::new(g),
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let spawns = match mud_client::spawn::SpawnTable::load(content) {
+        Ok(s) => Arc::new(s),
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // Same resolver `/go` and `/map` use, so a room means one thing
+    // whichever way you ask for it.
+    let anchor = match mud_client::go::resolve(&graph, None, at) {
+        Ok(id) => id,
+        Err(refusal) => {
+            for line in refusal.lines() {
+                eprintln!("{line}");
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+    let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    // Nothing is known about a character here — there is no character —
+    // so nothing is warned about. See `map::PaintCtx`.
+    let mut view = MapView::new(
+        graph.clone(),
+        spawns,
+        anchor,
+        None,
+        PaintCtx::default(),
+        (cols as usize, rows as usize),
+    );
+    match run_offline(&mut view) {
+        Err(e) => {
+            eprintln!("terminal error: {e}");
+            ExitCode::FAILURE
+        }
+        // Nothing to walk with, so the answer is the room itself: enough
+        // to paste into a profile, a loop file or a `/go`.
+        Ok(ViewAction::Go(id)) => {
+            let name = graph
+                .room(id)
+                .map(|r| r.name.clone())
+                .unwrap_or_else(|| "?".into());
+            println!("{}/{}  {name}", id.map, id.room);
+            ExitCode::SUCCESS
+        }
+        Ok(_) => ExitCode::SUCCESS,
     }
 }
 
