@@ -197,6 +197,44 @@ impl RoomGraph {
             .collect()
     }
 
+    /// Every room, in id order.
+    pub fn iter(&self) -> impl Iterator<Item = (RoomId, &GraphRoom)> {
+        self.rooms.iter().map(|(id, room)| (*id, room))
+    }
+
+    /// Step counts from `from` to every room it can reach.
+    ///
+    /// One BFS, so ranking a hundred same-named candidates costs what
+    /// routing to one of them does. That is the whole reason this exists
+    /// beside [`RoomGraph::route`]: `/go Slum Street` matches 152 rooms,
+    /// and ranking those by calling `route` in a loop would be 152 full
+    /// traversals over ~26k rooms — seconds of blocking work on the path
+    /// that handles a keystroke.
+    ///
+    /// The BFS skeleton is duplicated rather than shared because `route`
+    /// early-exits on its target and tracks parents to rebuild the path;
+    /// this does neither, and folding both into one function would cost
+    /// more in branches than the dozen lines it saved.
+    pub fn distances(&self, from: RoomId) -> BTreeMap<RoomId, usize> {
+        let mut seen = BTreeMap::new();
+        if !self.rooms.contains_key(&from) {
+            return seen;
+        }
+        seen.insert(from, 0);
+        let mut queue = VecDeque::from([from]);
+        while let Some(cur) = queue.pop_front() {
+            let steps = seen[&cur] + 1;
+            for edge in self.rooms[&cur].exits.iter().flatten() {
+                if !self.rooms.contains_key(&edge.dest) || seen.contains_key(&edge.dest) {
+                    continue;
+                }
+                seen.insert(edge.dest, steps);
+                queue.push_back(edge.dest);
+            }
+        }
+        seen
+    }
+
     /// Shortest route as direction steps (BFS over exits into known
     /// rooms). `None` when unreachable; empty when `from == to`.
     pub fn route(&self, from: RoomId, to: RoomId) -> Option<Vec<Direction>> {
