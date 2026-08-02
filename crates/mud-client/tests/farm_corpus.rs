@@ -358,7 +358,12 @@ fn emissions_flow_one_per_ack_and_never_wedge() {
     // 639 of the corpus's 2837 occupant names are painted cyan or white
     // (passive townsfolk, animals, guards, healers), and every swing at
     // one of them is a command that is no longer sent.
-    assert_eq!(total, 1781, "corpus gate throughput changed");
+    // 1781 -> 1824 when the ASSIST learned the runner's priority: sweep
+    // the floor before picking the next fight. The extra 43 are `get`s
+    // that used to be skipped entirely, because the old rule was "never
+    // loot while anything is worth fighting" and the post-kill block
+    // does not always come back before somebody else takes the pile.
+    assert_eq!(total, 1824, "corpus gate throughput changed");
 }
 
 /// The gate invents nothing. Everything it emits was either a bot

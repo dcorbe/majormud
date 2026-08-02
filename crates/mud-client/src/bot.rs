@@ -501,25 +501,29 @@ impl Bot {
                     .iter()
                     .enumerate()
                     .any(|(i, name)| self.would_attack(name) && aggressive_here(room, i));
-                let target = room
-                    .also_here
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, name)| self.attackable(name) && aggressive_here(room, *i))
-                    .max_by_key(|(i, name)| (self.threat_of(name), std::cmp::Reverse(*i)))
-                    .map(|(_, name)| name.clone());
-                let mut actions: Vec<BotAction> = target
-                    .and_then(|name| self.engage(&name))
-                    .into_iter()
-                    .collect();
-                // Floor cash rides the same toggle as drop pickup. Only
-                // in a room with no work: standing over a pile mid-fight
-                // is how loot gets a character killed, and the post-kill
-                // block lists the pile again anyway.
                 if self.swept.0 != room.name {
                     self.swept = (room.name.clone(), HashSet::new());
                 }
-                if self.config.auto_get && !self.room_has_work {
+                let mut actions: Vec<BotAction> = Vec::new();
+                // Money on the floor is swept BEFORE the next fight is
+                // picked — the same priority `StopState::verdict` uses,
+                // so the assist and a `/farm` run behave identically.
+                //
+                // This used to be `!self.room_has_work`, i.e. never
+                // sweep while anything was worth fighting, and the
+                // attack was emitted first. On a shared board that
+                // loses every contested pile: measured live 2026-08-02
+                // (cwrun6.raw), a block announcing 15 copper was
+                // answered `a rat`, then `look`, and only then `get
+                // copper` — by which time another player had taken it.
+                //
+                // An ONGOING fight still outranks the floor: `engaged`
+                // is set only while a swing has been traded, and it is
+                // cleared above when the target stops being listed.
+                // Standing over a pile mid-fight is how loot gets a
+                // character killed; standing over one BEFORE the fight
+                // costs at most a round of grace.
+                if self.config.auto_get && self.engaged.is_none() {
                     for entry in &room.items {
                         if let Some((_, denom)) = coin_pile(entry)
                             && self.swept.1.insert(denom.clone())
@@ -528,6 +532,14 @@ impl Bot {
                         }
                     }
                 }
+                let target = room
+                    .also_here
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, name)| self.attackable(name) && aggressive_here(room, *i))
+                    .max_by_key(|(i, name)| (self.threat_of(name), std::cmp::Reverse(*i)))
+                    .map(|(_, name)| name.clone());
+                actions.extend(target.and_then(|name| self.engage(&name)));
                 actions
             }
             Event::ActorEntered { name, .. } => {

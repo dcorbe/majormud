@@ -1211,17 +1211,49 @@ fn an_item_wearing_a_coin_name_is_not_cash() {
     assert!(actions.is_empty(), "{actions:?}");
 }
 
-/// Fight first, loot after: a room with work engages and leaves the
-/// pile alone — the post-kill block lists it again, and THAT sweep is
-/// safe to stand still for.
+/// Sweep first, THEN engage — the same priority `StopState::verdict`
+/// uses, so the assist and a `/farm` run behave identically.
+///
+/// This used to assert the opposite (fight first, sweep the post-kill
+/// block). On a shared board that loses every contested pile: measured
+/// live 2026-08-02 (cwrun6.raw), a block announcing 15 copper was
+/// answered `a rat`, then `look`, and only then `get copper` — by which
+/// time another player had taken it. Three uncontested piles in the
+/// same session were swept immediately and kept.
 #[test]
-fn fights_before_looting() {
+fn sweeps_before_engaging() {
     let mut bot = get_bot();
     let actions = bot.on_event(&Event::RoomSeen(view_with_items(
         &["giant rat"],
         &["2968 copper farthings"],
     )));
-    assert_eq!(actions, vec![BotAction::Send("a rat".into())]);
+    assert_eq!(
+        actions,
+        vec![
+            BotAction::Send("get copper".into()),
+            BotAction::Send("a rat".into()),
+        ],
+        "the coins go out first, and the fight still starts"
+    );
+}
+
+/// The floor never interrupts a swing already traded: `engaged` gates
+/// the sweep, exactly as it gates `Verdict::Busy` in the runner.
+#[test]
+fn an_ongoing_fight_is_not_interrupted_to_loot() {
+    let mut bot = get_bot();
+    // First block engages the rat.
+    bot.on_event(&Event::RoomSeen(view_with_items(&["giant rat"], &[])));
+    assert_eq!(bot.engaged(), Some("giant rat"));
+    // A pile appears mid-fight; the bot keeps fighting and ignores it.
+    let actions = bot.on_event(&Event::RoomSeen(view_with_items(
+        &["giant rat"],
+        &["2968 copper farthings"],
+    )));
+    assert!(
+        actions.is_empty(),
+        "money must not interrupt a fight in progress: {actions:?}"
+    );
 }
 
 #[test]
