@@ -1104,6 +1104,7 @@ fn view_named(name: &str, also_here: &[&str]) -> RoomView {
         exits: vec!["north".into()],
         also_here: also_here.iter().map(|s| s.to_string()).collect(),
         items: vec![],
+        also_here_sgr: Vec::new(),
     }
 }
 

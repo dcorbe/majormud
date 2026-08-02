@@ -38,6 +38,21 @@ pub struct RoomView {
     pub exits: Vec<String>,
     /// Names from "Also here: ..." (without the trailing period).
     pub also_here: Vec<String>,
+    /// The SGR each `also_here` name was painted in, same length and
+    /// order, `None` for a name that carried no colour of its own.
+    ///
+    /// The board paints occupants by what they ARE, and it is the only
+    /// signal that says so: bright magenta `1;35` is an aggressive
+    /// monster (or a player — those are capitalised), cyan `0;36` is
+    /// passive townsfolk and animals, white `0;37` is guards, healers
+    /// and named NPCs. Measured across six live captures, 67 distinct
+    /// names, zero counterexamples in either direction. See
+    /// [`crate::bot::Bot::aggressive_here`].
+    ///
+    /// Empty when the block was parsed without colour at all — an
+    /// unpainted board, or a fixture — which callers must read as "no
+    /// opinion" rather than as "nothing is aggressive".
+    pub also_here_sgr: Vec<Option<String>>,
     /// Items/coins from "You notice ... here.".
     pub items: Vec<String>,
 }

@@ -17010,31 +17010,42 @@ impl Core {
         }
 
         // Players first, then live monsters (oracle: NPCs share the line).
-        let mut others: Vec<&str> = self
+        let others: Vec<&str> = self
             .in_game_sessions()
             .filter(|(id, p)| *id != session && p.location == room.id && !p.hidden)
             .map(|(_, p)| p.name.as_str())
             .collect();
-        others.extend(
+        // Players are always bright magenta; a monster is painted by what
+        // it IS. The board's own convention, measured across six live
+        // captures (docs/mud-client.md): bright magenta is an aggressive
+        // template, cyan is passive townsfolk and animals, white is
+        // guards, healers and named NPCs. Clients read this to decide
+        // what is safe to attack, so painting everything magenta — which
+        // this did — told them a passive townsman was fair game.
+        let mut painted_others: Vec<(&str, &str)> =
+            others.iter().map(|n| (*n, text::color::ALSO_NAME)).collect();
+        painted_others.extend(
             self.monsters
                 .values()
                 .filter(|m| m.location == room.id)
-                .map(|m| m.name.as_str()),
+                .map(|m| {
+                    let sgr = self
+                        .content
+                        .monsters
+                        .get(&m.template)
+                        .map(|t| text::color::occupant(t.behaviour))
+                        .unwrap_or(text::color::ALSO_NAME);
+                    (m.name.as_str(), sgr)
+                }),
         );
-        if !others.is_empty() {
-            // Oracle palette: "0;35 Also here: 1;35 <name> 0m 0;35 ." —
-            // each name bright magenta inside the magenta line.
+        if !painted_others.is_empty() {
+            // Oracle palette: "0;35 Also here: <sgr> <name> 0m 0;35 ."
             out.push_str(text::color::ALSO);
             out.push_str(text::ALSO_HERE);
-            let painted: Vec<String> = others
+            let painted: Vec<String> = painted_others
                 .iter()
-                .map(|n| {
-                    format!(
-                        "{}{n}{}{}",
-                        text::color::ALSO_NAME,
-                        text::color::RESET,
-                        text::color::ALSO
-                    )
+                .map(|(n, sgr)| {
+                    format!("{sgr}{n}{}{}", text::color::RESET, text::color::ALSO)
                 })
                 .collect();
             out.push_str(&painted.join(", "));

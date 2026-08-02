@@ -705,3 +705,90 @@ fn a_line_redrawn_over_the_prompt_with_a_bare_cr_still_classifies() {
         "{ev:?}"
     );
 }
+
+// --- occupant colour ---------------------------------------------------
+//
+// The board paints occupants by what they ARE, and it is the only signal
+// that says so. `strip_ansi` runs before classification, so the colour
+// has to be read off the raw line or it is gone.
+
+/// Bytes copied verbatim from cwrun3.raw / cwrun6.raw.
+fn also_here_line(entries: &[(&str, &str)]) -> String {
+    let mut s = String::from("\x1b[0;35mAlso here: \x1b[0m");
+    for (i, (sgr, name)) in entries.iter().enumerate() {
+        if i > 0 {
+            s.push_str("\x1b[0;35m, \x1b[0m");
+        }
+        s.push_str(&format!("\x1b[{sgr}m{name}\x1b[0m\x1b[0m"));
+    }
+    s.push_str("\x1b[0;35m.\x1b[0m\r\n");
+    s
+}
+
+fn room_with(entries: &[(&str, &str)]) -> mud_client::events::RoomView {
+    let mut p = Parser::new();
+    let mut text = String::from("\r\n\x1b[1;36mNewhaven, Village Center\r\n");
+    text.push_str(&also_here_line(entries));
+    text.push_str("\x1b[0;32mObvious exits: north\r\n");
+    let mut evs = p.push(&text);
+    evs.extend(p.finish());
+    evs.into_iter()
+        .find_map(|e| match e {
+            Event::RoomSeen(r) => Some(r),
+            _ => None,
+        })
+        .expect("a room block")
+}
+
+#[test]
+fn occupant_colours_survive_parsing() {
+    let r = room_with(&[
+        ("1;35", "big kobold thief"),
+        ("0;36", "big drunken brawler"),
+        ("0;37", "fierce guardsman"),
+    ]);
+    assert_eq!(
+        r.also_here,
+        vec!["big kobold thief", "big drunken brawler", "fierce guardsman"]
+    );
+    assert_eq!(
+        r.also_here_sgr,
+        vec![
+            Some("1;35".to_string()),
+            Some("0;36".to_string()),
+            Some("0;37".to_string())
+        ]
+    );
+}
+
+/// An unpainted board must read as "no opinion", never as "nothing here
+/// is aggressive" — that is the difference between falling back to the
+/// case rule and refusing to fight at all.
+#[test]
+fn an_unpainted_block_carries_no_colour_opinion() {
+    let mut p = Parser::new();
+    let mut evs = p.push(
+        "\r\n\x1b[1;36mNewhaven, Village Center\r\nAlso here: giant rat.\r\n\x1b[0;32mObvious exits: north\r\n",
+    );
+    evs.extend(p.finish());
+    let r = evs
+        .into_iter()
+        .find_map(|e| match e {
+            Event::RoomSeen(r) => Some(r),
+            _ => None,
+        })
+        .expect("a room block");
+    assert_eq!(r.also_here, vec!["giant rat"]);
+    assert!(r.also_here_sgr.iter().all(Option::is_none), "{:?}", r.also_here_sgr);
+}
+
+/// Players are bright magenta too, so colour alone cannot tell them from
+/// an aggressive monster — capitalisation does.
+#[test]
+fn players_are_painted_like_aggressive_monsters() {
+    let r = room_with(&[("1;35", "Habuji"), ("1;35", "large filthbug")]);
+    assert_eq!(
+        r.also_here_sgr,
+        vec![Some("1;35".to_string()), Some("1;35".to_string())]
+    );
+}

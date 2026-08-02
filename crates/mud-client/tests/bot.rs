@@ -15,6 +15,7 @@ fn view(also_here: &[&str]) -> RoomView {
         exits: vec!["closed door north".into(), "up".into()],
         also_here: also_here.iter().map(|s| s.to_string()).collect(),
         items: vec![],
+        also_here_sgr: Vec::new(),
     }
 }
 
@@ -1288,4 +1289,86 @@ fn the_block_form_and_the_name_form_agree() {
         bot.has_target(&r),
         bot.has_target_among(r.also_here.iter().map(String::as_str))
     );
+}
+
+// --- the board's own aggression marker ---------------------------------
+//
+// Ranking by `exp * 1000 + hp` picks the fattest name in the room, and
+// in a town that is a passive `drunken brawler`: 250 exp, 110 hp, more
+// than twice a cave bear, and it would never have touched the character.
+// It killed the live character on 2026-08-02. The board says which is
+// which by how it paints the name; the bot now reads that.
+
+fn painted(entries: &[(&str, &str)]) -> RoomView {
+    RoomView {
+        name: "Newhaven, Village Center".into(),
+        exits: vec!["north".into()],
+        also_here: entries.iter().map(|(_, n)| n.to_string()).collect(),
+        also_here_sgr: entries
+            .iter()
+            .map(|(c, _)| (!c.is_empty()).then(|| c.to_string()))
+            .collect(),
+        items: vec![],
+    }
+}
+
+fn fighter() -> Bot {
+    Bot::new(BotConfig {
+        auto_combat: true,
+        max_hp: 30,
+        ..BotConfig::default()
+    })
+}
+
+#[test]
+fn a_passive_mob_is_never_attacked_when_the_board_painted_it() {
+    let mut bot = fighter();
+    let acts = bot.on_event(&Event::RoomSeen(painted(&[("0;36", "big drunken brawler")])));
+    assert!(acts.is_empty(), "cyan is passive: {acts:?}");
+}
+
+#[test]
+fn a_guard_in_white_is_never_attacked_even_without_an_ignore_entry() {
+    let mut bot = fighter();
+    let acts = bot.on_event(&Event::RoomSeen(painted(&[("0;37", "fierce guardsman")])));
+    assert!(acts.is_empty(), "white is law: {acts:?}");
+}
+
+/// The one that matters: the brawler outranks the rat on the threat
+/// table, so a colour-blind bot picks the brawler.
+#[test]
+fn the_aggressive_one_is_chosen_over_a_fatter_passive_one() {
+    let mut bot = fighter();
+    let acts = bot.on_event(&Event::RoomSeen(painted(&[
+        ("0;36", "big drunken brawler"),
+        ("1;35", "giant rat"),
+    ])));
+    assert_eq!(acts, vec![BotAction::Send("a rat".into())], "{acts:?}");
+}
+
+/// Colour does not replace the case rule — players are magenta too.
+#[test]
+fn a_player_in_magenta_is_still_not_a_target() {
+    let mut bot = fighter();
+    let acts = bot.on_event(&Event::RoomSeen(painted(&[("1;35", "Habuji")])));
+    assert!(acts.is_empty(), "players are capitalised: {acts:?}");
+}
+
+/// Self-calibrating: an unpainted block has no opinion, so the old rule
+/// decides and every board that does not paint keeps working.
+#[test]
+fn an_unpainted_block_falls_back_to_the_case_rule() {
+    let mut bot = fighter();
+    let acts = bot.on_event(&Event::RoomSeen(painted(&[("", "giant rat")])));
+    assert_eq!(acts, vec![BotAction::Send("a rat".into())], "{acts:?}");
+}
+
+/// A passive occupant is not "work", so it must not hold a stop open or
+/// suppress a rest — that would strand the runner beside a townsman.
+#[test]
+fn a_passive_mob_is_not_work() {
+    let mut bot = fighter();
+    bot.on_event(&Event::RoomSeen(painted(&[("0;36", "big drunken brawler")])));
+    assert!(!bot.has_target(&painted(&[("0;36", "big drunken brawler")])));
+    assert!(bot.has_target(&painted(&[("1;35", "giant rat")])));
 }

@@ -732,7 +732,7 @@ impl StopState {
         if self.observed.is_none() || !here.seeded() {
             return;
         }
-        if bot.has_target_among(here.names()) {
+        if bot.has_target_among(here.aggressive_names()) {
             self.empty_since = None;
         } else {
             self.empty_since.get_or_insert(now);
@@ -929,7 +929,7 @@ impl StopState {
         // has the kills, arrivals and departures since that block in
         // it. Judged against the CURRENT bot too — a target refused
         // since then no longer holds the stop.
-        if bot.has_target_among(here.names()) {
+        if bot.has_target_among(here.aggressive_names()) {
             return Verdict::Busy;
         }
         // Nothing left to fight, but the board may still be saying what

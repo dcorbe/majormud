@@ -123,6 +123,10 @@ impl Parser {
         let cleaned = resolve_backspaces(&strip_ansi(raw));
         let mut rest = cleaned.as_str();
         let mut opening = opening_sgr(raw);
+        // Computed from the RAW line: `cleaned` has already lost the
+        // colours, and the colour is the only thing that says what an
+        // occupant IS.
+        let sgr = also_here_sgr(raw);
         let mut saw_prompt = false;
         // Prompts can appear anywhere in a physical line (mid-line
         // redraws); classify the segments between them in order.
@@ -130,7 +134,7 @@ impl Parser {
             let m = c.get(0).unwrap();
             let before = &rest[..m.start()];
             if !before.is_empty() {
-                self.classify(before, opening, events);
+                self.classify(before, opening, &sgr, events);
             }
             events.push(prompt_event(&c));
             rest = &rest[m.end()..];
@@ -153,10 +157,16 @@ impl Parser {
                 .rfind("]:")
                 .and_then(|p| opening_sgr(&raw[p + 2..]));
         }
-        self.classify(rest, opening, events);
+        self.classify(rest, opening, &sgr, events);
     }
 
-    fn classify(&mut self, text_line: &str, opening: Option<&str>, events: &mut Vec<Event>) {
+    fn classify(
+        &mut self,
+        text_line: &str,
+        opening: Option<&str>,
+        sgr: &[Option<String>],
+        events: &mut Vec<Event>,
+    ) {
         // A bare carriage return is a redraw, not text: foreign boards
         // overwrite the dangling prompt with `\r` + erase-line where
         // stock uses a newline (cwrun2.raw, cwgaming 2026-08-01), and
@@ -190,6 +200,14 @@ impl Parser {
                     .split(", ")
                     .map(str::to_string)
                     .collect();
+                // Only when the split agrees with what the raw line
+                // painted; a mismatch means one of the two readings is
+                // wrong, and a wrong colour is worse than none.
+                room.also_here_sgr = if sgr.len() == room.also_here.len() {
+                    sgr.to_vec()
+                } else {
+                    Vec::new()
+                };
                 return;
             }
             if let Some(items) = text_line
@@ -228,6 +246,76 @@ fn prompt_event(c: &regex::Captures) -> Event {
 
 /// The SGR sequence in effect at the first visible character of the
 /// line, in `\x1b[..m` form; None when the line starts unpainted.
+/// The SGR each name on an "Also here:" line was painted in, in order.
+///
+/// The board renders the line as alternating runs — `0;35 "Also here: "`,
+/// `1;35 "<name>"`, `0;35 ", "`, `1;35 "<name>"`, `0;35 "."` — so the
+/// colour belongs to the run, and the separators are the line's own
+/// colour rather than anybody's. Everything after the marker that is not
+/// punctuation is a name, and its run's SGR is its colour.
+///
+/// Empty when the line carried no escape at all: callers must read that
+/// as "this board does not paint occupants", never as "nothing here is
+/// aggressive".
+fn also_here_sgr(raw: &str) -> Vec<Option<String>> {
+    let mut runs: Vec<(Option<String>, String)> = Vec::new();
+    let mut cur: Option<String> = None;
+    let mut text = String::new();
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    let mut painted = false;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            let mut j = i + 2;
+            while j < bytes.len() && (bytes[j].is_ascii_digit() || bytes[j] == b';') {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'm' {
+                runs.push((cur.take(), std::mem::take(&mut text)));
+                let code = &raw[i + 2..j];
+                // A reset ends the run without naming a colour.
+                cur = (!code.is_empty() && code != "0").then(|| code.to_string());
+                painted = true;
+                i = j + 1;
+                continue;
+            }
+        }
+        let ch = raw[i..].chars().next().unwrap_or('\0');
+        text.push(ch);
+        i += ch.len_utf8();
+    }
+    runs.push((cur, text));
+    if !painted {
+        return Vec::new();
+    }
+    let start = match runs
+        .iter()
+        .position(|(_, t)| t.contains(text::ALSO_HERE))
+    {
+        Some(i) => i,
+        None => return Vec::new(),
+    };
+    // The marker's own run may carry the first name behind it when the
+    // board does not reset between them.
+    let mut out = Vec::new();
+    for (idx, (sgr, t)) in runs.iter().enumerate().skip(start) {
+        let t = if idx == start {
+            match t.split_once(text::ALSO_HERE) {
+                Some((_, after)) => after,
+                None => continue,
+            }
+        } else {
+            t.as_str()
+        };
+        let t = t.trim().trim_end_matches('.').trim_end_matches(',').trim();
+        if t.is_empty() {
+            continue;
+        }
+        out.push(sgr.clone());
+    }
+    out
+}
+
 fn opening_sgr(raw: &str) -> Option<&str> {
     let bytes = raw.as_bytes();
     let mut i = 0;

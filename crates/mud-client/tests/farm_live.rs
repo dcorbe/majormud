@@ -102,13 +102,14 @@ fn world() -> Content {
         energy: 1000,
         roam_class: 7,
         level: 1,
-        // Lair: it will not chase or fight back, and -- unlike behaviour 0 --
-        // swinging at it is not a crime. M7's crime system charges evil for
-        // attacking an unprovoked behaviour-0/4 monster, and a freshly created
-        // character ships with evil warnings ON, so the server refuses the
-        // attack outright with "To do this action, you must turn off your evil
-        // warnings." A mode-0 fixture is simply unattackable now.
-        behaviour: 3,
+        // Aggressive (mode 2), for two reasons. Swinging at it is not a
+        // crime -- M7 charges evil only for an unprovoked behaviour-0/4
+        // monster, and a fresh character ships with evil warnings ON, so
+        // a mode-0 fixture is refused outright. And the server paints
+        // occupants by behaviour, so a passive mode (0/3) would render
+        // cyan and the bot would correctly decline to fight it: the
+        // fixture has to SAY the rat is something worth farming.
+        behaviour: 2,
         herd_mode: 0,
         ..Default::default()
     });
@@ -260,7 +261,7 @@ fn world_with_prose_death() -> Content {
         energy: 1000,
         roam_class: 9,
         level: 1,
-        behaviour: 3,
+        behaviour: 2,
         herd_mode: 0,
         ..Default::default()
     });
@@ -781,8 +782,21 @@ async fn the_fixture_world_has_a_monster_the_board_refuses_to_attack() {
 /// suppress its idle poke and reset its dwell counter on every prompt.
 /// The run did not fail; it HUNG. The timeout is what turns a
 /// regression back into a test failure instead of a wedged suite.
+///
+/// RETARGETED 2026-08-02. The bot now reads the board's occupant colour,
+/// and a crime-refused monster is ALWAYS painted passive — the crime
+/// gate fires only for behaviour 0/4, and both render cyan. So the bot
+/// never swings at one and this exact hang is unreachable through it.
+/// What the fixture still proves is the risk that replaced it: a passive
+/// occupant standing in the stop room is not "work", and the stop must
+/// prove itself empty and LEAVE rather than sit there watching a
+/// townsman. Same wedge, same timeout, new cause. The latch behaviour
+/// itself is covered at unit level by
+/// `bot.rs::a_refused_attack_clears_the_engaged_latch` and friends,
+/// which drive an unpainted room and so are unaffected — refusals still
+/// reach magenta monsters for reasons other than the crime gate.
 #[tokio::test]
-async fn a_refused_monster_does_not_hang_the_stop() {
+async fn a_passive_occupant_does_not_hang_the_stop() {
     let server = start_with(world_with_refused_monster()).await;
     let session = logged_in(server.local_addr(), "Persist").await;
 
@@ -807,34 +821,40 @@ async fn a_refused_monster_does_not_hang_the_stop() {
     assert_eq!(stats.loops, 1);
     assert_eq!(
         stats.kills, 0,
-        "nothing was killable here; a kill means the crime gate stopped refusing: {stats:?}"
+        "the beetle is painted passive; a kill means the colour gate stopped working: {stats:?}"
     );
 }
 
-/// The point of the profile toggle: with warnings off, the very monster
-/// the crime gate refused above becomes farmable. Same world, same
-/// circuit, one profile flag different from
-/// `a_refused_monster_does_not_hang_the_stop`.
+/// The profile toggle still works on the SERVER — turning warnings off
+/// makes the crime gate stop refusing — but it is no longer observable
+/// through a farm run, because the bot declines the passive beetle
+/// before the gate is ever consulted. Driven by hand for that reason.
+///
+/// (Before the colour gate this was a farm run asserting `kills >= 1`.)
 #[tokio::test]
-async fn the_evil_warning_toggle_makes_a_refused_monster_farmable() {
+async fn the_evil_warning_toggle_stops_the_board_refusing() {
     let server = start_with(world_with_refused_monster()).await;
     let session = logged_in_with(server.local_addr(), "Unwarned", true).await;
+    let t = Duration::from_secs(10);
 
-    let bot = BotConfig {
-        auto_combat: true,
-        max_hp: 0,
-        ..BotConfig::default()
-    };
-    let run = farm(&session, bot, farm_config(&["1/3"], 1));
-    let (end, stats) = tokio::time::timeout(Duration::from_secs(30), run)
+    session.send("n");
+    session.expect("Training Yard", t).await.expect("walked north");
+    session.send("e");
+    session.expect("Rat Cellar", t).await.expect("walked east");
+    session
+        .expect("giant beetle", t)
         .await
-        .expect("run should finish")
-        .expect("farm run");
+        .expect("a beetle should be standing here at boot");
 
-    assert_eq!(end, FarmEnd::LoopsDone);
+    session.send("a beetle");
+    let refused = tokio::time::timeout(
+        Duration::from_secs(3),
+        session.expect(mud_core::crime::WARN_ON_EVIL_REFUSAL, Duration::from_secs(3)),
+    )
+    .await;
     assert!(
-        stats.kills >= 1,
-        "warnings are off, so the swing should have landed: {stats:?}"
+        matches!(refused, Ok(Err(_)) | Err(_)),
+        "with warnings off the board must NOT refuse the swing"
     );
 }
 

@@ -354,7 +354,11 @@ fn emissions_flow_one_per_ack_and_never_wedge() {
     // departure-rest fix ran this suite clean at 1969, and the play
     // assist lives in the TUI, which this replay never exercises), and
     // it can emit nothing but gets by construction.
-    assert_eq!(total, 2040, "corpus gate throughput changed");
+    // 2040 -> 1781 when the bot started reading the board's own colour:
+    // 639 of the corpus's 2837 occupant names are painted cyan or white
+    // (passive townsfolk, animals, guards, healers), and every swing at
+    // one of them is a command that is no longer sent.
+    assert_eq!(total, 1781, "corpus gate throughput changed");
 }
 
 /// The gate invents nothing. Everything it emits was either a bot
@@ -421,8 +425,14 @@ fn the_corpus_shows_the_bot_occupied_rooms() {
     // render); one such block in the corpus lists a target. -> 399 when
     // the merge brought slice-8's expedition raws in (five more occupied
     // blocks across the gang and slime-lair sessions).
+    // 399 -> 333 when the bot started reading the board's own colour.
+    // Those 66 blocks list a PASSIVE occupant and nothing else: a
+    // drunken brawler (250 exp, 110 hp — it outranks a cave bear on the
+    // threat table), a townsman, a guardsman, a mangy dog. The bot used
+    // to pick the fattest name in the room and swing at it, which is
+    // what killed the live character on 2026-08-02.
     assert_eq!(
-        total, 399,
+        total, 333,
         "room blocks listing an attackable target changed; if that is \
          intended, update the number — but check the stop assertions \
          above are still doing work"

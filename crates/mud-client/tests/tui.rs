@@ -130,6 +130,7 @@ fn a_room(name: &str) -> RoomView {
         exits: vec![],
         also_here: vec![],
         items: vec![],
+        also_here_sgr: Vec::new(),
     }
 }
 

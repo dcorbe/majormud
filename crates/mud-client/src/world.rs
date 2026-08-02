@@ -243,6 +243,13 @@ pub struct Pile {
 pub struct Occupant {
     pub name: String,
     pub kind: OccupantKind,
+    /// The SGR the board painted this name in, when it painted at all.
+    ///
+    /// Carried because the model, not the block, is what the stop asks
+    /// "is there anything here worth fighting" — and the answer depends
+    /// on what the occupant IS, which only the colour says. Without it a
+    /// passive townsman kept a stop Busy forever (live-caught, 2026-08-02).
+    pub sgr: Option<String>,
     /// When this name was first seen here — preserved across reseeding
     /// blocks, so "how long has that been standing there" is answerable.
     pub since: Instant,
@@ -445,7 +452,8 @@ impl Here {
                 self.occupants = room
                     .also_here
                     .iter()
-                    .map(|name| {
+                    .enumerate()
+                    .map(|(i, name)| {
                         let clean = crate::correlate::strip_decoration(name);
                         let since = old
                             .iter()
@@ -455,6 +463,7 @@ impl Here {
                         Occupant {
                             name: clean.to_string(),
                             kind: kind_of(name),
+                            sgr: room.also_here_sgr.get(i).cloned().flatten(),
                             since,
                         }
                     })
@@ -491,6 +500,13 @@ impl Here {
                     self.occupants.push(Occupant {
                         kind: kind_of(&clean),
                         name: clean,
+                        // An arrival line carries no colour we parse, so
+                        // this is genuinely unknown until the next block
+                        // repaints the room. `aggressive_names` treats an
+                        // unknown as not-a-target while the rest of the
+                        // room IS painted, which is the conservative
+                        // reading and self-corrects on the next look.
+                        sgr: None,
                         since: now,
                     });
                 }
@@ -577,6 +593,20 @@ impl Here {
     /// the last render are already folded in.
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.occupants.iter().map(|o| o.name.as_str())
+    }
+
+    /// The occupants the board painted as aggressive, or all of them
+    /// when it painted nobody.
+    ///
+    /// Self-calibrating in the same way as
+    /// [`crate::bot::aggressive_here`]: an unpainted model has no
+    /// opinion and the case rule alone decides.
+    pub fn aggressive_names(&self) -> impl Iterator<Item = &str> {
+        let painted = self.occupants.iter().any(|o| o.sgr.is_some());
+        self.occupants
+            .iter()
+            .filter(move |o| !painted || o.sgr.as_deref() == Some(crate::bot::AGGRESSIVE_SGR))
+            .map(|o| o.name.as_str())
     }
 
     /// Does the model hold beliefs worth deciding on?

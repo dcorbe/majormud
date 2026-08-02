@@ -13,6 +13,7 @@ fn room(name: &str, also_here: &[&str]) -> Event {
         exits: vec!["south".into()],
         also_here: also_here.iter().map(|s| (*s).to_string()).collect(),
         items: vec![],
+        also_here_sgr: Vec::new(),
     })
 }
 

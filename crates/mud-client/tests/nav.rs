@@ -693,6 +693,7 @@ fn view(name: &str, exits: &[&str]) -> RoomView {
         exits: exits.iter().map(|s| (*s).to_string()).collect(),
         also_here: vec![],
         items: vec![],
+        also_here_sgr: Vec::new(),
     }
 }
 

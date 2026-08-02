@@ -231,6 +231,43 @@ pub(crate) fn target_word(name: &str) -> &str {
 
 /// Exits render as a display token, not a command — "closed door north",
 /// "closed gate west". The direction is the last word.
+/// The SGR the board paints an aggressive monster in.
+///
+/// The board colours occupants by what they ARE, and it is the only
+/// signal that says so. Measured across six live captures, 67 distinct
+/// names, zero counterexamples either way:
+///
+/// | SGR | behaviour mode | who |
+/// |---|---|---|
+/// | `1;35` bright magenta | 1, 2 | aggressive monsters — and players |
+/// | `0;36` cyan | 0, 3 | townsfolk, animals, brawlers |
+/// | `0;37` white | 4, 5 | guards, healers, named NPCs |
+///
+/// Players are bright magenta too, so colour alone is not enough: they
+/// are told apart by capitalisation, which [`is_attackable`] already
+/// tests. Aggressive monster = bright magenta AND lowercase.
+pub const AGGRESSIVE_SGR: &str = "1;35";
+
+/// Does the room block's own colouring permit swinging at occupant
+/// `idx`?
+///
+/// **Self-calibrating.** A block that painted nobody has no opinion, and
+/// the case rule alone decides — that is every unpainted board and every
+/// fixture, so nothing that worked before stops working. A block that
+/// painted anybody is trusted for everybody.
+///
+/// This exists because ranking by `exp * 1000 + hp` picks the fattest
+/// thing in the room, and the fattest thing in a town is a passive
+/// `drunken brawler`: 250 exp and 110 HP, more than twice a cave bear,
+/// which never would have touched the character. A hand-maintained
+/// ignore list was always going to miss one (live, 2026-08-02).
+pub fn aggressive_here(room: &crate::events::RoomView, idx: usize) -> bool {
+    if room.also_here_sgr.iter().all(Option::is_none) {
+        return true; // unpainted: no opinion
+    }
+    room.also_here_sgr.get(idx).and_then(|c| c.as_deref()) == Some(AGGRESSIVE_SGR)
+}
+
 fn exit_command(exit: &str) -> &str {
     exit.split_whitespace().last().unwrap_or(exit)
 }
@@ -459,12 +496,16 @@ impl Bot {
                 // Judged with would_attack, not attackable: a fight in
                 // progress is still work, and work is what makes
                 // resting incoherent.
-                self.room_has_work = room.also_here.iter().any(|name| self.would_attack(name));
+                self.room_has_work = room
+                    .also_here
+                    .iter()
+                    .enumerate()
+                    .any(|(i, name)| self.would_attack(name) && aggressive_here(room, i));
                 let target = room
                     .also_here
                     .iter()
                     .enumerate()
-                    .filter(|(_, name)| self.attackable(name))
+                    .filter(|(i, name)| self.attackable(name) && aggressive_here(room, *i))
                     .max_by_key(|(i, name)| (self.threat_of(name), std::cmp::Reverse(*i)))
                     .map(|(_, name)| name.clone());
                 let mut actions: Vec<BotAction> = target
@@ -578,7 +619,10 @@ impl Bot {
     /// [`Bot::attackable`] instead would report an empty room in the
     /// middle of a fight, and the runner would walk out of it.
     pub fn has_target(&self, room: &crate::events::RoomView) -> bool {
-        self.has_target_among(room.also_here.iter().map(String::as_str))
+        room.also_here
+            .iter()
+            .enumerate()
+            .any(|(i, name)| self.would_attack(name) && aggressive_here(room, i))
     }
 
     /// The same question asked of any names at all, not just the ones a

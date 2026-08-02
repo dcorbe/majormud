@@ -125,6 +125,29 @@ pub mod color {
     pub const ALSO: &str = "\x1b[0;35m";
     /// ... with names in `1;35` bright magenta.
     pub const ALSO_NAME: &str = "\x1b[1;35m";
+    /// Passive occupants — townsfolk, animals, brawlers (`0;36` cyan).
+    pub const ALSO_PASSIVE: &str = "\x1b[0;36m";
+    /// Guards, healers and named NPCs (`0;37` white).
+    pub const ALSO_NPC: &str = "\x1b[0;37m";
+
+    /// The colour an occupant is painted in, by behaviour mode.
+    ///
+    /// The board tells clients what a monster IS by how it paints the
+    /// name, and it is the only signal that does. Measured across six
+    /// live captures, 67 distinct names, zero counterexamples:
+    /// modes 0/3 render cyan, mode 4 white, and the aggressive modes
+    /// (1/2/5/6) bright magenta — the same magenta players get, which is
+    /// why a client must ALSO test capitalisation to tell them apart.
+    ///
+    /// See `content::Monster::behaviour` for the mode taxonomy and
+    /// `monsters.md` §4 for what each mode does.
+    pub fn occupant(behaviour: i16) -> &'static str {
+        match behaviour {
+            0 | 3 => ALSO_PASSIVE,
+            4 => ALSO_NPC,
+            _ => ALSO_NAME,
+        }
+    }
     /// "You notice" floor line (`0;36` cyan).
     pub const NOTICE: &str = "\x1b[0;36m";
     /// Incoming monster attack/miss lines (`0;36` cyan).
