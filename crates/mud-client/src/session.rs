@@ -154,7 +154,13 @@ impl Shared {
 
 enum Cmd {
     /// Paced game line (CRLF appended), tagged with its correlation id.
-    Line(CmdId, String),
+    /// `moves` marks a line that walks a command exit — correlated as a
+    /// move whatever its wording. See [`Session::send_move`].
+    Line {
+        id: CmdId,
+        line: String,
+        moves: bool,
+    },
     /// Unpaced raw bytes (telnet negotiation replies, FSD keystrokes).
     /// Excluded from correlation: not line-shaped, never echoed as one.
     Raw(Vec<u8>),
@@ -243,7 +249,7 @@ impl Session {
                 let mut pacer = Pacer::new(Duration::ZERO);
                 while let Some(cmd) = cmd_rx.recv().await {
                     match cmd {
-                        Cmd::Line(id, line) => {
+                        Cmd::Line { id, line, moves } => {
                             // Re-read per send: `set_pace` retunes a live
                             // session when `/farm` takes it over or hands
                             // it back.
@@ -259,10 +265,13 @@ impl Session {
                             // (this task is the only writer), and the
                             // entry exists before its echo can possibly
                             // arrive.
-                            correlator
-                                .lock()
-                                .expect("correlator lock")
-                                .sent(id, &line, Instant::now());
+                            {
+                                let mut cor = correlator.lock().expect("correlator lock");
+                                match moves {
+                                    true => cor.sent_move(id, &line, Instant::now()),
+                                    false => cor.sent(id, &line, Instant::now()),
+                                }
+                            }
                             let mut bytes = line.clone().into_bytes();
                             bytes.extend_from_slice(b"\r\n");
                             if write_half.write_all(&bytes).await.is_err() {
@@ -400,7 +409,29 @@ impl Session {
     /// lines, and a trailing space must not defeat echo matching.
     pub fn send(&self, line: &str) -> CmdId {
         let id = CmdId(self.next_id.fetch_add(1, Ordering::Relaxed));
-        let _ = self.cmd_tx.send(Cmd::Line(id, line.trim().to_string()));
+        let _ = self.cmd_tx.send(Cmd::Line {
+            id,
+            line: line.trim().to_string(),
+            moves: false,
+        });
+        id
+    }
+
+    /// Send a line that moves the character even though it is not a
+    /// direction word — the phrase that walks a **command exit**
+    /// (`borrow skiff`, `go manhole`, `climb tree`).
+    ///
+    /// Identical to [`Session::send`] on the wire; the only difference
+    /// is that the correlator files it as a move, so the arriving room
+    /// block answers it. See [`crate::correlate::Correlator::sent_move`]
+    /// for why this is the caller's assertion and not a string test.
+    pub fn send_move(&self, line: &str) -> CmdId {
+        let id = CmdId(self.next_id.fetch_add(1, Ordering::Relaxed));
+        let _ = self.cmd_tx.send(Cmd::Line {
+            id,
+            line: line.trim().to_string(),
+            moves: true,
+        });
         id
     }
 

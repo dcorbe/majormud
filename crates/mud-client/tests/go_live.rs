@@ -109,6 +109,7 @@ fn client_graph() -> Arc<RoomGraph> {
             room.exits[d as usize] = Some(ExitEdge {
                 dest: RoomId { map: 1, room: dest },
                 exit_type: 0,
+                command: None,
             });
         }
         (RoomId { map: 1, room: n }, room)

@@ -884,3 +884,57 @@ fn a_door_refusal_with_a_period_retires_the_move() {
         "the block belongs to the step, not to a stale refusal"
     );
 }
+
+/// A command exit is walked with a phrase — `borrow skiff` at the
+/// Newhaven ferry — and the phrase must correlate as the move it is.
+///
+/// `kind_of` reads direction words, so the phrase files as `Opaque`,
+/// and an Opaque command's reply grammar does not expect a room block:
+/// the arrival would answer nothing, the navigator would wait out its
+/// whole deadline standing in the room it had already reached, and the
+/// walk would report a timeout at the dock. That is the live 2026-08-02
+/// failure, one layer down.
+#[test]
+fn a_command_exit_phrase_correlates_as_a_move() {
+    let now = Instant::now();
+    let mut c = Correlator::new(Duration::from_secs(20));
+    let id = CmdId(1);
+    c.sent_move(id, "borrow skiff", now);
+    // The board echoes what it accepted.
+    let echo = c.on_event(Event::Line("borrow skiff".into()), now);
+    assert_eq!(
+        echo.answers,
+        Some(id),
+        "the echo answers the command it echoes, as for any accepted line"
+    );
+    let arrival = c.on_event(
+        Event::RoomSeen(RoomView {
+            name: "Small Pier".into(),
+            ..Default::default()
+        }),
+        now,
+    );
+    assert_eq!(
+        arrival.answers,
+        Some(id),
+        "the room block must answer the phrase that moved us"
+    );
+}
+
+/// The same phrase sent as an ordinary line stays Opaque, which is what
+/// makes the override necessary rather than cosmetic.
+#[test]
+fn the_same_phrase_sent_plainly_does_not_claim_a_room_block() {
+    let now = Instant::now();
+    let mut c = Correlator::new(Duration::from_secs(20));
+    c.sent(CmdId(1), "borrow skiff", now);
+    c.on_event(Event::Line("borrow skiff".into()), now);
+    let arrival = c.on_event(
+        Event::RoomSeen(RoomView {
+            name: "Small Pier".into(),
+            ..Default::default()
+        }),
+        now,
+    );
+    assert_eq!(arrival.answers, None);
+}

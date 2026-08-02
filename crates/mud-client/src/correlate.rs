@@ -333,6 +333,29 @@ impl Correlator {
     /// the command text, not the wire bytes: trailing CR/LF would defeat
     /// every echo match silently.
     pub fn sent(&mut self, id: CmdId, line: &str, now: Instant) {
+        self.sent_kind(id, line, false, now)
+    }
+
+    /// As [`Correlator::sent`], but the caller asserts this line moves
+    /// the character however it is worded.
+    ///
+    /// For **command exits**, where the board is walked with a phrase
+    /// rather than a direction — `borrow skiff`, `go manhole`,
+    /// `climb tree`. [`kind_of`] reads direction words and would file
+    /// these as `Opaque`, so the arriving room block would answer
+    /// nothing and the navigator would wait out its deadline standing in
+    /// the room it had already reached.
+    ///
+    /// Deliberately not solved by teaching `kind_of` to recognise `go `
+    /// and `climb `: those are ordinary words a player may type at a
+    /// board that says unknown commands out loud, and a wrong `Move`
+    /// classification lets an unrelated line retire a real step. The
+    /// graph knows which exits are command exits; the string does not.
+    pub fn sent_move(&mut self, id: CmdId, line: &str, now: Instant) {
+        self.sent_kind(id, line, true, now)
+    }
+
+    fn sent_kind(&mut self, id: CmdId, line: &str, force_move: bool, now: Instant) {
         debug_assert_eq!(line, line.trim(), "sent() wants the trimmed command text");
         self.expire(now);
         // A bare Enter is meaningful on the wire (pager advance) but
@@ -344,7 +367,7 @@ impl Correlator {
         self.queue.push_back(Entry {
             id,
             text: line.to_string(),
-            kind: kind_of(line),
+            kind: if force_move { Kind::Move } else { kind_of(line) },
             echoed: false,
             deadline: now + self.ttl,
             // Generous: covers the deepest measured pipeline (~3s of

@@ -33,6 +33,7 @@ fn graph() -> RoomGraph {
             room.exits[d as usize] = Some(ExitEdge {
                 dest: rid(1, dest),
                 exit_type: 0,
+                command: None,
             });
         }
         (rid(1, n), room)
@@ -117,6 +118,7 @@ fn graph_with_a_dark_market() -> RoomGraph {
             room.exits[d as usize] = Some(ExitEdge {
                 dest: rid(1, dest),
                 exit_type: 0,
+                command: None,
             });
         }
         (rid(1, n), room)
@@ -173,6 +175,7 @@ fn rejects_a_circuit_whose_wrap_around_has_no_route() {
                     e[Direction::North as usize] = Some(ExitEdge {
                         dest: rid(1, 2),
                         exit_type: 0,
+                        command: None,
                     });
                     e
                 },

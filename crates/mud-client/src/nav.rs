@@ -418,12 +418,16 @@ impl Navigator {
                     });
                 }
 
-                let exit_type = self
+                let edge = self
                     .graph
                     .room(current)
-                    .and_then(|r| r.exits[step as usize].as_ref())
-                    .map(|e| e.exit_type)
-                    .unwrap_or(0);
+                    .and_then(|r| r.exits[step as usize].as_ref());
+                let exit_type = edge.map(|e| e.exit_type).unwrap_or(0);
+                // A command exit is not walked, it is spoken: the
+                // direction word does nothing at all at the Newhaven
+                // ferry, and the leg simply stalls there until the
+                // deadline. See `ExitEdge::command`.
+                let command = edge.and_then(|e| e.command.clone());
 
                 // The room the walk believes it is standing in. Needed
                 // because a dark answer means "still here" when it
@@ -434,7 +438,15 @@ impl Navigator {
                     .map(|r| r.name.clone())
                     .unwrap_or_default();
 
-                let sent = session.send(dir_word(step));
+                // Correlated as a move whatever it says, because that is
+                // what it is: `kind_of` reads direction words, and
+                // "borrow skiff" would otherwise be Opaque, so the
+                // arrival block would answer nothing and the step would
+                // wait out its whole deadline having already arrived.
+                let sent = match command.as_deref() {
+                    Some(cmd) => session.send_move(cmd),
+                    None => session.send(dir_word(step)),
+                };
                 let outcome = self
                     .walk_step(
                         step,

@@ -30,12 +30,14 @@ fn line(names: &[&str]) -> RoomGraph {
                 room.exits[Direction::East as usize] = Some(ExitEdge {
                     dest: id(n + 1),
                     exit_type: 0,
+                    command: None,
                 });
             }
             if n > 1 {
                 room.exits[Direction::West as usize] = Some(ExitEdge {
                     dest: id(n - 1),
                     exit_type: 0,
+                    command: None,
                 });
             }
             (id(n), room)

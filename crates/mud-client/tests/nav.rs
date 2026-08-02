@@ -104,6 +104,7 @@ fn client_graph(market_name: &str) -> RoomGraph {
             room.exits[d as usize] = Some(ExitEdge {
                 dest: RoomId { map: 1, room: dest },
                 exit_type: 0,
+                command: None,
             });
         }
         (RoomId { map: 1, room: n }, room)
@@ -237,6 +238,7 @@ fn graph_with_a_phantom_exit() -> RoomGraph {
     gates.exits[Direction::East as usize] = Some(ExitEdge {
         dest: RoomId { map: 1, room: 3 },
         exit_type: 0,
+        command: None,
     });
     RoomGraph::from_rooms(vec![
         (RoomId { map: 1, room: 1 }, gates),
@@ -662,6 +664,7 @@ fn twin_graph() -> RoomGraph {
             r.exits[*d as usize] = Some(ExitEdge {
                 dest: *dest,
                 exit_type: 0,
+                command: None,
             });
         }
         r

@@ -23,11 +23,27 @@ const DIRECTIONS: [Direction; 10] = [
     Direction::Down,
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ExitEdge {
     pub dest: RoomId,
     pub exit_type: i64,
+    /// The line that traverses a **command exit** ([`COMMAND_EXIT`]),
+    /// where walking the direction does nothing at all and the board
+    /// expects a phrase instead: `borrow skiff` at the Newhaven ferry,
+    /// `go manhole` into the Silvermere sewers, `climb tree` in the
+    /// Tasloi village.
+    ///
+    /// 250 exits in the shipped world are of this kind and every one of
+    /// them resolves: `para1` names a MESSAGE whose first line is the
+    /// command (the second is an alias, unused — the board matches
+    /// loosely enough that one spelling is sufficient, live 2026-08-02).
+    /// `None` everywhere else, including the one command exit whose
+    /// message is blank.
+    pub command: Option<String>,
 }
+
+/// Exit type for a command exit — see [`ExitEdge::command`].
+pub const COMMAND_EXIT: i64 = 10;
 
 #[derive(Debug, Clone, Default)]
 pub struct GraphRoom {
@@ -65,6 +81,11 @@ impl RoomGraph {
             cols.push(format!("para1_{i}"));
         }
         cols.push("light".into());
+        // Command exits point at a MESSAGE for their phrase, so the
+        // whole table comes along first: 1-odd thousand short rows
+        // against 250 lookups, which is cheaper than 250 queries and far
+        // cheaper than discovering at the ferry that we cannot move.
+        let commands = Self::load_exit_commands(&conn)?;
         let sql = format!("SELECT {} FROM room", cols.join(","));
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
@@ -99,6 +120,9 @@ impl RoomGraph {
                         room: dest,
                     },
                     exit_type,
+                    command: (exit_type == COMMAND_EXIT)
+                        .then(|| commands.get(&para1).cloned())
+                        .flatten(),
                 });
             }
             let (Ok(map), Ok(room)) = (u16::try_from(map), u16::try_from(room)) else {
@@ -107,6 +131,30 @@ impl RoomGraph {
             rooms.insert(RoomId { map, room }, graph_room);
         }
         Ok(RoomGraph { rooms })
+    }
+
+    /// Message number -> the command that walks a command exit.
+    ///
+    /// Blank lines are dropped rather than stored: an empty command is
+    /// indistinguishable from "no command" to every caller, and storing
+    /// `Some("")` would have the navigator send a bare Enter.
+    fn load_exit_commands(
+        conn: &rusqlite::Connection,
+    ) -> Result<BTreeMap<i64, String>, String> {
+        let mut stmt = conn
+            .prepare("SELECT number, messageline1 FROM message")
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+        let mut out = BTreeMap::new();
+        while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            let number: i64 = row.get(0).map_err(|e| e.to_string())?;
+            let line: Option<String> = row.get(1).map_err(|e| e.to_string())?;
+            let line = line.unwrap_or_default().trim().to_string();
+            if !line.is_empty() {
+                out.insert(number, line);
+            }
+        }
+        Ok(out)
     }
 
     /// Build from in-memory rooms (tests, synthetic worlds).

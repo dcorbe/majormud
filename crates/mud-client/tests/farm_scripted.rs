@@ -66,6 +66,7 @@ fn corridor() -> Arc<RoomGraph> {
     start.exits[Direction::North as usize] = Some(ExitEdge {
         dest: MIDWAY,
         exit_type: 0,
+        command: None,
     });
     let mut midway = GraphRoom {
         name: "Inner Ward".into(),
@@ -75,10 +76,12 @@ fn corridor() -> Arc<RoomGraph> {
     midway.exits[Direction::North as usize] = Some(ExitEdge {
         dest: STOP,
         exit_type: 0,
+        command: None,
     });
     midway.exits[Direction::South as usize] = Some(ExitEdge {
         dest: START,
         exit_type: 0,
+        command: None,
     });
     let mut stop = GraphRoom {
         name: "Keep".into(),
@@ -88,6 +91,7 @@ fn corridor() -> Arc<RoomGraph> {
     stop.exits[Direction::South as usize] = Some(ExitEdge {
         dest: MIDWAY,
         exit_type: 0,
+        command: None,
     });
     Arc::new(RoomGraph::from_rooms(vec![
         (START, start),

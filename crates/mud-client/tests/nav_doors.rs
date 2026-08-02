@@ -121,6 +121,7 @@ fn graph_with_exit(exit_type: i64) -> Arc<RoomGraph> {
     here.exits[Direction::North as usize] = Some(ExitEdge {
         dest: THERE,
         exit_type,
+        command: None,
     });
     let mut there = GraphRoom {
         name: "Inner Ward".into(),
@@ -130,6 +131,7 @@ fn graph_with_exit(exit_type: i64) -> Arc<RoomGraph> {
     there.exits[Direction::South as usize] = Some(ExitEdge {
         dest: HERE,
         exit_type,
+        command: None,
     });
     Arc::new(RoomGraph::from_rooms(vec![(HERE, here), (THERE, there)]))
 }

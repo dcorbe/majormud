@@ -313,6 +313,7 @@ fn client_graph() -> RoomGraph {
             r.exits[*d as usize] = Some(ExitEdge {
                 dest: *dest,
                 exit_type: 0,
+                command: None,
             });
         }
         (id, r)
