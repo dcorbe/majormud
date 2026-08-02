@@ -18,6 +18,11 @@ fn main() -> ExitCode {
         } => run_command(&script, &profile, capture.as_deref()),
         Command::Path { from, to, content } => path_command(&from, &to, &content),
         Command::Map { at, content } => map_command(&at, &content),
+        Command::Import {
+            file,
+            content,
+            start,
+        } => import_command(&file, &content, start.as_deref()),
         Command::Farm {
             profile,
             capture,
@@ -252,6 +257,75 @@ fn map_command(at: &str, content: &std::path::Path) -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(_) => ExitCode::SUCCESS,
+    }
+}
+
+fn import_command(
+    file: &std::path::Path,
+    content: &std::path::Path,
+    start: Option<&str>,
+) -> ExitCode {
+    use mud_client::mega::{Index, import, parse_mp};
+
+    let graph = match mud_client::graph::RoomGraph::load(content) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let text = match std::fs::read_to_string(file) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{}: {e}", file.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let mp = match parse_mp(&text) {
+        Ok(mp) => mp,
+        Err(e) => {
+            eprintln!("{}: {e}", file.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let start = match start.map(|s| {
+        mud_client::farm::parse_room_id(s)
+            .ok_or_else(|| format!("--start wants map/room, got {s:?}"))
+    }) {
+        Some(Err(e)) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+        Some(Ok(id)) => Some(id),
+        None => None,
+    };
+    let (l, report) = match import(&graph, &Index::build(&graph), &mp, start) {
+        Ok(pair) => pair,
+        Err(e) => {
+            eprintln!("{e}");
+            // An ambiguous start is answerable; say how.
+            if matches!(e, mud_client::mega::ImportError::AmbiguousStart { .. }) {
+                eprintln!("re-run with --start map/room to pick one");
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+    for line in report.lines() {
+        println!("{line}");
+    }
+    if l.stops.len() < 2 {
+        eprintln!("nothing walkable here; not saved");
+        return ExitCode::FAILURE;
+    }
+    match l.save(&mud_client::loops::dir()) {
+        Ok(path) => {
+            println!("saved {} stops as {:?}: {}", l.stops.len(), l.name, path.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("loop: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 

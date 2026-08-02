@@ -175,7 +175,12 @@ enum StepOutcome {
 /// "pickable types are 2, 7, 0xb"). Deliberately not 6 (hidden), 9/0x18
 /// (traps), 0x10 (timed), 0x14 (alignment) or 0x16/0x17 (spell/ability
 /// gates) — none of those yield to `open`.
-fn is_door(exit_type: i64) -> bool {
+/// Does this exit have a door on it?
+///
+/// Public because the MegaMud room-id codec needs the same answer: its
+/// exit signature doubles a direction's value when the exit has a door,
+/// and a second opinion about what a door is would put every hash out.
+pub fn is_door(exit_type: i64) -> bool {
     matches!(exit_type, 2 | 7 | 0xb)
 }
 

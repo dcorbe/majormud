@@ -72,17 +72,24 @@ digits of a room-name hash (Σ char × 1-based position, last 3 hex digits of th
 followed by 5 nibbles of exit signature (`u_d`, `se_sw`, `ne_nw`, `e_w`, `n_s`; first
 direction of each pair = 1, second = 4, doubled for a door).
 
-Computed over all 26k rooms and tested against the 156 mirrored `.mp` files in
-`docs/mirrors/megamud.net/www.megamud.net/paths/`. On a sample of 18 loops:
+Computed over all 26k rooms and tested against the mirrored corpus at
+`docs/mirrors/megamud.net/www.megamud.net/paths/` — **19 `.mp` files**, not the 156
+first claimed here; the other 137 entries are zips that have not been unpacked.
 
-| outcome | count |
-|---|---|
-| start room resolves uniquely | 10 |
-| walks end-to-end on our graph | 6 |
-| every step hash also matches | 1 |
+*(Numbers below are the built importer's, measured. The planning-time Python probe
+guessed which exit types carry doors and got the hashes wrong, which understated every
+row. The real door test is `nav::is_door`, shared with the navigator.)*
 
-`A0700050` alone matches 38 rooms; 8,312 distinct IDs cover 26k rooms. The failures are
-not parser bugs — `delfcity.mp`, `elfloop.mp`, `madwloop.mp` start in rooms that do not
+| outcome | probe | actual |
+|---|---|---|
+| start room resolves uniquely | 10/18 | **14/19** |
+| start ambiguous (operator picks) | — | 2 |
+| start not in this world | — | 3 |
+| walks end-to-end on our graph | 6 | **7** |
+| every step hash also verifies | 1 | 2 |
+
+`A0700050` alone matches 38 rooms; 8,584 distinct IDs cover 26,720. The failures are not
+parser bugs — `low1loop.mp`, `madwloop.mp`, `rivpgnol.mp` start in rooms that do not
 exist in stock 1.11p, because those are other realms' custom maps.
 
 So the importable core of a `.mp` is **"start here, then walk these directions"**, and

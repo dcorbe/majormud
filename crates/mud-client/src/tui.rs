@@ -362,6 +362,15 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                             KeyOutcome::Loops { name } => {
                                 note(&mut out, &describe_loops(graph.as_deref(), name.as_deref()).join("\n"))?;
                             }
+                            KeyOutcome::ImportLoop { file } => {
+                                note(&mut out, &match graph.as_ref() {
+                                    None => vec![format!(
+                                        "-- loop: no room database at {} --",
+                                        content_path(session.profile()).display()
+                                    )],
+                                    Some(g) => import_loop(g, std::path::Path::new(&file)),
+                                }.join("\n"))?;
+                            }
                             KeyOutcome::StartFarm { loop_name } => {
                                 // Reachable mid-run now that the editor
                                 // works while farming: one job only.
@@ -651,6 +660,10 @@ pub enum KeyOutcome {
     Loops {
         name: Option<String>,
     },
+    /// Read a MegaMud `.mp` path into the library.
+    ImportLoop {
+        file: String,
+    },
     /// Take the keyboard back from whatever the client is driving.
     TakeOver,
     ToggleAssist,
@@ -693,9 +706,17 @@ pub fn slash(line: &str) -> Option<KeyOutcome> {
         "/farm" => Some(KeyOutcome::StartFarm {
             loop_name: (!rest.is_empty()).then(|| rest.to_string()),
         }),
-        "/loop" => Some(KeyOutcome::Loops {
-            name: (!rest.is_empty()).then(|| rest.to_string()),
-        }),
+        "/loop" => match rest.split_once(char::is_whitespace) {
+            Some(("import", file)) if !file.trim().is_empty() => Some(KeyOutcome::ImportLoop {
+                file: file.trim().to_string(),
+            }),
+            _ if rest == "import" => Some(KeyOutcome::Refuse(
+                "loop: import what? try `/loop import paths/rocsloop.mp`".into(),
+            )),
+            _ => Some(KeyOutcome::Loops {
+                name: (!rest.is_empty()).then(|| rest.to_string()),
+            }),
+        },
         "/bot" => Some(KeyOutcome::ToggleAssist),
         "/go" if rest.is_empty() => Some(KeyOutcome::Refuse(
             "go: where? try `/go 1/2324` or `/go Grungy Shop`".into(),
@@ -1285,6 +1306,46 @@ fn describe_loops(graph: Option<&crate::graph::RoomGraph>, name: Option<&str>) -
     }
     if let Some(graph) = graph {
         out.extend(l.check_names(graph).into_iter().map(|w| format!("  !! {w}")));
+    }
+    out
+}
+
+/// `/loop import`: read a MegaMud path and save what could be walked.
+///
+/// The report is printed whether or not the loop is saved, because how
+/// far a foreign path got is the whole answer. Saved anyway when it got
+/// somewhere: a route that stops short is still a route, and the operator
+/// can see exactly where it stops.
+fn import_loop(graph: &crate::graph::RoomGraph, file: &std::path::Path) -> Vec<String> {
+    let text = match std::fs::read_to_string(file) {
+        Ok(t) => t,
+        Err(e) => return vec![format!("loop: {}: {e}", file.display())],
+    };
+    let mp = match crate::mega::parse_mp(&text) {
+        Ok(mp) => mp,
+        Err(e) => return vec![format!("loop: {}: {e}", file.display())],
+    };
+    // Rebuilt per import rather than kept: 26k hashes take a moment and
+    // importing is a thing somebody does once.
+    let index = crate::mega::Index::build(graph);
+    let (l, report) = match crate::mega::import(graph, &index, &mp, None) {
+        Ok(pair) => pair,
+        Err(e) => return vec![format!("loop: {e}")],
+    };
+    let mut out = report.lines();
+    if l.stops.len() < 2 {
+        out.push("  nothing walkable here; not saved".into());
+        return out;
+    }
+    match l.save(&crate::loops::dir()) {
+        Ok(path) => out.push(format!(
+            "  saved {} stops as {:?} in {} (/farm {} to walk it)",
+            l.stops.len(),
+            l.name,
+            path.display(),
+            l.name
+        )),
+        Err(e) => out.push(format!("  not saved: {e}")),
     }
     out
 }

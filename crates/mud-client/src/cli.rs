@@ -55,6 +55,18 @@ pub enum Command {
         #[arg(long, default_value = "re/mmud_wgnt.sqlite")]
         content: PathBuf,
     },
+    /// Import a MegaMud `.mp` path into the loop library
+    Import {
+        /// The `.mp` file to read
+        file: PathBuf,
+        /// Room database (decoded WG3-NT sqlite)
+        #[arg(long, default_value = "re/mmud_wgnt.sqlite")]
+        content: PathBuf,
+        /// Start room as `map/room`, when the file's own start is
+        /// ambiguous
+        #[arg(long)]
+        start: Option<String>,
+    },
     /// Walk the profile's patrol circuit, farming each stop
     Farm {
         /// Character profile (TOML); needs a `[farm]` table

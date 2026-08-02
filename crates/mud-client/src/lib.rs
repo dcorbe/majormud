@@ -16,6 +16,7 @@ pub mod go;
 pub mod graph;
 pub mod loops;
 pub mod map;
+pub mod mega;
 pub mod mapview;
 pub mod nav;
 pub mod parse;
