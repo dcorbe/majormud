@@ -581,3 +581,48 @@ fn the_danger_states_are_told_apart_by_hue_not_brightness() {
         "passive must not be a shade of the aggressive hue: {passive}"
     );
 }
+
+/// The room you are standing in is the one you mark first, and it was
+/// the one room that could not show it. Making "you are here" outrank
+/// everything was written as an early return that skipped the background
+/// too, so the stop marker was lost precisely where it was needed.
+///
+/// Foreground says where you are, background says what you marked. That
+/// is the whole point of keeping them apart.
+#[test]
+fn the_room_you_stand_in_can_still_show_it_is_a_stop() {
+    let plane = spokes(&[Direction::East]);
+    let styles = styles(&plane, graph(), spawns(), Paint::Terrain, &PaintCtx::default());
+    let here = plane.room_at((0, 0)).expect("the hub");
+    let marks = Marks {
+        here: Some(here),
+        stops: [here].into_iter().collect(),
+        ..Default::default()
+    };
+    let out = render(&plane, &styles, (-2, -2), (30, 12), Zoom::Normal, &marks);
+    let row = out
+        .iter()
+        .find(|l| mud_client::map::strip_sgr(l).contains('@'))
+        .expect("the marker is drawn");
+    assert!(row.contains("1;32"), "still green for you: {row:?}");
+    assert!(row.contains("47"), "and marked as a stop: {row:?}");
+}
+
+/// Same for a route leg running under your feet.
+#[test]
+fn the_room_you_stand_in_can_still_show_it_is_on_the_route() {
+    let plane = spokes(&[Direction::East]);
+    let styles = styles(&plane, graph(), spawns(), Paint::Terrain, &PaintCtx::default());
+    let here = plane.room_at((0, 0)).expect("the hub");
+    let marks = Marks {
+        here: Some(here),
+        route: [here].into_iter().collect(),
+        ..Default::default()
+    };
+    let out = render(&plane, &styles, (-2, -2), (30, 12), Zoom::Normal, &marks);
+    let row = out
+        .iter()
+        .find(|l| mud_client::map::strip_sgr(l).contains('@'))
+        .expect("the marker is drawn");
+    assert!(row.contains("1;32") && row.contains("43"), "{row:?}");
+}

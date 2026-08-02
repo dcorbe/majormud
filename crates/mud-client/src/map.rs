@@ -555,17 +555,14 @@ struct Ink {
 }
 
 fn ink(fg: &'static str, id: RoomId, marks: &Marks) -> Ink {
-    // Where you stand outranks everything, the warning included. You
-    // already know you are there; red is for rooms you might walk into.
-    if marks.here == Some(id) {
-        return Ink {
-            fg: HERE,
-            bg: "",
-            cursor: false,
-        };
-    }
     Ink {
-        fg,
+        // Where you stand outranks the paint mode and the warning: you
+        // already know you are there, and red is for rooms you might walk
+        // into. It takes the FOREGROUND only — an early return that also
+        // cleared the background made the room you are standing in the
+        // one room that could not show it had been marked as a stop,
+        // which is the first room anybody marks.
+        fg: if marks.here == Some(id) { HERE } else { fg },
         bg: if marks.stops.contains(&id) {
             STOP
         } else if marks.route.contains(&id) {
