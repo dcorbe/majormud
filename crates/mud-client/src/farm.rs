@@ -1587,39 +1587,7 @@ pub async fn go_to_finish(
         return Ok(());
     };
     let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone());
-    let mut events = session.events();
-    crate::session::drain(&mut events, |_| {});
-    let ask = session.send("look");
-    // A dark room answers `look` with "you can't see anything" and no
-    // room block at all, so a walk home that insisted on one could never
-    // start from the very rooms most likely to strand a character. Light
-    // it first if we can, then ask again. No sleep between the light and
-    // the second look: the board answers in send order, so the look's
-    // attributed answer necessarily postdates the light taking effect.
-    let seen = match next_room_view(&mut events, ask, Duration::from_secs(15)).await {
-        Some(room) => room,
-        None => {
-            // Re-derived HERE, not carried in: the commonest way a farm
-            // ends is Ctrl-C, which cancels run_farm and drops its
-            // LightState outright — a parameter could never cover the
-            // exit route that matters most.
-            let sources = read_light_sources(session).await;
-            let Some(cmd) = sources.first().map(|s| s.command().to_string()) else {
-                return Err(FarmError::NotAtStart {
-                    expected: "a room block answering the finish walk's look".into(),
-                    saw: None,
-                });
-            };
-            session.send(&cmd);
-            let again = session.send("look");
-            next_room_view(&mut events, again, Duration::from_secs(15))
-                .await
-                .ok_or(FarmError::NotAtStart {
-                    expected: "a room block answering the finish walk's look".into(),
-                    saw: None,
-                })?
-        }
-    };
+    let seen = look_around(session, "the finish walk's look").await?;
     if let Some(here) = graph.room(finish)
         && here.name == seen.name
     {
@@ -1639,8 +1607,51 @@ pub async fn go_to_finish(
         .map_err(FarmError::Nav)
 }
 
+/// Ask the board where the character is standing.
+///
+/// A dark room answers `look` with "you can't see anything" and no room
+/// block at all, so anything that insisted on one could never start from
+/// the very rooms most likely to strand a character. Light it first if
+/// we can, then ask again. No sleep between the light and the second
+/// look: the board answers in send order, so the look's attributed
+/// answer necessarily postdates the light taking effect.
+///
+/// The light sources are re-derived HERE rather than carried in. The
+/// commonest way a farm ends is Ctrl-C, which cancels `run_farm` and
+/// drops its `LightState` outright — a parameter could never cover the
+/// exit route that matters most.
+///
+/// `whose` names the caller in the error, which is the only clue the
+/// operator gets about which look went unanswered.
+pub(crate) async fn look_around(
+    session: &crate::session::Session,
+    whose: &str,
+) -> Result<crate::events::RoomView, FarmError> {
+    let unanswered = || FarmError::NotAtStart {
+        expected: format!("a room block answering {whose}"),
+        saw: None,
+    };
+    let mut events = session.events();
+    crate::session::drain(&mut events, |_| {});
+    let ask = session.send("look");
+    match next_room_view(&mut events, ask, Duration::from_secs(15)).await {
+        Some(room) => Ok(room),
+        None => {
+            let sources = read_light_sources(session).await;
+            let Some(cmd) = sources.first().map(|s| s.command().to_string()) else {
+                return Err(unanswered());
+            };
+            session.send(&cmd);
+            let again = session.send("look");
+            next_room_view(&mut events, again, Duration::from_secs(15))
+                .await
+                .ok_or_else(unanswered)
+        }
+    }
+}
+
 /// The next room block in full, not just its name.
-async fn next_room_view(
+pub(crate) async fn next_room_view(
     events: &mut tokio::sync::broadcast::Receiver<Correlated>,
     answering: crate::correlate::CmdId,
     within: Duration,
@@ -1665,7 +1676,9 @@ async fn next_room_view(
 ///
 /// Empty means it cannot, which is worth knowing up front rather than
 /// discovering at the mouth of an unlit room.
-async fn read_light_sources(session: &crate::session::Session) -> Vec<crate::sheet::LightSource> {
+pub(crate) async fn read_light_sources(
+    session: &crate::session::Session,
+) -> Vec<crate::sheet::LightSource> {
     let inventory = ask(session, "inventory", "Encumbrance:").await;
     // No terminal wording is pinned for the spell listing, so the
     // collection is bounded by a short deadline instead of the full 10s
@@ -1740,7 +1753,7 @@ async fn verify_start(
 }
 
 /// How a leg ended.
-enum LegEnd {
+pub(crate) enum LegEnd {
     /// At the stop. `seen` is the attributed arrival block when the
     /// final step both described the stop and listed something worth
     /// fighting — evidence the stop pump can start from instead of
@@ -1761,7 +1774,7 @@ enum LegEnd {
 /// spend three flee round trips — plus up to two minutes waiting on the
 /// departure gate before each attempt.
 #[allow(clippy::too_many_arguments)]
-async fn travel(
+pub(crate) async fn travel(
     session: &crate::session::Session,
     nav: &crate::nav::Navigator,
     graph: &RoomGraph,
