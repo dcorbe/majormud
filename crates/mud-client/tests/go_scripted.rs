@@ -43,6 +43,7 @@ fn corridor() -> Arc<RoomGraph> {
         name: "Guard Post".into(),
         exits: Default::default(),
         light: 0,
+        ..Default::default()
     };
     start.exits[Direction::North as usize] = Some(ExitEdge {
         dest: MIDWAY,
@@ -53,6 +54,7 @@ fn corridor() -> Arc<RoomGraph> {
         name: "Inner Ward".into(),
         exits: Default::default(),
         light: 0,
+        ..Default::default()
     };
     midway.exits[Direction::North as usize] = Some(ExitEdge {
         dest: STOP,
@@ -68,6 +70,7 @@ fn corridor() -> Arc<RoomGraph> {
         name: "Keep".into(),
         exits: Default::default(),
         light: 0,
+        ..Default::default()
     };
     stop.exits[Direction::South as usize] = Some(ExitEdge {
         dest: MIDWAY,

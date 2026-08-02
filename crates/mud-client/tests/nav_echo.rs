@@ -27,12 +27,14 @@ fn graph(exit_type: i64) -> Arc<RoomGraph> {
         name: "Guard Post".into(),
         exits: Default::default(),
         light: 0,
+        ..Default::default()
     };
     here.exits[Direction::North as usize] = Some(ExitEdge { dest: THERE, exit_type, command: None });
     let mut there = GraphRoom {
         name: "Inner Ward".into(),
         exits: Default::default(),
         light: 0,
+        ..Default::default()
     };
     there.exits[Direction::South as usize] = Some(ExitEdge { dest: HERE, exit_type, command: None });
     Arc::new(RoomGraph::from_rooms(vec![(HERE, here), (THERE, there)]))
@@ -235,12 +237,14 @@ async fn a_refused_step_between_same_named_twins_does_not_drift() {
         name: "Newhaven, Narrow Road".into(),
         exits: Default::default(),
         light: 0,
+        ..Default::default()
     };
     here.exits[Direction::North as usize] = Some(ExitEdge { dest: THERE, exit_type: 0 , command: None });
     let mut there = GraphRoom {
         name: "Newhaven, Narrow Road".into(),
         exits: Default::default(),
         light: 0,
+        ..Default::default()
     };
     there.exits[Direction::South as usize] = Some(ExitEdge { dest: HERE, exit_type: 0 , command: None });
     let twins = Arc::new(RoomGraph::from_rooms(vec![(HERE, here), (THERE, there)]));
@@ -287,12 +291,14 @@ fn corridor() -> Arc<RoomGraph> {
         name: "Guard Post".into(),
         exits: Default::default(),
         light: 0,
+        ..Default::default()
     };
     here.exits[Direction::North as usize] = Some(ExitEdge { dest: THERE, exit_type: 0 , command: None });
     let mut there = GraphRoom {
         name: "Inner Ward".into(),
         exits: Default::default(),
         light: 0,
+        ..Default::default()
     };
     there.exits[Direction::North as usize] = Some(ExitEdge { dest: FAR, exit_type: 0 , command: None });
     there.exits[Direction::South as usize] = Some(ExitEdge { dest: HERE, exit_type: 0 , command: None });
@@ -300,6 +306,7 @@ fn corridor() -> Arc<RoomGraph> {
         name: "Keep".into(),
         exits: Default::default(),
         light: 0,
+        ..Default::default()
     };
     far.exits[Direction::South as usize] = Some(ExitEdge { dest: THERE, exit_type: 0 , command: None });
     Arc::new(RoomGraph::from_rooms(vec![

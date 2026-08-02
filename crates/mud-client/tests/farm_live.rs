@@ -309,6 +309,7 @@ fn client_graph() -> RoomGraph {
             name: name.into(),
             exits: Default::default(),
             light: 0,
+            ..Default::default()
         };
         for (d, dest) in exits {
             r.exits[*d as usize] = Some(ExitEdge {

@@ -515,6 +515,26 @@ fn the_known_verbs_are_claimed() {
     assert_eq!(slash("/bot"), Some(KeyOutcome::ToggleAssist));
 }
 
+/// Unlike `/go`, a bare `/room` is not a mistake: the room you are
+/// standing in is the one you ask about most.
+#[test]
+fn room_defaults_to_where_you_stand() {
+    assert_eq!(slash("/room"), Some(KeyOutcome::Room { target: None }));
+    assert_eq!(slash("/room   "), Some(KeyOutcome::Room { target: None }));
+    assert_eq!(
+        slash("/room 1/2156"),
+        Some(KeyOutcome::Room {
+            target: Some("1/2156".into())
+        })
+    );
+    assert_eq!(
+        slash("  /room   Small Cavern  "),
+        Some(KeyOutcome::Room {
+            target: Some("Small Cavern".into())
+        })
+    );
+}
+
 /// Deliberate: the board says unknown commands out loud rather than
 /// erroring, so swallowing every slash-prefixed line would silently eat
 /// board syntax nobody has audited.

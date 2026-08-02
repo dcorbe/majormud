@@ -204,9 +204,9 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     // assume a game is running.
     let mut in_realm = false;
     let started = std::time::Instant::now();
-    let (graph, nav) = match locator(session.profile()) {
-        Some((g, n)) => (Some(g), Some(n)),
-        None => (None, None),
+    let (graph, nav, spawns) = match locator(session.profile()) {
+        Some((g, n, s)) => (Some(g), Some(n), Some(s)),
+        None => (None, None, None),
     };
 
     // Key events come from a blocking reader thread.
@@ -418,6 +418,32 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                     }
                                 }
                             }
+                            KeyOutcome::Room { target } => {
+                                match (graph.as_ref(), spawns.as_ref()) {
+                                    (Some(g), Some(s)) => {
+                                        // A bare `/room` asks about here,
+                                        // which the client only knows once
+                                        // a room block has been localized.
+                                        let id = match &target {
+                                            Some(t) => crate::go::resolve(g, here, t),
+                                            None => here.ok_or_else(|| crate::go::GoRefusal::Unknown(
+                                                "where you are standing (walk a step first)".into(),
+                                            )),
+                                        };
+                                        match id {
+                                            Err(refusal) => note(&mut out, &refusal.lines().join("\n"))?,
+                                            Ok(id) => match crate::spawn::Dossier::of(g, s, id) {
+                                                None => note(&mut out, &format!("-- room: no room {}/{} --", id.map, id.room))?,
+                                                Some(d) => note(&mut out, &d.lines().join("\n"))?,
+                                            },
+                                        }
+                                    }
+                                    _ => note(&mut out, &format!(
+                                        "-- room: no room database at {} --",
+                                        content_path(session.profile()).display()
+                                    ))?,
+                                }
+                            }
                             KeyOutcome::Refuse(why) => note(&mut out, &format!("-- {why} --"))?,
                             KeyOutcome::TakeOver => {
                                 if let Some(j) = job.take() {
@@ -529,6 +555,12 @@ pub enum KeyOutcome {
     Go {
         target: String,
     },
+    /// Print what the world database knows about a room. `None` means the
+    /// one the character is standing in — unlike `/go`, a bare `/room` is
+    /// the commonest form rather than a mistake.
+    Room {
+        target: Option<String>,
+    },
     /// One of ours, got wrong. Print this and send nothing.
     Refuse(String),
 }
@@ -556,6 +588,9 @@ pub fn slash(line: &str) -> Option<KeyOutcome> {
         )),
         "/go" => Some(KeyOutcome::Go {
             target: rest.to_string(),
+        }),
+        "/room" => Some(KeyOutcome::Room {
+            target: (!rest.is_empty()).then(|| rest.to_string()),
         }),
         _ => None,
     }
@@ -1055,14 +1090,21 @@ fn content_path(profile: &crate::profile::Profile) -> std::path::PathBuf {
 /// away they are.
 fn locator(
     profile: &crate::profile::Profile,
-) -> Option<(Arc<crate::graph::RoomGraph>, crate::nav::Navigator)> {
+) -> Option<(
+    Arc<crate::graph::RoomGraph>,
+    crate::nav::Navigator,
+    Arc<crate::spawn::SpawnTable>,
+)> {
     let db = content_path(profile);
     // The hand-played session keeps its own room model, and it needs the
     // death wordings as much as the farm does — more, on a shared board.
     let _ = crate::deaths::init(&db);
     let graph = Arc::new(crate::graph::RoomGraph::load(&db).ok()?);
     let nav = crate::nav::Navigator::new(graph.clone(), crate::nav::NavConfig::default());
-    Some((graph, nav))
+    // Same file as the graph, so this fails only when that one would
+    // have: all three are one answer to "is there a world database".
+    let spawns = Arc::new(crate::spawn::SpawnTable::load(&db).ok()?);
+    Some((graph, nav, spawns))
 }
 
 /// Resolve a room block to a room id, given where we thought we were.

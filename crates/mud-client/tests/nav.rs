@@ -99,6 +99,7 @@ fn client_graph(market_name: &str) -> RoomGraph {
             name: name.into(),
             exits: Default::default(),
             light: 0,
+            ..Default::default()
         };
         for (d, dest) in exits {
             room.exits[d as usize] = Some(ExitEdge {
@@ -234,6 +235,7 @@ fn graph_with_a_phantom_exit() -> RoomGraph {
         name: "Town Gates".into(),
         exits: Default::default(),
         light: 0,
+        ..Default::default()
     };
     gates.exits[Direction::East as usize] = Some(ExitEdge {
         dest: RoomId { map: 1, room: 3 },
@@ -248,6 +250,7 @@ fn graph_with_a_phantom_exit() -> RoomGraph {
                 name: "Market Street".into(),
                 exits: Default::default(),
                 light: 0,
+                ..Default::default()
             },
         ),
     ])
@@ -659,6 +662,7 @@ fn twin_graph() -> RoomGraph {
             name: name.into(),
             exits: Default::default(),
             light: 0,
+            ..Default::default()
         };
         for (d, dest) in exits {
             r.exits[*d as usize] = Some(ExitEdge {
@@ -748,6 +752,7 @@ fn localize_view_refuses_when_still_ambiguous() {
         name: name.into(),
         exits: Default::default(),
         light: 0,
+        ..Default::default()
     };
     // Start somewhere that is neither twin and adjacent to neither, so
     // the cheap one-hop answer cannot apply and the exits are genuinely

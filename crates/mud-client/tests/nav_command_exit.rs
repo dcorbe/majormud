@@ -38,6 +38,7 @@ fn ferry(command: Option<&str>) -> Arc<RoomGraph> {
         name: "Newhaven, Docks".into(),
         exits: Default::default(),
         light: 0,
+        ..Default::default()
     };
     docks.exits[Direction::South as usize] = Some(ExitEdge {
         dest: PIER,
@@ -48,6 +49,7 @@ fn ferry(command: Option<&str>) -> Arc<RoomGraph> {
         name: "Small Pier".into(),
         exits: Default::default(),
         light: 0,
+        ..Default::default()
     };
     Arc::new(RoomGraph::from_rooms(vec![(DOCKS, docks), (PIER, pier)]))
 }

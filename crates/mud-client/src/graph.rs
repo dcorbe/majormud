@@ -45,10 +45,79 @@ pub struct ExitEdge {
 /// Exit type for a command exit — see [`ExitEdge::command`].
 pub const COMMAND_EXIT: i64 = 10;
 
+/// How a room's spawner behaves, from the room's `type` column
+/// (`room+0x43c`). Rates are the per-kick roll thresholds in
+/// `re/docs/monsters.md` §1: type 0 draws `genrdn(1,100) < 5`, type 2
+/// `< 0x5a`, and both are additionally gated on the room holding fewer
+/// monsters than players.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SpawnKind {
+    /// Type 0 — a timed spawn, ~4% per 5s kick.
+    #[default]
+    Timed,
+    /// Type 2 — a timed spawn at ~89%, and it bypasses the respawn
+    /// cooldown entirely.
+    Frequent,
+    /// Type 3 — swarm: spawn until the generator refuses.
+    Swarm,
+    /// Type 1 — filled once at boot; the periodic spawner skips it. This
+    /// is what shopkeepers and other fixtures are.
+    BootFill,
+    /// Anything else: no spawn at all.
+    Never,
+}
+
+impl SpawnKind {
+    fn from_column(ty: i64) -> SpawnKind {
+        match ty {
+            0 => SpawnKind::Timed,
+            2 => SpawnKind::Frequent,
+            3 => SpawnKind::Swarm,
+            1 => SpawnKind::BootFill,
+            _ => SpawnKind::Never,
+        }
+    }
+
+    /// Roughly how often a kick spawns here, as a percentage, for the
+    /// dossier to print. `None` where the question does not apply.
+    pub fn rate_percent(self) -> Option<u32> {
+        match self {
+            SpawnKind::Timed => Some(4),
+            SpawnKind::Frequent => Some(89),
+            _ => None,
+        }
+    }
+}
+
+/// What a room's spawner will put in the room, before the monster table
+/// is consulted. See [`crate::spawn::SpawnTable::candidates`] for the
+/// selection this feeds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Spawn {
+    pub kind: SpawnKind,
+    /// `monstertype` (`room+0x560`): which family of monsters this room
+    /// draws from. **0 is a sentinel meaning "none"**, not region zero —
+    /// read literally it has Town Gates spawning the group-0 scenery
+    /// props (`ancient tapestry`, `mirror portal`).
+    pub region: i64,
+    /// `minindex`..`maxindex` (`room+0x462`/`+0x464`): the level window a
+    /// candidate must fall inside. `(0, 0)` is a real window selecting
+    /// level-0 monsters — 1,354 rooms use it and 205 monsters sit there —
+    /// so unlike `region` it is not treated as a sentinel.
+    pub band: (i64, i64),
+    /// `bynumber` (`room+0x468`): one specific monster, bypassing the
+    /// region draw. Stored in the HIGH WORD — the column is a 32-bit read
+    /// of a 16-bit field, and its low word is zero in all 26,720 rooms.
+    pub forced: Option<i64>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct GraphRoom {
     pub name: String,
     pub exits: [Option<ExitEdge>; 10],
+    /// Shop number, 0 for a room that sells nothing.
+    pub shop: i64,
+    pub spawn: Spawn,
     /// The room table's `light` column: 0 is normal, negatives need a
     /// light source (Small Cavern 1/2156 = -200; ~17k shipped rooms are
     /// negative). The exact cutoff is ORACLE-OPEN — the bracketing
@@ -81,6 +150,12 @@ impl RoomGraph {
             cols.push(format!("para1_{i}"));
         }
         cols.push("light".into());
+        // The spawn columns ride along in the one pass. An extra column
+        // on a query that already reads every row is free; a second query
+        // over 26k rows to answer "what lives here" is not.
+        for c in ["\"type\"", "monstertype", "minindex", "maxindex", "bynumber", "shopnum"] {
+            cols.push(c.into());
+        }
         // Command exits point at a MESSAGE for their phrase, so the
         // whole table comes along first: 1-odd thousand short rows
         // against 250 lookups, which is cheaper than 250 queries and far
@@ -98,9 +173,18 @@ impl RoomGraph {
             }
             let name: Option<String> = row.get(2).map_err(|e| e.to_string())?;
             let light: i64 = row.get(33).unwrap_or(0);
+            let region: i64 = row.get(35).unwrap_or(0);
+            let forced: i64 = row.get(38).unwrap_or(0);
             let mut graph_room = GraphRoom {
                 name: name.unwrap_or_default(),
                 exits: Default::default(),
+                shop: row.get(39).unwrap_or(0),
+                spawn: Spawn {
+                    kind: SpawnKind::from_column(row.get(34).unwrap_or(-1)),
+                    region,
+                    band: (row.get(36).unwrap_or(0), row.get(37).unwrap_or(0)),
+                    forced: (forced > 0).then_some(forced >> 16),
+                },
                 light,
             };
             for d in 0..10 {

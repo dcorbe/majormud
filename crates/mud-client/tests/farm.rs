@@ -28,6 +28,7 @@ fn graph() -> RoomGraph {
             name: name.into(),
             exits: Default::default(),
             light: 0,
+            ..Default::default()
         };
         for (d, dest) in exits {
             room.exits[d as usize] = Some(ExitEdge {
@@ -113,6 +114,7 @@ fn graph_with_a_dark_market() -> RoomGraph {
             name: name.into(),
             exits: Default::default(),
             light,
+            ..Default::default()
         };
         for (d, dest) in exits {
             room.exits[d as usize] = Some(ExitEdge {
@@ -180,6 +182,7 @@ fn rejects_a_circuit_whose_wrap_around_has_no_route() {
                     e
                 },
                 light: 0,
+                ..Default::default()
             },
         ),
         (
@@ -188,6 +191,7 @@ fn rejects_a_circuit_whose_wrap_around_has_no_route() {
                 name: "One Way Ditch".into(),
                 exits: Default::default(),
                 light: 0,
+                ..Default::default()
             },
         ),
     ]);

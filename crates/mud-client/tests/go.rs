@@ -25,6 +25,7 @@ fn line(names: &[&str]) -> RoomGraph {
                 name: (*name).into(),
                 exits: Default::default(),
                 light: 0,
+                ..Default::default()
             };
             if (n as usize) < names.len() {
                 room.exits[Direction::East as usize] = Some(ExitEdge {

@@ -104,6 +104,7 @@ fn client_graph() -> Arc<RoomGraph> {
             name: name.into(),
             exits: Default::default(),
             light: 0,
+            ..Default::default()
         };
         for (d, dest) in exits {
             room.exits[d as usize] = Some(ExitEdge {
