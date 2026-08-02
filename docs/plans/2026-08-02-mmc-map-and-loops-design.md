@@ -258,8 +258,15 @@ run to 666, 999 and 9999, and experience at every index spans the whole 0–65,0
 A ramp built on them would be decoration. Experience is the number a farm spot is
 actually chosen on, and it is real.
 
-Background is the marks: `43` gold on-route, `47;30` for a stop, `42` for where the
-character stands.
+**There are no background colours.** Marks are foreground too, in one precedence order:
+gold `1;33` for anything on the marked loop (stops and the rooms the walk passes
+through alike, `@` included), then green `1;32` for where the character stands, then the
+warning, then the paint mode.
+
+Backgrounds were tried first and removed. Every rule had to state how it composed with
+the foreground, and the composition kept coming out wrong in the same place — the room
+the character is standing in could not show that it had been marked, which is the first
+room anybody marks when building a loop. One channel has no composition to get wrong.
 
 **The warning overlay** takes the foreground from whatever mode is active, in **bright
 red `1;31`**, and red is reserved for it alone — which is why red is absent from the

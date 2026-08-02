@@ -463,16 +463,17 @@ pub struct Marks {
     pub route: BTreeSet<RoomId>,
 }
 
-/// Gold behind a room the route passes through.
-const ON_ROUTE: &str = "43";
-/// A loop stop: white behind, dark in front.
-const STOP: &str = "47;30";
-/// Where the character stands: a bright green FOREGROUND on whatever the
-/// shell's background already is.
+/// A room on the marked loop — a stop, or a room the walk passes
+/// through. Gold, in the FOREGROUND like everything else.
 ///
-/// Not a filled background like the other marks. `@` is a unique glyph
-/// and needs no block of colour to be found, and the one cell you look at
-/// most should not be the ugliest thing on the screen.
+/// There are no background colours in this palette. Marks used to paint
+/// one, which meant every rule had to say how it composed with the
+/// foreground, and the room the character stood in ended up unable to
+/// show it had been marked at all. One channel, one precedence order,
+/// nothing to compose.
+const MARKED: &str = "1;33";
+/// Where the character stands, when that room is not part of the loop.
+/// Bright green on whatever the shell's background already is.
 const HERE: &str = "1;32";
 
 /// Paint the viewport.
@@ -543,37 +544,32 @@ pub fn render(
     buf.into_iter().map(emit).collect()
 }
 
-/// One cell's colour: foreground from the paint mode, background from
-/// the operator's marks. Kept apart rather than pre-joined so that the
-/// two compose — a dangerous room ON the route has to show both, which
-/// one colour per cell cannot do.
+/// One cell's colour. Foreground only — see [`MARKED`] for why there are
+/// no backgrounds — plus the cursor's reverse, which is not a colour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct Ink {
     fg: &'static str,
-    bg: &'static str,
     cursor: bool,
 }
 
+/// One precedence order, top to bottom:
+///
+/// 1. on the marked loop — gold, `@` included, so the route reads as a
+///    single shape rather than a colour plus a highlight
+/// 2. where the character stands — green
+/// 3. the warning — red
+/// 4. whatever the paint mode says
 fn ink(fg: &'static str, id: RoomId, marks: &Marks) -> Ink {
-    Ink {
-        // Where you stand outranks the paint mode and the warning: you
-        // already know you are there, and red is for rooms you might walk
-        // into. It takes the FOREGROUND only — an early return that also
-        // cleared the background made the room you are standing in the
-        // one room that could not show it had been marked as a stop,
-        // which is the first room anybody marks.
-        fg: if marks.here == Some(id) { HERE } else { fg },
-        bg: if marks.stops.contains(&id) {
-            STOP
-        } else if marks.route.contains(&id) {
-            ON_ROUTE
-        } else {
-            ""
-        },
-        // Not the cursor: `render` paints that last, so that it lands on
-        // empty cells too.
-        cursor: false,
-    }
+    let fg = if marks.stops.contains(&id) || marks.route.contains(&id) {
+        MARKED
+    } else if marks.here == Some(id) {
+        HERE
+    } else {
+        fg
+    };
+    // Not the cursor: `render` paints that last, so that it lands on
+    // empty cells too.
+    Ink { fg, cursor: false }
 }
 
 /// Write one character, dropping anything outside the viewport. Clipping
@@ -663,10 +659,9 @@ fn read(buf: &[Vec<(char, Ink)>], x: i64, y: i64) -> Option<(char, Ink)> {
 
 /// One buffer row as an escaped string, one SGR change per run.
 ///
-/// Foreground, background and the cursor's reverse are joined here rather
-/// than being pre-composed per cell: a run change is per-run, and the
-/// alternative was a cache keyed on every combination the palette can
-/// make.
+/// The colour and the cursor's reverse are joined here rather than
+/// pre-composed per cell: a run change is per-run, and the alternative
+/// was a cache keyed on every combination the palette can make.
 fn emit(row: Vec<(char, Ink)>) -> String {
     let mut out = String::new();
     let mut current = Ink::default();
@@ -676,10 +671,6 @@ fn emit(row: Vec<(char, Ink)>) -> String {
             if !ink.fg.is_empty() {
                 out.push(';');
                 out.push_str(ink.fg);
-            }
-            if !ink.bg.is_empty() {
-                out.push(';');
-                out.push_str(ink.bg);
             }
             if ink.cursor {
                 out.push_str(";7");

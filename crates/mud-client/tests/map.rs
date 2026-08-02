@@ -583,14 +583,13 @@ fn the_danger_states_are_told_apart_by_hue_not_brightness() {
 }
 
 /// The room you are standing in is the one you mark first, and it was
-/// the one room that could not show it. Making "you are here" outrank
-/// everything was written as an early return that skipped the background
-/// too, so the stop marker was lost precisely where it was needed.
+/// the one room that could not show it.
 ///
-/// Foreground says where you are, background says what you marked. That
-/// is the whole point of keeping them apart.
+/// Fixed by removing backgrounds altogether: one colour channel, one
+/// precedence order, and `@` simply turns gold when it is part of the
+/// loop.
 #[test]
-fn the_room_you_stand_in_can_still_show_it_is_a_stop() {
+fn the_marker_turns_gold_when_you_stand_on_a_stop() {
     let plane = spokes(&[Direction::East]);
     let styles = styles(&plane, graph(), spawns(), Paint::Terrain, &PaintCtx::default());
     let here = plane.room_at((0, 0)).expect("the hub");
@@ -604,13 +603,13 @@ fn the_room_you_stand_in_can_still_show_it_is_a_stop() {
         .iter()
         .find(|l| mud_client::map::strip_sgr(l).contains('@'))
         .expect("the marker is drawn");
-    assert!(row.contains("1;32"), "still green for you: {row:?}");
-    assert!(row.contains("47"), "and marked as a stop: {row:?}");
+    assert!(row.contains("1;33"), "gold once marked: {row:?}");
+    assert!(!row.contains("1;32"), "not green any more: {row:?}");
 }
 
 /// Same for a route leg running under your feet.
 #[test]
-fn the_room_you_stand_in_can_still_show_it_is_on_the_route() {
+fn the_marker_turns_gold_on_the_route_too() {
     let plane = spokes(&[Direction::East]);
     let styles = styles(&plane, graph(), spawns(), Paint::Terrain, &PaintCtx::default());
     let here = plane.room_at((0, 0)).expect("the hub");
@@ -624,5 +623,36 @@ fn the_room_you_stand_in_can_still_show_it_is_on_the_route() {
         .iter()
         .find(|l| mud_client::map::strip_sgr(l).contains('@'))
         .expect("the marker is drawn");
-    assert!(row.contains("1;32") && row.contains("43"), "{row:?}");
+    assert!(row.contains("1;33"), "gold on the route: {row:?}");
+}
+
+/// No background colours anywhere in the palette. They were the source
+/// of the composition rules that kept going wrong; the cursor's reverse
+/// is not one, since it inverts whatever colour is already there.
+#[test]
+fn the_palette_paints_no_backgrounds() {
+    let plane = spokes(&[Direction::East, Direction::North]);
+    let styles = styles(&plane, graph(), spawns(), Paint::Terrain, &PaintCtx::default());
+    let here = plane.room_at((0, 0)).expect("hub");
+    let marks = Marks {
+        here: Some(here),
+        cursor: Some((0, 0)),
+        stops: [here].into_iter().collect(),
+        route: plane.rooms().collect(),
+    };
+    for line in render(&plane, &styles, (-2, -2), (30, 12), Zoom::Normal, &marks) {
+        for code in line.split('\u{1b}').skip(1) {
+            let params = code.trim_start_matches('[').split('m').next().unwrap_or("");
+            for p in params.split(';') {
+                let n: u32 = match p.parse() {
+                    Ok(n) => n,
+                    Err(_) => continue,
+                };
+                assert!(
+                    !(40..=47).contains(&n) && !(100..=107).contains(&n),
+                    "background {n} in {line:?}"
+                );
+            }
+        }
+    }
 }
