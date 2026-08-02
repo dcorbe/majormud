@@ -535,6 +535,19 @@ fn room_defaults_to_where_you_stand() {
     );
 }
 
+/// `/map` takes the same optional argument with the same meaning, and
+/// resolves it through the same `go::resolve`.
+#[test]
+fn map_takes_the_same_argument_as_room() {
+    assert_eq!(slash("/map"), Some(KeyOutcome::Map { target: None }));
+    assert_eq!(
+        slash("/map 1/1076"),
+        Some(KeyOutcome::Map {
+            target: Some("1/1076".into())
+        })
+    );
+}
+
 /// Deliberate: the board says unknown commands out loud rather than
 /// erroring, so swallowing every slash-prefixed line would silently eat
 /// board syntax nobody has audited.

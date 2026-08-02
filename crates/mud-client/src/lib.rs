@@ -14,6 +14,7 @@ pub mod events;
 pub mod farm;
 pub mod go;
 pub mod graph;
+pub mod map;
 pub mod nav;
 pub mod parse;
 pub mod profile;

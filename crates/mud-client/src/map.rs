@@ -1,0 +1,649 @@
+//! Drawing the world as a grid: layout, zoom, and the palette.
+//!
+//! Geometry is derived from the exit graph rather than authored. Walk the
+//! compass exits from an anchor room, stepping one grid cell per
+//! direction, and the game's own geometry falls out — `re/slum_map.py`
+//! proved it by closing 160 slum rooms with zero coordinate conflicts.
+//!
+//! **A plane is the unit of drawing.** Up, down and map-change portals do
+//! not move the cursor in the plane; they leave it. Splitting the world
+//! that way puts the median plane at 8 rooms and the largest at 2,420, in
+//! a 65 x 118 cell extent; no plane anywhere is wider than 160 cells or
+//! taller than 157. That is small enough to lay out whole and scroll a
+//! viewport over, which is why [`layout`] takes no radius: a radius would
+//! put a wall in the middle of the thing the operator is trying to scroll
+//! around.
+//!
+//! **A cell holds one room or none.** When the walk wants to put a second
+//! room in an occupied cell the room is left unplaced and the clash is
+//! recorded, because a map that silently overlapped would be a map that
+//! lies. This is not a rare edge: the largest plane clashes on 145 of its
+//! 2,420 rooms, about 6%. A grid drawing of a world that was never built
+//! on a grid cannot do better, so the honest move is to say so.
+
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+use mud_core::content::{Direction, RoomId};
+
+use crate::graph::RoomGraph;
+use crate::spawn::{Dossier, SpawnTable, Threat};
+
+/// A position on the plane's grid. North is -y, east is +x.
+pub type Cell = (i32, i32);
+
+/// The eight directions that move within a plane, and their steps.
+const COMPASS: [(Direction, Cell); 8] = [
+    (Direction::North, (0, -1)),
+    (Direction::South, (0, 1)),
+    (Direction::East, (1, 0)),
+    (Direction::West, (-1, 0)),
+    (Direction::NorthEast, (1, -1)),
+    (Direction::NorthWest, (-1, -1)),
+    (Direction::SouthEast, (1, 1)),
+    (Direction::SouthWest, (-1, 1)),
+];
+
+const ALL: [Direction; 10] = [
+    Direction::North,
+    Direction::South,
+    Direction::East,
+    Direction::West,
+    Direction::NorthEast,
+    Direction::NorthWest,
+    Direction::SouthEast,
+    Direction::SouthWest,
+    Direction::Up,
+    Direction::Down,
+];
+
+fn step_of(dir: Direction) -> Option<Cell> {
+    COMPASS.iter().find(|(d, _)| *d == dir).map(|(_, s)| *s)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Extent {
+    pub min: Cell,
+    pub max: Cell,
+}
+
+impl Extent {
+    pub fn width(&self) -> i32 {
+        self.max.0 - self.min.0 + 1
+    }
+
+    pub fn height(&self) -> i32 {
+        self.max.1 - self.min.1 + 1
+    }
+}
+
+/// A room the walk could not place, because the cell it wanted was taken.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Conflict {
+    pub from: RoomId,
+    pub dir: Direction,
+    pub dest: RoomId,
+    /// The occupied cell the walk refused to draw over.
+    pub cell: Cell,
+}
+
+/// An exit that leaves the plane: up, down, or a map-change portal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Link {
+    pub from: RoomId,
+    pub dir: Direction,
+    pub dest: RoomId,
+}
+
+/// One drawable level of the world.
+pub struct Plane {
+    anchor: RoomId,
+    cells: BTreeMap<Cell, RoomId>,
+    at: BTreeMap<RoomId, Cell>,
+    extent: Extent,
+    conflicts: Vec<Conflict>,
+    links: Vec<Link>,
+}
+
+impl Plane {
+    pub fn anchor(&self) -> RoomId {
+        self.anchor
+    }
+
+    pub fn len(&self) -> usize {
+        self.at.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.at.is_empty()
+    }
+
+    pub fn extent(&self) -> Extent {
+        self.extent
+    }
+
+    pub fn conflicts(&self) -> &[Conflict] {
+        &self.conflicts
+    }
+
+    /// Exits off this plane, in the order the walk met them. The
+    /// interactive view offers these as plane hops.
+    pub fn links(&self) -> &[Link] {
+        &self.links
+    }
+
+    /// Links that leave this particular room, for the view's `<`/`>`.
+    pub fn links_from(&self, room: RoomId) -> impl Iterator<Item = &Link> {
+        self.links.iter().filter(move |l| l.from == room)
+    }
+
+    pub fn cell_of(&self, room: RoomId) -> Option<Cell> {
+        self.at.get(&room).copied()
+    }
+
+    pub fn room_at(&self, cell: Cell) -> Option<RoomId> {
+        self.cells.get(&cell).copied()
+    }
+
+    pub fn rooms(&self) -> impl Iterator<Item = RoomId> + '_ {
+        self.at.keys().copied()
+    }
+}
+
+/// Lay out the whole plane containing `anchor`, which lands at `(0, 0)`.
+///
+/// Breadth-first so that the shortest walk to a room decides its cell:
+/// with conflicts possible, the nearest placement is the one least likely
+/// to have accumulated distortion.
+pub fn layout(graph: &RoomGraph, anchor: RoomId) -> Plane {
+    let mut plane = Plane {
+        anchor,
+        cells: BTreeMap::new(),
+        at: BTreeMap::new(),
+        extent: Extent::default(),
+        conflicts: Vec::new(),
+        links: Vec::new(),
+    };
+    if graph.room(anchor).is_none() {
+        return plane;
+    }
+    plane.cells.insert((0, 0), anchor);
+    plane.at.insert(anchor, (0, 0));
+
+    let mut queue = VecDeque::from([anchor]);
+    while let Some(from) = queue.pop_front() {
+        let cell = plane.at[&from];
+        let Some(room) = graph.room(from) else {
+            continue;
+        };
+        for (i, dir) in ALL.into_iter().enumerate() {
+            let Some(edge) = room.exits[i].as_ref() else {
+                continue;
+            };
+            if graph.room(edge.dest).is_none() {
+                continue; // an edge into nothing; never drawn, as `route` never walks it
+            }
+            // Up, down and anything crossing to another map leave the
+            // plane rather than taking a cell in it.
+            let Some(step) = step_of(dir).filter(|_| edge.dest.map == from.map) else {
+                plane.links.push(Link {
+                    from,
+                    dir,
+                    dest: edge.dest,
+                });
+                continue;
+            };
+            let want = (cell.0 + step.0, cell.1 + step.1);
+            match plane.at.get(&edge.dest) {
+                // Already placed. Agreeing is the common case; disagreeing
+                // is the world not being flat, and is worth reporting once.
+                Some(&there) => {
+                    if there != want {
+                        plane.conflicts.push(Conflict {
+                            from,
+                            dir,
+                            dest: edge.dest,
+                            cell: want,
+                        });
+                    }
+                }
+                None if plane.cells.contains_key(&want) => {
+                    plane.conflicts.push(Conflict {
+                        from,
+                        dir,
+                        dest: edge.dest,
+                        cell: want,
+                    });
+                }
+                None => {
+                    plane.cells.insert(want, edge.dest);
+                    plane.at.insert(edge.dest, want);
+                    queue.push_back(edge.dest);
+                }
+            }
+        }
+    }
+
+    let (xs, ys): (Vec<i32>, Vec<i32>) = plane.cells.keys().copied().unzip();
+    plane.extent = Extent {
+        min: (
+            xs.iter().copied().min().unwrap_or(0),
+            ys.iter().copied().min().unwrap_or(0),
+        ),
+        max: (
+            xs.iter().copied().max().unwrap_or(0),
+            ys.iter().copied().max().unwrap_or(0),
+        ),
+    };
+    plane
+}
+
+// --- paint -----------------------------------------------------------
+
+/// What the foreground says about a room.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Paint {
+    /// What the room is: dark, a shop, or ordinary.
+    Terrain,
+    /// Whether what spawns here will start the fight.
+    Danger,
+    /// How much the best thing here is worth, which is what a farm spot
+    /// is actually chosen on.
+    ///
+    /// Deliberately experience and not the spawn band: `minindex` /
+    /// `maxindex` and the monster `index` they select on are a
+    /// within-region ordinal, not a difficulty scale. The values run to
+    /// 666, 999 and 9999, and experience at every index covers the whole
+    /// 0-65,000 range, so a ramp built on them would be decoration.
+    Worth,
+}
+
+/// What the palette needs to know about the character to warn them.
+///
+/// All-zero means "nothing known", and nothing known must never paint the
+/// world red: a warning that is always on is a warning nobody reads.
+#[derive(Debug, Clone, Default)]
+pub struct PaintCtx {
+    /// The character's maximum hitpoints. A spawn with more of them than
+    /// this is the clearest "you lose this fight" the shipped data
+    /// supports. 0 = unknown, so no warning.
+    pub max_hp: i64,
+    /// Warn at or above this experience value, for the case hitpoints
+    /// miss: something soft that hits very hard. 0 = never.
+    pub warn_above_exp: i64,
+    /// Set when the character is KNOWN to carry nothing that can light a
+    /// room — a [`crate::sheet::LightState`] built from an empty source
+    /// list. Darkness is then a warning rather than a shade of grey.
+    ///
+    /// Phrased as the negative on purpose, so that the default is
+    /// "nothing known" and agrees with the two fields above: an unknown
+    /// character must never paint the world red.
+    pub no_light_source: bool,
+}
+
+/// One room's appearance, before the operator's own marks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Style {
+    /// SGR parameters, without the escape or the `m`.
+    pub sgr: &'static str,
+    pub glyph: char,
+}
+
+/// The board's own bright magenta for an aggressive monster
+/// (`crate::bot::AGGRESSIVE`, `crate::events`). The map says the same
+/// thing in the same colour so the two read as one game.
+const AGGRESSIVE: &str = "1;35";
+/// Reserved for the warning overlay and nothing else, in every mode.
+const WARNING: &str = "1;31";
+const PASSIVE: &str = "0;35";
+const DARK: &str = "1;30";
+const SHOP: &str = "1;36";
+const PLAIN: &str = "0;37";
+
+/// Worth ramp, low to high. No red: see [`WARNING`].
+const WORTH: [(i64, &str); 4] = [
+    (0, "0;32"),
+    (100, "1;36"),
+    (1_000, "1;33"),
+    (10_000, "1;35"),
+];
+
+/// Style every room on the plane.
+///
+/// Computed for the whole plane at once rather than per drawn cell: the
+/// answer changes only when the mode or the character does, while the
+/// viewport changes on every arrow key.
+pub fn styles(
+    plane: &Plane,
+    graph: &RoomGraph,
+    spawns: &SpawnTable,
+    paint: Paint,
+    ctx: &PaintCtx,
+) -> BTreeMap<RoomId, Style> {
+    let mut out = BTreeMap::new();
+    for id in plane.rooms() {
+        let Some(d) = Dossier::of(graph, spawns, id) else {
+            continue;
+        };
+        let glyph = if plane.links_from(id).next().is_some() {
+            // A stairwell: somewhere this map does not show.
+            '+'
+        } else if d.shop > 0 {
+            '$'
+        } else {
+            '\u{00b7}' // ·
+        };
+        let sgr = if warns(&d, ctx) {
+            WARNING
+        } else {
+            match paint {
+                Paint::Terrain => {
+                    if d.dark {
+                        DARK
+                    } else if d.shop > 0 {
+                        SHOP
+                    } else {
+                        PLAIN
+                    }
+                }
+                Paint::Danger => match d.threat() {
+                    Threat::Aggressive => AGGRESSIVE,
+                    Threat::Passive => PASSIVE,
+                    Threat::Nothing => PLAIN,
+                },
+                Paint::Worth => {
+                    let best = d.candidates.iter().map(|t| t.experience).max();
+                    match best {
+                        None => PLAIN,
+                        Some(exp) => WORTH
+                            .iter()
+                            .rev()
+                            .find(|(floor, _)| exp >= *floor)
+                            .map(|(_, sgr)| *sgr)
+                            .unwrap_or(PLAIN),
+                    }
+                }
+            }
+        };
+        out.insert(id, Style { sgr, glyph });
+    }
+    out
+}
+
+/// Will the character have trouble here?
+///
+/// Only conditions the client can actually determine. There is no combat
+/// model behind this and there must not appear to be one.
+fn warns(d: &Dossier, ctx: &PaintCtx) -> bool {
+    if d.dark && ctx.no_light_source {
+        return true;
+    }
+    let toughest = d.candidates.iter().map(|t| t.hitpoints).max().unwrap_or(0);
+    if ctx.max_hp > 0 && toughest > ctx.max_hp {
+        return true;
+    }
+    let richest = d.candidates.iter().map(|t| t.experience).max().unwrap_or(0);
+    ctx.warn_above_exp > 0 && richest >= ctx.warn_above_exp
+}
+
+// --- render ----------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Zoom {
+    /// 4 x 2 characters per cell: glyphs, connectors and door marks.
+    Detail,
+    /// 2 x 1: glyphs and a horizontal connector. The default.
+    Normal,
+    /// 1 x 1: one glyph per room. Fits the widest plane (166 cells) on
+    /// any wide terminal.
+    Overview,
+}
+
+impl Zoom {
+    pub fn cell(self) -> (usize, usize) {
+        match self {
+            Zoom::Detail => (4, 2),
+            Zoom::Normal => (2, 1),
+            Zoom::Overview => (1, 1),
+        }
+    }
+
+    pub fn zoom_in(self) -> Zoom {
+        match self {
+            Zoom::Overview => Zoom::Normal,
+            _ => Zoom::Detail,
+        }
+    }
+
+    pub fn zoom_out(self) -> Zoom {
+        match self {
+            Zoom::Detail => Zoom::Normal,
+            _ => Zoom::Overview,
+        }
+    }
+}
+
+/// What the operator has marked, painted as BACKGROUND so it composes
+/// with the foreground rather than replacing it. A dangerous room on the
+/// route has to show both, which one colour per cell cannot do.
+#[derive(Debug, Clone, Default)]
+pub struct Marks {
+    pub here: Option<RoomId>,
+    pub cursor: Option<Cell>,
+    pub stops: BTreeSet<RoomId>,
+    pub route: BTreeSet<RoomId>,
+}
+
+/// Gold behind a room the route passes through.
+const ON_ROUTE: &str = "43";
+/// A loop stop: white behind, dark in front.
+const STOP: &str = "47;30";
+/// Where the character stands.
+const HERE: &str = "42";
+
+/// Paint the viewport.
+///
+/// `view` is the top-left CELL, so scrolling is cell arithmetic and never
+/// re-lays anything out. Cost tracks the terminal rather than the plane:
+/// only the cells that can land inside `size` are considered.
+pub fn render(
+    plane: &Plane,
+    styles: &BTreeMap<RoomId, Style>,
+    view: Cell,
+    size: (usize, usize),
+    zoom: Zoom,
+    marks: &Marks,
+) -> Vec<String> {
+    let (cols, rows) = size;
+    let (cw, ch) = zoom.cell();
+    if cols == 0 || rows == 0 {
+        return Vec::new();
+    }
+    let mut buf = vec![vec![(' ', Ink::default()); cols]; rows];
+
+    let across = cols.div_ceil(cw) as i32 + 1;
+    let down = rows.div_ceil(ch) as i32 + 1;
+
+    for gy in (view.1 - 1)..(view.1 + down) {
+        for gx in (view.0 - 1)..(view.0 + across) {
+            let Some(id) = plane.room_at((gx, gy)) else {
+                continue;
+            };
+            let col = (gx - view.0) as i64 * cw as i64;
+            let row = (gy - view.1) as i64 * ch as i64;
+            let style = styles.get(&id).copied().unwrap_or(Style {
+                sgr: PLAIN,
+                glyph: '\u{00b7}',
+            });
+
+            if zoom != Zoom::Overview {
+                connectors(plane, &mut buf, (gx, gy), (col, row), zoom, style.sgr);
+            }
+
+            let glyph = match marks.here {
+                Some(here) if here == id => '@',
+                _ => match zoom {
+                    // A single cell cannot carry a connector, so the room
+                    // itself is drawn solid and colour does the work.
+                    Zoom::Overview if style.glyph == '\u{00b7}' => '\u{2588}',
+                    _ => style.glyph,
+                },
+            };
+            put(&mut buf, col, row, glyph, ink(style.sgr, id, (gx, gy), marks));
+        }
+    }
+
+    buf.into_iter().map(emit).collect()
+}
+
+/// One cell's colour: foreground from the paint mode, background from
+/// the operator's marks. Kept apart rather than pre-joined so that the
+/// two compose — a dangerous room ON the route has to show both, which
+/// one colour per cell cannot do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct Ink {
+    fg: &'static str,
+    bg: &'static str,
+    cursor: bool,
+}
+
+fn ink(fg: &'static str, id: RoomId, cell: Cell, marks: &Marks) -> Ink {
+    Ink {
+        fg,
+        bg: if marks.here == Some(id) {
+            HERE
+        } else if marks.stops.contains(&id) {
+            STOP
+        } else if marks.route.contains(&id) {
+            ON_ROUTE
+        } else {
+            ""
+        },
+        cursor: marks.cursor == Some(cell),
+    }
+}
+
+/// Write one character, dropping anything outside the viewport. Clipping
+/// here rather than at each call site is what makes scrolling past the
+/// edge an ordinary thing to do with an arrow key.
+fn put(buf: &mut [Vec<(char, Ink)>], x: i64, y: i64, c: char, ink: Ink) {
+    let (rows, cols) = (buf.len() as i64, buf.first().map_or(0, Vec::len) as i64);
+    if x < 0 || y < 0 || x >= cols || y >= rows {
+        return;
+    }
+    buf[y as usize][x as usize] = (c, ink);
+}
+
+fn connectors(
+    plane: &Plane,
+    buf: &mut [Vec<(char, Ink)>],
+    cell: Cell,
+    at: (i64, i64),
+    zoom: Zoom,
+    fg: &'static str,
+) {
+    let (col, row) = at;
+    // A connector belongs to the room it leaves, so it takes that room's
+    // foreground and none of its marks: gold behind a stop must not bleed
+    // down the street.
+    let sgr = Ink {
+        fg,
+        ..Default::default()
+    };
+    for (dir, step) in COMPASS {
+        if plane.room_at((cell.0 + step.0, cell.1 + step.1)).is_none() {
+            continue;
+        }
+        match (zoom, dir) {
+            // Normal has one row per cell, so only the horizontals fit.
+            (Zoom::Normal, Direction::East) => put(buf, col + 1, row, '\u{2500}', sgr),
+            (Zoom::Normal, Direction::West) => put(buf, col - 1, row, '\u{2500}', sgr),
+            (Zoom::Normal, _) => {}
+            (Zoom::Detail, Direction::East) => {
+                for dx in 1..4 {
+                    put(buf, col + dx, row, '\u{2500}', sgr);
+                }
+            }
+            (Zoom::Detail, Direction::West) => {
+                for dx in 1..4 {
+                    put(buf, col - dx, row, '\u{2500}', sgr);
+                }
+            }
+            (Zoom::Detail, Direction::South) => put(buf, col, row + 1, '\u{2502}', sgr),
+            (Zoom::Detail, Direction::North) => put(buf, col, row - 1, '\u{2502}', sgr),
+            (Zoom::Detail, Direction::SouthEast) => put(buf, col + 2, row + 1, '\u{2572}', sgr),
+            (Zoom::Detail, Direction::NorthWest) => put(buf, col - 2, row - 1, '\u{2572}', sgr),
+            (Zoom::Detail, Direction::SouthWest) => put(buf, col - 2, row + 1, '\u{2571}', sgr),
+            (Zoom::Detail, Direction::NorthEast) => put(buf, col + 2, row - 1, '\u{2571}', sgr),
+            (Zoom::Detail, _) => {}
+            (Zoom::Overview, _) => {}
+        }
+    }
+}
+
+/// One buffer row as an escaped string, one SGR change per run.
+///
+/// Foreground, background and the cursor's reverse are joined here rather
+/// than being pre-composed per cell: a run change is per-run, and the
+/// alternative was a cache keyed on every combination the palette can
+/// make.
+fn emit(row: Vec<(char, Ink)>) -> String {
+    let mut out = String::new();
+    let mut current = Ink::default();
+    for (c, ink) in row {
+        if ink != current {
+            out.push_str("\x1b[0");
+            if !ink.fg.is_empty() {
+                out.push(';');
+                out.push_str(ink.fg);
+            }
+            if !ink.bg.is_empty() {
+                out.push(';');
+                out.push_str(ink.bg);
+            }
+            if ink.cursor {
+                out.push_str(";7");
+            }
+            out.push('m');
+            current = ink;
+        }
+        out.push(c);
+    }
+    if current != Ink::default() {
+        out.push_str("\x1b[0m");
+    }
+    // Trailing blanks cost columns on a narrow terminal and say nothing.
+    let trimmed = out.trim_end().to_string();
+    if trimmed.ends_with("\x1b[0m") || !trimmed.contains('\x1b') {
+        trimmed
+    } else {
+        trimmed + "\x1b[0m"
+    }
+}
+
+/// Printable columns, ignoring SGR escapes. The bound every render is
+/// held to: escapes are free, characters are not.
+pub fn visible_width(line: &str) -> usize {
+    strip_sgr(line).chars().count()
+}
+
+/// A line with its SGR escapes removed, for measuring and for tests.
+pub fn strip_sgr(line: &str) -> String {
+    let mut out = String::new();
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        // CSI ... final byte in @..~; anything else is not ours to skip.
+        if chars.next() != Some('[') {
+            continue;
+        }
+        for c in chars.by_ref() {
+            if ('@'..='~').contains(&c) {
+                break;
+            }
+        }
+    }
+    out
+}

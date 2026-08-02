@@ -19,8 +19,9 @@ Both findings were verified against `re/mmud_wgnt.sqlite` while planning.
 
 ### 1. "What spawns here" is a static query
 
-The room row carries `monstertype` (spawn region), `minindex`/`maxindex` (level band),
-`bynumber` (forced monster) and `type` (spawn behaviour). The candidate list is:
+The room row carries `monstertype` (spawn region), `minindex`/`maxindex` (a band of
+selector ordinals — see below, they are NOT levels), `bynumber` (forced monster) and
+`type` (spawn behaviour). The candidate list is:
 
 ```sql
 SELECT * FROM monster
@@ -46,8 +47,14 @@ Three refinements found while writing the tests:
   to minotaur champion, chest and spectral mage, which is plausible for that area — so
   a zero band is a level-0 selector, not a second sentinel.
 
+- **The band is not a level range.** `re/docs/monsters.md` §1 calls `+0x462`/`+0x464`
+  min and max *level*, but the values do not behave like one: monster `index` runs to
+  666, 999 and 9999, and experience at every index spans the whole 0–65,000 range. It is
+  an ordinal within the region's roster. Nothing that reasons about difficulty may use
+  it; the map's third paint mode uses experience instead.
+
 Field meanings from `re/docs/monsters.md` §1 — `room+0x560` region, `+0x462`/`+0x464`
-level band, `+0x468` forced monster, `+0x43c` spawn type (0 = timed ~4 % per 5 s kick,
+the selector band, `+0x468` forced monster, `+0x43c` spawn type (0 = timed ~4 % per 5 s kick,
 2 = timed ~89 %, 3 = swarm, 1 = boot-fill only). Aggression is the `follow` column, a
 0–100 rating (`mon+0x108`, §4 table at line 266); guardsman 90, kobold slave 10, kobold
 thief 20. The behaviour mode is `something3` (`mon+0x12c`), where 0 and 4 are unprovoked
@@ -84,11 +91,23 @@ from our world. The divergence report is the feature.
 
 ### 3. Plane sizes
 
-Splitting the world at vertical exits gives **1,207 planes, median 8 rooms**; the
-largest is **4,490 rooms in a 166 × 152 cell extent with 26–66 coordinate conflicts**
-(~1 %). Grid layout from the exit graph is sound — `re/slum_map.py` already closes 160
+*(Corrected once the layout was implemented. The first figures here came from a Python
+probe that let planes merge across maps; the real rule keeps a plane inside one map and
+gives smaller planes and a higher conflict rate.)*
+
+Splitting the world at vertical exits and map boundaries puts the **median plane at 8
+rooms** and the **largest at 2,420, in a 65 × 118 cell extent**. No plane anywhere is
+wider than **160** cells or taller than **157**, which is what the overview zoom was
+sized against. Grid layout from the exit graph is sound — `re/slum_map.py` closes 160
 slum rooms with zero conflicts. A whole-plane BFS is microseconds, so the layout is not
 radius-bounded; a radius would put a wall in the middle of the thing being scrolled.
+
+**Conflicts are ~6 %, not ~1 %.** The largest plane cannot place 145 of its 2,420 rooms.
+That is what drawing a world on a grid it was never built on costs, and it is why an
+unplaced room is reported rather than drawn over its neighbour.
+
+A plane count is deliberately not pinned: exits are directed, so "reachable from here"
+is not an equivalence relation and any sweep's tally depends on where it starts.
 
 ## Decisions
 
@@ -162,7 +181,7 @@ import summary lists every one it dropped.
 ### 2. Layout engine — `map.rs` (new), non-interactive `/map`
 
 - `layout(graph, center) -> Plane`: BFS over the centre's plane, one grid cell per
-  compass exit. Returns cell→room, extent, and the conflict list.
+  compass exit. Returns cell→room, extent, the conflict list and the links off-plane.
 - Up/down and map-portals do not move the cursor in-plane. A plane is `(map, z)`; only
   the centre's plane is drawn, and rooms with a vertical or cross-map exit carry a
   marker.
@@ -172,14 +191,19 @@ import summary lists every one it dropped.
 
 **Zoom** (`+`/`-`), cell footprint in characters:
 
-| zoom | cell | shows | 4,490-room plane |
+| zoom | cell | shows | widest plane (160 × 157) |
 |---|---|---|---|
-| detail | 4 × 2 | glyph, `───` `│` `╲` `╱` connectors, door and vertical marks | 664 × 304 |
-| normal (default) | 2 × 1 | glyph plus one horizontal connector char | 332 × 152 |
-| overview | 1 × 1 | one coloured glyph per room | 166 × 152 |
+| detail | 4 × 2 | glyph, `───` `│` `╲` `╱` connectors | 640 × 314 |
+| normal (default) | 2 × 1 | glyph plus one horizontal connector char | 320 × 157 |
+| overview | 1 × 1 | one coloured glyph per room | 160 × 157 |
 
-A half-block level (1 × ½, `▀` carrying two rooms per character row, 166 × 76) is
+Overview fits the widest plane on a 160-column terminal and still scrolls vertically. A
+half-block level (1 × ½, `▀` carrying two rooms per character row, 160 × 79) is
 deliberately out of scope until overview proves too tall.
+
+Glyphs say structure, colour says state: `@` the character, `$` a shop, `+` a stairwell
+or portal (a link off the plane), `·` an ordinary room — drawn `█` at overview, where a
+single cell cannot carry a connector and colour has to do the work.
 
 **Scrolling.** Arrows/`hjkl` move the cursor, viewport following at a two-cell margin;
 Shift-arrows/`HJKL` pan a screenful without moving the cursor; `Home` recentres; `/`
@@ -195,24 +219,32 @@ Foreground is the paint mode, cycled with `m`:
 |---|---|
 | terrain (default) | `1;30` needs light, `1;36` shop, `0;37` otherwise |
 | danger | `1;35` spawns something that initiates, `0;35` unprovoked only, plain none |
-| band | spawn level band on green → cyan → yellow → magenta, relative to your level |
+| worth | best experience on offer: green → cyan → yellow → magenta at 0 / 100 / 1k / 10k |
 
 Bright magenta is the exact SGR the board paints an aggressive monster in
 (`bot.rs:234`, `events.rs:45`), so "kill me" means the same thing in both places.
 
-Background is the marks: `43` gold on-route, bright white reverse for a stop, green for
-where the character stands.
+**The third mode is worth, not the spawn band.** `minindex`/`maxindex` and the monster
+`index` they select on are a within-region ordinal, not a difficulty scale: the values
+run to 666, 999 and 9999, and experience at every index spans the whole 0–65,000 range.
+A ramp built on them would be decoration. Experience is the number a farm spot is
+actually chosen on, and it is real.
+
+Background is the marks: `43` gold on-route, `47;30` for a stop, `42` for where the
+character stands.
 
 **The warning overlay** takes the foreground from whatever mode is active, in **bright
-red `1;31`**, and red is reserved for it alone — which is why red comes out of the band
-ramp above. It fires on conditions the client can actually determine, never on a guessed
-combat model, and the dossier panel names the one that tripped:
+red `1;31`**, and red is reserved for it alone — which is why red is absent from the
+worth ramp. It fires only on conditions the client can determine; there is no combat
+model behind it and there must not appear to be one. `PaintCtx::default()` knows nothing
+about the character and therefore warns about nothing, because a warning that is always
+on is a warning nobody reads.
 
 | trigger | source |
 |---|---|
-| spawn band above the character's level by a configurable margin | `maxindex` against the level `progress.rs` already tracks |
-| an exit needing a locked door opened | `ExitEdge::exit_type`; `/go` runs `bash_doors: false` (`go.rs:185`), so a locked door genuinely stops it |
-| a dark room while carrying no light source | `sheet::LightState` |
+| the toughest spawn has more hitpoints than the character's maximum | `monster.hitpoints` against `BotConfig::max_hp`; 0 = unknown, no warning |
+| the richest spawn is at or above an experience ceiling the operator set | `warn_above_exp`; 0 = never |
+| a dark room while the character is known to carry no light source | `sheet::LightState` with an empty source list |
 
 ### 3. Interactive view — `mapview.rs` (new)
 
@@ -272,10 +304,13 @@ Unit and corpus tests in `crates/mud-client/tests/`:
 - `spawn.rs` — `1/2156` → cave bear (100 exp, 50 hp, gamelimit 1), `1/1072` →
   guardsman, a `bynumber` room, a room with no spawn.
 - `map.rs` — the Slum Entrance plane reports its conflicts rather than swallowing them;
-  the largest plane is 4,490 rooms in 166 × 152 (a guard on the layout rule itself); a
-  vertical exit consumes no grid cell; at every zoom the render never exceeds the
-  terminal and a viewport at the extent edge clips instead of panicking; danger paint
-  is `1;35` for an initiating spawn and dim magenta for unprovoked-only.
+  the largest plane is 2,420 rooms in 65 × 118 and the widest anywhere is 160 × 157 (a
+  guard on the layout rule itself); the largest plane's 145 unplaced rooms are pinned
+  too, so the honest conflict rate cannot quietly drift; a vertical exit consumes no
+  grid cell; a plane never crosses into another map; at every zoom the render never
+  exceeds the terminal and a viewport at the extent edge clips instead of panicking;
+  danger paint is `1;35` for an initiating spawn and dim magenta for unprovoked-only;
+  an unknown character warns about nothing.
 - `loops.rs` — TOML round-trip; a `name` disagreeing with the graph warns; an
   unwalkable stop list is refused by `CircuitPlan`.
 - `mega.rs` — corpus over the mirrored `.mp` files asserting the measured baseline

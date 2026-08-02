@@ -420,26 +420,30 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                             }
                             KeyOutcome::Room { target } => {
                                 match (graph.as_ref(), spawns.as_ref()) {
-                                    (Some(g), Some(s)) => {
-                                        // A bare `/room` asks about here,
-                                        // which the client only knows once
-                                        // a room block has been localized.
-                                        let id = match &target {
-                                            Some(t) => crate::go::resolve(g, here, t),
-                                            None => here.ok_or_else(|| crate::go::GoRefusal::Unknown(
-                                                "where you are standing (walk a step first)".into(),
-                                            )),
-                                        };
-                                        match id {
-                                            Err(refusal) => note(&mut out, &refusal.lines().join("\n"))?,
-                                            Ok(id) => match crate::spawn::Dossier::of(g, s, id) {
-                                                None => note(&mut out, &format!("-- room: no room {}/{} --", id.map, id.room))?,
-                                                Some(d) => note(&mut out, &d.lines().join("\n"))?,
-                                            },
-                                        }
-                                    }
+                                    (Some(g), Some(s)) => match here_or(g, here, &target) {
+                                        Err(refusal) => note(&mut out, &refusal.lines().join("\n"))?,
+                                        Ok(id) => match crate::spawn::Dossier::of(g, s, id) {
+                                            None => note(&mut out, &format!("-- room: no room {}/{} --", id.map, id.room))?,
+                                            Some(d) => note(&mut out, &d.lines().join("\n"))?,
+                                        },
+                                    },
                                     _ => note(&mut out, &format!(
                                         "-- room: no room database at {} --",
+                                        content_path(session.profile()).display()
+                                    ))?,
+                                }
+                            }
+                            KeyOutcome::Map { target } => {
+                                match (graph.as_ref(), spawns.as_ref()) {
+                                    (Some(g), Some(s)) => match here_or(g, here, &target) {
+                                        Err(refusal) => note(&mut out, &refusal.lines().join("\n"))?,
+                                        Ok(id) => {
+                                            let drawn = draw_map(g, s, id, here, assist_config.max_hp.into(), cols, rows);
+                                            note(&mut out, &drawn.join("\n"))?;
+                                        }
+                                    },
+                                    _ => note(&mut out, &format!(
+                                        "-- map: no room database at {} --",
                                         content_path(session.profile()).display()
                                     ))?,
                                 }
@@ -561,6 +565,11 @@ pub enum KeyOutcome {
     Room {
         target: Option<String>,
     },
+    /// Draw the plane around a room. `None` means the one the character
+    /// is standing in, as for [`KeyOutcome::Room`].
+    Map {
+        target: Option<String>,
+    },
     /// One of ours, got wrong. Print this and send nothing.
     Refuse(String),
 }
@@ -590,6 +599,9 @@ pub fn slash(line: &str) -> Option<KeyOutcome> {
             target: rest.to_string(),
         }),
         "/room" => Some(KeyOutcome::Room {
+            target: (!rest.is_empty()).then(|| rest.to_string()),
+        }),
+        "/map" => Some(KeyOutcome::Map {
             target: (!rest.is_empty()).then(|| rest.to_string()),
         }),
         _ => None,
@@ -1088,6 +1100,86 @@ fn content_path(profile: &crate::profile::Profile) -> std::path::PathBuf {
 /// is handed back alongside because `/go` needs to ask it questions the
 /// navigator does not answer — which rooms carry a name, and how far
 /// away they are.
+/// The room a `/room` or `/map` argument means, defaulting to where the
+/// character stands.
+///
+/// Shared rather than written twice: both verbs take the same optional
+/// argument with the same meaning, and `go::resolve` already solves name
+/// matching and ambiguity reporting for all three.
+fn here_or(
+    graph: &crate::graph::RoomGraph,
+    here: Option<mud_core::content::RoomId>,
+    target: &Option<String>,
+) -> Result<mud_core::content::RoomId, crate::go::GoRefusal> {
+    match target {
+        Some(t) => crate::go::resolve(graph, here, t),
+        // The client only knows where it is once a room block has been
+        // localized, which is why this can fail at all.
+        None => here.ok_or_else(|| {
+            crate::go::GoRefusal::Unknown("where you are standing (walk a step first)".into())
+        }),
+    }
+}
+
+/// A plane drawn around `at`, centred and sized to the terminal.
+///
+/// Non-interactive: this is the same [`crate::map::render`] the
+/// interactive view uses, pointed at the scroll region instead of an
+/// alternate screen, so the layout and palette are proven before any
+/// keyboard handling exists.
+fn draw_map(
+    graph: &crate::graph::RoomGraph,
+    spawns: &crate::spawn::SpawnTable,
+    at: mud_core::content::RoomId,
+    here: Option<mud_core::content::RoomId>,
+    max_hp: i64,
+    cols: u16,
+    rows: u16,
+) -> Vec<String> {
+    use crate::map::{Marks, Paint, PaintCtx, Zoom};
+    let zoom = Zoom::Normal;
+    let plane = crate::map::layout(graph, at);
+    let ctx = PaintCtx {
+        max_hp,
+        ..Default::default()
+    };
+    let styles = crate::map::styles(&plane, graph, spawns, Paint::Terrain, &ctx);
+    // Two rows belong to the status bar and the input line; leave a few
+    // more for the header, so the map never scrolls its own caption off.
+    let (cw, ch) = zoom.cell();
+    let width = cols.max(1) as usize;
+    let height = rows.saturating_sub(6).max(3) as usize;
+    let cell = plane.cell_of(at).unwrap_or((0, 0));
+    let view = (
+        cell.0 - (width / cw / 2) as i32,
+        cell.1 - (height / ch / 2) as i32,
+    );
+    let marks = Marks {
+        here,
+        ..Default::default()
+    };
+
+    let name = graph.room(at).map(|r| r.name.as_str()).unwrap_or("?");
+    let e = plane.extent();
+    let mut out = vec![format!(
+        "-- {}/{} {name} | plane {} rooms, {}x{} cells{} --",
+        at.map,
+        at.room,
+        plane.len(),
+        e.width(),
+        e.height(),
+        match plane.conflicts().len() {
+            0 => String::new(),
+            n => format!(", {n} not placed"),
+        }
+    )];
+    out.extend(crate::map::render(
+        &plane, &styles, view, (width, height), zoom, &marks,
+    ));
+    out.push("-- @ you  + stairs or portal  $ shop --".into());
+    out
+}
+
 fn locator(
     profile: &crate::profile::Profile,
 ) -> Option<(
