@@ -31,6 +31,21 @@ SELECT * FROM monster
 Checked: `1/2156 Small Cavern` (monstertype 6, band 66..66) → `cave bear` (group 6,
 index 66). `1/1072 Slum Entrance` (monstertype 5, band 1..1) → `guardsman`.
 
+Three refinements found while writing the tests:
+
+- **`bynumber` is packed.** The forced monster number is `bynumber >> 16`; the low word
+  is zero in all 26,720 rooms, so the column is a 32-bit read of a 16-bit field. Room
+  `1/305 Skali's Fine Armour, Front Room` gives monster 27 `Gurbultis`, and that room's
+  region+band path resolves to the same monster independently. Two paths agreeing is
+  the strongest validation the decode has.
+- **`monstertype == 0` is a sentinel, not region zero.** Taken literally the join makes
+  `1/1 Town Gates` spawn `ancient tapestry` and `mirror portal` — the 29 group-0
+  monsters are scenery props. A room spawns from its region only when `monstertype > 0`.
+- **Band `0..0` is real and is kept.** 1,354 rooms carry a region with a zero band, and
+  205 monsters sit at index 0. `1/109 Darkwood Forest` (region 11, band 0..0) resolves
+  to minotaur champion, chest and spectral mage, which is plausible for that area — so
+  a zero band is a level-0 selector, not a second sentinel.
+
 Field meanings from `re/docs/monsters.md` §1 — `room+0x560` region, `+0x462`/`+0x464`
 level band, `+0x468` forced monster, `+0x43c` spawn type (0 = timed ~4 % per 5 s kick,
 2 = timed ~89 %, 3 = swarm, 1 = boot-fill only). Aggression is the `follow` column, a
@@ -170,17 +185,34 @@ deliberately out of scope until overview proves too tall.
 Shift-arrows/`HJKL` pan a screenful without moving the cursor; `Home` recentres; `/`
 searches by name. The panel shows `view (x,y) of WxH`.
 
-**Colour** (`m` cycles). Route, stop and you-are-here always override the mode.
+**Colour.** Foreground says what the room *is*; background says what you *marked it
+as*. They compose rather than fight, which a single-colour scheme cannot: a dangerous
+room on your route has to show both.
+
+Foreground is the paint mode, cycled with `m`:
 
 | mode | meaning |
 |---|---|
 | terrain (default) | `1;30` needs light, `1;36` shop, `0;37` otherwise |
 | danger | `1;35` spawns something that initiates, `0;35` unprovoked only, plain none |
-| band | spawn level band on green → cyan → yellow → red, relative to your level |
+| band | spawn level band on green → cyan → yellow → magenta, relative to your level |
 
 Bright magenta is the exact SGR the board paints an aggressive monster in
 (`bot.rs:234`, `events.rs:45`), so "kill me" means the same thing in both places.
-Overlays: `1;33` gold on-route, bright white reverse for a stop, `1;32` for you.
+
+Background is the marks: `43` gold on-route, bright white reverse for a stop, green for
+where the character stands.
+
+**The warning overlay** takes the foreground from whatever mode is active, in **bright
+red `1;31`**, and red is reserved for it alone — which is why red comes out of the band
+ramp above. It fires on conditions the client can actually determine, never on a guessed
+combat model, and the dossier panel names the one that tripped:
+
+| trigger | source |
+|---|---|
+| spawn band above the character's level by a configurable margin | `maxindex` against the level `progress.rs` already tracks |
+| an exit needing a locked door opened | `ExitEdge::exit_type`; `/go` runs `bash_doors: false` (`go.rs:185`), so a locked door genuinely stops it |
+| a dark room while carrying no light source | `sheet::LightState` |
 
 ### 3. Interactive view — `mapview.rs` (new)
 
