@@ -204,12 +204,67 @@ fn a_configured_spawn_room_still_lists_its_roster() {
     assert_eq!(names(&dossier(1, 1072)), ["guardsman"]);
 }
 
-/// A shopkeeper standing in the room is something the room contains, so
-/// the map's danger paint has to see it.
+/// A shop is not a danger, and the danger paint must not say it is.
+///
+/// `Passive` means "there are spawns here you could farm", not "somebody
+/// is standing here". Counting any occupant made every shop, healer and
+/// trainer light up magenta on the danger map — reported live while
+/// looking at Newhaven, where nothing spawns and the shops were the only
+/// colour on the screen.
 #[test]
-fn a_resident_counts_toward_the_rooms_threat() {
-    // The healer is unprovoked, so its room is not painted as hostile.
-    assert_eq!(dossier(1, 2190).threat(), Threat::Passive);
-    // And a room with neither resident nor spawn is still empty.
+fn a_harmless_resident_does_not_make_a_room_dangerous() {
+    // The healer: one resident, aggression 0, nothing spawns.
+    let healer = dossier(1, 2190);
+    assert!(healer.resident.is_some());
+    assert!(healer.candidates.is_empty());
+    assert_eq!(healer.threat(), Threat::Nothing);
+
+    // Jael's Missile Weapons: a shopkeeper and no spawns.
+    assert_eq!(dossier(1, 159).threat(), Threat::Nothing);
+    // A room with neither resident nor spawn is still empty.
     assert_eq!(dossier(1, 2151).threat(), Threat::Nothing);
+}
+
+/// A resident that WILL start the fight is exactly what the paint is for.
+/// Aggression 100 permanent NPCs are real: the tasloi chief, the night
+/// hag, the Bloody Executioner.
+#[test]
+fn a_hostile_resident_still_paints_the_room_dangerous() {
+    let hag = dossier(3, 37);
+    assert_eq!(hag.resident.as_ref().expect("night hag").aggression, 100);
+    assert_eq!(hag.threat(), Threat::Aggressive);
+}
+
+/// Newhaven's shopkeepers are rated aggression 100 and never attack
+/// anybody. The figure describes how hard they fight once provoked, not
+/// whether they start — which is why two earlier readings of "will this
+/// thing attack me" both painted every shop in town hostile.
+///
+/// What separates them is having no attack table at all.
+#[test]
+fn a_shopkeeper_with_aggression_100_does_not_initiate() {
+    for room in [2141u16, 2142, 2144, 2145, 2147] {
+        let d = dossier(1, room);
+        let npc = d.resident.as_ref().expect("a shopkeeper lives here");
+        assert_eq!(npc.aggression, 100, "{} rates 100", d.name);
+        assert_eq!(npc.attack_percent, 0, "{} has no attack", d.name);
+        assert!(!npc.initiates(), "{} must not read as hostile", d.name);
+        assert_eq!(d.threat(), Threat::Nothing, "{}", d.name);
+    }
+}
+
+/// And the things that do fight still do.
+#[test]
+fn a_monster_with_an_attack_table_still_initiates() {
+    for (map, room) in [(1u16, 2156u16), (1, 1072), (3, 37)] {
+        let d = dossier(map, room);
+        assert_eq!(
+            d.threat(),
+            Threat::Aggressive,
+            "{}/{} {}",
+            map,
+            room,
+            d.name
+        );
+    }
 }

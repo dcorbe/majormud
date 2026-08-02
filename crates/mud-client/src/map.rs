@@ -294,7 +294,15 @@ pub struct Style {
 const AGGRESSIVE: &str = "1;35";
 /// Reserved for the warning overlay and nothing else, in every mode.
 const WARNING: &str = "1;31";
-const PASSIVE: &str = "0;35";
+/// Something here to fight that will not start it — a target, not a
+/// threat.
+///
+/// Deliberately NOT a dimmer magenta. A shade of the danger hue reads as
+/// "slightly less dangerous", when passive means very nearly the
+/// opposite: farmable, and it leaves you alone until you swing. Cyan
+/// shares no hue with the warning red or the aggressive magenta, so the
+/// three cannot be confused at a glance.
+pub const PASSIVE_SGR: &str = "0;36";
 const DARK: &str = "1;30";
 const SHOP: &str = "1;36";
 const PLAIN: &str = "0;37";
@@ -356,7 +364,7 @@ pub fn styles(
                 }
                 Paint::Danger => match d.threat() {
                     Threat::Aggressive => AGGRESSIVE,
-                    Threat::Passive => PASSIVE,
+                    Threat::Passive => PASSIVE_SGR,
                     Threat::Nothing => PLAIN,
                 },
                 Paint::Worth => {

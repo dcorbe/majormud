@@ -553,3 +553,28 @@ fn the_marker_outranks_even_the_warning() {
         .expect("the marker is drawn");
     assert!(row.contains("1;32"), "still green: {row:?}");
 }
+
+/// The three danger states must not be shades of one another. Passive is
+/// good news — something to farm that leaves you alone — and a dimmer
+/// magenta read as "slightly less dangerous" instead.
+#[test]
+fn the_danger_states_are_told_apart_by_hue_not_brightness() {
+    let slum = layout(graph(), SLUM_ENTRANCE);
+    let s = styles(&slum, graph(), spawns(), Paint::Danger, &PaintCtx::default());
+    let aggressive = s.get(&SLUM_ENTRANCE).expect("guardsmen").sgr;
+    assert_eq!(aggressive, "1;35");
+
+    // A shop with a harmless resident and no spawns is plain, not magenta.
+    let shop = layout(graph(), RoomId { map: 1, room: 159 });
+    let s = styles(&shop, graph(), spawns(), Paint::Danger, &PaintCtx::default());
+    let quiet = s.get(&RoomId { map: 1, room: 159 }).expect("Jael's").sgr;
+    assert_eq!(quiet, "0;37", "a shopkeeper is not a danger");
+
+    // And passive, where it occurs, shares no hue with aggressive.
+    let passive = mud_client::map::PASSIVE_SGR;
+    assert_ne!(passive, aggressive);
+    assert!(
+        !passive.ends_with("35"),
+        "passive must not be a shade of the aggressive hue: {passive}"
+    );
+}

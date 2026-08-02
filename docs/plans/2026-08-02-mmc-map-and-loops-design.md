@@ -239,11 +239,18 @@ Foreground is the paint mode, cycled with `m`:
 | mode | meaning |
 |---|---|
 | terrain (default) | `1;30` needs light, `1;36` shop, `0;37` otherwise |
-| danger | `1;35` spawns something that initiates, `0;35` unprovoked only, plain none |
+| danger | `1;35` something here starts fights, `0;36` spawns that will not, plain neither |
 | worth | best experience on offer: green → cyan → yellow → magenta at 0 / 100 / 1k / 10k |
 
 Bright magenta is the exact SGR the board paints an aggressive monster in
-(`bot.rs:234`, `events.rs:45`), so "kill me" means the same thing in both places.
+(`bot.rs:234`, `events.rs:45`), so "kill me" means the same thing in both places. Passive
+is cyan rather than a dim magenta: a shade of the danger hue reads as "slightly less
+dangerous", when it means nearly the opposite — farmable, and it leaves you alone.
+
+**A resident is not a spawn.** `Passive` says there is something here to farm, not that
+somebody is standing here; counting the shopkeeper made every shop, healer and trainer
+light up on the danger map. A resident that *would* start the fight — a tasloi chief or
+a night hag at aggression 100 — still paints the room aggressive.
 
 **The third mode is worth, not the spawn band.** `minindex`/`maxindex` and the monster
 `index` they select on are a within-region ordinal, not a difficulty scale: the values

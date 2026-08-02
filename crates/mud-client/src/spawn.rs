@@ -45,32 +45,45 @@ pub struct Template {
     /// `re/docs/monsters.md` §4). Guardsman 90, kobold thief 20, kobold
     /// slave 10. Governs how readily the monster acts, not whether it may.
     pub aggression: i64,
-    /// `something3` — the behaviour mode (`mon+0x12c`). Whether it may
-    /// start a fight at all; see [`Template::initiates`].
+    /// `something3` — the behaviour mode (`mon+0x12c`). See
+    /// [`Template::initiates`].
     pub behaviour: i64,
+    /// `attackper_1` — how often the template's first attack fires. **0
+    /// means it has no attack table at all**, which is the thing that
+    /// actually separates a shopkeeper from a monster; see
+    /// [`Template::initiates`].
+    pub attack_percent: i64,
 }
 
 impl Template {
     /// Will this monster start the fight?
     ///
-    /// **Aggression is the load-bearing half.** Target acquisition rolls
-    /// `genrdn(0, 100) < aggression` (`re/docs/monsters.md` §4), so a
-    /// rating of 0 can never come up true: such a monster never acquires
-    /// anybody and never initiates. 103 of the 1,100 templates are in
-    /// that group and they are exactly the healers, shopkeepers and
-    /// props.
+    /// **Having an attack table is the load-bearing half.** 124 of the
+    /// 1,100 templates have `attackper_1 == 0` — no attack routine
+    /// whatsoever — and they are exactly the shopkeepers, healers,
+    /// trainers and props. Something with no way to swing cannot open
+    /// hostilities, whatever else its record says.
     ///
-    /// The behaviour mode only rules things out on top of that. It is a
-    /// poor discriminator on its own — 916 templates share mode 1,
-    /// including the healer — which is how a first live `/room` came to
-    /// paint the Newhaven healer's room as hostile.
+    /// That correction cost two wrong guesses. The behaviour mode is a
+    /// poor discriminator (916 templates share mode 1, the healer
+    /// included). Aggression is worse than it looks: Newhaven's
+    /// shopkeepers — Nathaniel, Betram, Rayth, Corwyn — are all rated
+    /// **100**, because the figure describes how hard they fight once
+    /// provoked, not whether they start. Both were tried, both painted
+    /// every shop in town as hostile, and both were caught by looking at
+    /// the map rather than by any test.
     ///
-    /// **ORACLE-OPEN either way.** A guardsman reads as initiating at
-    /// aggression 90 though guardsmen only attack criminals, so there is
-    /// a fame or legal-status gate somewhere untraced. Read a positive as
-    /// "may attack you", never as "will".
+    /// Aggression and the mode still gate on top: acquisition rolls
+    /// `genrdn(0, 100) < aggression` (`re/docs/monsters.md` §4), so a 0
+    /// can never come up true, and modes 0 and 4 are documented as
+    /// unprovoked.
+    ///
+    /// **ORACLE-OPEN.** A guardsman passes all three at aggression 90
+    /// though guardsmen only attack criminals, so a fame or legal-status
+    /// gate remains untraced. Read a positive as "may attack you", never
+    /// as "will".
     pub fn initiates(&self) -> bool {
-        self.aggression > 0 && !matches!(self.behaviour, 0 | 4)
+        self.attack_percent > 0 && self.aggression > 0 && !matches!(self.behaviour, 0 | 4)
     }
 }
 
@@ -91,7 +104,7 @@ impl SpawnTable {
         let mut stmt = conn
             .prepare(
                 "select number, name, \"group\", \"index\", experience, hitpoints, \
-                 alignment, gamelimit, follow, something3 \
+                 alignment, gamelimit, follow, something3, attackper_1 \
                  from monster where name != '' order by \"index\", number",
             )
             .map_err(|e| e.to_string())?;
@@ -108,6 +121,7 @@ impl SpawnTable {
                     gamelimit: row.get(7)?,
                     aggression: row.get(8)?,
                     behaviour: row.get(9)?,
+                    attack_percent: row.get(10)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -232,15 +246,26 @@ impl Dossier {
         self.resident.iter().chain(self.candidates.iter())
     }
 
+    /// How much this room wants to hurt you.
+    ///
+    /// Anything here that would start a fight makes it `Aggressive`, the
+    /// permanent resident included — a tasloi chief or a night hag at
+    /// aggression 100 is exactly what the paint is for.
+    ///
+    /// `Passive` is about SPAWNS, though, not occupancy: it means there
+    /// is something here to farm that will not open hostilities. A
+    /// shopkeeper standing in a shop is neither a danger nor a target,
+    /// and counting them made every shop, healer and trainer light up on
+    /// the danger map (live, 2026-08-02 — in Newhaven, where nothing
+    /// spawns, the shops were the only colour on the screen).
     pub fn threat(&self) -> Threat {
-        let mut any = false;
-        for t in self.occupants() {
-            any = true;
-            if t.initiates() {
-                return Threat::Aggressive;
-            }
+        if self.occupants().any(Template::initiates) {
+            Threat::Aggressive
+        } else if self.candidates.is_empty() {
+            Threat::Nothing
+        } else {
+            Threat::Passive
         }
-        if any { Threat::Passive } else { Threat::Nothing }
     }
 
     /// The highest level this room can produce, for the map's warning
