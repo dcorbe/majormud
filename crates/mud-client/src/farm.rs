@@ -1125,6 +1125,12 @@ pub struct FarmStats {
     /// they never touch `travel_interrupts` and cannot end a run
     /// TooHurt.
     pub sightings: u32,
+    /// Flees that could not rest before walking back, because the room
+    /// the flee landed in held work too. These are the recoveries that
+    /// still resume a fight wounded — the shape that used to be every
+    /// recovery. A run where this is most of `flees` is a run whose
+    /// circuit has nowhere safe to retreat to.
+    pub contested_recoveries: u32,
     /// Times the maintained room model ([`crate::world::Here`]) claimed
     /// something the board did not list. **The Stage-1 trust gate**: a
     /// poll is self-correcting and a model is not, so decisions may only
@@ -2474,6 +2480,33 @@ async fn farm_stop(
                     });
             }
             recoveries_left -= 1;
+            // Rest HERE, in the room the flee landed in, before walking
+            // back into the fight we just ran from.
+            //
+            // Without this the runner walked straight back and swung
+            // again at whatever HP it fled with, because nothing gates
+            // an attack on health: `Bot::on_event` picks the biggest
+            // threat off the room block and engages it. Three rules that
+            // are each right on their own close the loop — a heal is
+            // suppressed while the room holds work (`Bot::on_hp`, and
+            // rightly: resting beside a monster is its own death
+            // spiral), `recover` is deliberately not hp-guarded (see its
+            // note), and the attack has no floor. Measured live
+            // (cwrun3.raw): `south / n / look / a bear` five times over
+            // ~70 prompts, pinned at 12-15 HP of 52, until it died.
+            //
+            // The room we fled to is usually clear — that is what made
+            // it worth fleeing to — so this is the one moment in the
+            // stop when resting is both safe and possible. `Contested`
+            // means it was not, and then walking back is no worse than
+            // what this replaced.
+            let flee_sight =
+                crate::bot::Bot::with_refusals(bot_config.clone(), threat.clone(), refusals.clone());
+            if let DepartureWait::Contested =
+                wait_for_departure_health(session, cfg, bot_config, &flee_sight).await
+            {
+                stats.contested_recoveries += 1;
+            }
             if let RecoverEnd::Died = recover(session, nav, graph, stop, room).await? {
                 return Ok(StopEnd::Died);
             }

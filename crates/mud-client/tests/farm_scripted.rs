@@ -577,3 +577,144 @@ async fn an_endless_stop_is_left_when_its_cap_expires() {
         received.lock().unwrap()
     );
 }
+
+/// The cwrun3 death spiral, mechanized: a flee must REST where it
+/// landed before walking back into the fight it ran from.
+///
+/// Live incident (2026-08-02, cwrun3.raw ~line 4863): AutoFlee bolted at
+/// 12 HP of 52, `recover` walked straight back, and the arrival block
+/// re-engaged the cave bear at 12 HP — `south / n / look / a bear`, five
+/// times over ~70 prompts, pinned at 12-15 HP, until it died.
+///
+/// Three correct rules closed the loop. A heal is suppressed while the
+/// room holds work (resting beside a monster is its own spiral),
+/// `recover` is deliberately not hp-guarded (it runs below
+/// `interrupt_at_percent` by construction), and nothing gates an attack
+/// on health. The room the flee landed in is the one place where
+/// resting is both safe and possible, so that is where it happens.
+#[tokio::test]
+async fn a_flee_rests_before_it_walks_back() {
+    let (addr, received) = scripted_board(vec![
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        // verify_start: fit, alone.
+        (
+            "look",
+            format!("\r\nlook{}", room_block_hp("Guard Post", None, "north", 30)),
+        ),
+        // The leg to the stop.
+        (
+            "n",
+            format!(
+                "\r\nn{}",
+                room_block_hp("Inner Ward", Some("cave bear"), "south", 30)
+            ),
+        ),
+        // The stop pump's opening ask.
+        (
+            "look",
+            format!(
+                "\r\nlook{}",
+                room_block_hp("Inner Ward", Some("cave bear"), "south", 30)
+            ),
+        ),
+        // The swing that goes badly: 10 of 30 is under flee_at_percent.
+        (
+            "a bear",
+            "\r\na bear\r\nYou smack cave bear for 2 damage!\r\nThe cave bear bites you for 20 damage!\r\n[HP=10/MA=0]:"
+                .into(),
+        ),
+        // AutoFlee bolts down the only exit.
+        (
+            "south",
+            format!("\r\nsouth{}", room_block_hp("Guard Post", None, "north", 10)),
+        ),
+        // THE FIX: rest here, where it is safe, before going back.
+        (
+            "rest",
+            "\r\nrest\r\nYou are now resting.\r\n[HP=26/MA=0]:".into(),
+        ),
+        // Fit again, walk back. The bear has wandered off, so the stop
+        // proves empty and the lap finishes.
+        (
+            "n",
+            format!("\r\nn{}", room_block_hp("Inner Ward", None, "south", 26)),
+        ),
+        (
+            "look",
+            format!("\r\nlook{}", room_block_hp("Inner Ward", None, "south", 26)),
+        ),
+    ])
+    .await;
+    let session = session_for(addr).await;
+
+    let graph = corridor();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/2".into()],
+        loops: 1,
+        idle_poke_ms: 500,
+        // 80% of 30 = 24: fit to depart at 30, not at 10.
+        depart_at_percent: 80,
+        max_rest_seconds: 5,
+        travel_interrupts: 0,
+        ..FarmConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig {
+        auto_combat: true,
+        auto_flee: true,
+        flee_at_percent: 50,
+        auto_heal: true,
+        heal_at_percent: 80,
+        max_hp: 30,
+        ..BotConfig::default()
+    };
+
+    let (_end, stats) = match tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, &bot, &cfg, None),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    {
+        Ok(out) => out,
+        Err(e) => panic!(
+            "the run must survive the flee: {e:?}\nboard received: {:?}",
+            received.lock().unwrap()
+        ),
+    };
+
+    assert!(stats.flees >= 1, "the bot should have fled: {stats:?}");
+
+    let log = received.lock().unwrap();
+    let flee = log
+        .iter()
+        .position(|l| l == "south")
+        .unwrap_or_else(|| panic!("the bot should have fled: {log:?}"));
+    let rest = log
+        .iter()
+        .skip(flee)
+        .position(|l| l == "rest")
+        .map(|i| i + flee)
+        .unwrap_or_else(|| panic!("a flee must rest before walking back: {log:?}"));
+    let back = log
+        .iter()
+        .skip(flee)
+        .position(|l| l == "n")
+        .map(|i| i + flee)
+        .unwrap_or_else(|| panic!("it should have walked back: {log:?}"));
+    assert!(
+        rest < back,
+        "the rest must come BEFORE the walk back, or the fight resumes wounded: {log:?}"
+    );
+    // And it must not have swung again at 10 HP on the way.
+    let swings_after_flee = log.iter().skip(flee).take(back - flee).filter(|l| l.starts_with("a ")).count();
+    assert_eq!(
+        swings_after_flee, 0,
+        "nothing may re-engage between the flee and the walk back: {log:?}"
+    );
+}
