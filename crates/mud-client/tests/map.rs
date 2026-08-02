@@ -603,7 +603,7 @@ fn the_marker_turns_gold_when_you_stand_on_a_stop() {
         .iter()
         .find(|l| mud_client::map::strip_sgr(l).contains('@'))
         .expect("the marker is drawn");
-    assert!(row.contains("1;33"), "gold once marked: {row:?}");
+    assert!(row.contains("1;33"), "bright gold once marked: {row:?}");
     assert!(!row.contains("1;32"), "not green any more: {row:?}");
 }
 
@@ -623,7 +623,7 @@ fn the_marker_turns_gold_on_the_route_too() {
         .iter()
         .find(|l| mud_client::map::strip_sgr(l).contains('@'))
         .expect("the marker is drawn");
-    assert!(row.contains("1;33"), "gold on the route: {row:?}");
+    assert!(row.contains("0;33"), "dim gold on a pass-through room: {row:?}");
 }
 
 /// No background colours anywhere in the palette. They were the source
@@ -655,4 +655,67 @@ fn the_palette_paints_no_backgrounds() {
             }
         }
     }
+}
+
+/// The colour in effect at a given printable column of a rendered line.
+fn sgr_at_column(line: &str, want: usize) -> String {
+    let mut current = String::new();
+    let mut col = 0usize;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            if chars.next() != Some('[') {
+                continue;
+            }
+            let mut code = String::new();
+            for c in chars.by_ref() {
+                if ('@'..='~').contains(&c) {
+                    break;
+                }
+                code.push(c);
+            }
+            current = code;
+            continue;
+        }
+        if col == want {
+            return current;
+        }
+        col += 1;
+    }
+    current
+}
+
+/// A stop is somewhere the runner stands and fights; a pass-through room
+/// is somewhere it merely walks. Same hue, because it is one loop and the
+/// route should read as one shape — different brightness, because that
+/// distinction is what you are looking for when you check a circuit.
+#[test]
+fn a_stop_and_a_pass_through_room_are_told_apart() {
+    let plane = slums();
+    let styles = styles(&plane, graph(), spawns(), Paint::Terrain, &PaintCtx::default());
+    let a = RoomId { map: 1, room: 1076 };
+    let b = RoomId { map: 1, room: 1122 };
+    let route = mud_client::loops::route_rooms(graph(), &[a, b]);
+    let between = *route
+        .iter()
+        .find(|r| **r != a && **r != b)
+        .expect("the legs pass through something");
+
+    let marks = Marks {
+        stops: [a, b].into_iter().collect(),
+        route,
+        ..Default::default()
+    };
+    let (cw, ch) = Zoom::Normal.cell();
+    let view = (-4, -4);
+    let out = render(&plane, &styles, view, (120, 60), Zoom::Normal, &marks);
+    let colour = |room: RoomId| {
+        let (x, y) = plane.cell_of(room).expect("placed");
+        let row = ((y - view.1) as usize) * ch;
+        let col = ((x - view.0) as usize) * cw;
+        sgr_at_column(&out[row], col)
+    };
+    assert_eq!(colour(a), "0;1;33", "a stop is bright gold");
+    assert_eq!(colour(b), "0;1;33", "so is the other one");
+    assert_eq!(colour(between), "0;0;33", "a pass-through room is dim");
 }

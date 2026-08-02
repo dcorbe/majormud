@@ -463,15 +463,21 @@ pub struct Marks {
     pub route: BTreeSet<RoomId>,
 }
 
-/// A room on the marked loop — a stop, or a room the walk passes
-/// through. Gold, in the FOREGROUND like everything else.
+/// A stop on the marked loop: bright gold, in the FOREGROUND like
+/// everything else.
 ///
 /// There are no background colours in this palette. Marks used to paint
 /// one, which meant every rule had to say how it composed with the
 /// foreground, and the room the character stood in ended up unable to
 /// show it had been marked at all. One channel, one precedence order,
 /// nothing to compose.
-const MARKED: &str = "1;33";
+const STOP_MARK: &str = "1;33";
+/// A room the walk passes THROUGH without stopping: the same gold, dimmed.
+///
+/// Same hue because it is the same loop and the route should read as one
+/// shape; dimmer because the runner does not stand and fight here, and
+/// that is the difference worth seeing at a glance.
+const ON_ROUTE: &str = "0;33";
 /// Where the character stands, when that room is not part of the loop.
 /// Bright green on whatever the shell's background already is.
 const HERE: &str = "1;32";
@@ -554,14 +560,20 @@ struct Ink {
 
 /// One precedence order, top to bottom:
 ///
-/// 1. on the marked loop — gold, `@` included, so the route reads as a
-///    single shape rather than a colour plus a highlight
-/// 2. where the character stands — green
-/// 3. the warning — red
-/// 4. whatever the paint mode says
+/// 1. a stop — bright gold, `@` included
+/// 2. a room the route passes through — the same gold, dimmed
+/// 3. where the character stands — green
+/// 4. the warning — red
+/// 5. whatever the paint mode says
+///
+/// The loop outranks the character marker so a route reads as one
+/// continuous shape; the two golds keep "stand and fight here" apart from
+/// "walk through here" without leaving the hue.
 fn ink(fg: &'static str, id: RoomId, marks: &Marks) -> Ink {
-    let fg = if marks.stops.contains(&id) || marks.route.contains(&id) {
-        MARKED
+    let fg = if marks.stops.contains(&id) {
+        STOP_MARK
+    } else if marks.route.contains(&id) {
+        ON_ROUTE
     } else if marks.here == Some(id) {
         HERE
     } else {

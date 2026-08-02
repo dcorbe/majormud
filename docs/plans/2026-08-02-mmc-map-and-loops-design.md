@@ -259,9 +259,13 @@ A ramp built on them would be decoration. Experience is the number a farm spot i
 actually chosen on, and it is real.
 
 **There are no background colours.** Marks are foreground too, in one precedence order:
-gold `1;33` for anything on the marked loop (stops and the rooms the walk passes
-through alike, `@` included), then green `1;32` for where the character stands, then the
-warning, then the paint mode.
+bright gold `1;33` for a stop, the same gold dimmed `0;33` for a room the walk merely
+passes through, then green `1;32` for where the character stands, then the warning, then
+the paint mode. `@` follows the same order, so it turns gold when it is part of the loop.
+
+Two golds rather than one: the same hue keeps a route reading as a single shape, and the
+brightness separates "stand and fight here" from "walk through here", which is the
+distinction you are checking a circuit for.
 
 Backgrounds were tried first and removed. Every rule had to state how it composed with
 the foreground, and the composition kept coming out wrong in the same place — the room
