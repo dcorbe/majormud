@@ -372,6 +372,21 @@ Live, in the existing tmux session, on Salad:
 Board etiquette: `board-safe-to-restart` before any restart, and the spawner drains in
 1–2 h, so restart immediately before a field run.
 
+## Shelved, 2026-08-02
+
+**Reading the character's legal level automatically.** `Standing` and the initiation
+computation are done and tested; nothing populates `PaintCtx::standing` from the live
+session, so it defaults to Neutral. The tier word (Neutral / Seedy / Outlaw / Criminal /
+Villain / FIEND / Good / Saint) appears only in a WHO listing, so the wiring is: send
+`who` on login, find our own name, feed the word to `Standing::from_legal_level`.
+Open questions were whether to re-poll after kills and what to do when WHO cannot be
+parsed. Worth 19 templates out of 1,100.
+
+**ORACLE-OPEN, found while doing it.** Guardsmen decode as behaviour mode 4 — never
+initiates — yet real guardsmen hunt criminals, and §4 puts that behaviour in ROAM class
+5 while `guardsman` is class 1. Either the mechanism is elsewhere or the section is
+incomplete. Not verified live, and the map currently paints guardsman rooms as harmless.
+
 ## Follow-on, not in this plan
 
 `/where <monster|item>` — reverse index over the spawn table ranked by
