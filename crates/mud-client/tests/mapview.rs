@@ -10,7 +10,7 @@ use mud_client::graph::RoomGraph;
 use mud_client::map::{Paint, PaintCtx, Zoom};
 use mud_client::mapview::{MapView, ViewAction};
 use mud_client::spawn::SpawnTable;
-use mud_core::content::RoomId;
+use mud_core::content::{Direction, RoomId};
 
 fn db_path() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../re/mmud_wgnt.sqlite")
@@ -35,17 +35,18 @@ const SMALL_CAVERN: RoomId = RoomId { map: 1, room: 2156 };
 /// A slum street with a sewer grate: one of the plane's few links down.
 const SLUM_BEND: RoomId = RoomId { map: 1, room: 1084 };
 
-/// Walk the cursor off the drawn rooms entirely. Bounded by the plane's
-/// own height, so it cannot loop forever if the layout changes.
-fn walk_off_the_map(v: &mut MapView) {
-    let limit = v.plane().extent().height() + 4;
-    for _ in 0..limit {
-        press(v, KeyCode::Up);
-        if v.cursor_room().is_none() {
-            return;
-        }
-    }
-    panic!("still on a room after {limit} steps north");
+/// A view anchored on a room the graph has never heard of: the plane is
+/// empty, so the cursor genuinely has no room under it. This is the only
+/// way that happens now that movement snaps room to room.
+fn view_of_nowhere() -> MapView {
+    MapView::new(
+        graph(),
+        spawns(),
+        RoomId { map: 999, room: 999 },
+        None,
+        PaintCtx::default(),
+        (100, 30),
+    )
 }
 
 fn view() -> MapView {
@@ -79,29 +80,98 @@ fn it_opens_on_the_room_it_was_given() {
     assert_eq!(v.paint(), Paint::Terrain);
 }
 
+/// Arrows move ROOM to room, never onto the space between them.
+///
+/// The map is mostly gaps — streets are thin and the plane is wide — so
+/// a cursor that stepped one cell at a time spent most of its life on
+/// nothing, with the panel blank and no idea where it had got to. Every
+/// press lands somewhere real or does not move at all.
 #[test]
-fn the_cursor_moves_one_cell_per_press() {
+fn the_cursor_moves_room_to_room() {
     let mut v = view();
-    let (x, y) = v.cursor();
-    press(&mut v, KeyCode::Right);
-    assert_eq!(v.cursor(), (x + 1, y));
-    press(&mut v, KeyCode::Down);
-    assert_eq!(v.cursor(), (x + 1, y + 1));
-    press(&mut v, KeyCode::Char('h'));
-    assert_eq!(v.cursor(), (x, y + 1));
-    press(&mut v, KeyCode::Char('k'));
-    assert_eq!(v.cursor(), (x, y), "hjkl and the arrows are the same keys");
+    let start = v.cursor_room().expect("starts on a room");
+    for code in [
+        KeyCode::Right,
+        KeyCode::Down,
+        KeyCode::Char('h'),
+        KeyCode::Char('k'),
+        KeyCode::Left,
+        KeyCode::Up,
+    ] {
+        press(&mut v, code);
+        assert!(
+            v.cursor_room().is_some(),
+            "{code:?} put the cursor on nothing at {:?}",
+            v.cursor()
+        );
+    }
+    let _ = start;
 }
 
-/// The cursor may leave the rooms: crossing a gap to reach the next
-/// street is an ordinary thing to do, and refusing to move would make
-/// the map feel stuck.
+/// The whole point: a gap in a row is jumped, not landed in.
 #[test]
-fn the_cursor_may_stand_on_an_empty_cell() {
+fn a_gap_is_jumped_rather_than_stepped_into() {
     let mut v = view();
-    walk_off_the_map(&mut v);
-    assert_eq!(v.cursor_room(), None);
-    assert!(!v.lines().is_empty(), "and the view still paints");
+    let from = v.cursor();
+    press(&mut v, KeyCode::Right);
+    let to = v.cursor();
+    assert!(to.0 > from.0, "moved east");
+    assert!(v.plane().room_at(to).is_some());
+    // Every cell strictly between the two is empty, or it would have
+    // stopped there.
+    for x in (from.0 + 1)..to.0 {
+        assert_eq!(
+            v.plane().room_at((x, from.1)),
+            None,
+            "stopped short of a room at ({x}, {})",
+            from.1
+        );
+    }
+}
+
+/// A street that jogs must not dead-end the cursor. Scanning only the
+/// exact row would strand it the moment the next room sat one row over.
+#[test]
+fn movement_finds_a_room_that_is_not_on_the_same_row() {
+    use mud_client::graph::{ExitEdge, GraphRoom};
+    let here = RoomId { map: 1, room: 1 };
+    let jog = RoomId { map: 1, room: 2 };
+    let mut a = GraphRoom {
+        name: "Here".into(),
+        ..Default::default()
+    };
+    // The only other room is south-east: nothing at all lies due east.
+    a.exits[Direction::SouthEast as usize] = Some(ExitEdge {
+        dest: jog,
+        exit_type: 0,
+        command: None,
+    });
+    let g = std::sync::Arc::new(RoomGraph::from_rooms(vec![
+        (here, a),
+        (
+            jog,
+            GraphRoom {
+                name: "Jog".into(),
+                ..Default::default()
+            },
+        ),
+    ]));
+    let mut v = MapView::new(g, spawns(), here, None, PaintCtx::default(), (100, 30));
+    press(&mut v, KeyCode::Right);
+    assert_eq!(v.cursor_room(), Some(jog), "east should reach the jog");
+}
+
+#[test]
+fn movement_with_nothing_that_way_stays_put() {
+    let mut v = view();
+    // Far west of the slum plane there is nothing further west.
+    for _ in 0..80 {
+        press(&mut v, KeyCode::Left);
+    }
+    let stuck = v.cursor();
+    press(&mut v, KeyCode::Left);
+    assert_eq!(v.cursor(), stuck, "nowhere further west to go");
+    assert!(v.cursor_room().is_some(), "and still on a room");
 }
 
 #[test]
@@ -294,8 +364,7 @@ fn g_asks_to_walk_to_the_room_under_the_cursor() {
 
 #[test]
 fn g_on_an_empty_cell_walks_nowhere() {
-    let mut v = view();
-    walk_off_the_map(&mut v);
+    let mut v = view_of_nowhere();
     assert!(matches!(
         press(&mut v, KeyCode::Char('g')),
         ViewAction::Continue
@@ -394,8 +463,7 @@ fn enter_marks_the_room_under_the_cursor_as_a_stop() {
 
 #[test]
 fn marking_an_empty_cell_marks_nothing() {
-    let mut v = view();
-    walk_off_the_map(&mut v);
+    let mut v = view_of_nowhere();
     press(&mut v, KeyCode::Enter);
     assert!(v.stops().is_empty());
     assert!(v.message().is_some());
@@ -521,4 +589,99 @@ fn a_saved_loop_validates_as_a_farm_circuit() {
     saved
         .to_farm(&mud_client::farm::FarmConfig::default(), &graph())
         .expect("every leg walkable");
+}
+
+/// MajorMUD streets run diagonally constantly, and once movement snaps
+/// room to room you cannot reach a diagonal neighbour by pressing two
+/// orthogonals — each one lands somewhere else. The roguelike diagonals
+/// are load-bearing, not a convenience.
+#[test]
+fn the_diagonal_keys_reach_diagonal_neighbours() {
+    use mud_client::graph::{ExitEdge, GraphRoom};
+    let here = RoomId { map: 1, room: 1 };
+    let corners = [
+        (Direction::NorthWest, 'y', RoomId { map: 1, room: 2 }),
+        (Direction::NorthEast, 'u', RoomId { map: 1, room: 3 }),
+        (Direction::SouthWest, 'b', RoomId { map: 1, room: 4 }),
+        (Direction::SouthEast, 'n', RoomId { map: 1, room: 5 }),
+    ];
+    let mut hub = GraphRoom {
+        name: "Hub".into(),
+        ..Default::default()
+    };
+    let mut rooms = Vec::new();
+    for (dir, _, id) in corners {
+        hub.exits[dir as usize] = Some(ExitEdge {
+            dest: id,
+            exit_type: 0,
+            command: None,
+        });
+        rooms.push((
+            id,
+            GraphRoom {
+                name: format!("{dir:?}"),
+                ..Default::default()
+            },
+        ));
+    }
+    rooms.push((here, hub));
+    let g = std::sync::Arc::new(RoomGraph::from_rooms(rooms));
+
+    for (_, key, want) in corners {
+        let mut v = MapView::new(
+            g.clone(),
+            spawns(),
+            here,
+            None,
+            PaintCtx::default(),
+            (100, 30),
+        );
+        press(&mut v, KeyCode::Char(key));
+        assert_eq!(v.cursor_room(), Some(want), "key {key:?}");
+    }
+}
+
+/// A straight run must still prefer the room directly ahead over one
+/// sitting off to the side but slightly nearer.
+#[test]
+fn straight_ahead_beats_off_axis() {
+    use mud_client::graph::{ExitEdge, GraphRoom};
+    let here = RoomId { map: 1, room: 1 };
+    let ahead = RoomId { map: 1, room: 2 };
+    let aside = RoomId { map: 1, room: 3 };
+    let mut hub = GraphRoom {
+        name: "Hub".into(),
+        ..Default::default()
+    };
+    // `aside` is diagonally adjacent, `ahead` is two cells due east.
+    hub.exits[Direction::SouthEast as usize] = Some(ExitEdge {
+        dest: aside,
+        exit_type: 0,
+        command: None,
+    });
+    hub.exits[Direction::East as usize] = Some(ExitEdge {
+        dest: ahead,
+        exit_type: 0,
+        command: None,
+    });
+    let g = std::sync::Arc::new(RoomGraph::from_rooms(vec![
+        (here, hub),
+        (
+            ahead,
+            GraphRoom {
+                name: "Ahead".into(),
+                ..Default::default()
+            },
+        ),
+        (
+            aside,
+            GraphRoom {
+                name: "Aside".into(),
+                ..Default::default()
+            },
+        ),
+    ]));
+    let mut v = MapView::new(g, spawns(), here, None, PaintCtx::default(), (100, 30));
+    press(&mut v, KeyCode::Right);
+    assert_eq!(v.cursor_room(), Some(ahead), "east means east");
 }

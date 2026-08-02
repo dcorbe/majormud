@@ -272,6 +272,14 @@ impl MapView {
             KeyCode::Right | KeyCode::Char('l') => self.step(1, 0),
             KeyCode::Up | KeyCode::Char('k') => self.step(0, -1),
             KeyCode::Down | KeyCode::Char('j') => self.step(0, 1),
+            // Diagonals on the roguelike keys, because MajorMUD streets
+            // run diagonally all the time -- the slums are full of them --
+            // and reaching one by zig-zagging two orthogonals lands
+            // somewhere else entirely once movement snaps room to room.
+            KeyCode::Char('y') => self.step(-1, -1),
+            KeyCode::Char('u') => self.step(1, -1),
+            KeyCode::Char('b') => self.step(-1, 1),
+            KeyCode::Char('n') => self.step(1, 1),
 
             KeyCode::Home => {
                 match self.here {
@@ -357,9 +365,44 @@ impl MapView {
         ViewAction::Continue
     }
 
+    /// Move the cursor to the nearest room that way, skipping the gaps.
+    ///
+    /// The map is mostly empty space — streets are thin and the plane is
+    /// wide — so a cursor that stepped one cell per press spent most of
+    /// its life on nothing, with a blank panel and no way to tell where
+    /// it had got to. Snapping makes "where is the cursor" unanswerable
+    /// by construction: it is always on a room.
+    ///
+    /// Candidates are ranked by how far OFF the axis they sit first and
+    /// how far along it second, so a straight run east prefers the next
+    /// room in the same row, and a street that jogs one row over is still
+    /// found. Scanning only the exact row would strand the cursor the
+    /// moment a corridor stopped being straight.
+    ///
+    /// Nothing that way means no move. The cursor visibly staying put is
+    /// a clearer answer than drifting into the void.
     fn step(&mut self, dx: i32, dy: i32) {
-        self.cursor = (self.cursor.0 + dx, self.cursor.1 + dy);
-        self.follow();
+        let (cx, cy) = self.cursor;
+        let best = self
+            .plane
+            .rooms()
+            .filter_map(|id| self.plane.cell_of(id))
+            .filter_map(|(x, y)| {
+                let (vx, vy) = (x - cx, y - cy);
+                // Distance ALONG the direction and deviation OFF it, as a
+                // dot and a cross product. One formula for all eight
+                // directions: for east it reads as (dx, |dy|), for
+                // south-east as (dx+dy, |dx-dy|), and a room exactly on
+                // the diagonal deviates by zero as it should.
+                let along = vx * dx + vy * dy;
+                let off = (vx * dy - vy * dx).abs();
+                (along > 0).then_some(((off, along), (x, y)))
+            })
+            .min_by_key(|(rank, _)| *rank);
+        if let Some((_, cell)) = best {
+            self.cursor = cell;
+            self.follow();
+        }
     }
 
     fn pan(&mut self, dx: i32, dy: i32) {
@@ -518,7 +561,7 @@ impl MapView {
             ),
             (None, Some(msg)) => format!("-- {msg} --"),
             (None, None) => format!(
-                "{} | {} | {} stops | arrows move  +/- zoom  m mode  / find  enter marks  s saves  g go  q leave",
+                "{} | {} | {} stops | arrows/hjkl move  yubn diagonals  +/- zoom  m mode  / find  enter marks  s saves  g go  q leave",
                 match self.paint {
                     Paint::Terrain => "terrain",
                     Paint::Danger => "danger",
