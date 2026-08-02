@@ -7,10 +7,14 @@
 //! a typo in `[farm].circuit` must fail before the client connects, not
 //! halfway around the lap with a live character standing in a spawn.
 //!
-//! `[farm].start` is where the character *stands at login*, not where the
-//! farming happens. The runner verifies it by room name and then walks
-//! the first leg onto the circuit itself, so the two are often different
-//! rooms — a town room to log in at, a lair to farm.
+//! `[farm].start` is where the character is *expected* to stand at login,
+//! not where the farming happens and not a precondition. The runner looks
+//! around, works out where it actually is, and walks the first leg onto
+//! the circuit from there — so the two are often different rooms (a town
+//! room to log in at, a lair to farm) and being in neither is survivable.
+//! `start` earns its keep as the localizer's hint: it makes the common
+//! case free and separates same-named twins that a global search cannot.
+//! See [`locate_start`].
 //!
 //! `[farm].finish_at` is where to leave the character when the run stops.
 //! Without it a run ends wherever it happened to be, which for a lair
@@ -20,8 +24,8 @@
 //! and that is the commonest way a farm ends.
 //!
 //! **There is no dry run.** Building the plan validates the configuration,
-//! but `mmc farm` connects and starts farming as soon as the start room
-//! checks out; there is no way to ask it only to check the config.
+//! but `mmc farm` connects and starts farming as soon as it knows where
+//! the character is; there is no way to ask it only to check the config.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -1213,12 +1217,15 @@ impl FarmStats {
 
 #[derive(Debug)]
 pub enum FarmError {
-    /// The character is not standing where `[farm].start` says. Every
-    /// room id in the circuit is relative to that, so the runner refuses
-    /// rather than walking a live character blind.
-    NotAtStart {
-        expected: String,
-        saw: Option<String>,
+    /// A look went unanswered: no room block came back inside the
+    /// timeout, and lighting a source did not produce one either. Names
+    /// the caller, which is the only clue about which look it was.
+    ///
+    /// This is deliberately not the same failure as [`FarmError::Lost`]:
+    /// there, the board answered and the graph could not place the
+    /// answer; here the board said nothing at all.
+    NoRoomBlock {
+        whose: String,
     },
     /// A flee (or anything else) left the character somewhere that is
     /// not the stop or one of its neighbors, so there is no honest way
@@ -1234,10 +1241,9 @@ pub enum FarmError {
 impl std::fmt::Display for FarmError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FarmError::NotAtStart { expected, saw } => write!(
-                f,
-                "not at the configured start: expected {expected:?}, saw {saw:?}"
-            ),
+            FarmError::NoRoomBlock { whose } => {
+                write!(f, "no room block came back for {whose}")
+            }
             FarmError::Lost { saw } => {
                 write!(f, "lost: {saw:?} is not the stop or any neighbor of it")
             }
@@ -1497,17 +1503,12 @@ async fn farm_loop(
         bot_config.max_hp = max;
     }
 
-    // Ask once what the character is carrying and what it can cast. The
-    // answer decides whether a dark room is a dead end or a command away,
-    // and both listings are cheap.
-    verify_start(session, &graph, plan.start).await?;
-
     // One refusal set for the whole run. Learning that the board will not
     // let us hit a template is worth exactly one refused swing, not one
     // per stop per lap.
     let refusals = crate::bot::Refusals::default();
 
-    let mut current = plan.start;
+    let mut current = locate_start(session, &nav, plan.start).await?;
     loop {
         for &stop in &plan.circuit {
             if let Some(end) = time_up(started, cfg) {
@@ -1649,9 +1650,8 @@ pub(crate) async fn look_around(
     session: &crate::session::Session,
     whose: &str,
 ) -> Result<crate::events::RoomView, FarmError> {
-    let unanswered = || FarmError::NotAtStart {
-        expected: format!("a room block answering {whose}"),
-        saw: None,
+    let unanswered = || FarmError::NoRoomBlock {
+        whose: whose.to_string(),
     };
     let mut events = session.events();
     crate::session::drain(&mut events, |_| {});
@@ -1751,27 +1751,32 @@ async fn ask_for(
     out
 }
 
-async fn verify_start(
+/// Where the character actually is, before the first leg.
+///
+/// This used to verify the position against `[farm].start` and refuse
+/// when they differed. That was the wrong shape for the question: the
+/// runner is holding a navigator, and standing somewhere unexpected — a
+/// run that died, a walk that wandered, a login in the wrong room — is
+/// the ordinary case, not an error. So the answer is now *used*: the
+/// first leg routes from wherever the character stands to the first stop.
+///
+/// `start` survives as the localizer's hint, which is worth keeping.
+/// `localize_view` tries the cheap one-hop answer first, so a character
+/// that IS at the declared start resolves without searching, and a wrong
+/// hint costs only the global search that would otherwise have run.
+/// It is also what separates same-named twins, which the global search
+/// cannot (`nav::Navigator::localize_view`).
+///
+/// The one remaining refusal is a room the graph cannot place at all:
+/// there is no honest way to route out of an unknown room.
+async fn locate_start(
     session: &crate::session::Session,
-    graph: &RoomGraph,
+    nav: &crate::nav::Navigator,
     start: RoomId,
-) -> Result<(), FarmError> {
-    let expected = graph
-        .room(start)
-        .map(|r| r.name.clone())
-        .unwrap_or_default();
-    let mut events = session.events();
-    crate::session::drain(&mut events, |_| {});
-    let ask = session.send("look");
-    // Attributed: a login-banner render or anybody's stale block can
-    // never satisfy start verification.
-    let saw = next_room_view(&mut events, ask, Duration::from_secs(15))
-        .await
-        .map(|r| r.name);
-    match saw {
-        Some(name) if name == expected => Ok(()),
-        saw => Err(FarmError::NotAtStart { expected, saw }),
-    }
+) -> Result<RoomId, FarmError> {
+    let seen = look_around(session, "the run's opening look").await?;
+    nav.localize_view(start, &seen)
+        .ok_or(FarmError::Lost { saw: seen.name })
 }
 
 /// How a leg ended.

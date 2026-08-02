@@ -483,12 +483,14 @@ async fn walks_the_circuit_killing_what_it_finds() {
     );
 }
 
-/// The circuit is a list of room ids, and the character's position is
-/// only ever confirmed by room name. Starting somewhere other than the
-/// configured start means every id afterwards refers to the wrong room,
-/// so the runner refuses rather than walking a live character blind.
+/// `[farm].start` is where the character is EXPECTED to be, not a
+/// precondition. Standing somewhere else is the ordinary case — a run
+/// that died, a walk that wandered, a login in the wrong room — and the
+/// runner has a navigator, so it walks to the circuit rather than
+/// refusing. Position is still confirmed before the first step; the
+/// difference is that the answer is used instead of only being checked.
 #[tokio::test]
-async fn refuses_to_run_from_the_wrong_room() {
+async fn walks_to_the_circuit_from_the_wrong_room() {
     let server = start().await;
     let session = logged_in(server.local_addr(), "Lost").await;
     session.send("n"); // now in the Training Yard, not the Town Gates
@@ -497,16 +499,57 @@ async fn refuses_to_run_from_the_wrong_room() {
         .await
         .unwrap();
 
-    let err = farm(&session, BotConfig::default(), farm_config(&["1/2"], 1))
+    let (end, stats) = farm(&session, BotConfig::default(), farm_config(&["1/2"], 1))
         .await
-        .expect_err("must refuse");
+        .expect("should walk to the circuit, not refuse");
+
+    assert_eq!(end, FarmEnd::LoopsDone);
+    assert_eq!(stats.loops, 1);
+}
+
+/// The one position failure left: a room block the graph cannot place at
+/// all. There is no honest way to route from an unknown room, so that
+/// still stops the run.
+#[tokio::test]
+async fn refuses_to_run_from_a_room_it_cannot_place() {
+    let server = start().await;
+    let session = logged_in(server.local_addr(), "Nowhere").await;
+    // A graph that disagrees with the board about what these rooms are
+    // called. The character is standing in the Town Gates and no room in
+    // this navigator's world answers to that name, so there is nothing to
+    // route from.
+    let mut gates = GraphRoom {
+        name: "Somewhere Else Entirely".into(),
+        ..Default::default()
+    };
+    gates.exits[Direction::North as usize] = Some(ExitEdge {
+        dest: YARD,
+        exit_type: 0,
+        command: None,
+    });
+    let graph = Arc::new(RoomGraph::from_rooms(vec![
+        (GATES, gates),
+        (
+            YARD,
+            GraphRoom {
+                name: "Nor This One".into(),
+                ..Default::default()
+            },
+        ),
+    ]));
+    let cfg = farm_config(&["1/2"], 1);
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let err = tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, &BotConfig::default(), &cfg, None),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    .expect_err("must refuse");
 
     match err {
-        FarmError::NotAtStart { expected, saw } => {
-            assert_eq!(expected, "Town Gates");
-            assert_eq!(saw.as_deref(), Some("Training Yard"));
-        }
-        other => panic!("expected NotAtStart, got {other:?}"),
+        FarmError::Lost { saw } => assert_eq!(saw, "Town Gates"),
+        other => panic!("expected Lost, got {other:?}"),
     }
 }
 
