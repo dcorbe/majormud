@@ -56,7 +56,8 @@ const ALL: [Direction; 10] = [
     Direction::Down,
 ];
 
-fn step_of(dir: Direction) -> Option<Cell> {
+/// The grid step a compass direction makes, or `None` for up and down.
+pub fn step_of(dir: Direction) -> Option<Cell> {
     COMPASS.iter().find(|(d, _)| *d == dir).map(|(_, s)| *s)
 }
 

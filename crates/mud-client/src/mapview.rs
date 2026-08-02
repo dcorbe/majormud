@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use mud_core::content::RoomId;
+use mud_core::content::{Direction, RoomId};
 
 use crate::graph::RoomGraph;
 use crate::loops::{Loop, Stop, route_rooms};
@@ -314,18 +314,12 @@ impl MapView {
                 self.restyle();
             }
 
-            KeyCode::Char('>') => match self.cursor_room().and_then(|r| {
-                self.plane
-                    .links_from(r)
-                    .next()
-                    .map(|l| (l.dir, l.dest))
-            }) {
-                Some((_, dest)) => self.hop_to(dest, true),
-                None => {
-                    self.message = Some("no stairs or portal here (+ marks the ones there are)".into())
-                }
-            },
-            KeyCode::Char('<') => match self.back.pop() {
+            // Rogue's convention, and it is the only scheme that reaches
+            // both halves of a room holding an up AND a down exit — nine
+            // rooms on the Newhaven plane alone do.
+            KeyCode::Char('<') => self.climb(Direction::Up),
+            KeyCode::Char('>') => self.climb(Direction::Down),
+            KeyCode::Backspace => match self.back.pop() {
                 Some((anchor, cursor)) => {
                     self.hop_to(anchor, false);
                     self.cursor = cursor;
@@ -402,6 +396,37 @@ impl MapView {
         if let Some((_, cell)) = best {
             self.cursor = cell;
             self.follow();
+        }
+    }
+
+    /// Follow the up or down exit out of the room under the cursor.
+    ///
+    /// Falls through to any remaining plane link when the room has no
+    /// vertical one, so a lone cross-map portal is still reachable
+    /// without a key of its own.
+    fn climb(&mut self, want: Direction) {
+        let Some(room) = self.cursor_room() else {
+            self.message = Some("no room under the cursor".into());
+            return;
+        };
+        let dest = self
+            .plane
+            .links_from(room)
+            .find(|l| l.dir == want)
+            .or_else(|| {
+                self.plane
+                    .links_from(room)
+                    .find(|l| !matches!(l.dir, Direction::Up | Direction::Down))
+            })
+            .map(|l| l.dest);
+        match dest {
+            Some(dest) => self.hop_to(dest, true),
+            None => {
+                let word = if want == Direction::Up { "up" } else { "down" };
+                self.message = Some(format!(
+                    "nothing leads {word} from here (the panel lists what does)"
+                ));
+            }
         }
     }
 
@@ -533,6 +558,29 @@ impl MapView {
                 .unwrap_or_default(),
             None => vec![format!("({}, {}) nothing here", self.cursor.0, self.cursor.1)],
         };
+        // Say where the exits off this plane GO, and which key takes
+        // them. "exits: n e w d" told you a `d` existed and nothing else
+        // — not that it left the map, not where to, not how to follow it.
+        if let Some(room) = self.cursor_room() {
+            for link in self.plane.links_from(room) {
+                let key = match link.dir {
+                    Direction::Up => "<",
+                    Direction::Down => ">",
+                    _ => "that way",
+                };
+                lines.push(format!(
+                    "{} [{key}] {}/{} {}",
+                    spoken(link.dir),
+                    link.dest.map,
+                    link.dest.room,
+                    self.graph
+                        .room(link.dest)
+                        .map(|r| r.name.as_str())
+                        .unwrap_or("?")
+                ));
+            }
+        }
+
         let e = self.plane.extent();
         lines.push(String::new());
         lines.push(format!(
@@ -561,7 +609,7 @@ impl MapView {
             ),
             (None, Some(msg)) => format!("-- {msg} --"),
             (None, None) => format!(
-                "{} | {} | {} stops | arrows/hjkl move  yubn diagonals  +/- zoom  m mode  / find  enter marks  s saves  g go  q leave",
+                "{} | {} | {} stops | move arrows/hjkl/yubn  < > stairs  +/- zoom  m mode  / find  enter marks  s saves  g go  q leave",
                 match self.paint {
                     Paint::Terrain => "terrain",
                     Paint::Danger => "danger",
@@ -766,6 +814,25 @@ pub fn run_offline(view: &mut MapView) -> std::io::Result<ViewAction> {
             },
             _ => {}
         }
+    }
+}
+
+/// A direction as prose, for the panel to read out.
+///
+/// Deliberately not [`crate::nav::dir_word`]: that is the word SENT to
+/// the board, so it answers "d" where a human wants "down".
+fn spoken(dir: Direction) -> &'static str {
+    match dir {
+        Direction::North => "north",
+        Direction::South => "south",
+        Direction::East => "east",
+        Direction::West => "west",
+        Direction::NorthEast => "north-east",
+        Direction::NorthWest => "north-west",
+        Direction::SouthEast => "south-east",
+        Direction::SouthWest => "south-west",
+        Direction::Up => "up",
+        Direction::Down => "down",
     }
 }
 

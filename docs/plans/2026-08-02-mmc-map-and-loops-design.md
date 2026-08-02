@@ -282,10 +282,15 @@ on is a warning nobody reads.
   repaint.
 - Keep draining `raw_rx` into a buffer (so the broadcast never lags) and `events` (so
   the assist and exp meter keep working).
-- Beyond slice 2's keys: `>` follows a stairwell or portal under the cursor to that
-  plane and `<` walks back the way it came, `g` leaves and starts a `/go` to the cursor
-  room, `q`/Esc leave, Ctrl-Q quits. Esc closes a search rather than the map — one Esc,
-  one thing.
+- Beyond slice 2's keys: `<` and `>` follow the up and down exits — Rogue's convention,
+  and the only scheme that reaches both halves of a room holding an up AND a down exit
+  (nine on the Newhaven plane do). `>` falls through to a cross-map portal when there
+  are no stairs. Backspace returns to the plane you came from. `g` leaves and starts a
+  `/go` to the cursor room, `q`/Esc leave, Ctrl-Q quits. Esc closes a search rather than
+  the map — one Esc, one thing.
+- **The panel names every exit off the plane**: direction in prose, destination id and
+  room name, and the key that takes it. `exits: n e w d` said a `d` existed and nothing
+  else — not that it left the map, not where to, not how to follow it.
 - No Tab-to-next-room: the arrows move the cursor and `/` finds a room by name, and a
   third way to move the cursor is a third thing to remember.
 - Right panel is `Dossier::lines()` for the cursor room, behind a ruled edge — the

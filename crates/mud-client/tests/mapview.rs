@@ -288,7 +288,7 @@ fn a_plane_hop_re_anchors_on_the_far_side() {
     assert_eq!(v.cursor(), (0, 0), "the new plane's anchor is the origin");
 
     // And back the way we came, to the room we hopped from.
-    press(&mut v, KeyCode::Char('<'));
+    press(&mut v, KeyCode::Backspace);
     assert_eq!(v.cursor_room(), Some(SLUM_BEND));
 }
 
@@ -297,6 +297,7 @@ fn a_room_with_no_link_does_not_hop() {
     let mut v = view();
     let before = v.plane().anchor();
     press(&mut v, KeyCode::Char('>'));
+    let _ = before;
     assert_eq!(v.plane().anchor(), before);
     assert!(v.message().is_some(), "and says why");
 }
@@ -684,4 +685,76 @@ fn straight_ahead_beats_off_axis() {
     let mut v = MapView::new(g, spawns(), here, None, PaintCtx::default(), (100, 30));
     press(&mut v, KeyCode::Right);
     assert_eq!(v.cursor_room(), Some(ahead), "east means east");
+}
+
+// --- getting off the plane, 2026-08-02 --------------------------------
+
+const NARROW_ROAD: RoomId = RoomId { map: 1, room: 2146 };
+const ARENA: RoomId = RoomId { map: 1, room: 2150 };
+
+/// "exits: n e w d" said a `d` existed and nothing else — not that it
+/// left the map, not where it went, not how to follow it. Standing at
+/// 1/2146 knowing the Arena is below and being unable to find it on the
+/// map is what this fixes.
+#[test]
+fn the_panel_says_where_a_plane_exit_goes_and_which_key_takes_it() {
+    let v = MapView::new(
+        graph(),
+        spawns(),
+        NARROW_ROAD,
+        Some(NARROW_ROAD),
+        PaintCtx::default(),
+        (120, 30),
+    );
+    let frame = v
+        .lines()
+        .iter()
+        .map(|l| mud_client::map::strip_sgr(l))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(frame.contains("down [>]"), "names the direction and key:\n{frame}");
+    assert!(frame.contains("1/2150"), "names where it goes:\n{frame}");
+    assert!(frame.contains("Arena"), "by name:\n{frame}");
+}
+
+/// Rogue's convention, and the only scheme that reaches both halves of a
+/// room with an up AND a down exit — nine rooms on this plane have one.
+#[test]
+fn up_and_down_are_separate_keys() {
+    let mut v = MapView::new(
+        graph(),
+        spawns(),
+        NARROW_ROAD,
+        Some(NARROW_ROAD),
+        PaintCtx::default(),
+        (120, 30),
+    );
+    press(&mut v, KeyCode::Char('<'));
+    assert_eq!(v.plane().anchor(), NARROW_ROAD, "nothing leads up from here");
+    assert!(v.message().is_some(), "and it says so");
+
+    press(&mut v, KeyCode::Char('>'));
+    assert_eq!(v.cursor_room(), Some(ARENA), "down reaches the Arena");
+    assert_eq!(v.plane().anchor(), ARENA);
+
+    press(&mut v, KeyCode::Char('<'));
+    assert_eq!(v.cursor_room(), Some(NARROW_ROAD), "and up comes back");
+}
+
+/// A lone cross-map portal is reachable with `>`, which falls through to
+/// any non-vertical link when the room has no stairs. The seven
+/// multi-portal map-edge rooms take the first; the panel lists the rest.
+#[test]
+fn a_portal_is_reachable_without_a_key_of_its_own() {
+    let g = graph();
+    let plane = mud_client::map::layout(&g, NARROW_ROAD);
+    let portal = plane
+        .links()
+        .iter()
+        .find(|l| mud_client::map::step_of(l.dir).is_some()
+            && plane.links_from(l.from).all(|o| mud_client::map::step_of(o.dir).is_some()))
+        .expect("a room whose only links are portals");
+    let mut v = MapView::new(g, spawns(), portal.from, None, PaintCtx::default(), (120, 30));
+    press(&mut v, KeyCode::Char('>'));
+    assert_eq!(v.plane().anchor(), portal.dest, "> took the portal");
 }
