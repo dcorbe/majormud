@@ -22,6 +22,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use mud_core::content::RoomId;
 
 use crate::graph::RoomGraph;
+use crate::loops::{Loop, Stop, route_rooms};
 use crate::map::{Cell, Marks, Paint, PaintCtx, Plane, Style, Zoom, layout, render, styles};
 use crate::spawn::{Dossier, SpawnTable};
 
@@ -45,6 +46,19 @@ pub enum ViewAction {
     Quit,
     /// Leave the map and walk to this room.
     Go(RoomId),
+    /// Write this loop to the library. Built here and written by the
+    /// caller: the view stays free of the filesystem, which is what
+    /// makes every key it handles testable.
+    Save(Box<Loop>),
+}
+
+/// What the `/` prompt is collecting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Asking {
+    /// A room to jump the cursor to.
+    Room,
+    /// A name to save the marked stops under.
+    LoopName,
 }
 
 pub struct MapView {
@@ -64,8 +78,14 @@ pub struct MapView {
     size: (usize, usize),
     /// Planes hopped out of, most recent last. `<` walks back up it.
     back: Vec<(RoomId, Cell)>,
-    /// Set while `/` is taking a line.
-    prompt: Option<String>,
+    /// The marked circuit, in the order it will be walked.
+    stops: Vec<RoomId>,
+    /// Every room the walk passes through, recomputed when the stops
+    /// change rather than per frame: the map repaints on every keystroke
+    /// and this is a BFS per leg.
+    route: std::collections::BTreeSet<RoomId>,
+    /// Set while a prompt is taking a line.
+    prompt: Option<(Asking, String)>,
     /// One line of explanation, cleared by the next keystroke.
     message: Option<String>,
 }
@@ -93,6 +113,8 @@ impl MapView {
             paint: Paint::Terrain,
             size,
             back: Vec::new(),
+            stops: Vec::new(),
+            route: Default::default(),
             prompt: None,
             message: None,
         };
@@ -126,7 +148,16 @@ impl MapView {
     }
 
     pub fn prompt(&self) -> Option<&str> {
-        self.prompt.as_deref()
+        self.prompt.as_ref().map(|(_, text)| text.as_str())
+    }
+
+    /// The marked circuit, in walking order.
+    pub fn stops(&self) -> &[RoomId] {
+        &self.stops
+    }
+
+    pub fn route(&self) -> &std::collections::BTreeSet<RoomId> {
+        &self.route
     }
 
     pub fn message(&self) -> Option<&str> {
@@ -295,7 +326,20 @@ impl MapView {
                 None => self.message = Some("nowhere to go back to".into()),
             },
 
-            KeyCode::Char('/') => self.prompt = Some(String::new()),
+            KeyCode::Char('/') => self.prompt = Some((Asking::Room, String::new())),
+
+            KeyCode::Enter | KeyCode::Char(' ') => self.toggle_stop(),
+            KeyCode::Char('c') => {
+                self.stops.clear();
+                self.route.clear();
+            }
+            KeyCode::Char('s') => {
+                if self.stops.is_empty() {
+                    self.message = Some("mark some stops first (enter or space)".into());
+                } else {
+                    self.prompt = Some((Asking::LoopName, String::new()));
+                }
+            }
 
             KeyCode::Char('g') => {
                 return match self.cursor_room() {
@@ -323,28 +367,74 @@ impl MapView {
         self.view = (self.view.0 + dx * vw, self.view.1 + dy * vh);
     }
 
+    /// Mark or unmark the room under the cursor.
+    ///
+    /// Order is walking order, so a stop taken off and put back goes to
+    /// the end — which is what somebody rebuilding a leg means by it.
+    fn toggle_stop(&mut self) {
+        let Some(id) = self.cursor_room() else {
+            self.message = Some("no room under the cursor".into());
+            return;
+        };
+        match self.stops.iter().position(|&s| s == id) {
+            Some(i) => {
+                self.stops.remove(i);
+            }
+            None => self.stops.push(id),
+        }
+        self.route = route_rooms(&self.graph, &self.stops);
+    }
+
+    /// The marked circuit as a loop file, ready for the caller to write.
+    ///
+    /// Each stop carries its room name: that is what lets a later load
+    /// notice the file was written against a different world, and the
+    /// map is the one place that knows the name for free.
+    fn to_loop(&self, name: &str) -> Loop {
+        Loop {
+            stops: self
+                .stops
+                .iter()
+                .map(|&id| Stop::named(id, &self.graph))
+                .collect(),
+            ..Loop::new(name.trim())
+        }
+    }
+
     fn prompt_key(&mut self, key: &KeyEvent) -> ViewAction {
-        let Some(text) = self.prompt.as_mut() else {
+        let Some((asking, text)) = self.prompt.as_mut() else {
             return ViewAction::Continue;
         };
+        let asking = *asking;
         match key.code {
             KeyCode::Char(c) => text.push(c),
             KeyCode::Backspace => {
                 text.pop();
             }
-            // Abandoning a search must not also close the map: one Esc,
+            // Abandoning a prompt must not also close the map: one Esc,
             // one thing.
             KeyCode::Esc => self.prompt = None,
             KeyCode::Enter => {
-                let typed = self.prompt.take().unwrap_or_default();
+                let typed = self.prompt.take().map(|(_, t)| t).unwrap_or_default();
                 if typed.trim().is_empty() {
                     return ViewAction::Continue;
                 }
-                // Same resolver as `/go`, so a name means the same thing
-                // in the map as it does on the command line.
-                match crate::go::resolve(&self.graph, self.cursor_room().or(self.here), &typed) {
-                    Ok(id) => self.go_to_room(id),
-                    Err(refusal) => self.message = refusal.lines().first().cloned(),
+                match asking {
+                    // Same resolver as `/go`, so a name means the same
+                    // thing in the map as on the command line.
+                    Asking::Room => {
+                        match crate::go::resolve(
+                            &self.graph,
+                            self.cursor_room().or(self.here),
+                            &typed,
+                        ) {
+                            Ok(id) => self.go_to_room(id),
+                            Err(refusal) => self.message = refusal.lines().first().cloned(),
+                        }
+                    }
+                    Asking::LoopName => {
+                        return ViewAction::Save(Box::new(self.to_loop(&typed)));
+                    }
                 }
             }
             _ => {}
@@ -358,7 +448,8 @@ impl MapView {
         let marks = Marks {
             here: self.here,
             cursor: Some(self.cursor),
-            ..Default::default()
+            stops: self.stops.iter().copied().collect(),
+            route: self.route.clone(),
         };
         let map = render(
             &self.plane,
@@ -420,10 +511,14 @@ impl MapView {
 
     fn status(&self) -> String {
         let text = match (&self.prompt, &self.message) {
-            (Some(typed), _) => format!("/{typed}"),
+            (Some((Asking::Room, typed)), _) => format!("find: {typed}"),
+            (Some((Asking::LoopName, typed)), _) => format!(
+                "save {} stops as: {typed}",
+                self.stops.len()
+            ),
             (None, Some(msg)) => format!("-- {msg} --"),
             (None, None) => format!(
-                "{} | {} | arrows move  shift pans  +/- zoom  m mode  / find  > stairs  g go  q leave",
+                "{} | {} | {} stops | arrows move  +/- zoom  m mode  / find  enter marks  s saves  g go  q leave",
                 match self.paint {
                     Paint::Terrain => "terrain",
                     Paint::Danger => "danger",
@@ -434,6 +529,7 @@ impl MapView {
                     Zoom::Normal => "normal",
                     Zoom::Overview => "overview",
                 },
+                self.stops.len(),
             ),
         };
         let mut line: String = text

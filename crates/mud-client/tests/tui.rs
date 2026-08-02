@@ -511,7 +511,10 @@ fn go_without_a_target_is_refused_locally() {
 #[test]
 fn the_known_verbs_are_claimed() {
     assert_eq!(slash("/quit"), Some(KeyOutcome::Quit));
-    assert_eq!(slash("/farm"), Some(KeyOutcome::StartFarm));
+    assert_eq!(
+        slash("/farm"),
+        Some(KeyOutcome::StartFarm { loop_name: None })
+    );
     assert_eq!(slash("/bot"), Some(KeyOutcome::ToggleAssist));
 }
 
@@ -531,6 +534,25 @@ fn room_defaults_to_where_you_stand() {
         slash("  /room   Small Cavern  "),
         Some(KeyOutcome::Room {
             target: Some("Small Cavern".into())
+        })
+    );
+}
+
+/// A named loop from the library replaces the profile's circuit; a bare
+/// `/farm` still walks the profile's own.
+#[test]
+fn farm_takes_an_optional_loop_name() {
+    assert_eq!(
+        slash("/farm cavebear"),
+        Some(KeyOutcome::StartFarm {
+            loop_name: Some("cavebear".into())
+        })
+    );
+    assert_eq!(slash("/loop"), Some(KeyOutcome::Loops { name: None }));
+    assert_eq!(
+        slash("/loop slum-sweep"),
+        Some(KeyOutcome::Loops {
+            name: Some("slum-sweep".into())
         })
     );
 }

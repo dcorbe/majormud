@@ -359,15 +359,21 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                             handle_key(&key, &mut editor, &session, &mut passthrough, job.is_some());
                         match outcome {
                             KeyOutcome::Quit => break Ok(()),
-                            KeyOutcome::StartFarm => {
+                            KeyOutcome::Loops { name } => {
+                                note(&mut out, &describe_loops(graph.as_deref(), name.as_deref()).join("\n"))?;
+                            }
+                            KeyOutcome::StartFarm { loop_name } => {
                                 // Reachable mid-run now that the editor
                                 // works while farming: one job only.
                                 if let Some(j) = job.as_ref() {
                                     note(&mut out, &format!("-- {} already running (Ctrl-F to take over) --", j.what))?;
                                 } else {
-                                    match start_farm(session.clone()) {
+                                    match start_farm(session.clone(), loop_name.as_deref()) {
                                         Ok(started) => {
-                                            note(&mut out, "-- farm running (Ctrl-F to take over) --")?;
+                                            note(&mut out, &match &loop_name {
+                                                Some(n) => format!("-- farming loop {n:?} (Ctrl-F to take over) --"),
+                                                None => "-- farm running (Ctrl-F to take over) --".to_string(),
+                                            })?;
                                             phase_rx = Some(started.phase.clone());
                                             job = Some(started);
                                         }
@@ -493,6 +499,16 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                             }
                                             match exit.action {
                                                 crate::mapview::ViewAction::Quit => break Ok(()),
+                                                crate::mapview::ViewAction::Save(l) => {
+                                                    let dir = crate::loops::dir();
+                                                    note(&mut out, &match l.save(&dir) {
+                                                        Ok(path) => format!(
+                                                            "-- saved {} stops as {:?} in {} (/farm {} to walk it) --",
+                                                            l.stops.len(), l.name, path.display(), l.name
+                                                        ),
+                                                        Err(e) => format!("-- loop: {e} --"),
+                                                    })?;
+                                                }
                                                 crate::mapview::ViewAction::Go(to) if job.is_some() => {
                                                     note(&mut out, "-- something is already driving (Ctrl-F to take over) --")?;
                                                     let _ = to;
@@ -626,7 +642,15 @@ pub fn key_bytes(key: &KeyEvent) -> Option<Vec<u8>> {
 pub enum KeyOutcome {
     Continue,
     Quit,
-    StartFarm,
+    /// Start the runner. `Some(name)` walks a loop from the library
+    /// instead of the profile's own `[farm].circuit`.
+    StartFarm {
+        loop_name: Option<String>,
+    },
+    /// List the loop library, or show one loop's stops.
+    Loops {
+        name: Option<String>,
+    },
     /// Take the keyboard back from whatever the client is driving.
     TakeOver,
     ToggleAssist,
@@ -666,7 +690,12 @@ pub fn slash(line: &str) -> Option<KeyOutcome> {
     };
     match verb {
         "/quit" => Some(KeyOutcome::Quit),
-        "/farm" => Some(KeyOutcome::StartFarm),
+        "/farm" => Some(KeyOutcome::StartFarm {
+            loop_name: (!rest.is_empty()).then(|| rest.to_string()),
+        }),
+        "/loop" => Some(KeyOutcome::Loops {
+            name: (!rest.is_empty()).then(|| rest.to_string()),
+        }),
         "/bot" => Some(KeyOutcome::ToggleAssist),
         "/go" if rest.is_empty() => Some(KeyOutcome::Refuse(
             "go: where? try `/go 1/2324` or `/go Grungy Shop`".into(),
@@ -1052,13 +1081,27 @@ fn repaint(
 /// with, so `/farm` needs no arguments. Errors are the operator's to read,
 /// not a reason to drop the connection — being told "no [farm] table" and
 /// staying logged in is strictly better than being thrown out.
-fn start_farm(session: Arc<Session>) -> Result<Job, String> {
+fn start_farm(session: Arc<Session>, loop_name: Option<&str>) -> Result<Job, String> {
     let profile = session.profile().clone();
-    let cfg = profile
-        .farm
-        .clone()
-        .ok_or("no [farm] table in the profile: nothing to patrol")?;
-    let graph = Arc::new(crate::graph::RoomGraph::load(&cfg.content)?);
+    // A named loop replaces the circuit, not the policy: every knob in
+    // the profile's [farm] table -- the hp gates, the dwell budgets, the
+    // nav limits -- still applies to it. The library holds routes, not
+    // settings.
+    let base = profile.farm.clone().unwrap_or_default();
+    let graph = Arc::new(crate::graph::RoomGraph::load(&base.content)?);
+    let cfg = match loop_name {
+        None => profile
+            .farm
+            .clone()
+            .ok_or("no [farm] table in the profile: nothing to patrol")?,
+        Some(name) => {
+            let l = crate::loops::load(&crate::loops::dir(), name)?;
+            for warning in l.check_names(&graph) {
+                eprintln!("loop {name}: {warning}");
+            }
+            l.to_farm(&base, &graph)?
+        }
+    };
     let plan = crate::farm::FarmPlan::build(&cfg, &graph)?;
     let bot = profile.bot.clone().unwrap_or_default();
     // Automation goes back under flood control. `play` unpaced this
@@ -1195,6 +1238,55 @@ fn here_or(
             crate::go::GoRefusal::Unknown("where you are standing (walk a step first)".into())
         }),
     }
+}
+
+/// `/loop`: the library's names, or one loop's stops.
+///
+/// Names are checked against the graph as they are printed, because the
+/// moment somebody looks at a loop is the moment to tell them it was
+/// written for a different world.
+fn describe_loops(graph: Option<&crate::graph::RoomGraph>, name: Option<&str>) -> Vec<String> {
+    let dir = crate::loops::dir();
+    let Some(name) = name else {
+        let names = crate::loops::list(&dir);
+        if names.is_empty() {
+            return vec![format!(
+                "no loops yet in {} (mark stops on /map and press s)",
+                dir.display()
+            )];
+        }
+        let mut out = vec![format!("{} loops in {}:", names.len(), dir.display())];
+        out.extend(names.into_iter().map(|n| format!("  {n}")));
+        return out;
+    };
+
+    let l = match crate::loops::load(&dir, name) {
+        Ok(l) => l,
+        Err(e) => return vec![format!("loop: {e}")],
+    };
+    let mut out = vec![format!(
+        "{}{}",
+        l.name,
+        l.note.as_deref().map(|n| format!(" - {n}")).unwrap_or_default()
+    )];
+    for stop in &l.stops {
+        let name = stop
+            .name
+            .clone()
+            .or_else(|| {
+                let id = stop.room()?;
+                graph?.room(id).map(|r| r.name.clone())
+            })
+            .unwrap_or_default();
+        out.push(format!("  {}  {name}", stop.at));
+    }
+    if let Some(finish) = &l.finish {
+        out.push(format!("  finish at {finish}"));
+    }
+    if let Some(graph) = graph {
+        out.extend(l.check_names(graph).into_iter().map(|w| format!("  !! {w}")));
+    }
+    out
 }
 
 fn locator(

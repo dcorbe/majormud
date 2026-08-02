@@ -226,6 +226,21 @@ fn map_command(at: &str, content: &std::path::Path) -> ExitCode {
             eprintln!("terminal error: {e}");
             ExitCode::FAILURE
         }
+        // The library is shared by every character, so a loop built
+        // offline is one `mmc play` can walk straight away.
+        Ok(ViewAction::Save(l)) => {
+            let dir = mud_client::loops::dir();
+            match l.save(&dir) {
+                Ok(path) => {
+                    println!("saved {} stops as {:?}: {}", l.stops.len(), l.name, path.display());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("loop: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         // Nothing to walk with, so the answer is the room itself: enough
         // to paste into a profile, a loop file or a `/go`.
         Ok(ViewAction::Go(id)) => {

@@ -376,3 +376,149 @@ fn a_frame_carries_no_stray_control_characters() {
         }
     }
 }
+
+// --- stops and the drawn route ---------------------------------------
+
+#[test]
+fn enter_marks_the_room_under_the_cursor_as_a_stop() {
+    let mut v = view();
+    press(&mut v, KeyCode::Enter);
+    assert_eq!(v.stops(), [CROSSROADS]);
+    press(&mut v, KeyCode::Right);
+    press(&mut v, KeyCode::Char(' '));
+    assert_eq!(v.stops().len(), 2, "space marks too");
+    // Toggling: the same key takes it off again, in place.
+    press(&mut v, KeyCode::Char(' '));
+    assert_eq!(v.stops(), [CROSSROADS]);
+}
+
+#[test]
+fn marking_an_empty_cell_marks_nothing() {
+    let mut v = view();
+    walk_off_the_map(&mut v);
+    press(&mut v, KeyCode::Enter);
+    assert!(v.stops().is_empty());
+    assert!(v.message().is_some());
+}
+
+/// The gold is the whole walk, not the stops: the point of drawing a
+/// route is seeing where it goes.
+#[test]
+fn two_stops_draw_a_route_between_them() {
+    let mut v = view();
+    press(&mut v, KeyCode::Enter);
+    assert_eq!(v.route().len(), 1, "one stop is a route of one room");
+    for _ in 0..4 {
+        press(&mut v, KeyCode::Right);
+    }
+    press(&mut v, KeyCode::Enter);
+    assert!(
+        v.route().len() > v.stops().len(),
+        "route {:?} should cover the rooms between {:?}",
+        v.route().len(),
+        v.stops()
+    );
+    for stop in v.stops() {
+        assert!(v.route().contains(stop));
+    }
+}
+
+#[test]
+fn c_clears_the_stops_and_the_route_with_them() {
+    let mut v = view();
+    press(&mut v, KeyCode::Enter);
+    press(&mut v, KeyCode::Right);
+    press(&mut v, KeyCode::Enter);
+    press(&mut v, KeyCode::Char('c'));
+    assert!(v.stops().is_empty());
+    assert!(v.route().is_empty());
+}
+
+/// Stops survive a plane hop: a circuit that goes down a staircase and
+/// back is exactly the kind nobody can build by hand.
+#[test]
+fn stops_are_kept_across_a_plane_hop() {
+    let mut v = view();
+    press(&mut v, KeyCode::Enter);
+    press(&mut v, KeyCode::Char('/'));
+    for c in "1/1084".chars() {
+        press(&mut v, KeyCode::Char(c));
+    }
+    press(&mut v, KeyCode::Enter);
+    press(&mut v, KeyCode::Char('>'));
+    assert_eq!(v.stops(), [CROSSROADS], "still marked on the plane above");
+    press(&mut v, KeyCode::Enter);
+    assert_eq!(v.stops().len(), 2);
+}
+
+// --- saving ----------------------------------------------------------
+
+#[test]
+fn s_asks_for_a_name_and_hands_back_a_loop() {
+    let mut v = view();
+    press(&mut v, KeyCode::Enter);
+    press(&mut v, KeyCode::Right);
+    press(&mut v, KeyCode::Enter);
+
+    press(&mut v, KeyCode::Char('s'));
+    assert!(v.prompt().is_some());
+    for c in "slum-sweep".chars() {
+        press(&mut v, KeyCode::Char(c));
+    }
+    let action = press(&mut v, KeyCode::Enter);
+    let ViewAction::Save(saved) = action else {
+        panic!("expected a loop, got {action:?}");
+    };
+    assert_eq!(saved.name, "slum-sweep");
+    assert_eq!(saved.stops.len(), 2);
+    assert_eq!(saved.stops[0].at, "1/1076");
+    assert_eq!(
+        saved.stops[0].name.as_deref(),
+        Some("Slum Street, Crossroads"),
+        "the name is written so a foreign realm can be caught on load"
+    );
+    assert_eq!(saved.world.as_deref(), Some(mud_client::loops::WORLD));
+    assert!(saved.check_names(&graph()).is_empty());
+}
+
+#[test]
+fn saving_with_no_stops_is_refused_before_it_asks_for_a_name() {
+    let mut v = view();
+    assert!(matches!(
+        press(&mut v, KeyCode::Char('s')),
+        ViewAction::Continue
+    ));
+    assert!(v.prompt().is_none());
+    assert!(v.message().is_some());
+}
+
+#[test]
+fn escape_abandons_a_save_the_way_it_abandons_a_search() {
+    let mut v = view();
+    press(&mut v, KeyCode::Enter);
+    press(&mut v, KeyCode::Char('s'));
+    assert!(matches!(press(&mut v, KeyCode::Esc), ViewAction::Continue));
+    assert!(v.prompt().is_none());
+    assert_eq!(v.stops(), [CROSSROADS], "and keeps the stops");
+}
+
+/// A saved loop has to be walkable by the runner that will walk it.
+#[test]
+fn a_saved_loop_validates_as_a_farm_circuit() {
+    let mut v = view();
+    press(&mut v, KeyCode::Enter);
+    for _ in 0..3 {
+        press(&mut v, KeyCode::Right);
+    }
+    press(&mut v, KeyCode::Enter);
+    press(&mut v, KeyCode::Char('s'));
+    for c in "walkable".chars() {
+        press(&mut v, KeyCode::Char(c));
+    }
+    let ViewAction::Save(saved) = press(&mut v, KeyCode::Enter) else {
+        panic!("expected a loop");
+    };
+    saved
+        .to_farm(&mud_client::farm::FarmConfig::default(), &graph())
+        .expect("every leg walkable");
+}

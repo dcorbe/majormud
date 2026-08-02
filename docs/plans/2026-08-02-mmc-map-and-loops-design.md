@@ -152,6 +152,10 @@ via   = "w w s"                # force this leg instead of routing it
 finish = "1/1072"              # park here when the run stops
 ```
 
+**`finish` is written above the stops, not below.** TOML puts every bare key before the
+first table header, so a scalar declared after `[[stop]]` would serialise INTO the last
+stop. `profile.rs` records the same trap; the loop file must not fall into it twice.
+
 `name` on a stop is a real optional key rather than a trailing comment: a comment
 cannot survive a TOML round-trip and cannot be verified, a key can. On load a `name`
 that disagrees with the graph is a loud warning naming both — that is what catches a
@@ -275,9 +279,16 @@ on is a warning nobody reads.
 - Route highlight: for each consecutive stop pair plus the closing pair, `route()`, then
   replay the directions marking every room passed. A leg leaving the visible plane is
   marked at its departure room rather than drawn.
-- Map keys: Enter/Space toggles a stop, `c` clears, `s` names and saves.
-- `/loop list|show|load|drop`, `/farm <name>`. `[farm].circuit` stays the unnamed
-  default; nothing rewrites the profile.
+- Map keys: Enter/Space toggles a stop, `c` clears, `s` names and saves. The view builds
+  the `Loop` value and hands it back as a `ViewAction`; the caller writes the file, so
+  every key the view handles stays testable and the view never touches the filesystem.
+- `/loop` lists the library, `/loop <name>` shows one loop's stops with a `!!` on any
+  whose recorded name disagrees with the world. `/farm <name>` walks a named loop.
+- **A named loop replaces the circuit, not the policy.** The profile's `[farm]` knobs —
+  hp gates, dwell budgets, nav limits — still apply. The library holds routes, not
+  settings, which is what lets one loop be walked by any character.
+- No `/loop drop`: deleting a file is what `rm` is for, and a destructive verb behind a
+  slash command in a terminal is a mis-keystroke away from losing work.
 
 ### 5. MegaMud import — `mega.rs` (new)
 
