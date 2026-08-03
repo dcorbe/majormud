@@ -182,3 +182,85 @@ fn distances_from_an_unknown_room_are_empty() {
             .is_empty()
     );
 }
+
+// --- constrained routing ----------------------------------------------
+
+/// The router can be fenced. This is a PROHIBITION, unlike `exit_cost`,
+/// which prices awkward exits rather than refusing them — and the
+/// difference is deliberate: a cost is the client's opinion about a type
+/// of exit, a fence is the operator's decision about a specific room, and
+/// "no route" is the right answer to the second.
+#[test]
+fn a_forbidden_room_is_routed_around() {
+    let g = graph();
+    // Three Slum Street rooms in a row; the middle one is on the direct
+    // route between its neighbours.
+    let from = RoomId { map: 1, room: 1072 };
+    let to = RoomId { map: 1, room: 1076 };
+    let direct = g.route(from, to).expect("the slums are connected");
+
+    let midway = {
+        let mut at = from;
+        let mut seen = Vec::new();
+        for d in &direct {
+            at = g.room(at).unwrap().exits[*d as usize].as_ref().unwrap().dest;
+            seen.push(at);
+        }
+        seen[0]
+    };
+
+    let around = g
+        .route_within(from, to, &|_, e| e.dest != midway)
+        .expect("the slums have more than one way through");
+    assert!(
+        around.len() > direct.len(),
+        "a detour is longer than the direct route: {} vs {}",
+        around.len(),
+        direct.len()
+    );
+
+    // And walking it really does miss the fenced room.
+    let mut at = from;
+    for d in &around {
+        at = g.room(at).unwrap().exits[*d as usize].as_ref().unwrap().dest;
+        assert_ne!(at, midway, "the detour walked through the fence");
+    }
+    assert_eq!(at, to);
+}
+
+/// Fencing the only way through answers "no route", and that is the
+/// correct answer rather than a defect: the caller asked for a wall.
+#[test]
+fn fencing_the_only_way_through_answers_none() {
+    let g = graph();
+    let cavern = RoomId { map: 1, room: 2156 };
+    let entrance = RoomId { map: 1, room: 2152 };
+    assert!(
+        g.route(entrance, cavern).is_some(),
+        "the Small Cavern is a dead end off the Dungeon Entrance"
+    );
+    assert_eq!(
+        g.route_within(entrance, cavern, &|_, e| e.dest != cavern),
+        None,
+        "fencing the destination itself leaves nowhere to arrive"
+    );
+}
+
+/// An unconstrained `route_within` is `route`. Pinned because the two
+/// share one search and the whole point of the refactor was that the
+/// existing callers could not drift.
+#[test]
+fn an_open_fence_routes_exactly_as_before() {
+    let g = graph();
+    let from = RoomId { map: 1, room: 1 };
+    let to = RoomId { map: 1, room: 2156 };
+    assert_eq!(
+        g.route_within(from, to, &|_, _| true),
+        g.route(from, to),
+        "no fence must mean no difference"
+    );
+    assert_eq!(
+        g.distances_within(from, &|_, _| true).len(),
+        g.distances(from).len()
+    );
+}

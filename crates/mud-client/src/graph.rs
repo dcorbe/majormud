@@ -476,7 +476,16 @@ impl RoomGraph {
     /// and it counts the steps of the route [`RoomGraph::route`] would
     /// actually pick — the two run the same search, so they cannot drift.
     pub fn distances(&self, from: RoomId) -> BTreeMap<RoomId, usize> {
-        self.explore(from, None)
+        self.distances_within(from, &|_, _| true)
+    }
+
+    /// As [`RoomGraph::distances`], over the edges `allow` accepts.
+    pub fn distances_within(
+        &self,
+        from: RoomId,
+        allow: &dyn Fn(Direction, &ExitEdge) -> bool,
+    ) -> BTreeMap<RoomId, usize> {
+        self.explore(from, None, allow)
             .into_iter()
             .map(|(id, reached)| (id, reached.hops))
             .collect()
@@ -488,13 +497,31 @@ impl RoomGraph {
     /// Cheapest by [`exit_cost`], not shortest: a walk that saves three
     /// streets by gambling on a hidden exit has not saved anything.
     pub fn route(&self, from: RoomId, to: RoomId) -> Option<Vec<Direction>> {
+        self.route_within(from, to, &|_, _| true)
+    }
+
+    /// As [`RoomGraph::route`], over the edges `allow` accepts.
+    ///
+    /// Note this is a PROHIBITION, which [`exit_cost`] deliberately is
+    /// not: exit *types* are costed rather than refused, because refusing
+    /// a type answers "no route" to rooms that are genuinely reachable.
+    /// That argument does not transfer. `allow` carries an operator's
+    /// decision that a room is off-limits — a roam's wall markers — and
+    /// there "no route" is the correct answer rather than a defect. The
+    /// caller asked for a fence and gets one.
+    pub fn route_within(
+        &self,
+        from: RoomId,
+        to: RoomId,
+        allow: &dyn Fn(Direction, &ExitEdge) -> bool,
+    ) -> Option<Vec<Direction>> {
         if from == to {
             return self.rooms.contains_key(&from).then(Vec::new);
         }
         if !self.rooms.contains_key(&from) || !self.rooms.contains_key(&to) {
             return None;
         }
-        let reached = self.explore(from, Some(to));
+        let reached = self.explore(from, Some(to), allow);
         let mut steps = Vec::new();
         let mut at = to;
         while at != from {
@@ -513,8 +540,15 @@ impl RoomGraph {
     ///
     /// Shared by [`RoomGraph::route`] and [`RoomGraph::distances`]
     /// precisely because they must agree: the steps one reports are the
-    /// steps the other counts.
-    fn explore(&self, from: RoomId, target: Option<RoomId>) -> BTreeMap<RoomId, Reached> {
+    /// steps the other counts. `allow` is shared for the same reason —
+    /// a constrained search and the distances taken over it must see the
+    /// same world.
+    fn explore(
+        &self,
+        from: RoomId,
+        target: Option<RoomId>,
+        allow: &dyn Fn(Direction, &ExitEdge) -> bool,
+    ) -> BTreeMap<RoomId, Reached> {
         let mut best: BTreeMap<RoomId, Reached> = BTreeMap::new();
         if !self.rooms.contains_key(&from) {
             return best;
@@ -534,7 +568,10 @@ impl RoomGraph {
             }
             for (d, edge) in self.rooms[&cur].exits.iter().enumerate() {
                 let Some(edge) = edge else { continue };
-                if !self.rooms.contains_key(&edge.dest) || settled.contains(&edge.dest) {
+                if !self.rooms.contains_key(&edge.dest)
+                    || settled.contains(&edge.dest)
+                    || !allow(DIRECTIONS[d], edge)
+                {
                     continue;
                 }
                 let step = (cost + u64::from(exit_cost(edge.exit_type)), hops + 1);
