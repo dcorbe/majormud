@@ -38,11 +38,23 @@ fn room_block(name: &str, also_here: Option<&str>, exits: &str) -> String {
 /// The prompt after a block is how HP reaches the client, so scenarios
 /// about the departure gate pick the number each block carries.
 fn room_block_hp(name: &str, also_here: Option<&str>, exits: &str, hp: i32) -> String {
+    room_block_vitals(name, also_here, exits, hp, 0)
+}
+
+/// As above, with a mana pool. The prompt is the only place mana ever
+/// reaches the client, so any scenario about casting has to carry it.
+fn room_block_vitals(
+    name: &str,
+    also_here: Option<&str>,
+    exits: &str,
+    hp: i32,
+    mana: i32,
+) -> String {
     let also = match also_here {
         Some(names) => format!("Also here: {names}.\r\n"),
         None => String::new(),
     };
-    format!("\r\n\x1b[1;36m{name}\r\n{also}Obvious exits: {exits}\r\n[HP={hp}/MA=0]:")
+    format!("\r\n\x1b[1;36m{name}\r\n{also}Obvious exits: {exits}\r\n[HP={hp}/MA={mana}]:")
 }
 
 /// A block with floor loot: the "You notice ... here." line rides
@@ -719,5 +731,241 @@ async fn a_flee_rests_before_it_walks_back() {
     assert_eq!(
         swings_after_flee, 0,
         "nothing may re-engage between the flee and the walk back: {log:?}"
+    );
+}
+
+/// The spiral's other half, and the reason spell healing exists.
+///
+/// `rest` is suppressed while the room holds a fight, and correctly: the
+/// board disengages combat to rest, the re-engage breaks the rest, and
+/// the pair alternate every round while the monster keeps swinging
+/// (2026-08-01, HP 21/52 beside a cave bear). But that left a wounded
+/// character in an occupied room with NO recovery at all — fight on, or
+/// run.
+///
+/// A cast disengages nothing, so it is not the same decision. Below the
+/// spell mark and still in the fight, the bot must cast; `rest` must
+/// still not go out while the bear is standing there.
+#[tokio::test]
+async fn a_fight_below_the_spell_mark_is_healed_not_rested() {
+    let (addr, received) = scripted_board(vec![
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=20]:"
+                .into(),
+        ),
+        // The book the heal is discovered from. Nothing is configured:
+        // `cast heal` is the cheapest thing in here.
+        (
+            "spells",
+            "\r\nspells\r\nYou have the following spells:\r\nLevel Mana Short Spell Name\r\n  1   3    heal  minor healing\r\n  8   9    maj   major healing\r\n[HP=30/MA=20]:"
+                .into(),
+        ),
+        (
+            "look",
+            format!("\r\nlook{}", room_block_vitals("Guard Post", None, "north", 30, 20)),
+        ),
+        (
+            "n",
+            format!(
+                "\r\nn{}",
+                room_block_vitals("Inner Ward", Some("cave bear"), "south", 30, 20)
+            ),
+        ),
+        // The arrival block names the bear and is attributed to the
+        // step, so the bot engages off it directly — there is no
+        // intervening look.
+        //
+        // The swing lands the character on 18 of 30 — 60%, under the
+        // spell mark of 80 and over the flee mark of 20. The bear is
+        // still up, so resting is off the table and casting is not.
+        (
+            "a bear",
+            "\r\na bear\r\nYou smack cave bear for 2 damage!\r\nThe cave bear bites you for 12 damage!\r\n[HP=18/MA=20]:"
+                .into(),
+        ),
+        // The cast and the round it happens in arrive together, which is
+        // what a real board does: the character never swings again by
+        // its own decision, because once engaged the ROUNDS are the
+        // board's. The bear dies in this one, so the stop proves empty
+        // and the lap finishes.
+        (
+            "cast heal",
+            "\r\ncast heal\r\nYou cast minor healing!\r\nYou feel better.\r\nYou smack cave bear for 30 damage!\r\nThe cave bear collapses in a heap.\r\nYou gain 300 experience.\r\n*Combat Off*\r\n[HP=27/MA=17]:"
+                .into(),
+        ),
+        (
+            "look",
+            format!(
+                "\r\nlook{}",
+                room_block_vitals("Inner Ward", None, "south", 27, 17)
+            ),
+        ),
+    ])
+    .await;
+    let session = session_for(addr).await;
+
+    let graph = corridor();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/2".into()],
+        loops: 1,
+        idle_poke_ms: 500,
+        depart_at_percent: 0,
+        travel_interrupts: 0,
+        ..FarmConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig {
+        auto_combat: true,
+        auto_heal: true,
+        auto_flee: true,
+        spell_at_percent: 80,
+        rest_at_percent: 60,
+        flee_at_percent: 20,
+        max_hp: 30,
+        ..BotConfig::default()
+    };
+
+    let finished = tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, &bot, &cfg, None),
+    )
+    .await;
+    // The log is the diagnosis for BOTH endings here, and a hang is the
+    // likelier one: with the cast suppressed this scenario deadlocks —
+    // the bot will not swing again while engaged, and the board says
+    // nothing unprompted — so "what did it send" is the whole question.
+    let Ok(result) = finished else {
+        panic!("run_farm hung; board received: {:?}", received.lock().unwrap());
+    };
+    let (_end, stats) = result.unwrap_or_else(|e| {
+        panic!(
+            "the run must survive the fight: {e:?}\nboard received: {:?}",
+            received.lock().unwrap()
+        )
+    });
+
+    let log = received.lock().unwrap();
+    assert!(
+        log.iter().any(|l| l == "cast heal"),
+        "18 of 30 is under the spell mark and the bear is still up: {log:?}"
+    );
+    assert!(
+        !log.iter().any(|l| l == "rest"),
+        "resting beside the bear is the spiral this replaced: {log:?}"
+    );
+    assert!(stats.kills >= 1, "the bear should still have died: {stats:?}");
+}
+
+/// Flee outranks everything, and the spell mark does not change that.
+/// Below `flee_at_percent` the bot is leaving; a cast would spend the
+/// round it leaves in, and staying to heal is what gets a character
+/// killed. The mark being the HIGHEST of the three makes this easy to
+/// get wrong — under 20% the character is under all three at once.
+#[tokio::test]
+async fn below_the_flee_mark_it_runs_and_does_not_cast() {
+    let (addr, received) = scripted_board(vec![
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=20]:"
+                .into(),
+        ),
+        (
+            "spells",
+            "\r\nspells\r\nYou have the following spells:\r\nLevel Mana Short Spell Name\r\n  1   3    heal  minor healing\r\n[HP=30/MA=20]:"
+                .into(),
+        ),
+        (
+            "look",
+            format!("\r\nlook{}", room_block_vitals("Guard Post", None, "north", 30, 20)),
+        ),
+        (
+            "n",
+            format!(
+                "\r\nn{}",
+                room_block_vitals("Inner Ward", Some("cave bear"), "south", 30, 20)
+            ),
+        ),
+        (
+            "look",
+            format!(
+                "\r\nlook{}",
+                room_block_vitals("Inner Ward", Some("cave bear"), "south", 30, 20)
+            ),
+        ),
+        // 5 of 30 is 16% — under the flee mark, and under the spell mark
+        // as well. Mana is untouched, so nothing but the policy stops a
+        // cast going out.
+        (
+            "a bear",
+            "\r\na bear\r\nYou smack cave bear for 2 damage!\r\nThe cave bear mauls you for 25 damage!\r\n[HP=5/MA=20]:"
+                .into(),
+        ),
+        (
+            "south",
+            format!("\r\nsouth{}", room_block_vitals("Guard Post", None, "north", 5, 20)),
+        ),
+        (
+            "rest",
+            "\r\nrest\r\nYou are now resting.\r\n[HP=30/MA=20]:".into(),
+        ),
+        (
+            "n",
+            format!("\r\nn{}", room_block_vitals("Inner Ward", None, "south", 30, 20)),
+        ),
+        (
+            "look",
+            format!("\r\nlook{}", room_block_vitals("Inner Ward", None, "south", 30, 20)),
+        ),
+    ])
+    .await;
+    let session = session_for(addr).await;
+
+    let graph = corridor();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/2".into()],
+        loops: 1,
+        idle_poke_ms: 500,
+        depart_at_percent: 80,
+        max_rest_seconds: 5,
+        travel_interrupts: 0,
+        ..FarmConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig {
+        auto_combat: true,
+        auto_heal: true,
+        auto_flee: true,
+        spell_at_percent: 80,
+        rest_at_percent: 60,
+        flee_at_percent: 50,
+        max_hp: 30,
+        ..BotConfig::default()
+    };
+
+    let (_end, stats) = tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, &bot, &cfg, None),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    .unwrap_or_else(|e| {
+        panic!(
+            "the run must survive the flee: {e:?}\nboard received: {:?}",
+            received.lock().unwrap()
+        )
+    });
+
+    assert!(stats.flees >= 1, "the bot should have fled: {stats:?}");
+    let log = received.lock().unwrap();
+    let flee = log
+        .iter()
+        .position(|l| l == "south")
+        .unwrap_or_else(|| panic!("the bot should have fled: {log:?}"));
+    assert!(
+        !log[..=flee].iter().any(|l| l.starts_with("cast ")),
+        "a cast must not delay the flee: {log:?}"
     );
 }

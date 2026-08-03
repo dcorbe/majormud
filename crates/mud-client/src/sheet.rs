@@ -26,6 +26,83 @@ const LIGHT_ITEMS: [&str; 4] = ["torch", "lantern", "lamp", "moon-lamp"];
 /// turns up with them.
 const LIGHT_SPELLS: [&str; 3] = ["starlight", "light", "continual light"];
 
+/// Spells that restore health, by exact name from the shipped `spell`
+/// table. Exact, not substring: `blessed vision` and `rapid healing` both
+/// contain a word this list uses and neither belongs here.
+///
+/// Order is irrelevant — the caster's own mana costs decide which one is
+/// picked (see [`Spellbook::heal_spells`]).
+///
+/// Two near-misses are excluded on purpose:
+/// - `rapid healing` (138/831) is a **regen buff**: duration 60, and its
+///   `min`/`max` of 200 is an ability value, not a number of hit points.
+///   It belongs in `[bot].buffs`.
+/// - `dead heal` (1252, level 999) and `divine healing` (1059, level 50)
+///   are not reachable by a playable character; `divine healing` is
+///   listed anyway because nothing breaks if it ever is.
+///
+/// The `... rain` family targets the room rather than one character
+/// (`target` 13), which still heals the caster — a group heal cast solo
+/// is just an expensive self-heal, and the mana cost says so.
+pub const HEAL_SPELLS: [&str; 9] = [
+    "minor healing",
+    "mend",
+    "healing rain",
+    "greater healing",
+    "major healing",
+    "major healing rain",
+    "greater healing rain",
+    "godheal",
+    "divine healing",
+];
+
+/// Whether this character casts spells or invokes powers.
+///
+/// Mystics (caster group 5) are a wholesale vocabulary swap, not a
+/// dialect quirk: `powers` for `spells`, `invoke` for `cast`, kai for
+/// mana. The board refuses the wrong one outright
+/// (`mud_core::text::KAI_NO_CAST`), so this is worked out from its own
+/// redirect at startup rather than configured or guessed from the class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Casting {
+    #[default]
+    Spells,
+    Powers,
+}
+
+impl Casting {
+    /// The command that lists what this character knows.
+    pub fn list_command(self) -> &'static str {
+        match self {
+            Casting::Spells => "spells",
+            Casting::Powers => "powers",
+        }
+    }
+
+    /// The command that uses `short`, which is the abbreviation the
+    /// listing prints and the only form the board reliably takes.
+    pub fn command(self, short: &str) -> String {
+        match self {
+            Casting::Spells => format!("cast {short}"),
+            Casting::Powers => format!("invoke {short}"),
+        }
+    }
+
+    /// Did the board just say we asked the wrong way round? Both
+    /// redirects are VERIFIED (`mud_core::text` §8.12), and either one
+    /// names the vocabulary that should have been used.
+    pub fn redirected(reply: &str) -> Option<Casting> {
+        let l = reply.to_lowercase();
+        if l.contains("you must list your powers") || l.contains("you must invoke your powers") {
+            return Some(Casting::Powers);
+        }
+        if l.contains("you must list your spells") || l.contains("you must cast your spells") {
+            return Some(Casting::Spells);
+        }
+        None
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Inventory {
     /// Carried items as the board lists them, wrapping rejoined.
@@ -130,10 +207,14 @@ impl Spellbook {
         let mut book = Spellbook::default();
         for line in text.lines() {
             let line = line.trim();
+            // "You have the following powers:" and its "Level Kai  Short
+            // Spell Name" header are already covered by the two prefixes
+            // above them; only the empty-book wording differs.
             if line.is_empty()
                 || line.starts_with("You have the following")
                 || line.starts_with("Level")
                 || line.starts_with("You have no spells")
+                || line.starts_with("You have no powers")
             {
                 continue;
             }
@@ -160,6 +241,45 @@ impl Spellbook {
         book
     }
 
+    /// Every way this character can heal itself, **cheapest first**.
+    ///
+    /// `only` overrides the discovery: a non-empty list names the spells
+    /// to use and nothing else is considered, so an operator can stop the
+    /// bot reaching for the expensive one. Names are matched
+    /// case-insensitively against the book's full spell name, and an
+    /// entry the character does not know is silently absent rather than
+    /// an error — the book is the authority on what it knows.
+    ///
+    /// **Cheapest, not biggest.** Sizing the spell to the wound was the
+    /// obvious alternative and it cannot be done honestly: the shipped
+    /// `min`/`max` are the level-1 figures and the real heal scales with
+    /// caster level, so any table here would understate by more the
+    /// longer the character had been played. Mana is the scarce resource,
+    /// an under-heal is retried next round for free, and the book's own
+    /// costs are real data about this character. So: cheapest affordable.
+    pub fn heal_spells(&self, only: &[String], casting: Casting) -> Vec<HealSource> {
+        let wanted = |name: &str| {
+            let lower = name.to_lowercase();
+            if only.is_empty() {
+                HEAL_SPELLS.contains(&lower.as_str())
+            } else {
+                only.iter().any(|o| o.to_lowercase() == lower)
+            }
+        };
+        let mut heals: Vec<HealSource> = self
+            .spells
+            .iter()
+            .filter(|s| wanted(&s.name))
+            .map(|s| HealSource {
+                name: s.name.clone(),
+                cmd: casting.command(&s.short),
+                mana_cost: s.mana as i32,
+            })
+            .collect();
+        heals.sort_by_key(|h| h.mana_cost);
+        heals
+    }
+
     /// The spell that would light a dark room, with the book's mana
     /// cost — the caster's mana floor comes from here, not from
     /// configuration.
@@ -168,6 +288,193 @@ impl Spellbook {
             .iter()
             .find(|s| LIGHT_SPELLS.contains(&s.name.to_lowercase().as_str()))
             .map(|s| (s.short.clone(), s.mana))
+    }
+}
+
+/// One healing spell this character knows, with what the board says it
+/// costs. There is no item or potion variant: unlike lighting, every way
+/// of healing modelled here fails the same way, so one shape suffices.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HealSource {
+    /// The book's full name, for the operator's benefit and for matching
+    /// a `[bot].heal_spells` entry.
+    pub name: String,
+    /// `cast maj` / `invoke lay`, built by [`Casting::command`].
+    pub cmd: String,
+    /// From the book, not from configuration.
+    pub mana_cost: i32,
+}
+
+/// What healing is worth doing right now. Mirrors [`LightAttempt`],
+/// including `Hold`: the board refuses a second cast inside one round
+/// (*"You have already cast a spell this round!"*) whichever spell it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HealAttempt {
+    Send(String),
+    /// A cast already went out this round; ask again at this instant.
+    Hold(std::time::Instant),
+    /// Nothing can work: a cast is already owed, mana covers none of the
+    /// spells, or the character knows none.
+    Nothing,
+}
+
+/// Cast a healing spell, and confirm it from the board.
+///
+/// This is [`LightState`] with a different trigger, and the differences
+/// are the interesting part:
+///
+/// - **It fires in combat.** Resting is suppressed while the room holds a
+///   fight, because the board disengages combat to rest and the
+///   re-engage breaks it — the 2026-08-01 death spiral. Casting
+///   disengages nothing, so it is the only recovery a character has while
+///   something is still hitting it. That is the whole reason this exists.
+/// - **Sources are not a preference order but a price list.** Lighting
+///   walks its sources in order and kills them as they fail; healing
+///   picks the cheapest one the current mana affords, every time.
+/// - **Failure is nearly always temporary.** A fizzle, an empty pool, a
+///   second cast in one round: all retried. The single terminal outcome
+///   is *"You do not know how to cast %s."*, which means the spell is not
+///   in the book and never will be — that one source is retired.
+///
+/// Below the mana floor this returns [`HealAttempt::Nothing`] rather than
+/// anything louder, and the rest mark takes over: resting restores mana
+/// as well as health, so the two marks compose without either knowing
+/// about the other.
+pub struct HealState {
+    /// Cheapest first ([`Spellbook::heal_spells`]).
+    sources: Vec<HealSource>,
+    /// Sources the board says are not in the book: dead for the run.
+    dead: Vec<bool>,
+    /// Last mana (or kai) seen on a prompt; `None` until one arrives, and
+    /// `None` means "unknown", which is treated as affording nothing —
+    /// a character whose pool has never been seen is not a caster.
+    mana: Option<i32>,
+    /// A cast is out and its outcome has not arrived: which source, and
+    /// the id its answer will carry.
+    pending: Option<(usize, crate::correlate::CmdId)>,
+    /// When the last cast was released, for round pacing.
+    last_attempt: Option<std::time::Instant>,
+}
+
+impl HealState {
+    pub fn new(sources: Vec<HealSource>) -> Self {
+        let dead = vec![false; sources.len()];
+        HealState {
+            sources,
+            dead,
+            mana: None,
+            pending: None,
+            last_attempt: None,
+        }
+    }
+
+    /// This character cannot heal itself by casting. Worth saying out
+    /// loud at startup rather than discovering at 20% health.
+    pub fn is_empty(&self) -> bool {
+        self.sources.is_empty()
+    }
+
+    /// The spells found, cheapest first — for the startup announcement.
+    pub fn sources(&self) -> &[HealSource] {
+        &self.sources
+    }
+
+    /// A cast is out and its outcome has not arrived.
+    pub fn in_flight(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// The cheapest live source the pool currently affords.
+    fn affordable(&self) -> Option<usize> {
+        let mana = self.mana?;
+        self.sources
+            .iter()
+            .zip(&self.dead)
+            .position(|(s, dead)| !dead && s.mana_cost <= mana)
+    }
+
+    /// What healing is worth doing at `now`.
+    ///
+    /// The caller owns the HP test — this knows about mana and rounds,
+    /// not about marks.
+    pub fn attempt(
+        &mut self,
+        now: std::time::Instant,
+        clock: &crate::world::RoundClock,
+    ) -> HealAttempt {
+        if self.pending.is_some() {
+            return HealAttempt::Nothing;
+        }
+        let Some(i) = self.affordable() else {
+            return HealAttempt::Nothing;
+        };
+        if let Some(at) = self.last_attempt {
+            let next = clock.next_round_after(at);
+            if now < next {
+                return HealAttempt::Hold(next);
+            }
+        }
+        self.last_attempt = Some(now);
+        HealAttempt::Send(self.sources[i].cmd.clone())
+    }
+
+    /// Called for every command the gate releases. Any of our own casts
+    /// arms the outcome watch — unlike lighting, which only ever has one
+    /// candidate in play, the source chosen here varies with the pool.
+    pub fn on_sent(&mut self, line: &str, id: crate::correlate::CmdId) {
+        if let Some(i) = self.sources.iter().position(|s| s.cmd == line) {
+            self.pending = Some((i, id));
+        }
+    }
+
+    /// Fold one event. Prompts carry the pool; everything else is only
+    /// read when the correlator says it answers OUR cast — a monster's
+    /// "%s attempted to cast %s at you, but failed." is routine din and
+    /// would otherwise read as our own fizzle.
+    pub fn on_event(&mut self, cor: &crate::correlate::Correlated) {
+        if let crate::events::Event::Prompt {
+            mana: Some(mana), ..
+        } = &cor.event
+        {
+            self.mana = Some(*mana);
+        }
+        let Some((i, pending)) = self.pending else {
+            return;
+        };
+        if cor.answers != Some(pending) {
+            return;
+        }
+        let crate::events::Event::Line(line) = &cor.event else {
+            return;
+        };
+        let line = line.to_lowercase();
+        // The one terminal outcome: the spell is not in the book. Every
+        // other failure is a roll, a pool or a round, and comes round
+        // again.
+        if line.contains("do not know how to cast") || line.contains("do not know how to invoke") {
+            self.dead[i] = true;
+            self.pending = None;
+        } else if line.starts_with("you cast ")
+            || line.starts_with("you invoke ")
+            || line.contains("but fail")
+            || line.contains("spell is resisted")
+            || line.contains("resists your spell")
+            || line.contains("enough mana to cast")
+            || line.contains("enough kai to invoke")
+            || line.contains("already cast a spell")
+            || line.contains("already invoked a power")
+        {
+            self.pending = None;
+        }
+    }
+
+    /// A fresh visit clears an outcome that never arrived, so a lost
+    /// wording cannot wedge healing for the rest of the run — the same
+    /// bargain [`LightState::new_visit`] makes, and the same worst case:
+    /// one wasted round trip.
+    pub fn new_visit(&mut self) {
+        self.pending = None;
+        self.last_attempt = None;
     }
 }
 
@@ -202,7 +509,11 @@ impl LightSource {
 /// items first (no mana, keep burning), the spell last (survives any
 /// number of burn-outs). Empty is a real answer — an unrecognised
 /// command is SAID OUT LOUD by the board, so nothing is invented.
-pub fn light_sources(inventory: &Inventory, spellbook: &Spellbook) -> Vec<LightSource> {
+pub fn light_sources(
+    inventory: &Inventory,
+    spellbook: &Spellbook,
+    casting: Casting,
+) -> Vec<LightSource> {
     let mut sources: Vec<LightSource> = inventory
         .light_items()
         .into_iter()
@@ -213,7 +524,7 @@ pub fn light_sources(inventory: &Inventory, spellbook: &Spellbook) -> Vec<LightS
         .collect();
     if let Some((short, mana)) = spellbook.light_spell_with_cost() {
         sources.push(LightSource::Spell {
-            cmd: format!("cast {short}"),
+            cmd: casting.command(&short),
             mana_cost: mana as i32,
         });
     }

@@ -252,15 +252,23 @@ pub async fn run_go(
     );
     let refusals = crate::bot::Refusals::default();
     // Only pay for the listing when the route actually passes through
-    // the dark. `read_light_sources` costs a three-second spell
-    // collection plus an inventory round trip, and spending that on a
-    // five-step walk across town makes the command feel broken.
-    let sources = if crate::farm::leg_needs_light(&graph, from, to) {
-        crate::farm::read_light_sources(session).await
+    // the dark. `read_sheet` costs a three-second spell collection plus
+    // an inventory round trip, and spending that on a five-step walk
+    // across town makes the command feel broken.
+    //
+    // Healing is deliberately empty here whatever the book says: `/go`
+    // is a walk the operator asked for, and `go_config` already zeroes
+    // the departure gate so it never rests either. Recovery on a walk
+    // belongs to the person who typed it.
+    let sheet = if crate::farm::leg_needs_light(&graph, from, to) {
+        crate::farm::read_sheet(session, &[]).await
     } else {
-        Vec::new()
+        crate::farm::Sheet { light: Vec::new(), heals: Vec::new() }
     };
-    let mut light = crate::sheet::LightState::new(sources);
+    let mut casts = crate::farm::Casts {
+        light: crate::sheet::LightState::new(sheet.light),
+        heal: crate::sheet::HealState::new(Vec::new()),
+    };
     let mut clock = crate::world::RoundClock::new();
     let mut stats = FarmStats::default();
     let mut current = from;
@@ -275,7 +283,7 @@ pub async fn run_go(
         &bot_config,
         &threat,
         &refusals,
-        &mut light,
+        &mut casts,
         &mut clock,
         Instant::now(),
         &mut stats,
@@ -294,7 +302,7 @@ pub async fn run_go(
     // A lit source burns a use per tick whether anything needs the light
     // or not. A dead character cannot put it out.
     if !matches!(end, GoEnd::Died)
-        && let Some(cmd) = light.extinguish()
+        && let Some(cmd) = casts.light.extinguish()
     {
         session.send(&cmd);
     }

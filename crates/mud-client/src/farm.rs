@@ -1472,20 +1472,46 @@ pub async fn run_farm(
     if let Err(e) = crate::deaths::init(&cfg.content) {
         eprintln!("death wordings unavailable ({e}); shared-room kills will be missed");
     }
-    let mut light = crate::sheet::LightState::new(read_light_sources(session).await);
+    let sheet = read_sheet(session, &bot_config.heal_spells).await;
+    let light = crate::sheet::LightState::new(sheet.light);
     if let Some(cmd) = light.first_command() {
         eprintln!("dark rooms will be handled with `{cmd}`");
     }
+    // Say what the character can and cannot do about being hurt, at
+    // startup rather than at 20% health. A spell mark set on a character
+    // with an empty book is a policy that can never fire, and silence
+    // would leave the operator believing it was armed.
+    let heal = crate::sheet::HealState::new(sheet.heals);
+    if bot_config.spell_at_percent > 0 {
+        match heal.sources().first() {
+            Some(cheapest) => eprintln!(
+                "healing below {}% with `{}` ({} mana){}",
+                bot_config.spell_at_percent,
+                cheapest.cmd,
+                cheapest.mana_cost,
+                match heal.sources().len() {
+                    1 => String::new(),
+                    n => format!(" and {} dearer", n - 1),
+                }
+            ),
+            None => eprintln!(
+                "spell_at_percent is {} but this character knows no healing spell; \
+                 it will rest and flee only",
+                bot_config.spell_at_percent
+            ),
+        }
+    }
+    let mut casts = Casts { light, heal };
     let mut clock = crate::world::RoundClock::new();
     let out = farm_loop(
-        session, graph, plan, bot_config, cfg, phase, &mut light, &mut clock,
+        session, graph, plan, bot_config, cfg, phase, &mut casts, &mut clock,
     )
     .await;
     // A lit source burns one use per 3s medium tick whether anything
     // needs the light or not; walked away from, it spends the run's
     // whole burn budget on idle time. Best effort — a dead character
     // cannot remove anything, and Ctrl-C never reaches here at all.
-    if let (Ok((end, _)), Some(cmd)) = (&out, light.extinguish())
+    if let (Ok((end, _)), Some(cmd)) = (&out, casts.light.extinguish())
         && !matches!(end, FarmEnd::Died)
     {
         session.send(&cmd);
@@ -1501,7 +1527,7 @@ async fn farm_loop(
     bot_config: &crate::bot::BotConfig,
     cfg: &FarmConfig,
     phase: PhaseSink<'_>,
-    light: &mut crate::sheet::LightState,
+    casts: &mut Casts,
     clock: &mut crate::world::RoundClock,
 ) -> Result<(FarmEnd, FarmStats), FarmError> {
     let started = Instant::now();
@@ -1552,7 +1578,7 @@ async fn farm_loop(
                     &bot_config,
                     &threat,
                     &refusals,
-                    light,
+                    casts,
                     clock,
                     started,
                     &mut stats,
@@ -1578,7 +1604,7 @@ async fn farm_loop(
                 &bot_config,
                 &threat,
                 &refusals,
-                light,
+                casts,
                 clock,
                 cfg,
                 started,
@@ -1683,8 +1709,8 @@ pub(crate) async fn look_around(
     match next_room_view(&mut events, ask, Duration::from_secs(15)).await {
         Some(room) => Ok(room),
         None => {
-            let sources = read_light_sources(session).await;
-            let Some(cmd) = sources.first().map(|s| s.command().to_string()) else {
+            let sheet = read_sheet(session, &[]).await;
+            let Some(cmd) = sheet.light.first().map(|s| s.command().to_string()) else {
                 return Err(unanswered());
             };
             session.send(&cmd);
@@ -1717,23 +1743,86 @@ pub(crate) async fn next_room_view(
     }
 }
 
-/// Ask the board for the inventory and the spellbook, and work out
-/// every way this character could light a dark room.
+/// What the board says this character is carrying and knows.
 ///
-/// Empty means it cannot, which is worth knowing up front rather than
-/// discovering at the mouth of an unlit room.
-pub(crate) async fn read_light_sources(
+/// Read once at startup, because both answers are wanted before they are
+/// needed: knowing there is no light is worth having at the mouth of an
+/// unlit room and not inside it, and knowing there is no heal is worth
+/// having before health is the thing being decided about.
+pub(crate) struct Sheet {
+    pub light: Vec<crate::sheet::LightSource>,
+    pub heals: Vec<crate::sheet::HealSource>,
+}
+
+/// The two spell machines, carried as one.
+///
+/// They are separate policies — one answers darkness, the other answers
+/// being hurt — but they are fed at exactly the same three points (every
+/// released command, every correlated event, every fresh visit) and they
+/// contend for the same round: the board refuses a second cast inside one
+/// whichever spell it was. Threading them apart through the same four
+/// signatures would have doubled the plumbing to say the same thing
+/// twice, and left the two easy to feed unevenly.
+pub(crate) struct Casts {
+    pub light: crate::sheet::LightState,
+    pub heal: crate::sheet::HealState,
+}
+
+impl Casts {
+    /// Every command the gate released.
+    pub fn on_sent(&mut self, line: &str, id: CmdId) {
+        self.light.on_sent(line, id);
+        self.heal.on_sent(line, id);
+    }
+
+    /// Every event, attribution and all.
+    pub fn on_event(&mut self, cor: &Correlated) {
+        self.light.on_event(cor);
+        self.heal.on_event(cor);
+    }
+
+    /// A fresh arrival: drop outcomes that never came back.
+    pub fn new_visit(&mut self) {
+        self.light.new_visit();
+        self.heal.new_visit();
+    }
+}
+
+/// Ask the board for the inventory and the spellbook.
+///
+/// Mystics are found out rather than configured: `spells` answers with
+/// "You may not list your spells. You are KAI! You must list your
+/// powers." (VERIFIED, `mud_core::text::KAI_NO_SPELLS`), so the redirect
+/// is the detection and one extra round trip is the whole cost. Every
+/// command built from the result then uses the matching verb.
+pub(crate) async fn read_sheet(
     session: &crate::session::Session,
-) -> Vec<crate::sheet::LightSource> {
+    heal_spells: &[String],
+) -> Sheet {
+    use crate::sheet::Casting;
+
     let inventory = ask(session, "inventory", "Encumbrance:").await;
     // No terminal wording is pinned for the spell listing, so the
     // collection is bounded by a short deadline instead of the full 10s
     // — this runs at every farm start and on dark finish walks.
-    let spells = ask_for(session, "spells", "", Duration::from_secs(3)).await;
-    crate::sheet::light_sources(
-        &crate::sheet::Inventory::parse(&inventory),
-        &crate::sheet::Spellbook::parse(&spells),
-    )
+    let mut casting = Casting::Spells;
+    let mut listing = ask_for(session, casting.list_command(), "", Duration::from_secs(3)).await;
+    if let Some(redirected) = Casting::redirected(&listing)
+        && redirected != casting
+    {
+        casting = redirected;
+        listing = ask_for(session, casting.list_command(), "", Duration::from_secs(3)).await;
+    }
+
+    let book = crate::sheet::Spellbook::parse(&listing);
+    Sheet {
+        light: crate::sheet::light_sources(
+            &crate::sheet::Inventory::parse(&inventory),
+            &book,
+            casting,
+        ),
+        heals: book.heal_spells(heal_spells, casting),
+    }
 }
 
 /// Send a listing command and collect what comes back.
@@ -1837,7 +1926,7 @@ pub(crate) async fn travel(
     bot_config: &crate::bot::BotConfig,
     threat: &std::sync::Arc<crate::bot::ThreatTable>,
     refusals: &crate::bot::Refusals,
-    light: &mut crate::sheet::LightState,
+    casts: &mut Casts,
     clock: &mut crate::world::RoundClock,
     started: Instant,
     stats: &mut FarmStats,
@@ -1901,7 +1990,7 @@ pub(crate) async fn travel(
             stats.sightings += 1;
             let until = Instant::now() + Duration::from_secs(cfg.defend_seconds);
             match farm_stop(
-                session, nav, graph, *current, bot_config, threat, refusals, light, clock, cfg,
+                session, nav, graph, *current, bot_config, threat, refusals, casts, clock, cfg,
                 started, Some(until), true, None, stats, phase,
             )
             .await?
@@ -1916,8 +2005,8 @@ pub(crate) async fn travel(
         // blind — today's behavior, now the explicit fallback. A fade
         // mid-leg still walks the remaining dark steps blind and is
         // caught at the stop by the Blind verdict + recast.
-        if !light.lit() && leg_needs_light(graph, *current, stop) {
-            ensure_lit(session, light, clock).await;
+        if !casts.light.lit() && leg_needs_light(graph, *current, stop) {
+            ensure_lit(session, &mut casts.light, clock).await;
         }
     set_phase(phase, Phase::Travelling { to: stop });
 
@@ -1972,7 +2061,7 @@ pub(crate) async fn travel(
                     bot_config,
                     threat,
                     refusals,
-                    light,
+                    casts,
                     clock,
                     cfg,
                     started,
@@ -2013,7 +2102,7 @@ pub(crate) async fn travel(
                     bot_config,
                     threat,
                     refusals,
-                    light,
+                    casts,
                     clock,
                     cfg,
                     started,
@@ -2226,7 +2315,7 @@ async fn farm_stop(
     // every lag and recovery, and a forgotten refusal is a refused swing
     // repeated -- a crime-system interaction on the live board.
     refusals: &crate::bot::Refusals,
-    light: &mut crate::sheet::LightState,
+    casts: &mut Casts,
     clock: &mut crate::world::RoundClock,
     cfg: &FarmConfig,
     started: Instant,
@@ -2251,7 +2340,7 @@ async fn farm_stop(
     // light whatever the graph believes, which arms the recast gate for
     // rooms the graph mislabels.
     let mut was_blind_this_visit = false;
-    light.new_visit();
+    casts.new_visit();
     let username = session.profile().username.clone();
     let backoff = Duration::from_millis(cfg.slowdown_backoff_ms);
     let poke_after = Duration::from_millis(cfg.idle_poke_ms);
@@ -2282,7 +2371,12 @@ async fn farm_stop(
     let mut bot =
         crate::bot::Bot::with_refusals(stop_config.clone(), threat.clone(), refusals.clone());
     let mut gate = Gate::new(backoff);
-    let mut heal = HealWatch::new(bot_config, cfg);
+    let mut rest_watch = HealWatch::new(bot_config, cfg);
+    // Health, for the spell mark. Read from the session's published
+    // state rather than accumulated here: the pump below folds prompts
+    // into the bot, not into a local, and a second copy of the number
+    // would be one more thing that can go stale.
+    let vitals = session.state();
     let mut seen = StopState::new(stop_name.clone(), cfg);
     // The maintained room state — fed the same stream, one fold. Its
     // first consumer is the recast coherence gate; StopState keeps its
@@ -2372,9 +2466,9 @@ async fn farm_stop(
                 // wordings arrive unsolicited and LightState reads them
                 // directly; the darkness returning is the backstop for
                 // one that was missed.
-                light.source_died();
+                casts.light.source_died();
                 was_blind_this_visit = true;
-                match light.attempt(now, clock) {
+                match casts.light.attempt(now, clock) {
                     crate::sheet::LightAttempt::Send(cmd) if gate.is_idle() => {
                         gate.push(cmd);
                         gate.push("look".into());
@@ -2400,6 +2494,36 @@ async fn farm_stop(
             }
         }
 
+        // Cast a heal. This is the ONE recovery that works while
+        // something is hitting the character, and the gates it does not
+        // have are the point: no `bot.engaged().is_none()`, no
+        // `room_has_work`. Those guard RESTING, because the board
+        // disengages combat to rest and the re-engage breaks it — the
+        // 2026-08-01 spiral. Casting disengages nothing.
+        //
+        // What it is gated on:
+        // - the flee mark, which outranks everything. Below it the bot
+        //   is leaving and a cast would spend the round it leaves in.
+        //   `bot.fled()` covers the window where the step is out and the
+        //   board has not yet said where it landed.
+        // - the gate being idle, so a cast never jumps a queued attack.
+        // - mana and the round, both inside `HealState::attempt`.
+        //
+        // `hp_percent` is the bot's own arithmetic, borrowed rather than
+        // recomputed, so this mark and the two in `on_hp` can never
+        // disagree about what 60% means.
+        if bot_config.auto_heal
+            && bot_config.spell_at_percent > 0
+            && !bot.fled()
+            && gate.is_idle()
+            && let Some(percent) = bot.hp_percent(vitals.borrow().hp)
+            && percent < bot_config.spell_at_percent as i32
+            && percent >= bot_config.flee_at_percent as i32
+            && let crate::sheet::HealAttempt::Send(cmd) = casts.heal.attempt(now, clock)
+        {
+            gate.push(cmd);
+        }
+
         // A fade is an indicator to RECAST, not bookkeeping (operator
         // directive): it arrives unsolicited mid-anything, and waiting
         // for the next look to come back "too dark" costs a blind
@@ -2409,10 +2533,10 @@ async fn farm_stop(
         // room evidence. A fade in a naturally lit room needs no action.
         if bot.engaged().is_none()
             && gate.is_idle()
-            && light.wants_recast()
+            && casts.light.wants_recast()
             && (graph.dark(stop) || was_blind_this_visit)
             && !recast_waits_for(&bot, &here)
-            && let crate::sheet::LightAttempt::Send(cmd) = light.attempt(now, clock)
+            && let crate::sheet::LightAttempt::Send(cmd) = casts.light.attempt(now, clock)
         {
             gate.push(cmd);
         }
@@ -2434,11 +2558,11 @@ async fn farm_stop(
 
         // Release whatever the gate is willing to send.
         while let Some(cmd) = gate.poll(now) {
-            heal.on_sent(&cmd);
+            rest_watch.on_sent(&cmd);
             let id = session.send(&cmd);
             gate.confirm(id);
             seen.on_sent(&cmd, id);
-            light.on_sent(&cmd, id);
+            casts.on_sent(&cmd, id);
         }
 
         // Sleep until the next event, the gate's own deadline, the idle
@@ -2563,7 +2687,7 @@ async fn farm_stop(
             bot =
                 crate::bot::Bot::with_refusals(stop_config.clone(), threat.clone(), refusals.clone());
             gate = Gate::new(backoff);
-            heal = HealWatch::new(bot_config, cfg);
+            rest_watch = HealWatch::new(bot_config, cfg);
             seen = StopState::new(stop_name.clone(), cfg);
             here.reset();
             here.room = Some(stop);
@@ -2571,7 +2695,7 @@ async fn farm_stop(
         }
 
         gate.on_event(&cor, Instant::now());
-        if heal.on_event(ev) {
+        if rest_watch.on_event(ev) {
             bot.rearm();
         }
 
@@ -2591,7 +2715,7 @@ async fn farm_stop(
             }
             gate.push(cmd);
         }
-        light.on_event(&cor);
+        casts.on_event(&cor);
         // The model folds BEFORE the stop state, because the stop state
         // now decides occupancy by asking it. The tally still runs —
         // the counters that earned `Here` this job are what would catch

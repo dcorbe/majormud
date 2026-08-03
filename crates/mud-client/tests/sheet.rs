@@ -10,7 +10,7 @@
 //!   level right-aligned in 3, mana in 4, four spaces, short name in 6,
 //!   spell name in 30.
 
-use mud_client::sheet::{Inventory, LightSource, Spellbook};
+use mud_client::sheet::{Casting, Inventory, LightSource, Spellbook};
 
 #[test]
 fn inventory_reads_the_carried_list() {
@@ -64,7 +64,7 @@ fn an_empty_pack_is_not_an_error() {
 fn inventory_finds_a_light_source() {
     let empty_book = Spellbook::parse("You have no spells.\n");
     let first = |text: &str| {
-        mud_client::sheet::light_sources(&Inventory::parse(text), &empty_book)
+        mud_client::sheet::light_sources(&Inventory::parse(text), &empty_book, Casting::Spells)
             .into_iter()
             .next()
     };
@@ -123,7 +123,7 @@ fn spellbook_finds_a_light_spell() {
          \x20 1   2    star  starlight                     \n",
     );
     assert_eq!(
-        mud_client::sheet::light_sources(&no_items, &book),
+        mud_client::sheet::light_sources(&no_items, &book, Casting::Spells),
         vec![LightSource::Spell {
             cmd: "cast star".into(),
             mana_cost: 2,
@@ -136,7 +136,7 @@ fn spellbook_finds_a_light_spell() {
          \x20 1   4    lb    lightning bolt                \n",
     );
     assert!(
-        mud_client::sheet::light_sources(&no_items, &dark).is_empty(),
+        mud_client::sheet::light_sources(&no_items, &dark, Casting::Spells).is_empty(),
         "lightning bolt is not a light spell"
     );
 }
@@ -184,7 +184,7 @@ fn the_real_inventory_parses() {
     // No torch and no lantern: the item route to solving darkness is not
     // available to this character, which is the answer the caller needs.
     assert!(
-        mud_client::sheet::light_sources(&inv, &Spellbook::default())
+        mud_client::sheet::light_sources(&inv, &Spellbook::default(), Casting::Spells)
             .is_empty()
     );
 }
@@ -198,7 +198,7 @@ fn the_real_spellbook_parses_and_offers_a_light() {
     assert_eq!(book.spells[1].name, "vine strike");
     // The whole point: this character can light a dark room.
     assert_eq!(
-        mud_client::sheet::light_sources(&Inventory::default(), &book),
+        mud_client::sheet::light_sources(&Inventory::default(), &book, Casting::Spells),
         vec![LightSource::Spell {
             cmd: "cast star".into(),
             mana_cost: 4,
@@ -222,7 +222,7 @@ fn a_carried_light_is_preferred_over_a_spell() {
         "You have the following spells:\nLevel Mana Short Spell Name\n  1   4    star  starlight\n",
     );
     assert_eq!(
-        mud_client::sheet::light_sources(&inv, &book),
+        mud_client::sheet::light_sources(&inv, &book, Casting::Spells),
         vec![
             LightSource::Item {
                 light_cmd: "light torch".into(),
@@ -243,7 +243,7 @@ fn a_carried_light_is_preferred_over_a_spell() {
 fn every_carried_light_item_is_a_source() {
     let inv = Inventory::parse("You are carrying a battered torch, brass lantern, torch\n");
     let book = Spellbook::parse("You have no spells.\n");
-    let sources = mud_client::sheet::light_sources(&inv, &book);
+    let sources = mud_client::sheet::light_sources(&inv, &book, Casting::Spells);
     assert_eq!(sources.len(), 3, "{sources:?}");
     assert!(matches!(&sources[0], LightSource::Item { light_cmd, .. } if light_cmd == "light torch"));
     assert!(
@@ -258,7 +258,7 @@ fn a_caster_with_no_torch_casts() {
         "You have the following spells:\nLevel Mana Short Spell Name\n  1   4    star  starlight\n",
     );
     assert_eq!(
-        mud_client::sheet::light_sources(&inv, &book),
+        mud_client::sheet::light_sources(&inv, &book, Casting::Spells),
         vec![LightSource::Spell {
             cmd: "cast star".into(),
             mana_cost: 4,
@@ -271,7 +271,7 @@ fn a_caster_with_no_torch_casts() {
 fn with_neither_there_are_no_sources() {
     let inv = Inventory::parse("You are carrying quarterstaff\n");
     let book = Spellbook::parse("You have no spells.\n");
-    assert!(mud_client::sheet::light_sources(&inv, &book).is_empty());
+    assert!(mud_client::sheet::light_sources(&inv, &book, Casting::Spells).is_empty());
 }
 
 /// Salad's real kit: no torch, but starlight in the book — one Spell
@@ -282,11 +282,265 @@ fn the_real_character_derives_a_single_spell_source() {
     assert_eq!(
         mud_client::sheet::light_sources(
             &Inventory::parse(REAL_INVENTORY),
-            &Spellbook::parse(REAL_SPELLBOOK)
+            &Spellbook::parse(REAL_SPELLBOOK),
+            Casting::Spells,
         ),
         vec![LightSource::Spell {
             cmd: "cast star".into(),
             mana_cost: 4,
         }]
     );
+}
+
+// --- healing spells ---------------------------------------------------
+
+use mud_client::correlate::{CmdId, Correlated};
+use mud_client::events::Event;
+use mud_client::sheet::{HealAttempt, HealSource, HealState};
+use mud_client::world::RoundClock;
+
+/// A book with three heals at different prices, plus one spell that is
+/// not a heal at all.
+fn healer_book() -> Spellbook {
+    Spellbook::parse(
+        "You have the following spells:\n\
+         Level Mana Short Spell Name\n\
+         \x20 1   2    star  starlight                     \n\
+         \x20 8   9    maj   major healing                 \n\
+         \x20 1   3    heal  minor healing                 \n\
+         \x20 2   5    mend  mend                          \n",
+    )
+}
+
+/// Discovery, and the ordering that matters: mana is the scarce
+/// resource, so the CHEAPEST heal comes first. Sizing the spell to the
+/// wound is not attempted — the shipped min/max are level-1 figures and
+/// the real heal scales with caster level, so any such table would lie
+/// by more the longer a character had been played.
+#[test]
+fn heals_are_discovered_cheapest_first() {
+    let heals = healer_book().heal_spells(&[], Casting::Spells);
+    assert_eq!(
+        heals,
+        vec![
+            HealSource { name: "minor healing".into(), cmd: "cast heal".into(), mana_cost: 3 },
+            HealSource { name: "mend".into(), cmd: "cast mend".into(), mana_cost: 5 },
+            HealSource { name: "major healing".into(), cmd: "cast maj".into(), mana_cost: 9 },
+        ],
+        "starlight lights rooms; it does not heal"
+    );
+}
+
+/// Naming spells in `[bot].heal_spells` pins the choice. A name the
+/// character does not know is simply absent — the book is the authority
+/// on what it knows, and inventing a `cast` for a spell it lacks would
+/// buy one "You do not know how to cast..." per attempt.
+#[test]
+fn configured_heal_spells_override_discovery() {
+    let book = healer_book();
+    assert_eq!(
+        book.heal_spells(&["Mend".into()], Casting::Spells),
+        vec![HealSource { name: "mend".into(), cmd: "cast mend".into(), mana_cost: 5 }],
+        "matched case-insensitively"
+    );
+    assert!(
+        book.heal_spells(&["godheal".into()], Casting::Spells).is_empty(),
+        "a spell that is not in the book is not a heal this character has"
+    );
+}
+
+/// `rapid healing` reads like a heal and is not one: duration 60, and
+/// its min/max of 200 is an ability value rather than hit points. It is
+/// a regen buff and belongs in `[bot].buffs`. `blessed vision` is the
+/// symmetric trap on the buff side of the same list.
+#[test]
+fn the_near_misses_are_not_heals() {
+    let book = Spellbook::parse(
+        "You have the following spells:\n\
+         Level Mana Short Spell Name\n\
+         \x2011   8    rapd  rapid healing                 \n\
+         \x2041   4    bvis  blessed vision                \n",
+    );
+    assert!(book.heal_spells(&[], Casting::Spells).is_empty());
+}
+
+/// Mystics are a whole vocabulary, not a spelling. The board's own
+/// redirect is the detection (VERIFIED, mud_core::text §8.12), and every
+/// command built afterwards uses the matching verb.
+#[test]
+fn a_mystic_invokes_powers() {
+    assert_eq!(
+        Casting::redirected(mud_core::text::KAI_NO_SPELLS),
+        Some(Casting::Powers)
+    );
+    assert_eq!(
+        Casting::redirected(mud_core::text::NON_KAI_NO_POWERS),
+        Some(Casting::Spells)
+    );
+    assert_eq!(
+        Casting::redirected("You have the following spells:"),
+        None,
+        "an ordinary listing says nothing either way"
+    );
+
+    // The powers listing differs in its header caption and in a
+    // right-aligned short column; the row parse is by whitespace, so
+    // both fall out.
+    let powers = Spellbook::parse(
+        "You have the following powers:\n\
+         Level Kai  Short Spell Name\n\
+         \x20 5   4     lay  lay hands                     \n",
+    );
+    assert_eq!(
+        powers.heal_spells(&["lay hands".into()], Casting::Powers),
+        vec![HealSource { name: "lay hands".into(), cmd: "invoke lay".into(), mana_cost: 4 }]
+    );
+    assert!(Spellbook::parse("You have no powers.\n").spells.is_empty());
+}
+
+// --- HealState --------------------------------------------------------
+
+fn heal_state() -> HealState {
+    HealState::new(healer_book().heal_spells(&[], Casting::Spells))
+}
+
+fn prompt(hp: i32, mana: i32) -> Correlated {
+    Correlated {
+        event: Event::Prompt { hp, mana: Some(mana) },
+        answers: None,
+    }
+}
+
+fn answering(line: &str, id: CmdId) -> Correlated {
+    Correlated {
+        event: Event::Line(line.into()),
+        answers: Some(id),
+    }
+}
+
+/// The floor is the book's price, not a configured number, and the pool
+/// picks the spell: 9 mana buys the dearest, 4 buys only the cheapest,
+/// 2 buys nothing at all. Below every price this says Nothing rather
+/// than anything louder — the rest mark takes over, and resting restores
+/// mana as well as health, so the two compose without either knowing
+/// about the other.
+#[test]
+fn the_pool_picks_the_spell() {
+    let clock = RoundClock::new();
+    let now = std::time::Instant::now();
+
+    let mut rich = heal_state();
+    rich.on_event(&prompt(20, 9));
+    assert_eq!(rich.attempt(now, &clock), HealAttempt::Send("cast heal".into()));
+
+    let mut thin = heal_state();
+    thin.on_event(&prompt(20, 4));
+    assert_eq!(thin.attempt(now, &clock), HealAttempt::Send("cast heal".into()));
+
+    let mut broke = heal_state();
+    broke.on_event(&prompt(20, 2));
+    assert_eq!(broke.attempt(now, &clock), HealAttempt::Nothing);
+
+    // A pool that has never been seen affords nothing: a character whose
+    // prompt carries no mana is not a caster.
+    let mut unseen = heal_state();
+    assert_eq!(unseen.attempt(now, &clock), HealAttempt::Nothing);
+}
+
+/// One cast per round, because the board refuses a second
+/// ("You have already cast a spell this round!"). The hold is until the
+/// next round boundary, not a fixed sleep.
+#[test]
+fn a_second_cast_in_one_round_is_held() {
+    let clock = RoundClock::new();
+    let now = std::time::Instant::now();
+    let mut heal = heal_state();
+    heal.on_event(&prompt(20, 9));
+
+    assert_eq!(heal.attempt(now, &clock), HealAttempt::Send("cast heal".into()));
+    // The outcome lands, so nothing is owed — but the round has not
+    // turned over.
+    heal.on_sent("cast heal", CmdId(1));
+    heal.on_event(&answering("You cast minor healing!", CmdId(1)));
+    assert!(matches!(heal.attempt(now, &clock), HealAttempt::Hold(_)));
+}
+
+/// A cast in flight suppresses the next one outright. Nothing is owed
+/// twice.
+#[test]
+fn an_owed_outcome_suppresses_the_next_cast() {
+    let clock = RoundClock::new();
+    let now = std::time::Instant::now();
+    let mut heal = heal_state();
+    heal.on_event(&prompt(20, 9));
+    heal.attempt(now, &clock);
+    heal.on_sent("cast heal", CmdId(1));
+
+    assert!(heal.in_flight());
+    assert_eq!(heal.attempt(now, &clock), HealAttempt::Nothing);
+}
+
+/// Every cast failure is a roll, a pool or a round, and comes round
+/// again — EXCEPT one. "You do not know how to cast %s." means the spell
+/// is not in the book and never will be, so that source is retired and
+/// the next-cheapest takes over.
+#[test]
+fn only_an_unknown_spell_kills_a_source() {
+    let clock = RoundClock::new();
+    let now = std::time::Instant::now();
+
+    for fizzle in [
+        "You attempt to cast minor healing, but fail.",
+        "You do not have enough mana to cast that spell.",
+        "You have already cast a spell this round!",
+    ] {
+        let mut heal = heal_state();
+        heal.on_event(&prompt(20, 9));
+        heal.attempt(now, &clock);
+        heal.on_sent("cast heal", CmdId(1));
+        heal.on_event(&answering(fizzle, CmdId(1)));
+        heal.new_visit();
+        assert_eq!(
+            heal.attempt(now, &clock),
+            HealAttempt::Send("cast heal".into()),
+            "{fizzle:?} is temporary"
+        );
+    }
+
+    let mut heal = heal_state();
+    heal.on_event(&prompt(20, 9));
+    heal.attempt(now, &clock);
+    heal.on_sent("cast heal", CmdId(1));
+    heal.on_event(&answering("You do not know how to cast heal.", CmdId(1)));
+    heal.new_visit();
+    assert_eq!(
+        heal.attempt(now, &clock),
+        HealAttempt::Send("cast mend".into()),
+        "the dead source is skipped, the next-cheapest is tried"
+    );
+}
+
+/// A monster casting at us is routine din and says nothing about our own
+/// spell. The correlator's attribution is what separates them — the
+/// wording alone cannot, because "%s attempted to cast %s at you, but
+/// failed." contains the same "fail" our fizzle does.
+#[test]
+fn a_monsters_cast_is_not_our_outcome() {
+    let clock = RoundClock::new();
+    let now = std::time::Instant::now();
+    let mut heal = heal_state();
+    heal.on_event(&prompt(20, 9));
+    heal.attempt(now, &clock);
+    heal.on_sent("cast heal", CmdId(1));
+
+    heal.on_event(&Correlated {
+        event: Event::Line("The cave bear attempted to cast blindness at you, but failed.".into()),
+        answers: None,
+    });
+    assert!(heal.in_flight(), "somebody else's failure is not ours");
+
+    // And an outcome attributed to a DIFFERENT send of ours is not it
+    // either.
+    heal.on_event(&answering("You cast starlight!", CmdId(2)));
+    assert!(heal.in_flight());
 }

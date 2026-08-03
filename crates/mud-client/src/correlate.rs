@@ -166,7 +166,10 @@ fn kind_of(cmd: &str) -> Kind {
     if cmd.starts_with("search ") {
         return Kind::Search;
     }
-    if cmd.starts_with("cast ") {
+    // `invoke` is the mystic's `cast` — same grammar, kai wording
+    // (`mud_core::text` §8.12), so it shares the kind rather than growing
+    // a parallel one that would have to be kept in step.
+    if cmd.starts_with("cast ") || cmd.starts_with("invoke ") {
         return Kind::Cast;
     }
     if cmd.starts_with("light ") {
@@ -280,11 +283,22 @@ fn completes(kind: Kind, ev: &Event) -> bool {
                 || has("resists your spell")
                 || has("already cast a spell")
                 || has("enough mana to cast")
+                // The spell is not in the book at all. Terminal, and the
+                // only cast outcome worth remembering past the round:
+                // `sheet::HealState` retires that source for the run.
+                || has("do not know how to cast")
                 // A cast of a light spell routes through the light
                 // routine and answers with its wordings — success and
                 // the already-lit refusal alike.
                 || has("you lit the")
                 || has("already have something lit")
+                // The mystic's half of the same table (`mud_core::text`
+                // §8.12, all VERIFIED): kai for mana, power for spell,
+                // invoke for cast.
+                || has("you invoke ")
+                || has("already invoked a power")
+                || has("enough kai to invoke")
+                || has("do not know how to invoke")
         }
         Kind::Light => {
             has("you lit the")
