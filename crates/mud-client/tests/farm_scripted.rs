@@ -969,3 +969,96 @@ async fn below_the_flee_mark_it_runs_and_does_not_cast() {
         "a cast must not delay the flee: {log:?}"
     );
 }
+
+/// The dead zone: with `auto_flee = false` the bot never runs, so the
+/// flee mark is a number nothing acts on — and suppressing the cast
+/// below it would leave a character that neither ran nor healed, which
+/// is worse than either. Under every mark at once, the cast must still
+/// go out.
+#[tokio::test]
+async fn with_fleeing_off_the_flee_mark_does_not_suppress_the_cast() {
+    let (addr, received) = scripted_board(vec![
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=20]:"
+                .into(),
+        ),
+        (
+            "spells",
+            "\r\nspells\r\nYou have the following spells:\r\nLevel Mana Short Spell Name\r\n  1   3    heal  minor healing\r\n[HP=30/MA=20]:"
+                .into(),
+        ),
+        (
+            "look",
+            format!("\r\nlook{}", room_block_vitals("Guard Post", None, "north", 30, 20)),
+        ),
+        (
+            "n",
+            format!(
+                "\r\nn{}",
+                room_block_vitals("Inner Ward", Some("cave bear"), "south", 30, 20)
+            ),
+        ),
+        // 5 of 30 is 16%: below the spell mark, below rest, below flee.
+        (
+            "a bear",
+            "\r\na bear\r\nYou smack cave bear for 2 damage!\r\nThe cave bear mauls you for 25 damage!\r\n[HP=5/MA=20]:"
+                .into(),
+        ),
+        (
+            "cast heal",
+            "\r\ncast heal\r\nYou cast minor healing!\r\nYou feel better.\r\nYou smack cave bear for 30 damage!\r\nThe cave bear collapses in a heap.\r\nYou gain 300 experience.\r\n*Combat Off*\r\n[HP=14/MA=17]:"
+                .into(),
+        ),
+        (
+            "look",
+            format!("\r\nlook{}", room_block_vitals("Inner Ward", None, "south", 14, 17)),
+        ),
+    ])
+    .await;
+    let session = session_for(addr).await;
+
+    let graph = corridor();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/2".into()],
+        loops: 1,
+        idle_poke_ms: 500,
+        depart_at_percent: 0,
+        travel_interrupts: 0,
+        ..FarmConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig {
+        auto_combat: true,
+        auto_heal: true,
+        // The whole point of this test.
+        auto_flee: false,
+        spell_at_percent: 80,
+        rest_at_percent: 60,
+        flee_at_percent: 30,
+        max_hp: 30,
+        ..BotConfig::default()
+    };
+
+    let finished = tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, &bot, &cfg, None),
+    )
+    .await;
+    let Ok(result) = finished else {
+        panic!("run_farm hung; board received: {:?}", received.lock().unwrap());
+    };
+    result.unwrap_or_else(|e| {
+        panic!(
+            "the run must survive the fight: {e:?}\nboard received: {:?}",
+            received.lock().unwrap()
+        )
+    });
+
+    let log = received.lock().unwrap();
+    assert!(
+        log.iter().any(|l| l == "cast heal"),
+        "nothing else was going to happen at 5 of 30: {log:?}"
+    );
+}

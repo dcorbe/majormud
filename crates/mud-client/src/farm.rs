@@ -2534,8 +2534,11 @@ async fn farm_stop(
         // 2026-08-01 spiral. Casting disengages nothing.
         //
         // What it is gated on:
-        // - the flee mark, which outranks everything. Below it the bot
-        //   is leaving and a cast would spend the round it leaves in.
+        // - the flee mark, which outranks everything — but ONLY when
+        //   fleeing is something that actually happens. Suppressing the
+        //   cast below a mark the bot will never act on would leave a
+        //   dead zone where a character with `auto_flee = false` neither
+        //   ran nor healed, which is the worst of both.
         //   `bot.fled()` covers the window where the step is out and the
         //   board has not yet said where it landed.
         // - the gate being idle, so a cast never jumps a queued attack.
@@ -2543,14 +2546,19 @@ async fn farm_stop(
         //
         // `hp_percent` is the bot's own arithmetic, borrowed rather than
         // recomputed, so this mark and the two in `on_hp` can never
-        // disagree about what 60% means.
+        // disagree about what 60% means. The value is copied out of the
+        // watch first: a `Ref` held across the body would block the
+        // session actor from publishing the next prompt.
+        let hp_now = vitals.borrow().hp;
+        let leaving = bot_config.auto_flee
+            && bot.hp_percent(hp_now).is_some_and(|p| p < bot_config.flee_at_percent as i32);
         if bot_config.auto_heal
             && bot_config.spell_at_percent > 0
             && !bot.fled()
+            && !leaving
             && gate.is_idle()
-            && let Some(percent) = bot.hp_percent(vitals.borrow().hp)
+            && let Some(percent) = bot.hp_percent(hp_now)
             && percent < bot_config.spell_at_percent as i32
-            && percent >= bot_config.flee_at_percent as i32
             && let crate::sheet::CastAttempt::Send(cmd) = casts.heal.attempt(now, clock)
         {
             gate.push(cmd);
