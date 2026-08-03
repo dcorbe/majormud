@@ -123,6 +123,44 @@ fn distances_agree_with_route_lengths() {
     }
 }
 
+/// The Silvermere Small Alleyway (1/405) has a type-6 HIDDEN exit south
+/// into the secret passage that runs under the Adventurer's Guild. A
+/// hop-count router takes it — 24 steps against 27 by the street — and
+/// the walk then stands in the alley sending `s` at a brick wall until it
+/// desyncs (live, 2026-08-02, walking a ranger to its trainer).
+///
+/// Three steps is a cheap price for not gambling on three search rolls,
+/// so the route has to leave by the only exit the board will show.
+#[test]
+fn a_route_prefers_three_more_streets_to_a_hidden_exit() {
+    let g = graph();
+    let alley = RoomId { map: 1, room: 405 };
+    let trainer = RoomId { map: 1, room: 502 };
+    let route = g.route(alley, trainer).expect("the guild is reachable");
+    assert_eq!(
+        route.first(),
+        Some(&Direction::North),
+        "left by the hidden exit instead of the street: {route:?}"
+    );
+    assert_eq!(route.len(), 27, "the street route, not the secret passage");
+}
+
+/// Costed, not forbidden. 1,383 shipped exits are hidden and whole areas
+/// sit behind them, so a router that refused type 6 outright would answer
+/// "no route" to rooms that are perfectly reachable — worse than the bug
+/// it fixes.
+#[test]
+fn a_hidden_exit_is_still_taken_when_it_is_the_only_way() {
+    let g = graph();
+    let alley = RoomId { map: 1, room: 405 };
+    let passage = RoomId { map: 1, room: 452 };
+    assert_eq!(
+        g.route(alley, passage),
+        Some(vec![Direction::South]),
+        "the secret passage is only reachable through its hidden exit"
+    );
+}
+
 #[test]
 fn distances_omit_unreachable_rooms() {
     let g = graph();

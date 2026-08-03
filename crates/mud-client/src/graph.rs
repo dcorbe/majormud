@@ -5,7 +5,8 @@
 //! when `roomtype_<d+1>` == 8 (map-change portal), else the room's own
 //! map. Placeholder rows (map outside 1..=999, room < 1) are skipped.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::path::Path;
 
 use mud_core::content::{Direction, RoomId};
@@ -44,6 +45,52 @@ pub struct ExitEdge {
 
 /// Exit type for a command exit — see [`ExitEdge::command`].
 pub const COMMAND_EXIT: i64 = 10;
+
+/// What taking this exit costs the walk, in units of one plain step.
+///
+/// The router used to be a hop-count BFS, which reads every edge as a
+/// step and is wrong about 4,000 of them. Live, 2026-08-02: routing out
+/// of the Silvermere Small Alleyway (1/405) it chose the type-6 HIDDEN
+/// south exit into the secret passage — 24 steps against 27 by the
+/// street — and the walk stood in the alley sending `s` at a brick wall
+/// until it desynced. Three streets are cheap; three search rolls at a
+/// 3% floor are not.
+///
+/// Costs, not prohibitions. 1,383 shipped exits are hidden and whole
+/// areas sit behind them, so refusing a type outright would answer "no
+/// route" to rooms that are reachable — a worse failure than the one
+/// being fixed. Every type stays finite; the router just has to be paid
+/// to use the awkward ones.
+///
+/// The classification is `re/docs/theft.md` §8.1, which is authoritative
+/// for this project over the older display-code list in `vir_schemas.md`.
+/// Types it does not name — 3, 4, 5, 0xc, 0xd, 0xe, 0xf, 0x11, 0x13 —
+/// are ORACLE-OPEN and priced as plain steps, which is exactly how the
+/// hop-count router treated them: no route that works today gets worse.
+/// 0x13 alone justifies the default, being the ordinary Silvermere
+/// street exit (94 of them, walked live).
+pub fn exit_cost(exit_type: i64) -> u32 {
+    match exit_type {
+        // A door or gate: an `open`, sometimes a bash chain that charges
+        // HP. The walk handles it (`nav::is_door`), so it is a detour
+        // worth a few streets rather than a wall.
+        2 | 7 | 0xb => 5,
+        // Hidden: revealed only by SEARCH, and the roll's floor is 3%
+        // (`theft.md` §9), so the honest price is tens of commands.
+        6 => 40,
+        // A trap on the exit. The walk has no DISARM, so this is damage
+        // taken on purpose.
+        9 | 0x18 => 25,
+        // Timed, alignment, spell and ability gates. The walk can neither
+        // satisfy nor wait these out, so they are a last resort — still
+        // routable, because a route that fails at a gate says something
+        // truer than "no route".
+        0x10 | 0x14 | 0x16 | 0x17 => 60,
+        // Plain, map-change portals, command exits (one reliable phrase),
+        // and the unmodelled remainder.
+        _ => 1,
+    }
+}
 
 /// How a room's spawner behaves, from the room's `type` column
 /// (`room+0x43c`). Rates are the per-kick roll thresholds in
@@ -378,39 +425,28 @@ impl RoomGraph {
 
     /// Step counts from `from` to every room it can reach.
     ///
-    /// One BFS, so ranking a hundred same-named candidates costs what
-    /// routing to one of them does. That is the whole reason this exists
-    /// beside [`RoomGraph::route`]: `/go Slum Street` matches 152 rooms,
-    /// and ranking those by calling `route` in a loop would be 152 full
-    /// traversals over ~26k rooms — seconds of blocking work on the path
-    /// that handles a keystroke.
+    /// One traversal, so ranking a hundred same-named candidates costs
+    /// what routing to one of them does. That is the whole reason this
+    /// exists beside [`RoomGraph::route`]: `/go Slum Street` matches 152
+    /// rooms, and ranking those by calling `route` in a loop would be 152
+    /// full traversals over ~26k rooms — seconds of blocking work on the
+    /// path that handles a keystroke.
     ///
-    /// The BFS skeleton is duplicated rather than shared because `route`
-    /// early-exits on its target and tracks parents to rebuild the path;
-    /// this does neither, and folding both into one function would cost
-    /// more in branches than the dozen lines it saved.
+    /// Hops, not cost: this number is shown to the user as "(N steps)",
+    /// and it counts the steps of the route [`RoomGraph::route`] would
+    /// actually pick — the two run the same search, so they cannot drift.
     pub fn distances(&self, from: RoomId) -> BTreeMap<RoomId, usize> {
-        let mut seen = BTreeMap::new();
-        if !self.rooms.contains_key(&from) {
-            return seen;
-        }
-        seen.insert(from, 0);
-        let mut queue = VecDeque::from([from]);
-        while let Some(cur) = queue.pop_front() {
-            let steps = seen[&cur] + 1;
-            for edge in self.rooms[&cur].exits.iter().flatten() {
-                if !self.rooms.contains_key(&edge.dest) || seen.contains_key(&edge.dest) {
-                    continue;
-                }
-                seen.insert(edge.dest, steps);
-                queue.push_back(edge.dest);
-            }
-        }
-        seen
+        self.explore(from, None)
+            .into_iter()
+            .map(|(id, reached)| (id, reached.hops))
+            .collect()
     }
 
-    /// Shortest route as direction steps (BFS over exits into known
-    /// rooms). `None` when unreachable; empty when `from == to`.
+    /// Cheapest route as direction steps. `None` when unreachable; empty
+    /// when `from == to`.
+    ///
+    /// Cheapest by [`exit_cost`], not shortest: a walk that saves three
+    /// streets by gambling on a hidden exit has not saved anything.
     pub fn route(&self, from: RoomId, to: RoomId) -> Option<Vec<Direction>> {
         if from == to {
             return self.rooms.contains_key(&from).then(Vec::new);
@@ -418,33 +454,72 @@ impl RoomGraph {
         if !self.rooms.contains_key(&from) || !self.rooms.contains_key(&to) {
             return None;
         }
-        let mut parent: BTreeMap<RoomId, (RoomId, Direction)> = BTreeMap::new();
-        let mut queue = VecDeque::from([from]);
-        while let Some(cur) = queue.pop_front() {
-            let room = &self.rooms[&cur];
-            for (d, edge) in room.exits.iter().enumerate() {
+        let reached = self.explore(from, Some(to));
+        let mut steps = Vec::new();
+        let mut at = to;
+        while at != from {
+            let (prev, dir) = reached.get(&at)?.via?;
+            steps.push(dir);
+            at = prev;
+        }
+        steps.reverse();
+        Some(steps)
+    }
+
+    /// Dijkstra over exits into known rooms, ordered by total
+    /// [`exit_cost`] and broken by hop count, so the cheapest route is
+    /// also the shortest of the equally cheap ones. `target` stops the
+    /// search once that room is settled; `None` walks the whole component.
+    ///
+    /// Shared by [`RoomGraph::route`] and [`RoomGraph::distances`]
+    /// precisely because they must agree: the steps one reports are the
+    /// steps the other counts.
+    fn explore(&self, from: RoomId, target: Option<RoomId>) -> BTreeMap<RoomId, Reached> {
+        let mut best: BTreeMap<RoomId, Reached> = BTreeMap::new();
+        if !self.rooms.contains_key(&from) {
+            return best;
+        }
+        best.insert(from, Reached::default());
+        let mut heap = BinaryHeap::from([Reverse((0u64, 0usize, from))]);
+        let mut settled: BTreeSet<RoomId> = BTreeSet::new();
+        while let Some(Reverse((cost, hops, cur))) = heap.pop() {
+            // A cheaper entry for this room was already popped; this one
+            // is the stale copy the push-on-improve strategy leaves
+            // behind.
+            if !settled.insert(cur) {
+                continue;
+            }
+            if target == Some(cur) {
+                break;
+            }
+            for (d, edge) in self.rooms[&cur].exits.iter().enumerate() {
                 let Some(edge) = edge else { continue };
-                if !self.rooms.contains_key(&edge.dest) {
+                if !self.rooms.contains_key(&edge.dest) || settled.contains(&edge.dest) {
                     continue;
                 }
-                if edge.dest == from || parent.contains_key(&edge.dest) {
-                    continue;
+                let step = (cost + u64::from(exit_cost(edge.exit_type)), hops + 1);
+                if best.get(&edge.dest).is_none_or(|r| (r.cost, r.hops) > step) {
+                    best.insert(
+                        edge.dest,
+                        Reached {
+                            cost: step.0,
+                            hops: step.1,
+                            via: Some((cur, DIRECTIONS[d])),
+                        },
+                    );
+                    heap.push(Reverse((step.0, step.1, edge.dest)));
                 }
-                parent.insert(edge.dest, (cur, DIRECTIONS[d]));
-                if edge.dest == to {
-                    let mut steps = Vec::new();
-                    let mut at = to;
-                    while at != from {
-                        let (prev, dir) = parent[&at];
-                        steps.push(dir);
-                        at = prev;
-                    }
-                    steps.reverse();
-                    return Some(steps);
-                }
-                queue.push_back(edge.dest);
             }
         }
-        None
+        best
     }
+}
+
+/// How the cheapest known route reaches one room: what it cost, how many
+/// steps it took, and the edge it arrived by (`None` only at the origin).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct Reached {
+    cost: u64,
+    hops: usize,
+    via: Option<(RoomId, Direction)>,
 }
