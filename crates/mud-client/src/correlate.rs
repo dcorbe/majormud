@@ -132,6 +132,7 @@ enum Kind {
     Light,
     Get,
     BuyHealing,
+    Search,
     Opaque,
 }
 
@@ -157,6 +158,13 @@ fn kind_of(cmd: &str) -> Kind {
     }
     if cmd.starts_with("bash ") {
         return Kind::Bash;
+    }
+    // Only the DIRECTED form. A bare `search` re-lists the room's items
+    // and answers with a wording this grammar does not model; the client
+    // never sends one, and classifying it here would leave an entry
+    // lingering to claim somebody else's line.
+    if cmd.starts_with("search ") {
+        return Kind::Search;
     }
     if cmd.starts_with("cast ") {
         return Kind::Cast;
@@ -282,6 +290,21 @@ fn completes(kind: Kind, ev: &Event) -> bool {
             has("you lit the")
                 || has("already have something lit")
                 || has("may not light that item")
+        }
+        // SEARCH <dir> (theft.md §9). The roll either reveals the exit
+        // ("You found an exit to the north!", "...upwards!",
+        // "...downwards!") or reports nothing — and "nothing" is also
+        // what an ALREADY-found exit says, since the found state falls
+        // through the same else. Both terminal; so are the two refusals,
+        // which never roll at all.
+        //
+        // Deliberately no RoomSeen arm above: a search moves nobody, so a
+        // block during one is somebody else's render.
+        Kind::Search => {
+            has("you found an exit")
+                || has("you notice nothing different")
+                || has("may not search while attacking")
+                || has("why would you want to search that")
         }
         Kind::Get => has("you picked up"),
         Kind::BuyHealing => has("wounds are healed"),

@@ -162,6 +162,50 @@ fn an_echo_for_a_later_command_drops_earlier_unechoed_entries() {
     assert_eq!(ans(&mut c, room("Small Cavern"), t), None);
 }
 
+/// `SEARCH <dir>` has a closed two-line grammar (`theft.md` §9): it
+/// either reveals the exit or reports nothing different. Without it the
+/// search is Opaque, its reply attributes to nobody, and the navigator's
+/// hidden-exit loop waits out a full step deadline on every roll — a
+/// hundred rolls at fifteen seconds each.
+#[test]
+fn a_search_is_answered_by_what_it_found() {
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "search s", t);
+    assert_eq!(ans(&mut c, line("search s"), t), Some(CmdId(1)), "the echo accepts");
+    assert_eq!(
+        ans(&mut c, line("You found an exit to the south!"), t),
+        Some(CmdId(1))
+    );
+}
+
+/// The failed roll retires the search too — and it is the common case, at
+/// a 3% floor. Leaving it pending would have every later roll attribute
+/// to the first one.
+#[test]
+fn a_search_that_found_nothing_still_answers() {
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "search s", t);
+    assert_eq!(ans(&mut c, line("search s"), t), Some(CmdId(1)));
+    assert_eq!(
+        ans(&mut c, line("You notice nothing different to the south."), t),
+        Some(CmdId(1))
+    );
+}
+
+/// A search never moves the character, so a room block is somebody
+/// else's render — the login banner, a `look` from another consumer — and
+/// must not retire it.
+#[test]
+fn a_room_block_never_answers_a_search() {
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "search s", t);
+    assert_eq!(ans(&mut c, line("search s"), t), Some(CmdId(1)));
+    assert_eq!(ans(&mut c, room("Small Alleyway"), t), None);
+}
+
 // ---------------------------------------------------- the unsolicited din
 
 #[test]
