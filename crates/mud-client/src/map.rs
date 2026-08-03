@@ -298,8 +298,19 @@ pub struct Style {
 /// (`crate::bot::AGGRESSIVE`, `crate::events`). The map says the same
 /// thing in the same colour so the two read as one game.
 const AGGRESSIVE: &str = "1;35";
-/// Reserved for the warning overlay and nothing else, in every mode.
+/// Bright red, in every mode, for the two things that both mean "not
+/// here": a room the shipped data says will hurt you ([`warns`]), and a
+/// room the operator fenced a roam out of ([`WALL`]).
+///
+/// This constant used to be reserved for the warning alone. Spending
+/// that reservation on walls is deliberate rather than lazy — there is
+/// no moment where telling the two apart changes what you do, and a
+/// second red would have to be distinguishable from this one at a glance
+/// while meaning very nearly the same thing.
 const WARNING: &str = "1;31";
+/// A room a roam may not enter. The warning red, and the same red for
+/// the same reason — see [`WARNING`].
+const WALL: &str = WARNING;
 /// Something here to fight that will not start it — a target, not a
 /// threat.
 ///
@@ -461,6 +472,8 @@ pub struct Marks {
     pub cursor: Option<Cell>,
     pub stops: BTreeSet<RoomId>,
     pub route: BTreeSet<RoomId>,
+    /// Rooms a roam is fenced out of ([`crate::roam::Walls`]).
+    pub walls: BTreeSet<RoomId>,
 }
 
 /// A stop on the marked loop: bright gold, in the FOREGROUND like
@@ -594,7 +607,13 @@ struct Ink {
 /// continuous shape; the two golds keep "stand and fight here" apart from
 /// "walk through here" without leaving the hue.
 fn ink(fg: &'static str, id: RoomId, marks: &Marks) -> Ink {
-    let fg = if marks.stops.contains(&id) {
+    // A wall outranks everything, including a stop. Marking a room as
+    // both is contradictory and the fence is the half that must win:
+    // paint it gold and the operator reads "the run stands here" about a
+    // room the run will refuse to enter.
+    let fg = if marks.walls.contains(&id) {
+        WALL
+    } else if marks.stops.contains(&id) {
         STOP_MARK
     } else if marks.route.contains(&id) {
         ON_ROUTE

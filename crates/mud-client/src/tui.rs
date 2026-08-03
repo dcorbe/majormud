@@ -545,6 +545,22 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                                         Err(e) => format!("-- loop: {e} --"),
                                                     })?;
                                                 }
+                                                crate::mapview::ViewAction::Roam(_) if job.is_some() => {
+                                                    note(&mut out, "-- something is already driving (Ctrl-F to take over) --")?;
+                                                }
+                                                crate::mapview::ViewAction::Roam(walls) => {
+                                                    let fenced = walls.len();
+                                                    match start_roam(session.clone(), walls, here) {
+                                                        Ok(started) => {
+                                                            note(&mut out, &format!(
+                                                                "-- roaming, fenced out of {fenced} rooms (Ctrl-F to take over) --"
+                                                            ))?;
+                                                            phase_rx = Some(started.phase.clone());
+                                                            job = Some(started);
+                                                        }
+                                                        Err(e) => note(&mut out, &format!("-- roam: {e} --"))?,
+                                                    }
+                                                }
                                                 crate::mapview::ViewAction::Go(to) if job.is_some() => {
                                                     note(&mut out, "-- something is already driving (Ctrl-F to take over) --")?;
                                                     let _ = to;
@@ -1160,13 +1176,61 @@ fn start_farm(session: Arc<Session>, loop_name: Option<&str>) -> Result<Job, Str
     // session for the operator's keystrokes; the runner it is about to
     // hand the connection to cycled at loopback echo speed without this
     // (~40 look+attack commands in 400ms, run4 2026-08-01).
-    session.set_pace(profile.pace());
+    Ok(spawn_run(session, graph, plan, bot, cfg, "farm"))
+}
+
+/// Roam the region the operator fenced, on an already-connected session.
+///
+/// The walls came off the map and are not stored anywhere: this is the
+/// only thing that will ever see them, and when the run ends they are
+/// gone. Everything else — the hp gates, the dwell budgets, the nav
+/// limits — still comes from the profile's `[farm]` table, exactly as a
+/// named loop does. The library holds routes; the profile holds policy.
+fn start_roam(
+    session: Arc<Session>,
+    walls: crate::roam::Walls,
+    here: Option<mud_core::content::RoomId>,
+) -> Result<Job, String> {
+    let profile = session.profile().clone();
+    let cfg = profile.farm.clone().unwrap_or_default();
+    let graph = Arc::new(crate::graph::RoomGraph::load(&cfg.content)?);
+    // Where the character stands is what the region is measured from, so
+    // a roam started from an unknown position has nothing to measure.
+    // Refusing beats guessing: the fence would be anchored somewhere
+    // nobody is.
+    let start = here.ok_or(
+        "nobody knows where you are standing; walk a step or /where first, then roam",
+    )?;
+    let plan = crate::farm::FarmPlan::roaming(start, walls, &graph)?;
+    let bot = profile.bot.clone().unwrap_or_default();
+    Ok(spawn_run(session, graph, plan, bot, cfg, "roam"))
+}
+
+/// Hand the connection to the runner and report what it did.
+///
+/// Shared by `/farm` and the map's roam so the two cannot describe the
+/// same ending differently — the only thing that varies is whether laps
+/// or rooms are the number that means anything.
+fn spawn_run(
+    session: Arc<Session>,
+    graph: Arc<crate::graph::RoomGraph>,
+    plan: crate::farm::FarmPlan,
+    bot: crate::bot::BotConfig,
+    cfg: crate::farm::FarmConfig,
+    what: &'static str,
+) -> Job {
+    // Automation goes back under flood control. `play` unpaced this
+    // session for the operator's keystrokes; the runner it is about to
+    // hand the connection to cycled at loopback echo speed without this
+    // (~40 look+attack commands in 400ms, run4 2026-08-01).
+    session.set_pace(session.profile().pace());
+    let roaming = plan.roam.is_some();
     let (tx, rx) = tokio::sync::watch::channel(crate::farm::Phase::default());
     let handle = tokio::spawn(async move {
         let end = match crate::farm::run_farm(&session, graph, &plan, &bot, &cfg, Some(&tx)).await {
             Ok((end, stats)) => crate::farm::Phase::Done {
                 why: format!(
-                    "{} ({} kills, {} loops{})",
+                    "{} ({} kills, {}{})",
                     match end {
                         crate::farm::FarmEnd::LoopsDone => "loops walked",
                         crate::farm::FarmEnd::TimeUp => "time up",
@@ -1175,7 +1239,13 @@ fn start_farm(session: Arc<Session>, loop_name: Option<&str>) -> Result<Job, Str
                             "too hurt: travel interrupt budget spent",
                     },
                     stats.kills,
-                    stats.loops,
+                    // A roam walks no circuits, so "0 loops" would be
+                    // true and useless.
+                    if roaming {
+                        format!("{} rooms", stats.roamed)
+                    } else {
+                        format!("{} loops", stats.loops)
+                    },
                     // The room model runs in shadow, and this is the only
                     // place a `/farm` run can report what it measured.
                     // Silent when it never disagreed.
@@ -1189,11 +1259,11 @@ fn start_farm(session: Arc<Session>, loop_name: Option<&str>) -> Result<Job, Str
         };
         let _ = tx.send(end);
     });
-    Ok(Job {
+    Job {
         handle,
         phase: rx,
-        what: "farm",
-    })
+        what,
+    }
 }
 
 /// Walk to a room on an already-connected session.

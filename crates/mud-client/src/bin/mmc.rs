@@ -240,6 +240,17 @@ fn map_command(at: &str, content: &std::path::Path) -> ExitCode {
                 }
             }
         }
+        // `mmc map` holds no connection, so there is nothing to roam
+        // with. Report the fence rather than discarding it silently —
+        // the marking was real work, and saying so is what tells the
+        // operator to do it from inside `mmc play` instead.
+        Ok(ViewAction::Roam(walls)) => {
+            eprintln!(
+                "roam needs a connection; mark those {} walls again inside `mmc play` (r)",
+                walls.len()
+            );
+            ExitCode::FAILURE
+        }
         // Nothing to walk with, so the answer is the room itself: enough
         // to paste into a profile, a loop file or a `/go`.
         Ok(ViewAction::Go(id)) => {

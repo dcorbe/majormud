@@ -758,3 +758,117 @@ fn a_portal_is_reachable_without_a_key_of_its_own() {
     press(&mut v, KeyCode::Char('>'));
     assert_eq!(v.plane().anchor(), portal.dest, "> took the portal");
 }
+
+// --- roam walls -------------------------------------------------------
+//
+// A wall is the opposite of a stop: a stop says "stand here and fight",
+// a wall says "never come here at all". They share the map and the
+// cursor and nothing else, which is what these pin.
+
+#[test]
+fn x_walls_the_room_under_the_cursor() {
+    let mut v = view();
+    press(&mut v, KeyCode::Char('x'));
+    assert_eq!(v.walls().iter().copied().collect::<Vec<_>>(), [CROSSROADS]);
+    // Toggling: the same key takes it off again.
+    press(&mut v, KeyCode::Char('x'));
+    assert!(v.walls().is_empty());
+}
+
+#[test]
+fn walling_an_empty_cell_walls_nothing() {
+    let mut v = view_of_nowhere();
+    press(&mut v, KeyCode::Char('x'));
+    assert!(v.walls().is_empty());
+    assert!(v.message().is_some(), "and it says why");
+}
+
+/// Both selections coexist. An operator may well mark a circuit and a
+/// fence in one sitting, and neither key may quietly clobber the other's
+/// work.
+#[test]
+fn walls_and_stops_do_not_clobber_each_other() {
+    let mut v = view();
+    press(&mut v, KeyCode::Enter);
+    press(&mut v, KeyCode::Right);
+    press(&mut v, KeyCode::Char('x'));
+
+    assert_eq!(v.stops().len(), 1);
+    assert_eq!(v.walls().len(), 1);
+    assert_ne!(
+        v.stops()[0],
+        v.walls().iter().copied().next().unwrap(),
+        "the cursor moved between them, so they are different rooms"
+    );
+}
+
+/// `c` clears the lot. Leaving walls behind after clearing the stops
+/// would fence a run the operator thought they had reset.
+#[test]
+fn c_clears_walls_as_well_as_stops() {
+    let mut v = view();
+    press(&mut v, KeyCode::Enter);
+    press(&mut v, KeyCode::Char('x'));
+    press(&mut v, KeyCode::Char('c'));
+    assert!(v.stops().is_empty());
+    assert!(v.walls().is_empty());
+}
+
+/// A walled room paints red, and it outranks the gold stop marker on a
+/// room that is somehow both — the fence is the half that must win,
+/// because gold would read as "the run stands here" about a room the run
+/// refuses to enter.
+#[test]
+fn a_wall_paints_red_over_everything() {
+    // The cursor is drawn last and in reverse video, which merges into
+    // the cell's SGR, so both cases step off the marked room first and
+    // read the marker's own colour.
+    let mut stopped = view();
+    press(&mut stopped, KeyCode::Enter);
+    press(&mut stopped, KeyCode::Right);
+    let gold = stopped.lines().join("\n");
+    assert!(gold.contains("1;33"), "a stop is gold");
+    assert!(
+        !gold.contains("1;31"),
+        "nothing on this fixture is red until something is walled"
+    );
+
+    let mut walled = view();
+    press(&mut walled, KeyCode::Enter);
+    press(&mut walled, KeyCode::Char('x'));
+    press(&mut walled, KeyCode::Right);
+    let red = walled.lines().join("\n");
+    assert!(
+        red.contains("1;31"),
+        "the same room, now walled as well, must be red"
+    );
+}
+
+/// `r` hands the walls to the caller and leaves the map. Nothing is
+/// written anywhere: a roam is a once-off and the walls die with it.
+#[test]
+fn r_hands_back_the_walls_and_leaves() {
+    let mut v = view();
+    press(&mut v, KeyCode::Char('x'));
+    press(&mut v, KeyCode::Right);
+    press(&mut v, KeyCode::Char('x'));
+
+    let action = press(&mut v, KeyCode::Char('r'));
+    let ViewAction::Roam(walls) = action else {
+        panic!("expected a roam, got {action:?}");
+    };
+    assert_eq!(walls.len(), 2);
+    assert!(walls.contains(CROSSROADS));
+}
+
+/// An unfenced roam is legitimate — it means "this whole plane" — so
+/// unlike `s`, which refuses an empty stop list, `r` must not.
+#[test]
+fn r_with_no_walls_is_allowed() {
+    let mut v = view();
+    let action = press(&mut v, KeyCode::Char('r'));
+    let ViewAction::Roam(walls) = action else {
+        panic!("expected a roam, got {action:?}");
+    };
+    assert!(walls.is_empty());
+}

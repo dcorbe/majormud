@@ -699,6 +699,7 @@ fn the_palette_paints_no_backgrounds() {
         cursor: Some((0, 0)),
         stops: [here].into_iter().collect(),
         route: plane.rooms().collect(),
+        walls: Default::default(),
     };
     for line in render(&plane, &styles, (-2, -2), (30, 12), Zoom::Normal, &marks) {
         for code in line.split('\u{1b}').skip(1) {

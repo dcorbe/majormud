@@ -50,6 +50,12 @@ pub enum ViewAction {
     /// caller: the view stays free of the filesystem, which is what
     /// makes every key it handles testable.
     Save(Box<Loop>),
+    /// Leave the map and roam, fenced out of these rooms.
+    ///
+    /// Carries the walls rather than saving them anywhere, because a
+    /// roam is a once-off: they were marked for this run and they die
+    /// with it. Nothing to name, nothing to load, nothing to go stale.
+    Roam(crate::roam::Walls),
 }
 
 /// What the `/` prompt is collecting.
@@ -84,6 +90,10 @@ pub struct MapView {
     /// change rather than per frame: the map repaints on every keystroke
     /// and this is a BFS per leg.
     route: std::collections::BTreeSet<RoomId>,
+    /// Rooms a roam must never enter. Separate from `stops` because the
+    /// two say opposite things and an operator may well want both in one
+    /// sitting: a circuit to walk, and a fence to keep it honest.
+    walls: std::collections::BTreeSet<RoomId>,
     /// Set while a prompt is taking a line.
     prompt: Option<(Asking, String)>,
     /// One line of explanation, cleared by the next keystroke.
@@ -114,6 +124,7 @@ impl MapView {
             size,
             back: Vec::new(),
             stops: Vec::new(),
+            walls: std::collections::BTreeSet::new(),
             route: Default::default(),
             prompt: None,
             message: None,
@@ -154,6 +165,10 @@ impl MapView {
     /// The marked circuit, in walking order.
     pub fn stops(&self) -> &[RoomId] {
         &self.stops
+    }
+
+    pub fn walls(&self) -> &std::collections::BTreeSet<RoomId> {
+        &self.walls
     }
 
     pub fn route(&self) -> &std::collections::BTreeSet<RoomId> {
@@ -331,9 +346,11 @@ impl MapView {
             KeyCode::Char('/') => self.prompt = Some((Asking::Room, String::new())),
 
             KeyCode::Enter | KeyCode::Char(' ') => self.toggle_stop(),
+            KeyCode::Char('x') => self.toggle_wall(),
             KeyCode::Char('c') => {
                 self.stops.clear();
                 self.route.clear();
+                self.walls.clear();
             }
             KeyCode::Char('s') => {
                 if self.stops.is_empty() {
@@ -341,6 +358,12 @@ impl MapView {
                 } else {
                     self.prompt = Some((Asking::LoopName, String::new()));
                 }
+            }
+
+            // A roam with no walls is legitimate -- it means "this whole
+            // plane" -- so unlike `s` there is nothing to refuse here.
+            KeyCode::Char('r') => {
+                return ViewAction::Roam(crate::roam::Walls::new(self.walls.iter().copied()));
             }
 
             KeyCode::Char('g') => {
@@ -439,6 +462,22 @@ impl MapView {
     ///
     /// Order is walking order, so a stop taken off and put back goes to
     /// the end — which is what somebody rebuilding a leg means by it.
+    /// Fence the room under the cursor in or out.
+    ///
+    /// No route recompute: walls do not describe a walk, they describe
+    /// where one may not go, and the region they imply is worked out by
+    /// the runner from where the character actually stands rather than
+    /// from the cursor.
+    fn toggle_wall(&mut self) {
+        let Some(id) = self.cursor_room() else {
+            self.message = Some("no room under the cursor".into());
+            return;
+        };
+        if !self.walls.insert(id) {
+            self.walls.remove(&id);
+        }
+    }
+
     fn toggle_stop(&mut self) {
         let Some(id) = self.cursor_room() else {
             self.message = Some("no room under the cursor".into());
@@ -518,6 +557,7 @@ impl MapView {
             cursor: Some(self.cursor),
             stops: self.stops.iter().copied().collect(),
             route: self.route.clone(),
+            walls: self.walls.clone(),
         };
         let map = render(
             &self.plane,
@@ -609,7 +649,7 @@ impl MapView {
             ),
             (None, Some(msg)) => format!("-- {msg} --"),
             (None, None) => format!(
-                "{} | {} | {} stops | move arrows/hjkl/yubn  < > stairs  +/- zoom  m mode  / find  enter marks  s saves  g go  q leave",
+                "{} | {} | {} stops | {} walls | move arrows/hjkl/yubn  < > stairs  +/- zoom  m mode  / find  enter marks  x walls  s saves  r roams  g go  q leave",
                 match self.paint {
                     Paint::Terrain => "terrain",
                     Paint::Danger => "danger",
@@ -621,6 +661,7 @@ impl MapView {
                     Zoom::Overview => "overview",
                 },
                 self.stops.len(),
+                self.walls.len(),
             ),
         };
         let mut line: String = text

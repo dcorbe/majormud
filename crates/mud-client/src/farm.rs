@@ -227,6 +227,45 @@ pub struct FarmPlan {
     /// because finding out the way home is unwalkable at the moment the
     /// run ends is exactly too late to do anything about it.
     pub finish: Option<RoomId>,
+    /// Set when this is a ROAM rather than a circuit: the rooms the run
+    /// may not enter, and the region falls out of them
+    /// ([`crate::roam`]). `circuit` is then empty and every leg
+    /// validation below is skipped, because none of it means anything
+    /// without an order to validate.
+    pub roam: Option<crate::roam::Walls>,
+}
+
+impl FarmPlan {
+    /// A roam of the region reachable from `start` without crossing a
+    /// wall.
+    ///
+    /// Set-shaped where [`FarmPlan::build`] is pairwise: there is no leg
+    /// list to check, so what is checked instead is that the character
+    /// is not standing on its own fence, and that the fence leaves it
+    /// somewhere to be. A region of ONE room passes — that is a vigil,
+    /// which is a coherent thing to ask for — but an empty one cannot
+    /// happen, so it is a refusal rather than a silent no-op.
+    pub fn roaming(start: RoomId, walls: crate::roam::Walls, graph: &RoomGraph) -> Result<FarmPlan, String> {
+        if graph.room(start).is_none() {
+            return Err(format!("{}/{} is not in the graph", start.map, start.room));
+        }
+        if walls.contains(start) {
+            return Err(format!(
+                "the character is standing in {}/{}, which is walled off:                  a roam cannot start on its own fence",
+                start.map, start.room
+            ));
+        }
+        let region = crate::roam::region(graph, start, &walls);
+        if region.is_empty() {
+            return Err("the fence leaves nowhere to roam".into());
+        }
+        Ok(FarmPlan {
+            start,
+            circuit: Vec::new(),
+            finish: None,
+            roam: Some(walls),
+        })
+    }
 }
 
 impl FarmPlan {
@@ -311,6 +350,7 @@ impl FarmPlan {
             start,
             circuit,
             finish,
+            roam: None,
         })
     }
 }
@@ -1161,6 +1201,10 @@ pub enum FarmEnd {
 pub struct FarmStats {
     pub kills: u32,
     pub loops: u32,
+    /// Rooms worked by a roam. `loops` is meaningless there — a roam
+    /// walks no circuits — so this is the number that says how much of
+    /// the region actually got covered.
+    pub roamed: u32,
     pub flees: u32,
     pub slowdowns: u32,
     /// Legs stopped part-way by the travel guard.
@@ -1589,8 +1633,35 @@ async fn farm_loop(
     let refusals = crate::bot::Refusals::default();
 
     let mut current = locate_start(session, &nav, plan.start).await?;
+
+    // Roaming: the region is worked out from where the character
+    // ACTUALLY is, not from `plan.start`, which is only a localizer hint
+    // and may be a room away. Computed ONCE — the fence is what defines
+    // the region, and re-deriving it from a moving position would let a
+    // one-way exit quietly enlarge it mid-run.
+    let mut roam = plan.roam.as_ref().map(|walls| {
+        let region = crate::roam::region(&graph, current, walls);
+        (walls, region, crate::roam::Rotation::new())
+    });
+    if let Some((_, region, _)) = &roam {
+        eprintln!("roaming {} rooms", region.len());
+    }
+
     loop {
-        for &stop in &plan.circuit {
+        // What to work next. A circuit hands over its whole lap in
+        // order; a roam hands over one room at a time, chosen fresh each
+        // pass because "least recently visited" is only meaningful
+        // against the visits that have actually happened. Either way the
+        // body below sees a plain `RoomId` and cannot tell which it was.
+        let lap: Vec<RoomId> = match &roam {
+            None => plan.circuit.clone(),
+            Some((walls, region, rotation)) => {
+                // `None` is a region of one: keep working the room we are
+                // already in. That is a vigil, not an ending.
+                vec![rotation.next(&graph, current, region, walls).unwrap_or(current)]
+            }
+        };
+        for &stop in &lap {
             if let Some(end) = time_up(started, cfg) {
                 return Ok((end, stats));
             }
@@ -1651,6 +1722,16 @@ async fn farm_loop(
                 StopEnd::Died => return Ok((FarmEnd::Died, stats)),
                 StopEnd::TimeUp => return Ok((FarmEnd::TimeUp, stats)),
             }
+            if let Some((_, _, rotation)) = &mut roam {
+                rotation.visited(stop, Instant::now());
+                stats.roamed += 1;
+            }
+        }
+        // A roam has no laps, so it has no lap budget: `loops` counts
+        // circuits walked and there are none. It ends on the clock or on
+        // Ctrl-F, which is what the operator was offered.
+        if roam.is_some() {
+            continue;
         }
         stats.loops += 1;
         if cfg.loops != 0 && stats.loops >= cfg.loops {
