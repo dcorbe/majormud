@@ -548,8 +548,12 @@ async fn refuses_to_run_from_a_room_it_cannot_place() {
     .expect_err("must refuse");
 
     match err {
-        FarmError::Lost { saw } => assert_eq!(saw, "Town Gates"),
-        other => panic!("expected Lost, got {other:?}"),
+        // Unknown, not a maze: walking cannot teach the client about a
+        // world it did not load, so no command should have gone out.
+        FarmError::Lost(mud_client::lost::Lost::Unknown { saw }) => {
+            assert_eq!(saw, "Town Gates")
+        }
+        other => panic!("expected an unplaceable room, got {other:?}"),
     }
 }
 

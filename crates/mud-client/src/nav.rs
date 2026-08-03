@@ -311,7 +311,7 @@ const SEARCH_ROLLS: u32 = 100;
 /// are the exception worth knowing about: they render as "closed trap
 /// door above" / "open trap door below" (DLL 0xccd5d, 0xccda4), so the
 /// vertical pair has to accept those words as well as up/down.
-fn direction_of(token: &str) -> Option<Direction> {
+pub fn direction_of(token: &str) -> Option<Direction> {
     let word = token.split_whitespace().next_back()?.to_lowercase();
     Some(match word.as_str() {
         "north" | "n" => Direction::North,
@@ -621,51 +621,26 @@ impl Navigator {
     /// exits before it is believed, and an answer is only returned when
     /// exactly one room survives.
     ///
-    /// The observed exits are treated as a SUBSET of the graph's, never an
-    /// equal set: hidden exits (type 6) and text-triggered action exits
-    /// (type 10) are in the graph but deliberately absent from the board's
-    /// "Obvious exits" line, so demanding equality would reject the right
-    /// room. Where several rooms still qualify, an exact match is
-    /// preferred before giving up.
+    /// The matching rule lives in [`crate::lost::candidates`], which is
+    /// also what the walking recovery starts from — one rule, so a room
+    /// this cannot place and one that walking can place are talking about
+    /// the same set.
     ///
     /// This is what lets a character that was moved further than one step
     /// — a flee chain, a recall — work out where it is and be walked back,
     /// which [`Navigator::localize`] cannot do from a name alone.
+    ///
+    /// Still only answers when the room is unique on sight, which is
+    /// 18.7% of the world. When it returns `None` the honest next move is
+    /// [`crate::lost::relocalize`], which walks until the answer is
+    /// forced.
     pub fn localize_view(&self, at: RoomId, seen: &crate::events::RoomView) -> Option<RoomId> {
         // A one-hop answer is still the best answer when it exists: it
         // needs no disambiguation and cannot be fooled by a twin.
         if let Some(near) = self.localize(at, &seen.name) {
             return Some(near);
         }
-        let observed: Vec<Direction> = seen.exits.iter().filter_map(|e| direction_of(e)).collect();
-        let named: Vec<RoomId> = self
-            .graph
-            .rooms_named(&seen.name)
-            .into_iter()
-            .filter(|id| {
-                self.graph.room(*id).is_some_and(|r| {
-                    observed
-                        .iter()
-                        .all(|d| r.exits[*d as usize].is_some())
-                })
-            })
-            .collect();
-        match named.as_slice() {
-            [only] => return Some(*only),
-            [] => return None,
-            _ => {}
-        }
-        // Several rooms admit the observed exits. Insist on an exact set
-        // before answering, and if that is still not unique, say nothing.
-        let exact: Vec<RoomId> = named
-            .into_iter()
-            .filter(|id| {
-                self.graph.room(*id).is_some_and(|r| {
-                    r.exits.iter().filter(|e| e.is_some()).count() == observed.len()
-                })
-            })
-            .collect();
-        match exact.as_slice() {
+        match crate::lost::candidates(&self.graph, seen).as_slice() {
             [only] => Some(*only),
             _ => None,
         }
@@ -701,6 +676,13 @@ impl Navigator {
             BlindContext::AfterMove => expected,
             BlindContext::AfterLook => here,
         }
+    }
+
+    /// The world this navigator routes over. Recovery needs it too, and
+    /// a caller holding a navigator should not have to hold the graph
+    /// beside it just to ask.
+    pub fn graph(&self) -> &RoomGraph {
+        &self.graph
     }
 
     pub fn localize(&self, at: RoomId, seen: &str) -> Option<RoomId> {

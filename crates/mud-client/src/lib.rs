@@ -15,6 +15,7 @@ pub mod farm;
 pub mod go;
 pub mod graph;
 pub mod loops;
+pub mod lost;
 pub mod map;
 pub mod mega;
 pub mod mapview;

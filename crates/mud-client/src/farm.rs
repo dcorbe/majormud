@@ -361,6 +361,17 @@ pub enum Phase {
     Failed {
         why: String,
     },
+    /// The job ended by establishing WHERE the character is, which is
+    /// the whole of what it was asked for (`/where`). Distinct from
+    /// [`Phase::Done`] because the room is the result and has to survive
+    /// as data: the caller adopts it as its position, which a sentence
+    /// cannot be.
+    Placed {
+        at: RoomId,
+        /// How many steps it took to be sure. Zero means the look alone
+        /// settled it.
+        steps: usize,
+    },
 }
 
 impl Phase {
@@ -382,13 +393,21 @@ impl Phase {
                 let head = why.lines().next().unwrap_or("").trim();
                 format!("stopped: {head}")
             }
+            Phase::Placed { at, steps } => match steps {
+                0 => format!("{}/{} (on sight)", at.map, at.room),
+                1 => format!("{}/{} after 1 step", at.map, at.room),
+                n => format!("{}/{} after {n} steps", at.map, at.room),
+            },
         }
     }
 
     /// The room the runner believes it is in, when it knows.
     pub fn room(&self) -> Option<RoomId> {
         match self {
-            Phase::Waiting { at } | Phase::Fighting { at, .. } | Phase::Resting { at } => Some(*at),
+            Phase::Waiting { at }
+            | Phase::Fighting { at, .. }
+            | Phase::Resting { at }
+            | Phase::Placed { at, .. } => Some(*at),
             _ => None,
         }
     }
@@ -1227,12 +1246,12 @@ pub enum FarmError {
     NoRoomBlock {
         whose: String,
     },
-    /// A flee (or anything else) left the character somewhere that is
-    /// not the stop or one of its neighbors, so there is no honest way
-    /// to work out where "back" is.
-    Lost {
-        saw: String,
-    },
+    /// The character could not be placed, even after walking to narrow
+    /// the candidates down. Carries which of the three ways it failed —
+    /// see [`crate::lost::Lost`], whose variants are the difference
+    /// between "the graph does not know this room", "you are in a maze"
+    /// and "the board would not answer".
+    Lost(crate::lost::Lost),
     Nav(crate::nav::NavError),
     /// The session ended under us.
     Disconnected,
@@ -1244,9 +1263,7 @@ impl std::fmt::Display for FarmError {
             FarmError::NoRoomBlock { whose } => {
                 write!(f, "no room block came back for {whose}")
             }
-            FarmError::Lost { saw } => {
-                write!(f, "lost: {saw:?} is not the stop or any neighbor of it")
-            }
+            FarmError::Lost(why) => write!(f, "lost: {why}"),
             FarmError::Nav(e) => write!(f, "{e}"),
             FarmError::Disconnected => write!(f, "disconnected"),
         }
@@ -1617,9 +1634,10 @@ pub async fn go_to_finish(
         return Ok(());
     }
     let hint = plan.circuit.last().copied().unwrap_or(plan.start);
-    let at = nav
-        .localize_view(hint, &seen)
-        .ok_or(FarmError::Lost { saw: seen.name })?;
+    let at = crate::lost::place(session, &graph, &nav, hint, &seen)
+        .await
+        .map_err(FarmError::Lost)?
+        .at;
     // Fights its way home rather than only stopping for death: the board
     // refuses movement while in combat, so a running guard would simply
     // be stuck wherever something picked a fight.
@@ -1775,8 +1793,10 @@ async fn locate_start(
     start: RoomId,
 ) -> Result<RoomId, FarmError> {
     let seen = look_around(session, "the run's opening look").await?;
-    nav.localize_view(start, &seen)
-        .ok_or(FarmError::Lost { saw: seen.name })
+    crate::lost::place(session, nav.graph(), nav, start, &seen)
+        .await
+        .map(|p| p.at)
+        .map_err(FarmError::Lost)
 }
 
 /// How a leg ended.
@@ -2607,12 +2627,12 @@ async fn recover(
     stop: RoomId,
     saw: &crate::events::RoomView,
 ) -> Result<RecoverEnd, FarmError> {
-    let _ = graph;
     // The whole room block, not just its name: a flee can chain further
     // than one hop, and the exits are what make a wider search safe.
-    let at = nav.localize_view(stop, saw).ok_or_else(|| FarmError::Lost {
-        saw: saw.name.clone(),
-    })?;
+    let at = crate::lost::place(session, graph, nav, stop, saw)
+        .await
+        .map_err(FarmError::Lost)?
+        .at;
     let mut guard = FarmGuard::death_only(&session.profile().username);
     match nav.goto(session, at, stop, &mut guard).await {
         Ok(_) => Ok(RecoverEnd::Back),

@@ -11,7 +11,8 @@ use std::path::Path;
 
 use mud_core::content::{Direction, RoomId};
 
-const DIRECTIONS: [Direction; 10] = [
+/// Direction index order, shared with the room record's exit arrays.
+pub const DIRECTIONS: [Direction; 10] = [
     Direction::North,
     Direction::South,
     Direction::East,

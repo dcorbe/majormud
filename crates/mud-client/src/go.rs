@@ -231,9 +231,10 @@ pub async fn run_go(
     // An impossible id when there is no hint, so the neighbour shortcut
     // necessarily misses and the global search runs.
     let hint = hint.unwrap_or(RoomId { map: 0, room: 0 });
-    let from = nav
-        .localize_view(hint, &seen)
-        .ok_or(FarmError::Lost { saw: seen.name })?;
+    let from = crate::lost::place(session, &graph, &nav, hint, &seen)
+        .await
+        .map_err(FarmError::Lost)?
+        .at;
     if from == to {
         return Ok(GoEnd::Arrived(to));
     }

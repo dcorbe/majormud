@@ -508,6 +508,14 @@ fn go_without_a_target_is_refused_locally() {
     assert!(matches!(slash("/go   "), Some(KeyOutcome::Refuse(_))));
 }
 
+/// `/where` takes no argument — the whole question is about the room the
+/// character is standing in, and there is nothing else to ask it about.
+#[test]
+fn where_takes_no_argument() {
+    assert_eq!(slash("/where"), Some(KeyOutcome::Where));
+    assert_eq!(slash("  /where   "), Some(KeyOutcome::Where));
+}
+
 #[test]
 fn the_known_verbs_are_claimed() {
     assert_eq!(slash("/quit"), Some(KeyOutcome::Quit));

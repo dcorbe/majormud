@@ -318,10 +318,23 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                 // status bar, live 2026-08-01). Retire the run: say why
                 // it ended, give the keyboard and the assist back.
                 if !changed {
-                    let why = phase_rx
-                        .take()
-                        .map(|rx| rx.borrow().label())
-                        .unwrap_or_else(|| "done".into());
+                    // A job that ended KNOWING where it stands is the
+                    // best position evidence there is — better than the
+                    // room blocks `track` sees, which is exactly why
+                    // `/where` exists: it resolves rooms no single block
+                    // can. Adopt it before the channel is dropped.
+                    let (why, placed) = match phase_rx.take() {
+                        Some(rx) => {
+                            let p = rx.borrow().clone();
+                            (p.label(), p.room())
+                        }
+                        None => ("done".into(), None),
+                    };
+                    let why: String = why;
+                    if let Some(at) = placed {
+                        here = Some(at);
+                        model.note_room(at);
+                    }
                     let what = job.take().map(|j| j.what).unwrap_or("job");
                     session.set_pace(std::time::Duration::ZERO);
                     // Latches from the stretch the job just drove describe
@@ -430,6 +443,20 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                                 job = Some(started);
                                             }
                                         },
+                                    }
+                                }
+                            }
+                            KeyOutcome::Where => {
+                                match graph.as_ref() {
+                                    None => note(&mut out, &format!(
+                                        "-- where: no room database at {} --",
+                                        content_path(session.profile()).display()
+                                    ))?,
+                                    Some(g) => {
+                                        let started = start_where(session.clone(), g.clone(), here);
+                                        note(&mut out, "-- working out where you are (Ctrl-F to take over) --")?;
+                                        phase_rx = Some(started.phase.clone());
+                                        job = Some(started);
                                     }
                                 }
                             }
@@ -678,6 +705,9 @@ pub enum KeyOutcome {
     Room {
         target: Option<String>,
     },
+    /// Work out which room the character is standing in, walking to
+    /// narrow the candidates when the look alone cannot say.
+    Where,
     /// Draw the plane around a room. `None` means the one the character
     /// is standing in, as for [`KeyOutcome::Room`].
     Map {
@@ -724,6 +754,7 @@ pub fn slash(line: &str) -> Option<KeyOutcome> {
         "/go" => Some(KeyOutcome::Go {
             target: rest.to_string(),
         }),
+        "/where" => Some(KeyOutcome::Where),
         "/room" => Some(KeyOutcome::Room {
             target: (!rest.is_empty()).then(|| rest.to_string()),
         }),
@@ -1221,6 +1252,46 @@ fn start_go(
 /// The room database this profile uses: `[farm].content` when it has
 /// one, else the same default `mmc path` uses.
 ///
+/// Ask the board where the character is, and walk until the answer is
+/// forced.
+///
+/// A job rather than an inline answer because it SENDS: a look, and then
+/// up to [`crate::lost::BUDGET`] steps. Everything that sends on this
+/// connection goes through the one job slot, so that the runner and the
+/// operator can never both be driving.
+fn start_where(
+    session: Arc<Session>,
+    graph: Arc<crate::graph::RoomGraph>,
+    hint: Option<mud_core::content::RoomId>,
+) -> Job {
+    session.set_pace(session.profile().pace());
+    let (tx, rx) = tokio::sync::watch::channel(crate::farm::Phase::default());
+    let handle = tokio::spawn(async move {
+        let nav = crate::nav::Navigator::new(graph.clone(), crate::nav::NavConfig::default());
+        let end = match crate::farm::look_around(&session, "the where look").await {
+            Err(e) => crate::farm::Phase::Failed { why: e.to_string() },
+            Ok(seen) => {
+                // An impossible id when there is no hint, so the one-hop
+                // shortcut necessarily misses and the search runs.
+                let hint = hint.unwrap_or(mud_core::content::RoomId { map: 0, room: 0 });
+                match crate::lost::place(&session, &graph, &nav, hint, &seen).await {
+                    Ok(p) => crate::farm::Phase::Placed {
+                        at: p.at,
+                        steps: p.steps,
+                    },
+                    Err(e) => crate::farm::Phase::Failed { why: e.to_string() },
+                }
+            }
+        };
+        let _ = tx.send(end);
+    });
+    Job {
+        handle,
+        phase: rx,
+        what: "where",
+    }
+}
+
 /// That default is RELATIVE, so a `play` started anywhere but the repo
 /// root finds nothing. Callers that refuse should say which path they
 /// tried — "unknown room" is a very confusing way to learn about a
