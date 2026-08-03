@@ -443,6 +443,22 @@ could reach its target more cheaply by cutting through a wall takes the
 long way instead, and a room the walls cut off entirely is simply
 unreachable — `no route`, which is what you asked for.
 
+**Doors are outside a roam, all of them**, whether or not you marked
+them. The client has no key handling of any kind — keys in the inventory
+are not parsed, exits' key ids are not read, and there is no `unlock`
+verb — so its entire repertoire for a shut door is `open`, then bash
+until a counter runs out. Live on cwgaming, 2026-08-03: the board
+answered `open n` with *"The door is locked."* and the walk sent **88
+bashes across four approaches, spending 36 HP of a 75-HP character** on a
+type-7 lock that wanted Picklocks and was never going to yield to force.
+
+A roam always has somewhere else to be, so skipping a door costs nothing
+and trying one is paid for in health. A patrol with a circuit is a
+different bargain — its stops were named by you and a door in the way has
+to be opened — so `[farm.nav].bash_doors` still governs there and is
+untouched. This is a roam rule, and a stopgap: it goes away when there is
+something better than force to offer a lock.
+
 Order is **least-recently-visited, nearest on ties**: a fresh roam sweeps
 outward rather than settling, and after that each room gets the longest
 recovery the area's size allows. Respawns are silent in this game, so

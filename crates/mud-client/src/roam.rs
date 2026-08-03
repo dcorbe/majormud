@@ -75,8 +75,33 @@ fn on_plane(plane: u16, dir: Direction, edge: &ExitEdge) -> bool {
 /// Both uses take it from here so they cannot disagree: a region that
 /// contained a room the router refused to reach would send the runner
 /// somewhere it could then never leave.
+///
+/// **Doors are outside a roam, all of them.** Not a preference and not
+/// costed — refused, exactly like a wall.
+///
+/// The client has no key handling of any kind: keys in the inventory are
+/// not even parsed, exits' key ids are not read, and there is no `unlock`
+/// verb. So the entire repertoire for a shut door is `open`, then bash
+/// until a counter runs out. Live on cwgaming, 2026-08-03, at 1/1119
+/// Slum Street Dead End: the board answered `open n` with **"The door is
+/// locked."** and the walk then sent 88 bashes across four approaches,
+/// spending 36 hp of a 75-hp character on a type-7 lock that wanted
+/// Picklocks and was never going to yield to force.
+///
+/// A roam is a wander with no destination that matters — there is always
+/// another room — so the cost of skipping a door is nothing and the cost
+/// of trying one is measured in health. A patrol with a circuit is a
+/// different bargain: its stops were named by the operator and a door in
+/// the way has to be opened, so `[farm.nav].bash_doors` still governs
+/// there and is untouched.
+///
+/// Revisit when there is something better than force to offer a lock.
 pub fn passable(plane: u16, walls: &Walls) -> impl Fn(Direction, &ExitEdge) -> bool + '_ {
-    move |dir, edge| on_plane(plane, dir, edge) && !walls.contains(edge.dest)
+    move |dir, edge| {
+        on_plane(plane, dir, edge)
+            && !walls.contains(edge.dest)
+            && !crate::nav::is_door(edge.exit_type)
+    }
 }
 
 /// Every room the character can reach from `from` without crossing a wall

@@ -423,6 +423,12 @@ impl Navigator {
     pub fn fenced(mut self, walls: crate::roam::Walls, plane: u16) -> Self {
         self.fence = Some(walls);
         self.plane = Some(plane);
+        // Second layer. `roam::passable` already refuses every door, so
+        // no fenced route should ever arrive at one -- but "should never
+        // happen" is how the walk got to 88 bashes in the first place,
+        // and the failure mode is measured in the character's health.
+        // If a door is somehow reached, stop honestly instead.
+        self.bash_doors = false;
         self
     }
 

@@ -210,3 +210,72 @@ fn a_region_of_one_has_no_next_room() {
     let region = region(g, here, &walls);
     assert_eq!(Rotation::new().next(g, here, &region, &walls), None);
 }
+
+// --- doors are outside a roam ------------------------------------------
+
+/// The live incident this rule exists for, in the shipped data.
+///
+/// 1/1119 "Slum Street, Dead End" has a type-7 lock north into 1/2436.
+/// On cwgaming, 2026-08-03, the board answered `open n` with "The door is
+/// locked." and the walk sent 88 bashes across four approaches, spending
+/// 36 hp of a 75-hp character on a lock that wanted Picklocks. The client
+/// has no key handling at all, so force is its whole repertoire.
+///
+/// A roam always has somewhere else to be, so the door is simply not in
+/// the region.
+#[test]
+fn a_roam_region_stops_at_a_door() {
+    let g = graph();
+    const DEAD_END: RoomId = RoomId { map: 1, room: 1119 };
+    const BEHIND_THE_DOOR: RoomId = RoomId { map: 1, room: 2436 };
+
+    // The fixture is only meaningful while the data still says so.
+    let north = g
+        .room(DEAD_END)
+        .expect("the dead end is in the graph")
+        .exits[mud_core::content::Direction::North as usize]
+        .as_ref()
+        .expect("it has a north exit");
+    assert_eq!(north.dest, BEHIND_THE_DOOR);
+    assert!(
+        mud_client::nav::is_door(north.exit_type),
+        "1/1119 north should still be a door; got exit type {}",
+        north.exit_type
+    );
+
+    let region = region(g, DEAD_END, &Walls::default());
+    assert!(region.contains(&DEAD_END), "the seed is always in");
+    assert!(
+        !region.contains(&BEHIND_THE_DOOR),
+        "a roam must not include what is behind a locked door"
+    );
+}
+
+/// And the walk agrees with the region: a fenced navigator will not route
+/// through a door even when it is the only way, which is the honest
+/// answer rather than 88 bashes.
+#[test]
+fn a_roaming_walk_will_not_route_through_a_door() {
+    let g = graph();
+    const DEAD_END: RoomId = RoomId { map: 1, room: 1119 };
+    const BEHIND_THE_DOOR: RoomId = RoomId { map: 1, room: 2436 };
+
+    let nav = mud_client::nav::Navigator::new(
+        std::sync::Arc::new(RoomGraph::load(&db_path()).expect("graph")),
+        mud_client::nav::NavConfig::default(),
+    )
+    .fenced(Walls::default(), DEAD_END.map);
+    assert_eq!(nav.route_from(DEAD_END, BEHIND_THE_DOOR), None);
+
+    // An ordinary walk still opens doors: this is a roam rule, not a
+    // client-wide one. `/go` and a named circuit keep their bash budget.
+    let open = mud_client::nav::Navigator::new(
+        std::sync::Arc::new(RoomGraph::load(&db_path()).expect("graph")),
+        mud_client::nav::NavConfig::default(),
+    );
+    assert!(
+        open.route_from(DEAD_END, BEHIND_THE_DOOR).is_some(),
+        "a patrol whose stop is behind a door still has to try it"
+    );
+    let _ = g;
+}
