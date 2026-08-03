@@ -1607,7 +1607,17 @@ async fn farm_loop(
 ) -> Result<(FarmEnd, FarmStats), FarmError> {
     let started = Instant::now();
     let mut stats = FarmStats::default();
-    let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone());
+    // A roam's fence binds the WALK, not just the destinations. Without
+    // this the rotation would only ever pick rooms inside the region
+    // while the legs between them cut straight through a wall whenever
+    // that was cheaper — a fence you can walk through is not a fence.
+    let nav = {
+        let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone());
+        match &plan.roam {
+            Some(walls) => nav.fenced(walls.clone(), plan.start.map),
+            None => nav,
+        }
+    };
     // Danger ranking from the shipped data. A missing or unreadable
     // database is not fatal: an empty table simply means "no opinion",
     // and the bot falls back to the board's own listing order.

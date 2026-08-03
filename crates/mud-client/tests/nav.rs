@@ -821,3 +821,110 @@ fn a_dark_room_answers_a_look_and_a_move_with_the_same_line() {
         "a blind look was read as arrival at the destination"
     );
 }
+
+// --- the roam fence ---------------------------------------------------
+
+/// A fence that only filtered DESTINATIONS would look right for a long
+/// time and then quietly walk through a wall.
+///
+/// The roam's rotation already picks its targets using fenced distances,
+/// so end to end the runner rarely asks for a route that wants to cross
+/// one — which is exactly what makes this worth asserting directly
+/// rather than through a run. Here the wall sits on the cheapest path
+/// between two rooms the roam is entitled to visit:
+///
+/// ```text
+///   A --east--> WALLED --south--> B          2 steps
+///   A --north--> D --north--> E --east--> B  3 steps, the honest way
+/// ```
+#[test]
+fn a_fenced_navigator_routes_around_a_wall() {
+    use mud_client::roam::Walls;
+
+    const A: RoomId = RoomId { map: 1, room: 1 };
+    const B: RoomId = RoomId { map: 1, room: 2 };
+    const WALLED: RoomId = RoomId { map: 1, room: 3 };
+    const D: RoomId = RoomId { map: 1, room: 4 };
+    const E: RoomId = RoomId { map: 1, room: 5 };
+
+    let room = |name: &str, exits: &[(Direction, RoomId)]| {
+        let mut r = GraphRoom {
+            name: name.into(),
+            exits: Default::default(),
+            light: 0,
+            ..Default::default()
+        };
+        for (d, dest) in exits {
+            r.exits[*d as usize] = Some(ExitEdge {
+                dest: *dest,
+                exit_type: 0,
+                command: None,
+            });
+        }
+        r
+    };
+    let graph = Arc::new(RoomGraph::from_rooms(vec![
+        (A, room("Guard Post", &[(Direction::East, WALLED), (Direction::North, D)])),
+        (B, room("Inner Ward", &[(Direction::North, WALLED), (Direction::West, E)])),
+        (WALLED, room("Keep", &[(Direction::West, A), (Direction::South, B)])),
+        (D, room("Watchtower", &[(Direction::South, A), (Direction::North, E)])),
+        (E, room("Barbican", &[(Direction::South, D), (Direction::East, B)])),
+    ]));
+
+    let open = Navigator::new(graph.clone(), NavConfig::default());
+    assert_eq!(
+        open.route_from(A, B),
+        Some(vec![Direction::East, Direction::South]),
+        "the fixture only means anything if the wall is the SHORT way"
+    );
+
+    let fenced = Navigator::new(graph.clone(), NavConfig::default())
+        .fenced(Walls::new([WALLED]), A.map);
+    assert_eq!(
+        fenced.route_from(A, B),
+        Some(vec![Direction::North, Direction::North, Direction::East]),
+        "a fenced walk takes the long way rather than through the Keep"
+    );
+}
+
+/// Fencing the only way through answers "no route" — and that is the
+/// answer the operator asked for, not a defect.
+#[test]
+fn a_fence_can_cut_a_room_off_entirely() {
+    use mud_client::roam::Walls;
+
+    const A: RoomId = RoomId { map: 1, room: 1 };
+    const WALLED: RoomId = RoomId { map: 1, room: 2 };
+    const BEYOND: RoomId = RoomId { map: 1, room: 3 };
+
+    let room = |name: &str, exits: &[(Direction, RoomId)]| {
+        let mut r = GraphRoom {
+            name: name.into(),
+            exits: Default::default(),
+            light: 0,
+            ..Default::default()
+        };
+        for (d, dest) in exits {
+            r.exits[*d as usize] = Some(ExitEdge {
+                dest: *dest,
+                exit_type: 0,
+                command: None,
+            });
+        }
+        r
+    };
+    let graph = Arc::new(RoomGraph::from_rooms(vec![
+        (A, room("Guard Post", &[(Direction::North, WALLED)])),
+        (WALLED, room("Keep", &[(Direction::South, A), (Direction::North, BEYOND)])),
+        (BEYOND, room("Inner Ward", &[(Direction::South, WALLED)])),
+    ]));
+
+    let fenced = Navigator::new(graph.clone(), NavConfig::default())
+        .fenced(Walls::new([WALLED]), A.map);
+    assert_eq!(fenced.route_from(A, BEYOND), None);
+    assert_eq!(
+        Navigator::new(graph, NavConfig::default()).route_from(A, BEYOND),
+        Some(vec![Direction::North, Direction::North]),
+        "and without the fence it is an ordinary two-step walk"
+    );
+}

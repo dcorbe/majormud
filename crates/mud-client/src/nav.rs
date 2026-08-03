@@ -375,6 +375,16 @@ pub struct Navigator {
     step_timeout: std::time::Duration,
     bash_doors: bool,
     search_hidden: bool,
+    /// The plane a fenced walk is confined to, alongside `fence`.
+    plane: Option<u16>,
+    /// Rooms every route must avoid ([`crate::roam::Walls`]).
+    ///
+    /// Without this a roam's fence would be advisory for PATHING while
+    /// binding on destinations: the rotation only ever picks rooms
+    /// inside the region, but the walk there is a plain `route` and
+    /// would happily cut through a wall when that was cheaper. A fence
+    /// you can walk through is not a fence.
+    fence: Option<crate::roam::Walls>,
 }
 
 /// The direction word the board understands for each step.
@@ -400,6 +410,40 @@ impl Navigator {
             step_timeout: std::time::Duration::from_millis(cfg.step_timeout_ms),
             bash_doors: cfg.bash_doors,
             search_hidden: cfg.search_hidden,
+            fence: None,
+            plane: None,
+        }
+    }
+
+    /// Refuse to route through these rooms, or off the plane they sit on.
+    ///
+    /// Consumed by a roam and by nothing else: `/go`, `/farm` and the
+    /// recovery walks keep the whole world, because a marker means one
+    /// thing and it is "not on this roam".
+    pub fn fenced(mut self, walls: crate::roam::Walls, plane: u16) -> Self {
+        self.fence = Some(walls);
+        self.plane = Some(plane);
+        self
+    }
+
+    /// The route this walk is allowed to take.
+    ///
+    /// Unfenced, this is exactly `RoomGraph::route`. Fenced, it is the
+    /// same search over the edges a roam may use, so the walk and the
+    /// region it is walking cannot disagree about where the fence is.
+    ///
+    /// Public so a test can ask the question directly. It is otherwise
+    /// hard to observe: the roam's rotation already picks its targets
+    /// with the fenced distances, so end to end the runner rarely ASKS
+    /// for a route that would want to cross a wall — which is exactly
+    /// why a fence that bound only destinations would look fine for a
+    /// long time and then quietly walk through one.
+    pub fn route_from(&self, from: RoomId, to: RoomId) -> Option<Vec<Direction>> {
+        match (&self.fence, self.plane) {
+            (Some(walls), Some(plane)) => {
+                self.graph.route_within(from, to, &crate::roam::passable(plane, walls))
+            }
+            _ => self.graph.route(from, to),
         }
     }
 
@@ -442,8 +486,7 @@ impl Navigator {
                 return Ok(current);
             }
             let route = self
-                .graph
-                .route(current, to)
+                .route_from(current, to)
                 .ok_or(NavErrorKind::NoRoute)
                 .map_err(|kind| NavError { at: current, kind })?;
             for step in route {

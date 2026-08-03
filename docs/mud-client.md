@@ -405,6 +405,57 @@ Errors are reported and the connection is kept: being told "no `[farm]`
 table" while still logged in beats being thrown out. A run that stops
 badly shows why in the bar (`stopped: ...`) rather than a bare "done".
 
+### Roaming — fence an area instead of listing a circuit
+
+A loop says where to go, in order. A **roam** says where *not* to go, and
+the area falls out of that: the character wanders everything it can reach
+from where it stands without crossing a wall you marked.
+
+On the map (`/map`):
+
+| key | |
+|---|---|
+| `x` | wall the room under the cursor — it paints red |
+| `r` | leave the map and roam what the walls leave |
+| `c` | clear stops **and** walls |
+
+Walls and loop stops coexist; `enter` still marks a stop, and you can
+build both in one sitting. A room marked as both paints as a wall,
+because the fence is the half that has to win.
+
+**Nothing is saved.** The walls exist for that one run and are gone when
+it ends — there is no roam library, no name to type, no file to go stale.
+The reasoning is that a wall which outlived its run would shape a later
+one with nothing to look at and no reason to suspect it.
+
+The area is worked out **once**, from where the character actually
+stands. `r` with no walls at all is legitimate and means "this whole
+plane".
+
+**Up, down and cross-map exits are never inside a roam**, and that is not
+configurable. It is the same rule the map uses to decide what belongs on
+a drawn plane, so the area a roam covers is exactly the area you were
+looking at when you placed the markers. It also means one marker on a
+staircase is unnecessary — the stairs were never in.
+
+The fence binds the **walk**, not just the destinations. A route that
+could reach its target more cheaply by cutting through a wall takes the
+long way instead, and a room the walls cut off entirely is simply
+unreachable — `no route`, which is what you asked for.
+
+Order is **least-recently-visited, nearest on ties**: a fresh roam sweeps
+outward rather than settling, and after that each room gets the longest
+recovery the area's size allows. Respawns are silent in this game, so
+walking back in is the only way to find out; an empty room is left the
+moment it proves empty and comes round again later.
+
+A roam has no laps, so it ends on `[farm].max_seconds` or Ctrl-F, and
+reports rooms worked rather than loops walked. Fencing yourself into a
+single room is allowed — that is a vigil.
+
+`mmc map` can mark walls but cannot roam: there is no connection to roam
+with, so it says so rather than discarding the marking silently.
+
 ## The status bar
 
 One renderer for both commands, so a session looks the same whichever

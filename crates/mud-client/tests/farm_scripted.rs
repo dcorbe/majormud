@@ -1062,3 +1062,123 @@ async fn with_fleeing_off_the_flee_mark_does_not_suppress_the_cast() {
         "nothing else was going to happen at 5 of 30: {log:?}"
     );
 }
+
+/// A roam runs, works the rooms it can reach, and never enters the
+/// walled one. End to end against a board.
+#[tokio::test]
+async fn a_roam_never_steps_into_a_walled_room() {
+    use mud_client::roam::Walls;
+
+    // A(1/1) --north--> B(1/2), and --east--> C(1/3), which is walled.
+    let graph = {
+        let mut a = GraphRoom {
+            name: "Guard Post".into(),
+            exits: Default::default(),
+            light: 0,
+            ..Default::default()
+        };
+        a.exits[Direction::North as usize] = Some(ExitEdge {
+            dest: MIDWAY,
+            exit_type: 0,
+            command: None,
+        });
+        a.exits[Direction::East as usize] = Some(ExitEdge {
+            dest: STOP,
+            exit_type: 0,
+            command: None,
+        });
+        let mut b = GraphRoom {
+            name: "Inner Ward".into(),
+            exits: Default::default(),
+            light: 0,
+            ..Default::default()
+        };
+        b.exits[Direction::South as usize] = Some(ExitEdge {
+            dest: START,
+            exit_type: 0,
+            command: None,
+        });
+        let mut c = GraphRoom {
+            name: "Keep".into(),
+            exits: Default::default(),
+            light: 0,
+            ..Default::default()
+        };
+        c.exits[Direction::West as usize] = Some(ExitEdge {
+            dest: START,
+            exit_type: 0,
+            command: None,
+        });
+        Arc::new(RoomGraph::from_rooms(vec![
+            (START, a),
+            (MIDWAY, b),
+            (STOP, c),
+        ]))
+    };
+
+    let (addr, received) = scripted_board(vec![
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        (
+            "look",
+            format!("\r\nlook{}", room_block("Guard Post", None, "north east")),
+        ),
+        ("n", format!("\r\nn{}", room_block("Inner Ward", None, "south"))),
+        (
+            "look",
+            format!("\r\nlook{}", room_block("Inner Ward", None, "south")),
+        ),
+        ("s", format!("\r\ns{}", room_block("Guard Post", None, "north east"))),
+        (
+            "look",
+            format!("\r\nlook{}", room_block("Guard Post", None, "north east")),
+        ),
+    ])
+    .await;
+    let session = session_for(addr).await;
+
+    let cfg = FarmConfig {
+        loops: 0,
+        max_seconds: 8,
+        idle_poke_ms: 500,
+        depart_at_percent: 0,
+        stop_seconds: 2,
+        ..FarmConfig::default()
+    };
+    let plan = FarmPlan::roaming(START, Walls::new([STOP]), &graph).expect("a roam of A and B");
+    assert!(plan.circuit.is_empty(), "a roam has no circuit");
+
+    let bot = BotConfig {
+        max_hp: 30,
+        ..BotConfig::default()
+    };
+    let finished = tokio::time::timeout(
+        Duration::from_secs(40),
+        run_farm(&session, graph.clone(), &plan, &bot, &cfg, None),
+    )
+    .await;
+    let Ok(result) = finished else {
+        panic!("run_farm hung; board received: {:?}", received.lock().unwrap());
+    };
+    let (end, stats) = result.unwrap_or_else(|e| {
+        panic!(
+            "the roam must survive: {e:?}\nboard received: {:?}",
+            received.lock().unwrap()
+        )
+    });
+
+    assert_eq!(end, FarmEnd::TimeUp, "a roam ends on the clock: {stats:?}");
+    let log = received.lock().unwrap();
+    assert!(
+        !log.iter().any(|l| l == "e"),
+        "the walled Keep is one step east and was entered: {log:?}"
+    );
+    assert!(
+        log.iter().any(|l| l == "n"),
+        "the roam should have worked the room it CAN reach: {log:?}"
+    );
+    assert!(stats.roamed >= 1, "rooms worked should be counted: {stats:?}");
+}
