@@ -166,10 +166,27 @@ redirect, so nothing needs configuring.
 #### `buffs`
 
 `bless` is **not** a heal — it is a 40-round buff worth +3, and it restores
-no health. Buffs are therefore kept up on a duration budget rather than
-fired at an HP mark: cast when the character is somewhere quiet, recast when
-the budget runs out. Naming one in `heal_spells` would do nothing useful;
-name it in `buffs`.
+no health. There is no HP mark that makes sense for it, so buffs are kept up
+on a **duration budget** instead: cast in a quiet room, recast when the
+rounds run out. Naming one in `heal_spells` would do nothing useful.
+
+The duration comes from the shipped `spell` table via `[farm].content`, in
+combat rounds, and it is a **floor**: the real duration scales with caster
+level, so a recast on the table figure is always early and never late. That
+is what lets this work off a timer at all.
+
+There is a wear-off wording family (`The effects of %s wear off.`), and it
+is used only as an *early trigger*: any wear-off expires every budget at
+once. The `%s` is the spell's own free text, so it cannot be trusted to say
+which buff lapsed — the same trap as the per-monster movement messages. One
+redundant cast is the worst case; a buff silently down is not.
+
+A buff the character does not know, or one with no duration, is refused at
+startup with the reason printed. Nothing is skipped quietly: a buff that is
+not being kept up looks exactly like one that is.
+
+Buffs are never cast mid-fight. A buff bought during the fight it was meant
+to help is mana spent too late to matter.
 
 #### Renamed keys
 

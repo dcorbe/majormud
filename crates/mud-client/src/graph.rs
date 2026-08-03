@@ -390,6 +390,45 @@ impl RoomGraph {
         Ok(table)
     }
 
+    /// How long each spell lasts, in combat rounds, by lowercased name.
+    ///
+    /// Only rows with a non-zero `duration` are returned, which is
+    /// exactly the set of spells it makes sense to *keep up* — a heal has
+    /// duration 0 because it happens and is over.
+    ///
+    /// **The figure is a floor, not the truth.** Real duration scales
+    /// with caster level (`mud_core::content` `Scaling`), so a buff
+    /// recast on the table value is always recast early and never late.
+    /// That is the property that lets buff upkeep work off a timer at
+    /// all, without needing to recognise a wear-off wording it cannot
+    /// reliably identify.
+    ///
+    /// Duplicate names exist (`rapid healing` is both 138 and 831); the
+    /// SHORTEST wins, for the same reason — early is safe.
+    pub fn load_spell_durations(db: &Path) -> Result<BTreeMap<String, u32>, String> {
+        let conn =
+            rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(|e| format!("open {}: {e}", db.display()))?;
+        let mut stmt = conn
+            .prepare("select lower(name), duration from spell where name != '' and duration > 0")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut table: BTreeMap<String, u32> = BTreeMap::new();
+        for row in rows {
+            let (name, duration) = row.map_err(|e| e.to_string())?;
+            let rounds = duration.max(0) as u32;
+            let slot = table.entry(name).or_insert(rounds);
+            if rounds < *slot {
+                *slot = rounds;
+            }
+        }
+        Ok(table)
+    }
+
     pub fn room(&self, id: RoomId) -> Option<&GraphRoom> {
         self.rooms.get(&id)
     }

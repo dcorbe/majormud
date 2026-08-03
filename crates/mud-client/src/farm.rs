@@ -27,7 +27,7 @@
 //! but `mmc farm` connects and starts farming as soon as it knows where
 //! the character is; there is no way to ask it only to check the config.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -1472,7 +1472,17 @@ pub async fn run_farm(
     if let Err(e) = crate::deaths::init(&cfg.content) {
         eprintln!("death wordings unavailable ({e}); shared-room kills will be missed");
     }
-    let sheet = read_sheet(session, &bot_config.heal_spells).await;
+    // Buff durations, for the upkeep budget. An unreadable database is
+    // not fatal anywhere else here and is not fatal here either: an
+    // empty table means every configured buff is refused with a reason,
+    // which is louder than quietly recasting on a made-up timer.
+    let durations = crate::graph::RoomGraph::load_spell_durations(&cfg.content).unwrap_or_else(|e| {
+        if !bot_config.buffs.is_empty() {
+            eprintln!("spell durations unavailable ({e}); buffs will not be kept up");
+        }
+        BTreeMap::new()
+    });
+    let sheet = read_sheet(session, bot_config, &durations).await;
     let light = crate::sheet::LightState::new(sheet.light);
     if let Some(cmd) = light.first_command() {
         eprintln!("dark rooms will be handled with `{cmd}`");
@@ -1501,7 +1511,20 @@ pub async fn run_farm(
             ),
         }
     }
-    let mut casts = Casts { light, heal };
+    // Same bargain for buffs: say what is being kept up, and say out
+    // loud what was asked for and could not be.
+    let (kept, refused) = sheet.buffs;
+    for reason in refused {
+        eprintln!("buff {reason}");
+    }
+    for b in &kept {
+        eprintln!(
+            "keeping `{}` up: {} rounds, {} mana",
+            b.name, b.rounds, b.mana_cost
+        );
+    }
+    let buff = crate::sheet::BuffState::new(kept);
+    let mut casts = Casts { light, heal, buff };
     let mut clock = crate::world::RoundClock::new();
     let out = farm_loop(
         session, graph, plan, bot_config, cfg, phase, &mut casts, &mut clock,
@@ -1709,7 +1732,7 @@ pub(crate) async fn look_around(
     match next_room_view(&mut events, ask, Duration::from_secs(15)).await {
         Some(room) => Ok(room),
         None => {
-            let sheet = read_sheet(session, &[]).await;
+            let sheet = read_sheet(session, &crate::bot::BotConfig::default(), &BTreeMap::new()).await;
             let Some(cmd) = sheet.light.first().map(|s| s.command().to_string()) else {
                 return Err(unanswered());
             };
@@ -1752,6 +1775,9 @@ pub(crate) async fn next_room_view(
 pub(crate) struct Sheet {
     pub light: Vec<crate::sheet::LightSource>,
     pub heals: Vec<crate::sheet::HealSource>,
+    /// The `[bot].buffs` that survived being looked up, and one line for
+    /// each that did not.
+    pub buffs: (Vec<crate::sheet::Buff>, Vec<String>),
 }
 
 /// The two spell machines, carried as one.
@@ -1766,6 +1792,7 @@ pub(crate) struct Sheet {
 pub(crate) struct Casts {
     pub light: crate::sheet::LightState,
     pub heal: crate::sheet::HealState,
+    pub buff: crate::sheet::BuffState,
 }
 
 impl Casts {
@@ -1773,18 +1800,21 @@ impl Casts {
     pub fn on_sent(&mut self, line: &str, id: CmdId) {
         self.light.on_sent(line, id);
         self.heal.on_sent(line, id);
+        self.buff.on_sent(line, id);
     }
 
     /// Every event, attribution and all.
-    pub fn on_event(&mut self, cor: &Correlated) {
+    pub fn on_event(&mut self, cor: &Correlated, now: Instant) {
         self.light.on_event(cor);
         self.heal.on_event(cor);
+        self.buff.on_event(cor, now);
     }
 
     /// A fresh arrival: drop outcomes that never came back.
     pub fn new_visit(&mut self) {
         self.light.new_visit();
         self.heal.new_visit();
+        self.buff.new_visit();
     }
 }
 
@@ -1797,7 +1827,8 @@ impl Casts {
 /// command built from the result then uses the matching verb.
 pub(crate) async fn read_sheet(
     session: &crate::session::Session,
-    heal_spells: &[String],
+    bot: &crate::bot::BotConfig,
+    durations: &BTreeMap<String, u32>,
 ) -> Sheet {
     use crate::sheet::Casting;
 
@@ -1821,7 +1852,8 @@ pub(crate) async fn read_sheet(
             &book,
             casting,
         ),
-        heals: book.heal_spells(heal_spells, casting),
+        heals: book.heal_spells(&bot.heal_spells, casting),
+        buffs: crate::sheet::buffs(&book, &bot.buffs, durations, casting),
     }
 }
 
@@ -2183,13 +2215,13 @@ async fn ensure_lit(
             return;
         }
         match light.attempt(Instant::now(), clock) {
-            crate::sheet::LightAttempt::Send(cmd) => {
+            crate::sheet::CastAttempt::Send(cmd) => {
                 let id = session.send(&cmd);
                 light.on_sent(&cmd, id);
             }
-            crate::sheet::LightAttempt::Hold(_) => {}
-            crate::sheet::LightAttempt::Nothing if !light.in_flight() => return,
-            crate::sheet::LightAttempt::Nothing => {}
+            crate::sheet::CastAttempt::Hold(_) => {}
+            crate::sheet::CastAttempt::Nothing if !light.in_flight() => return,
+            crate::sheet::CastAttempt::Nothing => {}
         }
         match tokio::time::timeout(Duration::from_millis(300), events.recv()).await {
             Ok(Ok(cor)) => light.on_event(&cor),
@@ -2469,7 +2501,7 @@ async fn farm_stop(
                 casts.light.source_died();
                 was_blind_this_visit = true;
                 match casts.light.attempt(now, clock) {
-                    crate::sheet::LightAttempt::Send(cmd) if gate.is_idle() => {
+                    crate::sheet::CastAttempt::Send(cmd) if gate.is_idle() => {
                         gate.push(cmd);
                         gate.push("look".into());
                     }
@@ -2478,7 +2510,7 @@ async fn farm_stop(
                     // is what turns "Blind + no attempt = dead end"
                     // into "Blind + Hold = retry next round", the live
                     // 15-dark-encounters-3-casts bug.
-                    crate::sheet::LightAttempt::Hold(next) => {
+                    crate::sheet::CastAttempt::Hold(next) => {
                         hold_until = Some(hold_until.map_or(next, |h: Instant| h.min(next)));
                     }
                     // A stop we cannot see is a stop we cannot farm, and
@@ -2486,7 +2518,7 @@ async fn farm_stop(
                     // Defending is the exception: there the deadline
                     // governs, or we walk on and leave whatever is
                     // hitting us behind.
-                    crate::sheet::LightAttempt::Nothing if !defending && gate.is_idle() => {
+                    crate::sheet::CastAttempt::Nothing if !defending && gate.is_idle() => {
                         return Ok(StopEnd::Dwelt);
                     }
                     _ => {}
@@ -2519,7 +2551,7 @@ async fn farm_stop(
             && let Some(percent) = bot.hp_percent(vitals.borrow().hp)
             && percent < bot_config.spell_at_percent as i32
             && percent >= bot_config.flee_at_percent as i32
-            && let crate::sheet::HealAttempt::Send(cmd) = casts.heal.attempt(now, clock)
+            && let crate::sheet::CastAttempt::Send(cmd) = casts.heal.attempt(now, clock)
         {
             gate.push(cmd);
         }
@@ -2536,7 +2568,26 @@ async fn farm_stop(
             && casts.light.wants_recast()
             && (graph.dark(stop) || was_blind_this_visit)
             && !recast_waits_for(&bot, &here)
-            && let crate::sheet::LightAttempt::Send(cmd) = casts.light.attempt(now, clock)
+            && let crate::sheet::CastAttempt::Send(cmd) = casts.light.attempt(now, clock)
+        {
+            gate.push(cmd);
+        }
+
+        // Buff upkeep, last of the three because it is the only one that
+        // is never urgent: a buff bought during the fight it was meant to
+        // help is mana spent too late to matter. So it waits for a quiet
+        // room — no fight engaged, nothing the bot would swing at — which
+        // on a lap comes round often enough, every stop that proves
+        // empty.
+        //
+        // No explicit ordering is needed between the three: each checks
+        // `gate.is_idle()` before pushing, and the gate holds one command
+        // in flight, so the first to want the round takes it and the
+        // others ask again next pass.
+        if bot.engaged().is_none()
+            && !recast_waits_for(&bot, &here)
+            && gate.is_idle()
+            && let crate::sheet::CastAttempt::Send(cmd) = casts.buff.attempt(now, clock)
         {
             gate.push(cmd);
         }
@@ -2715,7 +2766,7 @@ async fn farm_stop(
             }
             gate.push(cmd);
         }
-        casts.on_event(&cor);
+        casts.on_event(&cor, Instant::now());
         // The model folds BEFORE the stop state, because the stop state
         // now decides occupancy by asking it. The tally still runs —
         // the counters that earned `Here` this job are what would catch

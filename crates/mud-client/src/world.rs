@@ -26,9 +26,12 @@ pub const ROUND: Duration = Duration::from_millis(5130);
 /// boundaries; observing them locks the phase, and consumers ask "when
 /// does the next round start" instead of sleeping guesses.
 ///
-/// First (and only) consumer: lighting retry pacing — one cast per
-/// round, because the board refuses a second cast inside one anyway
-/// ("You have already cast a spell this round!").
+/// Consumed by all three spell machines (lighting, healing, buffs) for
+/// the same reason: one cast per round, because the board refuses a
+/// second inside one anyway ("You have already cast a spell this
+/// round!"). Buff upkeep additionally uses [`RoundClock::period`] to
+/// turn a spell's duration in ROUNDS — which is how the shipped data
+/// expresses it — into wall time.
 pub struct RoundClock {
     period: Duration,
     /// The start of the most recently observed burst.

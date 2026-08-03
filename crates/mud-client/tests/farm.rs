@@ -1996,7 +1996,7 @@ fn our_own_movement_invalidates_the_stop() {
 // the dark anyway.
 // ---------------------------------------------------------------------
 
-use mud_client::sheet::{LightAttempt, LightSource, LightState};
+use mud_client::sheet::{CastAttempt, LightSource, LightState};
 use mud_client::world::{ROUND, RoundClock};
 
 const LIGHT_ID: CmdId = CmdId(91);
@@ -2016,7 +2016,7 @@ fn spell() -> LightState {
 }
 
 /// attempt() with an unlocked clock — pacing without phase knowledge.
-fn ask(l: &mut LightState, now: Instant) -> LightAttempt {
+fn ask(l: &mut LightState, now: Instant) -> CastAttempt {
     l.attempt(now, &RoundClock::new())
 }
 
@@ -2031,14 +2031,14 @@ fn mana(l: &mut LightState, mana: i32) {
 fn a_confirmed_light_is_lit_and_not_relit() {
     let now = Instant::now();
     let mut l = torch();
-    assert_eq!(ask(&mut l, now), LightAttempt::Send("light torch".into()));
+    assert_eq!(ask(&mut l, now), CastAttempt::Send("light torch".into()));
     l.on_sent("light torch", LIGHT_ID);
     // Outcome owed: no second attempt while one is in flight.
-    assert_eq!(ask(&mut l, now), LightAttempt::Nothing);
+    assert_eq!(ask(&mut l, now), CastAttempt::Nothing);
     l.on_event(&answering(Event::Line("You lit the torch.".into()), LIGHT_ID));
     assert!(l.lit());
     // Lit sources are not re-lit.
-    assert_eq!(ask(&mut l, now), LightAttempt::Nothing);
+    assert_eq!(ask(&mut l, now), CastAttempt::Nothing);
 }
 
 #[test]
@@ -2064,7 +2064,7 @@ fn a_fizzle_is_retried_next_round_while_mana_lasts() {
     let now = Instant::now();
     let mut l = spell();
     mana(&mut l, 12);
-    assert_eq!(ask(&mut l, now), LightAttempt::Send("cast star".into()));
+    assert_eq!(ask(&mut l, now), CastAttempt::Send("cast star".into()));
     l.on_sent("cast star", LIGHT_ID);
     l.on_event(&answering(
         Event::Line("You attempt to cast starlight, but fail.".into()),
@@ -2073,13 +2073,13 @@ fn a_fizzle_is_retried_next_round_while_mana_lasts() {
     assert!(!l.lit());
     // Inside the same round: hold until the next one, not give up.
     match ask(&mut l, now + Duration::from_secs(1)) {
-        LightAttempt::Hold(until) => assert!(until <= now + ROUND + Duration::from_millis(1)),
+        CastAttempt::Hold(until) => assert!(until <= now + ROUND + Duration::from_millis(1)),
         other => panic!("expected Hold, got {other:?}"),
     }
     // Next round: cast again.
     assert_eq!(
         ask(&mut l, now + ROUND + Duration::from_millis(10)),
-        LightAttempt::Send("cast star".into())
+        CastAttempt::Send("cast star".into())
     );
 }
 
@@ -2095,7 +2095,7 @@ fn a_cast_success_marks_the_source_lit() {
     l.on_sent("cast star", LIGHT_ID);
     l.on_event(&answering(Event::Line("You cast starlight!".into()), LIGHT_ID));
     assert!(l.lit());
-    assert_eq!(ask(&mut l, now), LightAttempt::Nothing);
+    assert_eq!(ask(&mut l, now), CastAttempt::Nothing);
 }
 
 /// Mana below the cost stops the CASTING, never the plan: the lap (and
@@ -2105,9 +2105,9 @@ fn mana_below_the_cost_stops_the_casting_not_the_plan() {
     let now = Instant::now();
     let mut l = spell();
     mana(&mut l, 1);
-    assert_eq!(ask(&mut l, now), LightAttempt::Nothing);
+    assert_eq!(ask(&mut l, now), CastAttempt::Nothing);
     mana(&mut l, 4);
-    assert_eq!(ask(&mut l, now), LightAttempt::Send("cast star".into()));
+    assert_eq!(ask(&mut l, now), CastAttempt::Send("cast star".into()));
 }
 
 /// The operator's directive, verbatim: "Your starlight spell fades
@@ -2129,7 +2129,7 @@ fn a_spell_fade_asks_for_a_recast_and_kills_nothing() {
     assert!(l.wants_recast());
     assert_eq!(
         ask(&mut l, now + ROUND * 2),
-        LightAttempt::Send("cast star".into())
+        CastAttempt::Send("cast star".into())
     );
 }
 
@@ -2155,7 +2155,7 @@ fn an_item_burn_out_advances_to_the_next_source() {
     assert!(!l.lit());
     assert_eq!(
         ask(&mut l, now + ROUND),
-        LightAttempt::Send("light lantern".into())
+        CastAttempt::Send("light lantern".into())
     );
 }
 
@@ -2170,7 +2170,7 @@ fn a_bystanders_burn_out_wording_does_not_kill_a_spell_plan() {
     l.on_event(&unsolicited(Event::Line(
         "Poop's torch is no longer lit!".into(),
     )));
-    assert_eq!(ask(&mut l, now), LightAttempt::Send("cast star".into()));
+    assert_eq!(ask(&mut l, now), CastAttempt::Send("cast star".into()));
 }
 
 /// Blind-while-lit is the backstop for a missed wording, and the kinds
@@ -2187,7 +2187,7 @@ fn dark_while_lit_kills_an_item_but_only_dims_a_spell() {
     l.source_died();
     assert!(!l.lit());
     l.new_visit();
-    assert_eq!(ask(&mut l, now + ROUND), LightAttempt::Nothing);
+    assert_eq!(ask(&mut l, now + ROUND), CastAttempt::Nothing);
 
     let mut l = spell();
     mana(&mut l, 12);
@@ -2199,7 +2199,7 @@ fn dark_while_lit_kills_an_item_but_only_dims_a_spell() {
     assert!(l.wants_recast());
     assert_eq!(
         ask(&mut l, now + ROUND),
-        LightAttempt::Send("cast star".into())
+        CastAttempt::Send("cast star".into())
     );
 }
 
@@ -2216,7 +2216,7 @@ fn may_not_light_advances_past_the_item() {
     assert!(!l.lit());
     // The board refused the item outright: never try it again, and with
     // no other source, there is nothing left.
-    assert_eq!(ask(&mut l, now + ROUND), LightAttempt::Nothing);
+    assert_eq!(ask(&mut l, now + ROUND), CastAttempt::Nothing);
 }
 
 #[test]
@@ -2241,20 +2241,20 @@ fn light_state_edges_are_pinned() {
     // the plan.
     let mut l = torch();
     l.source_died();
-    assert_eq!(ask(&mut l, now), LightAttempt::Send("light torch".into()));
+    assert_eq!(ask(&mut l, now), CastAttempt::Send("light torch".into()));
 
     // A non-plan release does not arm the outcome watch.
     let mut l = torch();
     l.on_sent("look", CmdId(5));
-    assert_eq!(ask(&mut l, now), LightAttempt::Send("light torch".into()));
+    assert_eq!(ask(&mut l, now), CastAttempt::Send("light torch".into()));
 
     // A lost outcome does not wedge the run: the next visit re-arms.
     let mut l = torch();
     ask(&mut l, now);
     l.on_sent("light torch", LIGHT_ID);
-    assert_eq!(ask(&mut l, now), LightAttempt::Nothing, "outcome owed");
+    assert_eq!(ask(&mut l, now), CastAttempt::Nothing, "outcome owed");
     l.new_visit();
-    assert_eq!(ask(&mut l, now), LightAttempt::Send("light torch".into()));
+    assert_eq!(ask(&mut l, now), CastAttempt::Send("light torch".into()));
 }
 
 /// The stale-Blind poisoning: the light took, then an arrival
@@ -2306,7 +2306,7 @@ fn burn_out_wordings_and_the_extinguish_command() {
     l.new_visit();
     assert_eq!(
         ask(&mut l, now + ROUND),
-        LightAttempt::Nothing,
+        CastAttempt::Nothing,
         "a burned-out source is not retried"
     );
 

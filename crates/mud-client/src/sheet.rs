@@ -305,16 +305,20 @@ pub struct HealSource {
     pub mana_cost: i32,
 }
 
-/// What healing is worth doing right now. Mirrors [`LightAttempt`],
-/// including `Hold`: the board refuses a second cast inside one round
-/// (*"You have already cast a spell this round!"*) whichever spell it is.
+/// What one of the spell machines wants to do right now.
+///
+/// Shared by all three — lighting, healing, buffs — because the answer
+/// has the same shape whatever the spell is, and `Hold` in particular has
+/// the same single cause: the board refuses a second cast inside one
+/// round (*"You have already cast a spell this round!"*), and it does not
+/// care which spell the first one was.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HealAttempt {
+pub enum CastAttempt {
     Send(String),
     /// A cast already went out this round; ask again at this instant.
     Hold(std::time::Instant),
-    /// Nothing can work: a cast is already owed, mana covers none of the
-    /// spells, or the character knows none.
+    /// Nothing can work — the reasons differ per machine, and none of
+    /// them is an error.
     Nothing,
 }
 
@@ -336,7 +340,7 @@ pub enum HealAttempt {
 ///   is *"You do not know how to cast %s."*, which means the spell is not
 ///   in the book and never will be — that one source is retired.
 ///
-/// Below the mana floor this returns [`HealAttempt::Nothing`] rather than
+/// Below the mana floor this returns [`CastAttempt::Nothing`] rather than
 /// anything louder, and the rest mark takes over: resting restores mana
 /// as well as health, so the two marks compose without either knowing
 /// about the other.
@@ -401,21 +405,21 @@ impl HealState {
         &mut self,
         now: std::time::Instant,
         clock: &crate::world::RoundClock,
-    ) -> HealAttempt {
+    ) -> CastAttempt {
         if self.pending.is_some() {
-            return HealAttempt::Nothing;
+            return CastAttempt::Nothing;
         }
         let Some(i) = self.affordable() else {
-            return HealAttempt::Nothing;
+            return CastAttempt::Nothing;
         };
         if let Some(at) = self.last_attempt {
             let next = clock.next_round_after(at);
             if now < next {
-                return HealAttempt::Hold(next);
+                return CastAttempt::Hold(next);
             }
         }
         self.last_attempt = Some(now);
-        HealAttempt::Send(self.sources[i].cmd.clone())
+        CastAttempt::Send(self.sources[i].cmd.clone())
     }
 
     /// Called for every command the gate releases. Any of our own casts
@@ -478,6 +482,208 @@ impl HealState {
     }
 }
 
+/// One spell the character keeps up on itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Buff {
+    pub name: String,
+    pub cmd: String,
+    pub mana_cost: i32,
+    /// From the shipped `spell` table's `duration`
+    /// ([`crate::graph::RoomGraph::load_spell_durations`]), in combat
+    /// rounds. A floor: the real duration scales with caster level, so
+    /// recasting on this is early and never late.
+    pub rounds: u32,
+}
+
+/// Keep buffs up.
+///
+/// A buff is not a heal and this is not [`HealState`] with a different
+/// list. `bless` restores no health at all — it is +3 for 40 rounds — so
+/// there is no HP mark to fire it at. What decides is time: cast it, note
+/// when, recast when the budget runs out.
+///
+/// **Why a timer and not the wear-off line.** The wording family is real
+/// and pinned (`The effects of %s wear off.`, live as *"The effects of
+/// blur wear off."* / *"The effects of shockshield wear off!"*), but the
+/// `%s` is the spell's own free-text `DescMsg` — the same trap as the
+/// per-monster movement messages, where matching a name against
+/// author-written prose gets it wrong in both directions. So the wording
+/// is used as an EARLY TRIGGER only: any wear-off expires every budget,
+/// and the timer is the thing that is actually correct. Being early
+/// costs one extra cast; being late costs the fight.
+///
+/// Buffs are cast in a quiet room, never mid-fight: a buff bought during
+/// the fight it was meant to help is mana spent too late to matter.
+pub struct BuffState {
+    buffs: Vec<Buff>,
+    /// When each was last confirmed cast; `None` = never, or lapsed.
+    cast_at: Vec<Option<std::time::Instant>>,
+    mana: Option<i32>,
+    pending: Option<(usize, crate::correlate::CmdId)>,
+    last_attempt: Option<std::time::Instant>,
+}
+
+impl BuffState {
+    pub fn new(buffs: Vec<Buff>) -> Self {
+        let cast_at = vec![None; buffs.len()];
+        BuffState {
+            buffs,
+            cast_at,
+            mana: None,
+            pending: None,
+            last_attempt: None,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.buffs.is_empty()
+    }
+
+    pub fn buffs(&self) -> &[Buff] {
+        &self.buffs
+    }
+
+    /// The first buff that is lapsed (or never cast) and affordable.
+    fn wanted(&self, now: std::time::Instant, clock: &crate::world::RoundClock) -> Option<usize> {
+        let mana = self.mana?;
+        self.buffs.iter().enumerate().position(|(i, b)| {
+            if b.mana_cost > mana {
+                return false;
+            }
+            match self.cast_at[i] {
+                None => true,
+                Some(at) => now.duration_since(at) >= clock.period() * b.rounds,
+            }
+        })
+    }
+
+    /// What upkeep is worth doing at `now`. The caller owns the "is the
+    /// room quiet" question; this owns mana, the round, and the budget.
+    pub fn attempt(
+        &mut self,
+        now: std::time::Instant,
+        clock: &crate::world::RoundClock,
+    ) -> CastAttempt {
+        if self.pending.is_some() {
+            return CastAttempt::Nothing;
+        }
+        let Some(i) = self.wanted(now, clock) else {
+            return CastAttempt::Nothing;
+        };
+        if let Some(at) = self.last_attempt {
+            let next = clock.next_round_after(at);
+            if now < next {
+                return CastAttempt::Hold(next);
+            }
+        }
+        self.last_attempt = Some(now);
+        CastAttempt::Send(self.buffs[i].cmd.clone())
+    }
+
+    pub fn on_sent(&mut self, line: &str, id: crate::correlate::CmdId) {
+        if let Some(i) = self.buffs.iter().position(|b| b.cmd == line) {
+            self.pending = Some((i, id));
+        }
+    }
+
+    /// Fold one event. The budget is only started by a cast the board
+    /// CONFIRMED — a fizzle leaves the buff lapsed, which is the truth,
+    /// and it is retried next round.
+    pub fn on_event(&mut self, cor: &crate::correlate::Correlated, now: std::time::Instant) {
+        if let crate::events::Event::Prompt {
+            mana: Some(mana), ..
+        } = &cor.event
+        {
+            self.mana = Some(*mana);
+        }
+        if let crate::events::Event::Line(line) = &cor.event {
+            let l = line.to_lowercase();
+            // Unsolicited and unattributable: something of ours ran out.
+            // Which one it was cannot be read off the wording, so every
+            // budget expires and the next quiet moment re-establishes
+            // whatever is actually missing. One redundant cast is the
+            // worst case; a buff silently down is not.
+            if l.contains("the effects of") && l.contains("wear off") {
+                self.cast_at.iter_mut().for_each(|at| *at = None);
+            }
+        }
+        let Some((i, pending)) = self.pending else {
+            return;
+        };
+        if cor.answers != Some(pending) {
+            return;
+        }
+        let crate::events::Event::Line(line) = &cor.event else {
+            return;
+        };
+        let line = line.to_lowercase();
+        if line.starts_with("you cast ") || line.starts_with("you invoke ") {
+            self.cast_at[i] = Some(now);
+            self.pending = None;
+        } else if line.contains("do not know how to cast")
+            || line.contains("do not know how to invoke")
+        {
+            // Not in the book: never ask again. The budget stays "never
+            // cast", so `wanted` would keep picking it — remove it.
+            self.buffs.remove(i);
+            self.cast_at.remove(i);
+            self.pending = None;
+        } else if line.contains("but fail")
+            || line.contains("enough mana to cast")
+            || line.contains("enough kai to invoke")
+            || line.contains("already cast a spell")
+            || line.contains("already invoked a power")
+        {
+            self.pending = None;
+        }
+    }
+
+    pub fn new_visit(&mut self) {
+        self.pending = None;
+        self.last_attempt = None;
+    }
+}
+
+/// Pick the buffs `wanted` names out of the spellbook, with the board's
+/// own mana cost and the shipped duration.
+///
+/// A name the character does not know is absent rather than an error, and
+/// a spell with no duration is refused outright with a word about it: a
+/// heal named here would be recast forever, since a budget of 0 rounds is
+/// always expired.
+pub fn buffs(
+    spellbook: &Spellbook,
+    wanted: &[String],
+    durations: &std::collections::BTreeMap<String, u32>,
+    casting: Casting,
+) -> (Vec<Buff>, Vec<String>) {
+    let mut out = Vec::new();
+    let mut refused = Vec::new();
+    for name in wanted {
+        let lower = name.to_lowercase();
+        let Some(known) = spellbook
+            .spells
+            .iter()
+            .find(|s| s.name.to_lowercase() == lower)
+        else {
+            refused.push(format!("`{name}` is not in this character's book"));
+            continue;
+        };
+        match durations.get(&lower) {
+            Some(&rounds) if rounds > 0 => out.push(Buff {
+                name: known.name.clone(),
+                cmd: casting.command(&known.short),
+                mana_cost: known.mana as i32,
+                rounds,
+            }),
+            _ => refused.push(format!(
+                "`{name}` has no duration, so it is not something to keep up"
+            )),
+        }
+    }
+    (out, refused)
+}
+
 /// One way the character can light a dark room. The KINDS matter
 /// because their failure modes differ completely: a spell fizzles
 /// (random cast roll — retry), fades ("Your starlight spell fades
@@ -535,20 +741,6 @@ pub fn light_sources(
 /// %s - you can't see anything" (DLL 0xdf37e). The descriptor varies, so
 /// the tail is what is matched.
 pub const TOO_DARK: &str = "you can't see anything";
-
-/// What lighting is worth doing right now.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LightAttempt {
-    /// Send this command.
-    Send(String),
-    /// An attempt was made this round; the board refuses a second cast
-    /// inside one ("You have already cast a spell this round!"), so
-    /// wait until this instant and ask again.
-    Hold(std::time::Instant),
-    /// Nothing can work: lit already, an outcome owed, mana below the
-    /// cost, or every source dead.
-    Nothing,
-}
 
 /// Light the room, CONFIRM it from the board, and only give up when
 /// nothing can work. Walking a dark room blind is the LAST resort.
@@ -666,12 +858,12 @@ impl LightState {
         &mut self,
         now: std::time::Instant,
         clock: &crate::world::RoundClock,
-    ) -> LightAttempt {
+    ) -> CastAttempt {
         if self.lit || self.pending.is_some() {
-            return LightAttempt::Nothing;
+            return CastAttempt::Nothing;
         }
         let Some(source) = self.current() else {
-            return LightAttempt::Nothing;
+            return CastAttempt::Nothing;
         };
         let cmd = source.command().to_string();
         let mana_floor = match source {
@@ -683,16 +875,16 @@ impl LightState {
         {
             // Below the floor the CASTING stops, never the plan: mana
             // regens ~1/round and the lap revisits, which is the retry.
-            return LightAttempt::Nothing;
+            return CastAttempt::Nothing;
         }
         if let Some(at) = self.last_attempt {
             let next = clock.next_round_after(at);
             if now < next {
-                return LightAttempt::Hold(next);
+                return CastAttempt::Hold(next);
             }
         }
         self.last_attempt = Some(now);
-        LightAttempt::Send(cmd)
+        CastAttempt::Send(cmd)
     }
 
     /// Called for every command the gate releases, like the other

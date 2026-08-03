@@ -261,13 +261,18 @@ pub async fn run_go(
     // the departure gate so it never rests either. Recovery on a walk
     // belongs to the person who typed it.
     let sheet = if crate::farm::leg_needs_light(&graph, from, to) {
-        crate::farm::read_sheet(session, &[]).await
+        crate::farm::read_sheet(session, &bot_config, &Default::default()).await
     } else {
-        crate::farm::Sheet { light: Vec::new(), heals: Vec::new() }
+        crate::farm::Sheet {
+            light: Vec::new(),
+            heals: Vec::new(),
+            buffs: (Vec::new(), Vec::new()),
+        }
     };
     let mut casts = crate::farm::Casts {
         light: crate::sheet::LightState::new(sheet.light),
         heal: crate::sheet::HealState::new(Vec::new()),
+        buff: crate::sheet::BuffState::new(Vec::new()),
     };
     let mut clock = crate::world::RoundClock::new();
     let mut stats = FarmStats::default();

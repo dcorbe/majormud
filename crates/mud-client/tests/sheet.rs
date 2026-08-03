@@ -296,7 +296,7 @@ fn the_real_character_derives_a_single_spell_source() {
 
 use mud_client::correlate::{CmdId, Correlated};
 use mud_client::events::Event;
-use mud_client::sheet::{HealAttempt, HealSource, HealState};
+use mud_client::sheet::{CastAttempt, HealSource, HealState};
 use mud_client::world::RoundClock;
 
 /// A book with three heals at different prices, plus one spell that is
@@ -431,20 +431,20 @@ fn the_pool_picks_the_spell() {
 
     let mut rich = heal_state();
     rich.on_event(&prompt(20, 9));
-    assert_eq!(rich.attempt(now, &clock), HealAttempt::Send("cast heal".into()));
+    assert_eq!(rich.attempt(now, &clock), CastAttempt::Send("cast heal".into()));
 
     let mut thin = heal_state();
     thin.on_event(&prompt(20, 4));
-    assert_eq!(thin.attempt(now, &clock), HealAttempt::Send("cast heal".into()));
+    assert_eq!(thin.attempt(now, &clock), CastAttempt::Send("cast heal".into()));
 
     let mut broke = heal_state();
     broke.on_event(&prompt(20, 2));
-    assert_eq!(broke.attempt(now, &clock), HealAttempt::Nothing);
+    assert_eq!(broke.attempt(now, &clock), CastAttempt::Nothing);
 
     // A pool that has never been seen affords nothing: a character whose
     // prompt carries no mana is not a caster.
     let mut unseen = heal_state();
-    assert_eq!(unseen.attempt(now, &clock), HealAttempt::Nothing);
+    assert_eq!(unseen.attempt(now, &clock), CastAttempt::Nothing);
 }
 
 /// One cast per round, because the board refuses a second
@@ -457,12 +457,12 @@ fn a_second_cast_in_one_round_is_held() {
     let mut heal = heal_state();
     heal.on_event(&prompt(20, 9));
 
-    assert_eq!(heal.attempt(now, &clock), HealAttempt::Send("cast heal".into()));
+    assert_eq!(heal.attempt(now, &clock), CastAttempt::Send("cast heal".into()));
     // The outcome lands, so nothing is owed — but the round has not
     // turned over.
     heal.on_sent("cast heal", CmdId(1));
     heal.on_event(&answering("You cast minor healing!", CmdId(1)));
-    assert!(matches!(heal.attempt(now, &clock), HealAttempt::Hold(_)));
+    assert!(matches!(heal.attempt(now, &clock), CastAttempt::Hold(_)));
 }
 
 /// A cast in flight suppresses the next one outright. Nothing is owed
@@ -477,7 +477,7 @@ fn an_owed_outcome_suppresses_the_next_cast() {
     heal.on_sent("cast heal", CmdId(1));
 
     assert!(heal.in_flight());
-    assert_eq!(heal.attempt(now, &clock), HealAttempt::Nothing);
+    assert_eq!(heal.attempt(now, &clock), CastAttempt::Nothing);
 }
 
 /// Every cast failure is a roll, a pool or a round, and comes round
@@ -502,7 +502,7 @@ fn only_an_unknown_spell_kills_a_source() {
         heal.new_visit();
         assert_eq!(
             heal.attempt(now, &clock),
-            HealAttempt::Send("cast heal".into()),
+            CastAttempt::Send("cast heal".into()),
             "{fizzle:?} is temporary"
         );
     }
@@ -515,7 +515,7 @@ fn only_an_unknown_spell_kills_a_source() {
     heal.new_visit();
     assert_eq!(
         heal.attempt(now, &clock),
-        HealAttempt::Send("cast mend".into()),
+        CastAttempt::Send("cast mend".into()),
         "the dead source is skipped, the next-cheapest is tried"
     );
 }
@@ -543,4 +543,156 @@ fn a_monsters_cast_is_not_our_outcome() {
     // either.
     heal.on_event(&answering("You cast starlight!", CmdId(2)));
     assert!(heal.in_flight());
+}
+
+// --- buffs ------------------------------------------------------------
+
+use mud_client::sheet::{Buff, BuffState};
+use std::collections::BTreeMap;
+
+/// The shipped figures: bless is spell 14, duration 40 rounds.
+fn durations() -> BTreeMap<String, u32> {
+    BTreeMap::from([
+        ("bless".to_string(), 40),
+        ("greater bless".to_string(), 40),
+        ("minor healing".to_string(), 0),
+    ])
+}
+
+fn buff_book() -> Spellbook {
+    Spellbook::parse(
+        "You have the following spells:\n\
+         Level Mana Short Spell Name\n\
+         \x20 2   4    bles  bless                         \n\
+         \x20 1   3    heal  minor healing                 \n",
+    )
+}
+
+/// A buff needs both halves: the character has to know it, and it has to
+/// last. Anything missing either is refused OUT LOUD rather than dropped
+/// — a buff silently not being kept up looks exactly like one that is.
+#[test]
+fn buffs_are_refused_with_a_reason() {
+    let (kept, refused) = mud_client::sheet::buffs(
+        &buff_book(),
+        &["bless".into(), "shockshield".into(), "minor healing".into()],
+        &durations(),
+        Casting::Spells,
+    );
+    assert_eq!(
+        kept,
+        vec![Buff {
+            name: "bless".into(),
+            cmd: "cast bles".into(),
+            mana_cost: 4,
+            rounds: 40,
+        }]
+    );
+    assert_eq!(refused.len(), 2, "{refused:?}");
+    assert!(refused[0].contains("not in this character's book"), "{refused:?}");
+    // A heal has duration 0: it happens and is over. Kept up, it would
+    // be recast forever, because a budget of 0 rounds is always expired.
+    assert!(refused[1].contains("no duration"), "{refused:?}");
+}
+
+/// The budget, end to end. Cast once, then nothing until the rounds run
+/// out — and only a CONFIRMED cast starts the clock, because a fizzle
+/// leaves the buff genuinely down.
+#[test]
+fn a_buff_is_recast_when_its_budget_runs_out() {
+    let clock = RoundClock::new();
+    let (kept, _) = mud_client::sheet::buffs(
+        &buff_book(),
+        &["bless".into()],
+        &durations(),
+        Casting::Spells,
+    );
+    let mut buffs = BuffState::new(kept);
+    let t0 = std::time::Instant::now();
+    buffs.on_event(&prompt(30, 20), t0);
+
+    assert_eq!(buffs.attempt(t0, &clock), CastAttempt::Send("cast bles".into()));
+    buffs.on_sent("cast bles", CmdId(1));
+
+    // A fizzle does not start the budget: the buff is not up.
+    buffs.on_event(&answering("You attempt to cast bless, but fail.", CmdId(1)), t0);
+    buffs.new_visit();
+    assert_eq!(
+        buffs.attempt(t0 + clock.period(), &clock),
+        CastAttempt::Send("cast bles".into()),
+        "a failed cast leaves it down"
+    );
+    buffs.on_sent("cast bles", CmdId(2));
+    buffs.on_event(&answering("You cast bless!", CmdId(2)), t0);
+
+    // Now it is up, and stays up for its 40 rounds.
+    buffs.new_visit();
+    assert_eq!(
+        buffs.attempt(t0 + clock.period() * 39, &clock),
+        CastAttempt::Nothing,
+        "still inside the budget"
+    );
+    assert_eq!(
+        buffs.attempt(t0 + clock.period() * 40, &clock),
+        CastAttempt::Send("cast bles".into()),
+        "the budget ran out"
+    );
+}
+
+/// The wear-off line is an EARLY TRIGGER, not the mechanism. Its `%s` is
+/// the spell's own free text, so which buff lapsed cannot be read off
+/// it — every budget expires and the next quiet moment re-establishes
+/// whatever is actually missing. One redundant cast is the worst case.
+#[test]
+fn a_wear_off_line_expires_the_budget_early() {
+    let clock = RoundClock::new();
+    let (kept, _) = mud_client::sheet::buffs(
+        &buff_book(),
+        &["bless".into()],
+        &durations(),
+        Casting::Spells,
+    );
+    let mut buffs = BuffState::new(kept);
+    let t0 = std::time::Instant::now();
+    buffs.on_event(&prompt(30, 20), t0);
+    buffs.attempt(t0, &clock);
+    buffs.on_sent("cast bles", CmdId(1));
+    buffs.on_event(&answering("You cast bless!", CmdId(1)), t0);
+    buffs.new_visit();
+    assert_eq!(buffs.attempt(t0, &clock), CastAttempt::Nothing);
+
+    // Unsolicited, unattributed, and naming a spell by its own prose.
+    buffs.on_event(
+        &Correlated {
+            event: Event::Line("The effects of blur wear off.".into()),
+            answers: None,
+        },
+        t0,
+    );
+    buffs.new_visit();
+    assert_eq!(
+        buffs.attempt(t0, &clock),
+        CastAttempt::Send("cast bles".into()),
+        "recast early rather than trusting a wording to name the right spell"
+    );
+}
+
+/// Mana gates upkeep as it gates healing, and from the same source: the
+/// book's own cost, not configuration.
+#[test]
+fn a_buff_is_not_cast_without_the_mana_for_it() {
+    let clock = RoundClock::new();
+    let (kept, _) = mud_client::sheet::buffs(
+        &buff_book(),
+        &["bless".into()],
+        &durations(),
+        Casting::Spells,
+    );
+    let mut buffs = BuffState::new(kept);
+    let t0 = std::time::Instant::now();
+
+    buffs.on_event(&prompt(30, 3), t0);
+    assert_eq!(buffs.attempt(t0, &clock), CastAttempt::Nothing, "bless costs 4");
+    buffs.on_event(&prompt(30, 4), t0);
+    assert_eq!(buffs.attempt(t0, &clock), CastAttempt::Send("cast bles".into()));
 }
