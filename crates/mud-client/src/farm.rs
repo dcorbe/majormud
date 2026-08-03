@@ -1176,6 +1176,14 @@ pub struct FarmStats {
     /// recovery. A run where this is most of `flees` is a run whose
     /// circuit has nowhere safe to retreat to.
     pub contested_recoveries: u32,
+    /// Legs that desynced badly enough to need [`crate::lost`] to WALK
+    /// the position out, rather than name it from one look.
+    ///
+    /// Worth counting separately from the desync it replaced: a run that
+    /// recovers ten times is working, but it is also telling you the
+    /// circuit crosses rooms the graph cannot tell apart, and that is a
+    /// fact about the route rather than about the client.
+    pub relocalizations: u32,
     /// Times the maintained room model ([`crate::world::Here`]) claimed
     /// something the board did not list. **The Stage-1 trust gate**: a
     /// poll is self-correcting and a model is not, so decisions may only
@@ -1696,7 +1704,34 @@ pub async fn go_to_finish(
     // Fights its way home rather than only stopping for death: the board
     // refuses movement while in combat, so a running guard would simply
     // be stuck wherever something picked a fight.
+    //
+    // Desyncing gets one recovery, the same one a leg gets. The walk home
+    // starts from a placed position, but places it ONCE — and the way
+    // home is the longest unbroken walk a run takes, so it has the most
+    // room to lose track. Live 2026-08-03: "could not walk to the finish
+    // room: at 1/787: desync: expected \"Dark Tunnel\", saw \"Dark
+    // Tunnel\"" — the sewers are full of same-named rooms and the
+    // navigator's neighbour-only localize cannot separate them.
+    //
+    // One retry, not a loop: the second placement is a walk of its own,
+    // and a route that desyncs twice is telling you the graph and the
+    // board disagree about this part of the world.
     let mut guard = FarmGuard::new(0, 0, &session.profile().username);
+    let err = match nav.goto(session, at, finish, &mut guard).await {
+        Ok(_) => return Ok(()),
+        Err(e) => e,
+    };
+    if !matches!(err.kind, crate::nav::NavErrorKind::Desync { .. }) {
+        return Err(FarmError::Nav(err));
+    }
+    // `relocalize`, not `place`: see the leg's desync branch. `place`
+    // would re-confirm `err.at` from its own name and hand back the
+    // belief that just failed.
+    let seen = look_around(session, "the finish walk's desync look").await?;
+    let at = crate::lost::relocalize(session, &graph, &seen, crate::lost::BUDGET)
+        .await
+        .map_err(FarmError::Lost)?
+        .at;
     nav.goto(session, at, finish, &mut guard)
         .await
         .map(|_| ())
@@ -1991,6 +2026,15 @@ pub(crate) async fn travel(
         )
     };
     let mut budget = cfg.travel_interrupts;
+    // Desync recoveries this leg may spend. Bounded because the recovery
+    // WALKS: an unbounded one that keeps landing somewhere it cannot
+    // route from would wander the character across the world at the
+    // pacer's floor, which is worse than stopping and saying so. Three
+    // is generous — `relocalize` resolves 93.3% of the world on its own
+    // first try, so needing a fourth means the graph and the board
+    // disagree about this part of the map, and that is a fact to report
+    // rather than walk off.
+    let mut relocalizations = 3u32;
     // The one room this leg already defended on a sighting or an entry.
     // A second trip there means the defence did not clear it — deadline
     // expired, unkillable, or refused mid-fight — and stopping again
@@ -2150,6 +2194,59 @@ pub(crate) async fn travel(
                     StopEnd::Died => return Ok(LegEnd::Died),
                     StopEnd::TimeUp => return Ok(LegEnd::TimeUp),
                 }
+            }
+            // The navigator has lost track of where the character is
+            // standing, and `localize` — which only ever considers the
+            // room it thought we were in and that room's neighbours —
+            // could not work it out either.
+            //
+            // That is not the end of the answers, it is the end of the
+            // FREE ones. `lost::relocalize` walks until the candidate set
+            // collapses, and resolves 93.3% of the world within its
+            // budget. It was already wired into every other place a
+            // character can be lost — startup, `/go`, the walk home, the
+            // recovery after a flee — and not into the one place a run
+            // actually desyncs mid-lap, where it simply ended the run.
+            //
+            // Live, 2026-08-03: a farm believed it stood in 1/735 "Sewer
+            // Tunnel, Dead End", was really in an ordinary "Sewer
+            // Tunnel", and sent `s` into a wall five times before giving
+            // up. The sewers are exactly the shape this is for — 1,754
+            // distinct names over 26,720 rooms, and the labyrinthine
+            // ones repeat hardest.
+            //
+            // A maze (or a walk that cannot get an answer at all) still
+            // ends the run: at that point the position genuinely is not
+            // knowable, and routing from a guess is what verified
+            // navigation exists to prevent.
+            NavErrorKind::Desync { .. } => {
+                // NOT `lost::place`. `place` tries `localize_view(hint)`
+                // first, and the hint here is `err.at` — the belief that
+                // just proved wrong. In a corridor of same-named rooms
+                // that shortcut CONFIRMS the bad hint (the name matches,
+                // the exits match) and returns it unchanged, so the leg
+                // re-plans the identical route, walks into the identical
+                // wall, and desyncs again. Measured live 2026-08-03
+                // (cwrun7): 142 refusals in a perfect cycle of four `e`s
+                // and a look, forever.
+                //
+                // A desync is the one situation where the hint is known
+                // false, so the walk has to earn the answer.
+                if relocalizations == 0 {
+                    return Err(FarmError::Nav(err));
+                }
+                relocalizations -= 1;
+                let seen = look_around(session, "the desync's look").await?;
+                let placed =
+                    crate::lost::relocalize(session, graph, &seen, crate::lost::BUDGET)
+                        .await
+                        .map_err(FarmError::Lost)?;
+                stats.relocalizations += 1;
+                // Where the WALK ended, not where it began: relocalize
+                // moves, and routing from the old room would be routing
+                // from somewhere nobody is.
+                *current = placed.at;
+                continue;
             }
             _ => Err(FarmError::Nav(err))?,
         }
