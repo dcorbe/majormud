@@ -1007,11 +1007,17 @@ fn whiff_at_us(line: &str) -> bool {
     !line.starts_with("You") && crate::events::mentions_you(line)
 }
 
-/// Decides when a heal has plainly failed, so the runner can call
+/// Decides when a REST has plainly failed, so the runner can call
 /// [`crate::bot::Bot::rearm`].
 ///
-/// The bot's heal latch clears only when HP climbs back over the
-/// threshold, so a heal that never lands latches it forever: the
+/// It watches `[bot].rest_command` and nothing else. Spell healing is
+/// confirmed by the board's own cast wordings in
+/// [`crate::sheet::HealState`] and needs none of this; the name (and
+/// `[farm].heal_retry_prompts` / `heal_refused` with it) predates the
+/// split and is kept so existing profiles keep parsing.
+///
+/// The bot's rest latch clears only when HP climbs back over the
+/// threshold, so a rest that never lands latches it forever: the
 /// character sits wounded and never rests again. `bot.rs` documents that
 /// the runner rearms it "when it sees the heal was refused" — but there
 /// is nothing to see. No refusal wording survives in any of the 51
@@ -1029,19 +1035,19 @@ fn whiff_at_us(line: &str) -> bool {
 /// That is the right outcome: if resting is not working, leaving is the
 /// other option.
 pub struct HealWatch {
-    heal_command: String,
+    rest_command: String,
     retry_prompts: u32,
     refused: Vec<String>,
-    /// HP at the first prompt after the heal went out; `None` until then.
+    /// HP at the first prompt after the rest went out; `None` until then.
     baseline: Option<i32>,
-    /// Prompts seen since the heal went out. `None` = not watching.
+    /// Prompts seen since the rest went out. `None` = not watching.
     prompts: Option<u32>,
 }
 
 impl HealWatch {
     pub fn new(bot: &crate::bot::BotConfig, farm: &FarmConfig) -> Self {
         HealWatch {
-            heal_command: bot.heal_command.clone(),
+            rest_command: bot.rest_command.clone(),
             retry_prompts: farm.heal_retry_prompts,
             refused: farm.heal_refused.clone(),
             baseline: None,
@@ -1052,7 +1058,7 @@ impl HealWatch {
     /// Called for every command the gate actually releases. A fresh heal
     /// restarts the watch: new baseline, new patience.
     pub fn on_sent(&mut self, line: &str) {
-        if line == self.heal_command {
+        if line == self.rest_command {
             self.baseline = None;
             self.prompts = Some(0);
         }
@@ -2176,7 +2182,7 @@ async fn wait_for_departure_health(
         // if it happened. It was a 120-second sleep that then departed
         // at whatever HP it started with.
         if !sent_heal {
-            session.send(&bot_config.heal_command);
+            session.send(&bot_config.rest_command);
             sent_heal = true;
         }
         // A poke is what produces the prompt that carries HP; without one
@@ -2580,7 +2586,7 @@ async fn farm_stop(
         for crate::bot::BotAction::Send(cmd) in actions {
             // The heal command is the only way to tell resting from
             // simply standing about; the bot's own debounce is private.
-            if cmd == bot_config.heal_command {
+            if cmd == bot_config.rest_command {
                 resting = true;
             }
             gate.push(cmd);

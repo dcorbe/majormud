@@ -448,7 +448,7 @@ fn next_deadline_is_when_the_backoff_ends() {
 
 fn heal_watch(refused: &[&str]) -> HealWatch {
     let bot = BotConfig {
-        heal_command: "rest".into(),
+        rest_command: "rest".into(),
         ..BotConfig::default()
     };
     let farm = FarmConfig {
@@ -517,7 +517,7 @@ fn prompts_do_nothing_when_no_heal_is_outstanding() {
 }
 
 #[test]
-fn only_the_heal_command_arms_it() {
+fn only_the_rest_command_arms_it() {
     let mut w = heal_watch(&[]);
     w.on_sent("a rat");
     for _ in 0..5 {
@@ -1644,7 +1644,7 @@ fn combat_off_unlatches_the_bot_without_costing_a_look() {
 #[test]
 fn a_heal_the_bot_never_sent_does_not_arm_the_heal_watch() {
     let bot_cfg = BotConfig {
-        heal_command: "rest".into(),
+        rest_command: "rest".into(),
         ..BotConfig::default()
     };
     let mut watch = HealWatch::new(&bot_cfg, &FarmConfig::default());

@@ -144,12 +144,44 @@ pub struct BotConfig {
     /// and on a shared board a listed item is somebody's gear.
     pub auto_get: bool,
     pub auto_flee: bool,
-    /// Heal when hp% drops below this (needs `max_hp`).
-    pub heal_at_percent: u32,
-    /// Flee when hp% drops below this (needs `max_hp`).
+    /// Cast a healing spell when hp% drops below this (needs `max_hp`).
+    /// 0 = never, which is the default: a character with no heal in its
+    /// book must not have one invented for it.
+    ///
+    /// The highest of the three marks, and the only one that works in a
+    /// fight. Casting costs mana, does not disengage combat, and is
+    /// therefore the response to being hurt *while something is still
+    /// hitting you* — see the asymmetry documented on [`Bot::on_hp`].
+    /// The spells themselves come from the character's own spellbook
+    /// ([`crate::sheet::Spellbook::heal_spells`]), and the casting lives
+    /// in [`crate::sheet::HealState`], because confirming a cast needs
+    /// the correlation this pure core deliberately does without.
+    pub spell_at_percent: u32,
+    /// Stop and rest when hp% drops below this (needs `max_hp`).
+    ///
+    /// Free, restores mana as well as health, and only coherent in an
+    /// empty room — the board disengages combat to rest, so resting
+    /// beside a monster is the death spiral `on_hp` guards against.
+    ///
+    /// The alias is what this knob was called when resting was the only
+    /// recovery there was; profiles written then still mean rest.
+    #[serde(alias = "heal_at_percent")]
+    pub rest_at_percent: u32,
+    /// Flee when hp% drops below this (needs `max_hp`). The lowest mark,
+    /// and it outranks both of the others.
     pub flee_at_percent: u32,
-    /// Command issued to recover (rest, cast a heal, quaff...).
-    pub heal_command: String,
+    /// Command issued to rest (`rest` on both targets). Aliased for the
+    /// same reason as `rest_at_percent`.
+    #[serde(alias = "heal_command")]
+    pub rest_command: String,
+    /// Heal spells to use, strongest-last, overriding what
+    /// [`crate::sheet::HEAL_SPELLS`] would discover in the spellbook.
+    /// Empty (the default) means discover.
+    pub heal_spells: Vec<String>,
+    /// Buffs to keep up, by spell name — `bless` and the like. These are
+    /// NOT healing: they are cast on a duration budget, not at an HP
+    /// mark, and maintained by [`crate::sheet::BuffState`].
+    pub buffs: Vec<String>,
     /// Never attacked. Matched as a substring, so "guardsman" also
     /// covers the rolled "fat guardsman".
     pub ignore: Vec<String>,
@@ -192,6 +224,41 @@ pub struct BotConfig {
     pub assist_play: bool,
 }
 
+impl BotConfig {
+    /// Check the recovery marks describe one ladder, before the socket
+    /// opens. Same bargain as [`crate::farm::FarmPlan::build`]: a typo
+    /// should cost an error message, not a dead character.
+    ///
+    /// Out of order they do not merely misbehave, they cancel: with the
+    /// rest mark above the spell mark, the bot rests first and never
+    /// reaches a health where casting is still worth mana; with the flee
+    /// mark above either, it runs before it ever tries to recover, and
+    /// `on_hp`'s "flee outranks" ordering makes that permanent.
+    ///
+    /// A mark of 0 is OFF, not "0%", so it is skipped rather than
+    /// compared — the default `spell_at_percent` is 0 and must not make
+    /// every existing profile fail to load.
+    pub fn validate(&self) -> Result<(), String> {
+        let ladder = [
+            ("spell_at_percent", self.spell_at_percent),
+            ("rest_at_percent", self.rest_at_percent),
+            ("flee_at_percent", self.flee_at_percent),
+        ];
+        let set: Vec<_> = ladder.iter().filter(|(_, v)| *v != 0).collect();
+        for pair in set.windows(2) {
+            let ((upper, u), (lower, l)) = (pair[0], pair[1]);
+            if u < l {
+                return Err(format!(
+                    "[bot].{upper} ({u}) is below {lower} ({l}): the marks are one ladder, \
+                     spell >= rest >= flee, and out of order the lower one fires first \
+                     and the higher one never gets a chance"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 impl Default for BotConfig {
     fn default() -> Self {
         BotConfig {
@@ -199,9 +266,16 @@ impl Default for BotConfig {
             auto_heal: false,
             auto_get: false,
             auto_flee: false,
-            heal_at_percent: 50,
+            // 0, not a percentage: spell healing is opt-in. Every
+            // profile written before this existed rests and only rests,
+            // and upgrading mmc must not silently start spending their
+            // mana for them.
+            spell_at_percent: 0,
+            rest_at_percent: 50,
             flee_at_percent: 25,
-            heal_command: "rest".into(),
+            rest_command: "rest".into(),
+            heal_spells: Vec::new(),
+            buffs: Vec::new(),
             ignore: Vec::new(),
             max_hp: 0,
             combat_idle_prompts: 12,
@@ -719,7 +793,18 @@ impl Bot {
         Some(BotAction::Send(format!("a {}", target_word(name))))
     }
 
-    /// Percent-of-max policies. Flee outranks heal: staying to heal is
+    /// This character's health as a percentage of max, or `None` when
+    /// `max_hp` is unknown (0) or the character is downed and HP reads
+    /// negative — the two cases [`Bot::on_hp`] refuses to decide on.
+    ///
+    /// Exposed so the runner's spell-heal dispatch reads exactly the
+    /// number the rest and flee marks are compared against, rather than
+    /// recomputing it from a `max_hp` it holds separately.
+    pub fn hp_percent(&self, hp: i32) -> Option<i32> {
+        (self.config.max_hp > 0 && hp > 0).then(|| hp * 100 / self.config.max_hp)
+    }
+
+    /// Percent-of-max policies. Flee outranks rest: staying to heal is
     /// what gets a character killed. Both fire once and re-arm on a
     /// change of situation, because prompts arrive in bursts: async
     /// output disturbs the dangling prompt and the board re-prompts, so
@@ -731,12 +816,20 @@ impl Bot {
     ///
     /// Note the bursts come from output, not from a timer: an idle board
     /// sends nothing whatsoever, for minutes at a stretch.
+    ///
+    /// The third mark, `spell_at_percent`, is deliberately NOT here.
+    /// Casting a heal has to be confirmed from the board's own wording
+    /// and this core is attribution-blind on purpose — a monster's
+    /// "...attempted to cast X at you, but failed." would read as our own
+    /// fizzle. It lives in [`crate::sheet::HealState`], dispatched by the
+    /// runner, which is also where the mana floor and the one-cast-per-
+    /// round pacing belong. What that leaves here is the ordering these
+    /// two marks have always had.
     fn on_hp(&mut self, hp: i32) -> Vec<BotAction> {
         // Downed: commands do not land, and HP reads negative.
-        if self.config.max_hp <= 0 || hp <= 0 {
+        let Some(percent) = self.hp_percent(hp) else {
             return Vec::new();
-        }
-        let percent = hp * 100 / self.config.max_hp;
+        };
         if self.config.auto_flee
             && percent < self.config.flee_at_percent as i32
             && !self.fled
@@ -745,7 +838,7 @@ impl Bot {
             self.fled = true;
             return vec![BotAction::Send(exit_command(exit).to_string())];
         }
-        if percent >= self.config.heal_at_percent as i32 {
+        if percent >= self.config.rest_at_percent as i32 {
             self.healing = false;
         } else if self.config.auto_heal
             && !self.healing
@@ -761,7 +854,7 @@ impl Bot {
             && !self.room_has_work
         {
             self.healing = true;
-            return vec![BotAction::Send(self.config.heal_command.clone())];
+            return vec![BotAction::Send(self.config.rest_command.clone())];
         }
         Vec::new()
     }

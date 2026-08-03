@@ -163,8 +163,8 @@ fn does_not_spam_attack_same_target() {
 fn heals_below_threshold() {
     let mut bot = Bot::new(BotConfig {
         auto_heal: true,
-        heal_at_percent: 50,
-        heal_command: "rest".into(),
+        rest_at_percent: 50,
+        rest_command: "rest".into(),
         max_hp: 40,
         ..BotConfig::default()
     });
@@ -188,7 +188,7 @@ fn healing_fighter() -> Bot {
     Bot::new(BotConfig {
         auto_combat: true,
         auto_heal: true,
-        heal_at_percent: 50,
+        rest_at_percent: 50,
         max_hp: 52,
         ..BotConfig::default()
     })
@@ -261,7 +261,7 @@ fn an_ignored_occupant_does_not_block_resting() {
     let mut bot = Bot::new(BotConfig {
         auto_combat: true,
         auto_heal: true,
-        heal_at_percent: 50,
+        rest_at_percent: 50,
         max_hp: 52,
         ignore: vec!["town guard".into()],
         ..BotConfig::default()
@@ -277,7 +277,7 @@ fn an_ignored_occupant_does_not_block_resting() {
 fn heal_requires_known_max_hp() {
     let mut bot = Bot::new(BotConfig {
         auto_heal: true,
-        heal_at_percent: 50,
+        rest_at_percent: 50,
         max_hp: 0, // unknown: percent policies stay off
         ..BotConfig::default()
     });
@@ -305,7 +305,7 @@ fn flees_below_flee_threshold_via_last_known_exit() {
 fn flee_takes_priority_over_heal() {
     let mut bot = Bot::new(BotConfig {
         auto_heal: true,
-        heal_at_percent: 50,
+        rest_at_percent: 50,
         auto_flee: true,
         flee_at_percent: 25,
         max_hp: 40,
@@ -320,8 +320,8 @@ fn flee_takes_priority_over_heal() {
 fn does_not_repeat_heal_while_still_hurt() {
     let mut bot = Bot::new(BotConfig {
         auto_heal: true,
-        heal_at_percent: 50,
-        heal_command: "rest".into(),
+        rest_at_percent: 50,
+        rest_command: "rest".into(),
         max_hp: 40,
         ..BotConfig::default()
     });
@@ -356,10 +356,10 @@ fn does_not_repeat_heal_while_still_hurt() {
 fn heals_when_hurt_but_no_exit_is_known() {
     let mut bot = Bot::new(BotConfig {
         auto_heal: true,
-        heal_at_percent: 50,
+        rest_at_percent: 50,
         auto_flee: true,
         flee_at_percent: 25,
-        heal_command: "rest".into(),
+        rest_command: "rest".into(),
         max_hp: 40,
         ..BotConfig::default()
     });
@@ -566,8 +566,8 @@ fn flees_once_per_room_not_once_per_prompt() {
 fn rearm_releases_a_heal_that_never_landed() {
     let mut bot = Bot::new(BotConfig {
         auto_heal: true,
-        heal_at_percent: 50,
-        heal_command: "rest".into(),
+        rest_at_percent: 50,
+        rest_command: "rest".into(),
         max_hp: 40,
         ..BotConfig::default()
     });
@@ -590,7 +590,7 @@ fn rearm_releases_a_heal_that_never_landed() {
 fn stays_quiet_while_downed() {
     let mut bot = Bot::new(BotConfig {
         auto_heal: true,
-        heal_at_percent: 50,
+        rest_at_percent: 50,
         auto_flee: true,
         flee_at_percent: 25,
         max_hp: 40,
@@ -1403,4 +1403,112 @@ fn a_passive_mob_is_not_work() {
     bot.on_event(&Event::RoomSeen(painted(&[("0;36", "big drunken brawler")])));
     assert!(!bot.has_target(&painted(&[("0;36", "big drunken brawler")])));
     assert!(bot.has_target(&painted(&[("1;35", "giant rat")])));
+}
+
+// --- the recovery ladder ---------------------------------------------
+
+/// The three marks are one ladder and the loader says so before the
+/// socket opens. Out of order they cancel rather than merely misbehave:
+/// `on_hp` gives flee absolute priority, so a flee mark above the rest
+/// mark means the character runs instead of ever resting.
+#[test]
+fn an_out_of_order_ladder_is_refused() {
+    let upside_down = BotConfig {
+        spell_at_percent: 30,
+        rest_at_percent: 60,
+        flee_at_percent: 80,
+        ..BotConfig::default()
+    };
+    let err = upside_down.validate().expect_err("this ladder is upside down");
+    assert!(err.contains("spell_at_percent"), "{err}");
+
+    let ordered = BotConfig {
+        spell_at_percent: 80,
+        rest_at_percent: 60,
+        flee_at_percent: 30,
+        ..BotConfig::default()
+    };
+    assert!(ordered.validate().is_ok());
+}
+
+/// 0 means OFF, not 0%. The shipped default leaves `spell_at_percent` at
+/// 0, so treating it as a rung would make every profile that predates
+/// spell healing fail to load.
+#[test]
+fn an_unset_mark_is_not_a_rung() {
+    let rest_and_flee_only = BotConfig {
+        spell_at_percent: 0,
+        rest_at_percent: 60,
+        flee_at_percent: 30,
+        ..BotConfig::default()
+    };
+    assert!(rest_and_flee_only.validate().is_ok());
+    assert!(BotConfig::default().validate().is_ok());
+}
+
+/// The ladder end to end. Nothing above the spell mark, rest only once
+/// the room is clear, and below the flee mark the bot runs and does
+/// nothing else — the invariant `on_hp` has always had.
+#[test]
+fn the_marks_fire_in_order_as_hp_falls() {
+    let cfg = BotConfig {
+        auto_combat: true,
+        auto_heal: true,
+        auto_flee: true,
+        spell_at_percent: 80,
+        rest_at_percent: 60,
+        flee_at_percent: 30,
+        max_hp: 100,
+        ..BotConfig::default()
+    };
+
+    // 85%: nothing at all.
+    let mut bot = Bot::new(cfg.clone());
+    bot.on_event(&room(&[]));
+    assert!(bot.on_event(&Event::Prompt { hp: 85, mana: Some(20) }).is_empty());
+
+    // 70%: below the spell mark but above rest. The bot core sends
+    // nothing — casting is the runner's, since it needs correlation —
+    // and crucially it does NOT rest yet.
+    let mut bot = Bot::new(cfg.clone());
+    bot.on_event(&room(&[]));
+    assert!(
+        bot.on_event(&Event::Prompt { hp: 70, mana: Some(20) }).is_empty(),
+        "the spell mark is not the rest mark"
+    );
+
+    // 50%: below rest, room proven clear, so it rests.
+    let mut bot = Bot::new(cfg.clone());
+    bot.on_event(&room(&[]));
+    assert_eq!(
+        bot.on_event(&Event::Prompt { hp: 50, mana: Some(20) }),
+        vec![BotAction::Send("rest".into())]
+    );
+
+    // 25%: below every mark. Flee outranks, and it is the only thing
+    // that goes out.
+    let mut bot = Bot::new(cfg);
+    bot.on_event(&room(&[]));
+    assert_eq!(
+        bot.on_event(&Event::Prompt { hp: 25, mana: Some(20) }),
+        vec![BotAction::Send("north".into())],
+        "the first listed exit, and nothing else: rest must not accompany a flee"
+    );
+}
+
+/// `hp_percent` is the number the marks are compared against, exposed so
+/// the runner's cast dispatch cannot drift from `on_hp`'s arithmetic. It
+/// refuses to answer in exactly the two cases `on_hp` refuses to decide:
+/// max unknown, and downed (HP reads negative).
+#[test]
+fn hp_percent_answers_only_when_the_marks_could() {
+    let known = Bot::new(BotConfig {
+        max_hp: 50,
+        ..BotConfig::default()
+    });
+    assert_eq!(known.hp_percent(25), Some(50));
+    assert_eq!(known.hp_percent(-3), None, "downed");
+
+    let unknown = Bot::new(BotConfig::default());
+    assert_eq!(unknown.hp_percent(25), None, "max_hp unknown");
 }

@@ -223,3 +223,81 @@ fn evil_warning_toggle_defaults_off_and_parses() {
 // session's business: `mmc play` calls `Session::set_pace(ZERO)` after
 // connecting, and `/farm` restores `profile.pace()`. See tests/pacing.rs
 // for the mid-stream retune behaviour.
+
+/// `heal_at_percent` and `heal_command` named the REST mark and the rest
+/// command back when resting was the only recovery mmc had. Splitting
+/// recovery into three marks renamed them, and every profile written
+/// before that still means rest — so the old spellings must land on
+/// `rest_*` and must not be mistaken for the new spell mark, which stays
+/// off. Silently reinterpreting them as "cast a heal" would start
+/// spending a caster's mana on an mmc upgrade alone.
+#[test]
+fn the_old_heal_keys_still_mean_rest() {
+    let p: Profile = toml::from_str(
+        r#"
+        target = "mbbs"
+        host = "127.0.0.1"
+        port = 2327
+        username = "u"
+        password = "p"
+
+        [bot]
+        auto_heal = true
+        heal_at_percent = 60
+        heal_command = "rest"
+        flee_at_percent = 30
+        "#,
+    )
+    .unwrap();
+
+    let bot = p.bot.expect("[bot] table");
+    assert_eq!(bot.rest_at_percent, 60);
+    assert_eq!(bot.rest_command, "rest");
+    assert_eq!(
+        bot.spell_at_percent, 0,
+        "an old profile must not start casting on an upgrade"
+    );
+}
+
+/// The three marks are one ladder and read as one: cast a spell first,
+/// rest below that, run below that. Each is independent of the others in
+/// the file, so a profile that sets only one keeps the shipped values for
+/// the rest.
+#[test]
+fn the_three_marks_parse_as_a_ladder() {
+    let p: Profile = toml::from_str(
+        r#"
+        target = "mbbs"
+        host = "127.0.0.1"
+        port = 2327
+        username = "u"
+        password = "p"
+
+        [bot]
+        auto_heal = true
+        spell_at_percent = 80
+        rest_at_percent = 60
+        flee_at_percent = 30
+        heal_spells = ["mend"]
+        buffs = ["bless"]
+        "#,
+    )
+    .unwrap();
+
+    let bot = p.bot.clone().expect("[bot] table");
+    assert_eq!(
+        (
+            bot.spell_at_percent,
+            bot.rest_at_percent,
+            bot.flee_at_percent
+        ),
+        (80, 60, 30)
+    );
+    assert_eq!(bot.heal_spells, vec!["mend".to_string()]);
+    assert_eq!(bot.buffs, vec!["bless".to_string()]);
+    // The rest command is untouched by any of it.
+    assert_eq!(bot.rest_command, "rest");
+
+    let back: Profile = toml::from_str(&toml::to_string(&p).unwrap()).unwrap();
+    assert_eq!(p, back);
+}

@@ -672,7 +672,7 @@ async fn a_flee_rests_before_it_walks_back() {
         auto_flee: true,
         flee_at_percent: 50,
         auto_heal: true,
-        heal_at_percent: 80,
+        rest_at_percent: 80,
         max_hp: 30,
         ..BotConfig::default()
     };

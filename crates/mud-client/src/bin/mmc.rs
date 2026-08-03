@@ -34,10 +34,7 @@ fn main() -> ExitCode {
 }
 
 fn play_command(profile_path: &std::path::Path, capture: Option<&std::path::Path>) -> ExitCode {
-    let profile: Profile = match std::fs::read_to_string(profile_path)
-        .map_err(|e| e.to_string())
-        .and_then(|s| toml::from_str(&s).map_err(|e| e.to_string()))
-    {
+    let profile = match Profile::load(profile_path) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("profile {}: {e}", profile_path.display());
@@ -84,10 +81,7 @@ fn run_command(
     profile_path: &std::path::Path,
     capture: Option<&std::path::Path>,
 ) -> ExitCode {
-    let profile: Profile = match std::fs::read_to_string(profile_path)
-        .map_err(|e| e.to_string())
-        .and_then(|s| toml::from_str(&s).map_err(|e| e.to_string()))
-    {
+    let profile = match Profile::load(profile_path) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("profile {}: {e}", profile_path.display());
@@ -338,10 +332,7 @@ fn farm_command(
 ) -> ExitCode {
     use mud_client::farm::{FarmEnd, FarmPlan, Phase as FarmPhase, go_to_finish, run_farm};
 
-    let profile: Profile = match std::fs::read_to_string(profile_path)
-        .map_err(|e| e.to_string())
-        .and_then(|s| toml::from_str(&s).map_err(|e| e.to_string()))
-    {
+    let profile = match Profile::load(profile_path) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("profile {}: {e}", profile_path.display());

@@ -43,7 +43,41 @@ pub struct Profile {
     pub farm: Option<FarmConfig>,
 }
 
+/// Keys that were renamed, and what they are called now. Deserialisation
+/// accepts both (`#[serde(alias)]` on the fields), so this exists only to
+/// SAY SO — a profile that keeps working while its vocabulary has moved
+/// on is a profile whose owner never finds out about the new knob next to
+/// it. Same habit as the dark-stop warning in `FarmPlan::build`: a
+/// warning, never a refusal.
+const RENAMED_KEYS: [(&str, &str); 2] = [
+    ("heal_at_percent", "rest_at_percent"),
+    ("heal_command", "rest_command"),
+];
+
 impl Profile {
+    /// Read and parse a profile, reporting renamed keys on stderr.
+    ///
+    /// The three call sites (`play`, `run`, `farm`) had this open-coded
+    /// identically; the error string is the caller's to print, because
+    /// only the caller knows whether it is fatal.
+    pub fn load(path: &std::path::Path) -> Result<Profile, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let profile: Profile = toml::from_str(&text).map_err(|e| e.to_string())?;
+        for line in text.lines() {
+            let key = line.split('=').next().unwrap_or_default().trim();
+            if let Some((_, new)) = RENAMED_KEYS.iter().find(|(old, _)| *old == key) {
+                eprintln!(
+                    "profile {}: `{key}` is now `{new}` (still accepted, still means rest)",
+                    path.display()
+                );
+            }
+        }
+        if let Some(bot) = &profile.bot {
+            bot.validate()?;
+        }
+        Ok(profile)
+    }
+
     pub fn pace(&self) -> Duration {
         match self.pace_ms {
             Some(ms) => Duration::from_millis(ms),

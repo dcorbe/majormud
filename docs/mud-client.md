@@ -51,9 +51,12 @@ auto_combat = true
 auto_heal = true
 auto_flee = true
 auto_get = true            # coins only; floor items are never announced
-heal_at_percent = 60
-flee_at_percent = 30
-heal_command = "rest"
+spell_at_percent = 80      # cast a heal below this; 0 = never
+rest_at_percent = 60       # stop and rest below this
+flee_at_percent = 30       # run below this
+rest_command = "rest"
+heal_spells = []           # empty = discover from the spellbook
+buffs = ["bless"]          # kept up on a duration budget, not an HP mark
 ignore = ["guard", "healer"]
 # max_hp omitted: the runner probes the board for it at startup
 
@@ -99,6 +102,80 @@ Note the two targets spell it differently, which the client handles: the
 board takes `SET WARNING ON|OFF` (an explicit setter, so idempotent),
 while `mud-server` implements a bare `set evil` toggle. That divergence is
 the reimplementation's, not the board's.
+
+### The three recovery marks
+
+Being hurt has three answers and they are not interchangeable. All three
+are percentages of `max_hp`, which the runner probes at startup, and all
+three do nothing at all while `max_hp` is unknown.
+
+| mark | response | costs | works in a fight |
+|---|---|---|---|
+| `spell_at_percent` | cast a healing spell | mana | **yes** |
+| `rest_at_percent` | `rest` | nothing | no |
+| `flee_at_percent` | walk out the first exit | the room | n/a |
+
+They are one ladder and the loader refuses a profile whose marks are out
+of order. `0` means *off*, not *0%* — `spell_at_percent` defaults to 0, so
+a profile written before spell healing existed keeps resting and only
+resting.
+
+As health falls with `80 / 60 / 30`:
+
+```
+85%   nothing
+70%   cast a heal
+50%   cast a heal; rest as well, but only if the room is clear
+25%   run — and nothing else
+```
+
+**Flee outranks everything**, which is why the last line is bare. Staying
+to heal is what gets a character killed, and that ordering has been in
+`Bot::on_hp` since a live death produced it.
+
+#### Why casting works mid-fight and resting does not
+
+Resting is suppressed whenever the room holds a fight, and that is not
+caution — it is the fix for a measured death spiral (2026-08-01, HP 21/52
+beside a cave bear). The board **disengages combat to rest**, so the bot
+un-latched, the next room block re-engaged, the engage broke the rest, and
+it alternated every round while the bear kept swinging. In an occupied room
+the coherent choices are fight or flee.
+
+Casting has none of that. It does not disengage, it does not interrupt the
+swing, and mid-fight is exactly when it is worth the mana. So the spell mark
+is the *only* recovery a character has while something is still hitting it —
+which is the whole reason it exists.
+
+Casts are paced to one per round, because the board refuses a second
+(*"You have already cast a spell this round!"*), and each one is confirmed
+from the board's own wording rather than assumed.
+
+#### Choosing the spells
+
+`heal_spells` empty (the default) means **discover**: the client reads the
+character's own spellbook and uses what is in it, cheapest first, with the
+mana costs the book itself reports. Nothing is invented — a character with
+no heal in its book simply never casts one. List names in `heal_spells` to
+pin the choice instead.
+
+Mystics are handled: `powers` and `invoke` replace `spells` and `cast`, and
+the Kai pool replaces mana. The client works out which from the board's own
+redirect, so nothing needs configuring.
+
+#### `buffs`
+
+`bless` is **not** a heal — it is a 40-round buff worth +3, and it restores
+no health. Buffs are therefore kept up on a duration budget rather than
+fired at an HP mark: cast when the character is somewhere quiet, recast when
+the budget runs out. Naming one in `heal_spells` would do nothing useful;
+name it in `buffs`.
+
+#### Renamed keys
+
+`heal_at_percent` and `heal_command` named the rest mark and the rest
+command back when resting was the only recovery there was. Both still parse
+and still mean rest; the client says so once at load.
 
 ### `[farm]`
 
