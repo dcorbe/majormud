@@ -1,7 +1,8 @@
 //! Login dialects for the two supported targets.
 //!
 //! MBBSEmu (original WCCMMUD behind the BBS): `Username:` -> `Password:`
-//! -> `Make your selection` -> `A` -> `[MAJORMUD]:` — the flow
+//! -> `Make your selection` -> the module key ([`module_key`], read off
+//! the menu rather than assumed) -> `[MAJORMUD]:` — the flow
 //! `tools/oracle/mudlib.py::login` automates.
 //!
 //! Rust server (`crates/mud-server`): `Account: ` -> existing-account
@@ -88,6 +89,45 @@ pub async fn ensure_evil_warnings_off(session: &Session) -> Result<(), ExpectErr
     Ok(())
 }
 
+/// The key that picks MajorMUD out of the BBS main menu.
+///
+/// **The menu is not a constant.** MBBSEmu numbers the entries from the
+/// modules it actually loaded, so a host running only `WCCMMUD` prints
+///
+/// ```text
+/// Please select one of the following:
+///    1 ... MajorMUD
+/// Main Menu
+/// Make your selection (X to exit):
+/// ```
+///
+/// while a host with several modules letters them. This was hardcoded to
+/// `A`, which is right for one particular `modules.json` and silently
+/// wrong for any other — the board simply redraws the menu, and the login
+/// then times out waiting for `[MAJORMUD]:` with nothing in the
+/// transcript to say why. Observed live 2026-08-03 after a board restart.
+///
+/// So: read the key off the menu the board just printed. `A` remains the
+/// fallback for the case where the menu is not recognisable at all, since
+/// that is what shipped and a wrong guess costs one redrawn menu.
+pub fn module_key(menu: &str) -> &'static str {
+    // Leaked deliberately: the key is one short-lived token per login,
+    // and `send` wants a &str that outlives the borrow of `menu`.
+    static KEYS: [&str; 36] = [
+        "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "A", "B", "C", "D", "E", "F", "G", "H",
+        "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
+    ];
+    menu.lines()
+        .filter(|l| l.to_lowercase().contains("majormud"))
+        .find_map(|line| {
+            let token = line.trim().split_whitespace().next()?;
+            KEYS.iter()
+                .find(|k| k.eq_ignore_ascii_case(token))
+                .copied()
+        })
+        .unwrap_or("A")
+}
+
 pub async fn login(session: &Session, profile: &Profile) -> Result<LoginOutcome, ExpectError> {
     use std::time::Duration;
     let t = Duration::from_secs(30);
@@ -97,8 +137,9 @@ pub async fn login(session: &Session, profile: &Profile) -> Result<LoginOutcome,
             session.send(&profile.username);
             session.expect("Password:", t).await?;
             session.send(&profile.password);
+            let menu = session.mark();
             session.expect("Make your selection", t).await?;
-            session.send("A");
+            session.send(module_key(&session.since(menu)));
             session.expect("[MAJORMUD]:", t).await?;
             // `[MAJORMUD]:` is the module's MENU, not a game prompt. The
             // realm is behind "[E] . Enter the Realm", and a caller left

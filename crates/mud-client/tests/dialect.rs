@@ -260,3 +260,31 @@ fn ordinary_traffic_settles_nothing() {
     );
     assert_eq!(realm_presence(&Event::Line("Username:".into())), None);
 }
+
+/// The BBS main menu is generated from the modules the host loaded, so
+/// the key that picks MajorMUD is not a constant. A host running only
+/// WCCMMUD numbers it `1`; a host with several modules letters them.
+/// Hardcoding `A` was silently wrong on the first kind — the board just
+/// redraws the menu and the login times out waiting for `[MAJORMUD]:`
+/// with nothing in the transcript to explain it (live, 2026-08-03).
+#[test]
+fn the_module_key_is_read_off_the_menu() {
+    let numbered = "\
+Please select one of the following:
+   1 ... MajorMUD
+Main Menu
+Make your selection (X to exit):";
+    assert_eq!(mud_client::dialect::module_key(numbered), "1");
+
+    let lettered = "\
+Please select one of the following:
+   A ... MajorMUD
+   B ... Fantasy Land
+Main Menu
+Make your selection (X to exit):";
+    assert_eq!(mud_client::dialect::module_key(lettered), "A");
+
+    // Unrecognisable: keep what shipped. A wrong guess costs one
+    // redrawn menu, and refusing to log in costs the whole run.
+    assert_eq!(mud_client::dialect::module_key("Make your selection:"), "A");
+}
