@@ -792,3 +792,81 @@ fn players_are_painted_like_aggressive_monsters() {
         vec![Some("1;35".to_string()), Some("1;35".to_string())]
     );
 }
+
+/// Room DESCRIPTION is not an arrival, however much it reads like one.
+///
+/// Live, 2026-08-03, Newhaven's Sovereign Street. The description wraps
+/// mid-sentence and the tail line
+///
+/// ```text
+/// laughter and merriment coming from within.
+/// ```
+///
+/// matched the movemsg arrival family — free-form per-monster templates
+/// force those to be loose — as "laughter and merriment" entering from
+/// "within". The bot then sent `a merriment` at the scenery once per
+/// look, forever, and `/go` gave up.
+///
+/// The origin word is the discriminator. The board fills a movemsg's
+/// `%s` with a direction, so a real movement always has one; the corpus
+/// holds four lines of this shape and not a single genuine arrival whose
+/// origin is not a direction.
+#[test]
+fn wrapped_room_description_is_not_an_arrival() {
+    for line in [
+        // The Sovereign Street line, verbatim.
+        "laughter and merriment coming from within.",
+        // The other three the corpus already contained.
+        "sounds of many people coming from within.",
+        "steel from inside.",
+        "from here.",
+        "from the earth.",
+    ] {
+        assert!(
+            !parse_all(&format!("{line}\r\n")).iter().any(|e| matches!(
+                e,
+                Event::ActorEntered { .. } | Event::ActorLeft { .. }
+            )),
+            "{line:?} is scenery, not something walking about"
+        );
+    }
+}
+
+/// The same rule going the other way, and it catches a death line that
+/// had been read as a departure: "falls to the ground" is not a
+/// direction, and the ground is not somewhere a monster went.
+#[test]
+fn prose_destinations_are_not_departures() {
+    for line in [
+        "The kobold thief falls to the ground.",
+        "The path leads down to the vault.",
+        "A staircase descends to the darkness.",
+    ] {
+        assert!(
+            !parse_all(&format!("{line}\r\n"))
+                .iter()
+                .any(|e| matches!(e, Event::ActorLeft { .. })),
+            "{line:?} is not a departure"
+        );
+    }
+}
+
+/// And the real ones still parse, including the two vertical wordings
+/// that are not compass points.
+#[test]
+fn real_movements_survive_the_narrowing() {
+    for (line, from) in [
+        ("A black cat slinks into the room from the west.", Some("west")),
+        ("A thin giant rat creeps into the room from nowhere.", None),
+        ("A cave bear lumbers into the room from above.", Some("up")),
+        ("A cave bear lumbers into the room from below.", Some("down")),
+    ] {
+        let events = parse_all(&format!("{line}\r\n"));
+        match events.first() {
+            Some(Event::ActorEntered { from: got, .. }) => {
+                assert_eq!(got.as_deref(), from, "{line:?}")
+            }
+            other => panic!("{line:?} should still be an arrival, got {other:?}"),
+        }
+    }
+}

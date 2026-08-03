@@ -421,10 +421,12 @@ fn classify_line(t: &str, opening: Option<&str>) -> Option<Event> {
             from: None,
         });
     }
-    if let Some(c) = MOB_ENTER_RE.captures(t) {
+    if let Some(c) = MOB_ENTER_RE.captures(t)
+        && let Some(from) = dir_word(&c[2])
+    {
         return Some(Event::ActorEntered {
             name: c[1].to_string(),
-            from: dir_word(&c[2]),
+            from,
         });
     }
     if let Some(c) = MOB_ENTER_BARE_RE.captures(t) {
@@ -433,10 +435,12 @@ fn classify_line(t: &str, opening: Option<&str>) -> Option<Event> {
             from: None,
         });
     }
-    if let Some(c) = MOB_LEAVE_RE.captures(t) {
+    if let Some(c) = MOB_LEAVE_RE.captures(t)
+        && let Some(to) = dir_word(&c[2])
+    {
         return Some(Event::ActorLeft {
             name: c[1].to_string(),
-            to: dir_word(&c[2]),
+            to,
         });
     }
     if let Some(c) = ENTER_RE.captures(t) {
@@ -453,13 +457,38 @@ fn classify_line(t: &str, opening: Option<&str>) -> Option<Event> {
     None
 }
 
-/// Origin/destination word from a movemsg line -> the event's direction.
-/// "nowhere" is a spawn, not a place.
-fn dir_word(w: &str) -> Option<String> {
+/// Origin/destination word from a movemsg line.
+///
+/// `None` means **this is not a movement line at all**, and that outer
+/// layer is the whole point. `Some(None)` is "nowhere", a spawn rather
+/// than a place.
+///
+/// The movemsg wordings are free-form per-monster data, so the families
+/// that match them are necessarily loose — loose enough that WRAPPED ROOM
+/// DESCRIPTION reads as an arrival. Live, 2026-08-03, Sovereign Street:
+///
+/// ```text
+/// ...the sounds of
+/// laughter and merriment coming from within.
+/// ```
+///
+/// matched as "laughter and merriment" entering from "within", and the
+/// bot sent `a merriment` at the scenery once per look, forever. The
+/// corpus has three more of the same shape ("...clanging steel from
+/// inside.", "...leads east and west from here.", "...from the earth.")
+/// and NOT ONE genuine arrival whose origin is not a direction — the
+/// board fills the template's `%s` with a direction word, so a real
+/// movement always has one.
+///
+/// So the origin is the discriminator: anything else is prose, and prose
+/// is not an event.
+fn dir_word(w: &str) -> Option<Option<String>> {
     match w {
-        "nowhere" => None,
-        "above" => Some("up".to_string()),
-        "below" => Some("down".to_string()),
-        d => Some(d.to_string()),
+        "nowhere" => Some(None),
+        "above" | "up" => Some(Some("up".to_string())),
+        "below" | "down" => Some(Some("down".to_string())),
+        "north" | "south" | "east" | "west" | "northeast" | "northwest" | "southeast"
+        | "southwest" => Some(Some(w.to_string())),
+        _ => None,
     }
 }
