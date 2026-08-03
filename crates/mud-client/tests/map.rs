@@ -626,6 +626,66 @@ fn the_marker_turns_gold_on_the_route_too() {
     assert!(row.contains("0;33"), "dim gold on a pass-through room: {row:?}");
 }
 
+/// Reverse video paints the cell in its FOREGROUND colour, so a cursor
+/// on an unlit room — bright black, which is the terminal's own
+/// background wearing a different name — reversed into a black block on
+/// a black screen and could not be seen at all.
+///
+/// Not a corner: 17,432 of the 26,720 shipped rooms are unlit, so this
+/// was most of the map (reported live, 2026-08-02).
+#[test]
+fn the_cursor_is_visible_on_an_unlit_room() {
+    let plane = layout(graph(), SMALL_CAVERN);
+    let styles = styles(&plane, graph(), spawns(), Paint::Terrain, &PaintCtx::default());
+    assert_eq!(
+        styles.get(&SMALL_CAVERN).expect("styled").sgr,
+        "1;30",
+        "the test needs a room the palette greys out"
+    );
+
+    let (cw, ch) = Zoom::Normal.cell();
+    let view = (-2, -2);
+    let marks = Marks {
+        cursor: Some((0, 0)),
+        ..Default::default()
+    };
+    let out = render(&plane, &styles, view, (30, 12), Zoom::Normal, &marks);
+    let at = sgr_at_column(&out[2 * ch], 2 * cw);
+    assert!(at.contains("7"), "the cursor still reverses: {at:?}");
+    assert!(
+        !at.contains("1;30"),
+        "reversed into the background and vanished: {at:?}"
+    );
+}
+
+/// Only the cursor's own cell is lifted. An unlit room the cursor is not
+/// standing on stays grey — the palette is how you read the map, and
+/// brightening the whole terrain to suit one marker would throw away
+/// what the grey says.
+#[test]
+fn an_unlit_room_without_the_cursor_stays_grey() {
+    let plane = slums();
+    let styles = styles(&plane, graph(), spawns(), Paint::Terrain, &PaintCtx::default());
+    let mut grey = plane
+        .rooms()
+        .filter(|id| styles.get(id).is_some_and(|s| s.sgr == "1;30"))
+        .filter_map(|id| plane.cell_of(id))
+        .filter(|(x, y)| (0..10).contains(x) && (-6..0).contains(y));
+    let under = grey.next().expect("an unlit room to stand the cursor on");
+    let elsewhere = grey.next().expect("and another one to leave alone");
+
+    let (cw, ch) = Zoom::Normal.cell();
+    let view = (0, -6);
+    let marks = Marks {
+        cursor: Some(under),
+        ..Default::default()
+    };
+    let out = render(&plane, &styles, view, (120, 60), Zoom::Normal, &marks);
+    let row = ((elsewhere.1 - view.1) as usize) * ch;
+    let col = ((elsewhere.0 - view.0) as usize) * cw;
+    assert_eq!(sgr_at_column(&out[row], col), "0;1;30");
+}
+
 /// No background colours anywhere in the palette. They were the source
 /// of the composition rules that kept going wrong; the cursor's reverse
 /// is not one, since it inverts whatever colour is already there.
@@ -719,3 +779,4 @@ fn a_stop_and_a_pass_through_room_are_told_apart() {
     assert_eq!(colour(b), "0;1;33", "so is the other one");
     assert_eq!(colour(between), "0;0;33", "a pass-through room is dim");
 }
+

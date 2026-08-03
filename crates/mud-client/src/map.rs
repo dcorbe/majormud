@@ -543,11 +543,35 @@ pub fn render(
         let col = (cell.0 - view.0) as i64 * cw as i64;
         let row = (cell.1 - view.1) as i64 * ch as i64;
         let (glyph, mut ink) = read(&buf, col, row).unwrap_or((' ', Ink::default()));
+        ink.fg = under_cursor(ink.fg);
         ink.cursor = true;
         put(&mut buf, col, row, glyph, ink);
     }
 
     buf.into_iter().map(emit).collect()
+}
+
+/// The cell colour the cursor reverses, lifted off the floor.
+///
+/// Reverse video paints the cell in its FOREGROUND colour, so the cursor
+/// is only as visible as the colour it lands on. [`DARK`] is bright
+/// black — the terminal's own background wearing a different name — and
+/// reversing it produced a black block on a black screen: the cursor
+/// vanished, with nothing to say where it had got to (reported live,
+/// 2026-08-02). Not a corner case either, since 17,432 of the 26,720
+/// shipped rooms are unlit and the map is mostly grey.
+///
+/// Lifting it to [`PLAIN`] gives up nothing that could be read anyway:
+/// under reverse the glyph is gone and the cell is a solid block, so the
+/// shade of grey was never legible while the cursor sat on it. Move off
+/// and the room is grey again.
+///
+/// A floor rather than a fixed cursor colour, because every other entry
+/// in the palette reverses into something findable, and a cursor that
+/// discarded the room's colour would stop answering "what am I pointing
+/// at" — which is most of what it is for.
+fn under_cursor(fg: &'static str) -> &'static str {
+    if fg == DARK { PLAIN } else { fg }
 }
 
 /// One cell's colour. Foreground only — see [`MARKED`] for why there are
