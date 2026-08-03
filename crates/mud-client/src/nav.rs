@@ -3,13 +3,17 @@
 //! desyncs (lag, blocked exits, combat interruptions) surface as
 //! errors or re-localization, not silent drift.
 //!
-//! Two things the walker knows how to do beyond putting one foot in
+//! Three things the walker knows how to do beyond putting one foot in
 //! front of the other:
 //!
 //! - **Doors.** A route through a door or gate (exit types 2, 7, 0xb)
 //!   opens it rather than stopping at it, falling back to bashing when
 //!   `open` will not shift it. Only the graph decides an exit is a door;
 //!   see [`Navigator::goto`]'s step handling.
+//! - **Hidden exits.** A route through a type-6 exit searches it out
+//!   rather than reading the board's "no exit in that direction" as a
+//!   desync — the two are the same sentence, and only the graph knows
+//!   which one it is. See [`Navigator::find_hidden`].
 //! - **Working out where it is.** [`Navigator::localize`] answers from a
 //!   room name alone and is therefore limited to one hop, because names
 //!   repeat across the ~26k-room world. [`Navigator::localize_view`]
@@ -145,6 +149,15 @@ pub struct NavConfig {
     /// ("You take %d damage for bashing the door!") and refuses outright
     /// without a weapon.
     pub bash_doors: bool,
+    /// Reveal a hidden exit (type 6) with SEARCH instead of treating the
+    /// board's refusal as a desync.
+    ///
+    /// On by default: a hidden exit the router chose is otherwise a hard
+    /// stop, and the router only chooses one when it is the way through
+    /// (see [`crate::graph::exit_cost`]). A switch, for the same reason
+    /// `bash_doors` is one — SEARCH costs a command per roll and breaks
+    /// hide and sneak (`theft.md` §9).
+    pub search_hidden: bool,
 }
 
 impl Default for NavConfig {
@@ -152,6 +165,7 @@ impl Default for NavConfig {
         NavConfig {
             step_timeout_ms: 15_000,
             bash_doors: true,
+            search_hidden: true,
         }
     }
 }
@@ -182,6 +196,16 @@ enum StepOutcome {
 /// and a second opinion about what a door is would put every hash out.
 pub fn is_door(exit_type: i64) -> bool {
     matches!(exit_type, 2 | 7 | 0xb)
+}
+
+/// Is this exit hidden until SEARCH reveals it (`theft.md` §9)?
+///
+/// 1,383 shipped exits are, and the board neither lists them on the
+/// "Obvious exits" line nor admits they exist when you walk at them — it
+/// answers "There is no exit in that direction!", the same wording as a
+/// genuine desync. Only the graph can tell the two apart.
+pub fn is_hidden(exit_type: i64) -> bool {
+    exit_type == 6
 }
 
 /// Lines that mean a shut door turned the step back. Lowercased before
@@ -254,6 +278,32 @@ const BASH_PACED: &str = "must wait before you may do that";
 /// guard is the health backstop, this bound the diagnosability one.
 const BASH_RETRIES: u32 = 60;
 
+/// SEARCH revealed the hidden exit: "You found an exit to the %s!", and
+/// the two vertical wordings "You found an exit upwards!" /
+/// "...downwards!" (`theft.md` §9). The common prefix covers all three.
+///
+/// The find is not permanent — the board arms a ticker that re-hides the
+/// exit in about five minutes — which is why the step is walked
+/// immediately rather than remembered.
+const HIDDEN_FOUND: &str = "you found an exit";
+
+/// The roll came up short: "You notice nothing different to the %s."
+///
+/// It is ALSO what an already-found exit says: the found state falls
+/// through to the same else. So this line is not evidence that the exit
+/// is still hidden, only that this roll changed nothing — which is why
+/// the search runs on the board's refusal rather than ahead of the step.
+const HIDDEN_MISSED: &str = "you notice nothing different";
+
+/// Search rolls per step before a hidden exit is declared unfindable.
+///
+/// Sized from the roll itself (`theft.md` §9: success iff
+/// `genrdn(0,100) < max(Perception - 15, 3)`). The floor is 3%, where a
+/// hundred rolls is ~95% to reveal; any real Perception clears it in a
+/// handful. Bounded for the same reason [`BASH_RETRIES`] is: a walk that
+/// cannot get through should say so, not rummage forever.
+const SEARCH_ROLLS: u32 = 100;
+
 /// The direction an "Obvious exits" token points.
 ///
 /// Exits render as display strings, not commands — "closed door north",
@@ -294,6 +344,11 @@ enum StepEvent {
     BashFailed,
     /// The bash never rolled: it sat on the action timer.
     BashPaced,
+    /// SEARCH revealed a hidden exit; the step is still owed.
+    HiddenFound,
+    /// SEARCH changed nothing — a failed roll, or an exit that was
+    /// already revealed.
+    HiddenMissed,
     /// The room is too dark to see: the board sent no room block at all,
     /// only "you can't see anything".
     ///
@@ -319,6 +374,7 @@ pub struct Navigator {
     graph: Arc<RoomGraph>,
     step_timeout: std::time::Duration,
     bash_doors: bool,
+    search_hidden: bool,
 }
 
 /// The direction word the board understands for each step.
@@ -343,6 +399,7 @@ impl Navigator {
             graph,
             step_timeout: std::time::Duration::from_millis(cfg.step_timeout_ms),
             bash_doors: cfg.bash_doors,
+            search_hidden: cfg.search_hidden,
         }
     }
 
@@ -701,9 +758,22 @@ impl Navigator {
             // re-localizing and re-routing, which is precisely the
             // recovery this needs — and asking costs one command instead
             // of a whole step deadline.
-            // Bash wordings can only attribute to a bash the walk sent;
-            // unreachable here, kept for match completeness.
-            StepEvent::BashFailed | StepEvent::BashPaced => {}
+            // Bash and search wordings can only attribute to a bash or a
+            // search the walk sent; unreachable here, kept for match
+            // completeness.
+            StepEvent::BashFailed
+            | StepEvent::BashPaced
+            | StepEvent::HiddenFound
+            | StepEvent::HiddenMissed => {}
+            // "There is no exit in that direction!" is what a HIDDEN exit
+            // says too, and it is the only thing it says. The graph is
+            // the only witness that this wall is a door, so it decides:
+            // search here, re-localize everywhere else.
+            StepEvent::NoSuchExit if self.search_hidden && is_hidden(exit_type) => {
+                return self
+                    .find_hidden(step, expected, here, session, events, guard, armed)
+                    .await;
+            }
             StepEvent::NoSuchExit => {
                 let ask = session.send("look");
                 return self
@@ -751,7 +821,10 @@ impl Navigator {
                 return Ok(StepOutcome::StayedPut(here.to_string()));
             }
             // Unreachable for an open; kept for match completeness.
-            StepEvent::BashFailed | StepEvent::BashPaced => {}
+            StepEvent::BashFailed
+            | StepEvent::BashPaced
+            | StepEvent::HiddenFound
+            | StepEvent::HiddenMissed => {}
             StepEvent::NoSuchExit => {
                 let ask = session.send("look");
                 return self
@@ -827,8 +900,14 @@ impl Navigator {
                         by: "combat".into(),
                     }));
                 }
-                // It only opened it; the step is still owed.
-                StepEvent::DoorYielded | StepEvent::DoorBlocked => {
+                // It only opened it; the step is still owed. The search
+                // wordings are unreachable for a bash and join this arm
+                // rather than a bare `continue`: a bounded loop that some
+                // future wording could spin forever in is not bounded.
+                StepEvent::DoorYielded
+                | StepEvent::DoorBlocked
+                | StepEvent::HiddenFound
+                | StepEvent::HiddenMissed => {
                     let again = session.send(dir);
                     return self
                         .arrival(here, expected, BlindContext::AfterMove, events, guard, armed, again)
@@ -840,6 +919,80 @@ impl Navigator {
         Err(NavErrorKind::Expect(ExpectError::Timeout {
             needle: "room block after movement".into(),
             tail: format!("door did not yield to {BASH_RETRIES} bashes"),
+        }))
+    }
+
+    /// Reveal a hidden exit (type 6) the board has just denied, then walk
+    /// it.
+    ///
+    /// Entered only from a [`StepEvent::NoSuchExit`] on an exit the GRAPH
+    /// calls hidden, which is what makes searching safe: the same wording
+    /// on a plain exit means the walk is somewhere else and re-localizing
+    /// is the right answer, and a hundred searches would hide that.
+    ///
+    /// Reactive rather than pre-emptive because SEARCH cannot tell "still
+    /// hidden" from "already found" — both answer [`HIDDEN_MISSED`] — so a
+    /// search-first walk would spend its whole budget on an exit that
+    /// needed nothing. Sending the direction first asks the only question
+    /// with two different answers.
+    ///
+    /// The guard is heard between rolls for the same reason it is between
+    /// bashes: this loop can run for a hundred commands, and a character
+    /// rummaging at a wall is a character standing still while something
+    /// swings at it.
+    #[allow(clippy::too_many_arguments)]
+    async fn find_hidden(
+        &self,
+        step: Direction,
+        expected: &str,
+        here: &str,
+        session: &Session,
+        events: &mut tokio::sync::broadcast::Receiver<crate::correlate::Correlated>,
+        guard: &mut impl TravelGuard,
+        armed: &mut Option<Interrupt>,
+    ) -> Result<StepOutcome, NavErrorKind> {
+        let dir = dir_word(step);
+        let mut rolls = 0u32;
+        while rolls < SEARCH_ROLLS {
+            if let Some(interrupt) = armed.take() {
+                return Err(NavErrorKind::Interrupted(interrupt));
+            }
+            let searched = session.send(&format!("search {dir}"));
+            match self.wait_room(events, guard, armed, searched).await? {
+                // Found — and the board re-hides it in about five
+                // minutes, so the step goes out now.
+                StepEvent::HiddenFound => {
+                    let again = session.send(dir);
+                    return self
+                        .arrival(here, expected, BlindContext::AfterMove, events, guard, armed, again)
+                        .await
+                        .map(StepOutcome::Arrived);
+                }
+                StepEvent::CombatBlocked => {
+                    return Err(NavErrorKind::Interrupted(Interrupt::Attacked {
+                        by: "combat".into(),
+                    }));
+                }
+                // A search moves nobody, so a block attributed to one
+                // means the walk is not where it believed. Report it as
+                // the standing position and let `goto` re-localize.
+                StepEvent::Arrived(name) => return Ok(StepOutcome::StayedPut(name)),
+                StepEvent::Blind => return Ok(StepOutcome::StayedPut(here.to_string())),
+                // The failed roll, and every wording a search has no
+                // business producing: spend a roll rather than loop on it.
+                StepEvent::HiddenMissed
+                | StepEvent::NoSuchExit
+                | StepEvent::DoorBlocked
+                | StepEvent::DoorYielded
+                | StepEvent::BashFailed
+                | StepEvent::BashPaced => {
+                    rolls += 1;
+                }
+            }
+        }
+        Err(NavErrorKind::Expect(ExpectError::Timeout {
+            needle: "hidden exit revealed by search".into(),
+            tail: format!("{SEARCH_ROLLS} searches did not reveal the exit {dir}"),
         }))
     }
 
@@ -867,7 +1020,11 @@ impl Navigator {
                 StepEvent::Blind => {
                     return Ok(Navigator::blind_position(after, expected, here).to_string());
                 }
-                StepEvent::NoSuchExit | StepEvent::BashFailed | StepEvent::BashPaced => continue,
+                StepEvent::NoSuchExit
+                | StepEvent::BashFailed
+                | StepEvent::BashPaced
+                | StepEvent::HiddenFound
+                | StepEvent::HiddenMissed => continue,
                 StepEvent::CombatBlocked => {
                     return Err(NavErrorKind::Interrupted(Interrupt::Attacked {
                         by: "combat".into(),
@@ -964,6 +1121,12 @@ impl Navigator {
                     }
                     if line.contains(BASH_PACED) {
                         return Ok(StepEvent::BashPaced);
+                    }
+                    if line.contains(HIDDEN_FOUND) {
+                        return Ok(StepEvent::HiddenFound);
+                    }
+                    if line.contains(HIDDEN_MISSED) {
+                        return Ok(StepEvent::HiddenMissed);
                     }
                     if DOOR_BLOCKED.iter().any(|m| line.contains(m)) {
                         return Ok(StepEvent::DoorBlocked);

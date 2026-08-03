@@ -75,6 +75,7 @@ fn nav(g: Arc<RoomGraph>) -> Navigator {
         NavConfig {
             step_timeout_ms: 1500,
             bash_doors: false,
+            ..NavConfig::default()
         },
     )
 }

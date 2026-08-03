@@ -216,6 +216,7 @@ async fn bashing_can_be_switched_off() {
         NavConfig {
             step_timeout_ms: 1500,
             bash_doors: false,
+            ..NavConfig::default()
         },
     );
 
