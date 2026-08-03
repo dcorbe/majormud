@@ -526,9 +526,11 @@ while the feature does nothing.
 - `tests/bot.rs`, `tests/farm.rs` — the pure decision cores, no sockets.
 - `tests/nav.rs`, `tests/farm_live.rs`, `tests/live_server.rs` — against
   the in-process `mud-server`.
-- `tests/dialect.rs`, `tests/nav_doors.rs` — against scripted boards, for
-  behaviour `mud-server` does not model (the MBBSEmu login, the open/bash
-  command family).
+- `tests/dialect.rs`, `tests/nav_doors.rs`, `tests/farm_scripted.rs` —
+  against scripted boards, for behaviour `mud-server` does not model (the
+  MBBSEmu login, the open/bash command family, spell healing).
+- `tests/sheet.rs` — the spellbook, and the three spell machines
+  (lighting, healing, buff upkeep) as pure state.
 - `tests/bot_corpus.rs`, `tests/farm_corpus.rs`, `tests/parse.rs` — replay
   the real transcripts in `re/oracle/`.
 
