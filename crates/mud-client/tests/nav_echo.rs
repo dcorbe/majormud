@@ -145,7 +145,7 @@ async fn a_stale_render_before_the_echo_does_not_satisfy_the_step() {
     .await
     .expect("goto should not hang")
     .expect("the echoed block is the real arrival");
-    assert_eq!(at, THERE);
+    assert_eq!(at.at, THERE);
 }
 
 /// The run5 double echo: a receipt echo at accept, the reply arriving
@@ -171,7 +171,7 @@ async fn a_double_echoed_step_lands_once() {
     .await
     .expect("goto should not hang")
     .expect("double echo still lands");
-    assert_eq!(at, THERE);
+    assert_eq!(at.at, THERE);
 }
 
 /// A block with NO echo is unsolicited — somebody else's render. It must
@@ -430,5 +430,5 @@ async fn a_players_arrival_does_not_interrupt() {
     .await
     .expect("goto should not hang")
     .expect("a player's arrival must not stop the walk");
-    assert_eq!(at, FAR);
+    assert_eq!(at.at, FAR);
 }

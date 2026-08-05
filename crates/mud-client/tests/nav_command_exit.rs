@@ -144,7 +144,7 @@ async fn a_command_exit_is_spoken_not_walked() {
     .expect("must not hang")
     .unwrap_or_else(|e| panic!("the ferry must be crossable: {e}\nboard heard: {:?}", log.lock().unwrap()));
 
-    assert_eq!(at, PIER);
+    assert_eq!(at.at, PIER);
     let heard = log.lock().unwrap().clone();
     assert!(
         heard.iter().any(|l| l == "borrow skiff"),

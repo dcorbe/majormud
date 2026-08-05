@@ -163,7 +163,7 @@ async fn a_hidden_exit_is_searched_until_it_is_found() {
     .expect("goto should not hang")
     .expect("the third roll reveals it");
 
-    assert_eq!(at, THERE);
+    assert_eq!(at.at, THERE);
     assert_eq!(log.searches.load(Ordering::SeqCst), 3, "one roll is not a search");
 }
 
@@ -187,7 +187,7 @@ async fn an_already_revealed_exit_is_walked_without_searching() {
     .expect("goto should not hang")
     .expect("nothing was in the way");
 
-    assert_eq!(at, THERE);
+    assert_eq!(at.at, THERE);
     assert_eq!(log.searches.load(Ordering::SeqCst), 0, "no search was owed");
     assert_eq!(log.moves.load(Ordering::SeqCst), 1, "one step, first time");
 }

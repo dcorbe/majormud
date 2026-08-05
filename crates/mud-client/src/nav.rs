@@ -173,16 +173,92 @@ impl Default for NavConfig {
 /// Verification failures tolerated before a walk aborts.
 const MAX_FAILURES: u32 = 3;
 
-/// What one resolved step actually established. `Arrived` carries the
-/// name of a room the character MOVED into; `StayedPut` carries the name
-/// answering the recovery `look` after a refusal — the walk knows it did
-/// not move, and that knowledge must survive: ~51k adjacent room pairs
-/// share a name (1/2151 and 1/2146 are both "Newhaven, Narrow Road"),
-/// so a refusal's look-answer treated as an arrival drifts `current`
-/// into the same-named twin while the character stands still.
+/// What the walk learned about the room it is standing in.
+///
+/// A name is the least it can be, because a dark room renders no block
+/// at all and the name then comes from the graph edge that was walked.
+/// When there IS a block it is kept whole: it is the board's own account
+/// of the room, attributed to our own command, and the caller that
+/// asked for the walk is about to want exactly that — see
+/// [`Arrival::seen`].
+#[derive(Debug)]
+enum Sighting {
+    /// The board rendered the room and the block answered our step.
+    Block(crate::events::RoomView),
+    /// Too dark to render: only a name, and not the board's.
+    Dark(String),
+}
+
+impl Sighting {
+    fn name(&self) -> &str {
+        match self {
+            Sighting::Block(room) => &room.name,
+            Sighting::Dark(name) => name,
+        }
+    }
+
+    /// The block, if there was one. Consumes: a block handed on is not
+    /// one this module keeps reasoning about.
+    fn block(self) -> Option<crate::events::RoomView> {
+        match self {
+            Sighting::Block(room) => Some(room),
+            Sighting::Dark(_) => None,
+        }
+    }
+}
+
+/// What one resolved step actually established. `Arrived` describes a
+/// room the character MOVED into; `StayedPut` describes what answered
+/// the recovery `look` after a refusal — the walk knows it did not move,
+/// and that knowledge must survive: ~51k adjacent room pairs share a
+/// name (1/2151 and 1/2146 are both "Newhaven, Narrow Road"), so a
+/// refusal's look-answer treated as an arrival drifts `current` into the
+/// same-named twin while the character stands still.
 enum StepOutcome {
-    Arrived(String),
-    StayedPut(String),
+    Arrived(Sighting),
+    StayedPut(Sighting),
+}
+
+/// Where a walk ended, and what the board said about it on the way in.
+///
+/// The block is the whole reason this is not a bare [`RoomId`]. The step
+/// that lands on the destination is answered by the destination's own
+/// render, attributed to that step — and then the caller used to throw
+/// it away and send a `look` for the same text. A farm stop paid that
+/// round-trip once per stop; a roam, which works one room per pass, paid
+/// it once per room walked.
+#[derive(Debug, Clone)]
+pub struct Arrival {
+    /// The room the walk ended in.
+    pub at: RoomId,
+    /// The block that described `at`, when the walk has one to give.
+    ///
+    /// `None` is the honest answer more often than it looks: a walk of
+    /// no steps (already there) never asked anything, a dark room
+    /// rendered nothing, and a walk that ended somewhere other than the
+    /// room its last block named has no block ABOUT `at`. Callers must
+    /// treat it as "ask if you need to know", never as "empty room".
+    pub seen: Option<crate::events::RoomView>,
+}
+
+impl Arrival {
+    /// Pair a finishing position with the walk's last accepted block,
+    /// keeping the block only if it is the one that described `at`.
+    ///
+    /// The guard is the safety property, and it is why the block is
+    /// carried keyed to a room rather than on its own: a walk that took
+    /// another step, re-planned or localized elsewhere after its last
+    /// block would otherwise hand the caller a render of somewhere the
+    /// character no longer is — a stop would then work a room it had
+    /// left, which is the exact failure verified navigation exists to
+    /// prevent.
+    fn new(at: RoomId, landed: Option<(RoomId, crate::events::RoomView)>) -> Arrival {
+        let seen = match landed {
+            Some((id, room)) if id == at => Some(room),
+            _ => None,
+        };
+        Arrival { at, seen }
+    }
 }
 
 /// Exit types that are a door or gate you can open (`theft.md` §8.1:
@@ -330,8 +406,8 @@ pub fn direction_of(token: &str) -> Option<Direction> {
 
 /// What one command produced while walking a step.
 enum StepEvent {
-    /// A room block: the name we landed on.
-    Arrived(String),
+    /// A room block: the board's own account of where we landed.
+    Arrived(crate::events::RoomView),
     /// A shut door turned us back.
     DoorBlocked,
     /// The door is open now, but we are still on this side of it.
@@ -458,8 +534,11 @@ impl Navigator {
     /// previous room's neighbors and re-route; abort after repeated
     /// failures.
     ///
-    /// Returns the room the walk ended in — `to` on success, and on
-    /// failure [`NavError::at`] carries the last room it verified.
+    /// Returns an [`Arrival`]: the room the walk ended in — `to` on
+    /// success — together with the block the last step was answered
+    /// with, so the caller need not `look` for what the board has just
+    /// finished sending. On failure [`NavError::at`] carries the last
+    /// room the walk verified.
     ///
     /// `guard` sees every event the walk goes past, including the ones
     /// the between-step drain throws away, and can end the walk early.
@@ -482,14 +561,21 @@ impl Navigator {
         from: RoomId,
         to: RoomId,
         guard: &mut impl TravelGuard,
-    ) -> Result<RoomId, NavError> {
+    ) -> Result<Arrival, NavError> {
         let mut current = from;
         let mut failures = 0u32;
         let mut armed: Option<Interrupt> = None;
         let mut events = session.events();
+        // The last block the walk accepted, and the room it had just
+        // established when it did. The pairing is the whole safety
+        // property: a block is handed on ONLY if the walk finished in
+        // the room that block described, so a re-plan, a further step or
+        // a localization that moved us on can never pass off a stale
+        // render as the destination's.
+        let mut landed: Option<(RoomId, crate::events::RoomView)> = None;
         'replan: loop {
             if current == to {
-                return Ok(current);
+                return Ok(Arrival::new(current, landed));
             }
             let route = self
                 .route_from(current, to)
@@ -584,8 +670,16 @@ impl Navigator {
                     }
                 };
                 let seen = match seen {
-                    StepOutcome::Arrived(name) if name == expected_name => {
+                    StepOutcome::Arrived(sighting) if sighting.name() == expected_name => {
                         current = expected_id;
+                        // The block that answered this step describes
+                        // the room the step just landed in. Kept HERE,
+                        // keyed to that room, so the check at the top of
+                        // the loop can hand it to the caller when this
+                        // was the last step of the walk. A dark arrival
+                        // keeps nothing, which is the correct answer:
+                        // there was no block.
+                        landed = sighting.block().map(|room| (current, room));
                         if let Some(interrupt) = armed.take() {
                             return Err(NavError {
                                 at: current,
@@ -600,35 +694,44 @@ impl Navigator {
                     // with a same-named twin next door, localize would
                     // confidently relocate a character that never went
                     // anywhere. Re-plan from where we still stand.
-                    StepOutcome::StayedPut(name) if name == here_name => {
+                    StepOutcome::StayedPut(sighting) if sighting.name() == here_name => {
                         failures += 1;
                         if failures > MAX_FAILURES {
                             return Err(NavError {
                                 at: current,
                                 kind: NavErrorKind::Desync {
                                     expected: expected_name.clone(),
-                                    saw: name,
+                                    saw: sighting.name().to_string(),
                                 },
                             });
                         }
                         continue 'replan;
                     }
-                    StepOutcome::Arrived(name) | StepOutcome::StayedPut(name) => name,
+                    StepOutcome::Arrived(sighting) | StepOutcome::StayedPut(sighting) => sighting,
                 };
                 failures += 1;
+                // Taken before the sighting is consumed below, and it is
+                // the only thing the error wants from it.
+                let saw = seen.name().to_string();
                 let desync = |at| NavError {
                     at,
                     kind: NavErrorKind::Desync {
                         expected: expected_name.clone(),
-                        saw: seen.clone(),
+                        saw: saw.clone(),
                     },
                 };
                 if failures > MAX_FAILURES {
                     return Err(desync(current));
                 }
-                match self.localize(current, &seen) {
+                match self.localize(current, &saw) {
                     Some(id) => {
                         current = id;
+                        // Localizing is what settles which room the
+                        // block was describing, so this is the same
+                        // pairing as a clean step — and this arm CAN
+                        // land on the destination, which is precisely
+                        // when the caller wants the block.
+                        landed = seen.block().map(|room| (id, room));
                         // Same rule as a clean step: the walk is now
                         // localized, so hand back from somewhere true.
                         if let Some(interrupt) = armed.take() {
@@ -644,7 +747,10 @@ impl Navigator {
                     None => return Err(desync(current)),
                 }
             }
-            return Ok(current);
+            // Every step of the route was walked, so this is the normal
+            // end of a walk: `current` is `to` and the last step's block
+            // is the destination's own.
+            return Ok(Arrival::new(current, landed));
         }
     }
 
@@ -774,14 +880,14 @@ impl Navigator {
     ) -> Result<StepOutcome, NavErrorKind> {
         let dir = dir_word(step);
         match self.wait_room(events, guard, armed, sent).await? {
-            StepEvent::Arrived(name) => return Ok(StepOutcome::Arrived(name)),
+            StepEvent::Arrived(room) => return Ok(StepOutcome::Arrived(Sighting::Block(room))),
             // A direction was just sent, so dark is the destination
             // reporting itself; the name comes from the graph edge we
             // chose, not from a guess that movement generally works.
             StepEvent::Blind => {
-                return Ok(StepOutcome::Arrived(
+                return Ok(StepOutcome::Arrived(Sighting::Dark(
                     Navigator::blind_position(BlindContext::AfterMove, expected, here).to_string(),
-                ));
+                )));
             }
             // The graph says there is an exit and the board says there is
             // not, so the walk is not where it believes. Ask the room and
@@ -842,14 +948,14 @@ impl Navigator {
         match self.wait_room(events, guard, armed, opened).await? {
             // Unreachable under the reply grammar (a block never
             // attributes to an open); kept for match completeness.
-            StepEvent::Arrived(name) => return Ok(StepOutcome::Arrived(name)),
+            StepEvent::Arrived(room) => return Ok(StepOutcome::Arrived(Sighting::Block(room))),
             // An `open` never moves the character, so a dark line
             // attributed to it says nothing about arrival — treating it
             // as AfterMove would advance `current` a room while the
             // character stands still, on the acceptance circuit's exact
             // terrain (doors into dark).
             StepEvent::Blind => {
-                return Ok(StepOutcome::StayedPut(here.to_string()));
+                return Ok(StepOutcome::StayedPut(Sighting::Dark(here.to_string())));
             }
             // Unreachable for an open; kept for match completeness.
             StepEvent::BashFailed
@@ -912,12 +1018,12 @@ impl Navigator {
                     continue;
                 }
                 // The bash carried us through the doorway.
-                StepEvent::Arrived(name) => return Ok(StepOutcome::Arrived(name)),
+                StepEvent::Arrived(room) => return Ok(StepOutcome::Arrived(Sighting::Block(room))),
                 StepEvent::Blind => {
-                    return Ok(StepOutcome::Arrived(
+                    return Ok(StepOutcome::Arrived(Sighting::Dark(
                         Navigator::blind_position(BlindContext::AfterMove, expected, here)
                             .to_string(),
-                    ));
+                    )));
                 }
                 StepEvent::NoSuchExit => {
                     let ask = session.send("look");
@@ -1007,8 +1113,12 @@ impl Navigator {
                 // A search moves nobody, so a block attributed to one
                 // means the walk is not where it believed. Report it as
                 // the standing position and let `goto` re-localize.
-                StepEvent::Arrived(name) => return Ok(StepOutcome::StayedPut(name)),
-                StepEvent::Blind => return Ok(StepOutcome::StayedPut(here.to_string())),
+                StepEvent::Arrived(room) => {
+                    return Ok(StepOutcome::StayedPut(Sighting::Block(room)));
+                }
+                StepEvent::Blind => {
+                    return Ok(StepOutcome::StayedPut(Sighting::Dark(here.to_string())));
+                }
                 // The failed roll, and every wording a search has no
                 // business producing: spend a roll rather than loop on it.
                 StepEvent::HiddenMissed
@@ -1041,15 +1151,17 @@ impl Navigator {
         guard: &mut impl TravelGuard,
         armed: &mut Option<Interrupt>,
         awaiting: crate::correlate::CmdId,
-    ) -> Result<String, NavErrorKind> {
+    ) -> Result<Sighting, NavErrorKind> {
         loop {
             match self
                 .wait_room(events, guard, armed, awaiting)
                 .await?
             {
-                StepEvent::Arrived(name) => return Ok(name),
+                StepEvent::Arrived(room) => return Ok(Sighting::Block(room)),
                 StepEvent::Blind => {
-                    return Ok(Navigator::blind_position(after, expected, here).to_string());
+                    return Ok(Sighting::Dark(
+                        Navigator::blind_position(after, expected, here).to_string(),
+                    ));
                 }
                 StepEvent::NoSuchExit
                 | StepEvent::BashFailed
@@ -1128,7 +1240,7 @@ impl Navigator {
                     if let Some(sighted) = guard.on_room(&room) {
                         *armed = armed.take().or(Some(sighted));
                     }
-                    return Ok(StepEvent::Arrived(room.name));
+                    return Ok(StepEvent::Arrived(room));
                 }
                 crate::events::Event::Line(line) => {
                     let line = line.to_lowercase();

@@ -168,7 +168,7 @@ async fn goto_walks_verified_route() {
         .await
         .expect("navigate gates -> market");
 
-    assert_eq!(at, RoomId { map: 1, room: 3 });
+    assert_eq!(at.at, RoomId { map: 1, room: 3 });
     // The session's parsed state confirms where we ended up.
     let state = session.state().borrow().clone();
     assert_eq!(
@@ -453,7 +453,7 @@ async fn an_unarmed_guard_changes_nothing() {
         .await
         .expect("navigate gates -> market");
 
-    assert_eq!(at, RoomId { map: 1, room: 3 });
+    assert_eq!(at.at, RoomId { map: 1, room: 3 });
 }
 
 /// Sights a named room, but ONLY through the attributed-arrival hook —
@@ -555,7 +555,7 @@ async fn a_stale_attributed_answer_is_not_a_sighting() {
         )
         .await
         .expect("a stale answer must not sight");
-    assert_eq!(at, RoomId { map: 1, room: 3 });
+    assert_eq!(at.at, RoomId { map: 1, room: 3 });
 }
 
 /// A recovery look (phantom exit -> "no exit" -> re-ask) answers with

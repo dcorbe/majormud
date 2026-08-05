@@ -1126,16 +1126,12 @@ async fn a_roam_never_steps_into_a_walled_room() {
             "look",
             format!("\r\nlook{}", room_block("Guard Post", None, "north east")),
         ),
+        // No `look` per stop: the step that lands on a room is answered
+        // with that room's block, and the stop opens from it. A roam
+        // spends one command per room worked, which is the whole point
+        // of `Arrival::seen`.
         ("n", format!("\r\nn{}", room_block("Inner Ward", None, "south"))),
-        (
-            "look",
-            format!("\r\nlook{}", room_block("Inner Ward", None, "south")),
-        ),
         ("s", format!("\r\ns{}", room_block("Guard Post", None, "north east"))),
-        (
-            "look",
-            format!("\r\nlook{}", room_block("Guard Post", None, "north east")),
-        ),
     ])
     .await;
     let session = session_for(addr).await;
@@ -1181,4 +1177,76 @@ async fn a_roam_never_steps_into_a_walled_room() {
         "the roam should have worked the room it CAN reach: {log:?}"
     );
     assert!(stats.roamed >= 1, "rooms worked should be counted: {stats:?}");
+}
+
+/// The step that lands on the stop already carried the stop's block out
+/// with it, so the stop must not ask for it again.
+///
+/// This was a whole round-trip per room, and a roam is nothing but
+/// rooms: it picks one stop per pass, walks a step or two, and works
+/// it. Live, the `look` doubled the commands a roam spent per room and
+/// the board answered it with the render it had just sent.
+///
+/// [`StopState::seed`] has always accepted an arrival block — but only
+/// the one an INTERRUPTED leg handed up ([`Interrupt::Sighted`]). A leg
+/// that simply arrived threw its block away and the stop opened blind.
+#[tokio::test]
+async fn a_clean_arrival_is_not_re_asked_at_the_stop() {
+    let (addr, received) = scripted_board(vec![
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        // verify_start's attributed look. The only one this run needs.
+        ("look", format!("\r\nlook{}", room_block("Guard Post", None, "north"))),
+        ("n", format!("\r\nn{}", room_block("Inner Ward", None, "north south"))),
+        // The stop's own block, riding out on the step that landed here.
+        ("n", format!("\r\nn{}", room_block("Keep", None, "south"))),
+        // Scripted only so the OLD behaviour fails on the assertion
+        // below rather than on a desync: the fallback would otherwise
+        // replay Guard Post's block and the runner would read the
+        // redundant look as having been swept back to the start.
+        ("look", format!("\r\nlook{}", room_block("Keep", None, "south"))),
+    ])
+    .await;
+    let session = session_for(addr).await;
+
+    let graph = corridor();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/3".into()],
+        loops: 1,
+        idle_poke_ms: 500,
+        depart_at_percent: 0,
+        ..FarmConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 30,
+        ..BotConfig::default()
+    };
+
+    let (end, stats) = match tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, &bot, &cfg, None),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    {
+        Ok(out) => out,
+        Err(e) => panic!(
+            "the lap must finish: {e:?}\nboard received: {:?}",
+            received.lock().unwrap()
+        ),
+    };
+    assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
+
+    let log = received.lock().unwrap();
+    let last_step = log.iter().rposition(|l| l == "n").expect("the leg walked");
+    assert!(
+        !log[last_step..].iter().any(|l| l == "look"),
+        "the arrival block already said what the look asks for: {log:?}"
+    );
 }

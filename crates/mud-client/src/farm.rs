@@ -2054,10 +2054,15 @@ async fn locate_start(
 
 /// How a leg ended.
 pub(crate) enum LegEnd {
-    /// At the stop. `seen` is the attributed arrival block when the
-    /// final step both described the stop and listed something worth
-    /// fighting — evidence the stop pump can start from instead of
-    /// re-asking the board.
+    /// At the stop. `seen` is the attributed arrival block the final
+    /// step was answered with — evidence the stop pump starts from
+    /// instead of re-asking the board.
+    ///
+    /// Present on every leg that walked at least one step into a lit
+    /// stop, whether or not anything interrupted it
+    /// ([`crate::nav::Arrival::seen`]). `None` means there is genuinely
+    /// nothing to hand on — a leg of no steps, or a stop too dark to
+    /// render — and the stop asks, exactly as it always did.
     Arrived { seen: Option<crate::events::RoomView> },
     Died,
     TimeUp,
@@ -2178,9 +2183,16 @@ pub(crate) async fn travel(
     set_phase(phase, Phase::Travelling { to: stop });
 
         let err = match nav.goto(session, *current, stop, &mut guard).await {
-            Ok(at) => {
-                *current = at;
-                return Ok(LegEnd::Arrived { seen: None });
+            // The block the last step was answered with IS the stop's,
+            // attributed to our own command — the same evidence an
+            // interrupted leg hands up below, and the same evidence a
+            // `look` would have gone and fetched a round-trip later.
+            // Handing it on is what lets a stop open having already
+            // seen the room. `None` (a dark room, or a walk of no
+            // steps) leaves the stop to ask, as it always did.
+            Ok(arrived) => {
+                *current = arrived.at;
+                return Ok(LegEnd::Arrived { seen: arrived.seen });
             }
             Err(e) => e,
         };

@@ -180,7 +180,7 @@ async fn a_closed_door_is_opened_and_traversed() {
     .expect("goto should not hang")
     .expect("should have got through the door");
 
-    assert_eq!(at, THERE);
+    assert_eq!(at.at, THERE);
     assert_eq!(log.opens.load(Ordering::SeqCst), 1, "should have opened it once");
     assert_eq!(log.bashes.load(Ordering::SeqCst), 0, "bash costs HP; not needed here");
 }
@@ -201,7 +201,7 @@ async fn a_locked_door_is_bashed() {
     .expect("goto should not hang")
     .expect("should have bashed through");
 
-    assert_eq!(at, THERE);
+    assert_eq!(at.at, THERE);
     assert!(log.bashes.load(Ordering::SeqCst) >= 1, "a locked door needs a bash");
 }
 
@@ -355,7 +355,7 @@ async fn a_dark_room_is_navigated_by_dead_reckoning() {
     .expect("goto should not hang")
     .expect("a dark room is still somewhere");
 
-    assert_eq!(at, THERE, "position comes from the graph edge taken");
+    assert_eq!(at.at, THERE, "position comes from the graph edge taken");
 }
 
 /// A board whose door needs `fails` bash rolls before it gives — the
@@ -433,7 +433,7 @@ async fn a_bash_that_fails_is_rolled_again_until_the_door_gives() {
     .await
     .expect("goto should not hang")
     .expect("the third roll opens it");
-    assert_eq!(at, THERE);
+    assert_eq!(at.at, THERE);
     // Two real fails, the yield, and the interleaved scolds — five
     // sends, but only two spent the roll budget.
     assert_eq!(log.bashes.load(Ordering::SeqCst), 5, "scold, fail, scold, fail, yield");
@@ -631,7 +631,7 @@ async fn a_softened_door_refusal_is_still_a_blocked_door() {
     .expect("goto should not hang")
     .expect("a softened refusal must still open the door");
 
-    assert_eq!(at, THERE);
+    assert_eq!(at.at, THERE);
     assert_eq!(
         log.opens.load(Ordering::SeqCst),
         1,
