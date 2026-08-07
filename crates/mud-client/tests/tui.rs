@@ -628,6 +628,13 @@ fn map_takes_the_same_argument_as_room() {
     );
 }
 
+/// `/help` and `/?` are the same command under two names.
+#[test]
+fn help_has_two_spellings() {
+    assert_eq!(slash("/help"), Some(KeyOutcome::Help));
+    assert_eq!(slash("/?"), Some(KeyOutcome::Help));
+}
+
 /// Deliberate: the board says unknown commands out loud rather than
 /// erroring, so swallowing every slash-prefixed line would silently eat
 /// board syntax nobody has audited.

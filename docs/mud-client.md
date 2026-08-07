@@ -337,6 +337,9 @@ it loses nothing and `train stats` can be re-entered later.
 
 ## Driving from inside `play`
 
+`/help` (or `/?`) prints the client's own commands and keybindings —
+this section, condensed, without leaving the session.
+
 `/farm` starts the patrol on the session you are already connected to,
 and **Ctrl-F** stops it and hands the keyboard back. That is the reason
 to want it: when a run does something you dislike you take over in one

@@ -604,6 +604,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                 }
                             }
                             KeyOutcome::Refuse(why) => note(&mut out, &format!("-- {why} --"))?,
+                            KeyOutcome::Help => note(&mut out, help_text())?,
                             KeyOutcome::TakeOver => {
                                 if let Some(j) = job.take() {
                                     j.handle.abort();
@@ -742,6 +743,8 @@ pub enum KeyOutcome {
     },
     /// One of ours, got wrong. Print this and send nothing.
     Refuse(String),
+    /// List the client's own slash commands and keybindings.
+    Help,
 }
 
 /// What a submitted line asks the CLIENT to do, or `None` when it is the
@@ -788,8 +791,28 @@ pub fn slash(line: &str) -> Option<KeyOutcome> {
         "/map" => Some(KeyOutcome::Map {
             target: (!rest.is_empty()).then(|| rest.to_string()),
         }),
+        "/help" | "/?" => Some(KeyOutcome::Help),
         _ => None,
     }
+}
+
+/// Text for `/help`. A function rather than a `const` so it reads next
+/// to `slash`, the thing it has to stay in sync with.
+fn help_text() -> &'static str {
+    "/quit                disconnect and exit
+/farm [loop]         patrol the profile's circuit, or a named loop from the library
+/loop [name]         list the loop library, or show one loop's stops
+/loop import <file>  read a MegaMud .mp path into the library
+/bot                 toggle the fight/loot assist (walk vs. run for /go)
+/go <room>           walk to a room, by id (1/2324) or name
+/where               work out which room you're standing in
+/room [target]       what the world database knows about a room (default: here)
+/map [target]        draw the plane around a room (default: here)
+/help, /?            this list
+
+Ctrl-F  take the keyboard back from a running farm/go/where/roam
+Ctrl-P  toggle passthrough, for full-screen board screens (train stats)
+Ctrl-Q  quit"
 }
 
 /// One keystroke against the session. Public for the keyboard-contract
