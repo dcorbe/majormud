@@ -302,3 +302,74 @@ pub async fn place(
     }
     relocalize(session, graph, seen, BUDGET).await
 }
+
+/// What the client believes about where the character is standing, and
+/// how much that belief is worth.
+///
+/// `Option<RoomId>` could not tell "a room block resolved to this id"
+/// apart from "no block has resolved since, so this is the last id that
+/// did". Both were handed to [`place`] as hints of equal standing, and
+/// its name-only one-hop shortcut then CONFIRMED the stale one — a wrong
+/// origin that routes an entire walk from a room the character was never
+/// in. Making the difference a type means every consumer has to say
+/// which of the two it can live with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Fix {
+    /// Nothing has resolved yet: before the first block after login, or
+    /// after a demotion chain with no history behind it.
+    #[default]
+    Unknown,
+    /// A room block resolved to this id. Safe as a routing origin and as
+    /// a trusted hint.
+    Confirmed(RoomId),
+    /// The last id that DID resolve, kept only to say where the
+    /// character last was. Never a routing origin, never a hint.
+    Stale(RoomId),
+}
+
+impl Fix {
+    /// The id a caller may route from, or hand to [`place`] as a trusted
+    /// hint. `None` unless the belief is current.
+    pub fn confirmed(self) -> Option<RoomId> {
+        match self {
+            Fix::Confirmed(at) => Some(at),
+            _ => None,
+        }
+    }
+
+    /// The best id to SHOW, current or not. Display only — never feed
+    /// this to a router or a localizer.
+    pub fn last_known(self) -> Option<RoomId> {
+        match self {
+            Fix::Confirmed(at) | Fix::Stale(at) => Some(at),
+            Fix::Unknown => None,
+        }
+    }
+
+    /// Demote on an unresolvable block: the character is somewhere the
+    /// graph could not name, so whatever was believed is now only
+    /// history. Idempotent — a stale fix does not decay further, and an
+    /// unknown one cannot invent a room to be stale about.
+    pub fn demote(self) -> Fix {
+        match self {
+            Fix::Confirmed(at) | Fix::Stale(at) => Fix::Stale(at),
+            Fix::Unknown => Fix::Unknown,
+        }
+    }
+}
+
+/// Fold one room block into a positional fix.
+///
+/// THE place a block becomes a position, so the client and the map
+/// cannot disagree about what a block meant. Callers must have already
+/// dropped blocks that describe somewhere else (`Correlated::elsewhere`).
+pub fn refix(nav: &Navigator, fix: Fix, seen: &RoomView) -> Fix {
+    // Only a CONFIRMED fix may seed the one-hop shortcut. Seeding it with
+    // a stale id is exactly how a stale id used to confirm itself; the
+    // impossible id forces the global search instead.
+    let hint = fix.confirmed().unwrap_or(RoomId { map: 0, room: 0 });
+    match nav.localize_view(hint, seen) {
+        Some(at) => Fix::Confirmed(at),
+        None => fix.demote(),
+    }
+}
