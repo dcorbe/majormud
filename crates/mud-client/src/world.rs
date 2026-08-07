@@ -427,7 +427,13 @@ impl Here {
         use crate::events::Event;
         match &cor.event {
             Event::RoomSeen(room) => {
-                if cor.answers.is_none() {
+                // A `look <direction>` block describes the room next
+                // door, not this one — an ungated peek would report the
+                // neighbour's occupants and piles as ours, and any
+                // divergence the reconcile-before-reseed pass draws from
+                // it is a false one. Same rule `session.rs`'s
+                // `apply_event` applies to `state.room`.
+                if cor.answers.is_none() || cor.elsewhere {
                     return;
                 }
                 // A block naming somewhere else describes somewhere

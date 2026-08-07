@@ -870,7 +870,11 @@ pub fn assist_actions(
     bot: &mut crate::bot::Bot,
     cor: &crate::correlate::Correlated,
 ) -> Vec<String> {
-    let sees = !matches!(cor.event, crate::events::Event::RoomSeen(_)) || cor.answers.is_some();
+    // A `look <direction>` block names the neighbour's occupants, not
+    // ours — feeding it to the bot is how an assist would attack a
+    // monster standing in the room next door.
+    let sees = !matches!(cor.event, crate::events::Event::RoomSeen(_))
+        || (cor.answers.is_some() && !cor.elsewhere);
     let mut out: Vec<String> = if sees {
         bot.on_event(&cor.event)
             .into_iter()

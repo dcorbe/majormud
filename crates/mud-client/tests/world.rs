@@ -23,6 +23,14 @@ fn answering(ev: Event, id: CmdId) -> Correlated {
     }
 }
 
+fn peeked(ev: Event, id: CmdId) -> Correlated {
+    Correlated {
+        event: ev,
+        answers: Some(id),
+        elsewhere: true,
+    }
+}
+
 fn view(also_here: &[&str]) -> RoomView {
     RoomView {
         name: "Small Cavern".into(),
@@ -108,6 +116,22 @@ fn an_attributed_block_seeds_here_and_an_unsolicited_one_does_not() {
     assert_eq!(here.occupants.len(), 1);
     assert_eq!(here.occupants[0].name, "cave bear");
     assert_eq!(here.occupants[0].kind, OccupantKind::Monster);
+}
+
+/// A `look <direction>` block names the NEIGHBOUR's occupants, not
+/// ours. Folding it in would report a monster a room away as standing
+/// here — the same class of bug attributed blocks fixed for position,
+/// now fixed for the occupant model too.
+#[test]
+fn a_directional_look_block_does_not_seed_here() {
+    let now = Instant::now();
+    let mut here = Here::default();
+    here.on_event(&peeked(Event::RoomSeen(view(&["guardsman"])), ASK), now);
+    assert!(
+        here.view.is_none(),
+        "a peek at the neighbour is not evidence about this room"
+    );
+    assert!(here.occupants.is_empty());
 }
 
 #[test]

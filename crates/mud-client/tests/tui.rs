@@ -361,6 +361,14 @@ fn attributed(event: Event) -> Correlated {
     }
 }
 
+fn peeked(event: Event) -> Correlated {
+    Correlated {
+        event,
+        answers: Some(CmdId(1)),
+        elsewhere: true,
+    }
+}
+
 fn unsolicited(event: Event) -> Correlated {
     Correlated {
         event,
@@ -419,6 +427,25 @@ fn an_unattributed_block_starts_nothing() {
     };
     assert_eq!(
         assist_actions(&mut bot, &unsolicited(Event::RoomSeen(room))),
+        Vec::<String>::new()
+    );
+}
+
+/// A `look <direction>` block names the NEIGHBOUR's occupants. Feeding
+/// it to the assist would attack a monster standing in the room next
+/// door — the same class of bug Task 1 fixed for position tracking,
+/// reachable because manual typing (including a directional look) is
+/// never blocked while the assist runs.
+#[test]
+fn a_directional_look_starts_nothing() {
+    let mut bot = assist_bot();
+    let room = RoomView {
+        name: "Slum Entrance".into(),
+        also_here: vec!["guardsman".into()],
+        ..RoomView::default()
+    };
+    assert_eq!(
+        assist_actions(&mut bot, &peeked(Event::RoomSeen(room))),
         Vec::<String>::new()
     );
 }

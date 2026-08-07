@@ -2965,7 +2965,11 @@ async fn farm_stop(
         // to clear `engaged` mid-fight when a pre-arrival block lacked
         // the target, then duplicate the attack on the re-ask. Async
         // truths (combat, arrivals, prompts) pass through untouched.
-        let bot_sees = !matches!(ev, Event::RoomSeen(_)) || cor.answers.is_some();
+        // A `look <direction>` block names the neighbour's occupants,
+        // not the stop's — feeding it to the bot is how the farm would
+        // attack a monster standing in the room next door.
+        let bot_sees =
+            !matches!(ev, Event::RoomSeen(_)) || (cor.answers.is_some() && !cor.elsewhere);
         let actions = if bot_sees { bot.on_event(ev) } else { Vec::new() };
         for crate::bot::BotAction::Send(cmd) in actions {
             // The heal command is the only way to tell resting from
