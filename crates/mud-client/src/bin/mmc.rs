@@ -216,7 +216,7 @@ fn map_command(at: &str, content: &std::path::Path) -> ExitCode {
         graph.clone(),
         spawns,
         anchor,
-        None,
+        mud_client::lost::Fix::Unknown,
         PaintCtx::default(),
         (cols as usize, rows as usize),
     );

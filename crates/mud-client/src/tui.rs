@@ -487,7 +487,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                                 g.clone(),
                                                 s.clone(),
                                                 id,
-                                                here.last_known(),
+                                                here,
                                                 crate::map::PaintCtx {
                                                     max_hp: assist_config.max_hp.into(),
                                                     ..Default::default()
@@ -521,6 +521,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                                     &mut key_rx,
                                                     &mut raw_rx,
                                                     &mut events,
+                                                    nav.as_ref(),
                                                     &mut on_event,
                                                 )
                                                 .await?
@@ -533,6 +534,13 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                             out.write_all(b"\x1b8")?;
                                             out.write_all(&exit.buffered)?;
                                             out.write_all(b"\x1b7")?;
+                                            // `play`'s own tracking arm did
+                                            // not run while the view owned
+                                            // the screen; adopt what it
+                                            // learned instead of forgetting
+                                            // every step taken with the map
+                                            // open.
+                                            here = exit.here;
                                             if let Some(why) = &exit.interrupted {
                                                 note(&mut out, &format!("-- {why} --"))?;
                                             }

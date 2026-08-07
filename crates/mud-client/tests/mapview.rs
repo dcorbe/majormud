@@ -7,6 +7,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use mud_client::graph::RoomGraph;
+use mud_client::lost::Fix;
 use mud_client::map::{Paint, PaintCtx, Zoom};
 use mud_client::mapview::{MapView, ViewAction};
 use mud_client::spawn::SpawnTable;
@@ -43,7 +44,7 @@ fn view_of_nowhere() -> MapView {
         graph(),
         spawns(),
         RoomId { map: 999, room: 999 },
-        None,
+        Fix::Unknown,
         PaintCtx::default(),
         (100, 30),
     )
@@ -54,7 +55,7 @@ fn view() -> MapView {
         graph(),
         spawns(),
         CROSSROADS,
-        Some(CROSSROADS),
+        Fix::Confirmed(CROSSROADS),
         PaintCtx::default(),
         (100, 30),
     )
@@ -156,7 +157,7 @@ fn movement_finds_a_room_that_is_not_on_the_same_row() {
             },
         ),
     ]));
-    let mut v = MapView::new(g, spawns(), here, None, PaintCtx::default(), (100, 30));
+    let mut v = MapView::new(g, spawns(), here, Fix::Unknown, PaintCtx::default(), (100, 30));
     press(&mut v, KeyCode::Right);
     assert_eq!(v.cursor_room(), Some(jog), "east should reach the jog");
 }
@@ -392,7 +393,7 @@ fn a_frame_fits_the_terminal_it_was_given() {
             graph(),
             spawns(),
             CROSSROADS,
-            Some(CROSSROADS),
+            Fix::Confirmed(CROSSROADS),
             PaintCtx::default(),
             size,
         );
@@ -416,7 +417,7 @@ fn the_panel_describes_the_room_under_the_cursor() {
         graph(),
         spawns(),
         SMALL_CAVERN,
-        Some(SMALL_CAVERN),
+        Fix::Confirmed(SMALL_CAVERN),
         PaintCtx::default(),
         (120, 30),
     );
@@ -633,7 +634,7 @@ fn the_diagonal_keys_reach_diagonal_neighbours() {
             g.clone(),
             spawns(),
             here,
-            None,
+            Fix::Unknown,
             PaintCtx::default(),
             (100, 30),
         );
@@ -682,7 +683,7 @@ fn straight_ahead_beats_off_axis() {
             },
         ),
     ]));
-    let mut v = MapView::new(g, spawns(), here, None, PaintCtx::default(), (100, 30));
+    let mut v = MapView::new(g, spawns(), here, Fix::Unknown, PaintCtx::default(), (100, 30));
     press(&mut v, KeyCode::Right);
     assert_eq!(v.cursor_room(), Some(ahead), "east means east");
 }
@@ -702,7 +703,7 @@ fn the_panel_says_where_a_plane_exit_goes_and_which_key_takes_it() {
         graph(),
         spawns(),
         NARROW_ROAD,
-        Some(NARROW_ROAD),
+        Fix::Confirmed(NARROW_ROAD),
         PaintCtx::default(),
         (120, 30),
     );
@@ -725,7 +726,7 @@ fn up_and_down_are_separate_keys() {
         graph(),
         spawns(),
         NARROW_ROAD,
-        Some(NARROW_ROAD),
+        Fix::Confirmed(NARROW_ROAD),
         PaintCtx::default(),
         (120, 30),
     );
@@ -754,7 +755,7 @@ fn a_portal_is_reachable_without_a_key_of_its_own() {
         .find(|l| mud_client::map::step_of(l.dir).is_some()
             && plane.links_from(l.from).all(|o| mud_client::map::step_of(o.dir).is_some()))
         .expect("a room whose only links are portals");
-    let mut v = MapView::new(g, spawns(), portal.from, None, PaintCtx::default(), (120, 30));
+    let mut v = MapView::new(g, spawns(), portal.from, Fix::Unknown, PaintCtx::default(), (120, 30));
     press(&mut v, KeyCode::Char('>'));
     assert_eq!(v.plane().anchor(), portal.dest, "> took the portal");
 }

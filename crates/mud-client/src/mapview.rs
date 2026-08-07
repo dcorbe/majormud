@@ -70,8 +70,8 @@ enum Asking {
 pub struct MapView {
     graph: Arc<RoomGraph>,
     spawns: Arc<SpawnTable>,
-    /// Where the character stands, if the client knows.
-    here: Option<RoomId>,
+    /// Where the character stands, and whether that is still true.
+    here: crate::lost::Fix,
     ctx: PaintCtx,
     plane: Plane,
     styles: BTreeMap<RoomId, Style>,
@@ -105,7 +105,7 @@ impl MapView {
         graph: Arc<RoomGraph>,
         spawns: Arc<SpawnTable>,
         anchor: RoomId,
-        here: Option<RoomId>,
+        here: crate::lost::Fix,
         ctx: PaintCtx,
         size: (usize, usize),
     ) -> MapView {
@@ -177,6 +177,16 @@ impl MapView {
 
     pub fn message(&self) -> Option<&str> {
         self.message.as_deref()
+    }
+
+    /// What the view currently believes, so the client can adopt it when
+    /// the map closes.
+    pub fn here(&self) -> crate::lost::Fix {
+        self.here
+    }
+
+    pub fn set_here(&mut self, fix: crate::lost::Fix) {
+        self.here = fix;
     }
 
     pub fn resize(&mut self, size: (usize, usize)) {
@@ -297,7 +307,7 @@ impl MapView {
             KeyCode::Char('n') => self.step(1, 1),
 
             KeyCode::Home => {
-                match self.here {
+                match self.here.last_known() {
                     Some(here) => {
                         // Re-anchor rather than just moving the cursor: the
                         // character may be on another plane entirely.
@@ -532,7 +542,7 @@ impl MapView {
                     Asking::Room => {
                         match crate::go::resolve(
                             &self.graph,
-                            self.cursor_room().or(self.here),
+                            self.cursor_room().or(self.here.last_known()),
                             &typed,
                         ) {
                             Ok(id) => self.go_to_room(id),
@@ -553,7 +563,7 @@ impl MapView {
     pub fn lines(&self) -> Vec<String> {
         let (map_w, map_h) = self.map_area();
         let marks = Marks {
-            here: self.here,
+            here: self.here.last_known(),
             cursor: Some(self.cursor),
             stops: self.stops.iter().copied().collect(),
             route: self.route.clone(),
@@ -685,6 +695,11 @@ pub struct ViewExit {
     pub buffered: Vec<u8>,
     /// Set when the map closed itself rather than being closed.
     pub interrupted: Option<String>,
+    /// Where the view last resolved the character to. `tui::play`'s own
+    /// tracking arm does not run while the view owns the screen, so
+    /// without this every step taken with the map open is forgotten the
+    /// moment it closes.
+    pub here: crate::lost::Fix,
 }
 
 /// Paint one frame into the alternate screen.
@@ -759,6 +774,7 @@ pub async fn run(
     keys: &mut tokio::sync::mpsc::UnboundedReceiver<crossterm::event::Event>,
     raw: &mut tokio::sync::broadcast::Receiver<Vec<u8>>,
     events: &mut tokio::sync::broadcast::Receiver<crate::correlate::Correlated>,
+    nav: Option<&crate::nav::Navigator>,
     on_event: &mut dyn FnMut(&crate::correlate::Correlated),
 ) -> std::io::Result<ViewExit> {
     use crossterm::event::{Event as TermEvent, KeyEventKind};
@@ -778,11 +794,28 @@ pub async fn run(
                     action: ViewAction::Leave,
                     buffered,
                     interrupted: Some("disconnected".into()),
+                    here: view.here(),
                 }),
             },
             ev = events.recv() => {
                 if let Ok(cor) = &ev {
                     on_event(cor);
+                    // The view owns the screen, so `tui::play`'s tracking
+                    // arm is not running: the map must advance the same
+                    // fix the same way, through the same `refix`, or the
+                    // two disagree the moment the map closes. `elsewhere`
+                    // is honoured here for the same reason it is in the
+                    // session — a peek at the next room must not walk the
+                    // marker into it.
+                    if let (Some(nav), crate::events::Event::RoomSeen(seen)) = (nav, &cor.event)
+                        && !cor.elsewhere
+                    {
+                        let next = crate::lost::refix(nav, view.here(), seen);
+                        if next != view.here() {
+                            view.set_here(next);
+                            paint(&mut out, view)?;
+                        }
+                    }
                     if let crate::events::Event::Line(line) = &cor.event
                         && crate::farm::is_player_death(line, &username)
                     {
@@ -790,12 +823,18 @@ pub async fn run(
                             action: ViewAction::Leave,
                             buffered,
                             interrupted: Some("you died; the map is closed".into()),
+                            here: view.here(),
                         });
                     }
                 }
             }
             key = keys.recv() => match key {
-                None => return Ok(ViewExit { action: ViewAction::Quit, buffered, interrupted: None }),
+                None => return Ok(ViewExit {
+                    action: ViewAction::Quit,
+                    buffered,
+                    interrupted: None,
+                    here: view.here(),
+                }),
                 Some(TermEvent::Resize(cols, rows)) => {
                     view.resize((cols as usize, rows as usize));
                     paint(&mut out, view)?;
@@ -803,7 +842,12 @@ pub async fn run(
                 Some(TermEvent::Key(key)) if key.kind == KeyEventKind::Press => {
                     match view.on_key(&key) {
                         ViewAction::Continue => paint(&mut out, view)?,
-                        action => return Ok(ViewExit { action, buffered, interrupted: None }),
+                        action => return Ok(ViewExit {
+                            action,
+                            buffered,
+                            interrupted: None,
+                            here: view.here(),
+                        }),
                     }
                 }
                 Some(_) => {}
