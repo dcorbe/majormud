@@ -1540,4 +1540,3 @@ fn locator(
     let spawns = Arc::new(crate::spawn::SpawnTable::load(&db).ok()?);
     Some((graph, nav, spawns))
 }
-

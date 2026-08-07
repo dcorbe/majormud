@@ -174,6 +174,25 @@ fn with_a_runner_the_bar_gains_activity_and_room_number() {
     assert!(s.contains("1/2156"), "{s}");
 }
 
+/// A stale fix still shows the room id -- better than nothing -- but the
+/// trailing `?` is the whole reason the type reaches the bar at all: the
+/// operator must be able to see the client has lost the thread before
+/// trusting it as a walk's origin.
+#[test]
+fn a_stale_fix_shows_the_room_with_a_question_mark() {
+    let state = GameState {
+        hp: 23,
+        mana: Some(8),
+        room: Some(a_room("Small Cavern")),
+    };
+    let stale = render_status(&state, "mbbs", None, Fix::Stale(RoomId { map: 1, room: 2156 }), None, None, false, 120);
+    assert!(stale.contains("1/2156?"), "{stale}");
+
+    let confirmed = render_status(&state, "mbbs", None, Fix::Confirmed(RoomId { map: 1, room: 2156 }), None, None, false, 120);
+    assert!(confirmed.contains("1/2156]"), "{confirmed}");
+    assert!(!confirmed.contains("1/2156?"), "{confirmed}");
+}
+
 /// Still exactly `width` characters, whichever form it takes -- the bar
 /// is painted into a fixed row and a long room name must not wrap it.
 #[test]
