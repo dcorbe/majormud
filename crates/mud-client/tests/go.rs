@@ -5,7 +5,7 @@
 //! what this file pins is that `/go` never walks a live character
 //! somewhere the operator did not unambiguously ask for.
 
-use mud_client::farm::FarmConfig;
+use mud_client::farm::{FarmConfig, Phase};
 use mud_client::go::{GoRefusal, go_config, resolve};
 use mud_client::graph::{ExitEdge, GraphRoom, RoomGraph};
 use mud_core::content::{Direction, RoomId};
@@ -241,4 +241,23 @@ fn slum_street_is_ambiguous_in_the_shipped_world() {
         steps.windows(2).all(|w| w[0] <= w[1]),
         "nearest first: {steps:?}"
     );
+}
+
+// --- Phase::Done carries where it ended -------------------------------
+
+/// A walk that finished knowing where it stands is the best position
+/// evidence there is. Reporting only a sentence threw it away, and the
+/// client fell back to whatever the last room block happened to localize
+/// to.
+#[test]
+fn a_finished_walk_reports_the_room_it_reached() {
+    let at = RoomId { map: 1, room: 2324 };
+    let done = Phase::Done { why: "arrived".into(), at: Some(at) };
+    assert_eq!(done.room(), Some(at));
+}
+
+#[test]
+fn a_walk_that_ended_without_arriving_reports_no_room() {
+    let done = Phase::Done { why: "gave up".into(), at: None };
+    assert_eq!(done.room(), None);
 }

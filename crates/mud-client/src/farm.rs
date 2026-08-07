@@ -391,8 +391,11 @@ pub enum Phase {
     /// "done" hid a TooHurt ending from the operator watching a healthy
     /// character stand idle (cwgaming, 2026-08-01); the reason rides in
     /// the phase for exactly the reason Failed's does.
+    /// `at` is where it ended IF it knows — an arrival knows, a giving-up
+    /// usually does not.
     Done {
         why: String,
+        at: Option<RoomId>,
     },
     /// The run ended badly. Carried in the phase rather than logged and
     /// dropped, because the operator watching the status bar is exactly
@@ -426,7 +429,7 @@ impl Phase {
             Phase::Resting { .. } => "resting".into(),
             Phase::Recovering { to } => format!("recovering to {}/{}", to.map, to.room),
             Phase::WalkingHome => "walking home".into(),
-            Phase::Done { why } => format!("done: {why}"),
+            Phase::Done { why, .. } => format!("done: {why}"),
             // First line only. A NavError's Display carries a multi-line
             // `tail:` of raw board output, and the bar is one row.
             Phase::Failed { why } => {
@@ -448,6 +451,7 @@ impl Phase {
             | Phase::Fighting { at, .. }
             | Phase::Resting { at }
             | Phase::Placed { at, .. } => Some(*at),
+            Phase::Done { at, .. } => *at,
             _ => None,
         }
     }

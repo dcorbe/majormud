@@ -1268,6 +1268,9 @@ fn spawn_run(
                         .map(|d| format!("; room model: {d}"))
                         .unwrap_or_default(),
                 ),
+                // `FarmEnd` carries no room; the shadow model's belief is
+                // not confirmed enough to hand a caller as an arrival.
+                at: None,
             },
             Err(e) => crate::farm::Phase::Failed { why: e.to_string() },
         };
@@ -1312,16 +1315,22 @@ fn start_go(
         let end = match crate::go::run_go(&session, graph, hint, to, &bot, &cfg, Some(&tx)).await {
             Ok(crate::go::GoEnd::Arrived(at)) => crate::farm::Phase::Done {
                 why: format!("arrived at {}/{}", at.map, at.room),
+                at: Some(at),
             },
             // Where it stands matters more than why it stopped: a bare
-            // "stopped" strands the operator worse than never trying.
+            // "stopped" strands the operator worse than never trying. And
+            // a travel interrupt is as solid a position as an arrival —
+            // the character stopped there, it did not vanish.
             Ok(crate::go::GoEnd::Stopped(at)) => crate::farm::Phase::Done {
                 why: format!(
                     "stopped at {}/{}: travel interrupt budget spent",
                     at.map, at.room
                 ),
+                at: Some(at),
             },
-            Ok(crate::go::GoEnd::Died) => crate::farm::Phase::Done { why: "died".into() },
+            Ok(crate::go::GoEnd::Died) => {
+                crate::farm::Phase::Done { why: "died".into(), at: None }
+            }
             Err(e) => crate::farm::Phase::Failed { why: e.to_string() },
         };
         let _ = tx.send(end);

@@ -458,6 +458,7 @@ fn a_directional_look_starts_nothing() {
 fn the_done_phase_carries_the_reason() {
     let phase = mud_client::farm::Phase::Done {
         why: "too hurt: travel interrupt budget spent".into(),
+        at: None,
     };
     assert_eq!(phase.label(), "done: too hurt: travel interrupt budget spent");
 }
@@ -501,7 +502,7 @@ fn the_bar_names_the_assist_when_it_is_driving() {
 #[test]
 fn a_running_farm_outranks_the_assist_in_the_bar() {
     let state = GameState { hp: 43, mana: Some(10), room: None };
-    let phase = mud_client::farm::Phase::Done { why: "loops walked".into() };
+    let phase = mud_client::farm::Phase::Done { why: "loops walked".into(), at: None };
     let s = render_status(&state, "mbbs", Some(&phase), Fix::Unknown, None, None, true, 120);
     assert!(!s.contains("assist"), "got {s:?}");
 }
