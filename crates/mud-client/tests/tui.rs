@@ -2,6 +2,7 @@
 //! bar rendering. The terminal loop itself is thin glue over these.
 
 use mud_client::events::RoomView;
+use mud_client::lost::Fix;
 use mud_client::session::GameState;
 use mud_client::tui::{InputEditor, render_status};
 use mud_core::content::RoomId;
@@ -92,16 +93,16 @@ fn status_line_shows_hp_room_and_fits_width() {
             ..Default::default()
         }),
     };
-    let s = render_status(&state, "mbbs", None, None, None, None, false, 80);
+    let s = render_status(&state, "mbbs", None, Fix::Unknown, None, None, false, 80);
     assert!(s.contains("HP 35"));
     assert!(s.contains("MA 12"));
     assert!(s.contains("Newhaven, Village Entrance"));
     assert!(s.contains("mbbs"));
 
     // Width is respected (padded or truncated to exactly `width`).
-    let narrow = render_status(&state, "mbbs", None, None, None, None, false, 20);
+    let narrow = render_status(&state, "mbbs", None, Fix::Unknown, None, None, false, 20);
     assert_eq!(narrow.chars().count(), 20);
-    let wide = render_status(&state, "mbbs", None, None, None, None, false, 120);
+    let wide = render_status(&state, "mbbs", None, Fix::Unknown, None, None, false, 120);
     assert_eq!(wide.chars().count(), 120);
 }
 
@@ -112,7 +113,7 @@ fn status_line_without_room_or_mana() {
         mana: None,
         room: None,
     };
-    let s = render_status(&state, "rust", None, None, None, None, false, 80);
+    let s = render_status(&state, "rust", None, Fix::Unknown, None, None, false, 80);
     assert!(s.contains("HP 10"));
     assert!(!s.contains("MA "));
     assert_eq!(s.chars().count(), 80);
@@ -143,7 +144,7 @@ fn without_a_runner_the_bar_is_hp_room_and_target() {
         mana: Some(8),
         room: Some(a_room("Newhaven, Narrow Road")),
     };
-    let s = render_status(&state, "mbbs", None, None, None, None, false, 100);
+    let s = render_status(&state, "mbbs", None, Fix::Unknown, None, None, false, 100);
     assert!(s.contains("HP 33"), "{s}");
     assert!(s.contains("MA 8"), "{s}");
     assert!(s.contains("Newhaven, Narrow Road"), "{s}");
@@ -166,7 +167,7 @@ fn with_a_runner_the_bar_gains_activity_and_room_number() {
         },
         target: "cave bear".into(),
     };
-    let s = render_status(&state, "mbbs", Some(&phase), Some(RoomId { map: 1, room: 2156 }), None, None, false, 120);
+    let s = render_status(&state, "mbbs", Some(&phase), Fix::Confirmed(RoomId { map: 1, room: 2156 }), None, None, false, 120);
     assert!(s.contains("attacking cave bear"), "{s}");
     assert!(s.contains("HP 23"), "{s}");
     assert!(s.contains("Small Cavern"), "{s}");
@@ -183,7 +184,7 @@ fn the_bar_is_always_exactly_the_width_asked_for() {
         room: Some(a_room("A Room With A Very Long Name Indeed That Runs On")),
     };
     for w in [20usize, 80, 120] {
-        assert_eq!(render_status(&state, "mbbs", None, None, None, None, false, w).chars().count(), w);
+        assert_eq!(render_status(&state, "mbbs", None, Fix::Unknown, None, None, false, w).chars().count(), w);
     }
 }
 
@@ -196,10 +197,10 @@ fn the_bar_shows_the_experience_rate_when_there_is_one() {
         mana: Some(8),
         room: Some(a_room("Small Cavern")),
     };
-    let with = render_status(&state, "mbbs", None, None, Some(255), None, false, 120);
+    let with = render_status(&state, "mbbs", None, Fix::Unknown, Some(255), None, false, 120);
     assert!(with.contains("255 xp/min"), "{with}");
 
-    let without = render_status(&state, "mbbs", None, None, None, None, false, 120);
+    let without = render_status(&state, "mbbs", None, Fix::Unknown, None, None, false, 120);
     assert!(!without.contains("xp/min"), "{without}");
 }
 
@@ -218,7 +219,7 @@ fn the_bar_never_contains_a_control_character() {
         why: "at 1/2152: timed out waiting for \"room block after movement\"; tail:\n\n  look\n"
             .into(),
     };
-    let s = render_status(&state, "mbbs", Some(&phase), None, None, None, false, 120);
+    let s = render_status(&state, "mbbs", Some(&phase), Fix::Unknown, None, None, false, 120);
     assert!(
         !s.chars().any(|c| c.is_control()),
         "a control character in a fixed-row bar wrecks the display: {s:?}"
@@ -442,7 +443,7 @@ fn the_bar_shows_the_level_and_the_time_to_the_next_one() {
     use mud_client::progress::LevelProgress;
     let state = GameState { hp: 43, mana: Some(10), room: None };
     let p = LevelProgress { exp: 57209, level: 3, needed: 7200 };
-    let s = render_status(&state, "mbbs", None, None, Some(100), Some(p), false, 120);
+    let s = render_status(&state, "mbbs", None, Fix::Unknown, Some(100), Some(p), false, 120);
     assert!(s.contains("L3->4 1h12m"), "got {s:?}");
 }
 
@@ -453,7 +454,7 @@ fn the_bar_admits_when_it_cannot_estimate() {
     use mud_client::progress::LevelProgress;
     let state = GameState { hp: 43, mana: Some(10), room: None };
     let p = LevelProgress { exp: 1, level: 1, needed: 500 };
-    let s = render_status(&state, "mbbs", None, None, None, Some(p), false, 120);
+    let s = render_status(&state, "mbbs", None, Fix::Unknown, None, Some(p), false, 120);
     assert!(s.contains("L1->2 ?"), "got {s:?}");
 }
 
@@ -464,7 +465,7 @@ fn the_bar_admits_when_it_cannot_estimate() {
 #[test]
 fn the_bar_names_the_assist_when_it_is_driving() {
     let state = GameState { hp: 43, mana: Some(10), room: None };
-    let s = render_status(&state, "mbbs", None, None, None, None, true, 120);
+    let s = render_status(&state, "mbbs", None, Fix::Unknown, None, None, true, 120);
     assert!(s.starts_with("assist | "), "got {s:?}");
 }
 
@@ -474,7 +475,7 @@ fn the_bar_names_the_assist_when_it_is_driving() {
 fn a_running_farm_outranks_the_assist_in_the_bar() {
     let state = GameState { hp: 43, mana: Some(10), room: None };
     let phase = mud_client::farm::Phase::Done { why: "loops walked".into() };
-    let s = render_status(&state, "mbbs", Some(&phase), None, None, None, true, 120);
+    let s = render_status(&state, "mbbs", Some(&phase), Fix::Unknown, None, None, true, 120);
     assert!(!s.contains("assist"), "got {s:?}");
 }
 
@@ -636,6 +637,6 @@ fn the_bar_shows_where_a_go_is_walking() {
             room: 2324,
         },
     };
-    let bar = render_status(&state, "mbbs", Some(&phase), None, None, None, false, 100);
+    let bar = render_status(&state, "mbbs", Some(&phase), Fix::Unknown, None, None, false, 100);
     assert!(bar.contains("1/2324"), "{bar}");
 }

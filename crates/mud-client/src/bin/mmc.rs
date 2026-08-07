@@ -439,6 +439,10 @@ fn farm_command(
                                 .unwrap_or_default();
                             (named.len() == 1).then(|| named[0])
                         });
+                        let room_id = match room_id {
+                            Some(at) => mud_client::lost::Fix::Confirmed(at),
+                            None => mud_client::lost::Fix::Unknown,
+                        };
                         mud_client::tui::render_status(
                             &state,
                             target_label,

@@ -153,10 +153,12 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     // A clone of the job's phase channel, kept separate so the select
     // can await it without borrowing `job` (which the repaint needs).
     let mut phase_rx: Option<tokio::sync::watch::Receiver<crate::farm::Phase>> = None;
-    // Where the client believes the character is, tracked whoever is
-    // driving. A room block is a room block: it says as much when the
-    // operator typed the move as when the runner did.
-    let mut here: Option<mud_core::content::RoomId> = None;
+    // Where the client believes the character is, and how much that
+    // belief is worth. A room block is a room block: it says as much when
+    // the operator typed the move as when the runner did — but a block
+    // the graph cannot name says nothing at all, and that used to be
+    // indistinguishable from agreement.
+    let mut here = crate::lost::Fix::Unknown;
     // Experience rate, counted from the board's award lines. Runs for the
     // whole session, not just while a farm is attached: a hand-played
     // stretch is worth measuring too.
@@ -291,13 +293,13 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
             changed = state_rx.changed() => {
                 if changed.is_err() { break Ok(()); }
                 if let (Some(nav), Some(room)) = (nav.as_ref(), state_rx.borrow().room.clone()) {
-                    here = track(nav, here, &room).or(here);
+                    here = crate::lost::refix(nav, here, &room);
                     // The shadow model keys identity on the printed name
                     // unless somebody can do better, and here somebody
                     // can: the locator already resolved this block to an
                     // id for the status bar. Without it, walking between
                     // Newhaven's twin Narrow Roads reads as a re-render.
-                    if let Some(id) = here {
+                    if let Some(id) = here.confirmed() {
                         model.note_room(id);
                     }
                 }
@@ -332,7 +334,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                     };
                     let why: String = why;
                     if let Some(at) = placed {
-                        here = Some(at);
+                        here = crate::lost::Fix::Confirmed(at);
                         model.note_room(at);
                     }
                     let what = job.take().map(|j| j.what).unwrap_or("job");
@@ -418,11 +420,12 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                             "-- go: no room database at {} --",
                                             content_path(session.profile()).display()
                                         ))?,
-                                        Some(g) => match crate::go::resolve(g, here, &target) {
+                                        Some(g) => match crate::go::resolve(g, here.confirmed(), &target) {
                                             Err(refusal) => note(&mut out, &refusal.lines().join("\n"))?,
                                             Ok(to) => {
                                                 let name = g.room(to).map(|r| r.name.clone()).unwrap_or_default();
                                                 let steps = here
+                                                    .confirmed()
                                                     .and_then(|f| g.route(f, to))
                                                     .map(|r| format!(", {} steps", r.len()))
                                                     .unwrap_or_default();
@@ -430,7 +433,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                                 let started = start_go(
                                                     session.clone(),
                                                     g.clone(),
-                                                    here,
+                                                    here.confirmed(),
                                                     to,
                                                     assist_config.clone(),
                                                     assist.is_some(),
@@ -453,7 +456,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                         content_path(session.profile()).display()
                                     ))?,
                                     Some(g) => {
-                                        let started = start_where(session.clone(), g.clone(), here);
+                                        let started = start_where(session.clone(), g.clone(), here.confirmed());
                                         note(&mut out, "-- working out where you are (Ctrl-F to take over) --")?;
                                         phase_rx = Some(started.phase.clone());
                                         job = Some(started);
@@ -462,7 +465,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                             }
                             KeyOutcome::Room { target } => {
                                 match (graph.as_ref(), spawns.as_ref()) {
-                                    (Some(g), Some(s)) => match here_or(g, here, &target) {
+                                    (Some(g), Some(s)) => match here_or(g, here.last_known(), &target) {
                                         Err(refusal) => note(&mut out, &refusal.lines().join("\n"))?,
                                         Ok(id) => match crate::spawn::Dossier::of(g, s, id) {
                                             None => note(&mut out, &format!("-- room: no room {}/{} --", id.map, id.room))?,
@@ -477,14 +480,14 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                             }
                             KeyOutcome::Map { target } => {
                                 match (graph.as_ref(), spawns.as_ref()) {
-                                    (Some(g), Some(s)) => match here_or(g, here, &target) {
+                                    (Some(g), Some(s)) => match here_or(g, here.last_known(), &target) {
                                         Err(refusal) => note(&mut out, &refusal.lines().join("\n"))?,
                                         Ok(id) => {
                                             let mut view = crate::mapview::MapView::new(
                                                 g.clone(),
                                                 s.clone(),
                                                 id,
-                                                here,
+                                                here.last_known(),
                                                 crate::map::PaintCtx {
                                                     max_hp: assist_config.max_hp.into(),
                                                     ..Default::default()
@@ -570,7 +573,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                                     let started = start_go(
                                                         session.clone(),
                                                         g.clone(),
-                                                        here,
+                                                        here.confirmed(),
                                                         to,
                                                         assist_config.clone(),
                                                         assist.is_some(),
@@ -897,7 +900,7 @@ fn redraw_bottom(
     state: &GameState,
     target: &str,
     phase: Option<&crate::farm::Phase>,
-    room_id: Option<mud_core::content::RoomId>,
+    room_id: crate::lost::Fix,
     exp_per_min: Option<i64>,
     level: Option<crate::progress::LevelProgress>,
     assist: bool,
@@ -936,7 +939,7 @@ pub fn render_status(
     state: &GameState,
     target: &str,
     phase: Option<&crate::farm::Phase>,
-    room_id: Option<mud_core::content::RoomId>,
+    room_id: crate::lost::Fix,
     exp_per_min: Option<i64>,
     level: Option<crate::progress::LevelProgress>,
     assist: bool,
@@ -960,8 +963,12 @@ pub fn render_status(
     }
     if let Some(room) = &state.room {
         s.push_str(&format!(" | {}", room.name));
-        if let Some(id) = room_id {
-            s.push_str(&format!(" [{}/{}]", id.map, id.room));
+        if let Some(id) = room_id.last_known() {
+            // A trailing `?` is the whole point of the type reaching the
+            // bar: the operator can see the client has lost the thread
+            // before /go routes from a room nobody is in.
+            let sure = if room_id.confirmed().is_some() { "" } else { "?" };
+            s.push_str(&format!(" [{}/{}{sure}]", id.map, id.room));
         }
     }
     if let Some(rate) = exp_per_min {
@@ -1114,7 +1121,7 @@ fn repaint(
     state_rx: &tokio::sync::watch::Receiver<GameState>,
     target: &str,
     job: Option<&Job>,
-    here: Option<mud_core::content::RoomId>,
+    here: crate::lost::Fix,
     exp_per_min: Option<i64>,
     level: Option<crate::progress::LevelProgress>,
     assist: bool,
@@ -1126,7 +1133,10 @@ fn repaint(
     // The runner's own belief wins while it drives -- it knows which of
     // two same-named rooms it walked to -- and the client's tracking
     // covers everything else.
-    let room_id = phase.as_ref().and_then(|p| p.room()).or(here);
+    let room_id = match phase.as_ref().and_then(|p| p.room()) {
+        Some(at) => crate::lost::Fix::Confirmed(at),
+        None => here,
+    };
     let state = state_rx.borrow().clone();
     redraw_bottom(
         out,
@@ -1189,7 +1199,7 @@ fn start_farm(session: Arc<Session>, loop_name: Option<&str>) -> Result<Job, Str
 fn start_roam(
     session: Arc<Session>,
     walls: crate::roam::Walls,
-    here: Option<mud_core::content::RoomId>,
+    here: crate::lost::Fix,
 ) -> Result<Job, String> {
     let profile = session.profile().clone();
     let cfg = profile.farm.clone().unwrap_or_default();
@@ -1198,8 +1208,8 @@ fn start_roam(
     // a roam started from an unknown position has nothing to measure.
     // Refusing beats guessing: the fence would be anchored somewhere
     // nobody is.
-    let start = here.ok_or(
-        "nobody knows where you are standing; walk a step or /where first, then roam",
+    let start = here.confirmed().ok_or(
+        "nobody knows with any confidence where you are standing; /where first, then roam",
     )?;
     let plan = crate::farm::FarmPlan::roaming(start, walls, &graph)?;
     let bot = profile.bot.clone().unwrap_or_default();
@@ -1510,20 +1520,3 @@ fn locator(
     Some((graph, nav, spawns))
 }
 
-/// Resolve a room block to a room id, given where we thought we were.
-///
-/// `localize_view` tries the cheap one-hop answer first and falls back to
-/// searching the whole graph by name and exits, so this works both for an
-/// ordinary step and for the first block after logging in, when there is
-/// no previous position at all.
-fn track(
-    nav: &crate::nav::Navigator,
-    here: Option<mud_core::content::RoomId>,
-    room: &crate::events::RoomView,
-) -> Option<mud_core::content::RoomId> {
-    // A room that cannot exist, so the neighbour shortcut misses and the
-    // global search runs. Any seed would do; this one cannot be right by
-    // accident.
-    let hint = here.unwrap_or(mud_core::content::RoomId { map: 0, room: 0 });
-    nav.localize_view(hint, room)
-}
