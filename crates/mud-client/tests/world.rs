@@ -233,10 +233,18 @@ fn combat_off_stales_the_view_but_keeps_the_occupants() {
     assert_eq!(here.occupants.len(), 1, "the room did not change");
 }
 
+/// Darkness is not a fact about room contents, so it disturbs nothing
+/// in the model. Per `_CAN_SEE` the board still lets the character
+/// attack and `get` in the dark — only the re-observation is refused —
+/// so the occupants and the floor stand exactly as they were. Blindness
+/// belongs to whoever owns the outstanding `look` (`farm::StopState`),
+/// which is the only thing that can tell OUR unanswered look apart from
+/// a dark line answering anything else.
 #[test]
-fn a_dark_answer_marks_here_blind() {
+fn a_dark_answer_disturbs_nothing_the_model_believes() {
     let now = Instant::now();
     let mut here = Here::default();
+    here.on_event(&answering(Event::RoomSeen(view(&["cave bear"])), ASK), now);
     here.on_event(
         &answering(
             Event::Line("The room is very dark - you can't see anything".into()),
@@ -244,10 +252,13 @@ fn a_dark_answer_marks_here_blind() {
         ),
         now,
     );
-    assert!(here.blind);
-    // The next attributed block clears it.
-    here.on_event(&answering(Event::RoomSeen(view(&[])), ASK), now);
-    assert!(!here.blind);
+    assert!(here.seeded(), "the model still holds beliefs");
+    assert_eq!(
+        here.names().collect::<Vec<_>>(),
+        ["cave bear"],
+        "the bear did not leave because the torch went out"
+    );
+    assert!(here.view.is_some(), "the render is not staled by darkness");
 }
 
 /// The recast coherence rule: a faded light waits while the room holds

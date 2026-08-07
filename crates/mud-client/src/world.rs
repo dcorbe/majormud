@@ -341,6 +341,23 @@ fn kind_of(name: &str) -> OccupantKind {
 /// verdict's evidence with invariants four live failures paid for.
 /// `Here` believes any attributed block, whoever asked, and earns
 /// trust as a consumer before any collapse is considered.
+///
+/// Blindness deliberately does NOT live here, and it is the one field
+/// that must never be collapsed inwards. `Here` models room CONTENTS,
+/// and darkness is not a fact about contents: per `_CAN_SEE`
+/// (decompile 66340) it gates room display, look, exits, search and
+/// hide — but NOT movement, attack or get. So every consumer of this
+/// model keeps working in the dark; the monsters are still standing
+/// there and the coins are still on the floor.
+///
+/// What darkness governs is the OBSERVATION CHANNEL — "no block is
+/// coming, go fix the light" — which needs the outstanding `look` to
+/// answer, and only [`crate::farm::StopState`] holds that. Its
+/// `blind` fires on `TOO_DARK` answering OUR look; a copy here could
+/// only test "answers something", and `Verdict::Blind` calls
+/// `LightState::source_died`, so the broader trigger would declare a
+/// source dead over a dark line answering a `get` — the poisoned
+/// light plan `StopState::invalidate` already paid for once.
 #[derive(Debug, Default)]
 pub struct Here {
     /// Localized identity, written by the owner (the pump knows the
@@ -351,8 +368,6 @@ pub struct Here {
     /// The living occupant list: seeded by each attributed block, then
     /// mutated by the events the pump used to throw away.
     pub occupants: Vec<Occupant>,
-    /// The board said "too dark" here more recently than any block.
-    pub blind: bool,
     /// The coins on this floor: seeded by each attributed block, raised
     /// by drop lines, cleared by the board's own pickup acknowledgement.
     pub piles: Vec<Pile>,
@@ -456,7 +471,6 @@ impl Here {
                     Self::compare(&mut self.reconcile, &self.occupants, &self.piles, room, now);
                 }
                 self.seeded = Some(room.name.clone());
-                self.blind = false;
                 let old = std::mem::take(&mut self.occupants);
                 self.occupants = room
                     .also_here
@@ -588,8 +602,6 @@ impl Here {
                     // FIGHT changed, not the room, so the occupants
                     // stand.
                     self.view = None;
-                } else if line.contains(crate::sheet::TOO_DARK) && cor.answers.is_some() {
-                    self.blind = true;
                 }
             }
             _ => {}
@@ -674,7 +686,6 @@ impl Here {
         self.view = None;
         self.occupants.clear();
         self.piles.clear();
-        self.blind = false;
         // Beliefs go; the measurement stays. Clearing the tally here
         // would discard exactly the evidence a bad run produces, and the
         // next block seeds rather than indicts an emptied model.
