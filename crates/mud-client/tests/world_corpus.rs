@@ -49,7 +49,7 @@ fn replay(path: &std::path::Path) -> Here {
     for (i, event) in events(path).into_iter().enumerate() {
         let answers = matches!(event, Event::RoomSeen(_)).then_some(CmdId(1));
         here.on_event(
-            &Correlated { event, answers },
+            &Correlated { event, answers, elsewhere: false },
             start + std::time::Duration::from_millis(i as u64),
         );
     }
@@ -176,7 +176,7 @@ fn stationary_arena(lexicon: bool) -> Measured {
         }
         let answers = matches!(event, Event::RoomSeen(_)).then_some(CmdId(1));
         here.on_event(
-            &Correlated { event, answers },
+            &Correlated { event, answers, elsewhere: false },
             start + std::time::Duration::from_millis(i as u64),
         );
     }

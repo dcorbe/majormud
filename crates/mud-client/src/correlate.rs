@@ -83,6 +83,17 @@ pub struct CmdId(pub u64);
 pub struct Correlated {
     pub event: Event,
     pub answers: Option<CmdId>,
+    /// True when `event` is a room block describing a room the character
+    /// is NOT standing in — the answer to a `look <direction>`.
+    ///
+    /// Without this a peek is indistinguishable from an arrival, and
+    /// `Navigator::localize` searches the current room PLUS its
+    /// neighbours by name, so the neighbour matches and the client's
+    /// position walks one room per peek. Consumers that model WHERE the
+    /// character is — position tracking, the occupancy model — must
+    /// ignore such a block; consumers that model what the world looks
+    /// like may still read it.
+    pub elsewhere: bool,
 }
 
 /// Strip the board's single leading parenthesized status decoration:
@@ -126,6 +137,7 @@ pub fn is_echo(line: &str, cmd: &str) -> bool {
 enum Kind {
     Move,
     Look,
+    LookDir,
     Open,
     Bash,
     Cast,
@@ -150,7 +162,20 @@ fn kind_of(cmd: &str) -> Kind {
     if DIRS.contains(&cmd) {
         return Kind::Move;
     }
-    if cmd == "look" || cmd.starts_with("look ") {
+    if cmd == "look" || cmd == "l" {
+        return Kind::Look;
+    }
+    // `look <direction>` and its `l <direction>` alias answer with a full
+    // room block for the NEIGHBOUR (vendor relnotes: "LOOK <dir> will now
+    // give the same detail as moving"). Same reply shape as a move, other
+    // vantage — so it needs its own kind rather than sharing `Look`,
+    // whose block IS where the character stands.
+    if let Some(rest) = cmd.strip_prefix("look ").or_else(|| cmd.strip_prefix("l ")) {
+        if DIRS.contains(&rest.trim()) {
+            return Kind::LookDir;
+        }
+    }
+    if cmd.starts_with("look ") {
         return Kind::Look;
     }
     if cmd.starts_with("open ") {
@@ -202,7 +227,7 @@ fn completes(kind: Kind, ev: &Event) -> bool {
         Event::RoomSeen(_) => {
             // A block answers movement and looking — and a bash that
             // carried the character through the doorway.
-            return matches!(kind, Kind::Move | Kind::Look | Kind::Bash);
+            return matches!(kind, Kind::Move | Kind::Look | Kind::LookDir | Kind::Bash);
         }
         Event::Line(l) => l.to_lowercase(),
         _ => return false,
@@ -253,7 +278,7 @@ fn completes(kind: Kind, ev: &Event) -> bool {
                 || has("may not pass through that exit")
                 || has("cover the toll of")
         }
-        Kind::Look => {
+        Kind::Look | Kind::LookDir => {
             has(DARK) || has("door is closed in that direction") || has("there are no exits")
         }
         Kind::Open => {
@@ -422,6 +447,7 @@ impl Correlator {
     /// Attribute one parsed event.
     pub fn on_event(&mut self, event: Event, now: Instant) -> Correlated {
         self.expire(now);
+        let mut elsewhere = false;
         let answers = match &event {
             Event::SlowDown => {
                 // Input above this point was DROPPED; whether dropped
@@ -433,7 +459,13 @@ impl Correlator {
                 let l = l.clone();
                 self.on_line(&l, now)
             }
-            Event::RoomSeen(_) => self.retire(&event, now),
+            Event::RoomSeen(_) => match self.retire(&event, now) {
+                Some((id, kind)) => {
+                    elsewhere = kind == Kind::LookDir;
+                    Some(id)
+                }
+                None => None,
+            },
             // Classified async traffic: combat, actors, prompts. The
             // board emits these freely; they answer nothing.
             Event::Prompt { .. }
@@ -442,7 +474,7 @@ impl Correlator {
             | Event::ActorEntered { .. }
             | Event::ActorLeft { .. } => None,
         };
-        Correlated { event, answers }
+        Correlated { event, answers, elsewhere }
     }
 
     /// A line is one of four things, checked in order: the echo of the
@@ -497,7 +529,7 @@ impl Correlator {
             self.refresh(now);
             return Some(id);
         }
-        self.retire(&Event::Line(line.to_string()), now)
+        self.retire(&Event::Line(line.to_string()), now).map(|(id, _)| id)
     }
 
     /// The reply completes the oldest accepted entry whose grammar
@@ -505,15 +537,16 @@ impl Correlator {
     /// not credited. Retirement takes everything older with it: replies
     /// are FIFO, so anything senior to the answered command was already
     /// answered or never will be.
-    fn retire(&mut self, ev: &Event, now: Instant) -> Option<CmdId> {
+    fn retire(&mut self, ev: &Event, now: Instant) -> Option<(CmdId, Kind)> {
         let pos = self
             .queue
             .iter()
             .position(|e| e.echoed && completes(e.kind, ev))?;
         let id = self.queue[pos].id;
+        let kind = self.queue[pos].kind;
         self.queue.drain(..=pos);
         self.refresh(now);
-        Some(id)
+        Some((id, kind))
     }
 
     /// Queue progress refreshes every pending deadline: a queued command

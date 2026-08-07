@@ -336,7 +336,7 @@ impl Session {
                         let mut guard = correlator.lock().expect("correlator lock");
                         for ev in batch {
                             let cor = guard.on_event(ev, Instant::now());
-                            state_tx.send_if_modified(|s| apply_event(s, &cor.event));
+                            state_tx.send_if_modified(|s| apply_event(s, &cor));
                             let _ = events_tx.send(cor);
                         }
                     }
@@ -355,7 +355,7 @@ impl Session {
                     let mut guard = correlator.lock().expect("correlator lock");
                     for ev in tail {
                         let cor = guard.on_event(ev, Instant::now());
-                        state_tx.send_if_modified(|s| apply_event(s, &cor.event));
+                        state_tx.send_if_modified(|s| apply_event(s, &cor));
                         let _ = events_tx.send(cor);
                     }
                 }
@@ -549,8 +549,8 @@ pub fn drain(events: &mut broadcast::Receiver<Correlated>, mut seen: impl FnMut(
 }
 
 /// Fold an event into the rolling state; returns whether it changed.
-fn apply_event(state: &mut GameState, ev: &Event) -> bool {
-    match ev {
+fn apply_event(state: &mut GameState, cor: &Correlated) -> bool {
+    match &cor.event {
         Event::Prompt { hp, mana } => {
             let changed = state.hp != *hp || state.mana != *mana;
             state.hp = *hp;
@@ -558,6 +558,14 @@ fn apply_event(state: &mut GameState, ev: &Event) -> bool {
             changed
         }
         Event::RoomSeen(room) => {
+            // The block a `look <direction>` answers describes the room
+            // NEXT DOOR. `state.room` means the room the character is
+            // standing in — it feeds position tracking and the occupant
+            // list — so adopting a peek would both walk the client's
+            // position and report the neighbour's occupants as present.
+            if cor.elsewhere {
+                return false;
+            }
             state.room = Some(room.clone());
             true
         }

@@ -356,6 +356,7 @@ fn attributed(event: Event) -> Correlated {
     Correlated {
         event,
         answers: Some(CmdId(1)),
+        elsewhere: false,
     }
 }
 
@@ -363,6 +364,7 @@ fn unsolicited(event: Event) -> Correlated {
     Correlated {
         event,
         answers: None,
+        elsewhere: false,
     }
 }
 

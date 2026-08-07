@@ -239,12 +239,12 @@ fn prompt(hp: i32) -> Event {
 
 /// An event nobody asked for.
 fn unsolicited(ev: Event) -> Correlated {
-    Correlated { event: ev, answers: None }
+    Correlated { event: ev, answers: None, elsewhere: false }
 }
 
 /// An event attributed to `id`.
 fn answering(ev: Event, id: CmdId) -> Correlated {
-    Correlated { event: ev, answers: Some(id) }
+    Correlated { event: ev, answers: Some(id), elsewhere: false }
 }
 
 #[test]

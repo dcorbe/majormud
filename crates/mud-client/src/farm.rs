@@ -1880,7 +1880,7 @@ pub(crate) async fn next_room_view(
     let deadline = tokio::time::Instant::now() + within;
     loop {
         match tokio::time::timeout_at(deadline, events.recv()).await {
-            Ok(Ok(Correlated { event: Event::RoomSeen(room), answers }))
+            Ok(Ok(Correlated { event: Event::RoomSeen(room), answers, .. }))
                 if answers == Some(answering) =>
             {
                 return Some(room);
@@ -2639,6 +2639,7 @@ async fn farm_stop(
             &crate::correlate::Correlated {
                 event: Event::RoomSeen(room.clone()),
                 answers: Some(crate::correlate::CmdId(0)),
+                elsewhere: false,
             },
             now,
         );

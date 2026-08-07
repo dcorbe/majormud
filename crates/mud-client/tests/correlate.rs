@@ -982,3 +982,58 @@ fn the_same_phrase_sent_plainly_does_not_claim_a_room_block() {
     );
     assert_eq!(arrival.answers, None);
 }
+
+// ------------------------------------------------ directional look vantage
+
+/// A `look <direction>` prints the NEIGHBOUR's room block. It retires the
+/// look like any other reply, but it is evidence about the room next
+/// door, never about where the character stands — so it is flagged
+/// `elsewhere` and position tracking drops it.
+#[test]
+fn directional_look_block_is_elsewhere() {
+    let mut c = Correlator::new(TTL);
+    let now = Instant::now();
+    c.sent(CmdId(1), "look north", now);
+    let _ = c.on_event(line("look north"), now);
+    let cor = c.on_event(room("Sewer Tunnel"), now);
+    assert_eq!(cor.answers, Some(CmdId(1)), "the block still retires the look");
+    assert!(cor.elsewhere, "a directional look describes the room next door");
+}
+
+/// A bare `look` describes the room the character is standing in, so it
+/// must keep feeding position tracking.
+#[test]
+fn bare_look_block_is_here() {
+    let mut c = Correlator::new(TTL);
+    let now = Instant::now();
+    c.sent(CmdId(1), "look", now);
+    let _ = c.on_event(line("look"), now);
+    let cor = c.on_event(room("Sewer Tunnel"), now);
+    assert_eq!(cor.answers, Some(CmdId(1)));
+    assert!(!cor.elsewhere);
+}
+
+/// A move's block is an arrival, the strongest position evidence there
+/// is.
+#[test]
+fn movement_block_is_here() {
+    let mut c = Correlator::new(TTL);
+    let now = Instant::now();
+    c.sent(CmdId(1), "n", now);
+    let _ = c.on_event(line("n"), now);
+    let cor = c.on_event(room("Sewer Tunnel"), now);
+    assert_eq!(cor.answers, Some(CmdId(1)));
+    assert!(!cor.elsewhere);
+}
+
+/// `l` is the board's look alias, so `l n` is a directional look too.
+#[test]
+fn short_look_alias_takes_a_direction() {
+    let mut c = Correlator::new(TTL);
+    let now = Instant::now();
+    c.sent(CmdId(1), "l n", now);
+    let _ = c.on_event(line("l n"), now);
+    let cor = c.on_event(room("Sewer Tunnel"), now);
+    assert_eq!(cor.answers, Some(CmdId(1)));
+    assert!(cor.elsewhere);
+}

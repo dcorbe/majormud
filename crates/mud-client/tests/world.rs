@@ -11,6 +11,7 @@ fn unsolicited(ev: Event) -> Correlated {
     Correlated {
         event: ev,
         answers: None,
+        elsewhere: false,
     }
 }
 
@@ -18,6 +19,7 @@ fn answering(ev: Event, id: CmdId) -> Correlated {
     Correlated {
         event: ev,
         answers: Some(id),
+        elsewhere: false,
     }
 }
 

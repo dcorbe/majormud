@@ -408,6 +408,7 @@ fn prompt(hp: i32, mana: i32) -> Correlated {
     Correlated {
         event: Event::Prompt { hp, mana: Some(mana) },
         answers: None,
+        elsewhere: false,
     }
 }
 
@@ -415,6 +416,7 @@ fn answering(line: &str, id: CmdId) -> Correlated {
     Correlated {
         event: Event::Line(line.into()),
         answers: Some(id),
+        elsewhere: false,
     }
 }
 
@@ -536,6 +538,7 @@ fn a_monsters_cast_is_not_our_outcome() {
     heal.on_event(&Correlated {
         event: Event::Line("The cave bear attempted to cast blindness at you, but failed.".into()),
         answers: None,
+        elsewhere: false,
     });
     assert!(heal.in_flight(), "somebody else's failure is not ours");
 
@@ -666,6 +669,7 @@ fn a_wear_off_line_expires_the_budget_early() {
         &Correlated {
             event: Event::Line("The effects of blur wear off.".into()),
             answers: None,
+            elsewhere: false,
         },
         t0,
     );

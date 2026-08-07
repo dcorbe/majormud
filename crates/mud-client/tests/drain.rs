@@ -14,6 +14,7 @@ fn prompt(hp: i32) -> Correlated {
     Correlated {
         event: Event::Prompt { hp, mana: None },
         answers: None,
+        elsewhere: false,
     }
 }
 
