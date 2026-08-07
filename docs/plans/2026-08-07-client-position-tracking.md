@@ -32,7 +32,26 @@ Symptom 2 follows from either: `/go` passes `here` to `lost::place`, whose name-
 
 **Rejected alternative:** an earlier proposal was to make `/go` call `lost::relocalize` unconditionally instead of `place`. Do not do this. `place` short-circuits at zero steps; `relocalize` answers without moving only for the 18.7% unique-on-sight rooms and otherwise **walks the character up to `BUDGET = 12` steps** doing candidate elimination. That would make `/go` wander before every walk from any non-unique room — most of the world — mid-play, into whatever is standing there. The defect is not that `place` is used; it is that a hint of unknown trustworthiness is handed to it. Fix the hint's provenance and the fast path stays.
 
-**Evidence gap, stated honestly:** there are zero `look <direction>` commands in any capture in this repo (3553 bare `look`s, no directional ones) because the client's automation never sends one — only the operator does, by hand. The mechanism above is confirmed from the code; the "full adjacent room block" behaviour is corroborated by the OmegaMUD reference client (`docs/mirrors/github-RonPenton-OmegaMUD/`, which files such a block as `AdjacentRooms[direction]` and pointedly does not move the player) and by the vendor relnotes ("LOOK &lt;dir&gt; will now give the same detail as moving"). Note that the `ESC[0;37;40m` preamble OmegaMUD uses to tell look from move is **not reliable on this board** — cwrun2 and cwrun7 emit zero of them across 699 room renders. This is why detection is done on the command text we sent, not on the wire bytes. No new capture is needed.
+**Measured on the live board, 2026-08-07.** No capture in this repo contained a directional look (3553 bare `look`s, zero directional ones) because the client's automation never sends one — only an operator does, by hand. That gap is now closed by `crates/mud-client/scripts/look_vantage.lua` and `look_vantage2.lua`, run against the live board as Salad. Standing in **Slum Street**, `look north` returned:
+
+```text
+look north
+Slum Entrance
+    The narrow path is barricaded heavily by a makeshift construction of heavy
+wooden beams. Guards flank the only opening in this wall, ...
+Also here: guardsman, large guardsman, large guardsman.
+Obvious exits: north, south
+[HP=79/MA=20]:
+```
+
+and the bare `look` immediately after reported **Slum Street** again. So, confirmed on this board:
+
+- A directional look prints a **full room block for the adjacent room** — cyan name, description, `Also here:`, `Obvious exits:` — byte-shaped exactly like an arrival. `parse.rs` will therefore emit `Event::RoomSeen` for it, and nothing in the block itself says it is a peek.
+- **The character does not move.** Every `look <dir>` in the probe was bracketed by bare looks that reported the same room.
+- The block carries the **neighbour's occupants**. This is why Task 1 gates `state.room` rather than only gating position: `RoomView::also_here` feeds `bot::Bot::aggressive_here`, so an ungated peek can report three guardsmen as standing next to you when they are a room away. A position that drifts is bad; an assist bot that opens on a monster in another room is worse.
+- The refusal wording for a direction with no exit is **`There are no exits to the east!`**. The existing `Kind::Look` arm in `completes` already matches on `there are no exits`, so widening that arm to `Kind::Look | Kind::LookDir` (Task 1, Step 5) is sufficient — do not invent a new wording for it.
+
+Note also that the `ESC[0;37;40m` preamble the OmegaMUD reference client uses to tell a look from a move is **not reliable here** — cwrun2 and cwrun7 emit zero of them across 699 room renders. That is why detection is done on the command text we sent rather than on the wire bytes, and why no further capture is needed.
 
 ---
 
