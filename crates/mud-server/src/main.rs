@@ -1,101 +1,79 @@
 //! Standalone telnet server for the MajorMUD reimplementation.
-//!
-//! Usage: mud-server [--content <path>] [--state <path>] [--listen <addr>]
-//!        [--houses <path>] [--spawn id@map,room] [--no-wire-noise]
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use clap::Parser;
 use mud_core::game::CoreConfig;
 use mud_server::{content_db, server::Server, state_db::StateDb};
 
-struct Args {
+#[derive(Parser, Debug)]
+#[command(name = "mud-server")]
+struct Cli {
+    /// Room/monster/item/spell database (decoded WG3-NT sqlite)
+    #[arg(long, default_value = "re/mmud_wgnt.sqlite")]
     content: PathBuf,
+
+    /// Player state database
+    #[arg(long, default_value = "state.sqlite")]
     state: PathBuf,
+
+    /// Address to bind
+    #[arg(long, default_value = "0.0.0.0:2325")]
     listen: String,
-    /// Guild-house description files (gangs.md §4) — every file in the
-    /// directory is preloaded, keyed by uppercase filename.
+
+    /// Guild-house description files (gangs.md §4) -- every file in the
+    /// directory is preloaded, keyed by uppercase filename
+    #[arg(long, default_value = "re/hse_files")]
     houses: PathBuf,
-    /// Dev fixture spawns: "id@map,room", repeatable (the M6 spawner runs
-    /// regardless; fixtures are the test/staging placement path).
+
+    /// Dev fixture spawn as id@map,room, repeatable (the M6 spawner runs
+    /// regardless; fixtures are the test/staging placement path)
+    #[arg(long = "spawn", value_name = "id@map,room", value_parser = parse_spawn)]
     spawns: Vec<(u16, u16, u16)>,
-    /// Send direction words plainly instead of hiding the board's
-    /// anti-bot junk character and backspace inside them. Useful when
-    /// reading a raw capture by eye.
+
+    /// Send direction words plainly instead of hiding the board's anti-bot
+    /// junk character and backspace inside them. Useful when reading a raw
+    /// capture by eye.
+    #[arg(long)]
     no_wire_noise: bool,
 }
 
-fn parse_args() -> Result<Args, String> {
-    let mut args = Args {
-        content: "re/mmud_wgnt.sqlite".into(),
-        state: "state.sqlite".into(),
-        listen: "0.0.0.0:2325".into(),
-        houses: "re/hse_files".into(),
-        spawns: Vec::new(),
-        no_wire_noise: false,
-    };
-    let mut it = std::env::args().skip(1);
-    while let Some(flag) = it.next() {
-        let mut value = |flag: &str| {
-            it.next()
-                .ok_or_else(|| format!("{flag} requires a value"))
-        };
-        match flag.as_str() {
-            "--content" => args.content = value("--content")?.into(),
-            "--state" => args.state = value("--state")?.into(),
-            "--listen" => args.listen = value("--listen")?,
-            "--houses" => args.houses = value("--houses")?.into(),
-            "--no-wire-noise" => args.no_wire_noise = true,
-            "--spawn" => {
-                let v = value("--spawn")?;
-                let (id, loc) = v
-                    .split_once('@')
-                    .ok_or_else(|| format!("--spawn wants id@map,room, got {v}"))?;
-                let (map, room) = loc
-                    .split_once(',')
-                    .ok_or_else(|| format!("--spawn wants id@map,room, got {v}"))?;
-                args.spawns.push((
-                    id.parse().map_err(|_| format!("bad monster id {id}"))?,
-                    map.parse().map_err(|_| format!("bad map {map}"))?,
-                    room.parse().map_err(|_| format!("bad room {room}"))?,
-                ));
-            }
-            other => return Err(format!("unknown flag {other}")),
-        }
-    }
-    Ok(args)
+/// Parse a `--spawn` value of the form `id@map,room`.
+fn parse_spawn(s: &str) -> Result<(u16, u16, u16), String> {
+    let (id, loc) = s.split_once('@').ok_or_else(|| format!("wants id@map,room, got {s}"))?;
+    let (map, room) = loc.split_once(',').ok_or_else(|| format!("wants id@map,room, got {s}"))?;
+    Ok((
+        id.parse().map_err(|_| format!("bad monster id {id}"))?,
+        map.parse().map_err(|_| format!("bad map {map}"))?,
+        room.parse().map_err(|_| format!("bad room {room}"))?,
+    ))
 }
 
 fn main() -> ExitCode {
-    let args = match parse_args() {
-        Ok(a) => a,
-        Err(e) => {
-            eprintln!("{e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let cli = Cli::parse();
 
-    let mut content = match content_db::load(&args.content) {
+    let mut content = match content_db::load(&cli.content) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("failed to load {}: {e}", args.content.display());
+            eprintln!("failed to load {}: {e}", cli.content.display());
             return ExitCode::FAILURE;
         }
     };
     // Guild-house files are optional world data: a missing directory
     // just means FILE DESCRIPTION rooms render without paragraphs (the
     // DLL's sysop-error case).
-    match content_db::load_house_dir(&args.houses) {
+    match content_db::load_house_dir(&cli.houses) {
         Ok(houses) => {
             let n = houses.len();
             for (name, lines) in houses {
                 content.add_house_text(&name, lines);
             }
             if n > 0 {
-                println!("loaded {n} guild-house files from {}", args.houses.display());
+                println!("loaded {n} guild-house files from {}", cli.houses.display());
             }
         }
-        Err(e) => eprintln!("--houses {}: {e} (continuing without)", args.houses.display()),
+        Err(e) => eprintln!("--houses {}: {e} (continuing without)", cli.houses.display()),
     }
     let errors = content.validate();
     if !errors.is_empty() {
@@ -113,10 +91,10 @@ fn main() -> ExitCode {
         content.spells.len(),
     );
 
-    let state = match StateDb::open(&args.state) {
+    let state = match StateDb::open(&cli.state) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("failed to open {}: {e}", args.state.display());
+            eprintln!("failed to open {}: {e}", cli.state.display());
             return ExitCode::FAILURE;
         }
     };
@@ -143,18 +121,18 @@ fn main() -> ExitCode {
                 // every direction word; period clients expect it, and a
                 // terminal renders it away. --no-wire-noise turns it off
                 // for anyone reading the stream by eye.
-                wire_noise: !args.no_wire_noise,
+                wire_noise: !cli.no_wire_noise,
                 ..CoreConfig::default()
             },
             state,
-            &args.listen,
-            args.spawns.clone(),
+            &cli.listen,
+            cli.spawns,
         )
         .await
         {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("failed to listen on {}: {e}", args.listen);
+                eprintln!("failed to listen on {}: {e}", cli.listen);
                 return ExitCode::FAILURE;
             }
         };

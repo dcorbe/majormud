@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 argon2 = { version = "0.5.3", features = ["std"] }
+clap = { version = "4", features = ["derive"] }
 mud-core = { path = "../mud-core" }
 rusqlite = { version = "0.37", features = ["bundled"] }
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time"] }
