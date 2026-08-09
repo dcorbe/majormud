@@ -26,6 +26,9 @@ const SE: u8 = 240;
 const SB: u8 = 250;
 const WILL: u8 = 251;
 const WONT: u8 = 252;
+/// The end of the option-carrying verbs. `WILL..=DONT` is WILL, WONT, DO and
+/// DONT -- the only telnet commands that take an option byte. RFC 854.
+const DONT: u8 = 254;
 const OPT_ECHO: u8 = 1;
 const OPT_SGA: u8 = 3;
 
@@ -322,31 +325,60 @@ fn core_thread(
 /// Reads telnet input: strips IAC command sequences, yields complete lines.
 struct TelnetReader {
     socket: OwnedReadHalf,
-    buf: Vec<u8>,
-    line: Vec<u8>,
-    /// The previous line ended on CR; swallow one following LF or NUL.
-    after_cr: bool,
+    decode: TelnetDecode,
 }
 
 impl TelnetReader {
     fn new(socket: OwnedReadHalf) -> Self {
         TelnetReader {
             socket,
-            buf: Vec::new(),
-            line: Vec::new(),
-            after_cr: false,
+            decode: TelnetDecode::default(),
         }
     }
 
     /// The next input line, or `None` on EOF/error.
+    async fn read_line(&mut self) -> Option<String> {
+        loop {
+            if let Some(line) = self.decode.next_line() {
+                return Some(line);
+            }
+            let mut chunk = [0u8; 1024];
+            match self.socket.read(&mut chunk).await {
+                Ok(0) | Err(_) => return None,
+                Ok(n) => self.decode.feed(&chunk[..n]),
+            }
+        }
+    }
+}
+
+/// The decoding half of [`TelnetReader`], with no socket attached.
+///
+/// Split out so that it can be tested at all: `read_line` needs a live
+/// `OwnedReadHalf`, and this needs only bytes. The telnet rules here are
+/// fiddly enough to have carried a real bug unnoticed -- see
+/// `a_two_byte_command_does_not_eat_the_byte_after_it`.
+#[derive(Default)]
+struct TelnetDecode {
+    buf: Vec<u8>,
+    line: Vec<u8>,
+    /// The previous line ended on CR; swallow one following LF or NUL.
+    after_cr: bool,
+}
+
+impl TelnetDecode {
+    /// Add freshly-read bytes.
+    fn feed(&mut self, bytes: &[u8]) {
+        self.buf.extend_from_slice(bytes);
+    }
+
+    /// The next complete line, or `None` when the buffer runs out first.
     ///
     /// An IAC sequence that has only partly arrived is left in the buffer
     /// until the rest of it turns up. Consuming it early would push the
     /// stragglers into the command text — a real failure now that we
     /// negotiate and clients answer back mid-line.
-    async fn read_line(&mut self) -> Option<String> {
-        loop {
-            // Consume buffered bytes first.
+    fn next_line(&mut self) -> Option<String> {
+        {
             while !self.buf.is_empty() {
                 // A CR ended the previous line; an LF or NUL arriving now
                 // completes that terminator and is not a line of its own.
@@ -372,13 +404,25 @@ impl TelnetReader {
                                 }
                                 None => break,
                             },
-                            // Three-byte command (WILL/WONT/DO/DONT/...).
-                            // We never answer: see `read_password`.
-                            _ => {
+                            // WILL/WONT/DO/DONT carry an option byte: three
+                            // bytes. We never answer: see `read_password`.
+                            WILL..=DONT => {
                                 if self.buf.len() < 3 {
                                     break;
                                 }
                                 self.buf.drain(..3);
+                            }
+                            // Everything else in the command range is TWO
+                            // bytes -- NOP, Data Mark, BRK, IP, AO, AYT, EC,
+                            // EL, GA, and a stray SE. RFC 854's command list.
+                            //
+                            // Reading them as three ate the byte after them,
+                            // and that byte is one the player typed: a telnet
+                            // client sends `IAC IP` when the user presses
+                            // Ctrl-C, so the next character they typed
+                            // silently vanished.
+                            _ => {
+                                self.buf.drain(..2);
                             }
                         }
                     }
@@ -412,11 +456,7 @@ impl TelnetReader {
                     }
                 }
             }
-            let mut chunk = [0u8; 1024];
-            match self.socket.read(&mut chunk).await {
-                Ok(0) | Err(_) => return None,
-                Ok(n) => self.buf.extend_from_slice(&chunk[..n]),
-            }
+            None
         }
     }
 
@@ -816,5 +856,72 @@ async fn login(
                 return Ok(None);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TelnetDecode;
+
+    /// Decode `input` twice: all at once, and one byte at a time. TCP
+    /// segments wherever it likes, so a decoder that only ever sees whole
+    /// sequences is a decoder that has never been tested.
+    fn both_ways(input: &[u8], expected: &str) {
+        let mut whole = TelnetDecode::default();
+        whole.feed(input);
+        assert_eq!(whole.next_line().as_deref(), Some(expected), "fed whole");
+
+        let mut split = TelnetDecode::default();
+        let mut got = None;
+        for &byte in input {
+            split.feed(&[byte]);
+            if let Some(line) = split.next_line() {
+                got = Some(line);
+                break;
+            }
+        }
+        assert_eq!(got.as_deref(), Some(expected), "fed one byte at a time");
+    }
+
+    #[test]
+    fn a_plain_line_survives() {
+        both_ways(b"north\r", "north");
+    }
+
+    #[test]
+    fn an_option_negotiation_is_removed_whole() {
+        both_ways(b"no\xff\xfd\x03rth\r", "north");
+    }
+
+    /// Only WILL/WONT/DO/DONT (251-254) carry an option byte. Every other
+    /// telnet command is TWO bytes (RFC 854), and reading one as three eats
+    /// the byte after it -- a byte the player typed.
+    ///
+    /// `IAC IP` is what a telnet client sends when the user presses Ctrl-C,
+    /// so this is not a theoretical shape: the first character after an
+    /// interrupt silently vanished.
+    #[test]
+    fn a_two_byte_command_does_not_eat_the_byte_after_it() {
+        both_ways(b"\xff\xf4north\r", "north"); // IAC IP  -- Ctrl-C
+        both_ways(b"\xff\xf9hi\r", "hi"); // IAC GA
+        both_ways(b"\xff\xf1x\r", "x"); // IAC NOP
+        both_ways(b"\xff\xf6?\r", "?"); // IAC AYT
+    }
+
+    #[test]
+    fn an_escaped_ff_is_one_literal_byte() {
+        // 0xFF decodes from CP437 as a non-breaking space.
+        both_ways(b"a\xff\xffb\r", "a\u{a0}b");
+    }
+
+    #[test]
+    fn a_subnegotiation_is_removed_whole() {
+        // IAC SB NAWS 0 80 0 24 IAC SE
+        both_ways(b"x\xff\xfa\x1f\x00\x50\x00\x18\xff\xf0y\r", "xy");
+    }
+
+    #[test]
+    fn backspace_erases_and_crlf_is_one_line_ending() {
+        both_ways(b"abx\x08\r\n", "ab");
     }
 }
