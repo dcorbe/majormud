@@ -9,8 +9,8 @@ use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 
 use mud_core::content::Content;
-use mud_core::cp437;
 use mud_core::game::{AccountProfile, Core, CoreConfig, Event, Gender, Player, SessionId};
+use textscreen::cp437;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
@@ -479,7 +479,7 @@ impl TelnetDecode {
     }
 
     fn take_line(&mut self) -> String {
-        let line = cp437::decode(&self.line);
+        let line = cp437::decode_wire(&self.line);
         self.line.clear();
         line
     }
