@@ -407,8 +407,32 @@ including every doc comment. Add at the top of the new file:
 use crate::cp437;
 ```
 
-Anywhere the moved code decoded a byte to a character, it must now call
-`cp437::decode_screen`. These are screen cells: C0 bytes are glyphs.
+**Do not add a `cp437` dependency to `cell.rs`.** An earlier draft of this step
+said "anywhere the moved code decoded a byte to a character, it must now call
+`cp437::decode_screen`". That is wrong: `Cells::line` deliberately does *not*
+decode CP437 — it collapses every byte that is not `ascii_graphic` or space to a
+space, so that `contains` matches on words. It is a text-extraction helper for
+assertions, not a renderer. Routing it through `decode_screen` would change what
+every existing `contains`/`find` assertion in dos-runtime matches, inside a task
+whose constraints forbid behaviour changes. `Cells::line` keeps its body byte for
+byte, and `cell.rs` depends on nothing.
+
+**Move doc comments with their code — except links that no longer resolve.**
+Verbatim protects *code* from drifting during a move; it does not license prose
+that becomes false in its new home. Comments referring to ``[`Screen`]``,
+`[crate::win32]` or `[crate::terminal]` must be rewritten as plain prose true
+from `textscreen`'s vantage point ("the `Screen` type in `dos-runtime`"), because
+a leaf crate cannot link to the crate it was extracted from. Finish with
+`cargo doc -p textscreen --no-deps 2>&1 | grep -c warning` returning 0.
+
+**Leave the four inline tests in `screen.rs` where they are.** They build a
+`Screen` via a local `screen_from` helper and exercise `Cells` through it; `Screen`
+stays, so they keep compiling against the re-export. Note they construct `Cell`
+literals directly and never call `Cells::blank`, so they do *not* cover the
+mutation in Step 5 — a `win32::process` test does. Do not move them.
+
+**Move `squash` and `find_squashed` too.** They are private free functions called
+only by `Cells::find`; leaving them behind would not compile.
 
 - [ ] **Step 2: Re-export from `dos-runtime` so nothing else changes yet**
 
