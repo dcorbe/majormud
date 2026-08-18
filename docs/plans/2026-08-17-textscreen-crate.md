@@ -44,6 +44,7 @@ The painter moves unchanged except that it writes to an `impl Write` instead of
 | `crates/textscreen/src/cell.rs` | `Cell`, `Cells` and their query helpers |
 | `crates/textscreen/src/paint.rs` | `Painter` -- the row-diffing renderer |
 | `crates/textscreen/tests/cp437.rs` | Codepage tests, incl. the two moved from `mud-core` |
+| `crates/textscreen/tests/cp437-reference.txt` | 256-char reference fixture; 223 entries from Python's `cp437` codec |
 | `crates/textscreen/tests/paint.rs` | Painter tests -- new, impossible before this plan |
 | `crates/dos-runtime/src/screen.rs` | Modified: `Screen` stays, `Cell`/`Cells` re-exported |
 | `crates/dos-runtime/src/terminal.rs` | Modified: uses `Painter`, drops its own tables |
@@ -125,14 +126,41 @@ fn the_two_readings_differ_below_0x20_and_only_there() {
 }
 
 #[test]
-fn above_0x7f_the_two_readings_agree_entry_for_entry() {
-    // This is the test that makes one table correct. If the high halves ever
-    // diverge, the crate is secretly two tables again.
+fn the_two_functions_share_one_table() {
+    // Proves only that the two functions have not diverged in code -- that
+    // neither was later pointed at a second, private table. For any fixed
+    // `b >= 0x80` both sides evaluate the identical expression
+    // `TABLE[b as usize]`, so this passes whatever `TABLE` holds. It does NOT
+    // validate the table's contents; `table_matches_the_independent_reference`
+    // does that.
     for b in 0x80u8..=0xff {
         assert_eq!(
             decode_wire(&[b]),
             decode_screen(&[b]),
             "byte {b:#04x} disagrees between the two readings"
+        );
+    }
+}
+
+/// `cp437-reference.txt`: exactly 256 characters in byte order, one trailing
+/// newline. Bytes `0x20..=0x7E` and `0x80..=0xFF` come from Python's stdlib
+/// `cp437` codec -- an authority independent of this crate. The other 33
+/// (`0x00..=0x1F` and `0x7F`) cannot: Python decodes them to raw control
+/// characters, not the OEM control-picture glyphs a screen shows, so they are
+/// hand-transcribed and carry the same day-one transcription risk `TABLE` does.
+/// All 256 are protected against a future accidental edit, which is the actual
+/// guarantee this buys.
+const REFERENCE: &str = include_str!("cp437-reference.txt");
+
+#[test]
+fn table_matches_the_independent_reference() {
+    let reference: Vec<char> = REFERENCE.trim_end_matches('\n').chars().collect();
+    assert_eq!(reference.len(), 256, "the fixture must hold exactly 256 characters");
+    for b in 0u16..=0xff {
+        let b = b as u8;
+        assert_eq!(
+            TABLE[b as usize], reference[b as usize],
+            "TABLE[{b:#04x}] disagrees with cp437-reference.txt"
         );
     }
 }
@@ -315,6 +343,20 @@ revert:
    nothing — corrected 2026-08-18 after it was run and came back green.)
 3. In `TABLE`, change entry `0xff` from `'\u{a0}'` to `' '`. Expect
    `encode_can_synthesize_the_telnet_iac_byte` to fail.
+4. Swap `TABLE[0xC9]` and `TABLE[0xCA]` -- a plausible box-drawing
+   transposition, and injectivity-preserving. Expect
+   `table_matches_the_independent_reference` to fail **while
+   `every_byte_survives_a_wire_round_trip` stays green**. That contrast is the
+   point: the round-trip cannot see a transposition, because the table stays a
+   bijection.
+
+**Corrected 2026-08-18.** This task originally specified a test named
+`above_0x7f_the_two_readings_agree_entry_for_entry`, commented "the test that
+makes one table correct". It was tautological -- both functions evaluate
+`TABLE[b as usize]` for `b >= 0x80`, so it passed for any table content and
+could never fail. The reference fixture and mutation 4 above are its
+replacement. A test whose comment claims more than it checks is worse than no
+test, and this plan shipped one.
 
 If any mutation leaves the suite green, the test for it is not testing it.
 
