@@ -304,8 +304,15 @@ revert:
 1. In `decode_screen`, change the body to match `decode_wire`'s (`if b < 0x80 {
    b as char }`). Expect `the_two_readings_differ_below_0x20_and_only_there` to
    fail.
-2. In `encode`, change `TABLE[0x80..]` to `TABLE` and drop the `+ 0x80`. Expect
-   `every_byte_survives_a_wire_round_trip` to fail.
+2. In `encode`, change `map_or(b'?', |i| (i + 0x80) as u8)` to
+   `map_or(b'?', |i| i as u8)`. Expect `every_byte_survives_a_wire_round_trip`
+   and `encode_can_synthesize_the_telnet_iac_byte` to fail.
+
+   (An earlier draft of this step said "change `TABLE[0x80..]` to `TABLE` and
+   drop the `+ 0x80`". That is a no-op: the table's high half is injective and
+   shares no character with the low half, so the two expressions are provably
+   equal and no test can distinguish them. A mutation that cannot fail proves
+   nothing — corrected 2026-08-18 after it was run and came back green.)
 3. In `TABLE`, change entry `0xff` from `'\u{a0}'` to `' '`. Expect
    `encode_can_synthesize_the_telnet_iac_byte` to fail.
 
