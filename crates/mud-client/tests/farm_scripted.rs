@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use mud_client::bot::BotConfig;
 use mud_client::farm::{FarmConfig, FarmEnd, FarmPlan, run_farm};
-use mud_client::graph::{ExitEdge, GraphRoom, RoomGraph};
+use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::profile::Profile;
 use mud_client::session::Session;
 use mud_core::content::{Direction, RoomId};
@@ -80,6 +80,7 @@ fn corridor() -> Arc<RoomGraph> {
         dest: MIDWAY,
         exit_type: 0,
         command: None,
+        requirement: ExitRequirement::None,
     });
     let mut midway = GraphRoom {
         name: "Inner Ward".into(),
@@ -91,11 +92,13 @@ fn corridor() -> Arc<RoomGraph> {
         dest: STOP,
         exit_type: 0,
         command: None,
+        requirement: ExitRequirement::None,
     });
     midway.exits[Direction::South as usize] = Some(ExitEdge {
         dest: START,
         exit_type: 0,
         command: None,
+        requirement: ExitRequirement::None,
     });
     let mut stop = GraphRoom {
         name: "Keep".into(),
@@ -107,6 +110,7 @@ fn corridor() -> Arc<RoomGraph> {
         dest: MIDWAY,
         exit_type: 0,
         command: None,
+        requirement: ExitRequirement::None,
     });
     Arc::new(RoomGraph::from_rooms(vec![
         (START, start),
@@ -1081,11 +1085,13 @@ async fn a_roam_never_steps_into_a_walled_room() {
             dest: MIDWAY,
             exit_type: 0,
             command: None,
+            requirement: ExitRequirement::None,
         });
         a.exits[Direction::East as usize] = Some(ExitEdge {
             dest: STOP,
             exit_type: 0,
             command: None,
+            requirement: ExitRequirement::None,
         });
         let mut b = GraphRoom {
             name: "Inner Ward".into(),
@@ -1097,6 +1103,7 @@ async fn a_roam_never_steps_into_a_walled_room() {
             dest: START,
             exit_type: 0,
             command: None,
+            requirement: ExitRequirement::None,
         });
         let mut c = GraphRoom {
             name: "Keep".into(),
@@ -1108,6 +1115,7 @@ async fn a_roam_never_steps_into_a_walled_room() {
             dest: START,
             exit_type: 0,
             command: None,
+            requirement: ExitRequirement::None,
         });
         Arc::new(RoomGraph::from_rooms(vec![
             (START, a),

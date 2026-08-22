@@ -124,7 +124,7 @@ fn one_press_moves_the_cursor_exactly_one_cell() {
 /// made this impossible by construction; it is now ordinary.
 #[test]
 fn the_cursor_may_stand_on_empty_space() {
-    use mud_client::graph::{ExitEdge, GraphRoom};
+    use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom};
     // Two rooms two cells apart on the same row: A --east--> C is not
     // possible in one step, so build A -e-> B -e-> C and walk past C.
     let a = RoomId { map: 1, room: 1 };
@@ -137,6 +137,7 @@ fn the_cursor_may_stand_on_empty_space() {
         dest: b,
         exit_type: 0,
         command: None,
+        requirement: ExitRequirement::None,
     });
     let g = std::sync::Arc::new(RoomGraph::from_rooms(vec![
         (a, ra),
@@ -583,7 +584,7 @@ fn a_saved_loop_validates_as_a_farm_circuit() {
 /// of them would be a constant irritation.
 #[test]
 fn the_diagonal_keys_reach_diagonal_neighbours() {
-    use mud_client::graph::{ExitEdge, GraphRoom};
+    use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom};
     let here = RoomId { map: 1, room: 1 };
     let corners = [
         (Direction::NorthWest, 'y', RoomId { map: 1, room: 2 }),
@@ -601,6 +602,7 @@ fn the_diagonal_keys_reach_diagonal_neighbours() {
             dest: id,
             exit_type: 0,
             command: None,
+            requirement: ExitRequirement::None,
         });
         rooms.push((
             id,

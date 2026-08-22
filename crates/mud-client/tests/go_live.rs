@@ -14,7 +14,7 @@ use std::sync::Arc;
 use mud_client::dialect::{self, Target};
 use mud_client::farm::FarmConfig;
 use mud_client::go::{GoEnd, resolve, run_go};
-use mud_client::graph::{ExitEdge, GraphRoom, RoomGraph};
+use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::profile::Profile;
 use mud_client::session::Session;
 use mud_core::content::{
@@ -111,6 +111,7 @@ fn client_graph() -> Arc<RoomGraph> {
                 dest: RoomId { map: 1, room: dest },
                 exit_type: 0,
                 command: None,
+                requirement: ExitRequirement::None,
             });
         }
         (RoomId { map: 1, room: n }, room)

@@ -25,6 +25,97 @@ pub const DIRECTIONS: [Direction; 10] = [
     Direction::Down,
 ];
 
+/// What an exit requires of whoever walks it.
+///
+/// Computed once at load from `roomtype`, the `para*` slots and the
+/// room's `cmdtext` script, so that routing and walking share one
+/// answer rather than each re-deriving it from a bare type number.
+///
+/// The taxonomy is ours, from `re/docs/theft.md` §8.1 plus the quest
+/// VM's `remoteaction` verb. It deliberately says what an exit NEEDS and
+/// not what it costs: cost depends on who is walking, and lives in
+/// `exit_cost`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExitRequirement {
+    /// Nothing. Walk it.
+    None,
+    /// A door or gate: `open`, then possibly a bash chain. Types 2, 7, 0xb.
+    Door,
+    /// Concealed. `searchable` is true for the ordinary SEARCH-revealed
+    /// exit and FALSE when the concealment is a puzzle bit-word that no
+    /// search roll can clear -- see [`ExitRequirement::Puzzle`]. Type 6.
+    Hidden { searchable: bool },
+    /// A trap on the exit. The walk has no DISARM. Types 9, 0x18.
+    Trap,
+    /// Not walked but spoken: the phrase is on [`ExitEdge::command`].
+    /// Type 10, 250 of them.
+    Command,
+    /// Costs money to pass. `gold` is in GOLD CROWNS, the unit `para1`
+    /// carries. Type 4.
+    ///
+    /// INFERRED unit, on two supports: the observed 5-gold Silvermere
+    /// toll matches `para1 = 5`, and map 17's `para1 = 10000` is exactly
+    /// 100 platinum = 1 runic coin. Proof would come from `move_user` in
+    /// the WCCMMUD decompile, which nobody has read. The conversion to
+    /// the client's base unit lives in exactly one place so that a
+    /// correction is a one-line change.
+    Toll { gold: u32 },
+    /// Gated on alignment, a known spell, or an ability. Types 0x14,
+    /// 0x16, 0x17. Not yet distinguished from one another: the walk can
+    /// satisfy none of them today, so one variant is as actionable as
+    /// three.
+    Gate,
+    /// Opens and shuts on a timer of its own. Type 0x10, 2 of them.
+    Timed,
+    /// Concealed by a bit-word that `remoteaction` scripts clear. Filled
+    /// in by the cmdtext pass; see the `Puzzle` task.
+    Puzzle { actions: Vec<PuzzleAction> },
+}
+
+impl Default for ExitRequirement {
+    fn default() -> Self {
+        ExitRequirement::None
+    }
+}
+
+impl ExitRequirement {
+    /// The requirement an exit type implies on its own, before the
+    /// cmdtext pass gets a say.
+    ///
+    /// Shared with the navigator's test fixtures deliberately. Those
+    /// fixtures build exits by type and care about the WALKER's
+    /// behaviour, so they must classify exactly as `load` does or they
+    /// test a world that cannot exist. The tests that pin the
+    /// classification itself do NOT call this — they assert
+    /// hand-written expectations against the shipped database, so they
+    /// can still fail when this is wrong.
+    pub fn from_exit_type(exit_type: i64, para1: i64) -> ExitRequirement {
+        match exit_type {
+            2 | 7 | 0xb => ExitRequirement::Door,
+            // Searchable until the cmdtext pass proves otherwise.
+            6 => ExitRequirement::Hidden { searchable: true },
+            9 | 0x18 => ExitRequirement::Trap,
+            COMMAND_EXIT => ExitRequirement::Command,
+            4 => ExitRequirement::Toll {
+                gold: u32::try_from(para1).unwrap_or(0),
+            },
+            0x14 | 0x16 | 0x17 => ExitRequirement::Gate,
+            0x10 => ExitRequirement::Timed,
+            _ => ExitRequirement::None,
+        }
+    }
+}
+
+/// One action that clears one bit of a puzzle exit's concealment word.
+/// Populated by the cmdtext pass in the next task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PuzzleAction {
+    /// The room the phrase must be spoken in.
+    pub room: RoomId,
+    /// The phrases that satisfy this step; any one of them.
+    pub commands: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ExitEdge {
     pub dest: RoomId,
@@ -42,6 +133,8 @@ pub struct ExitEdge {
     /// `None` everywhere else, including the one command exit whose
     /// message is blank.
     pub command: Option<String>,
+    /// What this exit requires of whoever walks it.
+    pub requirement: ExitRequirement,
 }
 
 /// Exit type for a command exit — see [`ExitEdge::command`].
@@ -284,6 +377,7 @@ impl RoomGraph {
                 }
                 let exit_type: i64 = row.get(13 + d).map_err(|e| e.to_string())?;
                 let para1: i64 = row.get(23 + d).map_err(|e| e.to_string())?;
+                let requirement = ExitRequirement::from_exit_type(exit_type, para1);
                 let dmap = if exit_type == 8 { para1 } else { map };
                 let (Ok(dmap), Ok(dest)) = (u16::try_from(dmap), u16::try_from(dest)) else {
                     continue; // malformed edge; never alias via lossy casts
@@ -297,6 +391,7 @@ impl RoomGraph {
                     command: (exit_type == COMMAND_EXIT)
                         .then(|| commands.get(&para1).cloned())
                         .flatten(),
+                    requirement,
                 });
             }
             let (Ok(map), Ok(room)) = (u16::try_from(map), u16::try_from(room)) else {

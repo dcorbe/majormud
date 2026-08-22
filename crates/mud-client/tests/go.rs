@@ -7,7 +7,7 @@
 
 use mud_client::farm::{FarmConfig, Phase};
 use mud_client::go::{GoRefusal, go_config, resolve};
-use mud_client::graph::{ExitEdge, GraphRoom, RoomGraph};
+use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_core::content::{Direction, RoomId};
 
 fn id(room: u16) -> RoomId {
@@ -32,6 +32,7 @@ fn line(names: &[&str]) -> RoomGraph {
                     dest: id(n + 1),
                     exit_type: 0,
                     command: None,
+                    requirement: ExitRequirement::None,
                 });
             }
             if n > 1 {
@@ -39,6 +40,7 @@ fn line(names: &[&str]) -> RoomGraph {
                     dest: id(n - 1),
                     exit_type: 0,
                     command: None,
+                    requirement: ExitRequirement::None,
                 });
             }
             (id(n), room)

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use mud_client::graph::{ExitEdge, GraphRoom, RoomGraph};
+use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::nav::{NavConfig, Navigator, NoGuard};
 use mud_client::profile::Profile;
 use mud_client::session::Session;
@@ -29,14 +29,24 @@ fn graph(exit_type: i64) -> Arc<RoomGraph> {
         light: 0,
         ..Default::default()
     };
-    here.exits[Direction::North as usize] = Some(ExitEdge { dest: THERE, exit_type, command: None });
+    here.exits[Direction::North as usize] = Some(ExitEdge {
+        dest: THERE,
+        exit_type,
+        command: None,
+        requirement: ExitRequirement::from_exit_type(exit_type, 0),
+    });
     let mut there = GraphRoom {
         name: "Inner Ward".into(),
         exits: Default::default(),
         light: 0,
         ..Default::default()
     };
-    there.exits[Direction::South as usize] = Some(ExitEdge { dest: HERE, exit_type, command: None });
+    there.exits[Direction::South as usize] = Some(ExitEdge {
+        dest: HERE,
+        exit_type,
+        command: None,
+        requirement: ExitRequirement::from_exit_type(exit_type, 0),
+    });
     Arc::new(RoomGraph::from_rooms(vec![(HERE, here), (THERE, there)]))
 }
 
@@ -239,14 +249,24 @@ async fn a_refused_step_between_same_named_twins_does_not_drift() {
         light: 0,
         ..Default::default()
     };
-    here.exits[Direction::North as usize] = Some(ExitEdge { dest: THERE, exit_type: 0 , command: None });
+    here.exits[Direction::North as usize] = Some(ExitEdge {
+        dest: THERE,
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::None,
+    });
     let mut there = GraphRoom {
         name: "Newhaven, Narrow Road".into(),
         exits: Default::default(),
         light: 0,
         ..Default::default()
     };
-    there.exits[Direction::South as usize] = Some(ExitEdge { dest: HERE, exit_type: 0 , command: None });
+    there.exits[Direction::South as usize] = Some(ExitEdge {
+        dest: HERE,
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::None,
+    });
     let twins = Arc::new(RoomGraph::from_rooms(vec![(HERE, here), (THERE, there)]));
 
     let (addr, _, _) = scripted_board(vec![
@@ -293,22 +313,42 @@ fn corridor() -> Arc<RoomGraph> {
         light: 0,
         ..Default::default()
     };
-    here.exits[Direction::North as usize] = Some(ExitEdge { dest: THERE, exit_type: 0 , command: None });
+    here.exits[Direction::North as usize] = Some(ExitEdge {
+        dest: THERE,
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::None,
+    });
     let mut there = GraphRoom {
         name: "Inner Ward".into(),
         exits: Default::default(),
         light: 0,
         ..Default::default()
     };
-    there.exits[Direction::North as usize] = Some(ExitEdge { dest: FAR, exit_type: 0 , command: None });
-    there.exits[Direction::South as usize] = Some(ExitEdge { dest: HERE, exit_type: 0 , command: None });
+    there.exits[Direction::North as usize] = Some(ExitEdge {
+        dest: FAR,
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::None,
+    });
+    there.exits[Direction::South as usize] = Some(ExitEdge {
+        dest: HERE,
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::None,
+    });
     let mut far = GraphRoom {
         name: "Keep".into(),
         exits: Default::default(),
         light: 0,
         ..Default::default()
     };
-    far.exits[Direction::South as usize] = Some(ExitEdge { dest: THERE, exit_type: 0 , command: None });
+    far.exits[Direction::South as usize] = Some(ExitEdge {
+        dest: THERE,
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::None,
+    });
     Arc::new(RoomGraph::from_rooms(vec![
         (HERE, here),
         (THERE, there),

@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use mud_client::graph::{COMMAND_EXIT, ExitEdge, GraphRoom, RoomGraph};
+use mud_client::graph::{COMMAND_EXIT, ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::nav::{NavConfig, Navigator, NoGuard};
 use mud_client::profile::Profile;
 use mud_client::session::Session;
@@ -44,6 +44,7 @@ fn ferry(command: Option<&str>) -> Arc<RoomGraph> {
         dest: PIER,
         exit_type: COMMAND_EXIT,
         command: command.map(str::to_string),
+        requirement: ExitRequirement::from_exit_type(COMMAND_EXIT, 0),
     });
     let pier = GraphRoom {
         name: "Small Pier".into(),

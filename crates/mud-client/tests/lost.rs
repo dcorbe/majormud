@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use mud_client::events::RoomView;
-use mud_client::graph::{ExitEdge, GraphRoom, RoomGraph};
+use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::lost::{self, Lost};
 use mud_client::profile::Profile;
 use mud_client::session::Session;
@@ -110,6 +110,7 @@ fn room(name: &str, exits: &[(Direction, RoomId)]) -> GraphRoom {
             dest: *dest,
             exit_type: 0,
             command: None,
+            requirement: ExitRequirement::None,
         });
     }
     r

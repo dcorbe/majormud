@@ -333,7 +333,7 @@ fn a_dark_room_warns_only_when_nothing_can_light_it() {
 
 /// A hub with a neighbour in each of the given directions.
 fn spokes(dirs: &[Direction]) -> Plane {
-    use mud_client::graph::{ExitEdge, GraphRoom};
+    use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom};
     let centre = RoomId { map: 1, room: 100 };
     let mut hub = GraphRoom {
         name: "Hub".into(),
@@ -349,6 +349,7 @@ fn spokes(dirs: &[Direction]) -> Plane {
             dest: id,
             exit_type: 0,
             command: None,
+            requirement: ExitRequirement::None,
         });
         rooms.push((
             id,

@@ -13,7 +13,7 @@ use mud_client::farm::{
     StopState, Verdict, is_player_death, parse_health, parse_room_id,
 };
 use mud_client::nav::{Interrupt, TravelGuard};
-use mud_client::graph::{ExitEdge, GraphRoom, RoomGraph};
+use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_core::content::{Direction, RoomId};
 
 fn rid(map: u16, room: u16) -> RoomId {
@@ -35,6 +35,7 @@ fn graph() -> RoomGraph {
                 dest: rid(1, dest),
                 exit_type: 0,
                 command: None,
+                requirement: ExitRequirement::None,
             });
         }
         (rid(1, n), room)
@@ -121,6 +122,7 @@ fn graph_with_a_dark_market() -> RoomGraph {
                 dest: rid(1, dest),
                 exit_type: 0,
                 command: None,
+                requirement: ExitRequirement::None,
             });
         }
         (rid(1, n), room)
@@ -178,6 +180,7 @@ fn rejects_a_circuit_whose_wrap_around_has_no_route() {
                         dest: rid(1, 2),
                         exit_type: 0,
                         command: None,
+                        requirement: ExitRequirement::None,
                     });
                     e
                 },

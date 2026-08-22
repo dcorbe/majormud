@@ -18,7 +18,7 @@ use std::time::Duration;
 use mud_client::bot::BotConfig;
 use mud_client::dialect::{self, Target};
 use mud_client::farm::{FarmConfig, FarmEnd, FarmError, FarmPlan, FarmStats, run_farm};
-use mud_client::graph::{ExitEdge, GraphRoom, RoomGraph};
+use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::profile::Profile;
 use mud_client::session::Session;
 use mud_core::content::{
@@ -316,6 +316,7 @@ fn client_graph() -> RoomGraph {
                 dest: *dest,
                 exit_type: 0,
                 command: None,
+                requirement: ExitRequirement::None,
             });
         }
         (id, r)
@@ -526,6 +527,7 @@ async fn refuses_to_run_from_a_room_it_cannot_place() {
         dest: YARD,
         exit_type: 0,
         command: None,
+        requirement: ExitRequirement::None,
     });
     let graph = Arc::new(RoomGraph::from_rooms(vec![
         (GATES, gates),

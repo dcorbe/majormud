@@ -1,7 +1,7 @@
 //! Room-graph tests against the real WG3-NT database. Ground truths
 //! computed with re/room_graph_wg.py (the decode reference).
 
-use mud_client::graph::RoomGraph;
+use mud_client::graph::{ExitRequirement, RoomGraph, DIRECTIONS};
 use mud_core::content::{Direction, RoomId};
 
 fn db_path() -> std::path::PathBuf {
@@ -263,4 +263,80 @@ fn an_open_fence_routes_exactly_as_before() {
         g.distances_within(from, &|_, _| true).len(),
         g.distances(from).len()
     );
+}
+
+// --- exit requirements --------------------------------------------------
+
+fn requirement(g: &RoomGraph, room: RoomId, dir: Direction) -> ExitRequirement {
+    let i = DIRECTIONS.iter().position(|d| *d == dir).expect("compass");
+    g.room(room)
+        .and_then(|r| r.exits[i].as_ref())
+        .map(|e| e.requirement.clone())
+        .unwrap_or(ExitRequirement::None)
+}
+
+/// The Silvermere gates charge to pass. Both directions carry the same
+/// `roomtype = 4, para1 = 5` in the data; whether both actually CHARGE is
+/// an engine question this plan does not answer.
+#[test]
+fn the_silvermere_gate_is_a_toll() {
+    let g = graph();
+    let inner = RoomId { map: 1, room: 1381 }; // Town Gates, Inner Bailey
+    let road = RoomId { map: 1, room: 1382 };  // Main Road, Silvermere Gates
+    assert_eq!(
+        requirement(g, inner, Direction::East),
+        ExitRequirement::Toll { gold: 5 }
+    );
+    assert_eq!(
+        requirement(g, road, Direction::West),
+        ExitRequirement::Toll { gold: 5 }
+    );
+}
+
+/// Every type-4 exit in the shipped world is a toll and no other type is.
+/// 57 of them, and their amounts are a currency distribution -- which is
+/// the evidence type 4 was identified from in the first place.
+#[test]
+fn every_toll_in_the_world_is_a_type_four_exit() {
+    let g = graph();
+    let mut amounts: Vec<u32> = Vec::new();
+    for (_, room) in g.iter() {
+        for edge in room.exits.iter().flatten() {
+            match (&edge.requirement, edge.exit_type) {
+                (ExitRequirement::Toll { gold }, 4) => amounts.push(*gold),
+                (ExitRequirement::Toll { .. }, t) => {
+                    panic!("a toll on exit type {t}, which is not 4")
+                }
+                (_, 4) => panic!("a type-4 exit that is not a toll"),
+                _ => {}
+            }
+        }
+    }
+    amounts.sort_unstable();
+    assert_eq!(amounts.len(), 57, "57 shipped type-4 exits");
+    let distinct: std::collections::BTreeSet<u32> = amounts.iter().copied().collect();
+    assert_eq!(
+        distinct,
+        [0, 5, 5000, 10000].into_iter().collect(),
+        "a currency distribution, not room or message ids"
+    );
+}
+
+/// The Marble Chamber candle is NOT a puzzle: it is one of 250 plain
+/// command exits, and the walker already speaks those. Guards against
+/// over-classifying narrative dressing as mechanism.
+#[test]
+fn the_crypt_candle_is_an_ordinary_command_exit() {
+    let g = graph();
+    let chamber = RoomId { map: 1, room: 2252 };
+    assert_eq!(
+        requirement(g, chamber, Direction::North),
+        ExitRequirement::Command
+    );
+    let i = DIRECTIONS
+        .iter()
+        .position(|d| *d == Direction::North)
+        .unwrap();
+    let edge = g.room(chamber).and_then(|r| r.exits[i].as_ref()).unwrap();
+    assert_eq!(edge.command.as_deref(), Some("turn right candle left"));
 }

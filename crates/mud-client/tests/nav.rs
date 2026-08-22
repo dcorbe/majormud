@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use mud_client::dialect::{self, Target};
-use mud_client::graph::{ExitEdge, GraphRoom, RoomGraph};
+use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::events::{Event, RoomView};
 use mud_client::nav::{Interrupt, NavConfig, NavErrorKind, Navigator, NoGuard, TravelGuard};
 use mud_client::profile::Profile;
@@ -106,6 +106,7 @@ fn client_graph(market_name: &str) -> RoomGraph {
                 dest: RoomId { map: 1, room: dest },
                 exit_type: 0,
                 command: None,
+                requirement: ExitRequirement::None,
             });
         }
         (RoomId { map: 1, room: n }, room)
@@ -241,6 +242,7 @@ fn graph_with_a_phantom_exit() -> RoomGraph {
         dest: RoomId { map: 1, room: 3 },
         exit_type: 0,
         command: None,
+        requirement: ExitRequirement::None,
     });
     RoomGraph::from_rooms(vec![
         (RoomId { map: 1, room: 1 }, gates),
@@ -669,6 +671,7 @@ fn twin_graph() -> RoomGraph {
                 dest: *dest,
                 exit_type: 0,
                 command: None,
+                requirement: ExitRequirement::None,
             });
         }
         r
@@ -859,6 +862,7 @@ fn a_fenced_navigator_routes_around_a_wall() {
                 dest: *dest,
                 exit_type: 0,
                 command: None,
+                requirement: ExitRequirement::None,
             });
         }
         r
@@ -909,6 +913,7 @@ fn a_fence_can_cut_a_room_off_entirely() {
                 dest: *dest,
                 exit_type: 0,
                 command: None,
+                requirement: ExitRequirement::None,
             });
         }
         r

@@ -28,7 +28,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use mud_client::graph::{ExitEdge, GraphRoom, RoomGraph};
+use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::nav::{NavConfig, Navigator, NoGuard};
 use mud_client::profile::Profile;
 use mud_client::session::Session;
@@ -109,6 +109,7 @@ fn graph_with_exit(exit_type: i64) -> Arc<RoomGraph> {
         dest: THERE,
         exit_type,
         command: None,
+        requirement: ExitRequirement::from_exit_type(exit_type, 0),
     });
     let mut there = GraphRoom {
         name: "Secret Passage".into(),
@@ -118,6 +119,7 @@ fn graph_with_exit(exit_type: i64) -> Arc<RoomGraph> {
         dest: HERE,
         exit_type,
         command: None,
+        requirement: ExitRequirement::from_exit_type(exit_type, 0),
     });
     Arc::new(RoomGraph::from_rooms(vec![(HERE, here), (THERE, there)]))
 }
