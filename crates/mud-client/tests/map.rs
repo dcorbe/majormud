@@ -844,3 +844,98 @@ fn the_plane_records_exits_and_not_adjacency() {
     );
 }
 
+/// Four rooms in a square, joined ONLY by orthogonal exits. Not one
+/// diagonal exists, so not one diagonal may be drawn — and the crossed
+/// glyph, which is two diagonals, least of all.
+#[test]
+fn a_square_loop_with_no_diagonal_exits_draws_no_diagonal() {
+    use mud_client::graph::{ExitEdge, GraphRoom};
+    let a = RoomId { map: 1, room: 1 };
+    let b = RoomId { map: 1, room: 2 };
+    let c = RoomId { map: 1, room: 3 };
+    let d = RoomId { map: 1, room: 4 };
+    let mk = |name: &str, exits: Vec<(Direction, RoomId)>| {
+        let mut r = GraphRoom {
+            name: name.into(),
+            ..Default::default()
+        };
+        for (dir, dest) in exits {
+            r.exits[dir as usize] = Some(ExitEdge {
+                dest,
+                exit_type: 0,
+                command: None,
+            });
+        }
+        r
+    };
+    let rooms = vec![
+        (a, mk("A", vec![(Direction::East, b), (Direction::South, c)])),
+        (b, mk("B", vec![(Direction::West, a), (Direction::South, d)])),
+        (c, mk("C", vec![(Direction::East, d), (Direction::North, a)])),
+        (d, mk("D", vec![(Direction::West, c), (Direction::North, b)])),
+    ];
+    let plane = layout(&RoomGraph::from_rooms(rooms), a);
+    for zoom in [Zoom::Detail, Zoom::Normal] {
+        let frame = drawn(&plane, zoom);
+        for glyph in ['\u{2573}', '\u{2572}', '\u{2571}'] {
+            assert!(
+                !frame.contains(glyph),
+                "{zoom:?} drew {glyph:?} for a square with no diagonal exits:\n{frame}"
+            );
+        }
+    }
+}
+
+/// Two rooms the grid puts side by side with nothing joining them get no
+/// line. `A --east--> B` and `A --southeast--> D` leave B and D
+/// vertically adjacent and unconnected.
+#[test]
+fn adjacent_rooms_with_no_exit_between_them_are_not_joined() {
+    use mud_client::graph::{ExitEdge, GraphRoom};
+    let a = RoomId { map: 1, room: 1 };
+    let b = RoomId { map: 1, room: 2 };
+    let d = RoomId { map: 1, room: 4 };
+    let mut ra = GraphRoom {
+        name: "A".into(),
+        ..Default::default()
+    };
+    ra.exits[Direction::East as usize] = Some(ExitEdge {
+        dest: b,
+        exit_type: 0,
+        command: None,
+    });
+    ra.exits[Direction::SouthEast as usize] = Some(ExitEdge {
+        dest: d,
+        exit_type: 0,
+        command: None,
+    });
+    let rooms = vec![
+        (a, ra),
+        (
+            b,
+            GraphRoom {
+                name: "B".into(),
+                ..Default::default()
+            },
+        ),
+        (
+            d,
+            GraphRoom {
+                name: "D".into(),
+                ..Default::default()
+            },
+        ),
+    ];
+    let plane = layout(&RoomGraph::from_rooms(rooms), a);
+    let frame = drawn(&plane, Zoom::Normal);
+    // Exactly one horizontal (A-B) and one diagonal (A-D). The vertical
+    // that used to appear between B and D was never an exit.
+    assert_eq!(
+        frame.matches('\u{2502}').count(),
+        0,
+        "a vertical was drawn where no exit exists:\n{frame}"
+    );
+    assert_eq!(frame.matches('\u{2500}').count(), 1, "A-B:\n{frame}");
+    assert_eq!(frame.matches('\u{2572}').count(), 1, "A-D:\n{frame}");
+}
+

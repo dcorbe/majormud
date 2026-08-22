@@ -559,7 +559,7 @@ pub fn render(
             });
 
             if zoom != Zoom::Overview {
-                connectors(plane, &mut buf, (gx, gy), (col, row), zoom, style.sgr);
+                connectors(plane, &mut buf, id, (col, row), zoom, style.sgr);
             }
 
             let glyph = match marks.here {
@@ -666,10 +666,17 @@ fn put(buf: &mut [Vec<(char, Ink)>], x: i64, y: i64, c: char, ink: Ink) {
     buf[y as usize][x as usize] = (c, ink);
 }
 
+/// Draw the connectors leaving one room.
+///
+/// A connector is drawn for an exit the plane RECORDED (`Plane::edges`),
+/// never for a room that merely happens to occupy the neighbouring cell.
+/// Grid adjacency is not connectivity: the layout packs rooms onto a
+/// square grid, so unrelated rooms end up side by side constantly, and
+/// drawing those was 47% of every line on the map.
 fn connectors(
     plane: &Plane,
     buf: &mut [Vec<(char, Ink)>],
-    cell: Cell,
+    room: RoomId,
     at: (i64, i64),
     zoom: Zoom,
     fg: &'static str,
@@ -688,8 +695,8 @@ fn connectors(
     // are the same shape at every scale, and writing them twice is how
     // one of them ends up missing a direction.
     let half = cw / 2;
-    for (_dir, step) in COMPASS {
-        if plane.room_at((cell.0 + step.0, cell.1 + step.1)).is_none() {
+    for (dir, step) in COMPASS {
+        if !plane.has_edge(room, dir) {
             continue;
         }
         let (dx, dy) = (step.0 as i64, step.1 as i64);
