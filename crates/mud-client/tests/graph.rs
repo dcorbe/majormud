@@ -359,6 +359,16 @@ fn the_gem_passage_is_concealed_by_a_puzzle_not_by_search() {
 /// The ordinary hidden exit is still searchable. Without this the fix
 /// would be "never search anything", which strands the 1,383 shipped
 /// hidden exits that SEARCH genuinely does reveal.
+///
+/// The bounds are exact, not a range: the shipped world has exactly
+/// 1,383 type-6 exits, full stop, and this loader's partition of them is
+/// exhaustive by construction (every `Hidden` edge is either `searchable`
+/// or not, there is no third bucket) -- so 1368 + 15 must equal all of
+/// them. A range that merely says ">1000" and "<50" passes just as
+/// happily for a loader that produced 3 or 40 puzzle-locked exits
+/// instead of the real 15; only equality can catch that the partition
+/// itself is wrong, and the fixture is the shipped game data, which does
+/// not drift.
 #[test]
 fn an_ordinary_hidden_exit_stays_searchable() {
     let g = graph();
@@ -375,16 +385,56 @@ fn an_ordinary_hidden_exit_stays_searchable() {
             }
         }
     }
-    assert!(
-        searchable > 1000,
-        "most of the 1,383 hidden exits are genuinely searchable, got {searchable}"
+    assert_eq!(
+        searchable, 1368,
+        "the shipped world has exactly 1368 genuinely searchable hidden exits"
     );
-    assert!(
-        puzzle_locked > 0,
-        "at least the gem passage is puzzle-locked, got {puzzle_locked}"
+    assert_eq!(
+        puzzle_locked, 15,
+        "the shipped world has exactly 15 remoteaction-concealed hidden exits"
     );
-    assert!(
-        puzzle_locked < 50,
-        "only a handful of exits are puzzle-locked, got {puzzle_locked}"
+    assert_eq!(
+        searchable + puzzle_locked,
+        1383,
+        "every type-6 exit in the world must land in exactly one bucket"
+    );
+}
+
+/// 1/1104's warehouse door is an ordinary Door (type 7) that a
+/// `remoteaction` script -- a crowbar on its chains -- also opens. The
+/// classifier's `_` arm replaces `Door` with `Puzzle` outright on real
+/// data; until now nothing exercised that arm at all.
+#[test]
+fn a_crowbarred_door_becomes_a_puzzle_not_a_door() {
+    let g = graph();
+    let warehouse = RoomId { map: 1, room: 1104 };
+    match requirement(g, warehouse, Direction::North) {
+        ExitRequirement::Puzzle { actions } => {
+            assert_eq!(actions.len(), 1, "one actor room: itself");
+            assert_eq!(actions[0].room, warehouse);
+            assert!(
+                actions[0]
+                    .commands
+                    .iter()
+                    .any(|c| c == "use crowbar"),
+                "expected 'use crowbar' among {:?}",
+                actions[0].commands
+            );
+        }
+        other => panic!("expected a puzzle-locked door, got {other:?}"),
+    }
+
+    // Pinned the same way as the Hidden partition above: the shipped
+    // world has exactly 10 remoteaction targets whose own type was
+    // Door/Gate (7 or 0xb) rather than Hidden, and every one of them is
+    // now classified Puzzle.
+    let puzzle_count = g
+        .iter()
+        .flat_map(|(_, room)| room.exits.iter().flatten())
+        .filter(|edge| matches!(edge.requirement, ExitRequirement::Puzzle { .. }))
+        .count();
+    assert_eq!(
+        puzzle_count, 10,
+        "the shipped world has exactly 10 Puzzle-classified (non-Hidden) exits"
     );
 }

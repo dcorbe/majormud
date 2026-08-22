@@ -484,9 +484,11 @@ impl RoomGraph {
                 map: map16,
                 room: actor16,
             };
-            // One script per line; the phrase is the head, the verbs
-            // follow, colon-separated. A line may hold several phrases
-            // for the same effect ("clear rubble" / "move rubble").
+            // One phrase per line: the head is the phrase, the verbs
+            // follow, colon-separated. Several phrasings of the same
+            // effect ("clear rubble", "move rubble") are separate
+            // lines, each parsed on its own -- no line holds more than
+            // one phrase.
             for line in body.split(['\r', '\n']).filter(|l| !l.trim().is_empty()) {
                 let mut parts = line.split(':');
                 let Some(phrase) = parts.next().map(str::trim) else {
