@@ -744,8 +744,11 @@ async fn finish_locator_gives_the_interactive_navigator_the_sessions_real_purse(
 
     let graph = interactive_gate_graph();
     let spawns = std::sync::Arc::new(SpawnTable::load(&interactive_db_path()).expect("spawn table"));
+    let content = std::sync::Arc::new(
+        mud_core::content_db::load(&interactive_db_path()).expect("content"),
+    );
 
-    let (_, nav, _) = finish_locator(Some((graph, spawns)), &session);
+    let (_, nav, _, _) = finish_locator(Some((graph, spawns, content)), &session);
 
     // A freshly connected session has never seen an `i` reply, so its
     // purse is empty. `Navigator::new`'s own default -- what this

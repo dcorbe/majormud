@@ -211,7 +211,10 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     // those arms would silently assign the SHADOWED job binding instead
     // of this clock, compile cleanly, and reset nothing.
     let mut exp_since = std::time::Instant::now();
-    let (graph, nav, spawns) = finish_locator(locator(session.profile()), &session);
+    // `content` is held for the session's lifetime alongside `graph` and
+    // `spawns`; nothing reads it yet — the views that will (Task 3/4 of
+    // the same plan) replace `graph`/`spawns`'s own database reads.
+    let (graph, nav, spawns, _content) = finish_locator(locator(session.profile()), &session);
 
     // Key events come from a blocking reader thread.
     let (key_tx, mut key_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1619,7 +1622,11 @@ pub fn on_realm_entry(session: &Arc<Session>) {
 /// by mistake.
 fn locator(
     profile: &crate::profile::Profile,
-) -> Option<(Arc<crate::graph::RoomGraph>, Arc<crate::spawn::SpawnTable>)> {
+) -> Option<(
+    Arc<crate::graph::RoomGraph>,
+    Arc<crate::spawn::SpawnTable>,
+    Arc<mud_core::content::Content>,
+)> {
     let db = content_path(profile);
     // The hand-played session keeps its own room model, and it needs the
     // death wordings as much as the farm does — more, on a shared board.
@@ -1628,7 +1635,14 @@ fn locator(
     // Same file as the graph, so this fails only when that one would
     // have: both are one answer to "is there a world database".
     let spawns = Arc::new(crate::spawn::SpawnTable::load(&db).ok()?);
-    Some((graph, spawns))
+    // The one decoder, held for the life of the session (spec
+    // `2026-08-22-one-path-to-content-design.md`). Not yet consumed —
+    // `graph` and `spawns` above still read the database on their own —
+    // the views that replace those reads are a later task in the same
+    // plan. Failure here is folded into the same "no world database"
+    // answer as the other two.
+    let content = Arc::new(mud_core::content_db::load(&db).ok()?);
+    Some((graph, spawns, content))
 }
 
 /// Finish what [`locator`] began: build the interactive play loop's own
@@ -1656,19 +1670,24 @@ fn locator(
 /// — it is the MOST-used path, not a side one, which is why it gets the
 /// same treatment as every other `Navigator::new` site.
 pub fn finish_locator(
-    found: Option<(Arc<crate::graph::RoomGraph>, Arc<crate::spawn::SpawnTable>)>,
+    found: Option<(
+        Arc<crate::graph::RoomGraph>,
+        Arc<crate::spawn::SpawnTable>,
+        Arc<mud_core::content::Content>,
+    )>,
     session: &Session,
 ) -> (
     Option<Arc<crate::graph::RoomGraph>>,
     Option<crate::nav::Navigator>,
     Option<Arc<crate::spawn::SpawnTable>>,
+    Option<Arc<mud_core::content::Content>>,
 ) {
     match found {
-        Some((g, s)) => {
+        Some((g, s, c)) => {
             let nav = crate::nav::Navigator::new(g.clone(), crate::nav::NavConfig::default())
                 .with_capabilities(session.capabilities());
-            (Some(g), Some(nav), Some(s))
+            (Some(g), Some(nav), Some(s), Some(c))
         }
-        None => (None, None, None),
+        None => (None, None, None, None),
     }
 }
