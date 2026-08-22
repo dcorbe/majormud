@@ -245,7 +245,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                         // waiting out the full period would leave the bar
                         // blank for the first minute of every session.
                         if present && !in_realm {
-                            session.send("exp");
+                            on_realm_entry(&session);
                         }
                         in_realm = present;
                     }
@@ -1547,6 +1547,31 @@ fn import_loop(graph: &crate::graph::RoomGraph, file: &std::path::Path) -> Vec<S
         Err(e) => out.push(format!("  not saved: {e}")),
     }
     out
+}
+
+/// What `play` sends once per realm entry.
+///
+/// `exp` feeds the status bar off the ordinary event stream (its answer
+/// is read back in the same `select!` arm that calls this). `i` is
+/// different: NOBODY HERE reads its reply. `Session::send` registers
+/// any `i` into the session's own purse tracker regardless of who sent
+/// it (see `session.rs`'s `PurseTracker`), so this send exists purely to
+/// pre-warm `session.capabilities()`'s purse before the first toll route
+/// is ever computed. Without it the purse sits at `Purse::ZERO` until
+/// the operator happens to type `i` by hand or a toll gets crossed once
+/// — every toll then reads unaffordable, the router always detours, and
+/// because it never attempts the toll route it never learns otherwise.
+/// Safe-direction, but a feature that quietly does nothing. If you are
+/// looking at this `i` wondering who reads it: the session does. Do not
+/// delete it again for that reason.
+///
+/// Split out from its one call site (in [`play`]) so this priming is a
+/// seam a test can reach: `play` owns a real terminal in raw mode and a
+/// background OS thread reading `crossterm::event::read()`, and cannot
+/// be driven end to end.
+pub fn on_realm_entry(session: &Session) {
+    session.send("exp");
+    session.send("i");
 }
 
 /// Loads the world files: the graph and the spawn table. Takes a

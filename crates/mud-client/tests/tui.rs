@@ -760,3 +760,75 @@ async fn finish_locator_gives_the_interactive_navigator_the_sessions_real_purse(
         "an empty session purse must not silently become infinite gold"
     );
 }
+
+use mud_client::purse::Purse;
+use mud_client::tui::on_realm_entry;
+
+/// A board that answers `i` with a fixed 10-gold balance and echoes
+/// anything else -- just enough to prove `on_realm_entry` armed and fed
+/// the session's own purse tracker, without needing the rest of `play`.
+async fn realm_entry_board() -> std::net::SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut sock, _) = listener.accept().await.unwrap();
+        // `exp` and `i` go out back to back with no pacing in this test
+        // profile, and can arrive in ONE read -- buffer and split on
+        // newlines, same as `capture_board`/`scripted_board` do, rather
+        // than treating a whole read as one line.
+        let mut pending = String::new();
+        let mut buf = [0u8; 512];
+        while let Ok(n) = sock.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            pending.push_str(&String::from_utf8_lossy(&buf[..n]));
+            while let Some(nl) = pending.find('\n') {
+                let line: String = pending.drain(..=nl).collect();
+                let line = line.trim().to_lowercase();
+                let echo = format!("\r\n{line}");
+                if line == "i" {
+                    sock.write_all(
+                        format!("{echo}\r\nYou are carrying 10 gold crowns\r\n[HP=51/MA=9]:")
+                            .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+                    continue;
+                }
+                let reply = format!("\r\nYou say \"{line}\"\r\n[HP=51/MA=9]:");
+                sock.write_all(format!("{echo}{reply}").as_bytes()).await.unwrap();
+            }
+        }
+    });
+    addr
+}
+
+/// `play` cannot be driven end to end (real terminal raw mode, a
+/// background OS thread reading `crossterm::event::read()`), so this
+/// exercises the realm-entry priming directly through the seam
+/// `on_realm_entry` -- the same function `play`'s `select!` arm calls
+/// the moment `realm_presence` first reports `true`.
+///
+/// This is the property the whole fix restores: an operator who has
+/// just walked into the game, and typed nothing yet, must already have
+/// a session whose purse reflects the board's real answer -- not
+/// `Purse::ZERO` waiting on an `i` nobody is going to send by hand.
+#[tokio::test]
+async fn entering_the_realm_arms_and_fills_the_sessions_purse() {
+    let addr = realm_entry_board().await;
+    let session = session_to(addr).await;
+
+    on_realm_entry(&session);
+    session
+        .expect("You are carrying", std::time::Duration::from_secs(5))
+        .await
+        .expect("purse reply");
+
+    assert_eq!(
+        session.capabilities().purse,
+        Purse::from_gold(10),
+        "entering the realm must arm and fill the session's purse before anything else asks for it"
+    );
+}
