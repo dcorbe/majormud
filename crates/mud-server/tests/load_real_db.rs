@@ -2,7 +2,7 @@
 
 use mud_core::ability::Ability;
 use mud_core::content::{MonsterId, RaceId, RoomId};
-use mud_server::content_db;
+use mud_core::content_db;
 
 fn db_path() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../re/mmud_wgnt.sqlite")

@@ -8,8 +8,8 @@
 use std::fmt;
 use std::path::Path;
 
-use mud_core::ability::Ability;
-use mud_core::content::{
+use crate::ability::Ability;
+use crate::content::{
     AbilityValue, AttackForm, Class, ClassId, Content, Element, Exit, Item, ItemId, LootSlot,
     MatchType, Message, MessageId, Monster, MonsterId, PlacedItem, Race, RaceId, Room, RoomId,
     SaveClass, ScalePair, Shop, ShopId, ShopStock, Spell, SpellId, StatBlock, TargetMode,
@@ -119,7 +119,7 @@ fn ability_cols(prefix: &str) -> String {
         .join(", ")
 }
 
-fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
+pub fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
     let exits = (1..=10)
         .map(|i| format!("roomexit_{i}, roomtype_{i}, para1_{i}, para2_{i}, para3_{i}, para4_{i}"))
         .collect::<Vec<_>>()
@@ -257,7 +257,7 @@ fn load_rooms(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
     Ok(())
 }
 
-fn load_monsters(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
+pub fn load_monsters(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
     let attack_cols = (1..=5)
         .map(|i| {
             format!(
@@ -389,7 +389,7 @@ fn opt_text_block(
     }
 }
 
-fn load_textblocks(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
+pub fn load_textblocks(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
     let mut stmt = db.prepare("SELECT number, next, body FROM textblock")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
@@ -407,7 +407,7 @@ fn coin(table: &'static str, row: &rusqlite::Row<'_>, idx: usize) -> Result<u32,
     u32::try_from(v.max(0)).map_err(|_| invalid(table, format!("coin at {idx} overflow")))
 }
 
-fn load_items(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
+pub fn load_items(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
     // Items carry 20 ability slots (not 10 like the other tables).
     let a_cols = (1..=20)
         .map(|i| format!("abilitya_{i}"))
@@ -500,7 +500,7 @@ fn load_items(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
     Ok(())
 }
 
-fn load_spells(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
+pub fn load_spells(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
     let mut stmt = db.prepare(&format!(
         "SELECT number, name, shortname, castmsga, castmsgb, {}, {}, \
          levelcap, energy, level, min, max, spelltype, typeofresists, \
@@ -563,7 +563,7 @@ fn load_spells(db: &Connection, content: &mut Content) -> Result<(), LoadError> 
     Ok(())
 }
 
-fn load_messages(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
+pub fn load_messages(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
     let mut stmt =
         db.prepare("SELECT number, messageline1, messageline2, messageline3 FROM message")?;
     let mut rows = stmt.query([])?;
@@ -580,7 +580,7 @@ fn load_messages(db: &Connection, content: &mut Content) -> Result<(), LoadError
     Ok(())
 }
 
-fn load_shops(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
+pub fn load_shops(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
     let stock_cols = (1..=20)
         .map(|i| {
             format!(
@@ -625,7 +625,7 @@ fn load_shops(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
     Ok(())
 }
 
-fn load_races(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
+pub fn load_races(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
     let mut stmt = db.prepare(&format!(
         "SELECT number, name, {}, {}, \
          minint, minwil, minstr, minhea, minagl, minchm, \
@@ -666,7 +666,7 @@ fn stat_block(
     })
 }
 
-fn load_classes(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
+pub fn load_classes(db: &Connection, content: &mut Content) -> Result<(), LoadError> {
     let mut stmt = db.prepare(&format!(
         "SELECT number, name, {}, {}, minhp, maxhp, magictype, magiclvl, exp, combat, \
          weapon, armour FROM class",

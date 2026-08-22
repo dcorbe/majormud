@@ -5,7 +5,7 @@
 
 use mud_core::content::{ClassId, MonsterId, RaceId, RoomId};
 use mud_core::game::{Core, CoreConfig, Event, Gender, Player, SessionId};
-use mud_server::content_db;
+use mud_core::content_db;
 
 fn player_at(name: &str, location: RoomId) -> Player {
     Player {

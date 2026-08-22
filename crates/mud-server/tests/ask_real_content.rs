@@ -6,7 +6,7 @@
 
 use mud_core::content::{ClassId, MonsterId, RaceId, RoomId};
 use mud_core::game::{Core, CoreConfig, Event, Gender, Player, SessionId};
-use mud_server::content_db;
+use mud_core::content_db;
 
 /// "Cavern, Dead End" (map 10) — empty at boot, nothing else talks.
 const ARENA: RoomId = RoomId { map: 10, room: 42 };

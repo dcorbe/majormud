@@ -18,8 +18,8 @@ fn every_file_description_room_resolves() {
         eprintln!("skipping: {CONTENT} not present");
         return;
     }
-    let mut content = mud_server::content_db::load(Path::new(CONTENT)).expect("content");
-    let houses = mud_server::content_db::load_house_dir(Path::new(HOUSES)).expect("hse dir");
+    let mut content = mud_core::content_db::load(Path::new(CONTENT)).expect("content");
+    let houses = mud_core::content_db::load_house_dir(Path::new(HOUSES)).expect("hse dir");
     assert!(houses.len() >= 130, "the mirror set is present");
     for (name, lines) in houses {
         assert!(!lines.is_empty(), "{name} parsed");

@@ -8,6 +8,7 @@ pub mod ability;
 pub mod combat;
 pub mod command;
 pub mod content;
+pub mod content_db;
 pub mod crime;
 pub mod gang;
 pub mod game;

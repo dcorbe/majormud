@@ -29,7 +29,7 @@ use std::collections::BTreeMap;
 
 use mud_core::content::{ClassId, MonsterId, RaceId, RoomId, SpellId, StatBlock};
 use mud_core::game::{Core, CoreConfig, Event, Gender, MonsterInstanceId, Player, SessionId};
-use mud_server::content_db;
+use mud_core::content_db;
 
 /// "Cavern, Dead End" (map 10) — `attributes` 0 (not a protected room, so
 /// the guilt gate stays out of the way), `monstertype` 0 and `permnpc` 0,

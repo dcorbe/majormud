@@ -34,7 +34,7 @@
 
 use mud_core::content::{ClassId, ItemId, MonsterId, RaceId, RoomId, StatBlock};
 use mud_core::game::{Core, CoreConfig, Event, Player, SessionId};
-use mud_server::content_db;
+use mud_core::content_db;
 
 /// "Cavern, Dead End" (map 10) — the same empty arena
 /// `charm_real_content.rs` uses: `attributes` 0, `monstertype` 0,
