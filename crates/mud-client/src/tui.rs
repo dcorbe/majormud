@@ -1574,52 +1574,53 @@ fn import_loop(graph: &crate::graph::RoomGraph, file: &std::path::Path) -> Vec<S
     out
 }
 
-/// Loads the world files: the graph, a plain navigator over it, and the
-/// spawn table. Takes a `Profile`, not a `Session` — on purpose. It runs
-/// before any session is guaranteed to exist and its job is "is there a
-/// world database", nothing about who is playing or what they can
-/// afford. See [`finish_locator`] for where a live session's real
-/// capabilities get applied.
+/// Loads the world files: the graph and the spawn table. Takes a
+/// `Profile`, not a `Session` — on purpose. It runs before any session
+/// is guaranteed to exist and its job is "is there a world database",
+/// nothing about who is playing or what they can afford. It builds no
+/// `Navigator` at all: see [`finish_locator`], the only place one gets
+/// built, so there is no unwired one for a second caller to reach for
+/// by mistake.
 fn locator(
     profile: &crate::profile::Profile,
-) -> Option<(
-    Arc<crate::graph::RoomGraph>,
-    crate::nav::Navigator,
-    Arc<crate::spawn::SpawnTable>,
-)> {
+) -> Option<(Arc<crate::graph::RoomGraph>, Arc<crate::spawn::SpawnTable>)> {
     let db = content_path(profile);
     // The hand-played session keeps its own room model, and it needs the
     // death wordings as much as the farm does — more, on a shared board.
     let _ = crate::deaths::init(&db);
     let graph = Arc::new(crate::graph::RoomGraph::load(&db).ok()?);
-    let nav = crate::nav::Navigator::new(graph.clone(), crate::nav::NavConfig::default());
     // Same file as the graph, so this fails only when that one would
-    // have: all three are one answer to "is there a world database".
+    // have: both are one answer to "is there a world database".
     let spawns = Arc::new(crate::spawn::SpawnTable::load(&db).ok()?);
-    Some((graph, nav, spawns))
+    Some((graph, spawns))
 }
 
-/// Finish what [`locator`] began, with the session's real capabilities.
+/// Finish what [`locator`] began: build the interactive play loop's own
+/// `Navigator`, with the session's real capabilities applied AT
+/// CONSTRUCTION — never a separate step a second caller could skip.
 ///
-/// Split out from its one call site (in [`play`]) rather than folded
-/// into it inline, so the wiring itself is a testable seam: `play` owns
-/// a real terminal in raw mode and a background OS thread reading
+/// `locator` used to hand back a ready-made `Navigator` of its own,
+/// which stayed representable on `Capabilities::unrestricted()` even
+/// after this function existed to fix one up: nothing in the type
+/// system stopped a future caller from taking `locator`'s navigator
+/// directly and walking with it unwired. Moving construction here
+/// removes the unwired value itself rather than merely leaving it
+/// unreached.
+///
+/// Split out from its one call site (in [`play`]) rather than folded in
+/// inline, so the wiring itself is a testable seam: `play` owns a real
+/// terminal in raw mode and a background OS thread reading
 /// `crossterm::event::read()`, and cannot be driven end to end the way
 /// `go::run_go` can. This function is the whole of what that call site
 /// does with a `Session` in hand, so a test exercising it directly is
 /// exercising the real wiring, not a stand-in for it.
 ///
-/// The navigator [`locator`] hands back is the one the interactive play
-/// loop walks with by hand (`mapview::run`'s route preview, in
-/// particular) — it is the MOST-used path, not a side one, which is why
-/// it gets the same treatment as every other `Navigator::new` site
-/// rather than being left on [`crate::graph::Capabilities::unrestricted`].
+/// The navigator this produces is the one the interactive play loop
+/// walks with by hand (`mapview::run`'s route preview, in particular)
+/// — it is the MOST-used path, not a side one, which is why it gets the
+/// same treatment as every other `Navigator::new` site.
 pub fn finish_locator(
-    found: Option<(
-        Arc<crate::graph::RoomGraph>,
-        crate::nav::Navigator,
-        Arc<crate::spawn::SpawnTable>,
-    )>,
+    found: Option<(Arc<crate::graph::RoomGraph>, Arc<crate::spawn::SpawnTable>)>,
     session: &Session,
 ) -> (
     Option<Arc<crate::graph::RoomGraph>>,
@@ -1627,7 +1628,11 @@ pub fn finish_locator(
     Option<Arc<crate::spawn::SpawnTable>>,
 ) {
     match found {
-        Some((g, n, s)) => (Some(g), Some(n.with_capabilities(session.capabilities())), Some(s)),
+        Some((g, s)) => {
+            let nav = crate::nav::Navigator::new(g.clone(), crate::nav::NavConfig::default())
+                .with_capabilities(session.capabilities());
+            (Some(g), Some(nav), Some(s))
+        }
         None => (None, None, None),
     }
 }

@@ -696,7 +696,6 @@ fn the_bar_shows_where_a_go_is_walking() {
 }
 
 use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
-use mud_client::nav::{NavConfig, Navigator};
 use mud_client::spawn::SpawnTable;
 use mud_client::tui::finish_locator;
 use mud_core::content::Direction;
@@ -734,28 +733,29 @@ fn interactive_gate_graph() -> std::sync::Arc<RoomGraph> {
 /// and a background OS thread reading `crossterm::event::read()`, so it
 /// cannot be driven end to end the way `go::run_go` is in
 /// `session_capabilities.rs`. `finish_locator` is the whole of what that
-/// call site does with a live session in hand, split out specifically so
-/// the wiring has a seam a test can reach instead of going uncovered.
+/// call site does with a live session in hand -- it is now also the
+/// ONLY place a `Navigator` over these world files gets built at all,
+/// so there is no unwired one for a second caller to reach for instead
+/// -- split out specifically so the wiring has a seam a test can reach.
 #[tokio::test]
 async fn finish_locator_gives_the_interactive_navigator_the_sessions_real_purse() {
     let (addr, _received) = capture_board().await;
     let session = session_to(addr).await;
 
     let graph = interactive_gate_graph();
-    let nav = Navigator::new(graph.clone(), NavConfig::default());
     let spawns = std::sync::Arc::new(SpawnTable::load(&interactive_db_path()).expect("spawn table"));
 
-    let (_, nav2, _) = finish_locator(Some((graph, nav, spawns)), &session);
+    let (_, nav, _) = finish_locator(Some((graph, spawns)), &session);
 
     // A freshly connected session has never seen an `i` reply, so its
     // purse is empty. `Navigator::new`'s own default -- what this
     // navigator would still be running on if `finish_locator` stopped
-    // applying the session's capabilities -- is `unrestricted()`, an
-    // effectively infinite purse that would pay any toll without ever
-    // being asked to. Routing must refuse the toll rather than silently
-    // affording it.
+    // applying the session's capabilities at construction -- is
+    // `unrestricted()`, an effectively infinite purse that would pay any
+    // toll without ever being asked to. Routing must refuse the toll
+    // rather than silently affording it.
     assert_eq!(
-        nav2.expect("locator succeeded").route_from(IGATE, IBEYOND),
+        nav.expect("locator succeeded").route_from(IGATE, IBEYOND),
         None,
         "an empty session purse must not silently become infinite gold"
     );
