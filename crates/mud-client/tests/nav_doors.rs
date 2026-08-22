@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
+use mud_client::graph::{Capabilities, ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::nav::{NavConfig, Navigator, NoGuard};
 use mud_client::profile::Profile;
 use mud_client::session::Session;
@@ -226,20 +226,30 @@ async fn pick_then_open_board() -> (std::net::SocketAddr, Arc<DoorLog>) {
     (addr, log)
 }
 
-/// A navigator with picking OFF, so the force path is what gets tested.
+/// A navigator walking a character with NO Picklocks, so the force path
+/// is what gets tested.
 ///
-/// Picking is on by default and is tried BEFORE bashing, so a test that
-/// means to exercise a bash has to say so — otherwise the lock gives to
-/// a pick and the bash it asserts never happens.
+/// Picking is tried BEFORE bashing whenever the character has the skill
+/// (`Navigator::new`'s default `Capabilities` is
+/// [`Capabilities::unrestricted`], which reads as "can pick anything"),
+/// so a test that means to exercise a bash has to hand the walker a
+/// character who cannot — otherwise the lock gives to a pick and the
+/// bash it asserts never happens. Whether picking is attempted at all is
+/// no longer a config switch: it is read off the character, the same
+/// way an empty purse — not a setting — is what makes a toll
+/// unaffordable.
 fn forcing_nav(graph: Arc<RoomGraph>) -> Navigator {
     Navigator::new(
         graph,
         NavConfig {
             step_timeout_ms: 1500,
-            pick_locks: false,
             ..NavConfig::default()
         },
     )
+    .with_capabilities(Capabilities {
+        picklocks: 0,
+        ..Capabilities::unrestricted()
+    })
 }
 
 /// A closed but unlocked door must be opened and walked through. This is
@@ -295,10 +305,13 @@ async fn bashing_can_be_switched_off() {
         NavConfig {
             step_timeout_ms: 1500,
             bash_doors: false,
-            pick_locks: false,
             ..NavConfig::default()
         },
-    );
+    )
+    .with_capabilities(Capabilities {
+        picklocks: 0,
+        ..Capabilities::unrestricted()
+    });
 
     let result = tokio::time::timeout(
         Duration::from_secs(10),
@@ -726,15 +739,19 @@ async fn a_softened_door_refusal_is_still_a_blocked_door() {
 /// character on a type-7 lock that was never going to yield to force,
 /// and the character later died with nothing to show for it. A thief
 /// picks it instead, for the cost of a command and no health at all.
+///
+/// `Navigator::new`'s default `Capabilities` is already
+/// [`Capabilities::unrestricted`] — a character who can pick anything —
+/// so nothing further needs supplying here; the point being tested is
+/// only that `bash_doors: false` still finds a way through.
 #[tokio::test]
-async fn a_locked_door_is_picked_when_picking_is_on() {
+async fn a_locked_door_is_picked_by_a_character_with_the_skill() {
     let (addr, log) = pick_then_open_board().await;
     let session = session_for(addr).await;
     let n = Navigator::new(
         graph_with_exit(7),
         NavConfig {
             step_timeout_ms: 1500,
-            pick_locks: true,
             bash_doors: false,
             ..NavConfig::default()
         },
@@ -757,21 +774,26 @@ async fn a_locked_door_is_picked_when_picking_is_on() {
     );
 }
 
-/// Picking costs a command per roll and flood control is real, so it
-/// stays behind a switch for the same reason bashing does.
+/// A character with no Picklocks does not pick — the roll costs a
+/// command for nothing, so there is no reason to try it. This used to be
+/// an operator-managed switch; now it is read straight off the
+/// character, the same way `forcing_nav` reads it.
 #[tokio::test]
-async fn picking_can_be_switched_off() {
+async fn a_character_with_no_picklocks_does_not_pick() {
     let (addr, log) = pick_then_open_board().await;
     let session = session_for(addr).await;
     let n = Navigator::new(
         graph_with_exit(7),
         NavConfig {
             step_timeout_ms: 1500,
-            pick_locks: false,
             bash_doors: false,
             ..NavConfig::default()
         },
-    );
+    )
+    .with_capabilities(Capabilities {
+        picklocks: 0,
+        ..Capabilities::unrestricted()
+    });
 
     let result = tokio::time::timeout(
         Duration::from_secs(10),
@@ -780,8 +802,8 @@ async fn picking_can_be_switched_off() {
     .await
     .expect("goto should not hang");
 
-    assert!(result.is_err(), "a locked door with both switches off is a dead end");
-    assert_eq!(log.picks.load(Ordering::SeqCst), 0, "must not pick when switched off");
+    assert!(result.is_err(), "a locked door with no skill and no bashing is a dead end");
+    assert_eq!(log.picks.load(Ordering::SeqCst), 0, "must not pick with no Picklocks");
     assert_eq!(log.bashes.load(Ordering::SeqCst), 0, "must not bash when switched off");
 }
 
@@ -799,11 +821,14 @@ async fn a_locked_door_says_it_is_locked_rather_than_timing_out() {
         graph_with_exit(7),
         NavConfig {
             step_timeout_ms: 1500,
-            pick_locks: false,
             bash_doors: false,
             ..NavConfig::default()
         },
-    );
+    )
+    .with_capabilities(Capabilities {
+        picklocks: 0,
+        ..Capabilities::unrestricted()
+    });
 
     let err = tokio::time::timeout(
         Duration::from_secs(10),
@@ -835,7 +860,6 @@ async fn a_picked_lock_is_opened_before_it_is_walked() {
         graph_with_exit(7),
         NavConfig {
             step_timeout_ms: 1500,
-            pick_locks: true,
             bash_doors: false,
             ..NavConfig::default()
         },

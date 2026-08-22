@@ -644,11 +644,14 @@ impl Session {
     /// off the event stream by whichever `i` a caller (or this session's
     /// own navigators) has already sent — never sent on `capabilities`'
     /// own account, so asking costs nothing and can go stale between real
-    /// inventory checks.
+    /// inventory checks. `picklocks` is the same idea off `stats()`:
+    /// whether this character can pick a lock is a fact read off the
+    /// board's own `stat` sheet, not a setting an operator manages.
     pub fn capabilities(&self) -> Capabilities {
         Capabilities {
             purse: self.purse.lock().expect("purse lock").meter.current(),
             tolls_known_free: Arc::clone(&self.toll_log),
+            picklocks: self.stats().picklocks.unwrap_or(0),
         }
     }
 

@@ -207,6 +207,7 @@ async fn a_toll_learned_by_run_go_is_known_to_the_next_navigator() {
     let broke = Capabilities {
         purse: Purse::ZERO,
         tolls_known_free: Arc::clone(&caps.tolls_known_free),
+        ..Default::default()
     };
     let nav2 = Navigator::new(graph, NavConfig::default()).with_capabilities(broke);
     assert_eq!(

@@ -154,6 +154,7 @@ async fn a_crossing_that_does_not_deduct_is_remembered_as_free() {
     let caps = Capabilities {
         purse: Purse::from_gold(10),
         tolls_known_free: Arc::clone(&toll_log),
+        ..Default::default()
     };
     let n = nav(gate_graph(Direction::West), caps);
 
@@ -186,6 +187,7 @@ async fn a_crossing_that_deducts_stays_tolled() {
     let caps = Capabilities {
         purse: Purse::from_gold(10),
         tolls_known_free: Arc::clone(&toll_log),
+        ..Default::default()
     };
     let n = nav(gate_graph(Direction::East), caps);
 

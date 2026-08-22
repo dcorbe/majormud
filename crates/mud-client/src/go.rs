@@ -177,9 +177,11 @@ pub fn go_config(base: &FarmConfig, walking: bool) -> FarmConfig {
         // and anyone who wants to rest first can type `rest`.
         depart_at_percent: 0,
         // `open` is tried first and costs nothing; `picklock` follows and
-        // costs a command and no health, so both stay on for an
-        // interactive walk and `pick_locks` is inherited from the
-        // profile rather than forced here.
+        // costs a command and no health, so nothing here needs to force
+        // it off for an interactive walk. Whether it is ever attempted
+        // at all is not a config knob any more: `Navigator` reads it
+        // straight off the character's own Picklocks
+        // (`crate::graph::Capabilities::picklocks`).
         //
         // BASHING is the one that is forced off. It is minutes of
         // silence — up to 60 failed rolls plus four times that in

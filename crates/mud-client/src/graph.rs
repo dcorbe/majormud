@@ -215,6 +215,15 @@ pub struct Capabilities {
     /// by whichever walk is currently crossing the edge; a plain field
     /// would give each `Capabilities` clone its own amnesia.
     pub tolls_known_free: Arc<TollLog>,
+    /// The character's own `stat`-sheet `Picklocks` skill. Not consulted
+    /// by routing (a locked door's cost does not depend on who is
+    /// walking it) — [`crate::nav::Navigator`] reads it to decide
+    /// whether picking a lock, at the moment it meets one, is worth
+    /// attempting at all. Zero by default: an operator who never asked
+    /// [`crate::session::Session::stats`] gets a character who cannot
+    /// pick, the same safe direction an empty purse already takes for
+    /// tolls.
+    pub picklocks: u32,
 }
 
 impl Capabilities {
@@ -224,11 +233,12 @@ impl Capabilities {
     /// than one character's view of it, and as the migration default.
     /// A caller that wants a character's real answer must pass that
     /// character's capabilities; this one will happily route through a
-    /// 10,000-gold toll.
+    /// 10,000-gold toll and pick anything.
     pub fn unrestricted() -> Capabilities {
         Capabilities {
             purse: crate::purse::Purse::from_farthings(u64::MAX),
             tolls_known_free: Arc::new(TollLog::default()),
+            picklocks: u32::MAX,
         }
     }
 

@@ -169,20 +169,6 @@ pub struct NavConfig {
     /// ("You take %d damage for bashing the door!") and refuses outright
     /// without a weapon.
     pub bash_doors: bool,
-    /// Pick a locked door rather than breaking it.
-    ///
-    /// On by default, and tried BEFORE bashing: a roll against the
-    /// character's Picklocks costs one command and no health, where a
-    /// bash charges HP and needs a weapon. The 88-bash incident
-    /// (cwgaming 2026-08-03, 1/1119) burned 36 hp of a 75-hp character
-    /// on a type-7 lock that wanted Picklocks and was never going to
-    /// yield to force.
-    ///
-    /// A character with no Picklocks simply fails the roll, which costs
-    /// commands rather than health — so the switch exists for flood
-    /// control and for operators who would rather stop at a locked door,
-    /// not because picking can hurt.
-    pub pick_locks: bool,
     /// Reveal a hidden exit (type 6) with SEARCH instead of treating the
     /// board's refusal as a desync.
     ///
@@ -199,7 +185,6 @@ impl Default for NavConfig {
         NavConfig {
             step_timeout_ms: 15_000,
             bash_doors: true,
-            pick_locks: true,
             search_hidden: true,
         }
     }
@@ -508,7 +493,14 @@ pub struct Navigator {
     graph: Arc<RoomGraph>,
     step_timeout: std::time::Duration,
     bash_doors: bool,
-    pick_locks: bool,
+    /// A fence's own veto on picking, independent of the character's
+    /// skill — see [`Navigator::fenced`]. `false` (picking allowed, gated
+    /// only by `capabilities.picklocks`) everywhere else; there is no
+    /// operator-facing switch for this any more, the way `bash_doors` and
+    /// `search_hidden` still have one in [`NavConfig`] — whether THIS
+    /// character can pick a lock is a fact read off the `stat` sheet
+    /// ([`crate::graph::Capabilities::picklocks`]), not a setting.
+    picking_fenced_off: bool,
     search_hidden: bool,
     /// The plane a fenced walk is confined to, alongside `fence`.
     plane: Option<u16>,
@@ -550,7 +542,7 @@ impl Navigator {
             graph,
             step_timeout: std::time::Duration::from_millis(cfg.step_timeout_ms),
             bash_doors: cfg.bash_doors,
-            pick_locks: cfg.pick_locks,
+            picking_fenced_off: false,
             search_hidden: cfg.search_hidden,
             fence: None,
             plane: None,
@@ -591,9 +583,23 @@ impl Navigator {
         // Picking is free where bashing is not, but the reasoning here
         // is the region's rather than the character's: `roam::passable`
         // holds that what is behind a door is not part of the area at
-        // all, so opening one by ANY means contradicts the fence.
-        self.pick_locks = false;
+        // all, so opening one by ANY means contradicts the fence — a
+        // veto a skilled thief does not get to override.
+        self.picking_fenced_off = true;
         self
+    }
+
+    /// Is picking a locked door worth attempting right now?
+    ///
+    /// Two independent vetoes, either one enough to refuse: the
+    /// character may simply have no Picklocks (`capabilities.picklocks`,
+    /// read off the `stat` sheet — see [`crate::session::Session::stats`]
+    /// — rather than an operator-managed switch), or a fence may forbid
+    /// it regardless of skill (see [`Navigator::fenced`]). A character
+    /// with the skill and no fence still just fails the roll sometimes —
+    /// that is the board's own dice, not this gate.
+    fn can_pick(&self) -> bool {
+        self.capabilities.picklocks > 0 && !self.picking_fenced_off
     }
 
     /// The route this walk is allowed to take.
@@ -1145,9 +1151,12 @@ impl Navigator {
 
         // Picking first: it is a roll like bashing, but it costs a
         // command and no health, so where the character has the skill it
-        // is strictly the cheaper way through. A character without the
-        // skill just fails the roll.
-        if self.pick_locks {
+        // is strictly the cheaper way through. The 88-bash incident
+        // (cwgaming 2026-08-03, 1/1119) burned 36 hp of a 75-hp character
+        // on a type-7 lock that wanted Picklocks and was never going to
+        // yield to force. A character without the skill just fails the
+        // roll, which costs commands rather than health.
+        if self.can_pick() {
             let mut rolls = 0u32;
             while rolls < PICK_RETRIES {
                 // Same reasoning as the bash loop: the guard IS the
@@ -1212,10 +1221,10 @@ impl Navigator {
         if !self.bash_doors {
             return Err(NavErrorKind::DoorLocked {
                 dir: dir.to_string(),
-                tried: if self.pick_locks {
+                tried: if self.can_pick() {
                     format!("{PICK_RETRIES} picks, bashing off")
                 } else {
-                    "picking and bashing both off".into()
+                    "can't pick, bashing off".into()
                 },
             });
         }
