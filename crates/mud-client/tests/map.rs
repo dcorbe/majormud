@@ -963,14 +963,20 @@ fn adjacent_rooms_with_no_exit_between_them_are_not_joined() {
     assert_eq!(frame.matches('\u{2572}').count(), 1, "A-D:\n{frame}");
 }
 
-/// The pin: over the shipped world, every connector the renderer would
-/// draw is an exit that exists.
+/// The pin: over the shipped world, every edge the PLANE RECORDED is an
+/// exit that exists.
 ///
-/// The example-based tests above each cover one shape. This covers the
-/// shapes nobody thought of, which is where the original defect lived --
-/// it survived a test section literally headed "connectors must not
-/// lie" because every assertion there checked that a line was PRESENT
-/// and none checked that an absent exit stayed unpainted.
+/// This is a layout-layer census. It reads `Plane::has_edge` and never
+/// renders, so it cannot see a `connectors()` regression -- the render
+/// path is pinned separately by
+/// `the_reported_room_draws_only_its_real_exits`. Do not read this test
+/// as covering what is drawn; an earlier version of this comment said it
+/// did, and that claim is what let the wrong-layer gap hide.
+///
+/// What it does cover is the case no example test reaches: a conflicting
+/// exit recorded as an edge. `layout()` places rooms by BFS and a
+/// disagreeing destination must NOT be recorded, or the line would point
+/// at the wrong room.
 #[test]
 fn no_connector_in_the_shipped_world_is_fabricated() {
     // `graph()` is the file's existing OnceLock helper and already
@@ -1020,7 +1026,6 @@ fn no_connector_in_the_shipped_world_is_fabricated() {
         &fabricated[..fabricated.len().min(5)]
     );
 }
-
 
 /// The reported case: `1/837 Graveyard, East of Tomb` has exactly three
 /// real exits -- north to 1/838, south to 1/836, east to 1/823, all
