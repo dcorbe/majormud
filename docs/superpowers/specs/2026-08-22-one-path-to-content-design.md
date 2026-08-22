@@ -71,8 +71,10 @@ a redesign. Two things do not come for free:
   queries filtered in SQL. The views must reproduce, exactly:
   - monsters: skip `name == ""` (1 such row); score `exp*1000 + hp`; **max** wins
     on a name collision (7 rows share "giant rat").
-  - spells: skip `name == ""` and `duration <= 0` (542 of 1379 survive);
-    **min** wins on a collision.
+  - spells: skip `name == ""` and `duration <= 0` — 542 of 1379 rows
+    qualify, collapsing to **453 distinct names** in the map; **min** wins
+    on a collision. (The earlier "542 survive" read as map entries and was
+    misleading; both figures are real, and they count different things.)
   - exit commands: entry only when `messageline1` is non-empty after trimming.
 
 `content::Exit` preserves the raw `exit_type` and all four `para` slots, so
