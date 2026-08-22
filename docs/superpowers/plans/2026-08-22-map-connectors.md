@@ -2,6 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Status:** LANDED on main 2026-08-22, commits `ee6a9fd1..5cb44f3e` (8 commits).
+All 4 tasks implemented, task-reviewed, and passed a whole-branch review (verdict:
+ship). Merged `--ff-only`. The unticked checkboxes below are an artefact of
+execution: implementers worked from extracted per-task briefs, not this file.
+Two residuals parked — see the commit messages and
+`a-comment-can-lie-about-which-layer-a-test-covers` in memory.
+
 **Goal:** Make every line the map draws correspond to an exit that exists, and return the arrow keys to moving one cell per press.
 
 **Architecture:** `layout()` already walks every exit and already decides whether the destination landed in the cell it wanted. Record that fact in a set on `Plane` at the moment it is discovered, and have `connectors()` read the set instead of inferring links from grid adjacency. `render()` stays a pure function of `Plane`, so no caller needs a `&RoomGraph`.

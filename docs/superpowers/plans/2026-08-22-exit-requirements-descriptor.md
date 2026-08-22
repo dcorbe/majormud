@@ -2,6 +2,18 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Status:** LANDED on main 2026-08-22, commits `1161ad5b..94b648c8` (5 commits),
+plus integration fix `e24ba194`. All 3 tasks implemented, task-reviewed, and passed
+a whole-branch review (verdict: ship). Merged `--ff-only`. The unticked checkboxes
+below are an artefact of execution: implementers worked from extracted per-task
+briefs, not this file.
+
+**HANDOFF to the routing plan:** `Puzzle { actions }` REPLACES `Door` on 10 shipped
+lever-opened gates. Nothing is lost — `ExitEdge::exit_type` is retained — so routing
+recovers door-ness with `nav::is_door(edge.exit_type) && matches!(edge.requirement,
+Puzzle { .. })`. A consumer that reads only `requirement` will route a walker past a
+gate it could have picked or bashed.
+
 **Goal:** Give every exit a descriptor saying what it requires, computed once at load, and use it to stop the walker searching for a passage that no search can ever reveal.
 
 **Architecture:** `RoomGraph::load` already reads `roomtype_*` and `para1_*` and already does a side pass over the `message` table for command-exit phrases. Add a second side pass over the rooms that carry a `cmdtext` script, so that a `remoteaction` targeting an exit marks that exit as concealed-by-puzzle rather than concealed-by-search. Store the result on `ExitEdge` as an `ExitRequirement`. Nothing in this plan consults character state — that is part 2.
