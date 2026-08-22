@@ -23,6 +23,7 @@ pub mod nav;
 pub mod parse;
 pub mod profile;
 pub mod progress;
+pub mod purse;
 pub mod roam;
 pub mod script;
 pub mod session;
