@@ -81,3 +81,74 @@ pub fn parse_coin_line(line: &str) -> Option<Purse> {
     }
     matched.then_some(Purse(total))
 }
+
+/// The carried balance, fed from the board's own inventory reply.
+///
+/// A coin listing on the wire is not necessarily the purse: a pile on the
+/// floor prints the same shape (`bot.rs`'s `COIN_PILE_RE` sweeps those),
+/// and reading either one as the balance would let the router refuse a
+/// toll the character can actually afford. So the meter only ever accepts
+/// the single line immediately following [`PurseMeter::expect_reply`] —
+/// the reply to OUR `i` — and nothing else, ever.
+///
+/// That line is authoritative whether or not it looks like coins: `mud-core`
+/// always renders the carried coins first on the "You are carrying ..."
+/// line (`crates/mud-core/src/game.rs:12842-12846`), so an inventory with
+/// no money answers with a line `parse_coin_line` rejects (`"You are
+/// carrying Nothing!"`, or an items-only listing) — and that rejection
+/// means "carrying zero", not "we don't know", which is why the balance is
+/// reset to [`Purse::ZERO`] and the request is still marked settled.
+///
+/// `current` is always an assignment from the board, never an
+/// accumulation — deliberately, so that a `Purse` built from
+/// `Capabilities::unrestricted()`'s `u64::MAX` sentinel can never reach
+/// this meter's arithmetic and overflow it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PurseMeter {
+    current: Purse,
+    /// Set by `expect_reply`, cleared by the very next `observe` call —
+    /// win or lose. One inventory ask gets exactly one answer; anything
+    /// coin-shaped after that belongs to the room, not the character.
+    expecting: bool,
+}
+
+impl PurseMeter {
+    /// Call this once the board has accepted our `i` (the correlator
+    /// attributes its echo) — never at raw send time, and never on the
+    /// echo line itself: the reply body is unattributed (`i`'s `Kind` is
+    /// `Opaque`, whose `completes` is always `false`, so the correlator
+    /// cannot mark any line of the actual reply), and the echo is not
+    /// that reply.
+    pub fn expect_reply(&mut self) {
+        self.expecting = true;
+    }
+
+    /// Note a line. Returns `true` iff it was accepted as the carried
+    /// balance. Only ever fires for the one line following
+    /// `expect_reply`; every other line -- including a coin pile on the
+    /// floor -- is refused regardless of shape.
+    pub fn observe(&mut self, line: &str) -> bool {
+        if !self.expecting {
+            return false;
+        }
+        self.expecting = false;
+        match parse_coin_line(line) {
+            Some(p) => {
+                self.current = p;
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn current(&self) -> Purse {
+        self.current
+    }
+
+    /// True once the one line owed to a pending `expect_reply` has
+    /// arrived (or there was never a pending request at all). False only
+    /// in the narrow window between sending `i` and its answer.
+    pub fn settled(&self) -> bool {
+        !self.expecting
+    }
+}

@@ -163,6 +163,13 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     // whole session, not just while a farm is attached: a hand-played
     // stretch is worth measuring too.
     let mut exp = crate::progress::ExpMeter::default();
+    // The carried balance, fed from our own `i` reply and nothing else —
+    // see `purse::PurseMeter`. `purse_pending` names the send so the
+    // correlator's echo attribution (not the reply itself, which is
+    // Opaque and unattributed) tells us the reply body starts on the
+    // NEXT line.
+    let mut purse = crate::purse::PurseMeter::default();
+    let mut purse_pending: Option<crate::correlate::CmdId> = None;
     // The assist: a bot that fights and loots BESIDE the operator while
     // no farm runs. Never heals or flees — movement and rest belong to
     // the person holding the keyboard. `/bot` toggles it; the profile's
@@ -249,6 +256,12 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                         // blank for the first minute of every session.
                         if present && !in_realm {
                             session.send("exp");
+                            // Same gate as `exp`: a command typed at the
+                            // account menu is a menu key, not an
+                            // inventory request, and the purse must not
+                            // wait forever on an `i` that never went to
+                            // the game.
+                            purse_pending = Some(session.send("i"));
                         }
                         in_realm = present;
                     }
@@ -261,6 +274,24 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                         if exp.total() != before {
                             repaint(&mut out, &state_rx, target, job.as_ref(), here,
                                     exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
+                        }
+                        // The board's echo of our `i` is attributed
+                        // (`cor.answers`); the reply body is not (`i` is
+                        // `Kind::Opaque`, whose `completes` never fires),
+                        // so the echo is the signal that the VERY NEXT
+                        // line is the answer, whatever it says. Anything
+                        // else — including a genuine echo mismatch, or
+                        // traffic while nothing is pending — just falls
+                        // through to `observe`, which is a no-op unless a
+                        // reply is actually owed.
+                        match purse_pending {
+                            Some(pid) if cor.answers == Some(pid) => {
+                                purse_pending = None;
+                                purse.expect_reply();
+                            }
+                            _ => {
+                                purse.observe(line);
+                            }
                         }
                     }
                     // While a farm runs it owns the connection outright;
