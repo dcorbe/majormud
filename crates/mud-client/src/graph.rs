@@ -1,16 +1,18 @@
-//! Client-side room graph, loaded from the decoded WG3-NT database
-//! (`re/mmud_wgnt.sqlite`). Exit decode rules follow
-//! `re/room_graph_wg.py`: direction index 0..9 = N,S,E,W,NE,NW,SE,SW,
-//! U,D; dest room = `roomexit_<d+1>` (>0); dest map = `para1_<d+1>`
+//! Client-side room graph, a view over `mud_core::content::Content` --
+//! itself decoded from the WG3-NT database (`re/mmud_wgnt.sqlite`) by
+//! `mud_core::content_db`, the one decoder both `mud-server` and this
+//! client use (`2026-08-22-one-path-to-content`). Exit decode rules
+//! follow `re/room_graph_wg.py`: direction index 0..9 = N,S,E,W,NE,NW,
+//! SE,SW,U,D; dest room = `roomexit_<d+1>` (>0); dest map = `para1_<d+1>`
 //! when `roomtype_<d+1>` == 8 (map-change portal), else the room's own
-//! map. Placeholder rows (map outside 1..=999, room < 1) are skipped.
+//! map -- all folded into `content::Exit::dest` at decode time.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use mud_core::content::{Direction, RoomId};
+use mud_core::content::{Content, Direction, MessageId, RoomId};
 
 /// Direction index order, shared with the room record's exit arrays.
 pub const DIRECTIONS: [Direction; 10] = [
@@ -72,7 +74,7 @@ pub enum ExitRequirement {
     /// clear, each recorded in `actions`. Computed by the load-time
     /// cmdtext pass, which cross-references every room's `remoteaction`
     /// directives against their target exits (see
-    /// `RoomGraph::load_remote_actions`).
+    /// `RoomGraph::remote_actions_from_content`).
     ///
     /// The pass overwrites whatever `from_exit_type` classified the
     /// target exit as. On the shipped world that replaces `Door` on 10
@@ -438,7 +440,7 @@ impl Spawn {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct GraphRoom {
     pub name: String,
     pub exits: [Option<ExitEdge>; 10],
@@ -460,106 +462,58 @@ pub struct RoomGraph {
 }
 
 impl RoomGraph {
+    /// Loads and decodes `db` via `mud_core::content_db` (the one decoder,
+    /// `2026-08-22-one-path-to-content`) and builds the graph as a view
+    /// over the result. No SQL of its own: the five hand-written queries
+    /// this module used to run are gone, split between
+    /// `mud_core::content_db`'s loaders and [`Self::from_content`]'s and
+    /// [`crate::views`]'s filtering.
     pub fn load(db: &Path) -> Result<Self, String> {
-        let conn = rusqlite::Connection::open_with_flags(
-            db,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )
-        .map_err(|e| format!("open {}: {e}", db.display()))?;
-        let mut cols = vec!["mapnumber".to_string(), "roomnumber".into(), "name".into()];
-        for i in 1..=10 {
-            cols.push(format!("roomexit_{i}"));
-        }
-        for i in 1..=10 {
-            cols.push(format!("roomtype_{i}"));
-        }
-        for i in 1..=10 {
-            cols.push(format!("para1_{i}"));
-        }
-        cols.push("light".into());
-        // The spawn columns ride along in the one pass. An extra column
-        // on a query that already reads every row is free; a second query
-        // over 26k rows to answer "what lives here" is not.
-        for c in [
-            "\"type\"",
-            "monstertype",
-            "minindex",
-            "maxindex",
-            "bynumber",
-            "shopnum",
-            "permnpc",
-        ] {
-            cols.push(c.into());
-        }
-        // Command exits point at a MESSAGE for their phrase, so the
-        // whole table comes along first: 1-odd thousand short rows
-        // against 250 lookups, which is cheaper than 250 queries and far
-        // cheaper than discovering at the ferry that we cannot move.
-        let commands = Self::load_exit_commands(&conn)?;
-        let remote_actions = Self::load_remote_actions(&conn)?;
-        let sql = format!("SELECT {} FROM room", cols.join(","));
-        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+        let content = mud_core::content_db::load(db).map_err(|e| e.to_string())?;
+        Ok(Self::from_content(&content))
+    }
+
+    /// Build from an already-decoded [`Content`] -- the view that
+    /// replaces this module's own SQL (`2026-08-22-one-path-to-content`
+    /// Task 4). `content::Exit` already carries the raw `exit_type` and
+    /// `param` (`para1`), so [`ExitRequirement::from_exit_type`] and the
+    /// destination/trigger-message folding port unchanged; only the
+    /// per-view filtering below (command-message trimming, the
+    /// `remoteaction` scan) is new work.
+    pub fn from_content(content: &Content) -> Self {
+        let remote_actions = Self::remote_actions_from_content(content);
         let mut rooms = BTreeMap::new();
-        while let Some(row) = rows.next().map_err(|e| e.to_string())? {
-            let map: i64 = row.get(0).map_err(|e| e.to_string())?;
-            let room: i64 = row.get(1).map_err(|e| e.to_string())?;
-            if !(1..=999).contains(&map) || room < 1 {
-                continue;
-            }
-            let name: Option<String> = row.get(2).map_err(|e| e.to_string())?;
-            let light: i64 = row.get(33).unwrap_or(0);
-            let region: i64 = row.get(35).unwrap_or(0);
-            let forced: i64 = row.get(38).unwrap_or(0);
+        for (id, room) in &content.rooms {
             let mut graph_room = GraphRoom {
-                name: name.unwrap_or_default(),
+                name: room.name.clone(),
                 exits: Default::default(),
-                shop: row.get(39).unwrap_or(0),
+                shop: room.shop.map(|s| i64::from(s.0)).unwrap_or(0),
                 spawn: Spawn {
-                    kind: SpawnKind::from_column(row.get(34).unwrap_or(-1)),
-                    region,
-                    band: (row.get(36).unwrap_or(0), row.get(37).unwrap_or(0)),
-                    forced: (forced > 0).then_some(forced >> 16),
-                    resident: {
-                        let n: i64 = row.get(40).unwrap_or(0);
-                        (n > 0).then_some(n)
-                    },
+                    kind: SpawnKind::from_column(i64::from(room.room_type)),
+                    region: i64::from(room.spawn_zone),
+                    band: (i64::from(room.min_level), i64::from(room.max_level)),
+                    forced: room.forced_monster.map(|m| i64::from(m.0)),
+                    resident: room.boss_monster.map(|m| i64::from(m.0)),
                 },
-                light,
+                light: i64::from(room.light),
             };
-            for d in 0..10 {
-                let dest: i64 = row.get(3 + d).map_err(|e| e.to_string())?;
-                if dest <= 0 {
-                    continue;
-                }
-                let exit_type: i64 = row.get(13 + d).map_err(|e| e.to_string())?;
-                let para1: i64 = row.get(23 + d).map_err(|e| e.to_string())?;
-                let requirement = ExitRequirement::from_exit_type(exit_type, para1);
-                let dmap = if exit_type == 8 { para1 } else { map };
-                let (Ok(dmap), Ok(dest)) = (u16::try_from(dmap), u16::try_from(dest)) else {
-                    continue; // malformed edge; never alias via lossy casts
-                };
+            for (d, exit) in room.exits.iter().enumerate() {
+                let Some(exit) = exit else { continue };
+                let exit_type = i64::from(exit.exit_type);
+                let param = i64::from(exit.param);
                 graph_room.exits[d] = Some(ExitEdge {
-                    dest: RoomId {
-                        map: dmap,
-                        room: dest,
-                    },
+                    dest: exit.dest,
                     exit_type,
                     command: (exit_type == COMMAND_EXIT)
-                        .then(|| commands.get(&para1).cloned())
+                        .then(|| Self::exit_command(content, exit.trigger_msg))
                         .flatten(),
-                    requirement,
+                    requirement: ExitRequirement::from_exit_type(exit_type, param),
                 });
             }
-            let (Ok(map), Ok(room)) = (u16::try_from(map), u16::try_from(room)) else {
-                continue;
-            };
-            rooms.insert(RoomId { map, room }, graph_room);
+            rooms.insert(*id, graph_room);
         }
-        // Second pass: an exit a `remoteaction` opens is concealed by a
-        // bit-word, not by a search roll. Done after the rooms are all
-        // read because the actor and the target are different rooms and
-        // the target may be read first.
+        // Second pass, same reasoning as `load`'s: the target exit may be
+        // read before or after the actor room that opens it.
         for ((target, exit), actions) in remote_actions {
             let Some(room) = rooms.get_mut(&target) else {
                 continue;
@@ -569,83 +523,50 @@ impl RoomGraph {
             };
             edge.requirement = match &edge.requirement {
                 ExitRequirement::Hidden { .. } => ExitRequirement::Hidden { searchable: false },
-                // A gate or door a lever throws is still a gate; the
-                // actions are what opens it.
                 _ => ExitRequirement::Puzzle { actions },
             };
         }
-        Ok(RoomGraph { rooms })
+        RoomGraph { rooms }
     }
 
-    /// Message number -> the command that walks a command exit.
-    ///
-    /// Blank lines are dropped rather than stored: an empty command is
-    /// indistinguishable from "no command" to every caller, and storing
-    /// `Some("")` would have the navigator send a bare Enter.
-    fn load_exit_commands(
-        conn: &rusqlite::Connection,
-    ) -> Result<BTreeMap<i64, String>, String> {
-        let mut stmt = conn
-            .prepare("SELECT number, messageline1 FROM message")
-            .map_err(|e| e.to_string())?;
-        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
-        let mut out = BTreeMap::new();
-        while let Some(row) = rows.next().map_err(|e| e.to_string())? {
-            let number: i64 = row.get(0).map_err(|e| e.to_string())?;
-            let line: Option<String> = row.get(1).map_err(|e| e.to_string())?;
-            let line = line.unwrap_or_default().trim().to_string();
-            if !line.is_empty() {
-                out.insert(number, line);
-            }
-        }
-        Ok(out)
+    /// A command exit's phrase: the trigger message's FIRST line
+    /// (`messageline1`), trimmed, entry only when non-empty -- the old
+    /// hand-written `load_exit_commands`'s filter, mutation-tested in
+    /// `tests/graph_content.rs`.
+    fn exit_command(content: &Content, trigger_msg: Option<MessageId>) -> Option<String> {
+        let line = content
+            .messages
+            .get(&trigger_msg?)?
+            .lines
+            .first()?
+            .trim()
+            .to_string();
+        (!line.is_empty()).then_some(line)
     }
 
-    /// Which exits are opened by a `remoteaction` script somewhere.
-    ///
-    /// The quest VM's `remoteaction <room> <msg> <action> <exit>` verb
-    /// clears one bit of a concealment word on the TARGET room's exit --
-    /// the actor may be standing somewhere else entirely. An exit
-    /// concealed this way answers SEARCH exactly as an ordinary hidden
-    /// exit does and can never be revealed by one, so the walker has to
-    /// be able to tell them apart.
-    ///
-    /// Returns target `(room, exit index)` -> the actions that open it,
-    /// keyed by the exit's 0-based direction index.
-    ///
-    /// 28 rooms in the shipped world carry such a script, between them
-    /// 82 directives. `mud-core`'s `remote_lever` parses the same
-    /// grammar, so the two must agree.
-    fn load_remote_actions(
-        conn: &rusqlite::Connection,
-    ) -> Result<BTreeMap<(RoomId, usize), Vec<PuzzleAction>>, String> {
-        let mut stmt = conn
-            .prepare(
-                "SELECT r.mapnumber, r.roomnumber, t.body \
-                 FROM room r JOIN textblock t ON t.number = r.cmdtext \
-                 WHERE r.cmdtext > 0 AND t.body LIKE '%remoteaction%'",
-            )
-            .map_err(|e| e.to_string())?;
-        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+    /// The old hand-written `load_remote_actions`, over a decoded
+    /// [`Content`] instead of a live connection: same grammar, same
+    /// per-line parse, sourced from `room.command_block` +
+    /// `content.textblocks` instead of the `room JOIN textblock` query.
+    fn remote_actions_from_content(
+        content: &Content,
+    ) -> BTreeMap<(RoomId, usize), Vec<PuzzleAction>> {
         let mut out: BTreeMap<(RoomId, usize), Vec<PuzzleAction>> = BTreeMap::new();
-        while let Some(row) = rows.next().map_err(|e| e.to_string())? {
-            let map: i64 = row.get(0).map_err(|e| e.to_string())?;
-            let actor_room: i64 = row.get(1).map_err(|e| e.to_string())?;
-            let body: Option<String> = row.get(2).map_err(|e| e.to_string())?;
-            let Some(body) = body else { continue };
-            let (Ok(map16), Ok(actor16)) = (u16::try_from(map), u16::try_from(actor_room)) else {
+        for (&actor, room) in &content.rooms {
+            let Some(block) = room.command_block else {
                 continue;
             };
-            let actor = RoomId {
-                map: map16,
-                room: actor16,
+            let Some(block) = content.textblocks.get(&block) else {
+                continue;
             };
-            // One phrase per line: the head is the phrase, the verbs
-            // follow, colon-separated. Several phrasings of the same
-            // effect ("clear rubble", "move rubble") are separate
-            // lines, each parsed on its own -- no line holds more than
-            // one phrase.
-            for line in body.split(['\r', '\n']).filter(|l| !l.trim().is_empty()) {
+            if !block.body.contains("remoteaction") {
+                continue;
+            }
+            for line in block
+                .body
+                .split(['\r', '\n'])
+                .filter(|l| !l.trim().is_empty())
+            {
                 let mut parts = line.split(':');
                 let Some(phrase) = parts.next().map(str::trim) else {
                     continue;
@@ -672,7 +593,7 @@ impl RoomGraph {
                     }
                     let key = (
                         RoomId {
-                            map: map16,
+                            map: actor.map,
                             room: target,
                         },
                         exit,
@@ -688,7 +609,7 @@ impl RoomGraph {
                 }
             }
         }
-        Ok(out)
+        out
     }
 
     /// Build from in-memory rooms (tests, synthetic worlds).
@@ -721,33 +642,8 @@ impl RoomGraph {
     /// highest-scoring row wins, so a shared name is never ranked below
     /// its most dangerous variant.
     pub fn load_threat(db: &Path) -> Result<crate::bot::ThreatTable, String> {
-        let conn = rusqlite::Connection::open_with_flags(
-            db,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )
-        .map_err(|e| format!("open {}: {e}", db.display()))?;
-        let mut stmt = conn
-            .prepare("select lower(name), experience, hitpoints from monster where name != ''")
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            })
-            .map_err(|e| e.to_string())?;
-        let mut table = crate::bot::ThreatTable::new();
-        for row in rows {
-            let (name, exp, hp) = row.map_err(|e| e.to_string())?;
-            let score = exp * 1000 + hp;
-            let slot = table.entry(name).or_insert(score);
-            if score > *slot {
-                *slot = score;
-            }
-        }
-        Ok(table)
+        let content = mud_core::content_db::load(db).map_err(|e| e.to_string())?;
+        Ok(crate::views::threat_table(&content))
     }
 
     /// How long each spell lasts, in combat rounds, by lowercased name.
@@ -766,27 +662,8 @@ impl RoomGraph {
     /// Duplicate names exist (`rapid healing` is both 138 and 831); the
     /// SHORTEST wins, for the same reason — early is safe.
     pub fn load_spell_durations(db: &Path) -> Result<BTreeMap<String, u32>, String> {
-        let conn =
-            rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-                .map_err(|e| format!("open {}: {e}", db.display()))?;
-        let mut stmt = conn
-            .prepare("select lower(name), duration from spell where name != '' and duration > 0")
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-            })
-            .map_err(|e| e.to_string())?;
-        let mut table: BTreeMap<String, u32> = BTreeMap::new();
-        for row in rows {
-            let (name, duration) = row.map_err(|e| e.to_string())?;
-            let rounds = duration.max(0) as u32;
-            let slot = table.entry(name).or_insert(rounds);
-            if rounds < *slot {
-                *slot = rounds;
-            }
-        }
-        Ok(table)
+        let content = mud_core::content_db::load(db).map_err(|e| e.to_string())?;
+        Ok(crate::views::spell_durations(&content))
     }
 
     pub fn room(&self, id: RoomId) -> Option<&GraphRoom> {
