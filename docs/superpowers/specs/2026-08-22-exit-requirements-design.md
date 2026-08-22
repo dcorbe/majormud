@@ -80,7 +80,13 @@ re-hide.
 
 Census: 28 rooms carry `remoteaction` scripts, 82 directives, 62 same-room and
 5 distinct cross-room actor→target pairs — the four above plus `12/2118
-Plaster Hallway, Guardroom` → `12/2122 Narrow Precipice`.
+Plaster Hallway, Guardroom` → `12/2122 Narrow Precipice`, whose east exit is
+also `type=6` (a hidden-passage reveal, NOT a gate toggle — an earlier draft
+of this spec said toggle, which is wrong).
+
+Across the whole world the 82 directives collapse to **25 distinct
+(map, room, exit) targets: 15 of type 6 (hidden) and 10 of type 7/0xb
+(door/gate)**. The 15 are exactly the exits a SEARCH can never reveal.
 
 `mud-client` has none of this. The quest VM and `exit_locks` live in
 `mud-core`, the *server* reimplementation — a different program. The bot
@@ -243,8 +249,11 @@ Fixtures are real and named, not invented.
 3. **`17/3042` never gets a SEARCH.** The hang, pinned.
 4. **`1/2252` candle** still routes as a spoken command exit — proof the
    change did not regress the 250 command exits that already work.
-5. **`12/2118` → `12/2122`** produces a cross-room `Puzzle` requirement with
-   one action, in the right target room.
+5. **A cross-room `remoteaction` target is classified from the TARGET's own
+   exit type**, not the actor's: `12/2122`'s east exit is type 6 and must come
+   out `Hidden { searchable: false }`, while a type-7 target such as `1/1104
+   Slum Street, Warehouse Door` must come out `Puzzle { actions }`. The world
+   totals are 15 and 10 respectively.
 6. **The gem puzzle parses to four actions, order-free** (`para2 = -4`), each
    with its item precondition.
 7. **Purse round-trip:** every denomination string the board can print parses
