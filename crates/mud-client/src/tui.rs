@@ -212,9 +212,9 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     // of this clock, compile cleanly, and reset nothing.
     let mut exp_since = std::time::Instant::now();
     // `content` is held for the session's lifetime alongside `graph` and
-    // `spawns`; nothing reads it yet — the views that will (Task 3/4 of
-    // the same plan) replace `graph`/`spawns`'s own database reads.
-    let (graph, nav, spawns, _content) = finish_locator(locator(session.profile()), &session);
+    // `spawns`; `on_realm_entry` is its one reader, for the spellbook
+    // probe's class/magictype skip (Task 5 of `one-path-to-content`).
+    let (graph, nav, spawns, content) = finish_locator(locator(session.profile()), &session);
 
     // Key events come from a blocking reader thread.
     let (key_tx, mut key_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -253,7 +253,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                         // waiting out the full period would leave the bar
                         // blank for the first minute of every session.
                         if present && !in_realm {
-                            on_realm_entry(&session);
+                            on_realm_entry(&session, content.clone());
                         }
                         in_realm = present;
                     }
@@ -1604,12 +1604,18 @@ fn import_loop(graph: &crate::graph::RoomGraph, file: &std::path::Path) -> Vec<S
 /// an error. Takes `&Arc<Session>` rather than `&Session` because the
 /// spawned task needs an owned handle that outlives this function
 /// returning.
-pub fn on_realm_entry(session: &Arc<Session>) {
+///
+/// `content`, when the caller has one loaded (see [`locator`]), is
+/// handed straight to [`crate::farm::probe_sheet`] so it can skip or
+/// retarget the spellbook probe on a confidently-known class; `None`
+/// (no world database, or the caller never held one) leaves probing
+/// exactly as it always was.
+pub fn on_realm_entry(session: &Arc<Session>, content: Option<Arc<mud_core::content::Content>>) {
     session.send("exp");
     session.send("i");
     let probe_session = Arc::clone(session);
     tokio::spawn(async move {
-        crate::farm::probe_sheet(&probe_session).await;
+        crate::farm::probe_sheet(&probe_session, content.as_deref()).await;
     });
 }
 

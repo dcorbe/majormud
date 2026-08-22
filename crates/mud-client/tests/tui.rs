@@ -826,7 +826,7 @@ async fn entering_the_realm_arms_and_fills_the_sessions_purse() {
     // which needs an owned handle that outlives the call.
     let session = std::sync::Arc::new(session_to(addr).await);
 
-    on_realm_entry(&session);
+    on_realm_entry(&session, None);
     session
         .expect("You are carrying", std::time::Duration::from_secs(5))
         .await
@@ -894,7 +894,7 @@ async fn the_mystic_redirect_happens_once_at_login() {
     let (addr, received) = mystic_realm_entry_board().await;
     let session = std::sync::Arc::new(session_to(addr).await);
 
-    on_realm_entry(&session);
+    on_realm_entry(&session, None);
     tokio::time::sleep(std::time::Duration::from_secs(7)).await;
 
     let (_, _, casting) = session.raw_sheet();

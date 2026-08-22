@@ -103,6 +103,30 @@ impl Casting {
     }
 }
 
+/// A class's caster group (`class.magictype`, `content::Class::caster_group`)
+/// by name, matched case-insensitively against the content database's own
+/// class table.
+///
+/// Returns `None` on ANY miss -- an empty or unread class name, a
+/// spelling the database does not carry, a customised board -- and a
+/// miss MUST be read as "I do not know", never as "no magic": see
+/// `2026-08-22-one-path-to-content-design.md`'s "Race and class". The
+/// one caller of this ([`crate::farm::probe_sheet`]) falls through to
+/// its ordinary spells-then-maybe-redirect probe on `None`; the board's
+/// own [`Casting::redirected`] stays authoritative regardless of what
+/// this says.
+pub fn class_caster_group(content: &mud_core::content::Content, class_name: &str) -> Option<i16> {
+    let name = class_name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    content
+        .classes
+        .values()
+        .find(|c| c.name.trim().eq_ignore_ascii_case(name))
+        .map(|c| c.caster_group)
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Inventory {
     /// Carried items as the board lists them, wrapping rejoined.

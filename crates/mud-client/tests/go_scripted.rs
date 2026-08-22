@@ -361,7 +361,7 @@ async fn a_second_go_in_one_session_sends_no_spells() {
     let graph = corridor();
 
     // What tui::on_realm_entry does in the background on a real connection.
-    probe_sheet(&session).await;
+    probe_sheet(&session, None).await;
 
     let first = tokio::time::timeout(
         Duration::from_secs(10),

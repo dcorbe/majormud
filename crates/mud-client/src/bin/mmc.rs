@@ -507,7 +507,13 @@ fn farm_command(
         // process either way, for a single `mmc farm` invocation), so
         // this is not new network cost -- just moved earlier, to right
         // after login where every other realm-entry priming belongs.
-        mud_client::farm::probe_sheet(&session).await;
+        //
+        // Loaded separately from `graph` above (which decodes the same
+        // file for its own purposes): `RoomGraph::load` does not hand
+        // back the `Content` it builds from, so this is a second read of
+        // one already-open file, not a second decoder.
+        let content = mud_core::content_db::load(db).ok();
+        mud_client::farm::probe_sheet(&session, content.as_ref()).await;
 
         // Ctrl-C stops the patrol. There is no session close API, and
         // sending "x" would mean waiting out exit meditation while the

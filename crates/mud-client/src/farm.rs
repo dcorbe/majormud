@@ -1974,20 +1974,52 @@ impl Casts {
 /// instead, which costs nothing on the wire. `pub`, not `pub(crate)`,
 /// specifically so the `mmc` binary — a separate crate from this
 /// library — can call it.
-pub async fn probe_sheet(session: &crate::session::Session) {
+///
+/// `content`, when the caller has one loaded, answers what used to be
+/// discovered purely by asking the board: `class.magictype` 0 (Warrior,
+/// Witchunter, Ninja, Thief) never has a spellbook, so no listing is
+/// sent at all; 5 (Mystic) starts straight on `powers` instead of
+/// `spells`-then-redirect. `None` -- no content, an unread stat sheet,
+/// or a class name the database does not carry -- falls all the way
+/// through to the unchanged spells-then-maybe-redirect probe below.
+/// Either way, [`Casting::redirected`] keeps the last word: this can
+/// only ever skip or retarget the FIRST ask, never talk the board out
+/// of a redirect it actually sends
+/// (`2026-08-22-one-path-to-content-design.md` "Race and class").
+pub async fn probe_sheet(
+    session: &crate::session::Session,
+    content: Option<&mud_core::content::Content>,
+) {
     use crate::sheet::Casting;
 
     let inventory = ask(session, "inventory", "Encumbrance:").await;
-    // No terminal wording is pinned for the spell listing, so the
-    // collection is bounded by a short deadline instead of the full 10s.
-    let mut casting = Casting::Spells;
-    let mut listing = ask_for(session, casting.list_command(), "", Duration::from_secs(3)).await;
-    if let Some(redirected) = Casting::redirected(&listing)
-        && redirected != casting
-    {
-        casting = redirected;
-        listing = ask_for(session, casting.list_command(), "", Duration::from_secs(3)).await;
-    }
+
+    let caster_group = content.and_then(|content| {
+        crate::sheet::class_caster_group(content, session.stats().class.as_deref().unwrap_or(""))
+    });
+
+    let (listing, casting) = if caster_group == Some(0) {
+        // A confidently-known non-caster: no round trip at all.
+        (String::new(), Casting::Spells)
+    } else {
+        // No terminal wording is pinned for the spell listing, so the
+        // collection is bounded by a short deadline instead of the full
+        // 10s.
+        let mut casting = if caster_group == Some(5) {
+            Casting::Powers
+        } else {
+            Casting::Spells
+        };
+        let mut listing =
+            ask_for(session, casting.list_command(), "", Duration::from_secs(3)).await;
+        if let Some(redirected) = Casting::redirected(&listing)
+            && redirected != casting
+        {
+            casting = redirected;
+            listing = ask_for(session, casting.list_command(), "", Duration::from_secs(3)).await;
+        }
+        (listing, casting)
+    };
 
     session.set_sheet(
         crate::sheet::Inventory::parse(&inventory),

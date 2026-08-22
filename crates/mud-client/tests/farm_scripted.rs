@@ -244,7 +244,7 @@ async fn a_monster_entering_mid_leg_is_fought_where_it_stands() {
     // open with those replies, so the probe has to run explicitly
     // here, exactly where `tui::on_realm_entry`/`mmc farm`'s own
     // startup would run it on a real connection.
-    mud_client::farm::probe_sheet(&session).await;
+    mud_client::farm::probe_sheet(&session, None).await;
 
     let graph = corridor();
     let cfg = FarmConfig {
@@ -363,7 +363,7 @@ async fn a_rest_contested_by_an_arrival_defends_instead_of_dozing() {
     // open with those replies, so the probe has to run explicitly
     // here, exactly where `tui::on_realm_entry`/`mmc farm`'s own
     // startup would run it on a real connection.
-    mud_client::farm::probe_sheet(&session).await;
+    mud_client::farm::probe_sheet(&session, None).await;
 
     let graph = corridor();
     let cfg = FarmConfig {
@@ -471,7 +471,7 @@ async fn a_pile_on_a_travel_leg_is_swept_without_losing_the_lap() {
     // open with those replies, so the probe has to run explicitly
     // here, exactly where `tui::on_realm_entry`/`mmc farm`'s own
     // startup would run it on a real connection.
-    mud_client::farm::probe_sheet(&session).await;
+    mud_client::farm::probe_sheet(&session, None).await;
 
     let graph = corridor();
     let cfg = FarmConfig {
@@ -571,7 +571,7 @@ async fn an_endless_stop_is_left_when_its_cap_expires() {
     // open with those replies, so the probe has to run explicitly
     // here, exactly where `tui::on_realm_entry`/`mmc farm`'s own
     // startup would run it on a real connection.
-    mud_client::farm::probe_sheet(&session).await;
+    mud_client::farm::probe_sheet(&session, None).await;
 
     let graph = corridor();
     let cfg = FarmConfig {
@@ -698,7 +698,7 @@ async fn a_flee_rests_before_it_walks_back() {
     // open with those replies, so the probe has to run explicitly
     // here, exactly where `tui::on_realm_entry`/`mmc farm`'s own
     // startup would run it on a real connection.
-    mud_client::farm::probe_sheet(&session).await;
+    mud_client::farm::probe_sheet(&session, None).await;
 
     let graph = corridor();
     let cfg = FarmConfig {
@@ -843,7 +843,7 @@ async fn a_fight_below_the_spell_mark_is_healed_not_rested() {
     // open with those replies, so the probe has to run explicitly
     // here, exactly where `tui::on_realm_entry`/`mmc farm`'s own
     // startup would run it on a real connection.
-    mud_client::farm::probe_sheet(&session).await;
+    mud_client::farm::probe_sheet(&session, None).await;
 
     let graph = corridor();
     let cfg = FarmConfig {
@@ -966,7 +966,7 @@ async fn below_the_flee_mark_it_runs_and_does_not_cast() {
     // open with those replies, so the probe has to run explicitly
     // here, exactly where `tui::on_realm_entry`/`mmc farm`'s own
     // startup would run it on a real connection.
-    mud_client::farm::probe_sheet(&session).await;
+    mud_client::farm::probe_sheet(&session, None).await;
 
     let graph = corridor();
     let cfg = FarmConfig {
@@ -1068,7 +1068,7 @@ async fn with_fleeing_off_the_flee_mark_does_not_suppress_the_cast() {
     // open with those replies, so the probe has to run explicitly
     // here, exactly where `tui::on_realm_entry`/`mmc farm`'s own
     // startup would run it on a real connection.
-    mud_client::farm::probe_sheet(&session).await;
+    mud_client::farm::probe_sheet(&session, None).await;
 
     let graph = corridor();
     let cfg = FarmConfig {
@@ -1196,7 +1196,7 @@ async fn a_roam_never_steps_into_a_walled_room() {
     // open with those replies, so the probe has to run explicitly
     // here, exactly where `tui::on_realm_entry`/`mmc farm`'s own
     // startup would run it on a real connection.
-    mud_client::farm::probe_sheet(&session).await;
+    mud_client::farm::probe_sheet(&session, None).await;
 
     let cfg = FarmConfig {
         loops: 0,
@@ -1278,7 +1278,7 @@ async fn a_clean_arrival_is_not_re_asked_at_the_stop() {
     // open with those replies, so the probe has to run explicitly
     // here, exactly where `tui::on_realm_entry`/`mmc farm`'s own
     // startup would run it on a real connection.
-    mud_client::farm::probe_sheet(&session).await;
+    mud_client::farm::probe_sheet(&session, None).await;
 
     let graph = corridor();
     let cfg = FarmConfig {
