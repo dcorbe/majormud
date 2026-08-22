@@ -82,14 +82,76 @@ fn a_mixed_carry_line_parses_only_the_leading_coins() {
 
 /// Carrying gear but no money at all is a real, distinct answer: zero
 /// carried, not "we don't know". The board doesn't say "Nothing!" here
-/// because there IS something -- just no coins among it.
+/// because there IS something -- just no coins among it. `observe`
+/// returns `true`: this line WAS the attributed answer, it just says
+/// "zero".
 #[test]
 fn a_carry_with_no_coins_at_all_reads_as_empty() {
     let mut m = PurseMeter::default();
     m.expect_reply();
-    assert!(!m.observe("You are carrying a rusty dagger"));
+    assert!(m.observe("You are carrying a rusty dagger"));
     assert_eq!(m.current(), Purse::ZERO);
     assert!(m.settled(), "we asked and got an answer");
+}
+
+/// A LATER empty answer must overwrite a non-zero balance, not leave it
+/// stale. Every other fixture in this file starts from
+/// `PurseMeter::default()`, which is already zero -- "reset to zero" and
+/// "leave unchanged" are indistinguishable there. This one starts from a
+/// real balance and spends it, so the two behaviours diverge: the
+/// dangerous bug is the router still believing the character has 208
+/// farthings after the board just said otherwise.
+#[test]
+fn a_later_empty_reply_resets_a_nonzero_purse() {
+    let mut m = PurseMeter::default();
+    m.expect_reply();
+    assert!(m.observe("You are carrying 2 gold crowns, 8 copper farthings"));
+    assert_eq!(m.current().farthings(), 208);
+
+    m.expect_reply();
+    assert!(m.observe("You are carrying Nothing!"));
+    assert_eq!(
+        m.current(),
+        Purse::ZERO,
+        "spending it all must clear the purse, not leave it at 208"
+    );
+}
+
+/// Same divergence, for a later reply that has gear but no coins rather
+/// than the literal "Nothing!" wording.
+#[test]
+fn a_later_gear_only_reply_resets_a_nonzero_purse() {
+    let mut m = PurseMeter::default();
+    m.expect_reply();
+    assert!(m.observe("You are carrying 2 gold crowns, 8 copper farthings"));
+    assert_eq!(m.current().farthings(), 208);
+
+    m.expect_reply();
+    assert!(m.observe("You are carrying a rusty dagger"));
+    assert_eq!(
+        m.current(),
+        Purse::ZERO,
+        "carrying no coins now must not leave the old 208 balance"
+    );
+}
+
+/// The board always joins coins first, so a real reply never has this
+/// shape -- but the parser must not depend on that being true by
+/// accident. A coin-shaped segment AFTER a non-coin segment is not
+/// LEADING and must not count: `leading_coins` has to `break` at the
+/// first non-coin segment, never `continue` past it hunting for one that
+/// matches. (Confirmed by mutation: flipping that `break` to `continue`
+/// turns this answer into 300 and fails the assertion below.)
+#[test]
+fn a_non_leading_coin_segment_does_not_count() {
+    let mut m = PurseMeter::default();
+    m.expect_reply();
+    assert!(m.observe("You are carrying a rusty dagger, 3 gold crowns"));
+    assert_eq!(
+        m.current(),
+        Purse::ZERO,
+        "a coin-shaped segment after a non-coin one is not leading and must not count"
+    );
 }
 
 /// The nastiest false positive available: an item whose own name STARTS
@@ -131,7 +193,7 @@ fn coins_on_the_floor_do_not_touch_the_purse() {
 fn an_inventory_without_coins_reads_as_empty() {
     let mut m = PurseMeter::default();
     m.expect_reply();
-    assert!(!m.observe("You are carrying Nothing!"));
+    assert!(m.observe("You are carrying Nothing!"));
     assert_eq!(m.current(), Purse::ZERO);
     assert!(m.settled(), "we asked and got an answer");
 }

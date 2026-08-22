@@ -116,12 +116,17 @@ pub fn parse_coin_line(line: &str) -> Option<Purse> {
 const CARRYING_PREFIX: &str = "You are carrying ";
 
 /// Sum the coin-shaped segments at the START of a "You are carrying ..."
-/// body, stopping at the first segment that is not one. `None` if there
-/// were none at all (an empty purse, or an items-only carry) — the same
-/// "no line = no fact" distinction [`parse_coin_line`] makes, kept
-/// separate because a `PurseMeter` reply is allowed to have money AND
-/// gear on the same line and a bare [`parse_coin_line`] would refuse the
-/// whole thing the moment it hit the first item.
+/// body, stopping at the first segment that is not one — never skipping
+/// past it to a later segment that IS coin-shaped: a stock board always
+/// joins coins first (`show_inventory`), so a non-coin segment means
+/// coins are over for this line, and any coin-shaped text found further
+/// on belongs to an item's own name or count, not the purse. `None` if
+/// there were no LEADING coin segments at all (an empty purse, or an
+/// items-only carry) — the same "no line = no fact" distinction
+/// [`parse_coin_line`] makes, kept separate because a `PurseMeter` reply
+/// is allowed to have money AND gear on the same line and a bare
+/// [`parse_coin_line`] would refuse the whole thing the moment it hit the
+/// first item.
 ///
 /// Items follow coins in `show_inventory`'s join and must never be
 /// mistaken for money — an item can itself wear a denomination word
@@ -129,18 +134,23 @@ const CARRYING_PREFIX: &str = "You are carrying ";
 /// `bot.rs::COIN_PILE_RE`'s own caution) but [`parse_coin_segment`]'s
 /// leading-count requirement is what keeps it out: "silver" is not a
 /// number.
+///
+/// Sums with `checked_add` and fails the WHOLE parse (returns `None`) on
+/// overflow, matching [`parse_coin_segment`]'s and [`parse_coin_line`]'s
+/// policy rather than silently saturating: one segment primitive shared
+/// by two callers should not disagree about what "too much money" means,
+/// and failing closed is the smaller surprise given the primitive
+/// already does.
 fn leading_coins(body: &str) -> Option<Purse> {
     let mut total: u64 = 0;
     let mut matched = false;
     for part in body.split(',') {
         let part = part.trim();
-        match parse_coin_segment(part) {
-            Some(v) => {
-                total = total.saturating_add(v);
-                matched = true;
-            }
-            None => break,
-        }
+        let Some(v) = parse_coin_segment(part) else {
+            break;
+        };
+        total = total.checked_add(v)?;
+        matched = true;
     }
     matched.then_some(Purse(total))
 }
@@ -160,9 +170,12 @@ fn leading_coins(body: &str) -> Option<Purse> {
 /// same line — so the balance comes from stripping that prefix and
 /// reading [`leading_coins`], not from [`parse_coin_line`] directly.
 /// `"You are carrying Nothing!"` and an items-only carry both have no
-/// leading coin segment, and that rejection means "carrying zero", not
-/// "we don't know", which is why the balance is reset to [`Purse::ZERO`]
-/// and the request is still marked settled.
+/// leading coin segment, and an ATTRIBUTED line saying so is a real
+/// answer, not a shrug: it resets the balance to [`Purse::ZERO`] just as
+/// surely as a coin-bearing line sets it to something else, because the
+/// dangerous direction here is overcounting — a stale non-zero balance
+/// surviving past a reply that said "nothing" would let the router think
+/// a toll is affordable when it no longer is.
 ///
 /// `current` is always an assignment from the board, never an
 /// accumulation — deliberately, so that a `Purse` built from
@@ -188,29 +201,30 @@ impl PurseMeter {
         self.expecting = true;
     }
 
-    /// Note a line. Returns `true` iff it was accepted as the carried
-    /// balance. Only ever fires for the one line following
-    /// `expect_reply`; every other line -- including a coin pile on the
-    /// floor -- is refused regardless of shape.
+    /// Note a line. Returns `true` iff this line was the one owed to a
+    /// pending `expect_reply` -- an attributed answer, whatever it says
+    /// -- and `false` only when nothing was pending at all (an
+    /// unattributed line, such as a coin pile on the floor, changes
+    /// NOTHING and is always refused).
     ///
     /// Strips `CARRYING_PREFIX` if present (a bare coin line, such as a
     /// hand-built fixture or a differently-worded board, is accepted
     /// as-is) and reads [`leading_coins`] off what remains, so gear
     /// listed after the coins on the same line is ignored rather than
-    /// poisoning the whole parse.
+    /// poisoning the whole parse. When there are no leading coins at all
+    /// the balance is still overwritten -- to [`Purse::ZERO`], not left
+    /// as whatever it used to hold: this line is the character's WHOLE
+    /// answer, and a stale non-zero balance surviving an attributed
+    /// "nothing" reply would overcount, the direction that lets the
+    /// router misjudge a toll as affordable.
     pub fn observe(&mut self, line: &str) -> bool {
         if !self.expecting {
             return false;
         }
         self.expecting = false;
         let body = line.strip_prefix(CARRYING_PREFIX).unwrap_or(line);
-        match leading_coins(body) {
-            Some(p) => {
-                self.current = p;
-                true
-            }
-            None => false,
-        }
+        self.current = leading_coins(body).unwrap_or(Purse::ZERO);
+        true
     }
 
     pub fn current(&self) -> Purse {
