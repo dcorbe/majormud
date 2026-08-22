@@ -715,11 +715,13 @@ impl Session {
     /// inventory checks. `picklocks` is the same idea off `stats()`:
     /// whether this character can pick a lock is a fact read off the
     /// board's own `stat` sheet, not a setting an operator manages.
+    /// `stealth` follows the identical pattern for the Stealth skill.
     pub fn capabilities(&self) -> Capabilities {
         Capabilities {
             purse: self.purse.lock().expect("purse lock").meter.current(),
             tolls_known_free: Arc::clone(&self.toll_log),
             picklocks: self.stats().picklocks.unwrap_or(0),
+            stealth: self.stats().stealth.unwrap_or(0),
         }
     }
 

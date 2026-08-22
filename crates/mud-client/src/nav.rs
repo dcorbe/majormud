@@ -259,6 +259,19 @@ pub struct Arrival {
     /// room its last block named has no block ABOUT `at`. Callers must
     /// treat it as "ask if you need to know", never as "empty room".
     pub seen: Option<crate::events::RoomView>,
+    /// Did the walk believe itself armed for a sneak on the step that
+    /// produced `at`? Consumed by
+    /// [`crate::bot::Bot::arm_backstab_opener`]'s caller: an opener may
+    /// trust this for the CURRENT arrival only — sneak is spent by the
+    /// one move that carried it in (`2026-08-22-inventory-and-backstab-
+    /// design.md`'s "The state model is trivial"), so it says nothing
+    /// about a later fight in the same room. `false` for a walk of no
+    /// steps (already there) and for any walk this navigator's
+    /// [`Capabilities::stealth`] is zero for, same honest default
+    /// [`Navigator::arm_sneak`] itself returns.
+    ///
+    /// [`Capabilities::stealth`]: crate::graph::Capabilities::stealth
+    pub sneaking: bool,
 }
 
 impl Arrival {
@@ -272,12 +285,16 @@ impl Arrival {
     /// character no longer is — a stop would then work a room it had
     /// left, which is the exact failure verified navigation exists to
     /// prevent.
-    fn new(at: RoomId, landed: Option<(RoomId, crate::events::RoomView)>) -> Arrival {
+    fn new(
+        at: RoomId,
+        landed: Option<(RoomId, crate::events::RoomView)>,
+        sneaking: bool,
+    ) -> Arrival {
         let seen = match landed {
             Some((id, room)) if id == at => Some(room),
             _ => None,
         };
-        Arrival { at, seen }
+        Arrival { at, seen, sneaking }
     }
 }
 
@@ -670,9 +687,15 @@ impl Navigator {
         // a localization that moved us on can never pass off a stale
         // render as the destination's.
         let mut landed: Option<(RoomId, crate::events::RoomView)> = None;
+        // Whether the LAST step attempted believed itself armed — see
+        // `Arrival::sneaking`. Reset to `false` on every assignment
+        // below rather than accumulated, so a walk of zero steps (or one
+        // this navigator's `capabilities.stealth` is zero for) reports
+        // honestly.
+        let mut last_sneaking = false;
         'replan: loop {
             if current == to {
-                return Ok(Arrival::new(current, landed));
+                return Ok(Arrival::new(current, landed, last_sneaking));
             }
             let route = self
                 .route_from(current, to)
@@ -770,6 +793,21 @@ impl Navigator {
                 } else {
                     None
                 };
+
+                // Send `sneak` before this step, when the character has
+                // the skill to usefully arm it — read the reply honestly
+                // rather than assuming success (`Navigator::arm_sneak`'s
+                // own doc has the full grammar).
+                last_sneaking = self
+                    .arm_sneak(session, &mut events, guard, &mut armed)
+                    .await
+                    .map_err(|kind| NavError { at: current, kind })?;
+                if let Some(interrupt) = armed.take() {
+                    return Err(NavError {
+                        at: current,
+                        kind: NavErrorKind::Interrupted(interrupt),
+                    });
+                }
 
                 // Correlated as a move whatever it says, because that is
                 // what it is: `kind_of` reads direction words, and
@@ -906,7 +944,7 @@ impl Navigator {
             // Every step of the route was walked, so this is the normal
             // end of a walk: `current` is `to` and the last step's block
             // is the destination's own.
-            return Ok(Arrival::new(current, landed));
+            return Ok(Arrival::new(current, landed, last_sneaking));
         }
     }
 
@@ -1424,6 +1462,97 @@ impl Navigator {
                     }));
                 }
                 StepEvent::DoorYielded | StepEvent::DoorBlocked => continue,
+            }
+        }
+    }
+
+    /// Send `sneak` and read the reply honestly, per
+    /// `2026-08-22-inventory-and-backstab-design.md`'s "Sneak replies"
+    /// facts. Never sent at all when `capabilities.stealth == 0` — a
+    /// character with no Stealth skill only spends a command and a delay
+    /// tick failing the roll forever.
+    ///
+    /// Success is genuinely SILENT (`theft.md` §11.1: "the player is
+    /// never told sneaking worked" — it prints only "Attempting to
+    /// sneak..."), and failure is reported only when a perception roll
+    /// passes. So the grammar is read the same way `Kind::Stat`'s body
+    /// is: buffer every line until the ordinary prompt that follows,
+    /// then classify what showed up —
+    ///
+    /// - `"You may not sneak right now!"` — a hard block (being fought
+    ///   or engaged). Not armed, and there is nothing to retry: the
+    ///   caller moves on unsneaked this step.
+    /// - `"You don't think you're sneaking."` — the attempt was seen to
+    ///   fail. Not armed.
+    /// - `"Attempting to sneak..."` with neither of the above — treated
+    ///   as armed. This is optimistic BY NECESSITY, not by choice: a
+    ///   silent success and a silent (unperceived) failure are printed
+    ///   IDENTICALLY, so "no bad news" is the best evidence this reply
+    ///   shape can ever give.
+    /// - Silence — no "Attempting to sneak..." at all before the prompt
+    ///   (`mud-core`'s `sneak_command` prints nothing when
+    ///   `delay_blocked`, i.e. sent too fast behind another command) —
+    ///   NOT armed. Unlike the bare-attempt case above, there is no
+    ///   attempt to be optimistic about.
+    async fn arm_sneak(
+        &self,
+        session: &Session,
+        events: &mut tokio::sync::broadcast::Receiver<crate::correlate::Correlated>,
+        guard: &mut impl TravelGuard,
+        armed: &mut Option<Interrupt>,
+    ) -> Result<bool, NavErrorKind> {
+        if self.capabilities.stealth == 0 {
+            return Ok(false);
+        }
+        const MAY_NOT_SNEAK: &str = "You may not sneak right now!";
+        const DONT_THINK_SNEAKING: &str = "You don't think you're sneaking.";
+        const ATTEMPTING_TO_SNEAK: &str = "Attempting to sneak...";
+        let id = session.send("sneak");
+        let mut attempted = false;
+        let mut failed = false;
+        let deadline = tokio::time::Instant::now() + self.step_timeout;
+        loop {
+            let ev = tokio::time::timeout_at(deadline, events.recv()).await;
+            if let Ok(Ok(ev)) = &ev {
+                match guard.on_event(&ev.event) {
+                    Some(Interrupt::Died) => {
+                        return Err(NavErrorKind::Interrupted(Interrupt::Died));
+                    }
+                    Some(hurt) => *armed = armed.take().or(Some(hurt)),
+                    None => {}
+                }
+            }
+            let cor = match ev {
+                // Silence past the deadline is read the same as a
+                // delay-blocked send: no attempt was ever confirmed, so
+                // the honest default is unarmed, never a hung walk.
+                Err(_) => return Ok(false),
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(_)) => {
+                    return Err(NavErrorKind::Expect(ExpectError::Closed { tail: String::new() }));
+                }
+                Ok(Ok(cor)) => cor,
+            };
+            match &cor.event {
+                crate::events::Event::Line(line) => {
+                    if cor.answers == Some(id) {
+                        continue; // the echo itself, not reply body text
+                    }
+                    let line = line.trim();
+                    if line == MAY_NOT_SNEAK {
+                        return Ok(false); // hard block; no retry this step
+                    }
+                    if line == DONT_THINK_SNEAKING {
+                        failed = true;
+                    }
+                    if line == ATTEMPTING_TO_SNEAK {
+                        attempted = true;
+                    }
+                }
+                crate::events::Event::Prompt { .. } if attempted || failed => {
+                    return Ok(attempted && !failed);
+                }
+                _ => {}
             }
         }
     }

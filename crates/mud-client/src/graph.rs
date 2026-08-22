@@ -226,6 +226,25 @@ pub struct Capabilities {
     /// pick, the same safe direction an empty purse already takes for
     /// tolls.
     pub picklocks: u32,
+    /// The character's own `stat`-sheet `Stealth` skill. Same pattern as
+    /// `picklocks`: read off the sheet, not an operator setting. Zero
+    /// means the character cannot usefully arm sneak at all, so
+    /// [`crate::nav::Navigator`] never sends it — a `sneak` a Stealth-0
+    /// character sent would still fail the roll, spending a command and
+    /// a delay tick for nothing.
+    ///
+    /// Unlike `picklocks`, [`Capabilities::unrestricted`] does NOT set
+    /// this to `u32::MAX`: picking is a gated COST, consulted only at
+    /// the moment a route actually meets a lock, so assuming "yes" there
+    /// changes nothing for a walk that never meets one. Sneaking is a
+    /// proactive SEND on every single step — assuming "yes" here would
+    /// have every existing caller of `unrestricted()` (every navigator
+    /// built before this field existed, and every test fixture that
+    /// never scripted a `sneak` reply) start sending a command its board
+    /// does not answer, paying a full step timeout on every step for
+    /// nothing. "Unrestricted" means every already-existing cost is
+    /// affordable, not that a brand new optional action gets taken.
+    pub stealth: u32,
 }
 
 impl Capabilities {
@@ -241,6 +260,10 @@ impl Capabilities {
             purse: crate::purse::Purse::from_farthings(u64::MAX),
             tolls_known_free: Arc::new(TollLog::default()),
             picklocks: u32::MAX,
+            // See the field's own doc: a proactive send, not a gated
+            // cost, so "unrestricted" leaves it off rather than arming
+            // it for every caller that has never heard of it.
+            stealth: 0,
         }
     }
 

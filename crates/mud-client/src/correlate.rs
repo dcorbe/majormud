@@ -149,6 +149,18 @@ enum Kind {
     BuyHealing,
     Search,
     Picklock,
+    /// `sneak` (theft.md §11.1). Like `Stat`, its body has no fixed
+    /// terminal wording — success is genuinely silent (`mud-core`'s
+    /// `sneak_command` returns having printed nothing past "Attempting
+    /// to sneak..."), and failure is reported only when a perception
+    /// roll passes. So the only thing that reliably closes the reply is
+    /// the ordinary game prompt that follows it, same as `Stat` — see
+    /// the `Event::Prompt` arm of `completes`. Classified at all so an
+    /// unattributed "You may not sneak right now!" or "You don't think
+    /// you're sneaking." can never be read as somebody else's line, and
+    /// so a caller waiting on the reply is not left to burn its whole
+    /// deadline the way the locked door once did (`b19f862d`).
+    Sneak,
     /// `stat`/`st` — the multi-line character sheet. Unlike every other
     /// modelled kind, no wording in the BODY completes it (there is no
     /// fixed terminal line — `Traps`/`Picklocks` can be the last row or
@@ -243,6 +255,9 @@ fn kind_of(cmd: &str) -> Kind {
     if cmd == "buy healing" {
         return Kind::BuyHealing;
     }
+    if cmd == "sneak" {
+        return Kind::Sneak;
+    }
     Kind::Opaque
 }
 
@@ -268,11 +283,13 @@ fn completes(kind: Kind, ev: &Event) -> bool {
         }
         // The ordinary game prompt is the ONLY thing that completes a
         // Stat reply — its body has no fixed terminal wording (see
-        // `Kind::Stat`'s doc). Every other kind answers to a RoomSeen or
-        // a specific Line wording instead, so a Prompt completes nothing
-        // for them: `classified_async_events_answer_nothing_and_retire_
-        // nothing` (tests/correlate.rs) pins that down.
-        Event::Prompt { .. } => return matches!(kind, Kind::Stat),
+        // `Kind::Stat`'s doc). `Kind::Sneak` shares that shape for the
+        // same reason (see its doc): every other kind answers to a
+        // RoomSeen or a specific Line wording instead, so a Prompt
+        // completes nothing for them:
+        // `classified_async_events_answer_nothing_and_retire_nothing`
+        // (tests/correlate.rs) pins that down.
+        Event::Prompt { .. } => return matches!(kind, Kind::Stat | Kind::Sneak),
         Event::Line(l) => l.to_lowercase(),
         _ => return false,
     };
@@ -399,6 +416,9 @@ fn completes(kind: Kind, ev: &Event) -> bool {
         Kind::BuyHealing => has("wounds are healed"),
         // No line completes it — see the `Event::Prompt` arm above.
         Kind::Stat => false,
+        // Same reasoning as `Kind::Stat` — see its doc and this match's
+        // `Event::Prompt` arm above.
+        Kind::Sneak => false,
         Kind::Opaque => false,
     }
 }
