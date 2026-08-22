@@ -1021,3 +1021,109 @@ fn no_connector_in_the_shipped_world_is_fabricated() {
     );
 }
 
+
+/// The reported case: `1/837 Graveyard, East of Tomb` has exactly three
+/// real exits -- north to 1/838, south to 1/836, east to 1/823, all
+/// ordinary (type 0) -- and no west exit and no diagonals. Every one of
+/// its eight neighbouring cells is nonetheless occupied by a real room
+/// (835 to the west; 839/824/834/822 on the diagonals), because the
+/// graveyard packs its rooms edge to edge. That is exactly the trap the
+/// old adjacency-based `connectors()` fell into: it drew a line to
+/// every OCCUPIED neighbour regardless of whether 837 itself had an
+/// exit there, so the room came out boxed in on all eight sides. This
+/// pins the render path (`connectors()`/`render()`) against the actual
+/// reported room, which the has_edge-only census in
+/// `no_connector_in_the_shipped_world_is_fabricated` does not exercise.
+#[test]
+fn the_reported_room_draws_only_its_real_exits() {
+    let anchor = RoomId { map: 1, room: 837 };
+    let plane = layout(graph(), anchor);
+    assert_eq!(plane.cell_of(anchor), Some((0, 0)));
+    // The premise the bug needs: every neighbour cell is occupied, so a
+    // pure-adjacency renderer has all eight to draw a line to.
+    for cell in [
+        (-1, -1),
+        (0, -1),
+        (1, -1),
+        (-1, 0),
+        (1, 0),
+        (-1, 1),
+        (0, 1),
+        (1, 1),
+    ] {
+        assert!(
+            plane.room_at(cell).is_some(),
+            "expected a real room at {cell:?} beside 1/837 -- if this fails \
+             the graveyard's layout changed and the test no longer proves \
+             what it claims"
+        );
+    }
+
+    let styles = styles(&plane, graph(), spawns(), Paint::Terrain, &PaintCtx::default());
+    for zoom in [Zoom::Detail, Zoom::Normal] {
+        let (cw, ch) = zoom.cell();
+        let (cw, ch) = (cw as i32, ch as i32);
+        // A 3x3 block of cells with 1/837 dead centre, so every glyph
+        // this test checks lands inside the rendered buffer.
+        let view = (-1, -1);
+        let size = ((3 * cw) as usize, (3 * ch) as usize);
+        let lines = render(&plane, &styles, view, size, zoom, &Marks::default());
+        let frame: Vec<Vec<char>> = lines
+            .iter()
+            .map(|l| mud_client::map::strip_sgr(l).chars().collect())
+            .collect();
+        let at = |col: i32, row: i32| -> char {
+            frame
+                .get(row as usize)
+                .and_then(|r| r.get(col as usize))
+                .copied()
+                .unwrap_or(' ')
+        };
+        // 1/837's own cell, centred in the view.
+        let (col, row) = (cw, ch);
+        let half = cw / 2;
+
+        assert_eq!(
+            at(col + 1, row),
+            '\u{2500}',
+            "{zoom:?}: missing the real east connector to 1/823"
+        );
+        assert_eq!(
+            at(col, row - 1),
+            '\u{2502}',
+            "{zoom:?}: missing the real north connector to 1/838"
+        );
+        assert_eq!(
+            at(col, row + 1),
+            '\u{2502}',
+            "{zoom:?}: missing the real south connector to 1/836"
+        );
+
+        assert_eq!(
+            at(col - 1, row),
+            ' ',
+            "{zoom:?}: fabricated a west connector toward 1/835, which 1/837 has no exit to"
+        );
+        assert_eq!(
+            at(col + half, row - 1),
+            ' ',
+            "{zoom:?}: fabricated a north-east diagonal"
+        );
+        assert_eq!(
+            at(col - half, row - 1),
+            ' ',
+            "{zoom:?}: fabricated a north-west diagonal"
+        );
+        assert_eq!(
+            at(col + half, row + 1),
+            ' ',
+            "{zoom:?}: fabricated a south-east diagonal"
+        );
+        assert_eq!(
+            at(col - half, row + 1),
+            ' ',
+            "{zoom:?}: fabricated a south-west diagonal"
+        );
+    }
+}
+
