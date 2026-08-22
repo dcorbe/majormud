@@ -144,7 +144,17 @@ regressions elsewhere may be found later.
 - Disarming to enable an unarmed backstab.
 - Encumbrance, item level requirements, and the Witchunter anti-magic rule —
   all future consumers of this same join.
-- Auto-sneak policy itself; this design assumes stealth state is available.
+- Auto-sneak policy itself. **This design assumed stealth state was
+  available to the client. That assumption was FALSE**, proven when Task 5
+  went looking for it: nothing in `mud-client` ever sends `sneak` or `hide`,
+  no `Event`, `GameState` or `Capabilities` field carries stealth, and
+  `stealthy` appears only in `backstab.rs` — the consumer with no producer.
+  Worse, `mud-core`'s `sneak_command` succeeds SILENTLY (there is no "you are
+  now sneaking" line to parse), so even a client that sent `sneak` could only
+  assume success, never confirm it. Task 5 (wiring the opener) is therefore
+  blocked on a stealth-tracking subsystem that does not exist and is not
+  planned. Tasks 1-4 stand on their own and landed; the decision function is
+  complete and tested, waiting for a caller that can answer "am I sneaking?"
 
 ## Sequencing
 
