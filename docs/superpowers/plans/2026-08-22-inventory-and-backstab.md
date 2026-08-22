@@ -108,22 +108,73 @@ A pure function of (wielded item, carried items, stealth state) → action.
 
 ---
 
-### Task 5: Wiring the opener
+### Task 5: The client learns to sneak
 
-**Files:** `nav.rs`, combat path; own test binary. **Depends on:** Task 4.
+**Files:** `graph.rs` (`Capabilities`), `nav.rs`, `session.rs`, `correlate.rs`;
+own test binary. **Depends on:** Task 4.
 
-- [ ] **Step 1: Read first.** Establish where an opening attack is issued on
-      room entry today. If there is no such seam, **report `NEEDS_CONTEXT`**
-      rather than inventing one.
-- [ ] **Step 2:** Evaluate the decision **before** arming sneak — equipping
-      breaks sneak, so the swap cannot happen after arrival.
-- [ ] **Step 3:** On entry with a target and stealth believed intact, send
-      `bs <target>`; after the opening round, restore the primary weapon. Firing
-      `bs` when not actually stealthy is a silent plain attack and is acceptable;
-      the per-move stealth re-roll means certainty is impossible.
-- [ ] **Step 4:** Handle `"You cannot backstab with this weapon!"` honestly —
-      it means the model was wrong about what is wielded. Log it as a
-      correction, do not silently retry.
+**Why this task exists.** Task 5 previously reported `NEEDS_CONTEXT`: `decide()`
+needs `stealthy: bool` and nothing could supply it. Nothing in `mud-client` has
+ever sent `sneak`. This task builds the producer.
+
+**Policy: ALWAYS SNEAK when capable.** Daniel chose this on 2026-08-22 over a
+chance-gated alternative that would have computed the §11.3 odds and armed only
+above a threshold. He was told the tradeoff — at Stealth 56 roughly two openers
+in three arrive seen, and a failed sneak means opening with the backstab weapon
+as an ordinary attack — and chose the simple policy anyway. Do not reintroduce
+gating.
+
+**The state model is trivial, and that is a finding, not an oversight.** Sneak is
+consumed by exactly one move (byte-verified 2026-08-22; see `theft.md` §11.1 and
+`mud-core`'s transit re-roll). So "armed" means *we sent `sneak` since the last
+move*, and it clears when we move. There is no wear-off, so there is no
+silent-break detection to write. MudPlay's elaborate stealth FSM exists only
+because it assumed persistence; do not copy it.
+
+- [ ] **Step 1:** Add `stealth: u32` to `Capabilities`, filled from
+      `Session::stats()`. Mirror exactly how `picklocks` was done — that landed
+      in `77d36eae` and is the pattern to follow.
+- [ ] **Step 2:** Classify `sneak` in the correlator. An unclassified reply is
+      never attributed and the caller burns its deadline — that is how the
+      locked door reported a phantom timeout (`b19f862d`). Not optional plumbing.
+- [ ] **Step 3:** Send `sneak` before each nav step when `stealth > 0` and not
+      engaged. Read the replies honestly:
+      - `"You may not sneak right now!"` — hard block (being fought or engaged).
+        No retry this step. Move anyway, unsneaked.
+      - `"You don't think you're sneaking."` — the attempt failed. NOT armed.
+      - a bare `"Attempting to sneak..."` with no failure line — treat as armed.
+        Success is genuinely silent (`theft.md` §11.1: "the player is never told
+        sneaking worked"), and failure is only *sometimes* reported, gated on a
+        perception roll. So this is optimistic by necessity, not by choice.
+        Say so in a comment.
+- [ ] **Step 4:** Clear armed on every move. The transit re-roll means the client
+      can never know it actually arrived unseen; it must not pretend otherwise.
+- [ ] **Step 5: Mutate** — make a character with `stealth: 0` still send `sneak`
+      and confirm a test fails; make `"You may not sneak right now!"` leave the
+      client believing it is armed and confirm a test fails.
+- [ ] **Step 6: Commit.**
+
+---
+
+### Task 6: Wiring the opener
+
+**Files:** `nav.rs`, `bot.rs`; own test binary. **Depends on:** Task 5.
+
+The seam is `Bot::engage` in `bot.rs`, reached from `on_event(Event::RoomSeen)`
+and `on_event(Event::ActorEntered)`.
+
+- [ ] **Step 1:** Evaluate `backstab::decide()` **before** arming sneak.
+      Equipping breaks sneak, so a swap after arrival is too late — the ordering
+      is decide → swap → sneak → move.
+- [ ] **Step 2:** On entry with a target and the client believing itself armed,
+      send `bs <target>` instead of the ordinary opener. Restore the primary
+      weapon after the opening round.
+- [ ] **Step 3:** Handle `"You cannot backstab with this weapon!"` — it means the
+      equipment model was wrong about what is wielded. Log it as a correction.
+      Do NOT silently retry.
+- [ ] **Step 4:** A `bs` sent while not actually stealthy is a silent plain
+      attack, which is acceptable and is why this policy is affordable. A `bs`
+      with the wrong weapon costs the opening round, which is why Step 3 matters.
 - [ ] **Step 5: Mutate** — move the swap to after the sneak and confirm an
       ordering test fails.
 - [ ] **Step 6: Commit.**
