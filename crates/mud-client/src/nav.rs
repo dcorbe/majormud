@@ -620,6 +620,19 @@ impl Navigator {
                     .room(current)
                     .and_then(|r| r.exits[step as usize].as_ref());
                 let exit_type = edge.map(|e| e.exit_type).unwrap_or(0);
+                // A type-6 exit concealed by a puzzle bit-word answers
+                // SEARCH exactly as a searchable one does and can never
+                // be revealed by it, so the graph has to say which this
+                // is. Searching a puzzle exit is unbounded: the roll can
+                // never succeed.
+                let searchable_hidden = edge
+                    .map(|e| {
+                        matches!(
+                            e.requirement,
+                            crate::graph::ExitRequirement::Hidden { searchable: true }
+                        )
+                    })
+                    .unwrap_or(false);
                 // A command exit is not walked, it is spoken: the
                 // direction word does nothing at all at the Newhaven
                 // ferry, and the leg simply stalls there until the
@@ -648,6 +661,7 @@ impl Navigator {
                     .walk_step(
                         step,
                         exit_type,
+                        searchable_hidden,
                         sent,
                         &expected_name,
                         &here_name,
@@ -870,6 +884,7 @@ impl Navigator {
         &self,
         step: Direction,
         exit_type: i64,
+        searchable_hidden: bool,
         sent: crate::correlate::CmdId,
         expected: &str,
         here: &str,
@@ -906,7 +921,7 @@ impl Navigator {
             // says too, and it is the only thing it says. The graph is
             // the only witness that this wall is a door, so it decides:
             // search here, re-localize everywhere else.
-            StepEvent::NoSuchExit if self.search_hidden && is_hidden(exit_type) => {
+            StepEvent::NoSuchExit if self.search_hidden && searchable_hidden => {
                 return self
                     .find_hidden(step, expected, here, session, events, guard, armed)
                     .await;

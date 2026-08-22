@@ -124,6 +124,19 @@ fn graph_with_exit(exit_type: i64) -> Arc<RoomGraph> {
     Arc::new(RoomGraph::from_rooms(vec![(HERE, here), (THERE, there)]))
 }
 
+/// The alleyway fixture, but the hidden exit is concealed by a puzzle
+/// bit-word rather than by a search roll — 17/3042's north passage.
+fn graph_with_puzzle_exit() -> Arc<RoomGraph> {
+    let g = graph_with_exit(6);
+    let mut rooms: Vec<(RoomId, GraphRoom)> = g.iter().map(|(id, r)| (id, r.clone())).collect();
+    for (_, room) in rooms.iter_mut() {
+        for edge in room.exits.iter_mut().flatten() {
+            edge.requirement = ExitRequirement::Hidden { searchable: false };
+        }
+    }
+    Arc::new(RoomGraph::from_rooms(rooms))
+}
+
 async fn session_for(addr: std::net::SocketAddr) -> Session {
     let profile = Profile {
         target: mud_client::dialect::Target::MbbsEmu,
@@ -213,6 +226,32 @@ async fn a_refused_plain_exit_is_never_searched() {
 
     assert!(result.is_err(), "a plain exit the board denies is a desync");
     assert_eq!(log.searches.load(Ordering::SeqCst), 0, "not hidden: must not search");
+}
+
+/// A type-6 exit whose concealment is a bit-word cannot be revealed by
+/// any number of SEARCH rolls, so the walker must not spend any. It used
+/// to search until something else interrupted it.
+#[tokio::test]
+async fn a_puzzle_concealed_exit_is_never_searched() {
+    // reveal_on = usize::MAX: this board never yields to a search, which
+    // is exactly what the real one does here.
+    let (addr, log) = alley_board(usize::MAX).await;
+    let session = session_for(addr).await;
+    let n = nav(graph_with_puzzle_exit());
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(20),
+        n.goto(&session, HERE, THERE, &mut NoGuard),
+    )
+    .await
+    .expect("goto should not hang");
+
+    assert!(result.is_err(), "the passage is shut; the walk cannot succeed");
+    assert_eq!(
+        log.searches.load(Ordering::SeqCst),
+        0,
+        "no search roll can clear a bit-word: not one may be spent"
+    );
 }
 
 /// SEARCH breaks hide and sneak and costs a command each roll, so it stays
