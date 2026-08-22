@@ -1569,9 +1569,27 @@ fn import_loop(graph: &crate::graph::RoomGraph, file: &std::path::Path) -> Vec<S
 /// seam a test can reach: `play` owns a real terminal in raw mode and a
 /// background OS thread reading `crossterm::event::read()`, and cannot
 /// be driven end to end.
-pub fn on_realm_entry(session: &Session) {
+///
+/// Also spawns the inventory/spellbook probe
+/// ([`crate::farm::probe_sheet`]) in the background — it is a real wire
+/// conversation, up to roughly 13 seconds of round trips including the
+/// mystic redirect, and cannot run inline here the way `exp`/`i` do:
+/// `on_realm_entry` executes inside `play`'s hot `select!` loop, and
+/// awaiting it there would freeze passthrough rendering, key handling
+/// and the status bar for the whole probe. Nothing here waits on it —
+/// every reader of `Session::raw_sheet` (via `crate::farm::sheet_from`)
+/// already treats "not read yet" (an empty book) as a normal answer, the
+/// same way an unread `Session::stats` is `Stats::default()` rather than
+/// an error. Takes `&Arc<Session>` rather than `&Session` because the
+/// spawned task needs an owned handle that outlives this function
+/// returning.
+pub fn on_realm_entry(session: &Arc<Session>) {
     session.send("exp");
     session.send("i");
+    let probe_session = Arc::clone(session);
+    tokio::spawn(async move {
+        crate::farm::probe_sheet(&probe_session).await;
+    });
 }
 
 /// Loads the world files: the graph and the spawn table. Takes a

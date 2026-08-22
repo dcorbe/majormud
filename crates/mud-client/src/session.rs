@@ -29,6 +29,7 @@ use crate::graph::{Capabilities, TollLog};
 use crate::parse::Parser;
 use crate::profile::Profile;
 use crate::purse::PurseMeter;
+use crate::sheet::{Casting, Inventory, Spellbook};
 use crate::stats::Stats;
 use crate::wire::{AnsiStripper, TelnetFilter, cp437_to_string};
 
@@ -244,6 +245,24 @@ struct StatTracker {
     buffer: Option<String>,
 }
 
+/// The character's inventory and spellbook, read once at realm entry —
+/// see [`crate::farm::probe_sheet`] and [`Session::set_sheet`] — and
+/// held here so `/go`, a farm start, and the dark-finish walk stop
+/// asking the board the same two questions on every call
+/// (`crate::farm::sheet_from` reads it back).
+///
+/// Character-intrinsic data ONLY: never a caller's bot config (which
+/// heal marks or buffs to keep up), which still varies per farm profile
+/// and gets applied fresh, in memory, by whoever calls `sheet_from` — a
+/// session-wide cache of the FULL `Sheet` would have frozen that choice
+/// to whichever caller happened to probe first.
+#[derive(Debug, Clone, Default)]
+struct RawSheet {
+    inventory: Inventory,
+    book: Spellbook,
+    casting: Casting,
+}
+
 pub struct Session {
     cmd_tx: mpsc::UnboundedSender<Cmd>,
     shared: Arc<Shared>,
@@ -258,7 +277,7 @@ pub struct Session {
     /// The session's own running balance, kept current by the reader
     /// task off whichever `i` reply arrives -- ours or a caller's.
     purse: Arc<Mutex<PurseTracker>>,
-    /// The session's own character sheet, kept current by the reader
+    /// The session's own `stat`-sheet reading, kept current by the reader
     /// task off whichever `stat`/`st` reply arrives -- ours or a
     /// caller's. See [`StatTracker`].
     stats: Arc<Mutex<StatTracker>>,
@@ -269,6 +288,10 @@ pub struct Session {
     ///
     /// [`Navigator`]: crate::nav::Navigator
     toll_log: Arc<TollLog>,
+    /// The session's own inventory and spellbook. NOT the `stat` sheet
+    /// above — a different "sheet" ([`crate::farm::Sheet`]), read once at
+    /// realm entry rather than fed continuously. See [`RawSheet`].
+    sheet: Arc<Mutex<RawSheet>>,
 }
 
 impl Session {
@@ -298,6 +321,7 @@ impl Session {
             buffer: None,
         }));
         let toll_log = Arc::new(TollLog::default());
+        let sheet = Arc::new(Mutex::new(RawSheet::default()));
 
         let mut raw_file = match &capture {
             Some(c) => Some(File::create(&c.raw)?),
@@ -461,6 +485,7 @@ impl Session {
             purse,
             stats,
             toll_log,
+            sheet,
         })
     }
 
@@ -662,6 +687,30 @@ impl Session {
     /// as [`Session::capabilities`]'s purse.
     pub fn stats(&self) -> Stats {
         self.stats.lock().expect("stats lock").current.clone()
+    }
+
+    /// Record the character's inventory and spellbook, as read off the
+    /// board by [`crate::farm::probe_sheet`]. Called once, at realm
+    /// entry; overwrites whatever was cached before — the same "always
+    /// an assignment" rule [`PurseMeter`] and [`StatTracker`] already
+    /// follow, so a `Session` never holds two different opinions about
+    /// what was last actually asked.
+    pub fn set_sheet(&self, inventory: Inventory, book: Spellbook, casting: Casting) {
+        let mut s = self.sheet.lock().expect("sheet lock");
+        s.inventory = inventory;
+        s.book = book;
+        s.casting = casting;
+    }
+
+    /// The session's own cached inventory, spellbook, and casting
+    /// vocabulary — `Default`s (empty inventory, empty book) until
+    /// [`Session::set_sheet`] has been called once. Cloned out rather
+    /// than borrowed so a caller can build a [`crate::farm::Sheet`] with
+    /// its own bot config (via [`crate::farm::sheet_from`]) without
+    /// holding the lock across that work.
+    pub fn raw_sheet(&self) -> (Inventory, Spellbook, Casting) {
+        let s = self.sheet.lock().expect("sheet lock");
+        (s.inventory.clone(), s.book.clone(), s.casting)
     }
 }
 

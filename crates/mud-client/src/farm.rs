@@ -1538,7 +1538,7 @@ pub async fn run_farm(
         }
         BTreeMap::new()
     });
-    let sheet = read_sheet(session, bot_config, &durations).await;
+    let sheet = sheet_from(session, bot_config, &durations);
     let light = crate::sheet::LightState::new(sheet.light);
     if let Some(cmd) = light.first_command() {
         eprintln!("dark rooms will be handled with `{cmd}`");
@@ -1847,7 +1847,10 @@ pub async fn go_to_finish(
 /// The light sources are re-derived HERE rather than carried in. The
 /// commonest way a farm ends is Ctrl-C, which cancels `run_farm` and
 /// drops its `LightState` outright — a parameter could never cover the
-/// exit route that matters most.
+/// exit route that matters most. [`sheet_from`] answers this for free
+/// now (the session's cached book survives a cancelled `run_farm` just
+/// as surely as it survives one that finishes), so the re-derivation
+/// that used to cost a wire round trip here now costs nothing.
 ///
 /// `whose` names the caller in the error, which is the only clue the
 /// operator gets about which look went unanswered.
@@ -1864,7 +1867,7 @@ pub(crate) async fn look_around(
     match next_room_view(&mut events, ask, Duration::from_secs(15)).await {
         Some(room) => Ok(room),
         None => {
-            let sheet = read_sheet(session, &crate::bot::BotConfig::default(), &BTreeMap::new()).await;
+            let sheet = sheet_from(session, &crate::bot::BotConfig::default(), &BTreeMap::new());
             let Some(cmd) = sheet.light.first().map(|s| s.command().to_string()) else {
                 return Err(unanswered());
             };
@@ -1950,24 +1953,33 @@ impl Casts {
     }
 }
 
-/// Ask the board for the inventory and the spellbook.
+/// Ask the board for the inventory and the spellbook, and cache the
+/// result on the session (see [`crate::session::Session::set_sheet`]).
 ///
 /// Mystics are found out rather than configured: `spells` answers with
 /// "You may not list your spells. You are KAI! You must list your
 /// powers." (VERIFIED, `mud_core::text::KAI_NO_SPELLS`), so the redirect
 /// is the detection and one extra round trip is the whole cost. Every
 /// command built from the result then uses the matching verb.
-pub(crate) async fn read_sheet(
-    session: &crate::session::Session,
-    bot: &crate::bot::BotConfig,
-    durations: &BTreeMap<String, u32>,
-) -> Sheet {
+///
+/// Called once per connection, right after login: from
+/// [`crate::tui::on_realm_entry`] for the interactive `mmc play`/`/go`
+/// path, and directly from `mmc farm`'s own startup for the headless
+/// path (which never runs `on_realm_entry` — it calls
+/// `mud_client::dialect::login` itself and skips `tui::play` entirely).
+/// Neither `run_farm`, `/go`, nor the dark-finish walk pays this round
+/// trip themselves any more (the doc comment here used to read "this
+/// runs at every farm start and on dark finish walks"); they read
+/// [`crate::session::Session::raw_sheet`] through [`sheet_from`]
+/// instead, which costs nothing on the wire. `pub`, not `pub(crate)`,
+/// specifically so the `mmc` binary — a separate crate from this
+/// library — can call it.
+pub async fn probe_sheet(session: &crate::session::Session) {
     use crate::sheet::Casting;
 
     let inventory = ask(session, "inventory", "Encumbrance:").await;
     // No terminal wording is pinned for the spell listing, so the
-    // collection is bounded by a short deadline instead of the full 10s
-    // — this runs at every farm start and on dark finish walks.
+    // collection is bounded by a short deadline instead of the full 10s.
     let mut casting = Casting::Spells;
     let mut listing = ask_for(session, casting.list_command(), "", Duration::from_secs(3)).await;
     if let Some(redirected) = Casting::redirected(&listing)
@@ -1977,13 +1989,31 @@ pub(crate) async fn read_sheet(
         listing = ask_for(session, casting.list_command(), "", Duration::from_secs(3)).await;
     }
 
-    let book = crate::sheet::Spellbook::parse(&listing);
+    session.set_sheet(
+        crate::sheet::Inventory::parse(&inventory),
+        crate::sheet::Spellbook::parse(&listing),
+        casting,
+    );
+}
+
+/// Build a [`Sheet`] from the session's cached inventory and spellbook
+/// (see [`crate::session::Session::raw_sheet`]) and this caller's own bot
+/// config. Pure — no wire I/O — so calling it on every `/go`, farm start,
+/// or dark-finish walk costs nothing; only [`probe_sheet`] costs a round
+/// trip, and it runs once, at realm entry.
+///
+/// Before the first [`probe_sheet`] has completed this reads back an
+/// empty book and an empty inventory (the session's `Default`), so every
+/// field is empty rather than wrong — the same "nothing yet" a caller
+/// gets from an unread `Session::stats` or `Session::capabilities`.
+pub(crate) fn sheet_from(
+    session: &crate::session::Session,
+    bot: &crate::bot::BotConfig,
+    durations: &BTreeMap<String, u32>,
+) -> Sheet {
+    let (inventory, book, casting) = session.raw_sheet();
     Sheet {
-        light: crate::sheet::light_sources(
-            &crate::sheet::Inventory::parse(&inventory),
-            &book,
-            casting,
-        ),
+        light: crate::sheet::light_sources(&inventory, &book, casting),
         heals: book.heal_spells(&bot.heal_spells, casting),
         buffs: crate::sheet::buffs(&book, &bot.buffs, durations, casting),
     }

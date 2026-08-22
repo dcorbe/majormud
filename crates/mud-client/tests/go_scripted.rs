@@ -18,7 +18,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use mud_client::bot::BotConfig;
-use mud_client::farm::FarmConfig;
+use mud_client::farm::{FarmConfig, probe_sheet};
 use mud_client::go::{GoEnd, go_config, run_go};
 use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::profile::Profile;
@@ -324,5 +324,72 @@ async fn run_mode_still_fights_out_of_a_combat_lock() {
     assert!(
         log.iter().any(|l| l == "a rat"),
         "the refusal must be answered with a fight, not a retry: {log:?}"
+    );
+}
+
+/// The point of Task 4: the session's inventory and spellbook are read
+/// once, not per walk. `run_go` used to pay a three-second spell
+/// collection plus an inventory round trip on every call (`read_sheet`,
+/// via `leg_needs_light`); now it reads `Session::raw_sheet`, filled
+/// once by `probe_sheet` at realm entry, so a second `/go` over the same
+/// session must not touch the board for either again.
+#[tokio::test]
+async fn a_second_go_in_one_session_sends_no_spells() {
+    let (addr, received) = scripted_board(vec![
+        // The realm-entry probe. ONE inventory, ONE spells -- never
+        // repeated no matter how many walks follow.
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying a torch.\r\nEncumbrance: 1/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        (
+            "spells",
+            "\r\nspells\r\nYou don't know any spells.\r\n[HP=30/MA=0]:".into(),
+        ),
+        // First /go: Guard Post -> Keep.
+        ("look", format!("\r\nlook{}", room_block("Guard Post", None, "north"))),
+        ("n", format!("\r\nn{}", room_block("Inner Ward", None, "north south"))),
+        ("n", format!("\r\nn{}", room_block("Keep", None, "south"))),
+        // Second /go, same session: Keep -> Guard Post.
+        ("look", format!("\r\nlook{}", room_block("Keep", None, "south"))),
+        ("s", format!("\r\ns{}", room_block("Inner Ward", None, "north south"))),
+        ("s", format!("\r\ns{}", room_block("Guard Post", None, "north"))),
+    ])
+    .await;
+    let session = session_for(addr).await;
+    let graph = corridor();
+
+    // What tui::on_realm_entry does in the background on a real connection.
+    probe_sheet(&session).await;
+
+    let first = tokio::time::timeout(
+        Duration::from_secs(10),
+        run_go(&session, graph.clone(), Some(START), STOP, &bot(), &cfg(false), None),
+    )
+    .await
+    .expect("first /go should not hang")
+    .expect("first /go should arrive");
+    assert_eq!(first, GoEnd::Arrived(STOP));
+
+    let second = tokio::time::timeout(
+        Duration::from_secs(10),
+        run_go(&session, graph, Some(STOP), START, &bot(), &cfg(false), None),
+    )
+    .await
+    .expect("second /go should not hang")
+    .expect("second /go should arrive");
+    assert_eq!(second, GoEnd::Arrived(START));
+
+    let log = received.lock().unwrap();
+    assert_eq!(
+        log.iter().filter(|l| **l == "inventory").count(),
+        1,
+        "inventory must be asked once, at the probe -- not again by either /go: {log:?}"
+    );
+    assert_eq!(
+        log.iter().filter(|l| **l == "spells").count(),
+        1,
+        "spells must be asked once, at the probe -- not again by either /go: {log:?}"
     );
 }

@@ -501,6 +501,13 @@ fn farm_command(
                 return ExitCode::FAILURE;
             }
         }
+        // `mmc play` gets this from `tui::on_realm_entry`; this path
+        // never runs `play`, so it has to ask for itself. `run_farm`
+        // used to pay this round trip on its own first call (once per
+        // process either way, for a single `mmc farm` invocation), so
+        // this is not new network cost -- just moved earlier, to right
+        // after login where every other realm-entry priming belongs.
+        mud_client::farm::probe_sheet(&session).await;
 
         // Ctrl-C stops the patrol. There is no session close API, and
         // sending "x" would mean waiting out exit meditation while the

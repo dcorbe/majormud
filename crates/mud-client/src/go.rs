@@ -262,24 +262,17 @@ pub async fn run_go(
         RoomGraph::load_threat(&cfg.content).unwrap_or_else(|_| crate::bot::ThreatTable::new()),
     );
     let refusals = crate::bot::Refusals::default();
-    // Only pay for the listing when the route actually passes through
-    // the dark. `read_sheet` costs a three-second spell collection plus
-    // an inventory round trip, and spending that on a five-step walk
-    // across town makes the command feel broken.
+    // `sheet_from` reads the session's own cached inventory/spellbook
+    // (read once, at realm entry — see `crate::tui::on_realm_entry`) and
+    // costs nothing on the wire, so there is no reason left to skip it
+    // on legs that never pass through the dark; the three-second spell
+    // collection this used to pay per walk is gone.
     //
     // Healing is deliberately empty here whatever the book says: `/go`
     // is a walk the operator asked for, and `go_config` already zeroes
     // the departure gate so it never rests either. Recovery on a walk
     // belongs to the person who typed it.
-    let sheet = if crate::farm::leg_needs_light(&graph, from, to) {
-        crate::farm::read_sheet(session, &bot_config, &Default::default()).await
-    } else {
-        crate::farm::Sheet {
-            light: Vec::new(),
-            heals: Vec::new(),
-            buffs: (Vec::new(), Vec::new()),
-        }
-    };
+    let sheet = crate::farm::sheet_from(session, &bot_config, &Default::default());
     let mut casts = crate::farm::Casts {
         light: crate::sheet::LightState::new(sheet.light),
         heal: crate::sheet::HealState::new(Vec::new()),
