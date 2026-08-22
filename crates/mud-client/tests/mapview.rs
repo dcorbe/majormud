@@ -37,8 +37,7 @@ const SMALL_CAVERN: RoomId = RoomId { map: 1, room: 2156 };
 const SLUM_BEND: RoomId = RoomId { map: 1, room: 1084 };
 
 /// A view anchored on a room the graph has never heard of: the plane is
-/// empty, so the cursor genuinely has no room under it. This is the only
-/// way that happens now that movement snaps room to room.
+/// empty, so the cursor genuinely has no room under it.
 fn view_of_nowhere() -> MapView {
     MapView::new(
         graph(),
@@ -575,10 +574,13 @@ fn a_saved_loop_validates_as_a_farm_circuit() {
         .expect("every leg walkable");
 }
 
-/// MajorMUD streets run diagonally constantly, and once movement snaps
-/// room to room you cannot reach a diagonal neighbour by pressing two
-/// orthogonals — each one lands somewhere else. The roguelike diagonals
-/// are load-bearing, not a convenience.
+/// MajorMUD streets run diagonally constantly. Two orthogonal presses
+/// can reach the same cell as one diagonal press -- `h` then `j` lands
+/// where `b` would have in one -- so the diagonal keys are a shortcut
+/// rather than the only route now that movement is one cell at a time.
+/// They stay bound because that shortcut is worth having: diagonal
+/// streets are common enough that spending two keystrokes on every one
+/// of them would be a constant irritation.
 #[test]
 fn the_diagonal_keys_reach_diagonal_neighbours() {
     use mud_client::graph::{ExitEdge, GraphRoom};
@@ -623,51 +625,6 @@ fn the_diagonal_keys_reach_diagonal_neighbours() {
         press(&mut v, KeyCode::Char(key));
         assert_eq!(v.cursor_room(), Some(want), "key {key:?}");
     }
-}
-
-/// A straight run must still prefer the room directly ahead over one
-/// sitting off to the side but slightly nearer.
-#[test]
-fn straight_ahead_beats_off_axis() {
-    use mud_client::graph::{ExitEdge, GraphRoom};
-    let here = RoomId { map: 1, room: 1 };
-    let ahead = RoomId { map: 1, room: 2 };
-    let aside = RoomId { map: 1, room: 3 };
-    let mut hub = GraphRoom {
-        name: "Hub".into(),
-        ..Default::default()
-    };
-    // `aside` is diagonally adjacent, `ahead` is two cells due east.
-    hub.exits[Direction::SouthEast as usize] = Some(ExitEdge {
-        dest: aside,
-        exit_type: 0,
-        command: None,
-    });
-    hub.exits[Direction::East as usize] = Some(ExitEdge {
-        dest: ahead,
-        exit_type: 0,
-        command: None,
-    });
-    let g = std::sync::Arc::new(RoomGraph::from_rooms(vec![
-        (here, hub),
-        (
-            ahead,
-            GraphRoom {
-                name: "Ahead".into(),
-                ..Default::default()
-            },
-        ),
-        (
-            aside,
-            GraphRoom {
-                name: "Aside".into(),
-                ..Default::default()
-            },
-        ),
-    ]));
-    let mut v = MapView::new(g, spawns(), here, Fix::Unknown, PaintCtx::default(), (100, 30));
-    press(&mut v, KeyCode::Right);
-    assert_eq!(v.cursor_room(), Some(ahead), "east means east");
 }
 
 // --- getting off the plane, 2026-08-02 --------------------------------

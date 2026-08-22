@@ -299,8 +299,8 @@ impl MapView {
             KeyCode::Down | KeyCode::Char('j') => self.step(0, 1),
             // Diagonals on the roguelike keys, because MajorMUD streets
             // run diagonally all the time -- the slums are full of them --
-            // and reaching one by zig-zagging two orthogonals lands
-            // somewhere else entirely once movement snaps room to room.
+            // and reaching one by pressing two orthogonals costs two
+            // keystrokes where one diagonal press does the same job.
             KeyCode::Char('y') => self.step(-1, -1),
             KeyCode::Char('u') => self.step(1, -1),
             KeyCode::Char('b') => self.step(-1, 1),
