@@ -200,6 +200,64 @@ pub fn exit_cost(exit_type: i64) -> u32 {
     }
 }
 
+/// What the walker can currently bring to bear on an exit.
+///
+/// A snapshot, passed to routing rather than read from a global: two
+/// routes computed for different characters in the same process must be
+/// able to disagree.
+#[derive(Debug, Clone, Default)]
+pub struct Capabilities {
+    pub purse: crate::purse::Purse,
+}
+
+impl Capabilities {
+    /// Everything satisfiable — what routing assumed before it could ask.
+    ///
+    /// Used by callers that genuinely want the shape of the world rather
+    /// than one character's view of it, and as the migration default.
+    /// A caller that wants a character's real answer must pass that
+    /// character's capabilities; this one will happily route through a
+    /// 10,000-gold toll.
+    pub fn unrestricted() -> Capabilities {
+        Capabilities {
+            purse: crate::purse::Purse::from_farthings(u64::MAX),
+        }
+    }
+}
+
+/// What one edge costs this walker, or that it cannot be walked at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cost {
+    Steps(u32),
+    Impassable,
+}
+
+/// [`exit_cost`], but able to consult the walker.
+///
+/// Still a COST and not a prohibition wherever a cost can express the
+/// truth — the argument in `exit_cost`'s own comment stands: refusing a
+/// type answers "no route" to rooms that are genuinely reachable.
+/// `Impassable` is reserved for edges no amount of walking opens:
+/// a toll beyond the purse, and a passage concealed by a puzzle
+/// bit-word that SEARCH cannot clear.
+pub fn exit_cost_for(req: &ExitRequirement, exit_type: i64, caps: &Capabilities) -> Cost {
+    match req {
+        ExitRequirement::Toll { gold } => {
+            if caps.purse.farthings() >= crate::purse::Purse::from_gold(*gold).farthings() {
+                Cost::Steps(1)
+            } else {
+                Cost::Impassable
+            }
+        }
+        // No search roll can clear a bit-word. Pricing this high rather
+        // than refusing it would still route through it whenever the
+        // detour was longer, and then stall at the wall.
+        ExitRequirement::Hidden { searchable: false } => Cost::Impassable,
+        // Everything else is priced exactly as before, by type.
+        _ => Cost::Steps(exit_cost(exit_type)),
+    }
+}
+
 /// How a room's spawner behaves, from the room's `type` column
 /// (`room+0x43c`). Rates are the per-kick roll thresholds in
 /// `re/docs/monsters.md` §1: type 0 draws `genrdn(1,100) < 5`, type 2

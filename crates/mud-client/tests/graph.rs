@@ -3,6 +3,8 @@
 
 use mud_client::graph::{ExitRequirement, RoomGraph, DIRECTIONS};
 use mud_core::content::{Direction, RoomId};
+use mud_client::graph::{Capabilities, Cost, exit_cost_for};
+use mud_client::purse::Purse;
 
 fn db_path() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../re/mmud_wgnt.sqlite")
@@ -505,4 +507,52 @@ fn the_remaining_classifications_have_exact_counts() {
     assert_eq!(timed, 2, "2 type-0x10 exits");
     assert_eq!(command, 250, "250 type-10 command exits");
     assert_eq!(none, 58216, "every unclassified raw type, summed");
+}
+
+/// A toll you can pay is a step. A toll you cannot pay is a wall.
+#[test]
+fn a_toll_costs_a_step_when_affordable_and_is_impassable_otherwise() {
+    let toll = ExitRequirement::Toll { gold: 5 };
+    let rich = Capabilities {
+        purse: Purse::from_farthings(500),
+    };
+    let broke = Capabilities {
+        purse: Purse::from_farthings(499),
+    };
+    assert_eq!(exit_cost_for(&toll, 4, &rich), Cost::Steps(1));
+    assert_eq!(exit_cost_for(&toll, 4, &broke), Cost::Impassable);
+}
+
+/// A puzzle-concealed exit is not merely expensive: no amount of walking
+/// opens it, so pricing it high would still route through it.
+#[test]
+fn a_puzzle_concealed_exit_is_impassable_not_expensive() {
+    let caps = Capabilities::unrestricted();
+    assert_eq!(
+        exit_cost_for(&ExitRequirement::Hidden { searchable: false }, 6, &caps),
+        Cost::Impassable
+    );
+    assert_eq!(
+        exit_cost_for(&ExitRequirement::Hidden { searchable: true }, 6, &caps),
+        Cost::Steps(40),
+        "a searchable hidden exit keeps its old price"
+    );
+}
+
+/// Everything exit_cost priced before must still cost the same, or this
+/// change silently reroutes the whole world. The old function is the
+/// oracle for the new one on every requirement that does not consult
+/// state.
+#[test]
+fn state_free_requirements_keep_their_old_prices() {
+    let caps = Capabilities::unrestricted();
+    for exit_type in [0, 2, 7, 0xb, 9, 0x18, 0x10, 0x14, 0x16, 0x17, 10, 0x13, 3, 5] {
+        let req = ExitRequirement::from_exit_type(exit_type, 0);
+        let want = mud_client::graph::exit_cost(exit_type);
+        assert_eq!(
+            exit_cost_for(&req, exit_type, &caps),
+            Cost::Steps(want),
+            "type {exit_type:#x} changed price"
+        );
+    }
 }
