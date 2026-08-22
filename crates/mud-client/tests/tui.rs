@@ -694,3 +694,69 @@ fn the_bar_shows_where_a_go_is_walking() {
     let bar = render_status(&state, "mbbs", Some(&phase), Fix::Unknown, None, None, false, 100);
     assert!(bar.contains("1/2324"), "{bar}");
 }
+
+use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
+use mud_client::nav::{NavConfig, Navigator};
+use mud_client::spawn::SpawnTable;
+use mud_client::tui::finish_locator;
+use mud_core::content::Direction;
+
+fn interactive_db_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../re/mmud_wgnt.sqlite")
+}
+
+const IGATE: RoomId = RoomId { map: 1, room: 1381 };
+const IBEYOND: RoomId = RoomId { map: 1, room: 1382 };
+
+/// A one-hop toll gate, same shape as `session_capabilities.rs`'s --
+/// this test only needs the toll requirement, never a live crossing.
+fn interactive_gate_graph() -> std::sync::Arc<RoomGraph> {
+    let mut gate = GraphRoom {
+        name: "Silvermere Gate".into(),
+        ..Default::default()
+    };
+    gate.exits[Direction::West as usize] = Some(ExitEdge {
+        dest: IBEYOND,
+        exit_type: 4,
+        command: None,
+        requirement: ExitRequirement::Toll { gold: 5 },
+    });
+    let beyond = GraphRoom {
+        name: "Beyond the Gate".into(),
+        ..Default::default()
+    };
+    std::sync::Arc::new(RoomGraph::from_rooms(vec![(IGATE, gate), (IBEYOND, beyond)]))
+}
+
+/// `play`'s call site (`locator` then `finish_locator`) builds the
+/// interactive walker's own navigator -- the one `mapview::run`'s route
+/// preview walks with. `play` itself owns a real terminal in raw mode
+/// and a background OS thread reading `crossterm::event::read()`, so it
+/// cannot be driven end to end the way `go::run_go` is in
+/// `session_capabilities.rs`. `finish_locator` is the whole of what that
+/// call site does with a live session in hand, split out specifically so
+/// the wiring has a seam a test can reach instead of going uncovered.
+#[tokio::test]
+async fn finish_locator_gives_the_interactive_navigator_the_sessions_real_purse() {
+    let (addr, _received) = capture_board().await;
+    let session = session_to(addr).await;
+
+    let graph = interactive_gate_graph();
+    let nav = Navigator::new(graph.clone(), NavConfig::default());
+    let spawns = std::sync::Arc::new(SpawnTable::load(&interactive_db_path()).expect("spawn table"));
+
+    let (_, nav2, _) = finish_locator(Some((graph, nav, spawns)), &session);
+
+    // A freshly connected session has never seen an `i` reply, so its
+    // purse is empty. `Navigator::new`'s own default -- what this
+    // navigator would still be running on if `finish_locator` stopped
+    // applying the session's capabilities -- is `unrestricted()`, an
+    // effectively infinite purse that would pay any toll without ever
+    // being asked to. Routing must refuse the toll rather than silently
+    // affording it.
+    assert_eq!(
+        nav2.expect("locator succeeded").route_from(IGATE, IBEYOND),
+        None,
+        "an empty session purse must not silently become infinite gold"
+    );
+}

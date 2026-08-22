@@ -213,10 +213,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     // assume a game is running.
     let mut in_realm = false;
     let started = std::time::Instant::now();
-    let (graph, nav, spawns) = match locator(session.profile()) {
-        Some((g, n, s)) => (Some(g), Some(n), Some(s)),
-        None => (None, None, None),
-    };
+    let (graph, nav, spawns) = finish_locator(locator(session.profile()), &session);
 
     // Key events come from a blocking reader thread.
     let (key_tx, mut key_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1577,6 +1574,12 @@ fn import_loop(graph: &crate::graph::RoomGraph, file: &std::path::Path) -> Vec<S
     out
 }
 
+/// Loads the world files: the graph, a plain navigator over it, and the
+/// spawn table. Takes a `Profile`, not a `Session` — on purpose. It runs
+/// before any session is guaranteed to exist and its job is "is there a
+/// world database", nothing about who is playing or what they can
+/// afford. See [`finish_locator`] for where a live session's real
+/// capabilities get applied.
 fn locator(
     profile: &crate::profile::Profile,
 ) -> Option<(
@@ -1594,4 +1597,37 @@ fn locator(
     // have: all three are one answer to "is there a world database".
     let spawns = Arc::new(crate::spawn::SpawnTable::load(&db).ok()?);
     Some((graph, nav, spawns))
+}
+
+/// Finish what [`locator`] began, with the session's real capabilities.
+///
+/// Split out from its one call site (in [`play`]) rather than folded
+/// into it inline, so the wiring itself is a testable seam: `play` owns
+/// a real terminal in raw mode and a background OS thread reading
+/// `crossterm::event::read()`, and cannot be driven end to end the way
+/// `go::run_go` can. This function is the whole of what that call site
+/// does with a `Session` in hand, so a test exercising it directly is
+/// exercising the real wiring, not a stand-in for it.
+///
+/// The navigator [`locator`] hands back is the one the interactive play
+/// loop walks with by hand (`mapview::run`'s route preview, in
+/// particular) — it is the MOST-used path, not a side one, which is why
+/// it gets the same treatment as every other `Navigator::new` site
+/// rather than being left on [`crate::graph::Capabilities::unrestricted`].
+pub fn finish_locator(
+    found: Option<(
+        Arc<crate::graph::RoomGraph>,
+        crate::nav::Navigator,
+        Arc<crate::spawn::SpawnTable>,
+    )>,
+    session: &Session,
+) -> (
+    Option<Arc<crate::graph::RoomGraph>>,
+    Option<crate::nav::Navigator>,
+    Option<Arc<crate::spawn::SpawnTable>>,
+) {
+    match found {
+        Some((g, n, s)) => (Some(g), Some(n.with_capabilities(session.capabilities())), Some(s)),
+        None => (None, None, None),
+    }
 }

@@ -11,7 +11,7 @@
 //! inside the broadcast — so a fresh subscriber (every phase handoff
 //! makes one) inherits correct attribution instead of a private guess.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -197,15 +197,26 @@ impl TimingLog {
 /// The session's own [`PurseMeter`], plus the bookkeeping needed to feed
 /// it centrally instead of per-consumer.
 ///
-/// `pending` names the [`CmdId`]s of our own `i` sends so the reader task
-/// can tell "this echo is the one owed a reply" from "this line just
-/// happens to read `i`" — the same distinction [`crate::nav::Navigator`]
-/// and `tui.rs` each track locally today, done once here so every caller
-/// shares one answer instead of running its own copy that goes stale the
-/// moment its `Navigator` is dropped.
+/// `pending` names the [`CmdId`]s of our own `i` sends, each stamped with
+/// when it went out, so the reader task can tell "this echo is the one
+/// owed a reply" from "this line just happens to read `i`" — the same
+/// distinction [`crate::nav::Navigator`] and `tui.rs` each track locally
+/// today, done once here so every caller shares one answer instead of
+/// running its own copy that goes stale the moment its `Navigator` is
+/// dropped.
+///
+/// An `i` that never echoes (a dropped connection, a send that landed on
+/// a menu that does not know the word) would otherwise sit in here
+/// forever — a slow, session-lifetime leak on a long-lived connection.
+/// [`feed_purse`] sweeps entries older than [`CORRELATE_TTL`] on every
+/// call: that is the same cutoff the correlator itself already uses to
+/// decide an unanswered command's late answers are unsolicited, so a
+/// pending `i` id and the correlator's own entry for it go stale on
+/// exactly the same clock, never two different opinions about when to
+/// give up on the same send.
 struct PurseTracker {
     meter: PurseMeter,
-    pending: HashSet<CmdId>,
+    pending: HashMap<CmdId, Instant>,
 }
 
 pub struct Session {
@@ -250,7 +261,7 @@ impl Session {
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<Cmd>();
         let purse = Arc::new(Mutex::new(PurseTracker {
             meter: PurseMeter::default(),
-            pending: HashSet::new(),
+            pending: HashMap::new(),
         }));
         let toll_log = Arc::new(TollLog::default());
 
@@ -454,7 +465,11 @@ impl Session {
         // `PurseMeter::expect_reply` for why the echo, not the reply, is
         // what arms the meter.
         if trimmed.eq_ignore_ascii_case("i") {
-            self.purse.lock().expect("purse lock").pending.insert(id);
+            self.purse
+                .lock()
+                .expect("purse lock")
+                .pending
+                .insert(id, Instant::now());
         }
         let _ = self.cmd_tx.send(Cmd::Line {
             id,
@@ -600,7 +615,15 @@ fn feed_purse(purse: &Mutex<PurseTracker>, cor: &Correlated) {
         return;
     };
     let mut tracker = purse.lock().expect("purse lock");
-    let is_our_echo = cor.answers.is_some_and(|id| tracker.pending.remove(&id));
+    // An `i` that never echoed (dropped connection, sent into a menu
+    // that never accepted it) is exactly as stale as the correlator's
+    // own entry for the same send would be by now — sweep both on the
+    // same clock rather than leaking one id per send that never answers.
+    let now = Instant::now();
+    tracker
+        .pending
+        .retain(|_, sent_at| now.duration_since(*sent_at) < CORRELATE_TTL);
+    let is_our_echo = cor.answers.is_some_and(|id| tracker.pending.remove(&id).is_some());
     if is_our_echo {
         tracker.meter.expect_reply();
     } else {
