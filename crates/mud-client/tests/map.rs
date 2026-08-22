@@ -403,30 +403,54 @@ fn every_compass_direction_is_drawn_at_the_connector_zooms() {
 
 /// Both diagonals of a square share its centre character, so one used to
 /// overwrite the other and was invisible everywhere. Crossed is the
-/// honest answer.
+/// honest answer — for a crossing that is REAL.
+///
+/// This test used to build a hub whose neighbours declared no exits at
+/// all and then require a crossing to appear. The only thing that could
+/// produce one was the adjacency bug, so the test asserted the defect it
+/// was meant to guard. Both diagonals are now declared outright.
 #[test]
-fn two_diagonals_through_one_cell_are_drawn_crossed() {
+fn two_real_diagonals_through_one_cell_are_drawn_crossed() {
+    use mud_client::graph::{ExitEdge, GraphRoom};
+    // A(0,0) B(1,0) C(0,1) D(1,1). A goes south-east to D; B goes
+    // south-west to C. The two links genuinely cross at the centre.
+    let a = RoomId { map: 1, room: 1 };
+    let b = RoomId { map: 1, room: 2 };
+    let c = RoomId { map: 1, room: 3 };
+    let d = RoomId { map: 1, room: 4 };
+    let mk = |name: &str, exits: Vec<(Direction, RoomId)>| {
+        let mut r = GraphRoom {
+            name: name.into(),
+            ..Default::default()
+        };
+        for (dir, dest) in exits {
+            r.exits[dir as usize] = Some(ExitEdge {
+                dest,
+                exit_type: 0,
+                command: None,
+            });
+        }
+        r
+    };
+    let rooms = vec![
+        (
+            a,
+            mk(
+                "A",
+                vec![(Direction::East, b), (Direction::SouthEast, d)],
+            ),
+        ),
+        (b, mk("B", vec![(Direction::SouthWest, c)])),
+        (c, mk("C", vec![])),
+        (d, mk("D", vec![])),
+    ];
+    let plane = layout(&RoomGraph::from_rooms(rooms), a);
     for zoom in [Zoom::Detail, Zoom::Normal] {
-        let frame = drawn(&spokes(&[Direction::SouthEast, Direction::East]), zoom);
-        // The hub's SE and the east neighbour's SW meet in one character.
+        let frame = drawn(&plane, zoom);
         assert!(
-            frame.contains('\u{2573}') || frame.contains('\u{2572}'),
-            "{zoom:?}:\n{frame}"
+            frame.contains('\u{2573}'),
+            "{zoom:?} lost one of two real crossing diagonals:\n{frame}"
         );
-        let all = drawn(
-            &spokes(&[
-                Direction::North,
-                Direction::South,
-                Direction::East,
-                Direction::West,
-                Direction::NorthEast,
-                Direction::NorthWest,
-                Direction::SouthEast,
-                Direction::SouthWest,
-            ]),
-            zoom,
-        );
-        assert!(all.contains('\u{2573}'), "{zoom:?} never crossed:\n{all}");
     }
 }
 
@@ -937,5 +961,63 @@ fn adjacent_rooms_with_no_exit_between_them_are_not_joined() {
     );
     assert_eq!(frame.matches('\u{2500}').count(), 1, "A-B:\n{frame}");
     assert_eq!(frame.matches('\u{2572}').count(), 1, "A-D:\n{frame}");
+}
+
+/// The pin: over the shipped world, every connector the renderer would
+/// draw is an exit that exists.
+///
+/// The example-based tests above each cover one shape. This covers the
+/// shapes nobody thought of, which is where the original defect lived --
+/// it survived a test section literally headed "connectors must not
+/// lie" because every assertion there checked that a line was PRESENT
+/// and none checked that an absent exit stayed unpainted.
+#[test]
+fn no_connector_in_the_shipped_world_is_fabricated() {
+    // `graph()` is the file's existing OnceLock helper and already
+    // expects the fixture to be present, as `loads_all_rooms` does.
+    // Follow that convention rather than inventing a second one.
+    let g = graph();
+    // Anchored at Newhaven, Narrow Road -- the plane the client shows on
+    // a stock login. layout() is a BFS from the anchor, so the placed
+    // set depends on it; the anchor is named so the numbers are
+    // reproducible.
+    let plane = layout(g, RoomId { map: 1, room: 2146 });
+    assert!(plane.len() > 1000, "expected a large plane, got {}", plane.len());
+
+    let mut fabricated = Vec::new();
+    let mut drawn = 0usize;
+    for room in plane.rooms() {
+        for dir in mud_client::graph::DIRECTIONS {
+            let Some(step) = mud_client::map::step_of(dir) else {
+                continue; // up/down leave the plane
+            };
+            if !plane.has_edge(room, dir) {
+                continue;
+            }
+            drawn += 1;
+            let cell = plane.cell_of(room).expect("placed");
+            let neighbour = plane.room_at((cell.0 + step.0, cell.1 + step.1));
+            let real = g
+                .room(room)
+                .and_then(|r| {
+                    mud_client::graph::DIRECTIONS
+                        .iter()
+                        .position(|d| *d == dir)
+                        .and_then(|i| r.exits[i].as_ref())
+                })
+                .map(|e| Some(e.dest) == neighbour)
+                .unwrap_or(false);
+            if !real {
+                fabricated.push((room, dir));
+            }
+        }
+    }
+    assert!(drawn > 3000, "expected thousands of connectors, got {drawn}");
+    assert!(
+        fabricated.is_empty(),
+        "{} of {drawn} connectors are not backed by an exit; first few: {:?}",
+        fabricated.len(),
+        &fabricated[..fabricated.len().min(5)]
+    );
 }
 
