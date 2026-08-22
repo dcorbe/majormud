@@ -602,7 +602,9 @@ prints `Attempting to sneak...` then:
 - else `chance = FUN_0046cc43(player, 95, usrnum)` (§11.3);
   **roll `genrdn(0,100)`**: `roll < chance` → success.
 - success: set `+0x6f4 |= 4` (sneak-armed) and print just `\r` — **the player is
-  never told sneaking worked**.
+  never told sneaking worked**. The arm carries no guarantee, though: the move
+  repeats the stealth check independently (see below) and can still fail
+  visibly.
 - failure: **roll `genrdn(0,100)`** vs Perception `+0x5f8`: `roll < P` →
   `You don't think you're sneaking.\r`, else the same silent `\r`.
 
@@ -612,6 +614,20 @@ The armed bit is consumed by the queued-movement dispatcher in
 `fast_update_character` (line 20045): if bit 4 is set the pending move runs as
 `sneak(usrnum, dir)` (`0x4172dc`), which is just
 `DAT_0047d648 = 1; move_user(...); DAT_0047d648 = 0;`.
+
+Inside `move_user`, gated on `DAT_0047d648 != 0` (lines 11945-11960), a SECOND,
+INDEPENDENT stealth-chance roll decides this specific transit before any of the
+sneak-branch handling below runs. PerStealth (`0xba`) still auto-passes; failing
+that, `chance = FUN_0046cc43(player, 0x5f, usrnum)` (§11.3, the same helper and
+the same cap `cmd_sneak` used to arm) and `roll = genrdn(0,100)`. `roll < chance`
+marks this transit sneaky (`local_19 = 1`); otherwise bit 4 (`+0x6f4 & 0xfffb`)
+is cleared right here and the move falls through as an ordinary, fully-broadcast
+move — normal leave/arrive lines, no perception-filtered sneak notices, and none
+of the self-awareness roll described next (that roll only exists on the
+surviving sneaky path). Net effect: because `cmd_sneak` already spent one roll
+to arm, a full sneak-and-move is gated by TWO independent draws against the same
+chance, so the true odds of arriving unseen are roughly the square of the single
+roll's chance, not the single roll's chance itself.
 
 `move_user`'s sneak branch (lines 12574+): clears bit 4, **rolls `genrdn(0,100)`**
 vs own Perception — `roll < P` prints (red) `You make a sound as you enter the room!\r`

@@ -402,6 +402,202 @@ fn not_droppable_items_refuse_to_hide() {
     assert!(own.contains("You may not hide that item!"), "{own:?}");
 }
 
+// --- move_user's independent transit reroll (theft.md §11.1,
+// 11945-11960): being armed is not a guarantee. A second, independent
+// draw against the same §11.3 helper decides the actual transit;
+// PerStealth still bypasses it, everyone else can still fail visibly.
+
+fn world_with_reroll_classes() -> Content {
+    let mut content = world();
+    // Stealth-capable, but NO PerStealth — both the arm roll (cmd_sneak)
+    // and the new transit roll are genuine draws, not auto-passes.
+    content.add_class(Class {
+        id: ClassId(3),
+        name: "Footpad".into(),
+        abilities: vec![
+            (Ability::from_id(0x67).unwrap(), 1),  // ClassStealth (the gate)
+            (Ability::from_id(0x1b).unwrap(), 20), // Stealth bonus
+        ],
+        hp_per_level: 5,
+        hp_seed: 4,
+        caster_group: 0,
+        casting_factor: 0,
+        exp_base: 0,
+        combat_factor: 4,
+        weapon_code: 8,
+        armour_code: 9,
+    });
+    // A huge Perception bonus so a perception-filtered broadcast is
+    // caught deterministically (roll(0,100) < perception is then
+    // certain) — this class exists only to make the test's OBSERVATION
+    // reliable, it plays no part in the mechanic under test.
+    content.add_class(Class {
+        id: ClassId(4),
+        name: "Eagle-Eye".into(),
+        abilities: vec![(Ability::from_id(0x4d).unwrap(), 500)], // Perception
+        hp_per_level: 5,
+        hp_seed: 4,
+        caster_group: 0,
+        casting_factor: 0,
+        exp_base: 0,
+        combat_factor: 4,
+        weapon_code: 8,
+        armour_code: 9,
+    });
+    content
+}
+
+/// Retries SNEAK on `core` until the armed bit is set (bounded — the
+/// per-attempt chance is the same §11.3 helper, so this converges fast).
+/// Each attempt charges the thief-family command delay (theft.md §11),
+/// so age it off between attempts the same way
+/// `thief_actions_charge_a_delay_that_gates_sneak_and_hide` does.
+fn arm_sneak(core: &mut Core, sneaker: SessionId) {
+    for _ in 0..60 {
+        for _ in 0..3 {
+            core.tick();
+        }
+        core.drain_events();
+        core.input(sneaker, "sneak");
+        core.drain_events();
+        if core.player_snapshot(sneaker).sneak_armed {
+            return;
+        }
+    }
+    panic!("never managed to arm sneak");
+}
+
+#[test]
+fn sneak_transit_reroll_can_fail_after_arming() {
+    // Armed + roll fails -> normal, fully-broadcast move; sneak_armed
+    // cleared. The DLL's independent second draw at 11945-11960:
+    // FUN_0046cc43 fails -> `+0x6f4 &= 0xfffb` (clear bit 4) right there,
+    // and the move falls through to the ordinary path.
+    let mut core = Core::new(world_with_reroll_classes(), CoreConfig::default());
+    let sneaker = core.attach_player(person("Shade", 3, false));
+    let watcher = core.attach_player(person("Guard", 4, false));
+    core.drain_events();
+
+    for _ in 0..100 {
+        arm_sneak(&mut core, sneaker);
+        assert!(
+            core.player_snapshot(sneaker).sneak_armed,
+            "arm_sneak's own postcondition"
+        );
+        core.input(sneaker, "n");
+        let events = core.drain_events();
+        let to_watcher = texts(&events, watcher);
+        if to_watcher.contains("just left to the north") {
+            // Normal path taken: the transit roll failed.
+            assert!(
+                !to_watcher.contains("sneaking"),
+                "no sneak notice on a failed transit: {to_watcher:?}"
+            );
+            assert!(
+                !core.player_snapshot(sneaker).sneak_armed,
+                "the armed bit is cleared on failure too"
+            );
+            return;
+        }
+        // Roll passed this attempt (sneaky move) — the watcher walked
+        // back in via the far room in the earlier iteration's setup, so
+        // reset the sneaker's position for the next attempt.
+        if core.player_snapshot(sneaker).location == THERE {
+            core.input(sneaker, "s");
+            core.drain_events();
+        }
+    }
+    panic!("never observed a failed transit roll in 100 attempts");
+}
+
+#[test]
+fn sneak_transit_reroll_passing_stays_sneaky() {
+    // Armed + roll passes -> the existing sneaky path, unchanged:
+    // perception-filtered notices, normal broadcasts suppressed.
+    let mut core = Core::new(world_with_reroll_classes(), CoreConfig::default());
+    let sneaker = core.attach_player(person("Shade", 3, false));
+    let watcher = core.attach_player(person("Guard", 4, false)); // Eagle-Eye: catches it for sure
+    core.drain_events();
+
+    for _ in 0..100 {
+        arm_sneak(&mut core, sneaker);
+        core.input(sneaker, "n");
+        let events = core.drain_events();
+        let to_watcher = texts(&events, watcher);
+        if to_watcher.contains("just left to the north") {
+            // Roll failed this attempt — reset and retry.
+            if core.player_snapshot(sneaker).location == THERE {
+                core.input(sneaker, "s");
+                core.drain_events();
+            }
+            continue;
+        }
+        assert!(
+            to_watcher.contains("You notice Shade sneaking out to the north"),
+            "the roll passed: the perception-filtered notice fires: {to_watcher:?}"
+        );
+        assert!(
+            !to_watcher.contains("just left"),
+            "the normal broadcast is suppressed on a passing roll: {to_watcher:?}"
+        );
+        assert!(
+            !core.player_snapshot(sneaker).sneak_armed,
+            "sneak is single-move: the armed bit clears on success too"
+        );
+        return;
+    }
+    panic!("never observed a passing transit roll in 100 attempts");
+}
+
+#[test]
+fn sneak_transit_reroll_perstealth_skips_the_draw() {
+    // PerStealth (ability 0xba) auto-passes BOTH the arm roll (cmd_sneak)
+    // and this second, independent transit roll (11946-11947:
+    // user_has_ability(0xba,...) short-circuits before FUN_0046cc43 /
+    // genrdn are ever reached). Class 1 ("Thief" in world()) carries
+    // PerStealth already.
+    let mut core = Core::new(world(), CoreConfig::default());
+    let sneaker = core.attach_player(person("Shade", 1, false));
+    let watcher = core.attach_player(person("Hawk", 2, true));
+    core.drain_events();
+
+    core.input(sneaker, "sneak");
+    core.drain_events();
+    assert!(
+        core.player_snapshot(sneaker).sneak_armed,
+        "PerStealth auto-arms on the first attempt, no retry needed"
+    );
+
+    let draws_before = core.debug_rng_draws();
+    core.input(sneaker, "n");
+    let events = core.drain_events();
+    let draws_after = core.debug_rng_draws();
+
+    // Three draws, none of them the transit stealth-chance roll:
+    //   1. give_monsters_a_free_attack's unconditional per-departure
+    //      roll (drawn even with nothing to hit — see move_player).
+    //   2. broadcast_sneak's per-candidate perception check, one draw
+    //      for the watcher present in the departure room.
+    //   3. the self-awareness "make a sound" roll (12574+), unconditional
+    //      on the sneaky path.
+    // PerStealth means FUN_0046cc43 + its genrdn were never reached —
+    // if they had been, this delta would be 4 (roll drawn and passed)
+    // or a differently-composed 2 (roll drawn and failed, which would
+    // also flip the assertions below to the normal-move wording).
+    assert_eq!(
+        draws_after - draws_before,
+        3,
+        "PerStealth skips the transit stealth-chance draw entirely"
+    );
+
+    let to_watcher = texts(&events, watcher);
+    assert!(
+        to_watcher.contains("You notice Shade sneaking out to the north"),
+        "PerStealth is always sneaky: {to_watcher:?}"
+    );
+    assert!(!to_watcher.contains("just left"), "{to_watcher:?}");
+}
+
 #[test]
 fn coins_stash_and_report() {
     let mut core = Core::new(stash_world(), CoreConfig::default());

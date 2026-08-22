@@ -16725,8 +16725,31 @@ impl Core {
         // this move; the normal leave/arrive broadcasts are replaced by
         // perception-FILTERED "You notice %s sneaking..." lines, and the
         // sneaker keeps the hidden byte. A NORMAL move clears it.
-        let sneaking = matches!(self.sessions.get(&session),
+        let mut sneaking = matches!(self.sessions.get(&session),
             Some(Session::InGame { player, .. }) if player.sneak_armed);
+        // move_user's own independent stealth roll (11945-11960): being
+        // armed is not a guarantee. PerStealth still auto-passes;
+        // otherwise a SECOND, INDEPENDENT draw against the same §11.3
+        // helper decides THIS transit. Failure clears the armed bit
+        // right here and the move falls through to the normal,
+        // fully-broadcast path below — no perception-filtered notices,
+        // no self-aware "make a sound" roll (that lives only on the
+        // surviving sneaky path).
+        if sneaking {
+            let auto = self
+                .ability_bag(self.player(session))
+                .value(Ability::from_id(0xba).expect("PerStealth in the enum"))
+                > 0;
+            if !auto {
+                let chance = self.stealth_chance_for(session);
+                if self.rng.roll(0, 100) >= chance {
+                    sneaking = false;
+                    if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
+                        player.sneak_armed = false;
+                    }
+                }
+            }
+        }
         if sneaking {
             // Self-awareness roll vs own Perception (12574+): a low roll
             // warns the sneaker — no effect on concealment.
