@@ -1297,6 +1297,33 @@ fn sweeps_a_pile_once_per_visit() {
     );
 }
 
+/// A kill's drop line and the room's own "You notice ..." listing name
+/// the SAME pile. Before this, the drop line had no memo consultation at
+/// all — a kill sent `get gold`, then the very next block re-listed the
+/// pile and the room-render sweep sent `get gold` again. One `get` per
+/// denomination per visit, regardless of which of the two paths sees the
+/// pile first.
+#[test]
+fn a_kill_drop_and_the_room_listing_claim_the_same_pile_once() {
+    let mut bot = get_bot();
+    // The visit starts and the room is keyed before the kill.
+    bot.on_event(&Event::RoomSeen(view_with_items(&["giant rat"], &[])));
+    // The kill's drop line claims "gold" first.
+    let drop_actions = bot.on_event(&Event::Line("40 gold drops to the ground.".into()));
+    assert_eq!(drop_actions, vec![BotAction::Send("get gold".into())]);
+    // The room re-renders, still listing the same pile the kill just
+    // reported dropping. The room-render path must find "gold" already
+    // claimed and send nothing.
+    let render_actions = bot.on_event(&Event::RoomSeen(view_with_items(
+        &[],
+        &["40 gold crowns"],
+    )));
+    assert!(
+        render_actions.is_empty(),
+        "denomination already claimed by the drop line: {render_actions:?}"
+    );
+}
+
 /// Stage 2 needs "is there work here" answered against the MAINTAINED
 /// occupant list rather than whatever the last room block happened to
 /// say, so the question has to be askable of any names at all.

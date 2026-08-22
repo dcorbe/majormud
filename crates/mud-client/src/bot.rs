@@ -915,7 +915,26 @@ impl Bot {
         if !self.config.auto_get {
             return Vec::new();
         }
+        // Consult the same per-visit memo the room-render sweep uses
+        // (~line 602): a kill's drop line and the room's own "You
+        // notice ..." listing name the SAME pile, and without this a
+        // kill sent `get gold` here, then the very next block re-listed
+        // the pile and the room-render path sent it again. `insert`
+        // returns false when the denomination is already claimed, so
+        // whichever source sees the pile first wins and the other is a
+        // no-op.
+        //
+        // This does not key on room name the way the render path does —
+        // a drop line only ever arrives mid-visit, after the RoomSeen
+        // that keyed `swept.0` for the room we are standing in. The one
+        // gap is a bot whose very first event is a drop line with no
+        // room seen yet: the memo is still keyed to the empty string,
+        // and the next RoomSeen resets it, undoing this claim and
+        // allowing one repeat `get`. That is the same reset the memo
+        // already performs on every room change; it does not survive
+        // being asked about a room it has not seen yet.
         coin_drop(line)
+            .filter(|(_, denom)| self.swept.1.insert(denom.clone()))
             .map(|(_, denom)| vec![BotAction::Send(format!("get {denom}"))])
             .unwrap_or_default()
     }
