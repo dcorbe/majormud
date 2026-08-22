@@ -340,6 +340,7 @@ impl RoomGraph {
         // against 250 lookups, which is cheaper than 250 queries and far
         // cheaper than discovering at the ferry that we cannot move.
         let commands = Self::load_exit_commands(&conn)?;
+        let remote_actions = Self::load_remote_actions(&conn)?;
         let sql = format!("SELECT {} FROM room", cols.join(","));
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
@@ -399,6 +400,24 @@ impl RoomGraph {
             };
             rooms.insert(RoomId { map, room }, graph_room);
         }
+        // Second pass: an exit a `remoteaction` opens is concealed by a
+        // bit-word, not by a search roll. Done after the rooms are all
+        // read because the actor and the target are different rooms and
+        // the target may be read first.
+        for ((target, exit), actions) in remote_actions {
+            let Some(room) = rooms.get_mut(&target) else {
+                continue;
+            };
+            let Some(edge) = room.exits[exit].as_mut() else {
+                continue;
+            };
+            edge.requirement = match &edge.requirement {
+                ExitRequirement::Hidden { .. } => ExitRequirement::Hidden { searchable: false },
+                // A gate or door a lever throws is still a gate; the
+                // actions are what opens it.
+                _ => ExitRequirement::Puzzle { actions },
+            };
+        }
         Ok(RoomGraph { rooms })
     }
 
@@ -421,6 +440,94 @@ impl RoomGraph {
             let line = line.unwrap_or_default().trim().to_string();
             if !line.is_empty() {
                 out.insert(number, line);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Which exits are opened by a `remoteaction` script somewhere.
+    ///
+    /// The quest VM's `remoteaction <room> <msg> <action> <exit>` verb
+    /// clears one bit of a concealment word on the TARGET room's exit --
+    /// the actor may be standing somewhere else entirely. An exit
+    /// concealed this way answers SEARCH exactly as an ordinary hidden
+    /// exit does and can never be revealed by one, so the walker has to
+    /// be able to tell them apart.
+    ///
+    /// Returns target `(room, exit index)` -> the actions that open it,
+    /// keyed by the exit's 0-based direction index.
+    ///
+    /// 28 rooms in the shipped world carry such a script, between them
+    /// 82 directives. `mud-core`'s `remote_lever` parses the same
+    /// grammar, so the two must agree.
+    fn load_remote_actions(
+        conn: &rusqlite::Connection,
+    ) -> Result<BTreeMap<(RoomId, usize), Vec<PuzzleAction>>, String> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT r.mapnumber, r.roomnumber, t.body \
+                 FROM room r JOIN textblock t ON t.number = r.cmdtext \
+                 WHERE r.cmdtext > 0 AND t.body LIKE '%remoteaction%'",
+            )
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+        let mut out: BTreeMap<(RoomId, usize), Vec<PuzzleAction>> = BTreeMap::new();
+        while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            let map: i64 = row.get(0).map_err(|e| e.to_string())?;
+            let actor_room: i64 = row.get(1).map_err(|e| e.to_string())?;
+            let body: Option<String> = row.get(2).map_err(|e| e.to_string())?;
+            let Some(body) = body else { continue };
+            let (Ok(map16), Ok(actor16)) = (u16::try_from(map), u16::try_from(actor_room)) else {
+                continue;
+            };
+            let actor = RoomId {
+                map: map16,
+                room: actor16,
+            };
+            // One script per line; the phrase is the head, the verbs
+            // follow, colon-separated. A line may hold several phrases
+            // for the same effect ("clear rubble" / "move rubble").
+            for line in body.split(['\r', '\n']).filter(|l| !l.trim().is_empty()) {
+                let mut parts = line.split(':');
+                let Some(phrase) = parts.next().map(str::trim) else {
+                    continue;
+                };
+                if phrase.is_empty() {
+                    continue;
+                }
+                for verb in parts {
+                    let mut w = verb.split_whitespace();
+                    if w.next() != Some("remoteaction") {
+                        continue;
+                    }
+                    let nums: Vec<i64> = w.filter_map(|n| n.parse().ok()).collect();
+                    // remoteaction <room> <msg> <action> <exit>
+                    let [target, _msg, _action, exit] = nums[..] else {
+                        continue;
+                    };
+                    let (Ok(target), Ok(exit)) = (u16::try_from(target), usize::try_from(exit))
+                    else {
+                        continue;
+                    };
+                    if exit > 9 {
+                        continue;
+                    }
+                    let key = (
+                        RoomId {
+                            map: map16,
+                            room: target,
+                        },
+                        exit,
+                    );
+                    let entry = out.entry(key).or_default();
+                    match entry.iter_mut().find(|a| a.room == actor) {
+                        Some(a) => a.commands.push(phrase.to_string()),
+                        None => entry.push(PuzzleAction {
+                            room: actor,
+                            commands: vec![phrase.to_string()],
+                        }),
+                    }
+                }
             }
         }
         Ok(out)

@@ -340,3 +340,51 @@ fn the_crypt_candle_is_an_ordinary_command_exit() {
     let edge = g.room(chamber).and_then(|r| r.exits[i].as_ref()).unwrap();
     assert_eq!(edge.command.as_deref(), Some("turn right candle left"));
 }
+
+/// 17/3042's north passage is concealed by a bit-word that four
+/// `remoteaction` scripts clear -- one per gem, in four other rooms. No
+/// number of SEARCH rolls can ever reveal it, so the walker must not try.
+#[test]
+fn the_gem_passage_is_concealed_by_a_puzzle_not_by_search() {
+    let g = graph();
+    let shadowy = RoomId { map: 17, room: 3042 };
+    match requirement(g, shadowy, Direction::North) {
+        ExitRequirement::Hidden { searchable } => {
+            assert!(!searchable, "no search roll can clear a bit-word")
+        }
+        other => panic!("expected a hidden exit, got {other:?}"),
+    }
+}
+
+/// The ordinary hidden exit is still searchable. Without this the fix
+/// would be "never search anything", which strands the 1,383 shipped
+/// hidden exits that SEARCH genuinely does reveal.
+#[test]
+fn an_ordinary_hidden_exit_stays_searchable() {
+    let g = graph();
+    let mut searchable = 0usize;
+    let mut puzzle_locked = 0usize;
+    for (_, room) in g.iter() {
+        for edge in room.exits.iter().flatten() {
+            if let ExitRequirement::Hidden { searchable: s } = edge.requirement {
+                if s {
+                    searchable += 1
+                } else {
+                    puzzle_locked += 1
+                }
+            }
+        }
+    }
+    assert!(
+        searchable > 1000,
+        "most of the 1,383 hidden exits are genuinely searchable, got {searchable}"
+    );
+    assert!(
+        puzzle_locked > 0,
+        "at least the gem passage is puzzle-locked, got {puzzle_locked}"
+    );
+    assert!(
+        puzzle_locked < 50,
+        "only a handful of exits are puzzle-locked, got {puzzle_locked}"
+    );
+}
