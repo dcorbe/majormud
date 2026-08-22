@@ -562,19 +562,116 @@ below and are a known gap."
 
 ---
 
-### Task 4: Learn which way the toll actually charges
+### Task 4: Fill the purse from the board
+
+**Files:**
+- Modify: `crates/mud-client/src/purse.rs` (add the observer)
+- Modify: `crates/mud-client/src/tui.rs` (poll on entering the realm, beside the existing `exp` poll)
+- Test: `crates/mud-client/tests/purse.rs`
+
+**Interfaces:**
+- Consumes: `Purse`, `parse_coin_line` (Task 1).
+- Produces: `PurseMeter` with `observe(&mut self, line: &str) -> bool` and `current(&self) -> Purse`. Task 5 reads `current()` either side of a crossing.
+
+**Why this task exists.** It was NOT in the plan as first written, and that was a defect: Task 5 needs to read the purse across a crossing, `Capabilities { purse }` needs a real value, and **nothing in the client produces one**. Verified on main: the client polls `health` (`farm.rs:1180`) and `exp` (`tui.rs:251`, `359`) and nothing else, and `bot.rs`'s `COIN_PILE_RE` reads coins on the FLOOR, not carried. Without this task the spec's first success criterion can only ever be exercised with a hand-constructed `Capabilities`, never against a board.
+
+**Where the number comes from.** The inventory command. `mud-core`'s `show_inventory` prints carried coins through `text::coin_listing`, which renders high-denomination-first and comma-separated (`"1 gold crown, 9 copper farthings"`). The command's aliases are `i` and `inventory` (`crates/mud-core/src/command.rs:166,213`).
+
+**The trap this task must avoid.** A coin listing on the wire is not necessarily the purse. A pile on the floor prints as a `You notice ... here.` line and `bot.rs` already sweeps those. If `PurseMeter` treated any coin-shaped line as the balance, walking into a room with 3 gold on the floor would silently rewrite the purse to 3 gold and the router would then refuse a toll it can afford.
+
+So the meter must only accept a listing it can attribute to **our own inventory command**. Read `crates/mud-client/src/correlate.rs` before designing this — the client already correlates a sent command with the reply that answers it, and that machinery is the right tool. Do not invent a second correlation scheme.
+
+- [ ] **Step 1: Read first, then write**
+
+Read `crates/mud-client/src/correlate.rs` and `crates/mud-client/src/tui.rs:240-260` (the `exp` poll on realm entry, which is the pattern to follow). Then decide how a reply to `i` is recognised.
+
+**If the correlator cannot attribute an inventory reply** — for example if it only tracks movement and combat — say so and report `NEEDS_CONTEXT` rather than inventing an attribution that will silently mis-fire. A purse that is wrong is worse than a purse that is absent, because the router will act on it.
+
+- [ ] **Step 2: Write the failing tests**
+
+```rust
+/// The meter takes its value from OUR inventory reply.
+#[test]
+fn an_inventory_reply_sets_the_purse() {
+    let mut m = PurseMeter::default();
+    assert_eq!(m.current(), Purse::ZERO);
+    m.expect_reply();                    // we just sent `i`
+    assert!(m.observe("2 gold crowns, 8 copper farthings"));
+    assert_eq!(m.current().farthings(), 208);
+}
+
+/// Coins lying on the floor are NOT the purse. Walking into a room with
+/// money in it must not rewrite the balance -- the router would then
+/// refuse a toll the character can actually afford.
+#[test]
+fn coins_on_the_floor_do_not_touch_the_purse() {
+    let mut m = PurseMeter::default();
+    m.expect_reply();
+    assert!(m.observe("2 gold crowns, 8 copper farthings"));
+    let before = m.current();
+    // No pending inventory request now; anything coin-shaped is somebody
+    // else's money.
+    assert!(!m.observe("3 gold crowns"));
+    assert!(!m.observe("You notice 11 silver nobles here."));
+    assert_eq!(m.current(), before, "the floor is not the purse");
+}
+
+/// An inventory with no coins in it means ZERO carried, which is a real
+/// answer and different from "we have never asked".
+#[test]
+fn an_inventory_without_coins_reads_as_empty() {
+    let mut m = PurseMeter::default();
+    m.expect_reply();
+    assert!(!m.observe("You are carrying Nothing!"));
+    assert_eq!(m.current(), Purse::ZERO);
+    assert!(m.settled(), "we asked and got an answer");
+}
+```
+
+Adapt the API names to whatever the correlator makes natural, but keep all three behaviours: attributed reply sets it, unattributed coin lines do not, and an answered-but-empty inventory is distinguishable from never-asked.
+
+- [ ] **Step 3: Run to verify they fail, then implement**
+
+Run: `cargo test -p mud-client --test purse`
+
+Implement `PurseMeter` in `purse.rs`, and send the inventory command on entering the realm in `tui.rs`, beside the existing `exp` poll and gated on the same realm-presence check — a command typed at the account menu is a menu key, not an inventory request.
+
+- [ ] **Step 4: Mutate**
+
+Make `observe` accept any coin-shaped line regardless of attribution. Expected: `coins_on_the_floor_do_not_touch_the_purse` FAILS. Make it accept none. Expected: `an_inventory_reply_sets_the_purse` FAILS. Both must bite, or the meter cannot tell our reply from the room.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/mud-client/src/purse.rs crates/mud-client/src/tui.rs crates/mud-client/tests/purse.rs
+git commit -m "feat(purse): read the carried balance off the inventory reply
+
+Nothing produced a purse value, so Capabilities.purse could only ever
+hold what a caller hand-constructed and the toll predicate could not be
+exercised against a board.
+
+The balance comes from the inventory command, which prints carried coins
+through the same high-to-low listing mud-core renders. Attribution is
+load-bearing: a pile on the floor is coin-shaped too, and treating one
+as the balance would have the router refuse a toll the character can
+afford."
+```
+
+---
+
+### Task 5: Learn which way the toll actually charges
 
 **Files:**
 - Modify: `crates/mud-client/src/nav.rs` (the walk path, where a step is sent and its reply read)
 - Test: `crates/mud-client/tests/nav_toll.rs` (create)
 
 **Interfaces:**
-- Consumes: `Purse`, `Capabilities`, `ExitRequirement::Toll`.
+- Consumes: `Purse`, `Capabilities`, `ExitRequirement::Toll`, and `PurseMeter::current()` from Task 4.
 - Produces: `pub struct TollLog` recording `(RoomId, Direction) -> charged: bool`, and `Capabilities::tolls_known_free: Arc<TollLog>` consulted by `exit_cost_for`.
 
 - [ ] **Step 1: Read first, then write**
 
-Before writing anything, read how `nav.rs` observes the board's reply to a step (the `StepEvent` enum and the arrival path), and how the session's current purse would reach it. **If no purse reading is available on the wire path yet, stop and report that**: this task needs a before/after purse observation, and inventing one that is never fed real data would be worse than saying the dependency is missing.
+Before writing anything, read how `nav.rs` observes the board's reply to a step (the `StepEvent` enum and the arrival path), and how `PurseMeter` (Task 4) reaches it. Task 4 exists precisely to supply the before/after reading this task needs; if it is not yet merged, stop — this task cannot be done without it.
 
 The spec's design is: assume every type-4 crossing charges; on an actual crossing compare the purse before and after; if it did not move, record that `(room, direction)` as free.
 
@@ -653,10 +750,19 @@ to re-cross."
 
 **Spec coverage.** Purse in farthings → Task 1. `Capabilities` + `Cost` + cost-not-prohibition → Task 2. Success criterion 1 (routing changes with state) → Task 3. Success criterion 4 (nothing refused for being merely expensive) → Task 3's `an_expensive_route_is_still_found`. Toll-direction learning → Task 4. Spec tests 1, 2 → Tasks 2 and 3. Spec test 7 (purse round trip) → Task 1. Spec test 8 (observed-toll learning) → Task 4.
 
+**Amended 2026-08-22 during execution.** A pre-flight check against the merged
+descriptor branch found this plan had a hole: Task 5 (toll-direction learning)
+needs to read the purse across a crossing, and NOTHING in the client produced a
+purse value — the client polls `health` and `exp` and nothing else, and
+`bot.rs` reads coins on the floor, not carried. Task 4 (fill the purse from the
+board) was inserted to close it, and the old Task 4 became Task 5. Without it
+success criterion 1 could only ever be exercised with a hand-constructed
+`Capabilities`.
+
 **Known gaps, stated rather than hidden:**
 
 - **Success criterion 3 — "a route that fails at a gate reports *which* gate" — has no task.** `Cost::Impassable` currently loses the reason on the way out of Dijkstra. Doing it properly means `route_for` returning a refusal reason rather than `Option`, which touches every caller, and it is worth its own plan rather than a rushed fourth task here. This is a deliberate deferral of a spec criterion and must not be reported as complete.
-- **Task 4 depends on a purse reading existing on the wire path**, which is unverified — Step 1 requires checking before building, and reporting rather than inventing if it is absent.
+- **Task 5's purse reading is now supplied by Task 4** rather than assumed. Task 4's own Step 1 still requires checking that the correlator can attribute an inventory reply, and reporting `NEEDS_CONTEXT` rather than inventing an attribution — a purse that is wrong is worse than one that is absent, because the router acts on it.
 - **Migration is incomplete by construction.** Task 3 leaves every existing caller on `Capabilities::unrestricted()`. Task 4 migrates the walking path. Any caller still unrestricted afterwards is a known gap.
 - **Spec tests 5 and 6** (the `12/2118` cross-room puzzle shape, and the four gem actions being order-free) are inherited from part 1's self-review and still have no assertion, because nothing consumes `Puzzle { actions }` until the phase-C solver.
 
