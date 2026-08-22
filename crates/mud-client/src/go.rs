@@ -225,7 +225,8 @@ pub async fn run_go(
     if let Err(e) = crate::deaths::init(&cfg.content) {
         eprintln!("death wordings unavailable ({e}); shared-room kills will be missed");
     }
-    let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone());
+    let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone())
+        .with_capabilities(session.capabilities());
 
     let seen = crate::farm::look_around(session, "the go walk's look").await?;
     // An impossible id when there is no hint, so the neighbour shortcut

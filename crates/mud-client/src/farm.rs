@@ -1616,7 +1616,8 @@ async fn farm_loop(
     // while the legs between them cut straight through a wall whenever
     // that was cheaper — a fence you can walk through is not a fence.
     let nav = {
-        let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone());
+        let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone())
+            .with_capabilities(session.capabilities());
         match &plan.roam {
             Some(walls) => nav.fenced(walls.clone(), plan.start.map),
             None => nav,
@@ -1784,7 +1785,8 @@ pub async fn go_to_finish(
     let Some(finish) = plan.finish else {
         return Ok(());
     };
-    let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone());
+    let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone())
+        .with_capabilities(session.capabilities());
     let seen = look_around(session, "the finish walk's look").await?;
     if let Some(here) = graph.room(finish)
         && here.name == seen.name

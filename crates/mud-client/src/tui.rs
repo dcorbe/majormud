@@ -1422,7 +1422,8 @@ fn start_where(
     session.set_pace(session.profile().pace());
     let (tx, rx) = tokio::sync::watch::channel(crate::farm::Phase::default());
     let handle = tokio::spawn(async move {
-        let nav = crate::nav::Navigator::new(graph.clone(), crate::nav::NavConfig::default());
+        let nav = crate::nav::Navigator::new(graph.clone(), crate::nav::NavConfig::default())
+            .with_capabilities(session.capabilities());
         let end = match crate::farm::look_around(&session, "the where look").await {
             Err(e) => crate::farm::Phase::Failed { why: e.to_string() },
             Ok(seen) => {

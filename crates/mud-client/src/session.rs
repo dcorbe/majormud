@@ -11,6 +11,7 @@
 //! inside the broadcast — so a fresh subscriber (every phase handoff
 //! makes one) inherits correct attribution instead of a private guess.
 
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -24,8 +25,10 @@ use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::correlate::{CmdId, Correlated, Correlator};
 use crate::events::{Event, RoomView};
+use crate::graph::{Capabilities, TollLog};
 use crate::parse::Parser;
 use crate::profile::Profile;
+use crate::purse::PurseMeter;
 use crate::wire::{AnsiStripper, TelnetFilter, cp437_to_string};
 
 /// Send pacing: reserves evenly spaced slots at least `min` apart
@@ -191,6 +194,20 @@ impl TimingLog {
     }
 }
 
+/// The session's own [`PurseMeter`], plus the bookkeeping needed to feed
+/// it centrally instead of per-consumer.
+///
+/// `pending` names the [`CmdId`]s of our own `i` sends so the reader task
+/// can tell "this echo is the one owed a reply" from "this line just
+/// happens to read `i`" — the same distinction [`crate::nav::Navigator`]
+/// and `tui.rs` each track locally today, done once here so every caller
+/// shares one answer instead of running its own copy that goes stale the
+/// moment its `Navigator` is dropped.
+struct PurseTracker {
+    meter: PurseMeter,
+    pending: HashSet<CmdId>,
+}
+
 pub struct Session {
     cmd_tx: mpsc::UnboundedSender<Cmd>,
     shared: Arc<Shared>,
@@ -202,6 +219,16 @@ pub struct Session {
     /// Current send-pacing interval in ms, shared with the writer task.
     /// See [`Session::set_pace`].
     pace_ms: Arc<AtomicU64>,
+    /// The session's own running balance, kept current by the reader
+    /// task off whichever `i` reply arrives -- ours or a caller's.
+    purse: Arc<Mutex<PurseTracker>>,
+    /// Which `(room, direction)` toll crossings this session has
+    /// personally measured free. `Arc` so every [`Navigator`] built over
+    /// this session's lifetime shares the same memory: a fact learned on
+    /// one leg (a farm stop, a `/go`) must still be known on the next.
+    ///
+    /// [`Navigator`]: crate::nav::Navigator
+    toll_log: Arc<TollLog>,
 }
 
 impl Session {
@@ -221,6 +248,11 @@ impl Session {
         let (raw_tx, _) = broadcast::channel(8192);
         let (state_tx, state_rx) = watch::channel(GameState::default());
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<Cmd>();
+        let purse = Arc::new(Mutex::new(PurseTracker {
+            meter: PurseMeter::default(),
+            pending: HashSet::new(),
+        }));
+        let toll_log = Arc::new(TollLog::default());
 
         let mut raw_file = match &capture {
             Some(c) => Some(File::create(&c.raw)?),
@@ -301,6 +333,7 @@ impl Session {
             let raw_tx = raw_tx.clone();
             let cmd_tx = cmd_tx.clone();
             let correlator = Arc::clone(&correlator);
+            let purse = Arc::clone(&purse);
             tokio::spawn(async move {
                 let mut filter = TelnetFilter::new();
                 let mut stripper = AnsiStripper::new();
@@ -337,6 +370,7 @@ impl Session {
                         for ev in batch {
                             let cor = guard.on_event(ev, Instant::now());
                             state_tx.send_if_modified(|s| apply_event(s, &cor));
+                            feed_purse(&purse, &cor);
                             let _ = events_tx.send(cor);
                         }
                     }
@@ -356,6 +390,7 @@ impl Session {
                     for ev in tail {
                         let cor = guard.on_event(ev, Instant::now());
                         state_tx.send_if_modified(|s| apply_event(s, &cor));
+                        feed_purse(&purse, &cor);
                         let _ = events_tx.send(cor);
                     }
                 }
@@ -375,6 +410,8 @@ impl Session {
             profile: profile.clone(),
             next_id: AtomicU64::new(1),
             pace_ms,
+            purse,
+            toll_log,
         })
     }
 
@@ -409,9 +446,19 @@ impl Session {
     /// lines, and a trailing space must not defeat echo matching.
     pub fn send(&self, line: &str) -> CmdId {
         let id = CmdId(self.next_id.fetch_add(1, Ordering::Relaxed));
+        let trimmed = line.trim();
+        // Name this id as an inventory ask BEFORE it goes out, mirroring
+        // `sent`'s own registration-before-write rule: the reader task
+        // must never be able to see the echo before it knows to expect
+        // one. `i` is the board's own inventory verb — see
+        // `PurseMeter::expect_reply` for why the echo, not the reply, is
+        // what arms the meter.
+        if trimmed.eq_ignore_ascii_case("i") {
+            self.purse.lock().expect("purse lock").pending.insert(id);
+        }
         let _ = self.cmd_tx.send(Cmd::Line {
             id,
-            line: line.trim().to_string(),
+            line: trimmed.to_string(),
             moves: false,
         });
         id
@@ -523,6 +570,41 @@ impl Session {
 
     pub fn state(&self) -> watch::Receiver<GameState> {
         self.state_rx.clone()
+    }
+
+    /// What the walker can currently bring to bear, as this session knows it.
+    ///
+    /// The toll log is shared by Arc deliberately: a fact learned on one
+    /// leg must outlive the `Navigator` that learned it, or the walk
+    /// relearns (and re-pays) the same toll on every crossing. The purse
+    /// is a snapshot of this session's own [`PurseMeter`], kept current
+    /// off the event stream by whichever `i` a caller (or this session's
+    /// own navigators) has already sent — never sent on `capabilities`'
+    /// own account, so asking costs nothing and can go stale between real
+    /// inventory checks.
+    pub fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            purse: self.purse.lock().expect("purse lock").meter.current(),
+            tolls_known_free: Arc::clone(&self.toll_log),
+        }
+    }
+}
+
+/// Feed one correlated event to the session's own purse meter: arm it on
+/// the echo of one of OUR `i` sends (named in `pending` before the bytes
+/// left, same as [`Correlator::sent`]), and otherwise offer the line as
+/// the reply owed to whichever ask is still open. A no-op line when
+/// nothing is pending, same as [`PurseMeter::observe`] itself.
+fn feed_purse(purse: &Mutex<PurseTracker>, cor: &Correlated) {
+    let Event::Line(line) = &cor.event else {
+        return;
+    };
+    let mut tracker = purse.lock().expect("purse lock");
+    let is_our_echo = cor.answers.is_some_and(|id| tracker.pending.remove(&id));
+    if is_our_echo {
+        tracker.meter.expect_reply();
+    } else {
+        tracker.meter.observe(line);
     }
 }
 
