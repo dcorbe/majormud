@@ -392,44 +392,25 @@ impl MapView {
         ViewAction::Continue
     }
 
-    /// Move the cursor to the nearest room that way, skipping the gaps.
+    /// Move the cursor one cell.
     ///
-    /// The map is mostly empty space — streets are thin and the plane is
-    /// wide — so a cursor that stepped one cell per press spent most of
-    /// its life on nothing, with a blank panel and no way to tell where
-    /// it had got to. Snapping makes "where is the cursor" unanswerable
-    /// by construction: it is always on a room.
+    /// This used to snap to the nearest room in the pressed direction,
+    /// ranking candidates by deviation off the axis. It read well and
+    /// drove badly: a press travelled an unpredictable distance and
+    /// often landed somewhere nobody was aiming.
     ///
-    /// Candidates are ranked by how far OFF the axis they sit first and
-    /// how far along it second, so a straight run east prefers the next
-    /// room in the same row, and a street that jogs one row over is still
-    /// found. Scanning only the exact row would strand the cursor the
-    /// moment a corridor stopped being straight.
+    /// A cell cursor cannot get lost the way the snap's rationale
+    /// feared. `map::render` paints the cursor last and unconditionally,
+    /// empty cells included, and `map::under_cursor` puts a floor under
+    /// the reversed colour so it stays visible on dark ground. Standing
+    /// on nothing leaves the side panel with nothing to describe, and
+    /// that is the accepted cost of aiming precisely.
     ///
-    /// Nothing that way means no move. The cursor visibly staying put is
-    /// a clearer answer than drifting into the void.
+    /// `follow` scrolls the viewport once the cursor reaches the margin,
+    /// so holding a direction pans the canvas.
     fn step(&mut self, dx: i32, dy: i32) {
-        let (cx, cy) = self.cursor;
-        let best = self
-            .plane
-            .rooms()
-            .filter_map(|id| self.plane.cell_of(id))
-            .filter_map(|(x, y)| {
-                let (vx, vy) = (x - cx, y - cy);
-                // Distance ALONG the direction and deviation OFF it, as a
-                // dot and a cross product. One formula for all eight
-                // directions: for east it reads as (dx, |dy|), for
-                // south-east as (dx+dy, |dx-dy|), and a room exactly on
-                // the diagonal deviates by zero as it should.
-                let along = vx * dx + vy * dy;
-                let off = (vx * dy - vy * dx).abs();
-                (along > 0).then_some(((off, along), (x, y)))
-            })
-            .min_by_key(|(rank, _)| *rank);
-        if let Some((_, cell)) = best {
-            self.cursor = cell;
-            self.follow();
-        }
+        self.cursor = (self.cursor.0 + dx, self.cursor.1 + dy);
+        self.follow();
     }
 
     /// Follow the up or down exit out of the room under the cursor.

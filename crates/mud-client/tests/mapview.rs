@@ -81,98 +81,80 @@ fn it_opens_on_the_room_it_was_given() {
     assert_eq!(v.paint(), Paint::Terrain);
 }
 
-/// Arrows move ROOM to room, never onto the space between them.
+/// One press, one cell. The cursor moves the canvas rather than hopping
+/// between rooms.
 ///
-/// The map is mostly gaps — streets are thin and the plane is wide — so
-/// a cursor that stepped one cell at a time spent most of its life on
-/// nothing, with the panel blank and no idea where it had got to. Every
-/// press lands somewhere real or does not move at all.
+/// It used to snap to the nearest room in the pressed direction, ranking
+/// candidates by how far OFF the axis they sat. That made a press land
+/// an unpredictable distance away, and often somewhere the operator was
+/// not aiming — hard to drive in practice, which is why it was reverted.
+///
+/// The original objection to a cell cursor was that it "spent most of
+/// its life on nothing" and vanished. It cannot vanish: `render` paints
+/// the cursor last and unconditionally, over empty cells included, and
+/// `under_cursor` puts a floor under the reversed colour. The panel
+/// being blank over a gap is the accepted cost of aiming precisely.
 #[test]
-fn the_cursor_moves_room_to_room() {
+fn one_press_moves_the_cursor_exactly_one_cell() {
     let mut v = view();
-    let start = v.cursor_room().expect("starts on a room");
-    for code in [
-        KeyCode::Right,
-        KeyCode::Down,
-        KeyCode::Char('h'),
-        KeyCode::Char('k'),
-        KeyCode::Left,
-        KeyCode::Up,
+    for (code, (dx, dy)) in [
+        (KeyCode::Right, (1, 0)),
+        (KeyCode::Left, (-1, 0)),
+        (KeyCode::Down, (0, 1)),
+        (KeyCode::Up, (0, -1)),
+        (KeyCode::Char('l'), (1, 0)),
+        (KeyCode::Char('h'), (-1, 0)),
+        (KeyCode::Char('j'), (0, 1)),
+        (KeyCode::Char('k'), (0, -1)),
+        (KeyCode::Char('y'), (-1, -1)),
+        (KeyCode::Char('u'), (1, -1)),
+        (KeyCode::Char('b'), (-1, 1)),
+        (KeyCode::Char('n'), (1, 1)),
     ] {
+        let from = v.cursor();
         press(&mut v, code);
-        assert!(
-            v.cursor_room().is_some(),
-            "{code:?} put the cursor on nothing at {:?}",
-            v.cursor()
-        );
-    }
-    let _ = start;
-}
-
-/// The whole point: a gap in a row is jumped, not landed in.
-#[test]
-fn a_gap_is_jumped_rather_than_stepped_into() {
-    let mut v = view();
-    let from = v.cursor();
-    press(&mut v, KeyCode::Right);
-    let to = v.cursor();
-    assert!(to.0 > from.0, "moved east");
-    assert!(v.plane().room_at(to).is_some());
-    // Every cell strictly between the two is empty, or it would have
-    // stopped there.
-    for x in (from.0 + 1)..to.0 {
         assert_eq!(
-            v.plane().room_at((x, from.1)),
-            None,
-            "stopped short of a room at ({x}, {})",
-            from.1
+            v.cursor(),
+            (from.0 + dx, from.1 + dy),
+            "{code:?} should move exactly one cell"
         );
     }
 }
 
-/// A street that jogs must not dead-end the cursor. Scanning only the
-/// exact row would strand it the moment the next room sat one row over.
+/// A cell with no room in it is a place the cursor may stand. The snap
+/// made this impossible by construction; it is now ordinary.
 #[test]
-fn movement_finds_a_room_that_is_not_on_the_same_row() {
+fn the_cursor_may_stand_on_empty_space() {
     use mud_client::graph::{ExitEdge, GraphRoom};
-    let here = RoomId { map: 1, room: 1 };
-    let jog = RoomId { map: 1, room: 2 };
-    let mut a = GraphRoom {
-        name: "Here".into(),
+    // Two rooms two cells apart on the same row: A --east--> C is not
+    // possible in one step, so build A -e-> B -e-> C and walk past C.
+    let a = RoomId { map: 1, room: 1 };
+    let b = RoomId { map: 1, room: 2 };
+    let mut ra = GraphRoom {
+        name: "A".into(),
         ..Default::default()
     };
-    // The only other room is south-east: nothing at all lies due east.
-    a.exits[Direction::SouthEast as usize] = Some(ExitEdge {
-        dest: jog,
+    ra.exits[Direction::East as usize] = Some(ExitEdge {
+        dest: b,
         exit_type: 0,
         command: None,
     });
     let g = std::sync::Arc::new(RoomGraph::from_rooms(vec![
-        (here, a),
+        (a, ra),
         (
-            jog,
+            b,
             GraphRoom {
-                name: "Jog".into(),
+                name: "B".into(),
                 ..Default::default()
             },
         ),
     ]));
-    let mut v = MapView::new(g, spawns(), here, Fix::Unknown, PaintCtx::default(), (100, 30));
+    let mut v = MapView::new(g, spawns(), a, Fix::Unknown, PaintCtx::default(), (100, 30));
+    // A is at (0,0) and B at (1,0); (2,0) is empty.
     press(&mut v, KeyCode::Right);
-    assert_eq!(v.cursor_room(), Some(jog), "east should reach the jog");
-}
-
-#[test]
-fn movement_with_nothing_that_way_stays_put() {
-    let mut v = view();
-    // Far west of the slum plane there is nothing further west.
-    for _ in 0..80 {
-        press(&mut v, KeyCode::Left);
-    }
-    let stuck = v.cursor();
-    press(&mut v, KeyCode::Left);
-    assert_eq!(v.cursor(), stuck, "nowhere further west to go");
-    assert!(v.cursor_room().is_some(), "and still on a room");
+    press(&mut v, KeyCode::Right);
+    assert_eq!(v.cursor(), (2, 0));
+    assert_eq!(v.cursor_room(), None, "standing on nothing is allowed");
 }
 
 #[test]
