@@ -438,3 +438,71 @@ fn a_crowbarred_door_becomes_a_puzzle_not_a_door() {
         "the shipped world has exactly 10 Puzzle-classified (non-Hidden) exits"
     );
 }
+
+/// `Toll` and the `Hidden` partition are pinned exactly elsewhere; this
+/// pins the six remaining classifications the same way, so a typo in a
+/// type number (`0x15` for `0x14`, say) cannot hide silently.
+///
+/// The expected counts are measurements, not derived by calling
+/// `from_exit_type` -- that would only prove the loader agrees with
+/// itself. They come from grouping `roomtype_1..10` directly against
+/// `re/mmud_wgnt.sqlite`, over exit slots the loader actually keeps
+/// (`roomexit_d > 0`, room's own `mapnumber` in 1..=999 and `roomnumber`
+/// >= 1), then mapping raw types to variants the same way
+/// `from_exit_type` does:
+///
+/// ```sql
+/// WITH exits AS (
+///   SELECT roomtype_1 AS rt, roomexit_1 AS rx FROM room
+///     WHERE mapnumber BETWEEN 1 AND 999 AND roomnumber >= 1
+///   UNION ALL SELECT roomtype_2, roomexit_2 FROM room ... -- through _10
+/// )
+/// SELECT rt, COUNT(*) FROM exits WHERE rx > 0 GROUP BY rt ORDER BY rt;
+/// ```
+///
+/// which measured (raw type -> populated-slot count): 0=57045, 2=73,
+/// 3=194, 4=57, 5=222, 6=1383, 7=1604, 8=296, 9=273, 10=250, 11=164,
+/// 12=284, 13=50, 14=2, 15=28, 16=2, 17=1, 19=94, 20=13, 22=290, 23=5,
+/// 24=22 -- summing to all 62,352 populated exit slots, confirming
+/// nothing was dropped by the grouping.
+///
+/// Door = types 2, 7, 0xb(11): 73 + 1604 + 164 = 1841 raw. But the
+/// Puzzle pass above overwrites 10 of those (7 from type 7, 3 from type
+/// 0xb -- confirmed by grouping the loaded graph's Puzzle-classified
+/// edges by their retained `exit_type`) with `Puzzle`, so the classified
+/// world has 1841 - 10 = 1831 `Door` edges, not the raw count. Trap =
+/// types 9, 0x18(24): 273 + 22 = 295, untouched by any remoteaction
+/// (they never target a Trap exit). Gate = types 0x14(20), 0x16(22),
+/// 0x17(23): 13 + 290 + 5 = 308, likewise untouched. Timed = type
+/// 0x10(16): 2. Command = type 10: 250. None = every other raw type (0,
+/// 3, 5, 8, 12, 13, 14, 15, 17, 19): 57045 + 194 + 222 + 296 + 284 + 50
+/// + 2 + 28 + 1 + 94 = 58216.
+#[test]
+fn the_remaining_classifications_have_exact_counts() {
+    let g = graph();
+    let mut door = 0usize;
+    let mut trap = 0usize;
+    let mut gate = 0usize;
+    let mut timed = 0usize;
+    let mut command = 0usize;
+    let mut none = 0usize;
+    for (_, room) in g.iter() {
+        for edge in room.exits.iter().flatten() {
+            match edge.requirement {
+                ExitRequirement::Door => door += 1,
+                ExitRequirement::Trap => trap += 1,
+                ExitRequirement::Gate => gate += 1,
+                ExitRequirement::Timed => timed += 1,
+                ExitRequirement::Command => command += 1,
+                ExitRequirement::None => none += 1,
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(door, 1831, "1841 raw type-{{2,7,0xb}} exits minus 10 taken by Puzzle");
+    assert_eq!(trap, 295, "273 type-9 + 22 type-0x18");
+    assert_eq!(gate, 308, "13 type-0x14 + 290 type-0x16 + 5 type-0x17");
+    assert_eq!(timed, 2, "2 type-0x10 exits");
+    assert_eq!(command, 250, "250 type-10 command exits");
+    assert_eq!(none, 58216, "every unclassified raw type, summed");
+}

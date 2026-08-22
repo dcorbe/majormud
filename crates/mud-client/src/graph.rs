@@ -67,8 +67,22 @@ pub enum ExitRequirement {
     Gate,
     /// Opens and shuts on a timer of its own. Type 0x10, 2 of them.
     Timed,
-    /// Concealed by a bit-word that `remoteaction` scripts clear. Filled
-    /// in by the cmdtext pass; see the `Puzzle` task.
+    /// Concealed by a bit-word that one or more `remoteaction` scripts
+    /// clear, each recorded in `actions`. Computed by the load-time
+    /// cmdtext pass, which cross-references every room's `remoteaction`
+    /// directives against their target exits (see
+    /// `RoomGraph::load_remote_actions`).
+    ///
+    /// The pass overwrites whatever `from_exit_type` classified the
+    /// target exit as. On the shipped world that replaces `Door` on 10
+    /// exits (lever-opened gates) and downgrades `Hidden { searchable:
+    /// true }` to `Hidden { searchable: false }` on 15 more -- but
+    /// nothing about the target is lost: `ExitEdge::exit_type` still
+    /// holds the raw type alongside `requirement`. A caller that needs
+    /// to know a puzzle-gated exit is ALSO a door -- to route a walker
+    /// past the gate by picking or bashing it instead of solving the
+    /// puzzle -- recovers that with
+    /// `nav::is_door(edge.exit_type) && matches!(edge.requirement, Puzzle { .. })`.
     Puzzle { actions: Vec<PuzzleAction> },
 }
 
