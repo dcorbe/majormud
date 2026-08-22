@@ -29,6 +29,7 @@ pub mod script;
 pub mod session;
 pub mod sheet;
 pub mod spawn;
+pub mod stats;
 pub mod tui;
 pub mod wire;
 pub mod world;
