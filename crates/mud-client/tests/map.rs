@@ -901,6 +901,18 @@ fn a_square_loop_with_no_diagonal_exits_draws_no_diagonal() {
     let plane = layout(&RoomGraph::from_rooms(rooms), a);
     for zoom in [Zoom::Detail, Zoom::Normal] {
         let frame = drawn(&plane, zoom);
+        // The square's four real sides (A-B, A-C, B-D, C-D) must still be
+        // drawn -- this test only proves the diagonals are honestly
+        // absent if the orthogonal sides they could have been confused
+        // with are honestly present.
+        assert!(
+            frame.contains('\u{2500}'),
+            "{zoom:?} lost a horizontal side of the square:\n{frame}"
+        );
+        assert!(
+            frame.contains('\u{2502}'),
+            "{zoom:?} lost a vertical side of the square:\n{frame}"
+        );
         for glyph in ['\u{2573}', '\u{2572}', '\u{2571}'] {
             assert!(
                 !frame.contains(glyph),
@@ -963,8 +975,8 @@ fn adjacent_rooms_with_no_exit_between_them_are_not_joined() {
     assert_eq!(frame.matches('\u{2572}').count(), 1, "A-D:\n{frame}");
 }
 
-/// The pin: over the shipped world, every edge the PLANE RECORDED is an
-/// exit that exists.
+/// The pin: over the shipped world, `Plane::has_edge` agrees with the
+/// graph exactly -- in both directions.
 ///
 /// This is a layout-layer census. It reads `Plane::has_edge` and never
 /// renders, so it cannot see a `connectors()` regression -- the render
@@ -973,10 +985,19 @@ fn adjacent_rooms_with_no_exit_between_them_are_not_joined() {
 /// as covering what is drawn; an earlier version of this comment said it
 /// did, and that claim is what let the wrong-layer gap hide.
 ///
-/// What it does cover is the case no example test reaches: a conflicting
-/// exit recorded as an edge. `layout()` places rooms by BFS and a
-/// disagreeing destination must NOT be recorded, or the line would point
-/// at the wrong room.
+/// Two halves, checked together:
+///
+/// - **Nothing fabricated.** Every edge recorded (`has_edge` true) is
+///   backed by a real exit to the room the plane actually placed next
+///   door. This is the case no example test reaches: a conflicting exit
+///   recorded as an edge. `layout()` places rooms by BFS and a
+///   disagreeing destination must NOT be recorded, or the line would
+///   point at the wrong room.
+/// - **Nothing missing.** Every real exit whose destination the plane
+///   placed in the geographically correct adjacent cell IS recorded.
+///   `assert!(drawn > 3000, ...)` alone is a sanity floor, not a pin --
+///   losing every edge in one of eight compass directions would still
+///   clear it. Only this per-edge relation catches that.
 #[test]
 fn no_connector_in_the_shipped_world_is_fabricated() {
     // `graph()` is the file's existing OnceLock helper and already
@@ -991,16 +1012,13 @@ fn no_connector_in_the_shipped_world_is_fabricated() {
     assert!(plane.len() > 1000, "expected a large plane, got {}", plane.len());
 
     let mut fabricated = Vec::new();
+    let mut missing = Vec::new();
     let mut drawn = 0usize;
     for room in plane.rooms() {
         for dir in mud_client::graph::DIRECTIONS {
             let Some(step) = mud_client::map::step_of(dir) else {
                 continue; // up/down leave the plane
             };
-            if !plane.has_edge(room, dir) {
-                continue;
-            }
-            drawn += 1;
             let cell = plane.cell_of(room).expect("placed");
             let neighbour = plane.room_at((cell.0 + step.0, cell.1 + step.1));
             let real = g
@@ -1013,8 +1031,14 @@ fn no_connector_in_the_shipped_world_is_fabricated() {
                 })
                 .map(|e| Some(e.dest) == neighbour)
                 .unwrap_or(false);
-            if !real {
-                fabricated.push((room, dir));
+            let has_edge = plane.has_edge(room, dir);
+            if has_edge {
+                drawn += 1;
+                if !real {
+                    fabricated.push((room, dir));
+                }
+            } else if real {
+                missing.push((room, dir));
             }
         }
     }
@@ -1024,6 +1048,12 @@ fn no_connector_in_the_shipped_world_is_fabricated() {
         "{} of {drawn} connectors are not backed by an exit; first few: {:?}",
         fabricated.len(),
         &fabricated[..fabricated.len().min(5)]
+    );
+    assert!(
+        missing.is_empty(),
+        "{} real exits to a genuinely adjacent room were not recorded as edges; first few: {:?}",
+        missing.len(),
+        &missing[..missing.len().min(5)]
     );
 }
 
