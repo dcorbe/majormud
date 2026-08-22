@@ -205,7 +205,12 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     // socket opened (live, 2026-08-01). Nothing sent on a timer may
     // assume a game is running.
     let mut in_realm = false;
-    let started = std::time::Instant::now();
+    // Named apart from the job-handle `started` bound inside the Farm
+    // and Go match arms below (`Ok(started) => { job = Some(started); }`)
+    // on purpose: a reset written as `started = Instant::now()` inside
+    // those arms would silently assign the SHADOWED job binding instead
+    // of this clock, compile cleanly, and reset nothing.
+    let mut exp_since = std::time::Instant::now();
     let (graph, nav, spawns) = finish_locator(locator(session.profile()), &session);
 
     // Key events come from a blocking reader thread.
@@ -220,7 +225,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
 
     let mut out = std::io::stdout();
     setup_region(&mut out, rows)?;
-    repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
+    repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
 
     let result = loop {
         tokio::select! {
@@ -231,7 +236,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                     out.write_all(b"\x1b8")?;
                     out.write_all(&bytes)?;
                     out.write_all(b"\x1b7")?;
-                    repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
+                    repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(_) => break Ok(()), // disconnected
@@ -257,7 +262,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                         exp.observe(line);
                         if exp.total() != before {
                             repaint(&mut out, &state_rx, target, job.as_ref(), here,
-                                    exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
+                                    exp.per_minute(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
                         }
                         // The carried balance is the session's own
                         // answer now (`Session::capabilities`), fed
@@ -306,7 +311,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                         model.note_room(id);
                     }
                 }
-                repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
+                repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
             }
             // The bar must follow the runner, not just HP: travelling and
             // fighting can pass without a single point of damage.
@@ -350,7 +355,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                     }
                     note(&mut out, &format!("-- {what} ended: {why} --"))?;
                 }
-                repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
+                repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
             }
             _ = level_tick.tick() => {
                 // Only while a game is actually running — see `in_realm`.
@@ -369,7 +374,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                         cols = w;
                         rows = h;
                         setup_region(&mut out, rows)?;
-                        repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
+                        repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
                     }
                     TermEvent::Key(key) if key.kind != KeyEventKind::Release => {
                         let was = passthrough;
@@ -397,6 +402,14 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                 } else {
                                     match start_farm(session.clone(), loop_name.as_deref()) {
                                         Ok(started) => {
+                                            // Fresh figures for a fresh
+                                            // job: the total and the
+                                            // clock it is divided by
+                                            // reset together, or the
+                                            // rate reads as a spike or a
+                                            // sink instead of the truth.
+                                            exp.reset();
+                                            exp_since = std::time::Instant::now();
                                             note(&mut out, &match &loop_name {
                                                 Some(n) => format!("-- farming loop {n:?} (Ctrl-F to take over) --"),
                                                 None => "-- farm running (Ctrl-F to take over) --".to_string(),
@@ -441,6 +454,11 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                                     assist_config.clone(),
                                                     assist.is_some(),
                                                 );
+                                                // See the StartFarm arm
+                                                // above: total and clock
+                                                // reset together.
+                                                exp.reset();
+                                                exp_since = std::time::Instant::now();
                                                 note(&mut out, &format!(
                                                     "-- {how} to {name} [{}/{}]{steps} (Ctrl-F to take over) --",
                                                     to.map, to.room
@@ -641,7 +659,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                             out.write_all(note.as_bytes())?;
                             out.write_all(b"\x1b7")?;
                         }
-                        repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(started.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
+                        repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
                     }
                     _ => {}
                 }

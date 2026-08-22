@@ -5,7 +5,7 @@
 //! it ran. These pin what an operator watching a run should see.
 
 use mud_client::events::{Actor, Event, RoomView};
-use mud_client::progress::ProgressView;
+use mud_client::progress::{ExpMeter, ProgressView};
 
 fn room(name: &str, also_here: &[&str]) -> Event {
     Event::RoomSeen(RoomView {
@@ -104,4 +104,21 @@ fn ordinary_prose_is_quiet_by_default() {
         view.on_event(&Event::Line("The floor is littered with bones.".into()))
             .is_none()
     );
+}
+
+/// `/go` and `/farm` reset the exp meter so the rate they report is
+/// about the job just started, not diluted by whatever the session
+/// earned before it. The total is the pure half of that fix — see
+/// `ExpMeter::reset`'s doc comment for why the caller must also restart
+/// the elapsed clock, which has no test harness here.
+#[test]
+fn reset_zeroes_the_running_total() {
+    let mut meter = ExpMeter::default();
+    meter.observe("You gain 16 experience.");
+    meter.observe("You gain 4 experience.");
+    assert_eq!(meter.total(), 20);
+    meter.reset();
+    assert_eq!(meter.total(), 0);
+    meter.observe("You gain 7 experience.");
+    assert_eq!(meter.total(), 7, "still counts normally after a reset");
 }

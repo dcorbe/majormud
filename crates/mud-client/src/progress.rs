@@ -173,6 +173,17 @@ impl ExpMeter {
         self.total
     }
 
+    /// Zero the running total. A long `/go` or `/farm` dilutes the
+    /// lifetime-of-session rate with minutes that earned nothing before
+    /// the job even started; resetting the total here is only half the
+    /// fix — the caller must also restart the elapsed clock it feeds to
+    /// [`Self::per_minute`], or the rate reads as a spike (old total
+    /// over a near-zero elapsed) instead of the fresh figure this exists
+    /// to produce.
+    pub fn reset(&mut self) {
+        self.total = 0;
+    }
+
     /// Experience per minute over `elapsed`, or `None` when too little
     /// time has passed for the figure to mean anything — which is a
     /// better answer than a number produced by dividing by nearly zero.
