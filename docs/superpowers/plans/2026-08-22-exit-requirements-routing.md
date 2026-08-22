@@ -746,6 +746,75 @@ to re-cross."
 
 ---
 
+### Task 6: Wire the session's capabilities into the walkers
+
+**Files:**
+- Modify: `crates/mud-client/src/session.rs` (own the shared state, expose `capabilities()`)
+- Modify: `crates/mud-client/src/go.rs:228`, `crates/mud-client/src/farm.rs:1619`, `crates/mud-client/src/farm.rs:1787`, `crates/mud-client/src/tui.rs:1425`, `crates/mud-client/src/tui.rs:1591`
+- Test: `crates/mud-client/tests/nav_toll.rs` or a sibling
+
+**Interfaces:**
+- Consumes: `PurseMeter` (Task 4), `Capabilities` / `TollLog` (Tasks 2, 5), `Navigator::with_capabilities` (Task 5).
+- Produces: `Session::capabilities() -> Capabilities`.
+
+**Why this task exists.** It was not in the plan as written, and without it the plan delivers nothing observable. Tasks 1-5 build a purse, a state-aware cost, a router that consults it, and a toll-direction learner — and **no production code path passes real capabilities to any of it.** All five `Navigator::new` sites take the `Capabilities::unrestricted()` default, so on a live board the router still walks the Silvermere gate paying the toll every time, forever, and the `TollLog` that learned it was free is dropped with the `Navigator`.
+
+The task-5 review confirmed the shape of the gap precisely: it is pure omission, not friction. The tests drive the same `route_for`/`record()` code production would; `with_capabilities` is a plain builder; `Capabilities` is `Clone` and `TollLog` is already an `Arc` designed to be shared. The only undecided thing is **where a persistent one lives**.
+
+**Where it lives: the `Session`.** It outlives every `Navigator` built during a connection, which is exactly the lifetime a learned toll fact needs. A fact learned by a farm leg must still be known to the next `go`.
+
+- [ ] **Step 1: Read first, and report if the shape does not fit**
+
+Read `crates/mud-client/src/session.rs` around `pub struct Session` (line ~194) and find where it publishes events (`events()` is consumed in `tui.rs`). `PurseMeter` needs to observe that stream to stay current.
+
+**If `Session` cannot observe its own event stream without restructuring** — for example if events are broadcast to consumers and never seen centrally — stop and report `NEEDS_CONTEXT` with what you found. Do not restructure the session's event plumbing to fit this feature; that is a much larger decision than this task.
+
+- [ ] **Step 2: Give the session the shared state**
+
+`Session` owns an `Arc<TollLog>` and a `PurseMeter` behind whatever lock the surrounding code already uses, feeds the meter from the event stream, and exposes:
+
+```rust
+/// What the walker can currently bring to bear, as this session knows it.
+///
+/// The toll log is shared by Arc deliberately: a fact learned on one leg
+/// must outlive the `Navigator` that learned it, or the walk relearns
+/// (and re-pays) the same toll on every crossing.
+pub fn capabilities(&self) -> crate::graph::Capabilities
+```
+
+- [ ] **Step 3: Wire the five call sites**
+
+Each becomes `Navigator::new(graph, cfg).with_capabilities(session.capabilities())`. Check each site actually has a `&Session` in scope; if one does not, say so rather than threading one through on your own initiative.
+
+- [ ] **Step 4: The test that proves it is wired**
+
+The existing tests prove the mechanism. This one must prove the *connection*: build a session, drive a walk that crosses a non-charging toll edge, then assert a **second, freshly-constructed** `Navigator` from the same session already knows that edge is free.
+
+That is the property the whole task exists for, and it is the one that fails today.
+
+- [ ] **Step 5: Mutate**
+
+Revert one call site to plain `Navigator::new(...)` and confirm the Step 4 test fails. If it still passes, the test is not proving the connection.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git commit -m "feat(session): give the walkers the session's real capabilities
+
+Tasks 1-5 built a purse, a state-aware cost, a router that consults it
+and a toll-direction learner, and nothing production-side passed any of
+it in: every Navigator took the unrestricted() default. On a live board
+the router walked the Silvermere gate paying the toll every time and
+dropped the TollLog that had just learned it was free.
+
+The session owns the shared state because it outlives every Navigator
+built during a connection, which is the lifetime a learned toll fact
+needs -- a fact learned on a farm leg must still be known to the next
+go."
+```
+
+---
+
 ## Self-Review
 
 **Spec coverage.** Purse in farthings → Task 1. `Capabilities` + `Cost` + cost-not-prohibition → Task 2. Success criterion 1 (routing changes with state) → Task 3. Success criterion 4 (nothing refused for being merely expensive) → Task 3's `an_expensive_route_is_still_found`. Toll-direction learning → Task 4. Spec tests 1, 2 → Tasks 2 and 3. Spec test 7 (purse round trip) → Task 1. Spec test 8 (observed-toll learning) → Task 4.
@@ -761,6 +830,7 @@ success criterion 1 could only ever be exercised with a hand-constructed
 
 **Known gaps, stated rather than hidden:**
 
+- **Task 6 was added during execution** to close a gap the plan shipped with: Tasks 1-5 built the machinery and nothing passed real capabilities to it, leaving the feature inert on a live board.
 - **Success criterion 3 — "a route that fails at a gate reports *which* gate" — has no task.** `Cost::Impassable` currently loses the reason on the way out of Dijkstra. Doing it properly means `route_for` returning a refusal reason rather than `Option`, which touches every caller, and it is worth its own plan rather than a rushed fourth task here. This is a deliberate deferral of a spec criterion and must not be reported as complete.
 - **Task 5's purse reading is now supplied by Task 4** rather than assumed. Task 4's own Step 1 still requires checking that the correlator can attribute an inventory reply, and reporting `NEEDS_CONTEXT` rather than inventing an attribution — a purse that is wrong is worse than one that is absent, because the router acts on it.
 - **Migration is incomplete by construction.** Task 3 leaves every existing caller on `Capabilities::unrestricted()`. Task 4 migrates the walking path. Any caller still unrestricted afterwards is a known gap.
