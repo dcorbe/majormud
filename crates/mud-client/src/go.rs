@@ -176,12 +176,20 @@ pub fn go_config(base: &FarmConfig, walking: bool) -> FarmConfig {
         // `interrupt_at_percent` still guards the leg once it is moving,
         // and anyone who wants to rest first can type `rest`.
         depart_at_percent: 0,
-        // `open` is tried first and costs nothing, so this only changes
-        // what happens at a genuinely LOCKED door. Bashing there is
-        // minutes of silence — up to 60 failed rolls plus four times
-        // that in cooldown scolds — and a freshly-dead character has no
-        // weapon to do it with. An interactive command should fail
-        // loudly and let the operator decide to `bash` by hand.
+        // `open` is tried first and costs nothing; `picklock` follows and
+        // costs a command and no health, so both stay on for an
+        // interactive walk and `pick_locks` is inherited from the
+        // profile rather than forced here.
+        //
+        // BASHING is the one that is forced off. It is minutes of
+        // silence — up to 60 failed rolls plus four times that in
+        // cooldown scolds — it charges HP per swing, and a freshly-dead
+        // character has no weapon to do it with. A locked door that
+        // resists picking now stops with `DoorLocked`, which names the
+        // door and the direction, so the operator can decide to `bash`
+        // by hand. That is the "fail loudly" this always meant: it used
+        // to report a TIMEOUT for an instant, known refusal, which read
+        // as though the client had hung (live, beef.raw 2026-08-22).
         nav: crate::nav::NavConfig {
             bash_doors: false,
             ..base.nav.clone()

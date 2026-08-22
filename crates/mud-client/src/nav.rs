@@ -49,6 +49,23 @@ pub enum NavErrorKind {
     /// and could not be re-localized among neighbors.
     Desync { expected: String, saw: String },
     Expect(ExpectError),
+    /// The door in the way is locked and nothing in this walk's
+    /// repertoire opened it.
+    ///
+    /// Its own variant rather than a timeout, because it is neither: the
+    /// board answered immediately and said exactly what was wrong. It
+    /// shipped as `Expect(Timeout { needle: "room block after movement" })`,
+    /// which told the operator the client had hung waiting for movement
+    /// when in fact it had been told "The door is locked." a second
+    /// earlier (live, beef.raw 2026-08-22). A walk that stops must say
+    /// something the operator can act on.
+    DoorLocked {
+        /// The direction the door sits in, as the board words it.
+        dir: String,
+        /// What the walk actually tried, so "locked" and "locked and I
+        /// was not allowed to try anything" are distinguishable.
+        tried: String,
+    },
     /// A [`TravelGuard`] decided that walking had become the wrong thing
     /// to be doing.
     Interrupted(Interrupt),
@@ -122,6 +139,9 @@ impl std::fmt::Display for NavError {
                 write!(f, "desync: expected {expected:?}, saw {saw:?}")
             }
             NavErrorKind::Expect(e) => write!(f, "{e}"),
+            NavErrorKind::DoorLocked { dir, tried } => {
+                write!(f, "the door {dir} is locked ({tried})")
+            }
             NavErrorKind::Interrupted(i) => write!(f, "travel interrupted: {i:?}"),
         }
     }
@@ -149,6 +169,20 @@ pub struct NavConfig {
     /// ("You take %d damage for bashing the door!") and refuses outright
     /// without a weapon.
     pub bash_doors: bool,
+    /// Pick a locked door rather than breaking it.
+    ///
+    /// On by default, and tried BEFORE bashing: a roll against the
+    /// character's Picklocks costs one command and no health, where a
+    /// bash charges HP and needs a weapon. The 88-bash incident
+    /// (cwgaming 2026-08-03, 1/1119) burned 36 hp of a 75-hp character
+    /// on a type-7 lock that wanted Picklocks and was never going to
+    /// yield to force.
+    ///
+    /// A character with no Picklocks simply fails the roll, which costs
+    /// commands rather than health — so the switch exists for flood
+    /// control and for operators who would rather stop at a locked door,
+    /// not because picking can hurt.
+    pub pick_locks: bool,
     /// Reveal a hidden exit (type 6) with SEARCH instead of treating the
     /// board's refusal as a desync.
     ///
@@ -165,6 +199,7 @@ impl Default for NavConfig {
         NavConfig {
             step_timeout_ms: 15_000,
             bash_doors: true,
+            pick_locks: true,
             search_hidden: true,
         }
     }
@@ -343,6 +378,18 @@ const BASH_CARRIED_THROUGH: &str = "walk through";
 /// sixty rolls.
 const BASH_FAILED: &str = "bash through fail";
 
+/// The picklock roll's failure (`re/docs/theft.md` §8.2/§8.3): the skill
+/// check missed, or the exit was never pickable. Both mean the door is
+/// still shut, which is all the walk needs to decide whether to roll
+/// again. Success is already covered by [`DOOR_YIELDED`]'s "unlocked the
+/// door".
+const PICK_FAILED: &str = "skill fails you";
+
+/// Picking gets the same budget as bashing: it is the same kind of
+/// thing — a roll repeated until the lock gives or the count says why —
+/// and a thief who can open a door at all usually needs several tries.
+const PICK_RETRIES: u32 = BASH_RETRIES;
+
 /// The cooldown scold: the bash sat on the action timer and never
 /// rolled. It paces, it does not fail — counting it against the roll
 /// budget deflated twenty nominal rolls to a handful of real ones.
@@ -418,6 +465,8 @@ enum StepEvent {
     NoSuchExit,
     /// The bash roll came up short; the door still stands.
     BashFailed,
+    /// The picklock roll missed; the door is still shut.
+    PickFailed,
     /// The bash never rolled: it sat on the action timer.
     BashPaced,
     /// SEARCH revealed a hidden exit; the step is still owed.
@@ -450,6 +499,7 @@ pub struct Navigator {
     graph: Arc<RoomGraph>,
     step_timeout: std::time::Duration,
     bash_doors: bool,
+    pick_locks: bool,
     search_hidden: bool,
     /// The plane a fenced walk is confined to, alongside `fence`.
     plane: Option<u16>,
@@ -491,6 +541,7 @@ impl Navigator {
             graph,
             step_timeout: std::time::Duration::from_millis(cfg.step_timeout_ms),
             bash_doors: cfg.bash_doors,
+            pick_locks: cfg.pick_locks,
             search_hidden: cfg.search_hidden,
             fence: None,
             plane: None,
@@ -528,6 +579,11 @@ impl Navigator {
         // and the failure mode is measured in the character's health.
         // If a door is somehow reached, stop honestly instead.
         self.bash_doors = false;
+        // Picking is free where bashing is not, but the reasoning here
+        // is the region's rather than the character's: `roam::passable`
+        // holds that what is behind a door is not part of the area at
+        // all, so opening one by ANY means contradicts the fence.
+        self.pick_locks = false;
         self
     }
 
@@ -986,6 +1042,7 @@ impl Navigator {
             // completeness.
             StepEvent::BashFailed
             | StepEvent::BashPaced
+            | StepEvent::PickFailed
             | StepEvent::HiddenFound
             | StepEvent::HiddenMissed => {}
             // "There is no exit in that direction!" is what a HIDDEN exit
@@ -1046,6 +1103,7 @@ impl Navigator {
             // Unreachable for an open; kept for match completeness.
             StepEvent::BashFailed
             | StepEvent::BashPaced
+            | StepEvent::PickFailed
             | StepEvent::HiddenFound
             | StepEvent::HiddenMissed => {}
             StepEvent::NoSuchExit => {
@@ -1070,11 +1128,58 @@ impl Navigator {
             StepEvent::DoorBlocked => {}
         }
 
+        // Picking first: it is a roll like bashing, but it costs a
+        // command and no health, so where the character has the skill it
+        // is strictly the cheaper way through. A character without the
+        // skill just fails the roll.
+        if self.pick_locks {
+            let mut rolls = 0u32;
+            while rolls < PICK_RETRIES {
+                // Same reasoning as the bash loop: the guard IS the
+                // health backstop and must be heard between rolls.
+                if let Some(interrupt) = armed.take() {
+                    return Err(NavErrorKind::Interrupted(interrupt));
+                }
+                let picked = session.send(&format!("picklock {dir}"));
+                match self.wait_room(events, guard, armed, picked).await? {
+                    // "You unlocked the door." -- open, but we have not
+                    // moved yet, so the step is still owed.
+                    StepEvent::DoorYielded => {
+                        let again = session.send(dir);
+                        return self
+                            .arrival(here, expected, BlindContext::AfterMove, events, guard, armed, again)
+                            .await
+                            .map(StepOutcome::Arrived);
+                    }
+                    StepEvent::PickFailed => {
+                        rolls += 1;
+                    }
+                    // The cooldown scold paces the roll, it does not
+                    // spend it -- counting it would deflate the budget
+                    // exactly as it did for bashing (df861241).
+                    StepEvent::BashPaced => {}
+                    StepEvent::CombatBlocked => {
+                        return Err(NavErrorKind::Interrupted(Interrupt::Attacked {
+                            by: "combat".into(),
+                        }));
+                    }
+                    // Anything else means the door is not the story any
+                    // more; fall through to force rather than keep
+                    // rolling at something that is not answering.
+                    _ => break,
+                }
+            }
+        }
+
         if !self.bash_doors {
-            return Err(NavErrorKind::Expect(ExpectError::Timeout {
-                needle: "room block after movement".into(),
-                tail: "door is locked and bash_doors is off".into(),
-            }));
+            return Err(NavErrorKind::DoorLocked {
+                dir: dir.to_string(),
+                tried: if self.pick_locks {
+                    format!("{PICK_RETRIES} picks, bashing off")
+                } else {
+                    "picking and bashing both off".into()
+                },
+            });
         }
 
         let mut rolls = 0u32;
@@ -1088,6 +1193,8 @@ impl Navigator {
             }
             let bashed = session.send(&format!("bash {dir}"));
             match self.wait_room(events, guard, armed, bashed).await? {
+                // Attributable only to a pick, which this is not.
+                StepEvent::PickFailed => {}
                 // The roll came up short; the door still stands.
                 StepEvent::BashFailed => {
                     rolls += 1;
@@ -1139,10 +1246,10 @@ impl Navigator {
                 }
             }
         }
-        Err(NavErrorKind::Expect(ExpectError::Timeout {
-            needle: "room block after movement".into(),
-            tail: format!("door did not yield to {BASH_RETRIES} bashes"),
-        }))
+        Err(NavErrorKind::DoorLocked {
+            dir: dir.to_string(),
+            tried: format!("did not yield to {BASH_RETRIES} bashes"),
+        })
     }
 
     /// Reveal a hidden exit (type 6) the board has just denied, then walk
@@ -1212,7 +1319,8 @@ impl Navigator {
                 | StepEvent::DoorBlocked
                 | StepEvent::DoorYielded
                 | StepEvent::BashFailed
-                | StepEvent::BashPaced => {
+                | StepEvent::BashPaced
+                | StepEvent::PickFailed => {
                     rolls += 1;
                 }
             }
@@ -1252,6 +1360,7 @@ impl Navigator {
                 StepEvent::NoSuchExit
                 | StepEvent::BashFailed
                 | StepEvent::BashPaced
+                | StepEvent::PickFailed
                 | StepEvent::HiddenFound
                 | StepEvent::HiddenMissed => continue,
                 StepEvent::CombatBlocked => {
@@ -1414,6 +1523,9 @@ impl Navigator {
                     }
                     if line.contains(BASH_FAILED) {
                         return Ok(StepEvent::BashFailed);
+                    }
+                    if line.contains(PICK_FAILED) {
+                        return Ok(StepEvent::PickFailed);
                     }
                     if line.contains(BASH_PACED) {
                         return Ok(StepEvent::BashPaced);

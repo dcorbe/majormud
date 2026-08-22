@@ -145,6 +145,7 @@ enum Kind {
     Get,
     BuyHealing,
     Search,
+    Picklock,
     Opaque,
 }
 
@@ -183,6 +184,19 @@ fn kind_of(cmd: &str) -> Kind {
     }
     if cmd.starts_with("bash ") {
         return Kind::Bash;
+    }
+    // The thief's answer to a locked door. The board takes any prefix
+    // from `pi`, but only the DIRECTED form is ours: a bare `pick` and
+    // `pick up <thing>` are different commands with different replies,
+    // and classifying those here would leave an entry lingering to claim
+    // somebody else's line.
+    if cmd.starts_with("picklock ") {
+        return Kind::Picklock;
+    }
+    if let Some(rest) = cmd.strip_prefix("pick ") {
+        if DIRS.contains(&rest.trim()) {
+            return Kind::Picklock;
+        }
     }
     // Only the DIRECTED form. A bare `search` re-lists the room's items
     // and answers with a wording this grammar does not model; the client
@@ -292,6 +306,12 @@ fn completes(kind: Kind, ev: &Event) -> bool {
         // (stopstate-run1, 170s) — the wording nav never recognized,
         // which is why doors "gave up". The carried-through wording is
         // handled by `confirms`, not here: its block is the arrival.
+        // The roll's two outcomes (`re/docs/theft.md` §8.2/§8.3): the
+        // lock gives, or the skill check fails and the door stays shut.
+        // The failure wording is shared with an unpickable exit type --
+        // both mean "this door did not open", which is all the walk
+        // needs to decide whether to roll again.
+        Kind::Picklock => has("unlocked the door") || has("skill fails you"),
         Kind::Bash => {
             has("bashed the")
                 || has("bash through fail")

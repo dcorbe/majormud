@@ -1037,3 +1037,34 @@ fn short_look_alias_takes_a_direction() {
     assert_eq!(cor.answers, Some(CmdId(1)));
     assert!(cor.elsewhere);
 }
+
+// --- picklock, the thief's answer to a locked door -------------------
+
+/// `picklock <dir>` must be a kind of its own, or its reply is never
+/// attributed and the navigator waits out its whole deadline for an
+/// answer that already arrived. That is not hypothetical: it is exactly
+/// how a locked door reported "timed out waiting for room block after
+/// movement" (live, beef.raw 2026-08-22) before the verb existed.
+#[test]
+fn a_picklock_is_a_kind_of_its_own() {
+    use mud_client::correlate::{CmdId, Correlator};
+    use mud_client::events::Event;
+    use std::time::{Duration, Instant};
+    let t0 = Instant::now();
+    for (cmd, reply) in [
+        // The roll's two outcomes (theft.md §8.2/§8.3): the lock gives,
+        // or the skill check fails and the door stays shut.
+        ("picklock s", "You unlocked the door."),
+        ("picklock s", "Your skill fails you this time."),
+        // The board takes any prefix from `pi`; the client sends the
+        // full word, but a hand-typed one must correlate too.
+        ("pick s", "You unlocked the door."),
+    ] {
+        let mut c = Correlator::new(Duration::from_secs(30));
+        c.sent(CmdId(1), cmd, t0);
+        let echo = c.on_event(Event::Line(cmd.into()), t0);
+        assert_eq!(echo.answers, Some(CmdId(1)), "echo of {cmd:?}");
+        let got = c.on_event(Event::Line(reply.into()), t0);
+        assert_eq!(got.answers, Some(CmdId(1)), "{cmd:?} answered by {reply:?}");
+    }
+}

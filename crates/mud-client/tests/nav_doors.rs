@@ -36,6 +36,7 @@ const THERE: RoomId = RoomId { map: 1, room: 2 };
 struct DoorLog {
     opens: AtomicUsize,
     bashes: AtomicUsize,
+    picks: AtomicUsize,
     moves: AtomicUsize,
 }
 
@@ -96,6 +97,12 @@ async fn door_board_worded(
                         open = true;
                         "\r\nThe door is now open.\r\n[HP=30/MA=0]:".to_string()
                     }
+                }
+                // The thief's answer: no HP, no weapon, just a roll.
+                "picklock n" | "picklock north" => {
+                    counter.picks.fetch_add(1, Ordering::SeqCst);
+                    open = true;
+                    "\r\nYou unlocked the door.\r\n[HP=30/MA=0]:".to_string()
                 }
                 "bash n" | "bash north" => {
                     counter.bashes.fetch_add(1, Ordering::SeqCst);
@@ -165,6 +172,22 @@ fn nav(graph: Arc<RoomGraph>) -> Navigator {
     )
 }
 
+/// A navigator with picking OFF, so the force path is what gets tested.
+///
+/// Picking is on by default and is tried BEFORE bashing, so a test that
+/// means to exercise a bash has to say so — otherwise the lock gives to
+/// a pick and the bash it asserts never happens.
+fn forcing_nav(graph: Arc<RoomGraph>) -> Navigator {
+    Navigator::new(
+        graph,
+        NavConfig {
+            step_timeout_ms: 1500,
+            pick_locks: false,
+            ..NavConfig::default()
+        },
+    )
+}
+
 /// A closed but unlocked door must be opened and walked through. This is
 /// the Newhaven case: the Arena's north exit into the dungeon is a type-7
 /// door, and until now it was a hard stop that had to be bashed by hand.
@@ -172,7 +195,7 @@ fn nav(graph: Arc<RoomGraph>) -> Navigator {
 async fn a_closed_door_is_opened_and_traversed() {
     let (addr, log) = door_board(false).await;
     let session = session_for(addr).await;
-    let n = nav(graph_with_exit(7));
+    let n = forcing_nav(graph_with_exit(7));
 
     let at = tokio::time::timeout(
         Duration::from_secs(10),
@@ -193,7 +216,7 @@ async fn a_closed_door_is_opened_and_traversed() {
 async fn a_locked_door_is_bashed() {
     let (addr, log) = door_board(true).await;
     let session = session_for(addr).await;
-    let n = nav(graph_with_exit(7));
+    let n = forcing_nav(graph_with_exit(7));
 
     let at = tokio::time::timeout(
         Duration::from_secs(10),
@@ -218,6 +241,7 @@ async fn bashing_can_be_switched_off() {
         NavConfig {
             step_timeout_ms: 1500,
             bash_doors: false,
+            pick_locks: false,
             ..NavConfig::default()
         },
     );
@@ -426,7 +450,7 @@ async fn rolling_door_board(fails: usize) -> (std::net::SocketAddr, Arc<DoorLog>
 async fn a_bash_that_fails_is_rolled_again_until_the_door_gives() {
     let (addr, log) = rolling_door_board(2).await;
     let session = session_for(addr).await;
-    let n = nav(graph_with_exit(7));
+    let n = forcing_nav(graph_with_exit(7));
 
     let at = tokio::time::timeout(
         Duration::from_secs(10),
@@ -447,7 +471,7 @@ async fn a_bash_that_fails_is_rolled_again_until_the_door_gives() {
 async fn a_door_that_never_yields_fails_cleanly_within_the_retry_budget() {
     let (addr, log) = rolling_door_board(usize::MAX).await;
     let session = session_for(addr).await;
-    let n = nav(graph_with_exit(7));
+    let n = forcing_nav(graph_with_exit(7));
 
     let started = std::time::Instant::now();
     let result = tokio::time::timeout(
@@ -516,7 +540,7 @@ async fn a_guard_interrupt_breaks_the_bash_loop() {
         }
     });
     let session = session_for(addr).await;
-    let n = nav(graph_with_exit(7));
+    let n = forcing_nav(graph_with_exit(7));
 
     let err = tokio::time::timeout(
         Duration::from_secs(10),
@@ -579,7 +603,7 @@ async fn a_whiff_during_door_work_stops_the_walk() {
     });
 
     let session = session_for(addr).await;
-    let n = nav(graph_with_exit(7));
+    let n = forcing_nav(graph_with_exit(7));
     let mut guard = mud_client::farm::FarmGuard::new(30, 25, "Farmer");
 
     let err = tokio::time::timeout(
@@ -623,7 +647,7 @@ async fn a_whiff_during_door_work_stops_the_walk() {
 async fn a_softened_door_refusal_is_still_a_blocked_door() {
     let (addr, log) = door_board_worded(false, "The door is closed.").await;
     let session = session_for(addr).await;
-    let n = nav(graph_with_exit(7));
+    let n = forcing_nav(graph_with_exit(7));
 
     let at = tokio::time::timeout(
         Duration::from_secs(10),
@@ -638,5 +662,107 @@ async fn a_softened_door_refusal_is_still_a_blocked_door() {
         log.opens.load(Ordering::SeqCst),
         1,
         "the refusal was never read as a blocked door, so `open` never went out"
+    );
+}
+
+// --- picking, for a character who has the skill ----------------------
+
+/// A locked door that wants Picklocks does not want force. The 88-bash
+/// incident (cwgaming 2026-08-03, 1/1119) spent 36 hp of a 75-hp
+/// character on a type-7 lock that was never going to yield to force,
+/// and the character later died with nothing to show for it. A thief
+/// picks it instead, for the cost of a command and no health at all.
+#[tokio::test]
+async fn a_locked_door_is_picked_when_picking_is_on() {
+    let (addr, log) = door_board(true).await;
+    let session = session_for(addr).await;
+    let n = Navigator::new(
+        graph_with_exit(7),
+        NavConfig {
+            step_timeout_ms: 1500,
+            pick_locks: true,
+            bash_doors: false,
+            ..NavConfig::default()
+        },
+    );
+
+    let at = tokio::time::timeout(
+        Duration::from_secs(10),
+        n.goto(&session, HERE, THERE, &mut NoGuard),
+    )
+    .await
+    .expect("goto should not hang")
+    .expect("should have picked through");
+
+    assert_eq!(at.at, THERE);
+    assert!(log.picks.load(Ordering::SeqCst) >= 1, "a locked door needs a pick");
+    assert_eq!(
+        log.bashes.load(Ordering::SeqCst),
+        0,
+        "picking succeeded, so nothing should have been bashed"
+    );
+}
+
+/// Picking costs a command per roll and flood control is real, so it
+/// stays behind a switch for the same reason bashing does.
+#[tokio::test]
+async fn picking_can_be_switched_off() {
+    let (addr, log) = door_board(true).await;
+    let session = session_for(addr).await;
+    let n = Navigator::new(
+        graph_with_exit(7),
+        NavConfig {
+            step_timeout_ms: 1500,
+            pick_locks: false,
+            bash_doors: false,
+            ..NavConfig::default()
+        },
+    );
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        n.goto(&session, HERE, THERE, &mut NoGuard),
+    )
+    .await
+    .expect("goto should not hang");
+
+    assert!(result.is_err(), "a locked door with both switches off is a dead end");
+    assert_eq!(log.picks.load(Ordering::SeqCst), 0, "must not pick when switched off");
+    assert_eq!(log.bashes.load(Ordering::SeqCst), 0, "must not bash when switched off");
+}
+
+/// A locked door is a KNOWN, INSTANT condition. Reporting it as a
+/// timeout -- which is what shipped -- leaves the operator unable to
+/// tell a shut door from a lagging board, and reads as though the client
+/// hung (live, beef.raw 2026-08-22: "timed out waiting for room block
+/// after movement" with an empty tail, at a door that had answered
+/// immediately).
+#[tokio::test]
+async fn a_locked_door_says_it_is_locked_rather_than_timing_out() {
+    let (addr, _log) = door_board(true).await;
+    let session = session_for(addr).await;
+    let n = Navigator::new(
+        graph_with_exit(7),
+        NavConfig {
+            step_timeout_ms: 1500,
+            pick_locks: false,
+            bash_doors: false,
+            ..NavConfig::default()
+        },
+    );
+
+    let err = tokio::time::timeout(
+        Duration::from_secs(10),
+        n.goto(&session, HERE, THERE, &mut NoGuard),
+    )
+    .await
+    .expect("goto should not hang")
+    .expect_err("a locked door with no way through is an error");
+
+    let said = err.to_string().to_lowercase();
+    assert!(said.contains("locked"), "the reason must name the lock, got: {said}");
+    assert!(
+        !said.contains("timed out"),
+        "an instant, known refusal must not masquerade as a timeout: {said}"
     );
 }
