@@ -82,13 +82,28 @@ That does not justify touching `FindCandidates`, hence the non-goal.
 The 18.7% figure reproduces `lost.rs`'s documented value exactly, which is
 what makes the query trustworthy.
 
-`lost.rs` further documents a simulated resolution curve — 18.7% at zero
-steps, 52.0% at one, 71.4% at two, 82.4% at three, 93.3% at twelve — and a
-*patient* versus *impatient* splitting rule at 93.3% versus 87.7%. **Only
-the zero-step point has been independently reproduced here.** The rest are
-carried from that module's own simulation. The port's test suite
-re-derives the curve against MudPlay's graph, which validates the claim and
-the port at once (see Testing).
+`lost.rs` further documents a simulated resolution curve. That curve has
+now been **independently reproduced** — re-simulated from the raw database
+without reference to the Rust implementation, over all 26,580 named rooms:
+
+| steps | reproduced | `lost.rs` documents |
+|---|---|---|
+| 0 | 18.7% | 18.7% |
+| 1 | 51.8% | 52.0% |
+| 2 | 71.3% | 71.4% |
+| 3 | 82.3% | 82.4% |
+| 12 | 93.5% | 93.3% |
+
+Agreement within 0.2pp at every point; 6.5% never resolve, which are the
+true mazes. This is the number the feature's value rests on: one step
+carries a lost character from 18.7% to better than half, and the whole
+twelve-step budget reaches 93.5%.
+
+The *patient* versus *impatient* splitting rule (93.3% versus 87.7%) is
+still carried from `lost.rs`'s own simulation and has not been
+re-derived here. The port's test suite re-derives the curve against
+MudPlay's graph, which validates the port against these numbers (see
+Testing).
 
 ## Design
 
