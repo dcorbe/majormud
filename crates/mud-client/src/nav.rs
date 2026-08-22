@@ -461,6 +461,12 @@ pub struct Navigator {
     /// would happily cut through a wall when that was cheaper. A fence
     /// you can walk through is not a fence.
     fence: Option<crate::roam::Walls>,
+    /// What this walker can bring to bear on a costed exit, and what it
+    /// has personally measured about toll edges. Defaults to
+    /// [`crate::graph::Capabilities::unrestricted`], which is exactly
+    /// the old behaviour: nothing that does not call
+    /// [`Navigator::with_capabilities`] changes.
+    capabilities: crate::graph::Capabilities,
 }
 
 /// The direction word the board understands for each step.
@@ -488,7 +494,24 @@ impl Navigator {
             search_hidden: cfg.search_hidden,
             fence: None,
             plane: None,
+            capabilities: crate::graph::Capabilities::unrestricted(),
         }
+    }
+
+    /// Route and learn as this walker, not as "everything is
+    /// satisfiable".
+    ///
+    /// Without this call every route this navigator computes and every
+    /// toll it crosses uses [`crate::graph::Capabilities::unrestricted`]
+    /// — unlimited purse, and a toll log nobody else can see — which is
+    /// exactly the behaviour every existing caller already had. A
+    /// caller that wants routing to respect a real purse, and wants a
+    /// measured toll fact to survive between walks, supplies its own
+    /// `Capabilities` (typically sharing one `Arc<TollLog>` across every
+    /// navigator that walks the same character).
+    pub fn with_capabilities(mut self, caps: crate::graph::Capabilities) -> Self {
+        self.capabilities = caps;
+        self
     }
 
     /// Refuse to route through these rooms, or off the plane they sit on.
@@ -522,10 +545,13 @@ impl Navigator {
     /// long time and then quietly walk through one.
     pub fn route_from(&self, from: RoomId, to: RoomId) -> Option<Vec<Direction>> {
         match (&self.fence, self.plane) {
-            (Some(walls), Some(plane)) => {
-                self.graph.route_within(from, to, &crate::roam::passable(plane, walls))
-            }
-            _ => self.graph.route(from, to),
+            (Some(walls), Some(plane)) => self.graph.route_within_for(
+                from,
+                to,
+                &crate::roam::passable(plane, walls),
+                &self.capabilities,
+            ),
+            _ => self.graph.route_for(from, to, &self.capabilities),
         }
     }
 
@@ -648,6 +674,32 @@ impl Navigator {
                     .map(|r| r.name.clone())
                     .unwrap_or_default();
 
+                // The edge this step is about to cross, and where it
+                // starts from -- captured before `current` moves, so a
+                // toll measured after arrival can still be filed against
+                // the room it was actually charged in.
+                let depart_room = current;
+                let toll_edge = edge
+                    .map(|e| matches!(e.requirement, crate::graph::ExitRequirement::Toll { .. }))
+                    .unwrap_or(false);
+                // The data says both directions of the Silvermere gate
+                // charge and play says only one does -- theft.md 8.1
+                // does not name type 4 and move_user is unread, so
+                // instead of guessing, ask the board what the character
+                // is carrying before an actual crossing and compare
+                // after. Only ever asked for a toll edge: every other
+                // step pays no extra round trip for a fact it does not
+                // need.
+                let toll_before = if toll_edge {
+                    Some(
+                        self.read_purse(session, &mut events, guard, &mut armed)
+                            .await
+                            .map_err(|kind| NavError { at: current, kind })?,
+                    )
+                } else {
+                    None
+                };
+
                 // Correlated as a move whatever it says, because that is
                 // what it is: `kind_of` reads direction words, and
                 // "borrow skiff" would otherwise be Opaque, so the
@@ -686,6 +738,25 @@ impl Navigator {
                 let seen = match seen {
                     StepOutcome::Arrived(sighting) if sighting.name() == expected_name => {
                         current = expected_id;
+                        // The step actually landed, so a pending toll
+                        // measurement gets its second reading now: if
+                        // the purse did not move, this direction is free
+                        // and every future route may prefer it. If it
+                        // did move, the pessimistic default already had
+                        // it right and nothing changes -- but the
+                        // measurement is recorded either way, so a
+                        // gate's answer is never generations stale.
+                        if let Some(before) = toll_before {
+                            let after = self
+                                .read_purse(session, &mut events, guard, &mut armed)
+                                .await
+                                .map_err(|kind| NavError { at: current, kind })?;
+                            self.capabilities.tolls_known_free.record(
+                                depart_room,
+                                step,
+                                after != before,
+                            );
+                        }
                         // The block that answered this step describes
                         // the room the step just landed in. Kept HERE,
                         // keyed to that room, so the check at the top of
@@ -1189,6 +1260,67 @@ impl Navigator {
                     }));
                 }
                 StepEvent::DoorYielded | StepEvent::DoorBlocked => continue,
+            }
+        }
+    }
+
+    /// Ask the board what the character is carrying and wait for the
+    /// answer.
+    ///
+    /// `i`'s reply body is unattributed -- its `Kind` is `Opaque`, whose
+    /// `completes` never fires (see [`crate::purse::PurseMeter`]'s own
+    /// doc) -- so the correlator can only mark the ECHO of our send.
+    /// This arms a fresh meter on that echo and reads whatever line
+    /// follows it, exactly as `tui.rs` does by hand for its own status
+    /// bar. Bounded by the same step deadline as a walk step: an `i`
+    /// that never answers is exactly as informative as a step that
+    /// never lands.
+    async fn read_purse(
+        &self,
+        session: &Session,
+        events: &mut tokio::sync::broadcast::Receiver<crate::correlate::Correlated>,
+        guard: &mut impl TravelGuard,
+        armed: &mut Option<Interrupt>,
+    ) -> Result<crate::purse::Purse, NavErrorKind> {
+        let id = session.send("i");
+        let mut meter = crate::purse::PurseMeter::default();
+        let deadline = tokio::time::Instant::now() + self.step_timeout;
+        loop {
+            let ev = tokio::time::timeout_at(deadline, events.recv()).await;
+            if let Ok(Ok(ev)) = &ev {
+                match guard.on_event(&ev.event) {
+                    // Nothing more is going to land, same as `wait_room`.
+                    Some(Interrupt::Died) => {
+                        return Err(NavErrorKind::Interrupted(Interrupt::Died));
+                    }
+                    Some(hurt) => *armed = armed.take().or(Some(hurt)),
+                    None => {}
+                }
+            }
+            let cor = match ev {
+                Err(_) => {
+                    return Err(NavErrorKind::Expect(ExpectError::Timeout {
+                        needle: "inventory reply".into(),
+                        tail: String::new(),
+                    }));
+                }
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(_)) => {
+                    return Err(NavErrorKind::Expect(ExpectError::Closed { tail: String::new() }));
+                }
+                Ok(Ok(cor)) => cor,
+            };
+            if let crate::events::Event::Line(line) = &cor.event {
+                if cor.answers == Some(id) {
+                    // The echo: whatever line comes next is the whole
+                    // answer, win or lose. Never fed to `observe` itself
+                    // -- it is the send bouncing back, not the reply.
+                    meter.expect_reply();
+                    continue;
+                }
+                if meter.observe(line) {
+                    return Ok(meter.current());
+                }
             }
         }
     }

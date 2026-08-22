@@ -8,6 +8,7 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use mud_core::content::{Direction, RoomId};
 
@@ -208,6 +209,12 @@ pub fn exit_cost(exit_type: i64) -> u32 {
 #[derive(Debug, Clone, Default)]
 pub struct Capabilities {
     pub purse: crate::purse::Purse,
+    /// Which `(room, direction)` toll crossings have been MEASURED to
+    /// not charge — see [`TollLog`]. `Arc` because the same log has to
+    /// be consulted by every routing call this walker makes AND updated
+    /// by whichever walk is currently crossing the edge; a plain field
+    /// would give each `Capabilities` clone its own amnesia.
+    pub tolls_known_free: Arc<TollLog>,
 }
 
 impl Capabilities {
@@ -221,7 +228,62 @@ impl Capabilities {
     pub fn unrestricted() -> Capabilities {
         Capabilities {
             purse: crate::purse::Purse::from_farthings(u64::MAX),
+            tolls_known_free: Arc::new(TollLog::default()),
         }
+    }
+
+    /// Has this edge, in this direction, been MEASURED not to charge?
+    ///
+    /// Delegates to [`TollLog::is_free`] so that `exit_cost_for`'s
+    /// consult and a test's direct assertion on the log are the same
+    /// question asked two ways, never two answers that could drift
+    /// apart.
+    pub fn is_known_free(&self, room: RoomId, dir: Direction) -> bool {
+        self.tolls_known_free.is_free(room, dir)
+    }
+}
+
+/// What a toll crossing was actually measured to do, per `(room,
+/// direction)` edge.
+///
+/// Exists because the data cannot be trusted on its own: both directions
+/// of the Silvermere gate carry `type=4, para1=5` and only the outbound
+/// crossing charges in play. `re/docs/theft.md` §8.1 does not name type
+/// 4 and the real rule is in `move_user` in the WCCMMUD decompile,
+/// unread — so instead of guessing, the walk measures the purse before
+/// and after an actual crossing and remembers what it saw.
+///
+/// Absence of an entry means "never crossed this way, assume it
+/// charges" — the pessimistic default the whole feature exists to
+/// protect. A wrong "charges" wastes a detour; a wrong "free" could
+/// strand a character on the wrong side of a gate it cannot pay to
+/// re-cross, so that direction is never the one guessed.
+#[derive(Debug, Default)]
+pub struct TollLog {
+    charged: Mutex<BTreeMap<(RoomId, Direction), bool>>,
+}
+
+impl TollLog {
+    /// Record what one actual crossing measured: `charged` true if the
+    /// purse moved, false if it did not. Overwrites any earlier
+    /// measurement of the same edge — the most recent crossing is the
+    /// best evidence there is.
+    pub fn record(&self, room: RoomId, dir: Direction, charged: bool) {
+        self.charged
+            .lock()
+            .expect("toll log lock")
+            .insert((room, dir), charged);
+    }
+
+    /// Was this edge measured free? `false` covers both "measured
+    /// charged" and "never measured" on purpose — a caller deciding
+    /// whether it is safe to assume the gate is open must not be able
+    /// to tell "no" and "don't know" apart.
+    pub fn is_free(&self, room: RoomId, dir: Direction) -> bool {
+        matches!(
+            self.charged.lock().expect("toll log lock").get(&(room, dir)),
+            Some(false)
+        )
     }
 }
 
@@ -240,10 +302,22 @@ pub enum Cost {
 /// `Impassable` is reserved for edges no amount of walking opens:
 /// a toll beyond the purse, and a passage concealed by a puzzle
 /// bit-word that SEARCH cannot clear.
-pub fn exit_cost_for(req: &ExitRequirement, exit_type: i64, caps: &Capabilities) -> Cost {
+///
+/// `room` and `dir` name the exact edge being costed — needed only to
+/// consult [`Capabilities::is_known_free`], since a per-edge learned
+/// fact cannot be looked up from a bare requirement and type number.
+pub fn exit_cost_for(
+    req: &ExitRequirement,
+    exit_type: i64,
+    room: RoomId,
+    dir: Direction,
+    caps: &Capabilities,
+) -> Cost {
     match req {
         ExitRequirement::Toll { gold } => {
-            if caps.purse.farthings() >= crate::purse::Purse::from_gold(*gold).farthings() {
+            if caps.is_known_free(room, dir) {
+                Cost::Steps(1)
+            } else if caps.purse.farthings() >= crate::purse::Purse::from_gold(*gold).farthings() {
                 Cost::Steps(1)
             } else {
                 Cost::Impassable
@@ -879,7 +953,13 @@ impl RoomGraph {
                 {
                     continue;
                 }
-                let step = match exit_cost_for(&edge.requirement, edge.exit_type, caps) {
+                let step = match exit_cost_for(
+                    &edge.requirement,
+                    edge.exit_type,
+                    cur,
+                    DIRECTIONS[d],
+                    caps,
+                ) {
                     // An edge this walker cannot open is not a dear edge.
                     // Skipping it is what lets the detour win.
                     Cost::Impassable => continue,

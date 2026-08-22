@@ -513,14 +513,23 @@ fn the_remaining_classifications_have_exact_counts() {
 #[test]
 fn a_toll_costs_a_step_when_affordable_and_is_impassable_otherwise() {
     let toll = ExitRequirement::Toll { gold: 5 };
+    let edge = RoomId { map: 1, room: 1381 };
     let rich = Capabilities {
         purse: Purse::from_farthings(500),
+        ..Default::default()
     };
     let broke = Capabilities {
         purse: Purse::from_farthings(499),
+        ..Default::default()
     };
-    assert_eq!(exit_cost_for(&toll, 4, &rich), Cost::Steps(1));
-    assert_eq!(exit_cost_for(&toll, 4, &broke), Cost::Impassable);
+    assert_eq!(
+        exit_cost_for(&toll, 4, edge, Direction::East, &rich),
+        Cost::Steps(1)
+    );
+    assert_eq!(
+        exit_cost_for(&toll, 4, edge, Direction::East, &broke),
+        Cost::Impassable
+    );
 }
 
 /// A puzzle-concealed exit is not merely expensive: no amount of walking
@@ -528,12 +537,25 @@ fn a_toll_costs_a_step_when_affordable_and_is_impassable_otherwise() {
 #[test]
 fn a_puzzle_concealed_exit_is_impassable_not_expensive() {
     let caps = Capabilities::unrestricted();
+    let edge = RoomId { map: 17, room: 3042 };
     assert_eq!(
-        exit_cost_for(&ExitRequirement::Hidden { searchable: false }, 6, &caps),
+        exit_cost_for(
+            &ExitRequirement::Hidden { searchable: false },
+            6,
+            edge,
+            Direction::North,
+            &caps
+        ),
         Cost::Impassable
     );
     assert_eq!(
-        exit_cost_for(&ExitRequirement::Hidden { searchable: true }, 6, &caps),
+        exit_cost_for(
+            &ExitRequirement::Hidden { searchable: true },
+            6,
+            edge,
+            Direction::North,
+            &caps
+        ),
         Cost::Steps(40),
         "a searchable hidden exit keeps its old price"
     );
@@ -546,11 +568,12 @@ fn a_puzzle_concealed_exit_is_impassable_not_expensive() {
 #[test]
 fn state_free_requirements_keep_their_old_prices() {
     let caps = Capabilities::unrestricted();
+    let edge = RoomId { map: 1, room: 1 };
     for exit_type in [0, 2, 7, 0xb, 9, 0x18, 0x10, 0x14, 0x16, 0x17, 10, 0x13, 3, 5] {
         let req = ExitRequirement::from_exit_type(exit_type, 0);
         let want = mud_client::graph::exit_cost(exit_type);
         assert_eq!(
-            exit_cost_for(&req, exit_type, &caps),
+            exit_cost_for(&req, exit_type, edge, Direction::North, &caps),
             Cost::Steps(want),
             "type {exit_type:#x} changed price"
         );
@@ -574,6 +597,7 @@ fn the_silvermere_toll_is_paid_when_affordable_and_walked_around_when_not() {
 
     let rich = Capabilities {
         purse: Purse::from_gold(5),
+        ..Default::default()
     };
     let route = g.route_for(inner, road, &rich).expect("a route with money");
     assert_eq!(route.len(), 1, "one hop through the gate: {route:?}");
@@ -581,6 +605,7 @@ fn the_silvermere_toll_is_paid_when_affordable_and_walked_around_when_not() {
 
     let broke = Capabilities {
         purse: Purse::from_gold(4),
+        ..Default::default()
     };
     let detour = g
         .route_for(inner, road, &broke)
