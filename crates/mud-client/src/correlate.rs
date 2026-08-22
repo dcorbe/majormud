@@ -49,8 +49,11 @@
 //! echo and can claim one unsolicited block; a grammar gap (an
 //! unmodelled reply wording) leaves its entry lingering until the cap,
 //! able to claim one same-kind event meanwhile; multi-line replies to
-//! Opaque commands attribute nothing at all. Every consumer keeps its
-//! own timeout precisely because of this floor.
+//! Opaque commands attribute nothing at all — the one deliberate
+//! exception is `Kind::Stat` (`stat`/`st`'s character sheet), retired by
+//! the ordinary game prompt that follows it rather than by any wording
+//! in the body, since the body has no fixed terminal line. Every
+//! consumer keeps its own timeout precisely because of this floor.
 //!
 //! `SlowDown` flushes everything pending: flood control DROPPED input,
 //! and whether a dropped command still echoes is unverified.
@@ -146,6 +149,19 @@ enum Kind {
     BuyHealing,
     Search,
     Picklock,
+    /// `stat`/`st` — the multi-line character sheet. Unlike every other
+    /// modelled kind, no wording in the BODY completes it (there is no
+    /// fixed terminal line — `Traps`/`Picklocks` can be the last row or
+    /// not depending on active buffs, see `mud-core`'s `show_sheet`).
+    /// What completes it is the ORDINARY game prompt that follows any
+    /// command's reply — see the `Event::Prompt` arm of `completes`.
+    /// [`crate::session::Session`]'s `StatTracker` accumulates the body
+    /// lines itself; this Kind's only job is making sure THAT reply gets
+    /// attributed at all, rather than sitting `Opaque` (`completes`
+    /// always `false`) until a waiting consumer burns its whole
+    /// deadline — the exact class of bug `b19f862d` fixed for the
+    /// locked door.
+    Stat,
     Opaque,
 }
 
@@ -165,6 +181,13 @@ fn kind_of(cmd: &str) -> Kind {
     }
     if cmd == "look" || cmd == "l" {
         return Kind::Look;
+    }
+    // The character sheet. `mud-core`'s alias table resolves both to
+    // `Command::Status`: `status`'s minimum abbreviation is 2 (`st`),
+    // and `stat` matches too since `"status".starts_with("stat")`
+    // (`crates/mud-core/src/command.rs`'s `ALIASES`).
+    if cmd == "stat" || cmd == "st" {
+        return Kind::Stat;
     }
     // `look <direction>` and its `l <direction>` alias answer with a full
     // room block for the NEIGHBOUR (vendor relnotes: "LOOK <dir> will now
@@ -243,6 +266,13 @@ fn completes(kind: Kind, ev: &Event) -> bool {
             // carried the character through the doorway.
             return matches!(kind, Kind::Move | Kind::Look | Kind::LookDir | Kind::Bash);
         }
+        // The ordinary game prompt is the ONLY thing that completes a
+        // Stat reply — its body has no fixed terminal wording (see
+        // `Kind::Stat`'s doc). Every other kind answers to a RoomSeen or
+        // a specific Line wording instead, so a Prompt completes nothing
+        // for them: `classified_async_events_answer_nothing_and_retire_
+        // nothing` (tests/correlate.rs) pins that down.
+        Event::Prompt { .. } => return matches!(kind, Kind::Stat),
         Event::Line(l) => l.to_lowercase(),
         _ => return false,
     };
@@ -367,6 +397,8 @@ fn completes(kind: Kind, ev: &Event) -> bool {
         }
         Kind::Get => has("you picked up"),
         Kind::BuyHealing => has("wounds are healed"),
+        // No line completes it — see the `Event::Prompt` arm above.
+        Kind::Stat => false,
         Kind::Opaque => false,
     }
 }
@@ -486,10 +518,15 @@ impl Correlator {
                 }
                 None => None,
             },
-            // Classified async traffic: combat, actors, prompts. The
-            // board emits these freely; they answer nothing.
-            Event::Prompt { .. }
-            | Event::CombatHit { .. }
+            // The ordinary game prompt: answers nothing for any pending
+            // kind except Stat, whose reply has no other terminator (see
+            // `Kind::Stat`). `retire` itself decides via `completes`, so
+            // this arm only exists to give Stat a path to it at all —
+            // every other kind sees the same `None` it always has.
+            Event::Prompt { .. } => self.retire(&event, now).map(|(id, _)| id),
+            // Classified async traffic: combat, actors. The board emits
+            // these freely; they answer nothing.
+            Event::CombatHit { .. }
             | Event::CombatMiss { .. }
             | Event::ActorEntered { .. }
             | Event::ActorLeft { .. } => None,

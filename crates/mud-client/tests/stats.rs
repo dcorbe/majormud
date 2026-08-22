@@ -1,4 +1,5 @@
-//! `Stats::parse` against the `stat` sheet.
+//! `Stats::parse` against the `stat` sheet, and the session's own read of
+//! it off the wire.
 //!
 //! The fixture in [`parses_every_field_from_the_beef_sheet`] is a live
 //! capture from MMud Reborn, 2026-08-22 (see
@@ -7,11 +8,13 @@
 //! alone on theirs — so a column-position parser would either misread or
 //! silently drop them; this only proves out if every field is asserted.
 
+use std::time::{Duration, Instant};
+
+use mud_client::correlate::{CmdId, Correlator};
+use mud_client::events::Event;
 use mud_client::stats::Stats;
 
-#[test]
-fn parses_every_field_from_the_beef_sheet() {
-    let sheet = "\
+const BEEF_SHEET: &str = "\
 Name: Beef                             Lives/CP:    9/100
 Race: Dark-Elf    Exp: 0               Perception:     43
 Class: Ninja      Level: 1             Stealth:        56
@@ -20,10 +23,11 @@ Hits:    22/22    Armour Class:   0/0  Thievery:        0
                                        Picklocks:      31
 Strength:  40     Agility: 50          Tracking:       26
 Intellect: 50     Health:  30          Martial Arts:   51
-Willpower: 30     Charm:   40          MagicRes:       35
-";
+Willpower: 30     Charm:   40          MagicRes:       35";
 
-    let stats = Stats::parse(sheet);
+#[test]
+fn parses_every_field_from_the_beef_sheet() {
+    let stats = Stats::parse(BEEF_SHEET);
 
     assert_eq!(stats.name.as_deref(), Some("Beef"));
     assert_eq!(stats.race.as_deref(), Some("Dark-Elf"));
@@ -86,4 +90,151 @@ fn empty_text_parses_to_an_entirely_absent_sheet() {
     let stats = Stats::parse("");
 
     assert_eq!(stats, Stats::default());
+}
+
+// ---------------------------------------------------- correlator: Kind::Stat
+
+/// `stat`'s reply has no fixed terminal wording (`Traps`/`Picklocks`
+/// aren't always the last row — active buffs append more lines after
+/// them), so nothing in the BODY can retire it. Left `Opaque`, its
+/// `completes` would always answer `false` and a consumer waiting on
+/// `Correlated::answers` would burn its whole deadline for nothing —
+/// the same class of phantom timeout `b19f862d` fixed for the locked
+/// door. The ordinary game prompt that follows every reply is what
+/// closes it out instead.
+#[test]
+fn the_ordinary_prompt_retires_a_pending_stat() {
+    let t = Instant::now();
+    let mut c = Correlator::new(Duration::from_secs(10));
+
+    c.sent(CmdId(1), "stat", t);
+    // The echo attributes and accepts — this already worked for Opaque
+    // commands (e.g. `i`), so it is not what this test is proving.
+    assert_eq!(c.on_event(Event::Line("stat".into()), t).answers, Some(CmdId(1)));
+    // Ordinary body lines answer nothing on their own...
+    assert_eq!(c.on_event(Event::Line("Name: Beef".into()), t).answers, None);
+    // ...but the prompt that follows the whole reply retires the entry.
+    assert_eq!(
+        c.on_event(Event::Prompt { hp: 22, mana: None }, t).answers,
+        Some(CmdId(1))
+    );
+}
+
+/// The same prompt that closes a `stat` reply answers NOTHING for every
+/// other kind — this is the invariant `the_ordinary_prompt_retires_a_
+/// pending_stat` is the one deliberate exception to, pinned down here so
+/// a future edit that makes `Kind::Stat`'s `completes` too permissive
+/// (e.g. answering any Prompt) gets caught immediately rather than by a
+/// stray reply landing on the wrong command months later.
+#[test]
+fn the_ordinary_prompt_retires_nothing_for_a_move() {
+    let t = Instant::now();
+    let mut c = Correlator::new(Duration::from_secs(10));
+
+    c.sent(CmdId(1), "n", t);
+    assert_eq!(c.on_event(Event::Line("n".into()), t).answers, Some(CmdId(1)));
+    assert_eq!(
+        c.on_event(Event::Prompt { hp: 22, mana: None }, t).answers,
+        None
+    );
+}
+
+// -------------------------------------------------- Session::stats(), live
+
+use mud_client::dialect::Target;
+use mud_client::profile::Profile;
+use mud_client::session::Session;
+
+async fn session_to(addr: std::net::SocketAddr) -> Session {
+    let profile = Profile {
+        target: Target::MbbsEmu,
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        username: "testuser".into(),
+        password: "testpass".into(),
+        pace_ms: Some(0),
+        disable_evil_warnings: false,
+        bot: None,
+        farm: None,
+    };
+    Session::connect(&profile, None).await.unwrap()
+}
+
+/// A board that echoes whatever it is sent and answers with the full
+/// Beef sheet followed by an ordinary prompt — enough to drive the
+/// session's own multi-line accumulation end to end without the rest of
+/// `play`. `inject`, when `Some`, splices one extra unrelated line into
+/// the MIDDLE of the body (between `Thievery` and `Traps`) to stand in
+/// for interleaved traffic (another player's shout, a queued command's
+/// own receipt echo) landing in the same window.
+async fn stat_board(inject: Option<&'static str>) -> std::net::SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut pending = String::new();
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = sock.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            pending.push_str(&String::from_utf8_lossy(&buf[..n]));
+            while let Some(nl) = pending.find('\n') {
+                let line: String = pending.drain(..=nl).collect();
+                let line = line.trim().to_string();
+                let mut rows: Vec<&str> = BEEF_SHEET.lines().collect();
+                if let Some(noise) = inject {
+                    rows.insert(4, noise); // after "Thievery:", before "Traps:"
+                }
+                let body = rows.join("\r\n");
+                let reply = format!("\r\n{line}\r\n{body}\r\n[HP=22]:");
+                sock.write_all(reply.as_bytes()).await.unwrap();
+            }
+        }
+    });
+    addr
+}
+
+/// The property Task 2 exists for: a caller sends `stat`, the session
+/// reads the WHOLE multi-line reply off the wire on its own, and
+/// [`Session::stats`] hands back exactly what [`Stats::parse`] would
+/// give the raw sheet — proving the session's accumulation and Task 1's
+/// parser agree, not just that each works in isolation.
+#[tokio::test]
+async fn session_stats_reads_the_whole_multiline_sheet_off_the_board() {
+    let addr = stat_board(None).await;
+    let session = session_to(addr).await;
+
+    session.send("stat");
+    session
+        .expect("[HP=22]:", Duration::from_secs(5))
+        .await
+        .expect("stat reply");
+
+    assert_eq!(session.stats(), Stats::parse(BEEF_SHEET));
+}
+
+/// A line that has nothing to do with the sheet, landing mid-reply, must
+/// not truncate it: every field after the interloper still has to come
+/// through. Without this the accumulator could plausibly stop (or
+/// discard the rest) the moment it saw a line that didn't look like part
+/// of the sheet, silently losing `Picklocks` and everything below it —
+/// exactly the field this whole feature exists to make readable.
+#[tokio::test]
+async fn an_interleaved_line_does_not_truncate_the_multiline_sheet() {
+    let addr = stat_board(Some("Another player shouts hello!")).await;
+    let session = session_to(addr).await;
+
+    session.send("stat");
+    session
+        .expect("[HP=22]:", Duration::from_secs(5))
+        .await
+        .expect("stat reply");
+
+    assert_eq!(
+        session.stats(),
+        Stats::parse(BEEF_SHEET),
+        "an unsolicited line mid-reply must not corrupt or truncate the parsed sheet"
+    );
 }

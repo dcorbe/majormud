@@ -29,6 +29,7 @@ use crate::graph::{Capabilities, TollLog};
 use crate::parse::Parser;
 use crate::profile::Profile;
 use crate::purse::PurseMeter;
+use crate::stats::Stats;
 use crate::wire::{AnsiStripper, TelnetFilter, cp437_to_string};
 
 /// Send pacing: reserves evenly spaced slots at least `min` apart
@@ -219,6 +220,30 @@ struct PurseTracker {
     pending: HashMap<CmdId, Instant>,
 }
 
+/// The session's own [`Stats`], plus the bookkeeping needed to
+/// accumulate its multi-line reply centrally instead of per-consumer —
+/// [`PurseTracker`]'s pattern, extended for a reply that spans many
+/// lines instead of one.
+///
+/// `pending` names the [`CmdId`]s of our own `stat`/`st` sends, exactly
+/// as `PurseTracker::pending` does for `i`: the reader task needs to
+/// tell "this echo is the one that arms the accumulator" from "this
+/// line just happens to read `stat`". Swept on the same
+/// [`CORRELATE_TTL`] clock as `PurseTracker`, for the same reason — a
+/// send that never echoes must not leak for the life of the session.
+struct StatTracker {
+    current: Stats,
+    pending: HashMap<CmdId, Instant>,
+    /// `Some` from the moment our echo is attributed until the next
+    /// ordinary game prompt closes the reply out; `None` means no reply
+    /// is in flight. Every [`Event::Line`] in between is appended
+    /// verbatim, interleaved traffic included: [`Stats::parse`] finds
+    /// each field by searching the whole text for its own `Label:`, so
+    /// a stray line no pattern matches just adds noise — it can never
+    /// truncate the sheet or knock a later field out of the parse.
+    buffer: Option<String>,
+}
+
 pub struct Session {
     cmd_tx: mpsc::UnboundedSender<Cmd>,
     shared: Arc<Shared>,
@@ -233,6 +258,10 @@ pub struct Session {
     /// The session's own running balance, kept current by the reader
     /// task off whichever `i` reply arrives -- ours or a caller's.
     purse: Arc<Mutex<PurseTracker>>,
+    /// The session's own character sheet, kept current by the reader
+    /// task off whichever `stat`/`st` reply arrives -- ours or a
+    /// caller's. See [`StatTracker`].
+    stats: Arc<Mutex<StatTracker>>,
     /// Which `(room, direction)` toll crossings this session has
     /// personally measured free. `Arc` so every [`Navigator`] built over
     /// this session's lifetime shares the same memory: a fact learned on
@@ -262,6 +291,11 @@ impl Session {
         let purse = Arc::new(Mutex::new(PurseTracker {
             meter: PurseMeter::default(),
             pending: HashMap::new(),
+        }));
+        let stats = Arc::new(Mutex::new(StatTracker {
+            current: Stats::default(),
+            pending: HashMap::new(),
+            buffer: None,
         }));
         let toll_log = Arc::new(TollLog::default());
 
@@ -345,6 +379,7 @@ impl Session {
             let cmd_tx = cmd_tx.clone();
             let correlator = Arc::clone(&correlator);
             let purse = Arc::clone(&purse);
+            let stats = Arc::clone(&stats);
             tokio::spawn(async move {
                 let mut filter = TelnetFilter::new();
                 let mut stripper = AnsiStripper::new();
@@ -382,6 +417,7 @@ impl Session {
                             let cor = guard.on_event(ev, Instant::now());
                             state_tx.send_if_modified(|s| apply_event(s, &cor));
                             feed_purse(&purse, &cor);
+                            feed_stats(&stats, &cor);
                             let _ = events_tx.send(cor);
                         }
                     }
@@ -402,6 +438,7 @@ impl Session {
                         let cor = guard.on_event(ev, Instant::now());
                         state_tx.send_if_modified(|s| apply_event(s, &cor));
                         feed_purse(&purse, &cor);
+                        feed_stats(&stats, &cor);
                         let _ = events_tx.send(cor);
                     }
                 }
@@ -422,6 +459,7 @@ impl Session {
             next_id: AtomicU64::new(1),
             pace_ms,
             purse,
+            stats,
             toll_log,
         })
     }
@@ -468,6 +506,16 @@ impl Session {
             self.purse
                 .lock()
                 .expect("purse lock")
+                .pending
+                .insert(id, Instant::now());
+        }
+        // Same rule, same reason, for the character sheet: `stat` and
+        // its minimum abbreviation `st` (`mud-core`'s `ALIASES` table)
+        // both resolve to `Command::Status`. See [`StatTracker`].
+        if trimmed.eq_ignore_ascii_case("stat") || trimmed.eq_ignore_ascii_case("st") {
+            self.stats
+                .lock()
+                .expect("stats lock")
                 .pending
                 .insert(id, Instant::now());
         }
@@ -603,6 +651,15 @@ impl Session {
             tolls_known_free: Arc::clone(&self.toll_log),
         }
     }
+
+    /// The session's own [`Stats`], as of the most recent `stat`/`st`
+    /// reply this session (or any caller sharing it) has read off the
+    /// board. `Stats::default()` — every field `None` — until the first
+    /// one arrives; nothing here sends anything on its own account, same
+    /// as [`Session::capabilities`]'s purse.
+    pub fn stats(&self) -> Stats {
+        self.stats.lock().expect("stats lock").current.clone()
+    }
 }
 
 /// Feed one correlated event to the session's own purse meter: arm it on
@@ -633,6 +690,51 @@ fn feed_purse(purse: &Mutex<PurseTracker>, cor: &Correlated) {
         tracker.meter.expect_reply();
     } else {
         tracker.meter.observe(line);
+    }
+}
+
+/// Feed one correlated event to the session's own [`Stats`]: arm
+/// accumulation on the echo of one of OUR `stat`/`st` sends (named in
+/// `pending` before the bytes left, same as [`feed_purse`]'s `i`), then
+/// append every line that follows into [`StatTracker::buffer`] until the
+/// next ordinary game prompt closes the reply out and it gets parsed.
+///
+/// Unlike [`feed_purse`], this does not need [`Correlated::answers`] to
+/// pick out the terminal line — `stat`'s reply has no fixed one (see
+/// `Kind::Stat` in `correlate.rs`) — so it watches the raw event shapes
+/// instead: any [`Event::Line`] while a reply is in flight is body text
+/// (interleaved traffic included — harmless, see [`StatTracker::buffer`]
+/// doc), and the first [`Event::Prompt`] after arming is always OUR
+/// reply's own terminator, never a later command's: the board processes
+/// commands strictly FIFO, so nothing else's reply — let alone its
+/// prompt — can complete before this one does.
+fn feed_stats(stats: &Mutex<StatTracker>, cor: &Correlated) {
+    let mut tracker = stats.lock().expect("stats lock");
+    // Same staleness rule as `feed_purse`, same reason: a `stat` that
+    // never echoed must not leak forever.
+    let now = Instant::now();
+    tracker
+        .pending
+        .retain(|_, sent_at| now.duration_since(*sent_at) < CORRELATE_TTL);
+    match &cor.event {
+        Event::Line(line) => {
+            let is_our_echo = cor.answers.is_some_and(|id| tracker.pending.remove(&id).is_some());
+            if is_our_echo {
+                // The echo line itself is not sheet body text.
+                tracker.buffer = Some(String::new());
+                return;
+            }
+            if let Some(buf) = &mut tracker.buffer {
+                buf.push_str(line);
+                buf.push('\n');
+            }
+        }
+        Event::Prompt { .. } => {
+            if let Some(buf) = tracker.buffer.take() {
+                tracker.current = Stats::parse(&buf);
+            }
+        }
+        _ => {}
     }
 }
 
