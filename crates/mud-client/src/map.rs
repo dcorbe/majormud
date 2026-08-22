@@ -103,6 +103,21 @@ pub struct Plane {
     extent: Extent,
     conflicts: Vec<Conflict>,
     links: Vec<Link>,
+    /// Every exit that both EXISTS in the graph and joins two rooms this
+    /// plane placed in adjacent cells — recorded here at layout time,
+    /// where the exits are already being walked.
+    ///
+    /// The renderer used to re-derive this at draw time by asking
+    /// whether a room happened to sit in the neighbouring cell, which
+    /// draws a line between any two rooms the grid puts side by side
+    /// whether or not anything joins them. Keeping the answer here is
+    /// what lets `render` stay a pure function of `Plane` — the
+    /// alternative was threading a `&RoomGraph` through `render` and
+    /// every one of its callers.
+    ///
+    /// Up and down are absent by construction: they never take a cell in
+    /// the plane, so they land in `links` instead.
+    edges: BTreeSet<(RoomId, Direction)>,
 }
 
 impl Plane {
@@ -145,6 +160,15 @@ impl Plane {
         self.cells.get(&cell).copied()
     }
 
+    /// Does a real exit leave `room` in `dir` toward the room the plane
+    /// placed in the adjacent cell?
+    ///
+    /// False for an exit whose destination ended up somewhere else (a
+    /// [`Conflict`]) — that line would point at the wrong room.
+    pub fn has_edge(&self, room: RoomId, dir: Direction) -> bool {
+        self.edges.contains(&(room, dir))
+    }
+
     pub fn rooms(&self) -> impl Iterator<Item = RoomId> + '_ {
         self.at.keys().copied()
     }
@@ -163,6 +187,7 @@ pub fn layout(graph: &RoomGraph, anchor: RoomId) -> Plane {
         extent: Extent::default(),
         conflicts: Vec::new(),
         links: Vec::new(),
+        edges: BTreeSet::new(),
     };
     if graph.room(anchor).is_none() {
         return plane;
@@ -205,6 +230,8 @@ pub fn layout(graph: &RoomGraph, anchor: RoomId) -> Plane {
                             dest: edge.dest,
                             cell: want,
                         });
+                    } else {
+                        plane.edges.insert((from, dir));
                     }
                 }
                 None if plane.cells.contains_key(&want) => {
@@ -218,6 +245,7 @@ pub fn layout(graph: &RoomGraph, anchor: RoomId) -> Plane {
                 None => {
                     plane.cells.insert(want, edge.dest);
                     plane.at.insert(edge.dest, want);
+                    plane.edges.insert((from, dir));
                     queue.push_back(edge.dest);
                 }
             }
