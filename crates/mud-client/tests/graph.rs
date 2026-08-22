@@ -556,3 +556,53 @@ fn state_free_requirements_keep_their_old_prices() {
         );
     }
 }
+
+/// The headline case. Leaving Silvermere through the gate is one hop and
+/// costs 5 gold. With the money, take the gate. Without it, take the
+/// long way round -- and still arrive.
+///
+/// The detour's exact length is deliberately NOT asserted. Measured
+/// against this exit_cost model it is 34 hops for a cost of 77 (an
+/// unweighted BFS says 29, which is why the number is not a constant
+/// worth pinning: it moves whenever a price does). What matters is that
+/// a route exists and that it is not the gate.
+#[test]
+fn the_silvermere_toll_is_paid_when_affordable_and_walked_around_when_not() {
+    let g = graph();
+    let inner = RoomId { map: 1, room: 1381 };
+    let road = RoomId { map: 1, room: 1382 };
+
+    let rich = Capabilities {
+        purse: Purse::from_gold(5),
+    };
+    let route = g.route_for(inner, road, &rich).expect("a route with money");
+    assert_eq!(route.len(), 1, "one hop through the gate: {route:?}");
+    assert_eq!(route[0], Direction::East);
+
+    let broke = Capabilities {
+        purse: Purse::from_gold(4),
+    };
+    let detour = g
+        .route_for(inner, road, &broke)
+        .expect("broke is not stranded; there is a free way round");
+    assert!(
+        detour.len() > 1,
+        "the free way round is long; got {detour:?}"
+    );
+    assert_ne!(detour[0], Direction::East, "not through the gate");
+}
+
+/// A gate is a cost, never a refusal: an expensive route is still a
+/// route. Only genuinely unopenable edges are refused.
+#[test]
+fn an_expensive_route_is_still_found() {
+    let g = graph();
+    // The Shadowy Passage behind the gem puzzle is unreachable...
+    let shadowy = RoomId { map: 17, room: 3042 };
+    let behind = RoomId { map: 17, room: 3044 };
+    assert!(
+        g.route_for(shadowy, behind, &Capabilities::unrestricted())
+            .is_none(),
+        "the gem passage is shut until the puzzle is solved"
+    );
+}

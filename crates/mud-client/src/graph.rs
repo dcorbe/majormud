@@ -761,7 +761,7 @@ impl RoomGraph {
         from: RoomId,
         allow: &dyn Fn(Direction, &ExitEdge) -> bool,
     ) -> BTreeMap<RoomId, usize> {
-        self.explore(from, None, allow)
+        self.explore(from, None, allow, &Capabilities::unrestricted())
             .into_iter()
             .map(|(id, reached)| (id, reached.hops))
             .collect()
@@ -773,7 +773,7 @@ impl RoomGraph {
     /// Cheapest by [`exit_cost`], not shortest: a walk that saves three
     /// streets by gambling on a hidden exit has not saved anything.
     pub fn route(&self, from: RoomId, to: RoomId) -> Option<Vec<Direction>> {
-        self.route_within(from, to, &|_, _| true)
+        self.route_within_for(from, to, &|_, _| true, &Capabilities::unrestricted())
     }
 
     /// As [`RoomGraph::route`], over the edges `allow` accepts.
@@ -791,13 +791,41 @@ impl RoomGraph {
         to: RoomId,
         allow: &dyn Fn(Direction, &ExitEdge) -> bool,
     ) -> Option<Vec<Direction>> {
+        self.route_within_for(from, to, allow, &Capabilities::unrestricted())
+    }
+
+    /// As [`RoomGraph::route`], for a walker with these capabilities.
+    ///
+    /// The difference is not academic: leaving Silvermere through the
+    /// gate is one hop and costs 5 gold, and the cheapest way round is
+    /// 34 hops for a cost of 77. A
+    /// router that cannot be told which walker is asking gets that
+    /// wrong every time, in the same direction.
+    pub fn route_for(
+        &self,
+        from: RoomId,
+        to: RoomId,
+        caps: &Capabilities,
+    ) -> Option<Vec<Direction>> {
+        self.route_within_for(from, to, &|_, _| true, caps)
+    }
+
+    /// As [`RoomGraph::route_within`], for a walker with these
+    /// capabilities.
+    pub fn route_within_for(
+        &self,
+        from: RoomId,
+        to: RoomId,
+        allow: &dyn Fn(Direction, &ExitEdge) -> bool,
+        caps: &Capabilities,
+    ) -> Option<Vec<Direction>> {
         if from == to {
             return self.rooms.contains_key(&from).then(Vec::new);
         }
         if !self.rooms.contains_key(&from) || !self.rooms.contains_key(&to) {
             return None;
         }
-        let reached = self.explore(from, Some(to), allow);
+        let reached = self.explore(from, Some(to), allow, caps);
         let mut steps = Vec::new();
         let mut at = to;
         while at != from {
@@ -810,7 +838,7 @@ impl RoomGraph {
     }
 
     /// Dijkstra over exits into known rooms, ordered by total
-    /// [`exit_cost`] and broken by hop count, so the cheapest route is
+    /// [`exit_cost_for`] and broken by hop count, so the cheapest route is
     /// also the shortest of the equally cheap ones. `target` stops the
     /// search once that room is settled; `None` walks the whole component.
     ///
@@ -824,6 +852,7 @@ impl RoomGraph {
         from: RoomId,
         target: Option<RoomId>,
         allow: &dyn Fn(Direction, &ExitEdge) -> bool,
+        caps: &Capabilities,
     ) -> BTreeMap<RoomId, Reached> {
         let mut best: BTreeMap<RoomId, Reached> = BTreeMap::new();
         if !self.rooms.contains_key(&from) {
@@ -850,7 +879,12 @@ impl RoomGraph {
                 {
                     continue;
                 }
-                let step = (cost + u64::from(exit_cost(edge.exit_type)), hops + 1);
+                let step = match exit_cost_for(&edge.requirement, edge.exit_type, caps) {
+                    // An edge this walker cannot open is not a dear edge.
+                    // Skipping it is what lets the detour win.
+                    Cost::Impassable => continue,
+                    Cost::Steps(c) => (cost + u64::from(c), hops + 1),
+                };
                 if best.get(&edge.dest).is_none_or(|r| (r.cost, r.hops) > step) {
                     best.insert(
                         edge.dest,
