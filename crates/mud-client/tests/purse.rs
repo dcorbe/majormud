@@ -53,14 +53,60 @@ fn a_line_that_is_not_coins_does_not_parse() {
     }
 }
 
-/// The meter takes its value from OUR inventory reply.
+/// The meter takes its value from OUR inventory reply. The real wire
+/// shape, per `mud-core`'s `show_inventory`: wrapped in "You are
+/// carrying ", not a bare coin line.
 #[test]
 fn an_inventory_reply_sets_the_purse() {
     let mut m = PurseMeter::default();
     assert_eq!(m.current(), Purse::ZERO);
     m.expect_reply(); // we just sent `i`
-    assert!(m.observe("2 gold crowns, 8 copper farthings"));
+    assert!(m.observe("You are carrying 2 gold crowns, 8 copper farthings"));
     assert_eq!(m.current().farthings(), 208);
+}
+
+/// The real shape: coins first, then worn gear, then a weapon, then
+/// grouped loose items, all comma-joined on ONE line
+/// (`crates/mud-core/src/game.rs:12840-12892`). The board never sends a
+/// bare coin line for an inventory reply, so the meter must read past
+/// the coins to the gear without either choking on it or counting it.
+#[test]
+fn a_mixed_carry_line_parses_only_the_leading_coins() {
+    let mut m = PurseMeter::default();
+    m.expect_reply();
+    assert!(m.observe(
+        "You are carrying 2 gold crowns, 8 copper farthings, a rusty dagger (worn), 3 sickle"
+    ));
+    assert_eq!(m.current().farthings(), 208, "gear after the coins must not touch the total");
+}
+
+/// Carrying gear but no money at all is a real, distinct answer: zero
+/// carried, not "we don't know". The board doesn't say "Nothing!" here
+/// because there IS something -- just no coins among it.
+#[test]
+fn a_carry_with_no_coins_at_all_reads_as_empty() {
+    let mut m = PurseMeter::default();
+    m.expect_reply();
+    assert!(!m.observe("You are carrying a rusty dagger"));
+    assert_eq!(m.current(), Purse::ZERO);
+    assert!(m.settled(), "we asked and got an answer");
+}
+
+/// The nastiest false positive available: an item whose own name STARTS
+/// with a denomination word. `bot.rs`'s `COIN_PILE_RE` documents "silver
+/// holy amulet" as exactly this trap (live in oracle_charm_lifecycle) --
+/// its leading-count requirement is what keeps a bare denomination word
+/// from being misread as one more coin entry.
+#[test]
+fn an_item_that_looks_like_a_coin_name_is_not_money() {
+    let mut m = PurseMeter::default();
+    m.expect_reply();
+    assert!(m.observe("You are carrying 2 gold crowns, 8 copper farthings, silver holy amulet"));
+    assert_eq!(
+        m.current().farthings(),
+        208,
+        "the amulet must not read as an extra denomination"
+    );
 }
 
 /// Coins lying on the floor are NOT the purse. Walking into a room with

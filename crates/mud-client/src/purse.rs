@@ -57,11 +57,34 @@ impl Purse {
     }
 }
 
+/// Match one comma-separated segment ("2 gold crowns") against the
+/// denomination table. `None` means this segment is not a coin entry at
+/// all — the boundary [`leading_coins`] uses to know where a mixed
+/// "You are carrying ..." list stops being money and starts being gear.
+fn parse_coin_segment(segment: &str) -> Option<u64> {
+    let segment = segment.trim();
+    let (count, rest) = segment.split_once(' ')?;
+    let count: u64 = count.parse().ok()?;
+    let rest = rest.trim();
+    let (_, _, value) = DENOMINATIONS
+        .iter()
+        .find(|(one, many, _)| rest == *one || rest == *many)?;
+    count.checked_mul(*value)
+}
+
 /// Read a coin listing into a purse, or `None` if the line is not one.
 ///
 /// `None` and `Some(Purse::ZERO)` are different answers on purpose: a
 /// line that says nothing about money must not be read as "carrying
 /// nothing", or every unrelated line would zero the purse.
+///
+/// All-or-nothing: every comma-separated segment must be a coin entry, or
+/// the whole line is rejected. This is the segment-level primitive with
+/// its own tests and its own job — a standalone coin line, such as the
+/// wording `bot.rs` sweeps off the floor. It deliberately does NOT know
+/// about `show_inventory`'s "You are carrying " wrapper or about coins
+/// sharing a line with items; that is [`leading_coins`]'s job, for
+/// [`PurseMeter`] alone.
 pub fn parse_coin_line(line: &str) -> Option<Purse> {
     let mut total: u64 = 0;
     let mut matched = false;
@@ -70,14 +93,54 @@ pub fn parse_coin_line(line: &str) -> Option<Purse> {
         if part.is_empty() {
             continue;
         }
-        let (count, rest) = part.split_once(' ')?;
-        let count: u64 = count.parse().ok()?;
-        let rest = rest.trim();
-        let (_, _, value) = DENOMINATIONS
-            .iter()
-            .find(|(one, many, _)| rest == *one || rest == *many)?;
-        total = total.checked_add(count.checked_mul(*value)?)?;
+        total = total.checked_add(parse_coin_segment(part)?)?;
         matched = true;
+    }
+    matched.then_some(Purse(total))
+}
+
+/// The literal wrapper `mud-core`'s `show_inventory` puts around the
+/// carried list: `out.push_str(&format!("You are carrying {}\n",
+/// names.join(", ")))` (`crates/mud-core/src/game.rs:12892`), with coins
+/// pushed as the FIRST joined element when there are any
+/// (`crates/mud-core/src/game.rs:12842-12846`) and `"You are carrying
+/// Nothing!"` (`text::CARRYING_NOTHING`) when the character carries
+/// nothing at all.
+///
+/// UNVERIFIED against the board this client actually plays: that board
+/// is a different reimplementation ("MMud Reborn"), its wording has
+/// already diverged from stock elsewhere, and nobody has captured its
+/// inventory reply. `mud-core` is the best offline authority there is,
+/// not a live oracle for this exact string — if the real board's
+/// wording differs, this is the one line to change.
+const CARRYING_PREFIX: &str = "You are carrying ";
+
+/// Sum the coin-shaped segments at the START of a "You are carrying ..."
+/// body, stopping at the first segment that is not one. `None` if there
+/// were none at all (an empty purse, or an items-only carry) — the same
+/// "no line = no fact" distinction [`parse_coin_line`] makes, kept
+/// separate because a `PurseMeter` reply is allowed to have money AND
+/// gear on the same line and a bare [`parse_coin_line`] would refuse the
+/// whole thing the moment it hit the first item.
+///
+/// Items follow coins in `show_inventory`'s join and must never be
+/// mistaken for money — an item can itself wear a denomination word
+/// ("silver holy amulet", live in oracle_charm_lifecycle per
+/// `bot.rs::COIN_PILE_RE`'s own caution) but [`parse_coin_segment`]'s
+/// leading-count requirement is what keeps it out: "silver" is not a
+/// number.
+fn leading_coins(body: &str) -> Option<Purse> {
+    let mut total: u64 = 0;
+    let mut matched = false;
+    for part in body.split(',') {
+        let part = part.trim();
+        match parse_coin_segment(part) {
+            Some(v) => {
+                total = total.saturating_add(v);
+                matched = true;
+            }
+            None => break,
+        }
     }
     matched.then_some(Purse(total))
 }
@@ -91,13 +154,15 @@ pub fn parse_coin_line(line: &str) -> Option<Purse> {
 /// the single line immediately following [`PurseMeter::expect_reply`] —
 /// the reply to OUR `i` — and nothing else, ever.
 ///
-/// That line is authoritative whether or not it looks like coins: `mud-core`
-/// always renders the carried coins first on the "You are carrying ..."
-/// line (`crates/mud-core/src/game.rs:12842-12846`), so an inventory with
-/// no money answers with a line `parse_coin_line` rejects (`"You are
-/// carrying Nothing!"`, or an items-only listing) — and that rejection
-/// means "carrying zero", not "we don't know", which is why the balance is
-/// reset to [`Purse::ZERO`] and the request is still marked settled.
+/// That line is authoritative whether or not it looks like coins: the
+/// board never sends a bare coin line for an inventory reply — coins
+/// arrive wrapped in `CARRYING_PREFIX` and often followed by gear on the
+/// same line — so the balance comes from stripping that prefix and
+/// reading [`leading_coins`], not from [`parse_coin_line`] directly.
+/// `"You are carrying Nothing!"` and an items-only carry both have no
+/// leading coin segment, and that rejection means "carrying zero", not
+/// "we don't know", which is why the balance is reset to [`Purse::ZERO`]
+/// and the request is still marked settled.
 ///
 /// `current` is always an assignment from the board, never an
 /// accumulation — deliberately, so that a `Purse` built from
@@ -127,12 +192,19 @@ impl PurseMeter {
     /// balance. Only ever fires for the one line following
     /// `expect_reply`; every other line -- including a coin pile on the
     /// floor -- is refused regardless of shape.
+    ///
+    /// Strips `CARRYING_PREFIX` if present (a bare coin line, such as a
+    /// hand-built fixture or a differently-worded board, is accepted
+    /// as-is) and reads [`leading_coins`] off what remains, so gear
+    /// listed after the coins on the same line is ignored rather than
+    /// poisoning the whole parse.
     pub fn observe(&mut self, line: &str) -> bool {
         if !self.expecting {
             return false;
         }
         self.expecting = false;
-        match parse_coin_line(line) {
+        let body = line.strip_prefix(CARRYING_PREFIX).unwrap_or(line);
+        match leading_coins(body) {
             Some(p) => {
                 self.current = p;
                 true
