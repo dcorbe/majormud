@@ -98,12 +98,6 @@ async fn door_board_worded(
                         "\r\nThe door is now open.\r\n[HP=30/MA=0]:".to_string()
                     }
                 }
-                // The thief's answer: no HP, no weapon, just a roll.
-                "picklock n" | "picklock north" => {
-                    counter.picks.fetch_add(1, Ordering::SeqCst);
-                    open = true;
-                    "\r\nYou unlocked the door.\r\n[HP=30/MA=0]:".to_string()
-                }
                 "bash n" | "bash north" => {
                     counter.bashes.fetch_add(1, Ordering::SeqCst);
                     open = true;
@@ -170,6 +164,66 @@ fn nav(graph: Arc<RoomGraph>) -> Navigator {
             ..NavConfig::default()
         },
     )
+}
+
+/// A board where the lock and the latch are SEPARATE, which is how the
+/// real one behaves: `picklock` answers "You unlocked the door." and the
+/// door still stands shut, so it must then be opened before it can be
+/// walked through.
+async fn pick_then_open_board() -> (std::net::SocketAddr, Arc<DoorLog>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let log = Arc::new(DoorLog::default());
+    let counter = Arc::clone(&log);
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut locked = true;
+        let mut open = false;
+        sock.write_all(room_block("Guard Post", "closed door north").as_bytes())
+            .await
+            .unwrap();
+        let mut buf = [0u8; 512];
+        while let Ok(n) = sock.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            let line = String::from_utf8_lossy(&buf[..n]).trim().to_lowercase();
+            let echo = format!("\r\n{line}");
+            let reply = match line.as_str() {
+                "n" | "north" => {
+                    counter.moves.fetch_add(1, Ordering::SeqCst);
+                    if open {
+                        room_block("Inner Ward", "open door south")
+                    } else {
+                        "\r\nThe door is closed.\r\n[HP=30/MA=0]:".to_string()
+                    }
+                }
+                "open n" | "open north" => {
+                    counter.opens.fetch_add(1, Ordering::SeqCst);
+                    if locked {
+                        "\r\nThe door is locked.\r\n[HP=30/MA=0]:".to_string()
+                    } else {
+                        open = true;
+                        "\r\nThe door is now open.\r\n[HP=30/MA=0]:".to_string()
+                    }
+                }
+                "picklock n" | "picklock north" => {
+                    counter.picks.fetch_add(1, Ordering::SeqCst);
+                    // Unlocked, NOT open. This is the whole point.
+                    locked = false;
+                    "\r\nYou unlocked the door.\r\n[HP=30/MA=0]:".to_string()
+                }
+                "bash n" | "bash north" => {
+                    counter.bashes.fetch_add(1, Ordering::SeqCst);
+                    open = true;
+                    "\r\nYou bashed the door open.\r\n[HP=30/MA=0]:".to_string()
+                }
+                other => format!("\r\nYou say \"{other}\"\r\n[HP=30/MA=0]:"),
+            };
+            sock.write_all(format!("{echo}{reply}").as_bytes()).await.unwrap();
+        }
+    });
+    (addr, log)
 }
 
 /// A navigator with picking OFF, so the force path is what gets tested.
@@ -674,7 +728,7 @@ async fn a_softened_door_refusal_is_still_a_blocked_door() {
 /// picks it instead, for the cost of a command and no health at all.
 #[tokio::test]
 async fn a_locked_door_is_picked_when_picking_is_on() {
-    let (addr, log) = door_board(true).await;
+    let (addr, log) = pick_then_open_board().await;
     let session = session_for(addr).await;
     let n = Navigator::new(
         graph_with_exit(7),
@@ -707,7 +761,7 @@ async fn a_locked_door_is_picked_when_picking_is_on() {
 /// stays behind a switch for the same reason bashing does.
 #[tokio::test]
 async fn picking_can_be_switched_off() {
-    let (addr, log) = door_board(true).await;
+    let (addr, log) = pick_then_open_board().await;
     let session = session_for(addr).await;
     let n = Navigator::new(
         graph_with_exit(7),
@@ -764,5 +818,41 @@ async fn a_locked_door_says_it_is_locked_rather_than_timing_out() {
     assert!(
         !said.contains("timed out"),
         "an instant, known refusal must not masquerade as a timeout: {said}"
+    );
+}
+
+/// A picked lock is UNLOCKED, not OPEN. The board answers "You unlocked
+/// the door." and the door still stands shut, so the walk owes it an
+/// `open` before the step. Sending the direction straight after the pick
+/// walks into a closed door and the leg dies there — live, Daniel's
+/// board 2026-08-22: "the picklocking worked, but it forgot to try
+/// opening the door and then gave up".
+#[tokio::test]
+async fn a_picked_lock_is_opened_before_it_is_walked() {
+    let (addr, log) = pick_then_open_board().await;
+    let session = session_for(addr).await;
+    let n = Navigator::new(
+        graph_with_exit(7),
+        NavConfig {
+            step_timeout_ms: 1500,
+            pick_locks: true,
+            bash_doors: false,
+            ..NavConfig::default()
+        },
+    );
+
+    let at = tokio::time::timeout(
+        Duration::from_secs(10),
+        n.goto(&session, HERE, THERE, &mut NoGuard),
+    )
+    .await
+    .expect("goto should not hang")
+    .expect("a picked and opened door is walkable");
+
+    assert_eq!(at.at, THERE);
+    assert!(log.picks.load(Ordering::SeqCst) >= 1, "the lock had to be picked");
+    assert!(
+        log.opens.load(Ordering::SeqCst) >= 2,
+        "one open before the pick, and one after it: the pick unlocks, it does not open"
     );
 }

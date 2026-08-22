@@ -348,12 +348,19 @@ const DOOR_BLOCKED: [&str; 7] = [
 
 /// Lines that mean the door gave way but we have NOT moved yet, so the
 /// step still has to be walked ("You bashed the door open.", 0xd54b0).
-const DOOR_YIELDED: [&str; 4] = [
-    "is now open",
-    "was already open",
-    "bashed the",
-    "unlocked the door",
-];
+const DOOR_YIELDED: [&str; 3] = ["is now open", "was already open", "bashed the"];
+
+/// The lock gave, but the LATCH did not: "You unlocked the door." leaves
+/// the door standing shut, so the walk still owes it an `open` before
+/// the step.
+///
+/// This lived in [`DOOR_YIELDED`] and that was wrong. Yielded means the
+/// way is clear and the direction can be sent; unlocked means one more
+/// command first. Conflating them sent the direction straight into a
+/// closed door and the leg died there (live, 2026-08-22: "the
+/// picklocking worked, but it forgot to try opening the door and then
+/// gave up").
+const DOOR_UNLOCKED: &str = "unlocked the door";
 
 /// The board's answer when the exit is not there at all. The graph and
 /// the board disagree, so the walk is somewhere other than it believes —
@@ -467,6 +474,8 @@ enum StepEvent {
     BashFailed,
     /// The picklock roll missed; the door is still shut.
     PickFailed,
+    /// The lock gave but the door is still shut — it needs opening.
+    DoorUnlocked,
     /// The bash never rolled: it sat on the action timer.
     BashPaced,
     /// SEARCH revealed a hidden exit; the step is still owed.
@@ -1045,6 +1054,9 @@ impl Navigator {
             | StepEvent::PickFailed
             | StepEvent::HiddenFound
             | StepEvent::HiddenMissed => {}
+            // Unlocked but still shut: the `open` below is precisely
+            // what it now needs.
+            StepEvent::DoorUnlocked => {}
             // "There is no exit in that direction!" is what a HIDDEN exit
             // says too, and it is the only thing it says. The graph is
             // the only witness that this wall is a door, so it decides:
@@ -1106,6 +1118,9 @@ impl Navigator {
             | StepEvent::PickFailed
             | StepEvent::HiddenFound
             | StepEvent::HiddenMissed => {}
+            // Unlocked but still shut: the `open` below is precisely
+            // what it now needs.
+            StepEvent::DoorUnlocked => {}
             StepEvent::NoSuchExit => {
                 let ask = session.send("look");
                 return self
@@ -1142,8 +1157,31 @@ impl Navigator {
                 }
                 let picked = session.send(&format!("picklock {dir}"));
                 match self.wait_room(events, guard, armed, picked).await? {
-                    // "You unlocked the door." -- open, but we have not
-                    // moved yet, so the step is still owed.
+                    // The lock gave. The door is still SHUT, so open it
+                    // and only then walk -- sending the direction here
+                    // walks into a closed door.
+                    StepEvent::DoorUnlocked => {
+                        let opened = session.send(&format!("open {dir}"));
+                        return match self.wait_room(events, guard, armed, opened).await? {
+                            StepEvent::DoorYielded => {
+                                let again = session.send(dir);
+                                self.arrival(
+                                    here, expected, BlindContext::AfterMove, events, guard, armed,
+                                    again,
+                                )
+                                .await
+                                .map(StepOutcome::Arrived)
+                            }
+                            // Unlocked and still refusing to open is not
+                            // something more picking will help with.
+                            _ => Err(NavErrorKind::DoorLocked {
+                                dir: dir.to_string(),
+                                tried: "picked the lock, but the door would not open".into(),
+                            }),
+                        };
+                    }
+                    // Already open (somebody else's doing, or it swung):
+                    // the way is clear, so walk it.
                     StepEvent::DoorYielded => {
                         let again = session.send(dir);
                         return self
@@ -1195,6 +1233,12 @@ impl Navigator {
             match self.wait_room(events, guard, armed, bashed).await? {
                 // Attributable only to a pick, which this is not.
                 StepEvent::PickFailed => {}
+                // The lock gave to the swing but the door still stands;
+                // spend the roll rather than looping on it for free.
+                StepEvent::DoorUnlocked => {
+                    rolls += 1;
+                    continue;
+                }
                 // The roll came up short; the door still stands.
                 StepEvent::BashFailed => {
                     rolls += 1;
@@ -1320,7 +1364,8 @@ impl Navigator {
                 | StepEvent::DoorYielded
                 | StepEvent::BashFailed
                 | StepEvent::BashPaced
-                | StepEvent::PickFailed => {
+                | StepEvent::PickFailed
+                | StepEvent::DoorUnlocked => {
                     rolls += 1;
                 }
             }
@@ -1361,6 +1406,7 @@ impl Navigator {
                 | StepEvent::BashFailed
                 | StepEvent::BashPaced
                 | StepEvent::PickFailed
+                | StepEvent::DoorUnlocked
                 | StepEvent::HiddenFound
                 | StepEvent::HiddenMissed => continue,
                 StepEvent::CombatBlocked => {
@@ -1535,6 +1581,9 @@ impl Navigator {
                     }
                     if line.contains(HIDDEN_MISSED) {
                         return Ok(StepEvent::HiddenMissed);
+                    }
+                    if line.contains(DOOR_UNLOCKED) {
+                        return Ok(StepEvent::DoorUnlocked);
                     }
                     if DOOR_BLOCKED.iter().any(|m| line.contains(m)) {
                         return Ok(StepEvent::DoorBlocked);
