@@ -245,6 +245,30 @@ struct StatTracker {
     buffer: Option<String>,
 }
 
+/// The session's own carried-contents reading, kept current by the
+/// reader task off whichever `i` reply arrives -- ours or a caller's.
+/// [`PurseTracker`]'s pattern, extended for a reply that spans several
+/// wrapped lines instead of one: buffered from the echo through the
+/// board's own terminator, the `Encumbrance:` line `show_inventory`
+/// always prints last (`crates/mud-core/src/game.rs`).
+///
+/// Distinct from [`PurseTracker`] on purpose. The purse is authoritative
+/// -- a `Purse` is a single number the meter can trust completely once
+/// it has seen one accepted reply. Contents are not: loot, sales and
+/// consumables drift the carried list constantly between asks, so this
+/// is deliberately allowed to be stale between refreshes rather than
+/// tracked incrementally (`2026-08-22-inventory-and-backstab-design.md`
+/// "Architecture — three layers, different truth models").
+struct ContentsTracker {
+    current: Inventory,
+    pending: HashMap<CmdId, Instant>,
+    /// `Some` from the echo until the `Encumbrance:` terminator; `None`
+    /// means no reply is in flight. Same shape as [`StatTracker::buffer`]
+    /// and the same reasoning: interleaved traffic just adds noise that
+    /// [`Inventory::parse`] will not recognise as any of its own fields.
+    buffer: Option<String>,
+}
+
 /// The character's inventory and spellbook, read once at realm entry —
 /// see [`crate::farm::probe_sheet`] and [`Session::set_sheet`] — and
 /// held here so `/go`, a farm start, and the dark-finish walk stop
@@ -292,6 +316,11 @@ pub struct Session {
     /// above — a different "sheet" ([`crate::farm::Sheet`]), read once at
     /// realm entry rather than fed continuously. See [`RawSheet`].
     sheet: Arc<Mutex<RawSheet>>,
+    /// The session's own carried-contents reading, kept current by the
+    /// reader task off whichever `i` reply arrives -- ours or a caller's.
+    /// See [`ContentsTracker`]. Unlike `sheet` above, this is refreshed
+    /// on EVERY `i`, not read once.
+    contents: Arc<Mutex<ContentsTracker>>,
 }
 
 impl Session {
@@ -322,6 +351,11 @@ impl Session {
         }));
         let toll_log = Arc::new(TollLog::default());
         let sheet = Arc::new(Mutex::new(RawSheet::default()));
+        let contents = Arc::new(Mutex::new(ContentsTracker {
+            current: Inventory::default(),
+            pending: HashMap::new(),
+            buffer: None,
+        }));
 
         let mut raw_file = match &capture {
             Some(c) => Some(File::create(&c.raw)?),
@@ -404,6 +438,7 @@ impl Session {
             let correlator = Arc::clone(&correlator);
             let purse = Arc::clone(&purse);
             let stats = Arc::clone(&stats);
+            let contents = Arc::clone(&contents);
             tokio::spawn(async move {
                 let mut filter = TelnetFilter::new();
                 let mut stripper = AnsiStripper::new();
@@ -442,6 +477,7 @@ impl Session {
                             state_tx.send_if_modified(|s| apply_event(s, &cor));
                             feed_purse(&purse, &cor);
                             feed_stats(&stats, &cor);
+                            feed_contents(&contents, &cor);
                             let _ = events_tx.send(cor);
                         }
                     }
@@ -463,6 +499,7 @@ impl Session {
                         state_tx.send_if_modified(|s| apply_event(s, &cor));
                         feed_purse(&purse, &cor);
                         feed_stats(&stats, &cor);
+                        feed_contents(&contents, &cor);
                         let _ = events_tx.send(cor);
                     }
                 }
@@ -486,6 +523,7 @@ impl Session {
             stats,
             toll_log,
             sheet,
+            contents,
         })
     }
 
@@ -531,6 +569,11 @@ impl Session {
             self.purse
                 .lock()
                 .expect("purse lock")
+                .pending
+                .insert(id, Instant::now());
+            self.contents
+                .lock()
+                .expect("contents lock")
                 .pending
                 .insert(id, Instant::now());
         }
@@ -689,6 +732,17 @@ impl Session {
         self.stats.lock().expect("stats lock").current.clone()
     }
 
+    /// The session's own carried-contents reading, as of the most recent
+    /// `i` reply this session (or any caller sharing it) has read off the
+    /// board. [`Inventory::default`] -- an empty pack -- until the first
+    /// one arrives; nothing here sends anything on its own account, same
+    /// as [`Session::stats`]. Best-effort by design: loot, sales and
+    /// consumables drift the real contents between asks, and this is
+    /// only ever as fresh as the last `i` anyone on this session sent.
+    pub fn contents(&self) -> Inventory {
+        self.contents.lock().expect("contents lock").current.clone()
+    }
+
     /// Record the character's inventory and spellbook, as read off the
     /// board by [`crate::farm::probe_sheet`]. Called once, at realm
     /// entry; overwrites whatever was cached before — the same "always
@@ -787,6 +841,46 @@ fn feed_stats(stats: &Mutex<StatTracker>, cor: &Correlated) {
             }
         }
         _ => {}
+    }
+}
+
+/// Feed one correlated event to the session's own [`Inventory`]: arm
+/// accumulation on the echo of one of OUR `i` sends (named in `pending`
+/// before the bytes left, same as [`feed_purse`] and [`feed_stats`]),
+/// then append every line that follows into [`ContentsTracker::buffer`]
+/// until the board's own terminator line closes the reply out.
+///
+/// Unlike [`feed_stats`], the terminator is not the next prompt: `i`'s
+/// reply always ends with `Encumbrance: .../ ...` (`show_inventory`,
+/// `crates/mud-core/src/game.rs`), a fixed final line rather than
+/// whatever text happens to precede the next `[HP=...]:`. Watching for
+/// it directly means a reply is parsed as soon as it is complete rather
+/// than waiting on a prompt that might be several lines further out.
+fn feed_contents(contents: &Mutex<ContentsTracker>, cor: &Correlated) {
+    let Event::Line(line) = &cor.event else {
+        return;
+    };
+    let mut tracker = contents.lock().expect("contents lock");
+    // Same staleness rule as `feed_purse`/`feed_stats`, same reason: an
+    // `i` that never echoed must not leak forever.
+    let now = Instant::now();
+    tracker
+        .pending
+        .retain(|_, sent_at| now.duration_since(*sent_at) < CORRELATE_TTL);
+    let is_our_echo = cor.answers.is_some_and(|id| tracker.pending.remove(&id).is_some());
+    if is_our_echo {
+        // The echo line itself is not reply body text.
+        tracker.buffer = Some(String::new());
+        return;
+    }
+    let Some(buf) = &mut tracker.buffer else {
+        return;
+    };
+    buf.push_str(line);
+    buf.push('\n');
+    if line.trim_start().starts_with("Encumbrance:") {
+        tracker.current = Inventory::parse(&std::mem::take(buf));
+        tracker.buffer = None;
     }
 }
 
