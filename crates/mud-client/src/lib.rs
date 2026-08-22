@@ -10,6 +10,7 @@ pub mod cli;
 pub mod correlate;
 pub mod deaths;
 pub mod dialect;
+pub mod equipment;
 pub mod events;
 pub mod farm;
 pub mod go;
