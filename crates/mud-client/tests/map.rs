@@ -412,7 +412,7 @@ fn every_compass_direction_is_drawn_at_the_connector_zooms() {
 /// was meant to guard. Both diagonals are now declared outright.
 #[test]
 fn two_real_diagonals_through_one_cell_are_drawn_crossed() {
-    use mud_client::graph::{ExitEdge, GraphRoom};
+    use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom};
     // A(0,0) B(1,0) C(0,1) D(1,1). A goes south-east to D; B goes
     // south-west to C. The two links genuinely cross at the centre.
     let a = RoomId { map: 1, room: 1 };
@@ -429,6 +429,7 @@ fn two_real_diagonals_through_one_cell_are_drawn_crossed() {
                 dest,
                 exit_type: 0,
                 command: None,
+                requirement: ExitRequirement::None,
             });
         }
         r
@@ -813,7 +814,7 @@ fn a_stop_and_a_pass_through_room_are_told_apart() {
 /// nothing at all joining them. The plane must know the difference.
 #[test]
 fn the_plane_records_exits_and_not_adjacency() {
-    use mud_client::graph::{ExitEdge, GraphRoom};
+    use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom};
     let a = RoomId { map: 1, room: 1 };
     let b = RoomId { map: 1, room: 2 };
     let d = RoomId { map: 1, room: 4 };
@@ -825,11 +826,13 @@ fn the_plane_records_exits_and_not_adjacency() {
         dest: b,
         exit_type: 0,
         command: None,
+        requirement: ExitRequirement::None,
     });
     ra.exits[Direction::SouthEast as usize] = Some(ExitEdge {
         dest: d,
         exit_type: 0,
         command: None,
+        requirement: ExitRequirement::None,
     });
     let rooms = vec![
         (a, ra),
@@ -874,7 +877,7 @@ fn the_plane_records_exits_and_not_adjacency() {
 /// glyph, which is two diagonals, least of all.
 #[test]
 fn a_square_loop_with_no_diagonal_exits_draws_no_diagonal() {
-    use mud_client::graph::{ExitEdge, GraphRoom};
+    use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom};
     let a = RoomId { map: 1, room: 1 };
     let b = RoomId { map: 1, room: 2 };
     let c = RoomId { map: 1, room: 3 };
@@ -889,6 +892,7 @@ fn a_square_loop_with_no_diagonal_exits_draws_no_diagonal() {
                 dest,
                 exit_type: 0,
                 command: None,
+                requirement: ExitRequirement::None,
             });
         }
         r
@@ -928,7 +932,7 @@ fn a_square_loop_with_no_diagonal_exits_draws_no_diagonal() {
 /// vertically adjacent and unconnected.
 #[test]
 fn adjacent_rooms_with_no_exit_between_them_are_not_joined() {
-    use mud_client::graph::{ExitEdge, GraphRoom};
+    use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom};
     let a = RoomId { map: 1, room: 1 };
     let b = RoomId { map: 1, room: 2 };
     let d = RoomId { map: 1, room: 4 };
@@ -940,11 +944,13 @@ fn adjacent_rooms_with_no_exit_between_them_are_not_joined() {
         dest: b,
         exit_type: 0,
         command: None,
+        requirement: ExitRequirement::None,
     });
     ra.exits[Direction::SouthEast as usize] = Some(ExitEdge {
         dest: d,
         exit_type: 0,
         command: None,
+        requirement: ExitRequirement::None,
     });
     let rooms = vec![
         (a, ra),
