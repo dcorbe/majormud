@@ -1270,10 +1270,14 @@ impl Navigator {
     /// `i`'s reply body is unattributed -- its `Kind` is `Opaque`, whose
     /// `completes` never fires (see [`crate::purse::PurseMeter`]'s own
     /// doc) -- so the correlator can only mark the ECHO of our send.
-    /// This arms a fresh meter on that echo and reads whatever line
-    /// follows it, exactly as `tui.rs` does by hand for its own status
-    /// bar. Bounded by the same step deadline as a walk step: an `i`
-    /// that never answers is exactly as informative as a step that
+    /// This arms a fresh meter on that echo, then keeps offering lines to
+    /// it until one is actually shaped like an inventory reply (see
+    /// `PurseMeter::observe`'s own doc): interleaved traffic in between
+    /// -- a shout, another player's action -- is skipped rather than
+    /// mistaken for the answer, which matters here specifically because
+    /// this is the reading the toll learner compares before and after a
+    /// crossing. Bounded by the same step deadline as a walk step: an
+    /// `i` that never answers is exactly as informative as a step that
     /// never lands.
     async fn read_purse(
         &self,
@@ -1312,9 +1316,11 @@ impl Navigator {
             };
             if let crate::events::Event::Line(line) = &cor.event {
                 if cor.answers == Some(id) {
-                    // The echo: whatever line comes next is the whole
-                    // answer, win or lose. Never fed to `observe` itself
-                    // -- it is the send bouncing back, not the reply.
+                    // The echo: arms the meter, but is never itself fed
+                    // to `observe` -- it is the send bouncing back, not
+                    // the reply. Which line after this counts as the
+                    // reply is `observe`'s call, not this loop's: it
+                    // only clears on a line that looks like one.
                     meter.expect_reply();
                     continue;
                 }

@@ -608,8 +608,13 @@ impl Session {
 /// Feed one correlated event to the session's own purse meter: arm it on
 /// the echo of one of OUR `i` sends (named in `pending` before the bytes
 /// left, same as [`Correlator::sent`]), and otherwise offer the line as
-/// the reply owed to whichever ask is still open. A no-op line when
-/// nothing is pending, same as [`PurseMeter::observe`] itself.
+/// the reply owed to whichever ask is still open. [`PurseMeter::observe`]
+/// itself decides whether a line offered this way is actually shaped
+/// like an inventory reply -- an unattributed line is always a no-op
+/// here, and so is an attributed one that does not look like the real
+/// answer; either way the expectation stays open for the next line
+/// rather than getting consumed by whatever interleaved traffic (a
+/// shout, another player's action) happened to land in the gap.
 fn feed_purse(purse: &Mutex<PurseTracker>, cor: &Correlated) {
     let Event::Line(line) = &cor.event else {
         return;

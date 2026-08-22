@@ -178,7 +178,7 @@ fn an_item_that_looks_like_a_coin_name_is_not_money() {
 fn coins_on_the_floor_do_not_touch_the_purse() {
     let mut m = PurseMeter::default();
     m.expect_reply();
-    assert!(m.observe("2 gold crowns, 8 copper farthings"));
+    assert!(m.observe("You are carrying 2 gold crowns, 8 copper farthings"));
     let before = m.current();
     // No pending inventory request now; anything coin-shaped is somebody
     // else's money.
@@ -196,4 +196,34 @@ fn an_inventory_without_coins_reads_as_empty() {
     assert!(m.observe("You are carrying Nothing!"));
     assert_eq!(m.current(), Purse::ZERO);
     assert!(m.settled(), "we asked and got an answer");
+}
+
+/// The gap between our `i`'s echo and its real reply is exactly where
+/// interleaved traffic on a live board lands -- a shout, another
+/// player's action. `i`'s reply body is unattributed (`Kind::Opaque`),
+/// so attribution here is positional, not textual: before content
+/// verification existed, `observe` treated whatever arrived right after
+/// the echo as the whole answer, unconditionally.
+///
+/// This is the load-bearing case, not a cosmetic one: `Navigator`'s toll
+/// learner reads the purse once before a crossing and once after. If an
+/// interloper had been consumed as either reading, two unrelated lines
+/// that both happen to parse as "no coins" would read as "the balance
+/// did not move" -- marking a toll crossing FREE when it actually
+/// charged, exactly the failure this feature exists to prevent.
+#[test]
+fn an_interloper_between_the_echo_and_the_reply_is_not_consumed() {
+    let mut m = PurseMeter::default();
+    m.expect_reply();
+    // Something else on the board, landing in the gap before our own
+    // reply arrives. It happens to be coin-shaped text on the wire, but
+    // it is not wrapped the way an inventory reply is.
+    assert!(!m.observe("Another player shouts, \"selling 5 gold crowns of loot!\""));
+    assert!(
+        !m.settled(),
+        "the interloper must not have satisfied the expectation"
+    );
+    assert!(m.observe("You are carrying 2 gold crowns, 8 copper farthings"));
+    assert_eq!(m.current().farthings(), 208, "the real reply must still be read");
+    assert!(m.settled());
 }

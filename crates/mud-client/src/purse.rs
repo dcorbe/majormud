@@ -111,8 +111,12 @@ pub fn parse_coin_line(line: &str) -> Option<Purse> {
 /// is a different reimplementation ("MMud Reborn"), its wording has
 /// already diverged from stock elsewhere, and nobody has captured its
 /// inventory reply. `mud-core` is the best offline authority there is,
-/// not a live oracle for this exact string — if the real board's
-/// wording differs, this is the one line to change.
+/// not a live oracle for this exact string — if the real board only
+/// differs in this WRAPPER (a different lead-in phrase around the same
+/// coins-first, comma-joined list), this is the one line to change.
+/// A board that also differs in coin ordering or vocabulary is a bigger
+/// edit: `DENOMINATIONS` and [`leading_coins`]'s coins-first assumption
+/// would need to change too, not just this constant.
 const CARRYING_PREFIX: &str = "You are carrying ";
 
 /// Sum the coin-shaped segments at the START of a "You are carrying ..."
@@ -184,10 +188,45 @@ fn leading_coins(body: &str) -> Option<Purse> {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PurseMeter {
     current: Purse,
-    /// Set by `expect_reply`, cleared by the very next `observe` call —
-    /// win or lose. One inventory ask gets exactly one answer; anything
-    /// coin-shaped after that belongs to the room, not the character.
+    /// Set by `expect_reply`, cleared only when a line that actually
+    /// LOOKS like an inventory reply arrives (see
+    /// [`looks_like_inventory_reply`]) -- never by the mere fact that
+    /// some line followed. One inventory ask gets exactly one answer;
+    /// anything else in between -- coin-shaped or not -- belongs to the
+    /// room or another player, not the character, and must not end the
+    /// wait.
     expecting: bool,
+}
+
+/// Does `line` have the shape of an inventory reply's body at all,
+/// rather than merely happen to be whatever arrived next?
+///
+/// Attribution here is positional, not textual: `i`'s reply body is
+/// `Kind::Opaque` (see [`PurseMeter::expect_reply`]'s own doc), so the
+/// correlator can only mark the ECHO, never the reply itself. Before
+/// this check existed, `observe` treated whichever line followed the
+/// echo as the whole answer unconditionally -- and on a live board any
+/// interleaved traffic (a shout, another player's action) can land in
+/// that gap. Usually that just yields a spurious zero, which undercounts
+/// and is the safe direction on its own. But the toll learner
+/// (`Navigator::read_purse`) takes a reading before AND after a
+/// crossing: if both readings land on unrelated interlopers and both
+/// come out zero, `after != before` is false and the crossing gets
+/// recorded FREE even though it charged -- exactly the failure this
+/// feature exists to prevent.
+///
+/// So a reply must look like one: `mud-core`'s `show_inventory` always
+/// wraps the carried list in [`CARRYING_PREFIX`], and `"You are carrying
+/// Nothing!"` is not a second case to check -- it already starts with
+/// that same prefix. A line that does not match is left unconsumed
+/// (`observe` returns `false` and `expecting` stays set), which chooses
+/// the failure mode deliberately: a board worded differently from this
+/// one never satisfies the expectation and the purse simply never
+/// updates, so the router treats every toll as unaffordable and detours.
+/// That is the safe direction -- worse than a live balance, better than
+/// consuming an arbitrary line and risking a mismeasured toll.
+fn looks_like_inventory_reply(line: &str) -> bool {
+    line.starts_with(CARRYING_PREFIX)
 }
 
 impl PurseMeter {
@@ -202,14 +241,16 @@ impl PurseMeter {
     }
 
     /// Note a line. Returns `true` iff this line was the one owed to a
-    /// pending `expect_reply` -- an attributed answer, whatever it says
-    /// -- and `false` only when nothing was pending at all (an
-    /// unattributed line, such as a coin pile on the floor, changes
-    /// NOTHING and is always refused).
+    /// pending `expect_reply` -- an attributed answer that also LOOKS
+    /// like one (see [`looks_like_inventory_reply`]) -- and `false`
+    /// otherwise: either nothing was pending at all (an unattributed
+    /// line, such as a coin pile on the floor, changes NOTHING and is
+    /// always refused), or something is pending but this line does not
+    /// have the shape of a reply, in which case it is skipped and the
+    /// expectation stays open for whatever comes next.
     ///
-    /// Strips `CARRYING_PREFIX` if present (a bare coin line, such as a
-    /// hand-built fixture or a differently-worded board, is accepted
-    /// as-is) and reads [`leading_coins`] off what remains, so gear
+    /// Strips `CARRYING_PREFIX` (verified present by the shape check
+    /// above) and reads [`leading_coins`] off what remains, so gear
     /// listed after the coins on the same line is ignored rather than
     /// poisoning the whole parse. When there are no leading coins at all
     /// the balance is still overwritten -- to [`Purse::ZERO`], not left
@@ -219,6 +260,9 @@ impl PurseMeter {
     /// router misjudge a toll as affordable.
     pub fn observe(&mut self, line: &str) -> bool {
         if !self.expecting {
+            return false;
+        }
+        if !looks_like_inventory_reply(line) {
             return false;
         }
         self.expecting = false;
@@ -231,9 +275,11 @@ impl PurseMeter {
         self.current
     }
 
-    /// True once the one line owed to a pending `expect_reply` has
-    /// arrived (or there was never a pending request at all). False only
-    /// in the narrow window between sending `i` and its answer.
+    /// True once a line that both answers our `i` AND looks like its
+    /// reply has arrived (or there was never a pending request at all).
+    /// False for the whole window between sending `i` and that answer --
+    /// which an interloper in between no longer shortens, now that
+    /// `observe` verifies shape before it clears this.
     pub fn settled(&self) -> bool {
         !self.expecting
     }
