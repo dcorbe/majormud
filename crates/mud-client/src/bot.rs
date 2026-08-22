@@ -446,6 +446,43 @@ pub struct Bot {
     /// drop line's job. Name-keyed, so the same-named-twin hazard costs
     /// a missed pile, never a loop.
     swept: (String, HashSet<String>),
+    /// What the very next `engage` should open with, primed by
+    /// [`Bot::arm_backstab_opener`] from the walk that produced the
+    /// CURRENT room (`crate::nav::Arrival::sneaking` /
+    /// `crate::nav::Arrival::restore_weapon`). Consumed the first time
+    /// `engage` fires — see [`Opener`]'s doc for why this must not
+    /// survive past that one use. `None` (never primed) is today's
+    /// unconditional `a <target>`.
+    opener: Option<Opener>,
+    /// How many times the board has told us the wielded weapon could not
+    /// backstab (`mud-core`'s `text::CANNOT_BACKSTAB_WEAPON`) — meaning
+    /// whatever this bot's caller believed was wielded at swap time was
+    /// wrong. Not acted on here (no retry: the opening round is already
+    /// spent either way, `2026-08-22-inventory-and-backstab-design.md`
+    /// "Failure modes and their cost") — kept as evidence a caller or a
+    /// test can consult, the "log it as a correction" the plan calls
+    /// for.
+    backstab_corrections: u32,
+}
+
+/// One arrival's belief about how the very next `engage` should open —
+/// see [`Bot::arm_backstab_opener`]. Taken, not cloned, the moment
+/// `engage` consumes it, so stale arrival evidence can never be reused
+/// to open a SECOND, later fight in the same room: sneak covers exactly
+/// the one move that carried the walk in
+/// (`2026-08-22-inventory-and-backstab-design.md` "The state model is
+/// trivial"), never whatever spawns minutes afterward.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Opener {
+    /// Open with `bs <target>` — the walk believed itself armed and the
+    /// wielded weapon (however it got there) is expected to backstab.
+    /// `restore`, when set, is the primary weapon to `eq` back
+    /// immediately after: the walk swapped to a backstab-only weapon
+    /// before moving in, so the opening round is the only round it
+    /// should spend wielding it (`2026-08-22-inventory-and-backstab-
+    /// design.md` "The swap-back is safe: by then the character is in
+    /// combat and the sneak is already spent").
+    Backstab { restore: Option<String> },
 }
 
 /// The set of targets the board has refused, shared across every bot a
@@ -481,7 +518,30 @@ impl Bot {
             refused,
             cooling: None,
             swept: (String::new(), HashSet::new()),
+            opener: None,
+            backstab_corrections: 0,
         }
+    }
+
+    /// Tell this bot what the walk that produced the CURRENT room
+    /// believed about its own backstab opener — see
+    /// `crate::nav::Arrival::sneaking` / `crate::nav::Arrival::
+    /// restore_weapon`. Call this once per arrival, before whatever
+    /// `on_event` call might engage a target from it; the belief is
+    /// consumed (taken) the first time `engage` fires, so it never
+    /// leaks into a later, unrelated fight in the same room.
+    ///
+    /// `sneaking = false` disarms it outright (today's `a <target>`,
+    /// whatever `restore` says) — a caller that never calls this at all
+    /// gets the identical default.
+    pub fn arm_backstab_opener(&mut self, sneaking: bool, restore: Option<String>) {
+        self.opener = sneaking.then_some(Opener::Backstab { restore });
+    }
+
+    /// How many times the board has refused a `bs` for carrying the
+    /// wrong weapon. See the field's own doc.
+    pub fn backstab_corrections(&self) -> u32 {
+        self.backstab_corrections
     }
 
     /// Release the one-shot heal/flee latches. Both re-arm on their own
@@ -613,7 +673,9 @@ impl Bot {
                     .filter(|(i, name)| self.attackable(name) && aggressive_here(room, *i))
                     .max_by_key(|(i, name)| (self.threat_of(name), std::cmp::Reverse(*i)))
                     .map(|(_, name)| name.clone());
-                actions.extend(target.and_then(|name| self.engage(&name)));
+                if let Some(name) = target {
+                    actions.extend(self.engage(&name));
+                }
                 actions
             }
             Event::ActorEntered { name, .. } => {
@@ -629,7 +691,7 @@ impl Bot {
                 if self.would_attack(name) {
                     self.room_has_work = true;
                 }
-                self.engage(name).into_iter().collect()
+                self.engage(name)
             }
             Event::ActorLeft { name, .. } => {
                 if self.engaged.as_deref() == Some(name.as_str()) {
@@ -784,13 +846,47 @@ impl Bot {
 
     /// Attack `name`, unless combat is off, a target is already engaged,
     /// the name is not a monster, or it is on the ignore list.
-    fn engage(&mut self, name: &str) -> Option<BotAction> {
+    ///
+    /// Opens with a backstab instead of an ordinary swing when
+    /// [`Bot::arm_backstab_opener`] believes this arrival is armed for
+    /// one — see [`Bot::opening_attack`]. Returns every command the
+    /// opener needs, in order: `bs`, then (only when the walk swapped
+    /// for it) the restore `eq` right behind it, so the primary weapon
+    /// is back before the SECOND round rather than lingering wielded for
+    /// the rest of the fight.
+    fn engage(&mut self, name: &str) -> Vec<BotAction> {
         if !self.attackable(name) {
-            return None;
+            return Vec::new();
         }
         self.engaged = Some(name.to_string());
         self.quiet_prompts = 0;
-        Some(BotAction::Send(format!("a {}", target_word(name))))
+        self.opening_attack(name)
+    }
+
+    /// The command(s) that open a fight with `name`: an ordinary swing
+    /// by default, or `bs` (plus a restore `eq`) when
+    /// [`Bot::arm_backstab_opener`] armed this arrival. Takes the primed
+    /// belief — see [`Opener`]'s doc for why it must not survive past
+    /// this one use.
+    ///
+    /// A `bs` sent while the character was not actually stealthy is a
+    /// silent plain attack — cheap, which is the whole reason the ALWAYS
+    /// SNEAK policy can afford to try whenever the walk believed itself
+    /// armed rather than proving it first
+    /// (`2026-08-22-inventory-and-backstab-design.md` "Failure modes and
+    /// their cost").
+    fn opening_attack(&mut self, name: &str) -> Vec<BotAction> {
+        let target = target_word(name);
+        match self.opener.take() {
+            Some(Opener::Backstab { restore: Some(primary) }) => vec![
+                BotAction::Send(format!("bs {target}")),
+                BotAction::Send(format!("eq {primary}")),
+            ],
+            Some(Opener::Backstab { restore: None }) => {
+                vec![BotAction::Send(format!("bs {target}"))]
+            }
+            None => vec![BotAction::Send(format!("a {target}"))],
+        }
     }
 
     /// This character's health as a percentage of max, or `None` when
@@ -911,6 +1007,16 @@ impl Bot {
                 .lock()
                 .expect("refusals")
                 .insert(target_word(&name).to_string());
+        }
+        // The wielded weapon could not backstab -- whatever the caller
+        // believed was wielded when it swapped for this opener was
+        // wrong. `attack_with_mode` still ran the swing as a normal
+        // attack (`mud-core`'s `backstab_command`), so the fight is not
+        // refused and `self.engaged` stands; there is nothing to retry,
+        // the opening round is already spent either way. Recorded as
+        // evidence only -- see `backstab_corrections`'s doc.
+        if line == mud_core::text::CANNOT_BACKSTAB_WEAPON {
+            self.backstab_corrections += 1;
         }
         if !self.config.auto_get {
             return Vec::new();

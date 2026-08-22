@@ -272,6 +272,13 @@ pub struct Arrival {
     ///
     /// [`Capabilities::stealth`]: crate::graph::Capabilities::stealth
     pub sneaking: bool,
+    /// The primary weapon to restore, if this walk swapped to a
+    /// backstab-capable one before the step that produced `at` — see
+    /// [`Navigator::with_backstab`]. `None` either because no swap was
+    /// needed (the wielded weapon was already dual-purpose, or none of
+    /// this applies) or because this navigator was never told what the
+    /// character carries at all.
+    pub restore_weapon: Option<String>,
 }
 
 impl Arrival {
@@ -289,12 +296,13 @@ impl Arrival {
         at: RoomId,
         landed: Option<(RoomId, crate::events::RoomView)>,
         sneaking: bool,
+        restore_weapon: Option<String>,
     ) -> Arrival {
         let seen = match landed {
             Some((id, room)) if id == at => Some(room),
             _ => None,
         };
-        Arrival { at, seen, sneaking }
+        Arrival { at, seen, sneaking, restore_weapon }
     }
 }
 
@@ -535,6 +543,20 @@ pub struct Navigator {
     /// the old behaviour: nothing that does not call
     /// [`Navigator::with_capabilities`] changes.
     capabilities: crate::graph::Capabilities,
+    /// What this walker knows about its own weapon and pack, for the
+    /// backstab opener it prepares before every step — see
+    /// [`Navigator::with_backstab`]. `None` (the default) disables the
+    /// opener entirely: nothing that does not call it changes, same
+    /// posture as `capabilities`.
+    backstab: Option<BackstabPrep>,
+}
+
+/// [`Navigator`]'s own snapshot of the character's weapon and pack, for
+/// [`crate::backstab::decide`]. See [`Navigator::with_backstab`].
+struct BackstabPrep {
+    content: Arc<mud_core::content::Content>,
+    wielded: Option<String>,
+    carried: Vec<String>,
 }
 
 /// The direction word the board understands for each step.
@@ -564,6 +586,7 @@ impl Navigator {
             fence: None,
             plane: None,
             capabilities: crate::graph::Capabilities::unrestricted(),
+            backstab: None,
         }
     }
 
@@ -580,6 +603,33 @@ impl Navigator {
     /// navigator that walks the same character).
     pub fn with_capabilities(mut self, caps: crate::graph::Capabilities) -> Self {
         self.capabilities = caps;
+        self
+    }
+
+    /// Arm this navigator to prepare a backstab opener before every
+    /// step, not just the one it turns out to matter for — the walk
+    /// cannot know which door leads to a target, so it stays ready for
+    /// whichever one does (`2026-08-22-inventory-and-backstab-
+    /// design.md`'s ALWAYS SNEAK policy, extended to the weapon).
+    ///
+    /// `wielded`/`carried` are a snapshot, the same honesty rule
+    /// [`Navigator::with_capabilities`] already follows: this navigator
+    /// never goes back to the session to refresh them mid-walk, so a
+    /// caller that swaps weapons by hand after building one gets a stale
+    /// opinion until it builds a fresh `Navigator`. The walk DOES keep
+    /// itself current for swaps IT sends, because those durably change
+    /// the truth an `Equipment` model itself would report.
+    ///
+    /// Without this call `goto` never sends `eq` and never sets
+    /// [`Arrival::restore_weapon`] — exactly today's behaviour for every
+    /// existing caller.
+    pub fn with_backstab(
+        mut self,
+        content: Arc<mud_core::content::Content>,
+        wielded: Option<String>,
+        carried: Vec<String>,
+    ) -> Self {
+        self.backstab = Some(BackstabPrep { content, wielded, carried });
         self
     }
 
@@ -687,15 +737,21 @@ impl Navigator {
         // a localization that moved us on can never pass off a stale
         // render as the destination's.
         let mut landed: Option<(RoomId, crate::events::RoomView)> = None;
-        // Whether the LAST step attempted believed itself armed — see
-        // `Arrival::sneaking`. Reset to `false` on every assignment
+        // Whether the LAST step attempted believed itself armed, and the
+        // primary weapon to restore if that step swapped for a backstab
+        // opener — see `Arrival::sneaking`/`Arrival::restore_weapon`.
+        // Reset to the "nothing happened" default on every assignment
         // below rather than accumulated, so a walk of zero steps (or one
-        // this navigator's `capabilities.stealth` is zero for) reports
-        // honestly.
+        // that never reaches `with_backstab`/stealth) reports honestly.
         let mut last_sneaking = false;
+        let mut last_restore: Option<String> = None;
+        // The wielded weapon this walk currently believes, refreshed by
+        // its own swaps — see `Navigator::with_backstab`'s doc. `None`
+        // when the caller never opted in.
+        let mut wielded = self.backstab.as_ref().and_then(|b| b.wielded.clone());
         'replan: loop {
             if current == to {
-                return Ok(Arrival::new(current, landed, last_sneaking));
+                return Ok(Arrival::new(current, landed, last_sneaking, last_restore));
             }
             let route = self
                 .route_from(current, to)
@@ -794,10 +850,30 @@ impl Navigator {
                     None
                 };
 
-                // Send `sneak` before this step, when the character has
-                // the skill to usefully arm it — read the reply honestly
-                // rather than assuming success (`Navigator::arm_sneak`'s
-                // own doc has the full grammar).
+                // Decide -> swap -> sneak -> move, in that exact order
+                // (`2026-08-22-inventory-and-backstab-design.md` "The
+                // backstab decision"): equipping breaks sneak, so any
+                // swap this step needs has to land BEFORE sneak is even
+                // attempted -- a swap sent after the move would be too
+                // late for the sneak that was already spent carrying the
+                // character through the doorway. The walk cannot know
+                // which door leads to a target, so it prepares before
+                // EVERY step, not just one it expects to matter --
+                // "ALWAYS SNEAK" extended to the weapon.
+                last_restore = None;
+                if let Some(prep) = &self.backstab {
+                    let plan = crate::backstab::decide(
+                        &prep.content,
+                        wielded.as_deref(),
+                        &prep.carried,
+                        self.capabilities.stealth > 0,
+                    );
+                    if let crate::backstab::BackstabPlan::Swap { to, restore } = plan {
+                        session.send(&format!("eq {to}"));
+                        wielded = Some(to);
+                        last_restore = Some(restore);
+                    }
+                }
                 last_sneaking = self
                     .arm_sneak(session, &mut events, guard, &mut armed)
                     .await
@@ -944,7 +1020,7 @@ impl Navigator {
             // Every step of the route was walked, so this is the normal
             // end of a walk: `current` is `to` and the last step's block
             // is the destination's own.
-            return Ok(Arrival::new(current, landed, last_sneaking));
+            return Ok(Arrival::new(current, landed, last_sneaking, last_restore));
         }
     }
 
