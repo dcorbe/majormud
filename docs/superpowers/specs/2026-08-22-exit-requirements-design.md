@@ -40,9 +40,12 @@ returns **zero hits**. Nothing here models it.
 
 `exit_cost` prices type 4 among the ORACLE-OPEN defaults at **1, a plain
 step**. So today the router walks through a 10,000-gold toll it cannot pay,
-and always prefers the Silvermere gate: the toll edge is **1 hop**, the
-toll-free way round is **29 hops** (BFS over map 1 excluding type-4 edges).
-That preference is not close, and it is made in total ignorance of the purse.
+and always prefers the Silvermere gate: the toll edge is **1 hop**, and the
+cheapest toll-free way round is **34 hops for a cost of 77** under this very
+`exit_cost` model (an unweighted BFS puts it at 29 — the two differ because
+the free route pays for doors, and it is the weighted figure the router
+actually sees). That preference is not close, and it is made in total
+ignorance of the purse.
 
 ### 2. A hidden exit that SEARCH can never reveal
 
@@ -96,7 +99,9 @@ names its cause.**
 Concretely, all of:
 
 1. Routing out of Silvermere with ≥ 5 gold takes the 1-hop gate; with less it
-   takes the 29-hop detour. Same code path, no special case.
+   takes the long way round and still arrives. Same code path, no special
+   case. The detour's exact length is not a contract — it moves with any
+   price in `exit_cost`.
 2. The walker never sends SEARCH at a puzzle-concealed exit.
 3. A route that fails at a gate reports *which* gate, not a timeout.
 4. No route is refused for being expensive — only for being unsatisfiable.
@@ -149,7 +154,7 @@ real route can still be found and reported. That is the one place our router is
 already better and it should stay that way.
 
 The toll then needs no special case: purse ≥ toll → `Steps(1)` plus a pay step;
-purse < toll → `Impassable`; Dijkstra finds the 29-hop detour by itself.
+purse < toll → `Impassable`; Dijkstra finds the detour by itself.
 
 ### The purse
 
@@ -231,8 +236,9 @@ C depends on inventory contents, which is why it is scoped separately.
 
 Fixtures are real and named, not invented.
 
-1. **Silvermere, both ways.** Purse 500 farthings → 1-hop gate. Purse 499 →
-   29-hop detour. The pair is the whole design in one test.
+1. **Silvermere, both ways.** Purse 500 farthings → the 1-hop gate. Purse 499
+   → a route that exists and does not start east. The pair is the whole design
+   in one test.
 2. **Map 17 toll.** Purse 999,999 → `Impassable`. Purse 1,000,000 → passable.
 3. **`17/3042` never gets a SEARCH.** The hang, pinned.
 4. **`1/2252` candle** still routes as a spoken command exit — proof the
