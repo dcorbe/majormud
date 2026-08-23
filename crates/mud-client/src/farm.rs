@@ -2370,10 +2370,11 @@ pub(crate) async fn travel(
                     Some(until),
                     true,
                     room,
-                    // No `Arrival` here either -- this interrupt fired
-                    // from `NavError`, which carries no sneaking belief.
-                    false,
-                    None,
+                    // A pass-through room, not the leg's actual
+                    // destination -- but the same `NavError` this step
+                    // produced, so the same real belief applies.
+                    err.sneaking,
+                    err.restore_weapon,
                     stats,
                     phase,
                 )
