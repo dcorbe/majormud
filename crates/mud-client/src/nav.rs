@@ -40,6 +40,22 @@ use mud_core::content::{Direction, RoomId};
 pub struct NavError {
     pub at: RoomId,
     pub kind: NavErrorKind,
+    /// What THIS step believed about its own backstab opener before it
+    /// failed to land cleanly -- the same belief [`Arrival::sneaking`]
+    /// carries on the success path, and for the identical reason: an
+    /// `Interrupted(Sighted { .. })`/`Interrupted(Entered { .. })` at
+    /// exactly the destination is not a desync, it is an arrival the
+    /// travel guard got to before `goto` returned `Ok` -- see
+    /// `crate::farm::travel`'s own construction of `LegEnd::Arrived`
+    /// from this case. `false` on every early-exit error that never
+    /// reached this step's decide -> swap -> sneak -> move at all (a
+    /// route failure, an expect timeout before the first step) --
+    /// [`Navigator::goto`]'s own starting default, never a guess.
+    pub sneaking: bool,
+    /// The primary weapon to restore, when this step's own arrival
+    /// swapped for a backstab-capable one -- [`Arrival::restore_weapon`],
+    /// same caveat as `sneaking`.
+    pub restore_weapon: Option<String>,
 }
 
 #[derive(Debug)]
@@ -756,7 +772,12 @@ impl Navigator {
             let route = self
                 .route_from(current, to)
                 .ok_or(NavErrorKind::NoRoute)
-                .map_err(|kind| NavError { at: current, kind })?;
+                .map_err(|kind| NavError {
+                    at: current,
+                    kind,
+                    sneaking: last_sneaking,
+                    restore_weapon: last_restore.clone(),
+                })?;
             for step in route {
                 let expected_id = self
                     .graph
@@ -766,6 +787,8 @@ impl Navigator {
                     .ok_or(NavError {
                         at: current,
                         kind: NavErrorKind::NoRoute,
+                        sneaking: last_sneaking,
+                        restore_weapon: last_restore.clone(),
                     })?;
                 let expected_name = self
                     .graph
@@ -774,6 +797,8 @@ impl Navigator {
                     .ok_or(NavError {
                         at: current,
                         kind: NavErrorKind::NoRoute,
+                        sneaking: last_sneaking,
+                        restore_weapon: last_restore.clone(),
                     })?;
 
                 // Attribution is what keeps stale blocks from
@@ -788,6 +813,8 @@ impl Navigator {
                     return Err(NavError {
                         at: current,
                         kind: NavErrorKind::Interrupted(interrupt),
+                        sneaking: last_sneaking,
+                        restore_weapon: last_restore.clone(),
                     });
                 }
 
@@ -844,7 +871,12 @@ impl Navigator {
                     Some(
                         self.read_purse(session, &mut events, guard, &mut armed)
                             .await
-                            .map_err(|kind| NavError { at: current, kind })?,
+                            .map_err(|kind| NavError {
+                                at: current,
+                                kind,
+                                sneaking: last_sneaking,
+                                restore_weapon: last_restore.clone(),
+                            })?,
                     )
                 } else {
                     None
@@ -877,11 +909,18 @@ impl Navigator {
                 last_sneaking = self
                     .arm_sneak(session, &mut events, guard, &mut armed)
                     .await
-                    .map_err(|kind| NavError { at: current, kind })?;
+                    .map_err(|kind| NavError {
+                        at: current,
+                        kind,
+                        sneaking: last_sneaking,
+                        restore_weapon: last_restore.clone(),
+                    })?;
                 if let Some(interrupt) = armed.take() {
                     return Err(NavError {
                         at: current,
                         kind: NavErrorKind::Interrupted(interrupt),
+                        sneaking: last_sneaking,
+                        restore_weapon: last_restore.clone(),
                     });
                 }
 
@@ -917,7 +956,12 @@ impl Navigator {
                             Some(interrupt) => NavErrorKind::Interrupted(interrupt),
                             None => kind,
                         };
-                        return Err(NavError { at: current, kind });
+                        return Err(NavError {
+                            at: current,
+                            kind,
+                            sneaking: last_sneaking,
+                            restore_weapon: last_restore.clone(),
+                        });
                     }
                 };
                 let seen = match seen {
@@ -935,7 +979,12 @@ impl Navigator {
                             let after = self
                                 .read_purse(session, &mut events, guard, &mut armed)
                                 .await
-                                .map_err(|kind| NavError { at: current, kind })?;
+                                .map_err(|kind| NavError {
+                                    at: current,
+                                    kind,
+                                    sneaking: last_sneaking,
+                                    restore_weapon: last_restore.clone(),
+                                })?;
                             self.capabilities.tolls_known_free.record(
                                 depart_room,
                                 step,
@@ -954,6 +1003,8 @@ impl Navigator {
                             return Err(NavError {
                                 at: current,
                                 kind: NavErrorKind::Interrupted(interrupt),
+                                sneaking: last_sneaking,
+                                restore_weapon: last_restore.clone(),
                             });
                         }
                         continue;
@@ -973,6 +1024,8 @@ impl Navigator {
                                     expected: expected_name.clone(),
                                     saw: sighting.name().to_string(),
                                 },
+                                sneaking: last_sneaking,
+                                restore_weapon: last_restore.clone(),
                             });
                         }
                         continue 'replan;
@@ -989,6 +1042,8 @@ impl Navigator {
                         expected: expected_name.clone(),
                         saw: saw.clone(),
                     },
+                    sneaking: last_sneaking,
+                    restore_weapon: last_restore.clone(),
                 };
                 if failures > MAX_FAILURES {
                     return Err(desync(current));
@@ -1008,6 +1063,8 @@ impl Navigator {
                             return Err(NavError {
                                 at: current,
                                 kind: NavErrorKind::Interrupted(interrupt),
+                                sneaking: last_sneaking,
+                                restore_weapon: last_restore.clone(),
                             });
                         }
                         continue 'replan;

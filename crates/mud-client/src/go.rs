@@ -237,6 +237,20 @@ pub async fn run_go(
     }
     let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone())
         .with_capabilities(session.capabilities());
+    // Item identity for the backstab opener -- best effort, same
+    // "reload the path again" pattern as the threat/duration tables
+    // `run_farm` already loads. `session.wielded()`/`.contents()` are
+    // themselves best-effort (whatever this session has read so far),
+    // exactly as `session.capabilities()`'s purse already is above.
+    let nav = match RoomGraph::load_content(&cfg.content) {
+        Ok(content) => {
+            nav.with_backstab(Arc::new(content), session.wielded(), session.contents().items)
+        }
+        Err(e) => {
+            eprintln!("item identity unavailable ({e}); backstab opener disabled");
+            nav
+        }
+    };
 
     let seen = crate::farm::look_around(session, "the go walk's look").await?;
     // An impossible id when there is no hint, so the neighbour shortcut

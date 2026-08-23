@@ -689,6 +689,19 @@ impl RoomGraph {
         Ok(crate::views::spell_durations(&content))
     }
 
+    /// The raw decoded content database, for a caller that needs item
+    /// identity directly (`crate::items::resolve`, the backstab
+    /// opener's weapon check -- `Navigator::with_backstab`) rather than
+    /// one of `RoomGraph`'s own derived views. Same "reload the path
+    /// again" shape as [`Self::load_threat`] / [`Self::load_spell_durations`]:
+    /// one more view over the same file, not a new concept. `RoomGraph`
+    /// itself does not keep the `Content` it was built from
+    /// ([`Self::from_content`] consumes a borrow and discards it), so
+    /// there is no cheaper way to hand one back.
+    pub fn load_content(db: &Path) -> Result<Content, String> {
+        mud_core::content_db::load(db).map_err(|e| e.to_string())
+    }
+
     pub fn room(&self, id: RoomId) -> Option<&GraphRoom> {
         self.rooms.get(&id)
     }

@@ -1618,6 +1618,21 @@ async fn farm_loop(
     let nav = {
         let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone())
             .with_capabilities(session.capabilities());
+        // Item identity for the backstab opener -- best effort, same
+        // "reload the path again" pattern as the threat table just
+        // below. `session.wielded()`/`.contents()` are themselves
+        // best-effort (whatever this session has read so far).
+        let nav = match RoomGraph::load_content(&cfg.content) {
+            Ok(content) => nav.with_backstab(
+                std::sync::Arc::new(content),
+                session.wielded(),
+                session.contents().items,
+            ),
+            Err(e) => {
+                eprintln!("item identity unavailable ({e}); backstab opener disabled");
+                nav
+            }
+        };
         match &plan.roam {
             Some(walls) => nav.fenced(walls.clone(), plan.start.map),
             None => nav,
@@ -1682,8 +1697,13 @@ async fn farm_loop(
             }
             // The leg's final step may have carried the stop's own block
             // out with it; the stop then starts from that evidence
-            // instead of re-asking the board.
+            // instead of re-asking the board. `arm` carries what that
+            // same step believed about sneaking/the swap -- see
+            // `LegEnd::Arrived`'s doc -- defaulting to the honest
+            // "nothing happened" reading for a zero-step leg (already
+            // at `stop`), the same default an un-opted-in walk reports.
             let mut arrival = None;
+            let mut arm = (false, None);
             if current != stop {
                 match travel(
                     session,
@@ -1703,7 +1723,10 @@ async fn farm_loop(
                 )
                 .await?
                 {
-                    LegEnd::Arrived { seen } => arrival = seen,
+                    LegEnd::Arrived { seen, sneaking, restore_weapon } => {
+                        arrival = seen;
+                        arm = (sneaking, restore_weapon);
+                    }
                     LegEnd::Died => return Ok((FarmEnd::Died, stats)),
                     LegEnd::TimeUp => return Ok((FarmEnd::TimeUp, stats)),
                     LegEnd::TooHurt => return Ok((FarmEnd::TooHurt, stats)),
@@ -1728,6 +1751,8 @@ async fn farm_loop(
                 until,
                 false,
                 arrival,
+                arm.0,
+                arm.1,
                 &mut stats,
                 phase,
             )
@@ -2131,7 +2156,23 @@ pub(crate) enum LegEnd {
     /// ([`crate::nav::Arrival::seen`]). `None` means there is genuinely
     /// nothing to hand on — a leg of no steps, or a stop too dark to
     /// render — and the stop asks, exactly as it always did.
-    Arrived { seen: Option<crate::events::RoomView> },
+    Arrived {
+        seen: Option<crate::events::RoomView>,
+        /// Did the walk believe itself armed for a sneak on the step
+        /// that produced this arrival — [`crate::nav::Arrival::sneaking`].
+        /// `false` whenever this leg's own [`crate::nav::Arrival`] is
+        /// not the one that produced this variant (a mid-route
+        /// Sighted/Entered interrupt landing exactly on `stop` — see
+        /// `travel`'s own construction site): [`crate::nav::NavError`]
+        /// carries no sneaking belief at all, so the honest default is
+        /// the same one an un-opted-in walk already reports.
+        sneaking: bool,
+        /// The primary weapon to restore, when this leg's arrival
+        /// swapped for a backstab-capable one —
+        /// [`crate::nav::Arrival::restore_weapon`]. Same honest-default
+        /// caveat as `sneaking`.
+        restore_weapon: Option<String>,
+    },
     Died,
     TimeUp,
     TooHurt,
@@ -2231,7 +2272,7 @@ pub(crate) async fn travel(
             let until = Instant::now() + Duration::from_secs(cfg.defend_seconds);
             match farm_stop(
                 session, nav, graph, *current, bot_config, threat, refusals, casts, clock, cfg,
-                started, Some(until), true, None, stats, phase,
+                started, Some(until), true, None, false, None, stats, phase,
             )
             .await?
             {
@@ -2260,7 +2301,11 @@ pub(crate) async fn travel(
             // steps) leaves the stop to ask, as it always did.
             Ok(arrived) => {
                 *current = arrived.at;
-                return Ok(LegEnd::Arrived { seen: arrived.seen });
+                return Ok(LegEnd::Arrived {
+                    seen: arrived.seen,
+                    sneaking: arrived.sneaking,
+                    restore_weapon: arrived.restore_weapon,
+                });
             }
             Err(e) => e,
         };
@@ -2289,9 +2334,19 @@ pub(crate) async fn travel(
                     _ => None,
                 };
                 // The destination itself: this IS the stop. Hand the
-                // evidence up so the stop starts from it.
+                // evidence up so the stop starts from it -- including
+                // what the step that produced it believed about its own
+                // backstab opener (`NavError::sneaking`/`restore_weapon`,
+                // now carried the same way `Arrival` does; this IS the
+                // common case for backstab in practice, since a monster
+                // already listed on arrival is exactly what trips
+                // `Sighted` before `goto` ever gets to return `Ok`).
                 if err.at == stop {
-                    return Ok(LegEnd::Arrived { seen: room });
+                    return Ok(LegEnd::Arrived {
+                        seen: room,
+                        sneaking: err.sneaking,
+                        restore_weapon: err.restore_weapon,
+                    });
                 }
                 if last_sighted == Some(err.at) {
                     guard.stop_sighting();
@@ -2315,6 +2370,10 @@ pub(crate) async fn travel(
                     Some(until),
                     true,
                     room,
+                    // No `Arrival` here either -- this interrupt fired
+                    // from `NavError`, which carries no sneaking belief.
+                    false,
+                    None,
                     stats,
                     phase,
                 )
@@ -2355,6 +2414,8 @@ pub(crate) async fn travel(
                     started,
                     Some(until),
                     true,
+                    None,
+                    false,
                     None,
                     stats,
                     phase,
@@ -2631,6 +2692,14 @@ async fn farm_stop(
     // described this stop. Seeds the evidence so the first swing goes
     // out without an opening look.
     arrival: Option<crate::events::RoomView>,
+    // What the leg that produced `arrival` believed about its own
+    // backstab opener -- `LegEnd::Arrived`'s `sneaking`/`restore_weapon`,
+    // straight from `crate::nav::Arrival`. `(false, None)` from every
+    // call site that has no real `Arrival` to report (a defence with no
+    // fresh leg behind it, a mid-route interrupt) -- the same honest
+    // default `Bot::arm_backstab_opener(false, ..)` already applies.
+    sneaking: bool,
+    restore_weapon: Option<String>,
     stats: &mut FarmStats,
     phase: PhaseSink<'_>,
 ) -> Result<StopEnd, FarmError> {
@@ -2670,6 +2739,12 @@ async fn farm_stop(
     };
     let mut bot =
         crate::bot::Bot::with_refusals(stop_config.clone(), threat.clone(), refusals.clone());
+    // Prime the opener from what the leg that brought us here believed
+    // -- see this function's own `sneaking`/`restore_weapon` doc. Safe
+    // to call unconditionally: `false` is exactly `Bot::with_refusals`'s
+    // own starting state (no opener primed), so a call site with
+    // nothing real to report changes nothing.
+    bot.arm_backstab_opener(sneaking, restore_weapon);
     let mut gate = Gate::new(backoff);
     let mut rest_watch = HealWatch::new(bot_config, cfg);
     // Health, for the spell mark. Read from the session's published
