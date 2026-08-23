@@ -429,8 +429,21 @@ fn completes(kind: Kind, ev: &Event) -> bool {
 /// itself and then renders the arrival — the block is the answer, so the
 /// announce must not retire the entry or every successful bash-through
 /// arrival would read unsolicited.
+///
+/// A sneaky move that breaks its stealth on the way in announces itself
+/// the same shape: "You make a sound as you enter the room!" prints,
+/// then the room block that actually completes the `Move` follows
+/// (`completes`'s `RoomSeen` arm, unconditionally for `Kind::Move`).
+/// Without this the line would answer nothing at all — not a `completes`
+/// wording for `Kind::Move` — so `nav`'s walk would never see it
+/// attributed to the step and could never learn the break (see
+/// `mud_client::nav::SNEAK_BROKE`, which reads this same line for the
+/// walk's own belief-tracking). Literal duplicated rather than shared,
+/// same call this file already made for "walk through".
 fn confirms(kind: Kind, line: &str) -> bool {
-    matches!(kind, Kind::Bash) && line.to_lowercase().contains("walk through")
+    let line = line.to_lowercase();
+    (matches!(kind, Kind::Bash) && line.contains("walk through"))
+        || (matches!(kind, Kind::Move) && line.contains("you make a sound as you enter the room"))
 }
 
 struct Entry {

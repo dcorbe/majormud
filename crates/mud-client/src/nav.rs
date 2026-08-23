@@ -278,13 +278,19 @@ pub struct Arrival {
     /// Did the walk believe itself armed for a sneak on the step that
     /// produced `at`? Consumed by
     /// [`crate::bot::Bot::arm_backstab_opener`]'s caller: an opener may
-    /// trust this for the CURRENT arrival only — sneak is spent by the
-    /// one move that carried it in (`2026-08-22-inventory-and-backstab-
-    /// design.md`'s "The state model is trivial"), so it says nothing
-    /// about a later fight in the same room. `false` for a walk of no
-    /// steps (already there) and for any walk this navigator's
-    /// [`Capabilities::stealth`] is zero for, same honest default
-    /// [`Navigator::arm_sneak`] itself returns.
+    /// trust this for the CURRENT arrival only.
+    ///
+    /// Sneak PERSISTS across steps now (`theft.md` §11.1, corrected
+    /// 2026-08-22 against live-board play: the armed bit survives a
+    /// passing transit roll and only clears on a break, not on every
+    /// move) — so `true` here does not mean "just armed this step", it
+    /// means "still believed sneaking as of this arrival", which can be
+    /// carried over from several steps back. It still says nothing
+    /// about a LATER fight in the same room: a break discovered on the
+    /// NEXT step's move would clear it for that step, not retroactively
+    /// for this one. `false` for a walk of no steps (already there) and
+    /// for any walk this navigator's [`Capabilities::stealth`] is zero
+    /// for, same honest default [`Navigator::arm_sneak`] itself returns.
     ///
     /// [`Capabilities::stealth`]: crate::graph::Capabilities::stealth
     pub sneaking: bool,
@@ -450,6 +456,17 @@ const HIDDEN_FOUND: &str = "you found an exit";
 /// is still hidden, only that this roll changed nothing — which is why
 /// the search runs on the board's refusal rather than ahead of the step.
 const HIDDEN_MISSED: &str = "you notice nothing different";
+
+/// Sneak breaking mid-transit (`theft.md` §11.1, corrected 2026-08-22
+/// against live-board play): under the persistent model sneak is a
+/// state that survives a passing transit roll and ends only when
+/// something breaks it. A failing roll is one of those breaks, and the
+/// board announces it with this line as the character steps into the
+/// new room — the causal signal [`Navigator::goto`] watches for, not a
+/// decorative aside. Seeing it clears the walk's belief so the NEXT
+/// step re-arms with a fresh `sneak` rather than assuming the old one
+/// still holds.
+const SNEAK_BROKE: &str = "you make a sound as you enter the room";
 
 /// Search rolls per step before a hidden exit is declared unfindable.
 ///
@@ -892,6 +909,18 @@ impl Navigator {
                 // which door leads to a target, so it prepares before
                 // EVERY step, not just one it expects to matter --
                 // "ALWAYS SNEAK" extended to the weapon.
+                //
+                // Persistence (see above) only covers the transit-roll
+                // break; equipping is a SEPARATE break the real board
+                // applies the instant `eq` lands, silently -- no line
+                // announces it the way a failed transit does. A belief
+                // this walk is not told to drop here would stay `true`
+                // forever after the first swap of a sneaky walk, since
+                // nothing else would ever clear it. So a swap always
+                // clears the belief, which is also exactly what makes
+                // the `if !last_sneaking` gate below re-send `sneak`
+                // this same step -- the one case persistence must not
+                // apply to keeps re-arming every time, same as before.
                 last_restore = None;
                 if let Some(prep) = &self.backstab {
                     let plan = crate::backstab::decide(
@@ -904,17 +933,28 @@ impl Navigator {
                         session.send(&format!("eq {to}"));
                         wielded = Some(to);
                         last_restore = Some(restore);
+                        last_sneaking = false;
                     }
                 }
-                last_sneaking = self
-                    .arm_sneak(session, &mut events, guard, &mut armed)
-                    .await
-                    .map_err(|kind| NavError {
-                        at: current,
-                        kind,
-                        sneaking: last_sneaking,
-                        restore_weapon: last_restore.clone(),
-                    })?;
+                // Sneak PERSISTS (theft.md §11.1, corrected 2026-08-22
+                // against live-board play): once believed armed, the walk
+                // holds that belief across steps instead of re-deriving
+                // it from a fresh `sneak` every time -- a stealthy
+                // character pays the round ONCE, not once per step. Only
+                // send `sneak` when the belief does not already hold:
+                // the first step of a walk, or any step right after a
+                // break (see the `sneak_broke` handling below).
+                if !last_sneaking {
+                    last_sneaking = self
+                        .arm_sneak(session, &mut events, guard, &mut armed)
+                        .await
+                        .map_err(|kind| NavError {
+                            at: current,
+                            kind,
+                            sneaking: last_sneaking,
+                            restore_weapon: last_restore.clone(),
+                        })?;
+                }
                 if let Some(interrupt) = armed.take() {
                     return Err(NavError {
                         at: current,
@@ -933,6 +973,12 @@ impl Navigator {
                     Some(cmd) => session.send_move(cmd),
                     None => session.send(dir_word(step)),
                 };
+                // Set by `wait_room` the moment it sees "You make a
+                // sound as you enter the room!" attributed to this
+                // step's move -- the board's own announcement that the
+                // transit roll failed and the belief above no longer
+                // holds. See `SNEAK_BROKE`.
+                let mut broke = false;
                 let outcome = self
                     .walk_step(
                         step,
@@ -945,8 +991,17 @@ impl Navigator {
                         &mut events,
                         guard,
                         &mut armed,
+                        &mut broke,
                     )
                     .await;
+                // Learned before `last_sneaking` is read anywhere else
+                // this step: a break is real-time ("...as you enter the
+                // room"), so the arrival this step produces — and any
+                // error it produces — must already reflect it, the same
+                // way `player.hidden` clears on the board's own side.
+                if broke {
+                    last_sneaking = false;
+                }
                 let seen = match outcome {
                     Ok(seen) => seen,
                     // A step that never lands while the guard is armed
@@ -1205,9 +1260,10 @@ impl Navigator {
         events: &mut tokio::sync::broadcast::Receiver<crate::correlate::Correlated>,
         guard: &mut impl TravelGuard,
         armed: &mut Option<Interrupt>,
+        sneak_broke: &mut bool,
     ) -> Result<StepOutcome, NavErrorKind> {
         let dir = dir_word(step);
-        match self.wait_room(events, guard, armed, sent).await? {
+        match self.wait_room(events, guard, armed, sent, sneak_broke).await? {
             StepEvent::Arrived(room) => return Ok(StepOutcome::Arrived(Sighting::Block(room))),
             // A direction was just sent, so dark is the destination
             // reporting itself; the name comes from the graph edge we
@@ -1240,13 +1296,13 @@ impl Navigator {
             // search here, re-localize everywhere else.
             StepEvent::NoSuchExit if self.search_hidden && searchable_hidden => {
                 return self
-                    .find_hidden(step, expected, here, session, events, guard, armed)
+                    .find_hidden(step, expected, here, session, events, guard, armed, sneak_broke)
                     .await;
             }
             StepEvent::NoSuchExit => {
                 let ask = session.send("look");
                 return self
-                    .arrival(here, expected, BlindContext::AfterLook, events, guard, armed, ask)
+                    .arrival(here, expected, BlindContext::AfterLook, events, guard, armed, ask, sneak_broke)
                     .await
                     .map(StepOutcome::StayedPut);
             }
@@ -1261,7 +1317,7 @@ impl Navigator {
                 // Someone else's door, or one that swung on its own.
                 let again = session.send(dir);
                 return self
-                    .arrival(here, expected, BlindContext::AfterMove, events, guard, armed, again)
+                    .arrival(here, expected, BlindContext::AfterMove, events, guard, armed, again, sneak_broke)
                     .await
                     .map(StepOutcome::Arrived);
             }
@@ -1277,7 +1333,7 @@ impl Navigator {
         }
 
         let opened = session.send(&format!("open {dir}"));
-        match self.wait_room(events, guard, armed, opened).await? {
+        match self.wait_room(events, guard, armed, opened, sneak_broke).await? {
             // Unreachable under the reply grammar (a block never
             // attributes to an open); kept for match completeness.
             StepEvent::Arrived(room) => return Ok(StepOutcome::Arrived(Sighting::Block(room))),
@@ -1301,7 +1357,7 @@ impl Navigator {
             StepEvent::NoSuchExit => {
                 let ask = session.send("look");
                 return self
-                    .arrival(here, expected, BlindContext::AfterLook, events, guard, armed, ask)
+                    .arrival(here, expected, BlindContext::AfterLook, events, guard, armed, ask, sneak_broke)
                     .await
                     .map(StepOutcome::StayedPut);
             }
@@ -1313,7 +1369,7 @@ impl Navigator {
             StepEvent::DoorYielded => {
                 let again = session.send(dir);
                 return self
-                    .arrival(here, expected, BlindContext::AfterMove, events, guard, armed, again)
+                    .arrival(here, expected, BlindContext::AfterMove, events, guard, armed, again, sneak_broke)
                     .await
                     .map(StepOutcome::Arrived);
             }
@@ -1336,18 +1392,18 @@ impl Navigator {
                     return Err(NavErrorKind::Interrupted(interrupt));
                 }
                 let picked = session.send(&format!("picklock {dir}"));
-                match self.wait_room(events, guard, armed, picked).await? {
+                match self.wait_room(events, guard, armed, picked, sneak_broke).await? {
                     // The lock gave. The door is still SHUT, so open it
                     // and only then walk -- sending the direction here
                     // walks into a closed door.
                     StepEvent::DoorUnlocked => {
                         let opened = session.send(&format!("open {dir}"));
-                        return match self.wait_room(events, guard, armed, opened).await? {
+                        return match self.wait_room(events, guard, armed, opened, sneak_broke).await? {
                             StepEvent::DoorYielded => {
                                 let again = session.send(dir);
                                 self.arrival(
                                     here, expected, BlindContext::AfterMove, events, guard, armed,
-                                    again,
+                                    again, sneak_broke,
                                 )
                                 .await
                                 .map(StepOutcome::Arrived)
@@ -1365,7 +1421,7 @@ impl Navigator {
                     StepEvent::DoorYielded => {
                         let again = session.send(dir);
                         return self
-                            .arrival(here, expected, BlindContext::AfterMove, events, guard, armed, again)
+                            .arrival(here, expected, BlindContext::AfterMove, events, guard, armed, again, sneak_broke)
                             .await
                             .map(StepOutcome::Arrived);
                     }
@@ -1410,7 +1466,7 @@ impl Navigator {
                 return Err(NavErrorKind::Interrupted(interrupt));
             }
             let bashed = session.send(&format!("bash {dir}"));
-            match self.wait_room(events, guard, armed, bashed).await? {
+            match self.wait_room(events, guard, armed, bashed, sneak_broke).await? {
                 // Attributable only to a pick, which this is not.
                 StepEvent::PickFailed => {}
                 // The lock gave to the swing but the door still stands;
@@ -1445,7 +1501,7 @@ impl Navigator {
                 StepEvent::NoSuchExit => {
                     let ask = session.send("look");
                     return self
-                        .arrival(here, expected, BlindContext::AfterLook, events, guard, armed, ask)
+                        .arrival(here, expected, BlindContext::AfterLook, events, guard, armed, ask, sneak_broke)
                         .await
                         .map(StepOutcome::StayedPut);
                 }
@@ -1464,7 +1520,7 @@ impl Navigator {
                 | StepEvent::HiddenMissed => {
                     let again = session.send(dir);
                     return self
-                        .arrival(here, expected, BlindContext::AfterMove, events, guard, armed, again)
+                        .arrival(here, expected, BlindContext::AfterMove, events, guard, armed, again, sneak_broke)
                         .await
                         .map(StepOutcome::Arrived);
                 }
@@ -1504,6 +1560,7 @@ impl Navigator {
         events: &mut tokio::sync::broadcast::Receiver<crate::correlate::Correlated>,
         guard: &mut impl TravelGuard,
         armed: &mut Option<Interrupt>,
+        sneak_broke: &mut bool,
     ) -> Result<StepOutcome, NavErrorKind> {
         let dir = dir_word(step);
         let mut rolls = 0u32;
@@ -1512,13 +1569,16 @@ impl Navigator {
                 return Err(NavErrorKind::Interrupted(interrupt));
             }
             let searched = session.send(&format!("search {dir}"));
-            match self.wait_room(events, guard, armed, searched).await? {
+            match self.wait_room(events, guard, armed, searched, sneak_broke).await? {
                 // Found — and the board re-hides it in about five
                 // minutes, so the step goes out now.
                 StepEvent::HiddenFound => {
                     let again = session.send(dir);
                     return self
-                        .arrival(here, expected, BlindContext::AfterMove, events, guard, armed, again)
+                        .arrival(
+                            here, expected, BlindContext::AfterMove, events, guard, armed, again,
+                            sneak_broke,
+                        )
                         .await
                         .map(StepOutcome::Arrived);
                 }
@@ -1570,10 +1630,11 @@ impl Navigator {
         guard: &mut impl TravelGuard,
         armed: &mut Option<Interrupt>,
         awaiting: crate::correlate::CmdId,
+        sneak_broke: &mut bool,
     ) -> Result<Sighting, NavErrorKind> {
         loop {
             match self
-                .wait_room(events, guard, armed, awaiting)
+                .wait_room(events, guard, armed, awaiting, sneak_broke)
                 .await?
             {
                 StepEvent::Arrived(room) => return Ok(Sighting::Block(room)),
@@ -1775,6 +1836,7 @@ impl Navigator {
         guard: &mut impl TravelGuard,
         armed: &mut Option<Interrupt>,
         awaiting: crate::correlate::CmdId,
+        sneak_broke: &mut bool,
     ) -> Result<StepEvent, NavErrorKind> {
         let deadline = tokio::time::Instant::now() + self.step_timeout;
         loop {
@@ -1855,6 +1917,15 @@ impl Navigator {
                     }
                     if line.contains(DOOR_UNLOCKED) {
                         return Ok(StepEvent::DoorUnlocked);
+                    }
+                    if line.contains(SNEAK_BROKE) {
+                        // Not terminal: the room block this step is
+                        // actually waiting on is still coming (this line
+                        // prints before `show_room`, never instead of
+                        // it) -- record the break and keep listening for
+                        // it on the same `awaiting` id.
+                        *sneak_broke = true;
+                        continue;
                     }
                     if DOOR_BLOCKED.iter().any(|m| line.contains(m)) {
                         return Ok(StepEvent::DoorBlocked);

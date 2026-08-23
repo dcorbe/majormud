@@ -68,6 +68,108 @@ async fn sneak_board(sneak_reply: &'static str) -> (std::net::SocketAddr, Arc<Sn
     (addr, log)
 }
 
+const FAR: RoomId = RoomId { map: 1, room: 3 };
+
+/// A board with a two-hop north/north corridor (Guard Post -> Inner
+/// Ward -> Keep), whose `sneak` reply is `sneak_reply` every time it is
+/// sent, and which announces "You make a sound as you enter the room!"
+/// on the move landing in `break_on_move` (0-indexed: 0 is the first
+/// `n`, 1 is the second) if given.
+async fn persistent_sneak_board(
+    sneak_reply: &'static str,
+    break_on_move: Option<usize>,
+) -> (std::net::SocketAddr, Arc<SneakLog>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let log = Arc::new(SneakLog::default());
+    let counter = Arc::clone(&log);
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        sock.write_all(room_block("Guard Post", "north").as_bytes())
+            .await
+            .unwrap();
+        let mut buf = [0u8; 512];
+        let mut move_index = 0usize;
+        while let Ok(n) = sock.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            let line = String::from_utf8_lossy(&buf[..n]).trim().to_lowercase();
+            let echo = format!("\r\n{line}");
+            let reply = match line.as_str() {
+                "sneak" => {
+                    counter.sneaks.fetch_add(1, Ordering::SeqCst);
+                    format!("\r\n{sneak_reply}\r\n[HP=30/MA=0]:")
+                }
+                "n" | "north" => {
+                    let idx = move_index;
+                    move_index += 1;
+                    counter.moves.fetch_add(1, Ordering::SeqCst);
+                    let block = if idx == 0 {
+                        room_block("Inner Ward", "north south")
+                    } else {
+                        room_block("Keep", "south")
+                    };
+                    if break_on_move == Some(idx) {
+                        format!("\r\nYou make a sound as you enter the room!{block}")
+                    } else {
+                        block
+                    }
+                }
+                other => format!("\r\nYou say \"{other}\"\r\n[HP=30/MA=0]:"),
+            };
+            sock.write_all(format!("{echo}{reply}").as_bytes()).await.unwrap();
+        }
+    });
+    (addr, log)
+}
+
+fn graph_two_hop() -> Arc<RoomGraph> {
+    let mut here = GraphRoom {
+        name: "Guard Post".into(),
+        exits: Default::default(),
+        light: 0,
+        ..Default::default()
+    };
+    here.exits[Direction::North as usize] = Some(ExitEdge {
+        dest: THERE,
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::from_exit_type(0, 0),
+    });
+    let mut mid = GraphRoom {
+        name: "Inner Ward".into(),
+        exits: Default::default(),
+        light: 0,
+        ..Default::default()
+    };
+    mid.exits[Direction::South as usize] = Some(ExitEdge {
+        dest: HERE,
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::from_exit_type(0, 0),
+    });
+    mid.exits[Direction::North as usize] = Some(ExitEdge {
+        dest: FAR,
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::from_exit_type(0, 0),
+    });
+    let mut far = GraphRoom {
+        name: "Keep".into(),
+        exits: Default::default(),
+        light: 0,
+        ..Default::default()
+    };
+    far.exits[Direction::South as usize] = Some(ExitEdge {
+        dest: THERE,
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::from_exit_type(0, 0),
+    });
+    Arc::new(RoomGraph::from_rooms(vec![(HERE, here), (THERE, mid), (FAR, far)]))
+}
+
 fn graph_one_hop() -> Arc<RoomGraph> {
     let mut here = GraphRoom {
         name: "Guard Post".into(),
@@ -199,4 +301,55 @@ async fn silence_is_not_believed_armed() {
         .unwrap();
     assert!(!arrival.sneaking, "silence must not be believed armed");
     assert_eq!(log.sneaks.load(Ordering::SeqCst), 1);
+}
+
+/// Sneak PERSISTS (theft.md §11.1, corrected 2026-08-22 against
+/// live-board play): one `sneak` should cover a walk of several rooms,
+/// not one per step. Mutation target: make the client re-arm every
+/// step regardless of belief and this fails (`log.sneaks` becomes 2).
+#[tokio::test]
+async fn one_sneak_covers_several_steps() {
+    let (addr, log) = persistent_sneak_board("Attempting to sneak...", None).await;
+    let session = session_for(addr).await;
+    let navigator = nav(graph_two_hop(), 56);
+    let arrival = navigator
+        .goto(&session, HERE, FAR, &mut NoGuard)
+        .await
+        .unwrap();
+    assert!(arrival.sneaking, "still believed sneaking at the far end");
+    assert_eq!(arrival.at, FAR);
+    assert_eq!(
+        log.sneaks.load(Ordering::SeqCst),
+        1,
+        "one arm covers the whole two-step walk"
+    );
+    assert_eq!(log.moves.load(Ordering::SeqCst), 2, "both steps still walked");
+}
+
+/// The board's "You make a sound as you enter the room!" is the break
+/// announcement, not decoration: seeing it must clear the belief so the
+/// NEXT step re-arms with a fresh `sneak`. Mutation target: make the
+/// break line not clear the belief and this fails (`log.sneaks` stays
+/// at 1, and `arrival.sneaking` on the broken step stays `true`).
+#[tokio::test]
+async fn the_break_line_clears_the_belief_and_the_next_step_rearms() {
+    // Break announced on move index 0 -- entering Inner Ward, the first
+    // step of the two-step walk.
+    let (addr, log) = persistent_sneak_board("Attempting to sneak...", Some(0)).await;
+    let session = session_for(addr).await;
+    let navigator = nav(graph_two_hop(), 56);
+    let arrival = navigator
+        .goto(&session, HERE, FAR, &mut NoGuard)
+        .await
+        .unwrap();
+    assert!(
+        arrival.sneaking,
+        "re-armed by the second `sneak` before the final step"
+    );
+    assert_eq!(
+        log.sneaks.load(Ordering::SeqCst),
+        2,
+        "arm once, break on the first step, re-arm once for the second"
+    );
+    assert_eq!(log.moves.load(Ordering::SeqCst), 2);
 }
