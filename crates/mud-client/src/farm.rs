@@ -2017,6 +2017,22 @@ pub async fn probe_sheet(
 ) {
     use crate::sheet::Casting;
 
+    // The sheet FIRST, because everything below reads it: `picklocks`
+    // and `stealth` reach the walker through `Session::capabilities()`,
+    // and the class name picks the casting dialect two lines down.
+    // Nothing else in the client ever sends `stat` -- the tracker, the
+    // correlator kind and the capability were all built without a
+    // sender, so `Session::stats()` stayed empty and every locked door
+    // reported "can't pick" against a character who could.
+    //
+    // `MagicRes:` sits on the sheet's last line, so a board wording it
+    // that way returns at once. The wait is bounded low because it is
+    // only synchronisation: `feed_stats` is driven by the correlator,
+    // not by this call, so a board that words the sheet differently
+    // still parses -- it just costs the deadline instead of returning
+    // early. Same bargain, and the same 3s, as the spell listing below.
+    let _ = ask_for(session, "stat", "MagicRes:", Duration::from_secs(3)).await;
+
     let inventory = ask(session, "inventory", "Encumbrance:").await;
 
     let caster_group = content.and_then(|content| {

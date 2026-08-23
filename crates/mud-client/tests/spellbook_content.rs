@@ -121,10 +121,21 @@ fn stat_reply(class: &str) -> String {
 const INVENTORY: &str =
     "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:";
 
-/// Reads the character's class off the board before `probe_sheet` runs,
-/// exactly as production code would (a `stat`/`st` the operator or an
-/// earlier probe already sent) -- `probe_sheet` itself never sends
-/// `stat`.
+/// Reads the class off the board before `probe_sheet` runs.
+///
+/// This helper's previous doc claimed it did what "production code
+/// would" -- and asserted outright that `probe_sheet` never sends
+/// `stat`. Both were true, and together they were the bug: NOTHING in
+/// the client sent `stat`, so `Session::stats()` stayed empty in the
+/// field, `capabilities().picklocks` was always 0, and a live `/go`
+/// stopped at a locked door reporting "can't pick" against a thief who
+/// could. Every test here passed the whole time because this helper
+/// hand-seeded what production never fetched.
+///
+/// `probe_sheet` now sends `stat` itself, so this is belt-and-braces:
+/// it pins the parse independently of the probe. See
+/// `probe_sheet_asks_for_the_sheet_itself` for the guard that the send
+/// actually happens.
 async fn prime_class(session: &Session, class: &str) {
     session.send("stat");
     session
@@ -135,6 +146,36 @@ async fn prime_class(session: &Session, class: &str) {
         session.stats().class.as_deref(),
         Some(class),
         "test setup: the stat reply must actually parse"
+    );
+}
+
+/// The regression guard for the live "can't pick" bug: `probe_sheet`
+/// must ask the board for the sheet ITSELF, with no operator command
+/// and no other probe having primed it. Everything downstream --
+/// `picklocks`, `stealth`, the casting dialect -- reads
+/// `Session::stats()`, and for months nothing filled it.
+#[tokio::test]
+async fn probe_sheet_asks_for_the_sheet_itself() {
+    let content = content_with_classes(&[("Warrior", 0)]);
+    let (addr, received) = scripted_board(vec![
+        ("stat", stat_reply("Warrior")),
+        ("inventory", INVENTORY.into()),
+    ])
+    .await;
+    let session = session_for(addr).await;
+    // Deliberately NO prime_class: the probe is on its own.
+
+    probe_sheet(&session, Some(&content)).await;
+
+    let log = received.lock().unwrap().clone();
+    assert!(
+        log.contains(&"stat".to_string()),
+        "probe_sheet must send `stat` unprompted; sent {log:?}"
+    );
+    assert_eq!(
+        session.stats().class.as_deref(),
+        Some("Warrior"),
+        "the sheet the probe fetched must reach Session::stats()"
     );
 }
 
