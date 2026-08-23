@@ -16721,20 +16721,24 @@ impl Core {
             }
         }
         let name = self.player(session).name.clone();
-        // Sneak movement (theft.md §11.1): the armed bit is consumed by
-        // this move; the normal leave/arrive broadcasts are replaced by
-        // perception-FILTERED "You notice %s sneaking..." lines, and the
-        // sneaker keeps the hidden byte. A NORMAL move clears it.
-        let mut sneaking = matches!(self.sessions.get(&session),
+        // Sneak movement (theft.md §11.1, corrected 2026-08-22 against
+        // live-board play): the armed bit is a STATE, not a per-move
+        // token. It survives a passing transit roll and holds across
+        // moves until something breaks it; the normal leave/arrive
+        // broadcasts are replaced by perception-FILTERED "You notice %s
+        // sneaking..." lines while it holds, and the sneaker keeps the
+        // hidden byte.
+        let was_armed = matches!(self.sessions.get(&session),
             Some(Session::InGame { player, .. }) if player.sneak_armed);
+        let mut sneaking = was_armed;
         // move_user's own independent stealth roll (11945-11960): being
         // armed is not a guarantee. PerStealth still auto-passes;
         // otherwise a SECOND, INDEPENDENT draw against the same §11.3
-        // helper decides THIS transit. Failure clears the armed bit
-        // right here and the move falls through to the normal,
-        // fully-broadcast path below — no perception-filtered notices,
-        // no self-aware "make a sound" roll (that lives only on the
-        // surviving sneaky path).
+        // helper decides THIS transit, every transit, for as long as the
+        // armed bit holds. A pass means sneak SURVIVES the move — it is
+        // not re-armed, spent, and re-armed on the next one; it simply
+        // keeps going, silently. A fail is the break: the character
+        // becomes visible and the board announces it below.
         if sneaking {
             let auto = self
                 .ability_bag(self.player(session))
@@ -16744,22 +16748,27 @@ impl Core {
                 let chance = self.stealth_chance_for(session);
                 if self.rng.roll(0, 100) >= chance {
                     sneaking = false;
-                    if let Some(Session::InGame { player, .. }) = self.sessions.get_mut(&session) {
-                        player.sneak_armed = false;
-                    }
                 }
             }
         }
+        // Was armed at the top of this move and did not survive it: the
+        // break, and the causal trigger for "You make a sound as you
+        // enter the room!" under the corrected model. This REPLACES the
+        // old self-aware Perception roll (12574+) that used to gate the
+        // same line on the SURVIVING path only, decorative and with no
+        // effect on concealment. The two readings are incompatible —
+        // one prints on a pass, the other on a fail — so this could not
+        // be layered on top of the old roll; it was retired instead.
+        // See theft.md §11.1's correction note for the conflict this
+        // resolves and why: the line is now deterministic on a break
+        // (the board "tells you when it stops"), not a separate,
+        // independently-rolled aside layered over a state that never
+        // actually changed.
+        let broke = was_armed && !sneaking;
+        if broke {
+            self.output_line(session, "You make a sound as you enter the room!");
+        }
         if sneaking {
-            // Self-awareness roll vs own Perception (12574+): a low roll
-            // warns the sneaker — no effect on concealment.
-            let perception = match self.sessions.get(&session) {
-                Some(Session::InGame { derived, .. }) => derived.perception,
-                _ => 0,
-            };
-            if self.rng.roll(0, 100) < perception {
-                self.output_line(session, "You make a sound as you enter the room!");
-            }
             self.broadcast_sneak(from, session, &text::sneak_out(&name, direction));
         } else {
             self.broadcast_to_room(from, Some(session), &text::left_via(&name, direction));
@@ -16767,8 +16776,12 @@ impl Core {
         match self.sessions.get_mut(&session) {
             Some(Session::InGame { player, moved_this_round, trail, .. }) => {
                 player.location = exit.dest;
-                player.sneak_armed = false;
+                // Only clear on a break (or if it was never armed to
+                // begin with) — a SURVIVING sneak must not be touched
+                // here, or persistence would be undone the instant it
+                // was granted.
                 if !sneaking {
+                    player.sneak_armed = false;
                     player.hidden = false;
                 }
                 // +0x6f4 bit 6 (12501) + the pursuit breadcrumb push.

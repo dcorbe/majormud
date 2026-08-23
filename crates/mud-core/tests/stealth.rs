@@ -470,9 +470,11 @@ fn arm_sneak(core: &mut Core, sneaker: SessionId) {
 #[test]
 fn sneak_transit_reroll_can_fail_after_arming() {
     // Armed + roll fails -> normal, fully-broadcast move; sneak_armed
-    // cleared. The DLL's independent second draw at 11945-11960:
-    // FUN_0046cc43 fails -> `+0x6f4 &= 0xfffb` (clear bit 4) right there,
-    // and the move falls through to the ordinary path.
+    // cleared, and — corrected 2026-08-22 against live-board play
+    // (theft.md §11.1) — the failure is what causes "You make a sound
+    // as you enter the room!", the board's own break announcement, NOT
+    // a separate decorative self-awareness roll layered on the
+    // surviving path (see `sneak_transit_reroll_passing_stays_sneaky`).
     let mut core = Core::new(world_with_reroll_classes(), CoreConfig::default());
     let sneaker = core.attach_player(person("Shade", 3, false));
     let watcher = core.attach_player(person("Guard", 4, false));
@@ -487,11 +489,16 @@ fn sneak_transit_reroll_can_fail_after_arming() {
         core.input(sneaker, "n");
         let events = core.drain_events();
         let to_watcher = texts(&events, watcher);
+        let to_sneaker = texts(&events, sneaker);
         if to_watcher.contains("just left to the north") {
             // Normal path taken: the transit roll failed.
             assert!(
                 !to_watcher.contains("sneaking"),
                 "no sneak notice on a failed transit: {to_watcher:?}"
+            );
+            assert!(
+                to_sneaker.contains("You make a sound as you enter the room!"),
+                "the break is announced to the sneaker: {to_sneaker:?}"
             );
             assert!(
                 !core.player_snapshot(sneaker).sneak_armed,
@@ -512,8 +519,13 @@ fn sneak_transit_reroll_can_fail_after_arming() {
 
 #[test]
 fn sneak_transit_reroll_passing_stays_sneaky() {
-    // Armed + roll passes -> the existing sneaky path, unchanged:
-    // perception-filtered notices, normal broadcasts suppressed.
+    // Armed + roll passes -> the sneaky path: perception-filtered
+    // notices, normal broadcasts suppressed. Corrected 2026-08-22
+    // against live-board play (theft.md §11.1): sneak PERSISTS, so a
+    // passing roll must leave the armed bit SET, not clear it -- the
+    // opposite of what this test asserted before. Player-observed on a
+    // real board: "sneak persists until it wears off, and the board
+    // tells you when it stops."
     let mut core = Core::new(world_with_reroll_classes(), CoreConfig::default());
     let sneaker = core.attach_player(person("Shade", 3, false));
     let watcher = core.attach_player(person("Guard", 4, false)); // Eagle-Eye: catches it for sure
@@ -524,6 +536,7 @@ fn sneak_transit_reroll_passing_stays_sneaky() {
         core.input(sneaker, "n");
         let events = core.drain_events();
         let to_watcher = texts(&events, watcher);
+        let to_sneaker = texts(&events, sneaker);
         if to_watcher.contains("just left to the north") {
             // Roll failed this attempt — reset and retry.
             if core.player_snapshot(sneaker).location == THERE {
@@ -541,8 +554,12 @@ fn sneak_transit_reroll_passing_stays_sneaky() {
             "the normal broadcast is suppressed on a passing roll: {to_watcher:?}"
         );
         assert!(
-            !core.player_snapshot(sneaker).sneak_armed,
-            "sneak is single-move: the armed bit clears on success too"
+            !to_sneaker.contains("make a sound"),
+            "a surviving sneak is not a break: no announcement: {to_sneaker:?}"
+        );
+        assert!(
+            core.player_snapshot(sneaker).sneak_armed,
+            "sneak persists: the armed bit survives a passing transit roll"
         );
         return;
     }
@@ -573,20 +590,24 @@ fn sneak_transit_reroll_perstealth_skips_the_draw() {
     let events = core.drain_events();
     let draws_after = core.debug_rng_draws();
 
-    // Three draws, none of them the transit stealth-chance roll:
+    // Two draws, neither the transit stealth-chance roll:
     //   1. give_monsters_a_free_attack's unconditional per-departure
     //      roll (drawn even with nothing to hit — see move_player).
     //   2. broadcast_sneak's per-candidate perception check, one draw
     //      for the watcher present in the departure room.
-    //   3. the self-awareness "make a sound" roll (12574+), unconditional
-    //      on the sneaky path.
-    // PerStealth means FUN_0046cc43 + its genrdn were never reached —
-    // if they had been, this delta would be 4 (roll drawn and passed)
-    // or a differently-composed 2 (roll drawn and failed, which would
-    // also flip the assertions below to the normal-move wording).
+    // No self-awareness "make a sound" roll any more (corrected
+    // 2026-08-22, theft.md §11.1): that decorative roll only ever fired
+    // on the SURVIVING path, and under the persistent model the line is
+    // now the deterministic announcement of a BREAK -- printed straight
+    // off `broke`, no roll of its own. PerStealth never breaks, so on
+    // this path the line never prints and nothing is drawn for it.
+    // PerStealth also means FUN_0046cc43 + its genrdn were never
+    // reached — if they had been, this delta would be 3 (roll drawn and
+    // passed) or a differently-composed 1 (roll drawn and failed, which
+    // would also flip the assertions below to the normal-move wording).
     assert_eq!(
         draws_after - draws_before,
-        3,
+        2,
         "PerStealth skips the transit stealth-chance draw entirely"
     );
 
