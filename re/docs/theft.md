@@ -586,7 +586,76 @@ only gates the *skill calc* and SEARCH detection).
 
 ## 11. SNEAK and HIDE
 
-### 11.1 `cmd_sneak` (`0x454641`) — arm stealth for the next move
+### 11.1 `cmd_sneak` (`0x454641`) — arm stealth
+
+> **Correction, 2026-08-22 (player-confirmed live-board play overrides
+> this section's decompile reading; see below).** Daniel plays this
+> game on a live board and has stated, unambiguously, that **sneak
+> PERSISTS until it wears off, and the board tells you when it stops**
+> — `"You make a sound as you enter the room!"` on the move that breaks
+> it, `"You don't think you are sneaking."` when the character checks
+> while not sneaking. `mud-core`'s move path and `mud-client`'s walker
+> were both built against the "armed bit consumed by one move" reading
+> below, and have been corrected to match the persistent model instead
+> (`crates/mud-core/src/game.rs`'s move path; `crates/mud-client/src/
+> nav.rs`'s `Navigator::goto`). This is a deliberate application of the
+> project's own evidence ranking (`docs/superpowers/specs/2026-08-22-
+> one-path-to-content-design.md`, "On the reliability of our own
+> specs"): observed live-board behaviour outranks our own RE documents.
+>
+> This is **not a build-version divergence** — Daniel confirms the
+> WG3-NT binary persists sneak too, in play. Our READING of the
+> decompile below was wrong, not the binary. Digging further: bit `0x4`
+> of `+0x6f4` (the "armed" bit this section describes) is set ONLY at
+> two sites, both inside `cmd_sneak` (`0x454641`/`0x454704` in
+> `re/wg_nt_ghidra/exports/WCCMMUD_decompiled.c`), confirmed by an
+> exhaustive grep of every write to `+0x6f4` in that file (not just a
+> pattern search for `| 4`). It is cleared unconditionally inside
+> `move_user`'s own sneaky-print branch (line ~12575, `& 0xfffb`)
+> **regardless of whether the transit roll below passed or failed** —
+> which is exactly the literal reading this section already documents.
+> No site anywhere in the 76,746-line decompile re-sets it after
+> `cmd_sneak`'s initial arm. Read strictly as written, this bit is
+> consumed after exactly one subsequent move, which is what led to the
+> original (wrong) implementation.
+>
+> The one candidate re-arm mechanism found — `fast_update_character`'s
+> queued-move dispatcher (line ~20045, described below) checking bit
+> `0x4` before every delayed direction command and routing through
+> `sneak(usrnum, dir)` when it is still set — does not save the
+> reading, because the bit it checks is the same one `move_user`
+> clears unconditionally one move earlier. Two possibilities remain
+> open, **neither confirmed**:
+>
+> 1. The durable "still trying to sneak" state lives in a field this
+>    trace did not find — not bit `0x4` of `+0x6f4` — and something
+>    re-arms bit `0x4` from it right before each queued-move dispatch,
+>    through logic that does not literally write `| 4` to `+0x6f4` (so
+>    a grep for that pattern would miss it).
+> 2. This decompile's reconstruction of the relevant branch is not
+>    faithful to the binary at this point (Ghidra misattribution),
+>    which only a byte-level disassembly re-check could rule in or out
+>    — out of scope for this pass.
+>
+> **What would settle it:** a solo, non-partied, non-automated `sneak`
+> → move → move → move transcript against Daniel's live board, showing
+> whether `"Attempting to sneak..."` reappears on the second and third
+> moves (per-move reading) or only after a `"You make a sound..."`
+> break (persistent reading), and whether a passing move ever reprints
+> `"Attempting to sneak..."` on its own. Until that capture exists, or
+> the real mechanism is found in the decompile, this document states
+> the confirmed BEHAVIOUR (persists, board announces the break) without
+> claiming a confirmed MECHANISM for it — an honest "we know the
+> behaviour, we have not located the flag" rather than a confident
+> wrong one.
+>
+> The rest of this subsection is kept as originally written — including
+> the parts the correction above supersedes — because the mechanical
+> detail (gates, rolls, chances, wordings) is still the best evidence
+> available for everything EXCEPT what happens to the armed bit across
+> multiple moves and what the self-awareness roll they describe now
+> means. See the inline notes below for exactly which claims are
+> superseded.
 
 Gates via `can_sneak` (`0x46bd91`): fails if being attacked by a same-room
 attacker (except attacker-type 4), or `player+0x6f0 >= 1` (combat-engagement
@@ -610,10 +679,18 @@ prints `Attempting to sneak...` then:
 
 Sysop-debug flag + PerStealth + armed → extra `PERFECT STEALTH\r` line.
 
-The armed bit is consumed by the queued-movement dispatcher in
-`fast_update_character` (line 20045): if bit 4 is set the pending move runs as
+**[Superseded — see the correction above: our implementation does NOT
+consume the armed bit on the surviving path any more.]** The queued
+movement dispatcher in `fast_update_character` (line 20045) checks the
+armed bit before every delayed direction command, not just the one
+right after `cmd_sneak`: if bit 4 is set the pending move runs as
 `sneak(usrnum, dir)` (`0x4172dc`), which is just
-`DAT_0047d648 = 1; move_user(...); DAT_0047d648 = 0;`.
+`DAT_0047d648 = 1; move_user(...); DAT_0047d648 = 0;` — a plain direction
+otherwise runs `move_user(..., 0)` directly. This per-move check is
+consistent with EITHER reading: a persistent state would rely on it to
+re-engage the sneak path on every subsequent move for as long as the bit
+stays set; the per-move reading below relies on it too, just for
+exactly one move before `cmd_sneak` has to be typed again.
 
 Inside `move_user`, gated on `DAT_0047d648 != 0` (lines 11945-11960), a SECOND,
 INDEPENDENT stealth-chance roll decides this specific transit before any of the
@@ -624,16 +701,38 @@ marks this transit sneaky (`local_19 = 1`); otherwise bit 4 (`+0x6f4 & 0xfffb`)
 is cleared right here and the move falls through as an ordinary, fully-broadcast
 move — normal leave/arrive lines, no perception-filtered sneak notices, and none
 of the self-awareness roll described next (that roll only exists on the
-surviving sneaky path). Net effect: because `cmd_sneak` already spent one roll
-to arm, a full sneak-and-move is gated by TWO independent draws against the same
-chance, so the true odds of arriving unseen are roughly the square of the single
-roll's chance, not the single roll's chance itself.
+surviving sneaky path). **Our implementation keeps this re-roll exactly as
+described** (`mud-core`, landed `aab2cb69`) — it is still what decides pass/fail
+for THIS transit — but a pass now leaves the armed bit SET instead of clearing
+it, so sneak keeps going into the next move rather than needing `cmd_sneak`
+typed again. **[Superseded]** The "roughly the square of the single roll's
+chance" framing below only holds for a ONE-move sneak; under the corrected
+persistent model the odds compound per move for as long as the walk keeps
+passing (`chance^N` over `N` moves, not `chance²` once), so a long sneaky walk
+is much likelier to break somewhere than a single transit's own odds suggest:
+because `cmd_sneak` already spent one roll to arm, a full sneak-and-move is
+gated by TWO independent draws against the same chance, so the true odds of
+arriving unseen are roughly the square of the single roll's chance, not the
+single roll's chance itself.
 
 `move_user`'s sneak branch (lines 12574+): clears bit 4, **rolls `genrdn(0,100)`**
 vs own Perception — `roll < P` prints (red) `You make a sound as you enter the room!\r`
-to the sneaker (self-awareness only, no actual effect on concealment). Both rooms
-then get **perception-filtered** notifications (`tell_room` with the
-perception-filter flag set, **[dkyellow]**):
+to the sneaker (self-awareness only, no actual effect on concealment).
+**[Superseded — this is the specific claim the correction above overturns.]**
+Read strictly, this roll is independent of, and decorative relative to, the
+transit re-roll above: it fires only on the path where the transit roll already
+PASSED, and even a failed self-awareness roll leaves concealment untouched. That
+reading cannot be reconciled with "the board tells you when it [sneak] stops" —
+a message gated on the surviving path can never announce a break. **Our
+implementation retires this roll outright** rather than layering a persistence
+model on top of it: `mud-core`'s move path now prints this exact line
+if-and-only-if the transit re-roll above FAILED (`was_armed && !sneaking`), with
+no additional Perception draw — deterministic on the break, not probabilistic on
+success. The self-awareness roll as decompiled and the causal-break reading
+cannot both be right (one prints on a pass, the other needs a fail), which is
+the conflict flagged in the correction above rather than resolved by keeping
+both. Both rooms then get **perception-filtered** notifications (`tell_room`
+with the perception-filter flag set, **[dkyellow]**):
 `You notice %s sneaking out upwards%s.\r` / `…downwards%s.\r` /
 `You notice %s sneaking out to the %s%s.\r` and on the far side
 `You notice %s sneak in from above%s.\r` / `…below%s.\r` /
