@@ -24,6 +24,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::correlate::{CmdId, Correlated, Correlator};
+use crate::equipment::Equipment;
 use crate::events::{Event, RoomView};
 use crate::graph::{Capabilities, TollLog};
 use crate::parse::Parser;
@@ -321,6 +322,20 @@ pub struct Session {
     /// See [`ContentsTracker`]. Unlike `sheet` above, this is refreshed
     /// on EVERY `i`, not read once.
     contents: Arc<Mutex<ContentsTracker>>,
+    /// The session's own wielded-weapon model. Updated two ways: any
+    /// `"You are now holding <new>."` line, wherever it lands in the
+    /// stream (see [`feed_equipment`]), and a one-time seed off the
+    /// first `i`/`inventory` listing this session sees -- see
+    /// [`Equipment::seed`], called from both [`feed_contents`] (the
+    /// lowercase `i` a caller sends) and [`Session::set_sheet`]
+    /// (`crate::farm::probe_sheet`'s `inventory`, the realm-entry
+    /// primer every caller -- TUI and headless `mmc farm`/`mmc go`
+    /// alike -- actually runs). `Arc` for the same reason `toll_log`
+    /// is: every [`Navigator`] built over this session's lifetime needs
+    /// the same, current belief.
+    ///
+    /// [`Navigator`]: crate::nav::Navigator
+    equipment: Arc<Mutex<Equipment>>,
 }
 
 impl Session {
@@ -356,6 +371,7 @@ impl Session {
             pending: HashMap::new(),
             buffer: None,
         }));
+        let equipment = Arc::new(Mutex::new(Equipment::new()));
 
         let mut raw_file = match &capture {
             Some(c) => Some(File::create(&c.raw)?),
@@ -439,6 +455,7 @@ impl Session {
             let purse = Arc::clone(&purse);
             let stats = Arc::clone(&stats);
             let contents = Arc::clone(&contents);
+            let equipment = Arc::clone(&equipment);
             tokio::spawn(async move {
                 let mut filter = TelnetFilter::new();
                 let mut stripper = AnsiStripper::new();
@@ -477,7 +494,8 @@ impl Session {
                             state_tx.send_if_modified(|s| apply_event(s, &cor));
                             feed_purse(&purse, &cor);
                             feed_stats(&stats, &cor);
-                            feed_contents(&contents, &cor);
+                            feed_contents(&contents, &equipment, &cor);
+                            feed_equipment(&equipment, &cor);
                             let _ = events_tx.send(cor);
                         }
                     }
@@ -499,7 +517,8 @@ impl Session {
                         state_tx.send_if_modified(|s| apply_event(s, &cor));
                         feed_purse(&purse, &cor);
                         feed_stats(&stats, &cor);
-                        feed_contents(&contents, &cor);
+                        feed_contents(&contents, &equipment, &cor);
+                        feed_equipment(&equipment, &cor);
                         let _ = events_tx.send(cor);
                     }
                 }
@@ -524,6 +543,7 @@ impl Session {
             toll_log,
             sheet,
             contents,
+            equipment,
         })
     }
 
@@ -745,6 +765,17 @@ impl Session {
         self.contents.lock().expect("contents lock").current.clone()
     }
 
+    /// The session's own wielded-weapon model, as this session has
+    /// confirmed (`"You are now holding <new>."`) or seeded it (the
+    /// first `i`/`inventory` listing read) -- see [`Equipment`]. `None`
+    /// until one of those has happened, or the character is genuinely
+    /// unarmed. Best-effort in the same sense [`Session::stats`] and
+    /// [`Session::contents`] are: nothing here sends anything on its own
+    /// account.
+    pub fn wielded(&self) -> Option<String> {
+        self.equipment.lock().expect("equipment lock").weapon().map(str::to_string)
+    }
+
     /// Record the character's inventory and spellbook, as read off the
     /// board by [`crate::farm::probe_sheet`]. Called once, at realm
     /// entry; overwrites whatever was cached before — the same "always
@@ -752,6 +783,12 @@ impl Session {
     /// follow, so a `Session` never holds two different opinions about
     /// what was last actually asked.
     pub fn set_sheet(&self, inventory: Inventory, book: Spellbook, casting: Casting) {
+        // The universal realm-entry primer (`crate::farm::probe_sheet`,
+        // run by both the TUI and headless `mmc farm`/`mmc go`) is the
+        // one call site every caller actually reaches, so it seeds the
+        // wielded-weapon model too -- see `Equipment::seed`'s doc for
+        // why this only ever takes the first time.
+        self.equipment.lock().expect("equipment lock").seed(&inventory.items);
         let mut s = self.sheet.lock().expect("sheet lock");
         s.inventory = inventory;
         s.book = book;
@@ -858,7 +895,7 @@ fn feed_stats(stats: &Mutex<StatTracker>, cor: &Correlated) {
 /// whatever text happens to precede the next `[HP=...]:`. Watching for
 /// it directly means a reply is parsed as soon as it is complete rather
 /// than waiting on a prompt that might be several lines further out.
-fn feed_contents(contents: &Mutex<ContentsTracker>, cor: &Correlated) {
+fn feed_contents(contents: &Mutex<ContentsTracker>, equipment: &Mutex<Equipment>, cor: &Correlated) {
     let Event::Line(line) = &cor.event else {
         return;
     };
@@ -882,8 +919,30 @@ fn feed_contents(contents: &Mutex<ContentsTracker>, cor: &Correlated) {
     buf.push('\n');
     if line.trim_start().starts_with("Encumbrance:") {
         tracker.current = Inventory::parse(&std::mem::take(buf));
+        // This is a caller's own `i`, not just ours (see this
+        // function's `pending`/echo dance above) -- so it is exactly
+        // the "first `i` listing" `Equipment::seed` wants, whichever
+        // caller happened to send it.
+        equipment.lock().expect("equipment lock").seed(&tracker.current.items);
         tracker.buffer = None;
     }
+}
+
+/// Feed one correlated event to the session's own [`Equipment`]: any
+/// [`Event::Line`] is offered to [`Equipment::observe`], which only
+/// ever moves off a genuine `"You are now holding <new>."` confirmation
+/// -- see that method's own doc for why nothing else can update it.
+/// Unlike purse/stats/contents this needs no `pending`/echo dance: an
+/// equip confirmation is unambiguous on its own wording, wherever in
+/// the stream it lands -- including mid-[`feed_contents`]'s own
+/// buffered `i` reply, since a swap issued while a listing is still in
+/// flight is exactly what [`crate::nav::Navigator::goto`]'s decide ->
+/// swap -> sneak -> move step does.
+fn feed_equipment(equipment: &Mutex<Equipment>, cor: &Correlated) {
+    let Event::Line(line) = &cor.event else {
+        return;
+    };
+    equipment.lock().expect("equipment lock").observe(line);
 }
 
 /// Throw away everything already queued on an event receiver.

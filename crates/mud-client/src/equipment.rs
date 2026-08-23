@@ -57,6 +57,49 @@ impl Equipment {
     pub fn observe(&mut self, line: &str) -> Option<String> {
         parse_now_holding(line).and_then(|name| self.confirm_weapon(&name))
     }
+
+    /// Seed the model from an `i`/`inventory` listing, for the one thing
+    /// [`Self::observe`] can never learn on its own: what was already
+    /// wielded before this client ever connected. Only takes if nothing
+    /// has confirmed a weapon yet -- past the first listing, `"nothing
+    /// in the game force-unequips gear"` (this module's own doc) makes
+    /// our own equip confirmations the only trustworthy source, and a
+    /// later listing re-parsed on top of them could only ever agree or
+    /// go stale between the read and the moment it lands.
+    pub fn seed(&mut self, items: &[String]) {
+        if self.weapon.is_none() {
+            self.weapon = wielded_from_listing(items);
+        }
+    }
+}
+
+/// Which of `items` (as printed by an `i`/`inventory` listing --
+/// comma-split, wrap-rejoined, `sheet::Inventory::items`'s own shape)
+/// names the WIELDED weapon.
+///
+/// The board marks an equipped item, worn or wielded, with a trailing
+/// `" (<Slot>)"`; a carried-but-unequipped item prints none at all.
+/// Established against MudPlay's own `i`-listing parser
+/// (`archive/FujiTerm/MudPlay/Game/Inventory/InventoryManager.cs`'s
+/// `EquippedSlotRegex`: an enumerated, closed set of 21 body slots plus
+/// the two weapon-hand spellings) and its `GAME_MECHANICS.md`
+/// "Equipment & gear" `[CONFIRMED]` notes -- nothing in this repo's own
+/// fixtures settles whether a carried-but-unworn item ever gets a
+/// marker too, so that source is the one that does. A one-handed weapon
+/// marks `"(Weapon Hand)"`; a two-handed one marks `"(Two handed)"`
+/// (`crates/mud-client/tests/contents.rs`'s `quarterstaff (Two
+/// handed)`); both mean the same thing, wielded rather than merely
+/// carried, so either one identifies the entry.
+///
+/// Returns the bare name, marker stripped -- the same shape
+/// [`Equipment::confirm_weapon`] already stores off `"You are now
+/// holding <name>."`.
+pub fn wielded_from_listing(items: &[String]) -> Option<String> {
+    items.iter().find_map(|item| {
+        item.strip_suffix(" (Weapon Hand)")
+            .or_else(|| item.strip_suffix(" (Two handed)"))
+            .map(str::to_string)
+    })
 }
 
 /// `mud_core::text::now_holding`'s exact wrapper, restated here rather
