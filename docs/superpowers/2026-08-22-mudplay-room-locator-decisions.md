@@ -527,3 +527,35 @@ REFINEMENT to the correction above (user pushed back: "we're using the database 
   So "Paradigm 1.11p" was a mashup of BOTH filenames: Paradigm is 1.9.1 there, and 1.11p is the stock file.
   PR description now names the exact file in the author's own repo, which is unambiguous to him and
   independently checkable — better than any version label I could paraphrase.
+
+=== FOLLOW-UP BUG (user report, 2026-08-23): "when the client is paused or stopped and its lost, it's still
+    stumbling around trying to find a room." ===
+Root cause: MY DESIGN ERROR, not a coding slip. I made PassiveRelocalizer trigger on "no engine attached",
+  which is ALSO the state after MovementController.Stop() (clears UserGate; walker detaches at
+  AutoWalkManager.cs:2294) and during ordinary manual play. The feature fired exactly when the user had told
+  automation to stop.
+User's rule, verbatim: "when you drop parties in play mode, pick up trying to resolve the room graph. If the
+  client is paused or stopped, just sit there." Plus: being in play mode WHILE DRAGGED is a legitimate MegaMUD
+  mechanic — leader disconnects, you resume your own loop.
+Ruling: gate on a MovementCoordinator.AutomationEngaged latch, armed at each engine's own Start choke point,
+  disarmed at every user stop. Cost if wrong: over-arming reinstates the bug, over-disarming silently kills
+  the feature. Both directions were explicitly reviewed for.
+Ruling: NO party-follow carve-out. A subagent flagged that an ex-follower who never pressed play won't be
+  rescued; under the user's rule that person is not in play mode, so sitting is CORRECT. Verified arming sits
+  at LoopRunner.cs:579 / AutoWalkManager.cs:797, BEFORE the lost-tracker bails at :954 / :859 — so a follower
+  who did press play stays armed even though their loop instantly bails. The user's case works unchanged.
+Ruling: fix the lazy-abandon hole too (abandon at the PUMP, not just at send). Mutation testing showed it was
+  worse than I framed it — a stale render could converge the matcher on NAME ALONE and confirm a wrong room
+  without ever reaching Send. Confidently-wrong position, not merely extra walking.
+Three review rounds, three censuses; the first two each missed real cases. What finally worked was using
+  ClearGate(...UserGate) as the FINGERPRINT for the defect class and grepping all 14 call sites — that found
+  three gaps nobody had asked about (NavigationViewModel's Exp-estimator / Loop-mode / Lair-mode toggles).
+  Lesson: enumerate a defect class by its code shape, not from memory of where it might live.
+Parked (Low, pre-existing, out of scope): disconnect and profile-switch never stop the movement engines or the
+  latch at all; and the arm choke point engages for internal callers (TrainerWalkManager, DeathRecoveryManager,
+  EventManager, PartyComebackManager, AutoDepositManager, TeleportMazeSolver), not only direct user gestures.
+Parked (Important, pre-existing): EngineRecoveryGate holds no MovementCoordinator reference, so its own
+  forward walk is not gated during a PAUSE. Stop is safe there (Detach synchronously nulls the walk). Fixing
+  it needs a new constructor dependency threaded through every call site plus a decision about whether a pause
+  should abort recovery or hold it — a separate change, not smuggled into a bugfix.
+Final: 6650/6650, 0 warnings, pushed to fork, PR #378 left as DRAFT pending the user's live test.
