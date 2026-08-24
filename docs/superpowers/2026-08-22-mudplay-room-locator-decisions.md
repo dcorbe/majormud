@@ -94,10 +94,10 @@ Task 3: fix round 1/5 (3 addressed, 0 open; commits 10da852..df73227) — re-rev
   and confirmed the Ambiguous test reaches the no-usable-exit branch at Steps==0, nowhere near the budget branch.
 Task 3: complete (commits 3132293..df73227, review clean)
 Task 4: dispatched (sonnet). BASE = df73227. Real game data IS present (~/.local/share/MudPlay/game data/
-  data-v1.11p/Rooms.json, 10.4MB) so the test will run, not skip. NOTE: that is a Paradigm 1.11p set, a
+  data-v1.11p/Rooms.json, 10.4MB) so the test will run, not skip. NOTE: that is a stock MajorMUD dat v1.11p set, a
   different world from the WG3-NT DB I simulated, so its curve may legitimately differ from 18.7/51.8/71.3/
   82.3/93.5 — the loose bounds in the brief guard the RULE, not a specific graph.
-Task 4: implementer DONE, commit f4db04e. Curve on Paradigm 1.11p: 18.9/45.5/64.3/74.7 .. 85.6% at 12,
+Task 4: implementer DONE, commit f4db04e. Curve on the stock 1.11p set: 18.9/45.5/64.3/74.7 .. 85.6% at 12,
   14.4% never resolve. 26,554 rooms measured, 4.3s.
 CONTROLLER FINDING (not from a reviewer): RoomLocatorCurveTests.cs:168 builds the observation from
   `room.Exits.Keys` — EVERY exit including hidden (SearchableHidden/MultiActionHidden) and command (Text)
@@ -117,7 +117,7 @@ Ruling: assertion bounds must be loosened. 45.5% actual against a 45% bound is a
   larger before the test catches it; acceptable, since this test's job is to catch a broken RULE, not drift.
 Task 4: fix round 1/5 returned — commit 7136837. Observe() now drops SearchableHidden/MultiActionHidden/Text
   and documents the Hidden/Passable gap. Controller verified the helper by reading it.
-  HONEST CURVE (Paradigm 1.11p): 18.4 / 44.3 / 62.8 / 73.2 / 78.1 / 80.6 ... 84.0% at 12; 16.0% never resolve.
+  HONEST CURVE (stock MajorMUD dat v1.11p): 18.4 / 44.3 / 62.8 / 73.2 / 78.1 / 80.6 ... 84.0% at 12; 16.0% never resolve.
   Observer fix accounted for ~1.6pp of the ~9.5pp gap vs my WG3-NT 93.5%; remainder is genuinely a harder
   world (largest same-name/same-mask bucket = 434 rooms). Bounds loosened to 0.10/0.30/0.65.
   Full task review dispatched (sonnet) over df73227..7136837 — asked specifically whether the number is
@@ -506,3 +506,14 @@ Final fix wave returned — 4eeca7c (gate on every movement gate) + 66ff281 (sha
        party protection that is the single most important guarantee on the branch;
    (2) is some gate asserted routinely enough in ordinary play that the relocalizer now never fires? Perfectly
        safe and never runs would fail the user's original complaint just as surely as the original bug.
+
+
+CORRECTION (2026-08-23, after the upstream author queried the PR wording): the measured data set was
+  repeatedly labelled "Paradigm 1.11p" above. That is WRONG. Its Info.json reads NMR v1.8.3 /
+  Dat File Version v1.11p / Custom: Default — i.e. the STOCK MajorMUD world, not the Paradigm realm.
+  A Task 4 subagent inferred "Paradigm" (this codebase is thick with paradigm-* report names and a
+  ParadigmPositionResolver) and I propagated it into the PR description without verifying it.
+  Lesson: I verified the NUMBERS at every step and never once verified the LABEL on them.
+  The correction strengthens the evidence rather than weakening it — Paradigm is a modified realm, so
+  citing it implied the curve might not generalise; stock is the broadly relevant case.
+  Genuine Paradigm references elsewhere (the `rm` fast path, bug id paradigm-20260813-201720) are correct.
