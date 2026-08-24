@@ -517,3 +517,13 @@ CORRECTION (2026-08-23, after the upstream author queried the PR wording): the m
   The correction strengthens the evidence rather than weakening it — Paradigm is a modified realm, so
   citing it implied the curve might not generalise; stock is the broadly relevant case.
   Genuine Paradigm references elsewhere (the `rm` fast path, bug id paradigm-20260813-201720) are correct.
+
+REFINEMENT to the correction above (user pushed back: "we're using the database that ships with MudPlay, no?"):
+  Checked properly. MudPlay's app repo bundles NO room database at all — `git ls-files` shows no .mdb/.accdb
+  and no Rooms.json; Defaults/ holds only seed JSON (which itself distinguishes ItemOverlay.stock from
+  ItemOverlay.paradigm). The data came from archive/FujiTerm/Majormud_MDB_Repo, which is
+  github.com/Tehshortbus/Majormud_MDB_Repo — the SAME author as MudPlay, i.e. his own companion database repo.
+  It holds two files: data-v1.11p.mdb (stock) and data-Paradigm-1.9.1.mdb. We imported the former.
+  So "Paradigm 1.11p" was a mashup of BOTH filenames: Paradigm is 1.9.1 there, and 1.11p is the stock file.
+  PR description now names the exact file in the author's own repo, which is unambiguous to him and
+  independently checkable — better than any version label I could paraphrase.
