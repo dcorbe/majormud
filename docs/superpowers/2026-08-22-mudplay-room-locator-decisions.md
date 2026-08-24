@@ -559,3 +559,29 @@ Parked (Important, pre-existing): EngineRecoveryGate holds no MovementCoordinato
   it needs a new constructor dependency threaded through every call site plus a decision about whether a pause
   should abort recovery or hold it — a separate change, not smuggled into a bugfix.
 Final: 6650/6650, 0 warnings, pushed to fork, PR #378 left as DRAFT pending the user's live test.
+
+=== LIVE FAILURE (Proto, 2026-08-24 08:16) — three starvation paths, one shape ===
+Diagnosed from a real in-client bug report (~/Desktop/stock-20260824-081650.md), not a hypothesis.
+  Ground truth: fell off a rooftop, actually on "Slum Street" (exits east/west). Tracker stuck at stale anchor
+  8/720 "Building Rooftop" — which ALSO has exits E/W, so only the NAME differed. 38 same-name candidates.
+  Captured: confidence=Suspect, strikes 1/3, tier=Tier1, AutomationEngaged=True, walk allowed=True,
+  "Relocalizer last outcome: (none yet)" — it never ran.
+Verified which build each client ran by comparing the MAPPED ASSEMBLY INODE per PID against the current file
+  (start times alone were not enough): 3 of 4 clients were stale; only Proto had the fix. So only Proto's
+  failure was evidence at all — Salad's told us nothing.
+Three starvation paths, all "something that should wake recovery doesn't":
+  1. NoteDirectionFailed early-returned unless Confirmed, so a refusal while Suspect was discarded.
+  2. A refusal yields no landing, so the engine never called NoteSuspectedMismatch and the gate stayed Tier1.
+  3. PassiveRelocalizer listened ONLY to RoomTracker.StateChanged, so pressing Play (which arms the latch),
+     an engine detaching, or the follower gate clearing never re-triggered it. Path 3 is almost certainly the
+     user's original "I hit play and neither tried recovering".
+Ruling: fix all three in one round. Cost if wrong: escalating on benign refusals (closed door, level gate,
+  mistyped direction) would have the client wander off — worse than the bug. Narrowed via WasEngineIssued.
+Ruling: I fixed the version/changelog bookkeeping MYSELF rather than dispatching, against my usual rule that
+  controller fixes skip review. Justification: pure documentation, zero behavioural risk, fully verifiable by
+  inspection, and four live characters were parked waiting. The bump had REPLACED the 3.25.0 header instead of
+  adding above it, orphaning its five bullets under 3.25.1 and deleting 3.25.0 from the changelog entirely.
+Residuals, named not hidden: tier-3's own backtrack move can still be refused and strand (second-order, out of
+  scope); WasEngineIssued inherits the pre-existing FIFO assumption about which pending move a refusal matches
+  — previously that only mis-set a strike counter, now it also gates escalation.
+Final: 6666/6666, 0 warnings, pushed. PR #378 still DRAFT pending the live cold-start test.
