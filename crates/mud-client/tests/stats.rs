@@ -196,6 +196,66 @@ async fn stat_board(inject: Option<&'static str>) -> std::net::SocketAddr {
     addr
 }
 
+/// The realm-entry pipeline, measured live 2026-08-26 (test.raw): the
+/// purse ping's `i` and the probe's `stat` are both receipt-echoed
+/// BEFORE the first reply, then each reply arrives FIFO with its own
+/// prompt. The i-reply's prompt lands inside the freshly armed stat
+/// window; closing on it parses the inventory text as the sheet
+/// (nothing recognised), discards the real sheet that follows, and the
+/// session walks with picklocks/stealth 0 — a Ninja with Picklocks 28
+/// stopped at a locked door with "can't pick".
+async fn pipelined_board() -> std::net::SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut pending = String::new();
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = sock.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            pending.push_str(&String::from_utf8_lossy(&buf[..n]));
+            if !pending.contains("stat\n") && !pending.contains("stat\r\n") {
+                continue;
+            }
+            let sheet = BEEF_SHEET.lines().collect::<Vec<_>>().join("\r\n");
+            let reply = format!(
+                "\r\ni\r\nstat\r\n\
+                 You are carrying 80 runic coins\r\n\
+                 You have no keys.\r\n\
+                 Wealth: 80000000 copper farthings\r\n\
+                 Encumbrance: 26/960 - None [2%]\r\n\
+                 [HP=22]:{sheet}\r\n\
+                 [HP=22]:DONE\r\n"
+            );
+            sock.write_all(reply.as_bytes()).await.unwrap();
+            pending.clear();
+        }
+    });
+    addr
+}
+
+#[tokio::test]
+async fn a_pipelined_reply_ahead_of_the_sheet_does_not_close_the_window() {
+    let addr = pipelined_board().await;
+    let session = session_to(addr).await;
+
+    session.send("i");
+    session.send("stat");
+    session
+        .expect("DONE", Duration::from_secs(5))
+        .await
+        .expect("full pipelined exchange");
+
+    assert_eq!(
+        session.stats(),
+        Stats::parse(BEEF_SHEET),
+        "the i-reply's own prompt must not close the stat window before the sheet arrives"
+    );
+}
+
 /// The property Task 2 exists for: a caller sends `stat`, the session
 /// reads the WHOLE multi-line reply off the wire on its own, and
 /// [`Session::stats`] hands back exactly what [`Stats::parse`] would

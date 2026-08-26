@@ -236,14 +236,23 @@ struct PurseTracker {
 struct StatTracker {
     current: Stats,
     pending: HashMap<CmdId, Instant>,
-    /// `Some` from the moment our echo is attributed until the next
-    /// ordinary game prompt closes the reply out; `None` means no reply
-    /// is in flight. Every [`Event::Line`] in between is appended
+    /// `Some` from the moment our echo is attributed until a prompt
+    /// closes a reply that actually parsed as a sheet; `None` means no
+    /// reply is in flight. Every [`Event::Line`] in between is appended
     /// verbatim, interleaved traffic included: [`Stats::parse`] finds
     /// each field by searching the whole text for its own `Label:`, so
     /// a stray line no pattern matches just adds noise — it can never
     /// truncate the sheet or knock a later field out of the parse.
-    buffer: Option<String>,
+    ///
+    /// Not every prompt is ours: when sends pipeline, BOTH receipt
+    /// echoes precede the first reply, so the first prompt after arming
+    /// can be an earlier command's terminator (measured live 2026-08-26:
+    /// the realm-entry `i` ping's reply+prompt landed inside the `stat`
+    /// window and the real sheet was discarded — picklocks read 0 on a
+    /// Ninja with 28). A prompt that closes a buffer parsing to nothing
+    /// clears the foreign reply and keeps waiting; the [`Instant`] is
+    /// the arm time, bounding that wait by [`CORRELATE_TTL`].
+    buffer: Option<(String, Instant)>,
 }
 
 /// The session's own carried-contents reading, kept current by the
@@ -849,10 +858,13 @@ fn feed_purse(purse: &Mutex<PurseTracker>, cor: &Correlated) {
 /// `Kind::Stat` in `correlate.rs`) — so it watches the raw event shapes
 /// instead: any [`Event::Line`] while a reply is in flight is body text
 /// (interleaved traffic included — harmless, see [`StatTracker::buffer`]
-/// doc), and the first [`Event::Prompt`] after arming is always OUR
-/// reply's own terminator, never a later command's: the board processes
-/// commands strictly FIFO, so nothing else's reply — let alone its
-/// prompt — can complete before this one does.
+/// doc). A prompt finalizes only when the buffer parses as a sheet: the
+/// first prompt after arming is NOT reliably ours — an earlier queued
+/// command's reply and prompt can land first, because receipt echoes
+/// for every pipelined send precede the first reply (see
+/// [`StatTracker::buffer`]). A prompt over an unparseable buffer closes
+/// that foreign reply out of the window and keeps waiting, up to
+/// [`CORRELATE_TTL`] from the arm.
 fn feed_stats(stats: &Mutex<StatTracker>, cor: &Correlated) {
     let mut tracker = stats.lock().expect("stats lock");
     // Same staleness rule as `feed_purse`, same reason: a `stat` that
@@ -866,17 +878,27 @@ fn feed_stats(stats: &Mutex<StatTracker>, cor: &Correlated) {
             let is_our_echo = cor.answers.is_some_and(|id| tracker.pending.remove(&id).is_some());
             if is_our_echo {
                 // The echo line itself is not sheet body text.
-                tracker.buffer = Some(String::new());
+                tracker.buffer = Some((String::new(), now));
                 return;
             }
-            if let Some(buf) = &mut tracker.buffer {
+            if let Some((buf, _)) = &mut tracker.buffer {
                 buf.push_str(line);
                 buf.push('\n');
             }
         }
         Event::Prompt { .. } => {
-            if let Some(buf) = tracker.buffer.take() {
-                tracker.current = Stats::parse(&buf);
+            if let Some((buf, armed_at)) = &mut tracker.buffer {
+                let parsed = Stats::parse(buf);
+                if parsed != Stats::default() {
+                    tracker.current = parsed;
+                    tracker.buffer = None;
+                } else if now.duration_since(*armed_at) >= CORRELATE_TTL {
+                    // The sheet never came; stop hoarding traffic.
+                    tracker.buffer = None;
+                } else {
+                    // An earlier command's reply just closed — not ours.
+                    buf.clear();
+                }
             }
         }
         _ => {}
