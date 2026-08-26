@@ -54,6 +54,35 @@ fn prompt_with_mana_and_kai() {
 }
 
 #[test]
+fn prompt_soh_marker_does_not_stick_to_the_echo() {
+    // The game ends its prompt with a \x01 client-sync marker, and the
+    // echo of the next command lands right after it on the same
+    // physical line (test.raw, 2026-08-26): `[HP=27]:\x01look`. The
+    // marker is not text: left in place it glues onto the echo, and an
+    // echo that never matches leaves the look's room block unattributed
+    // — "/go" then dies with "no room block came back".
+    let ev = parse_all("\x1b[0;37m[HP=27\x1b[0;37m]:\x01look\r\n");
+    assert_eq!(
+        ev,
+        vec![
+            Event::Prompt { hp: 27, mana: None },
+            Event::Line("look".into())
+        ]
+    );
+}
+
+#[test]
+fn prompt_soh_marker_does_not_delay_the_prompt() {
+    // Same marker on an idle prompt, no newline: the residual \x01 must
+    // not hold the prompt back until the next line arrives — Stat
+    // retirement and the heal gate key on the live prompt.
+    let mut p = Parser::new();
+    let ev = p.push("[HP=27]:\x01");
+    assert_eq!(ev, vec![Event::Prompt { hp: 27, mana: None }]);
+    assert!(p.finish().is_empty());
+}
+
+#[test]
 fn prompt_emitted_midstream_without_newline() {
     // The prompt arrives with no trailing newline; the parser must emit
     // it immediately (expect/bot logic keys on it), not on finish().

@@ -82,7 +82,16 @@ impl Parser {
     /// Feed a decoded chunk; returns events completed by this chunk.
     pub fn push(&mut self, decoded: &str) -> Vec<Event> {
         let mut events = Vec::new();
-        self.buf.push_str(decoded);
+        // The game marks its prompts with a trailing \x01 for client
+        // sync (seen live 2026-08-26: `[HP=27]:\x01look`). It is not
+        // text: kept, it glues onto the next echo — which then never
+        // matches its command — and holds an end-of-buffer prompt back
+        // until the next line. Dropped here so no consumer ever sees it.
+        if decoded.contains('\u{1}') {
+            self.buf.push_str(&decoded.replace('\u{1}', ""));
+        } else {
+            self.buf.push_str(decoded);
+        }
         while let Some(nl) = self.buf.find('\n') {
             let line: String = self.buf.drain(..=nl).collect();
             self.handle_line(line.trim_end_matches(['\n', '\r']), &mut events);
