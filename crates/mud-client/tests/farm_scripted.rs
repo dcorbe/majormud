@@ -263,6 +263,7 @@ async fn a_monster_entering_mid_leg_is_fought_where_it_stands() {
     let bot = BotConfig {
         auto_combat: true,
         max_hp: 30,
+        max_mana: 30,
         ..BotConfig::default()
     };
 
@@ -386,6 +387,7 @@ async fn a_rest_contested_by_an_arrival_defends_instead_of_dozing() {
     let bot = BotConfig {
         auto_combat: true,
         max_hp: 30,
+        max_mana: 30,
         ..BotConfig::default()
     };
 
@@ -488,6 +490,7 @@ async fn a_pile_on_a_travel_leg_is_swept_without_losing_the_lap() {
         auto_combat: true,
         auto_get: true,
         max_hp: 30,
+        max_mana: 30,
         ..BotConfig::default()
     };
 
@@ -594,6 +597,7 @@ async fn an_endless_stop_is_left_when_its_cap_expires() {
     let bot = BotConfig {
         auto_combat: true,
         max_hp: 30,
+        max_mana: 30,
         ..BotConfig::default()
     };
 
@@ -720,6 +724,7 @@ async fn a_flee_rests_before_it_walks_back() {
         auto_heal: true,
         rest_at_percent: 80,
         max_hp: 30,
+        max_mana: 30,
         ..BotConfig::default()
     };
 
@@ -864,6 +869,7 @@ async fn a_fight_below_the_spell_mark_is_healed_not_rested() {
         rest_at_percent: 60,
         flee_at_percent: 20,
         max_hp: 30,
+        max_mana: 30,
         ..BotConfig::default()
     };
 
@@ -988,6 +994,7 @@ async fn below_the_flee_mark_it_runs_and_does_not_cast() {
         rest_at_percent: 60,
         flee_at_percent: 50,
         max_hp: 30,
+        max_mana: 30,
         ..BotConfig::default()
     };
 
@@ -1090,6 +1097,7 @@ async fn with_fleeing_off_the_flee_mark_does_not_suppress_the_cast() {
         rest_at_percent: 60,
         flee_at_percent: 30,
         max_hp: 30,
+        max_mana: 30,
         ..BotConfig::default()
     };
 
@@ -1211,6 +1219,7 @@ async fn a_roam_never_steps_into_a_walled_room() {
 
     let bot = BotConfig {
         max_hp: 30,
+        max_mana: 30,
         ..BotConfig::default()
     };
     let finished = tokio::time::timeout(
@@ -1293,6 +1302,7 @@ async fn a_clean_arrival_is_not_re_asked_at_the_stop() {
     let bot = BotConfig {
         auto_combat: true,
         max_hp: 30,
+        max_mana: 30,
         ..BotConfig::default()
     };
 

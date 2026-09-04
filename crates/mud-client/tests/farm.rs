@@ -10,7 +10,7 @@ use mud_client::correlate::{CmdId, Correlated};
 use mud_client::events::{Actor, Event, RoomView};
 use mud_client::farm::{
     ACK_TIMEOUT, FarmConfig, FarmGuard, FarmPlan, FarmStats, Gate, HealWatch, LOOT_TRIES,
-    StopState, Verdict, is_player_death, parse_health, parse_room_id,
+    StopState, Verdict, is_player_death, parse_health, parse_mana, parse_room_id,
 };
 use mud_client::nav::{Interrupt, TravelGuard};
 use mud_client::session::Switch;
@@ -2605,4 +2605,27 @@ fn an_ongoing_fight_still_outranks_the_floor() {
         Verdict::Busy,
         "money never interrupts a swing already traded"
     );
+}
+
+// ---------------------------------------------------------------------
+// parse_mana: where BotConfig.max_mana comes from. The same `health`
+// line carries the pool whenever one exists, captioned Mana or Kai.
+// ---------------------------------------------------------------------
+
+#[test]
+fn reads_the_mana_pool_off_the_health_line() {
+    assert_eq!(
+        parse_mana("Health:    29/29    [100%]  Mana:   8/18  [44%]"),
+        Some((8, 18))
+    );
+    assert_eq!(
+        parse_mana("Health:    28/31    [90%]  Kai:   0/1   [0%]"),
+        Some((0, 1))
+    );
+}
+
+#[test]
+fn a_health_line_without_a_pool_has_no_mana() {
+    assert_eq!(parse_mana("Health:    35/35    [100%]"), None);
+    assert_eq!(parse_mana(""), None);
 }

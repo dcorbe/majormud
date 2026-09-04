@@ -160,6 +160,7 @@ fn bot() -> BotConfig {
     BotConfig {
         auto_combat: true,
         max_hp: 30,
+        max_mana: 30,
         ..BotConfig::default()
     }
 }

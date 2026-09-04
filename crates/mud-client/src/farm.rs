@@ -1172,21 +1172,42 @@ pub fn parse_health(text: &str) -> Option<(i32, i32)> {
     Some((c[1].parse().ok()?, c[2].parse().ok()?))
 }
 
-/// Ask the board for the character's maximum HP.
+/// The pool half of the board's `health` line: `Mana:   8/18  [44%]`
+/// or `Kai:   0/1   [0%]`. Absent when the character has no pool.
+pub fn parse_mana(text: &str) -> Option<(i32, i32)> {
+    static MANA_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?:Mana|Kai):\s*(\d+)/(\d+)").unwrap()
+    });
+    let c = MANA_RE.captures(text)?;
+    Some((c[1].parse().ok()?, c[2].parse().ok()?))
+}
+
+/// The maxima the board reports for the character. `max_mana` is 0
+/// when there is no pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Vitals {
+    pub max_hp: i32,
+    pub max_mana: i32,
+}
+
+/// Ask the board for the character's maximum HP and mana.
 ///
-/// [`crate::bot::BotConfig::max_hp`] scales every percent policy the bot
-/// has, and a wrong value mis-scales them silently while `0` disables
-/// them outright. Nothing else in the client parses a max HP — the
-/// prompt only carries the current value — so the runner asks rather
-/// than trusting a number typed into a profile.
-pub async fn discover_max_hp(session: &crate::session::Session) -> Option<i32> {
+/// [`crate::bot::BotConfig::max_hp`] and `max_mana` scale every percent
+/// policy the bot has, and a wrong value mis-scales them silently while
+/// `0` disables them outright. Nothing else in the client parses a
+/// maximum. The prompt only carries the current values, so the runner
+/// asks rather than trusting a number typed into a profile.
+pub async fn discover_vitals(session: &crate::session::Session) -> Option<Vitals> {
     let mark = session.mark();
     session.send("health");
     session
         .expect("Health:", std::time::Duration::from_secs(15))
         .await
         .ok()?;
-    parse_health(&session.since(mark)).map(|(_, max)| max)
+    let text = session.since(mark);
+    let (_, max_hp) = parse_health(&text)?;
+    let max_mana = parse_mana(&text).map(|(_, max)| max).unwrap_or(0);
+    Some(Vitals { max_hp, max_mana })
 }
 
 /// Why the run stopped.
@@ -1672,13 +1693,14 @@ async fn farm_loop(
         }),
     );
 
-    // Every percent policy divides by this, and a wrong value mis-scales
+    // Every percent policy divides by these, and a wrong value mis-scales
     // heal and flee silently. 0 means the profile did not say, so ask.
     let mut bot_config = bot_config.clone();
-    if bot_config.max_hp == 0
-        && let Some(max) = discover_max_hp(session).await
+    if (bot_config.max_hp == 0 || bot_config.max_mana == 0)
+        && let Some(vitals) = discover_vitals(session).await
     {
-        bot_config.max_hp = max;
+        bot_config.max_hp = vitals.max_hp;
+        bot_config.max_mana = vitals.max_mana;
     }
 
     // One refusal set for the whole run. Learning that the board will not

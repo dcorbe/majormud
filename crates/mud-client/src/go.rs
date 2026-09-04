@@ -271,13 +271,14 @@ pub async fn run_go(
         return Ok(GoEnd::Arrived(to));
     }
 
-    // Every percent policy divides by this, and a wrong value mis-scales
+    // Every percent policy divides by these, and a wrong value mis-scales
     // the travel guard silently. 0 means the profile did not say, so ask.
     let mut bot_config = bot_config.clone();
-    if bot_config.max_hp == 0
-        && let Some(max) = crate::farm::discover_max_hp(session).await
+    if (bot_config.max_hp == 0 || bot_config.max_mana == 0)
+        && let Some(vitals) = crate::farm::discover_vitals(session).await
     {
-        bot_config.max_hp = max;
+        bot_config.max_hp = vitals.max_hp;
+        bot_config.max_mana = vitals.max_mana;
     }
     let threat = Arc::new(
         RoomGraph::load_threat(&cfg.content).unwrap_or_else(|_| crate::bot::ThreatTable::new()),

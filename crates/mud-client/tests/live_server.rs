@@ -302,11 +302,12 @@ async fn capture_writes_raw_and_timing() {
     assert!(stamp.split('.').next().unwrap().parse::<u64>().is_ok());
 }
 
-/// Ask the board for the character's real max HP rather than trusting a
-/// number typed into a profile. A wrong `max_hp` silently mis-scales
-/// every percent policy the bot has, and `0` disables them outright.
+/// Ask the board for the character's real max HP and mana rather than
+/// trusting numbers typed into a profile. A wrong `max_hp` or `max_mana`
+/// silently mis-scales every percent policy the bot has, and `0`
+/// disables them outright.
 #[tokio::test]
-async fn discover_max_hp_asks_the_board() {
+async fn discover_vitals_asks_the_board() {
     let server = start_server().await;
     let session = Session::connect(&rust_profile(server.local_addr()), None)
         .await
@@ -316,16 +317,18 @@ async fn discover_max_hp_asks_the_board() {
         .expect("login");
     dialect::finish_creation(&session).await.expect("finish creation");
 
-    let max = mud_client::farm::discover_max_hp(&session)
+    let vitals = mud_client::farm::discover_vitals(&session)
         .await
         .expect("health report");
 
     // A level-1 Warrior of this fixture race: whatever the server rolled,
     // it must agree with the prompt the client already parsed.
-    assert!(max > 0, "max hp should be positive, got {max}");
+    assert!(vitals.max_hp > 0, "max hp should be positive, got {}", vitals.max_hp);
+    assert!(vitals.max_mana >= 0, "max mana should not be negative, got {}", vitals.max_mana);
     let hp = session.state().borrow().hp;
     assert!(
-        hp <= max,
-        "prompt HP {hp} exceeds the reported max {max}"
+        hp <= vitals.max_hp,
+        "prompt HP {hp} exceeds the reported max {}",
+        vitals.max_hp
     );
 }

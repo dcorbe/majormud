@@ -187,6 +187,9 @@ pub struct BotConfig {
     pub ignore: Vec<String>,
     /// Character max HP; 0 = unknown, disables percent policies.
     pub max_hp: i32,
+    /// Character max mana or kai; 0 = no pool or unknown. Probed with
+    /// `max_hp`, never typed.
+    pub max_mana: i32,
     /// Prompts with no blow struck either way before the fight is
     /// presumed over and the target released.
     ///
@@ -278,6 +281,7 @@ impl Default for BotConfig {
             buffs: Vec::new(),
             ignore: Vec::new(),
             max_hp: 0,
+            max_mana: 0,
             combat_idle_prompts: 12,
             assist_play: false,
         }

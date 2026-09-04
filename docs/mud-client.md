@@ -58,7 +58,7 @@ rest_command = "rest"
 heal_spells = []           # empty = discover from the spellbook
 buffs = ["bless"]          # kept up on a duration budget, not an HP mark
 ignore = ["guard", "healer"]
-# max_hp omitted: the runner probes the board for it at startup
+# max_hp and max_mana omitted: the runner probes the board for them at startup
 
 [farm]
 content = "/abs/path/re/mmud_wgnt.sqlite"
