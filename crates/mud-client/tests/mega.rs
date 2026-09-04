@@ -5,7 +5,7 @@ use mud_client::mega::{name_hash, parse_mp, slug};
 
 fn paths_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/mirrors/megamud.net/www.megamud.net/paths")
+        .join("../../docs/mirrors/megamud.net/paths")
 }
 
 fn read(name: &str) -> String {
