@@ -1592,26 +1592,29 @@ pub async fn run_farm(
     // startup rather than at 20% health. A spell mark set on a character
     // with an empty book is a policy that can never fire, and silence
     // would leave the operator believing it was armed.
-    let heal = crate::sheet::HealState::new(sheet.heals);
-    if bot_config.minor_heal_at_percent > 0 {
-        match heal.sources().first() {
-            Some(cheapest) => eprintln!(
-                "healing below {}% with `{}` ({} mana){}",
-                bot_config.minor_heal_at_percent,
-                cheapest.cmd,
-                cheapest.mana_cost,
-                match heal.sources().len() {
-                    1 => String::new(),
-                    n => format!(" and {} dearer", n - 1),
-                }
-            ),
-            None => eprintln!(
-                "minor_heal_at_percent is {} but this character knows no healing spell; \
-                 it will rest and flee only",
-                bot_config.minor_heal_at_percent
-            ),
-        }
+    let (heals, heal_refused) = sheet.heals;
+    for reason in &heal_refused {
+        eprintln!("heal {reason}");
     }
+    for h in &heals {
+        let (kind, mark) = match h.kind {
+            crate::sheet::HealKind::Minor => ("minor", bot_config.minor_heal_at_percent),
+            crate::sheet::HealKind::Major => ("major", bot_config.major_heal_at_percent),
+            crate::sheet::HealKind::Regen { .. } => ("regen", bot_config.minor_heal_at_percent),
+        };
+        eprintln!(
+            "{kind} heal below {mark}% with `{}` ({} mana)",
+            h.cmd, h.mana_cost
+        );
+    }
+    if bot_config.minor_heal_at_percent > 0 && bot_config.major_heal_at_percent > 0 && heals.is_empty() {
+        eprintln!(
+            "minor_heal_at_percent is {} but this character knows no healing spell; \
+             it will rest and flee only",
+            bot_config.minor_heal_at_percent
+        );
+    }
+    let heal = crate::sheet::HealState::new(heals);
     // Same bargain for buffs: say what is being kept up, and say out
     // loud what was asked for and could not be.
     let (kept, refused) = sheet.buffs;
@@ -1981,7 +1984,8 @@ pub(crate) async fn next_room_view(
 /// having before health is the thing being decided about.
 pub(crate) struct Sheet {
     pub light: Vec<crate::sheet::LightSource>,
-    pub heals: Vec<crate::sheet::HealSource>,
+    /// The heals this character casts, and the names it could not use.
+    pub heals: (Vec<crate::sheet::HealSource>, Vec<String>),
     /// The `[bot].buffs` that survived being looked up, and one line for
     /// each that did not.
     pub buffs: (Vec<crate::sheet::Buff>, Vec<String>),
@@ -2013,7 +2017,7 @@ impl Casts {
     /// Every event, attribution and all.
     pub fn on_event(&mut self, cor: &Correlated, now: Instant) {
         self.light.on_event(cor);
-        self.heal.on_event(cor);
+        self.heal.on_event(cor, now);
         self.buff.on_event(cor, now);
     }
 
@@ -2134,7 +2138,15 @@ pub(crate) fn sheet_from(
     let (inventory, book, casting) = session.raw_sheet();
     Sheet {
         light: crate::sheet::light_sources(&inventory, &book, casting),
-        heals: book.heal_spells(&bot.heal_spells, casting),
+        heals: book.heal_spells(
+            crate::sheet::HealChoice {
+                minor: &bot.minor_heal_spell,
+                major: &bot.major_heal_spell,
+                regen: &bot.hp_regen_spell,
+            },
+            durations,
+            casting,
+        ),
         buffs: crate::sheet::buffs(&book, &bot.buffs, durations, casting),
     }
 }
@@ -2956,13 +2968,12 @@ async fn farm_stop(
         let leaving = bot_config.auto_flee
             && bot.hp_percent(hp_now).is_some_and(|p| p < bot_config.flee_at_percent as i32);
         if bot_config.auto_heal
-            && bot_config.minor_heal_at_percent > 0
             && !bot.fled()
             && !leaving
             && gate.is_idle()
             && let Some(percent) = bot.hp_percent(hp_now)
-            && percent < bot_config.minor_heal_at_percent as i32
-            && let crate::sheet::CastAttempt::Send(cmd) = casts.heal.attempt(now, clock)
+            && let Some(need) = crate::bot::heal_need(bot_config, percent)
+            && let crate::sheet::CastAttempt::Send(cmd) = casts.heal.attempt(now, clock, need)
         {
             gate.push(cmd);
         }

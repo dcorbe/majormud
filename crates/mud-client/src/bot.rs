@@ -122,6 +122,20 @@ pub fn is_combat_off(line: &str) -> bool {
     line.contains("*Combat Off*")
 }
 
+/// Which heal the HP percent asks for, by the marks. None above the
+/// minor mark. Below the major mark the instant heal, never the slow
+/// regen. Between them the regen when one is named, else the minor.
+pub fn heal_need(cfg: &BotConfig, percent: i32) -> Option<crate::sheet::HealNeed> {
+    use crate::sheet::HealNeed;
+    if cfg.major_heal_at_percent > 0 && percent < cfg.major_heal_at_percent as i32 {
+        return Some(HealNeed::Major);
+    }
+    if cfg.minor_heal_at_percent > 0 && percent < cfg.minor_heal_at_percent as i32 {
+        return Some(if cfg.hp_regen_spell.is_empty() { HealNeed::Minor } else { HealNeed::Regen });
+    }
+    None
+}
+
 /// The board's three ways of refusing an attack outright (crime.md §3,
 /// all present verbatim in the shipped DLL). A refusal aborts the swing,
 /// so unlike a real fight it is never followed by a death line, an

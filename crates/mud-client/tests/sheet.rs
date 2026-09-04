@@ -296,8 +296,9 @@ fn the_real_character_derives_a_single_spell_source() {
 
 use mud_client::correlate::{CmdId, Correlated};
 use mud_client::events::Event;
-use mud_client::sheet::{CastAttempt, HealSource, HealState};
-use mud_client::world::RoundClock;
+use mud_client::sheet::{CastAttempt, HealChoice, HealKind, HealNeed, HealSource, HealState};
+use mud_client::world::{RoundClock, ROUND};
+use std::collections::BTreeMap;
 
 /// A book with three heals at different prices, plus one spell that is
 /// not a heal at all.
@@ -312,41 +313,74 @@ fn healer_book() -> Spellbook {
     )
 }
 
-/// Discovery, and the ordering that matters: mana is the scarce
-/// resource, so the CHEAPEST heal comes first. Sizing the spell to the
-/// wound is not attempted — the shipped min/max are level-1 figures and
-/// the real heal scales with caster level, so any such table would lie
-/// by more the longer a character had been played.
-#[test]
-fn heals_are_discovered_cheapest_first() {
-    let heals = healer_book().heal_spells(&[], Casting::Spells);
-    assert_eq!(
-        heals,
-        vec![
-            HealSource { name: "minor healing".into(), cmd: "cast heal".into(), mana_cost: 3 },
-            HealSource { name: "mend".into(), cmd: "cast mend".into(), mana_cost: 5 },
-            HealSource { name: "major healing".into(), cmd: "cast maj".into(), mana_cost: 9 },
-        ],
-        "starlight lights rooms; it does not heal"
-    );
+fn no_choice() -> HealChoice<'static> {
+    HealChoice { minor: "", major: "", regen: "" }
 }
 
-/// Naming spells in `[bot].heal_spells` pins the choice. A name the
-/// character does not know is simply absent — the book is the authority
-/// on what it knows, and inventing a `cast` for a spell it lacks would
-/// buy one "You do not know how to cast..." per attempt.
+/// Discovery, and the split that matters: mana is the scarce resource, so
+/// the CHEAPEST heal is the minor and the dearest is the major. Sizing
+/// the spell to the wound is not attempted — the shipped min/max are
+/// level-1 figures and the real heal scales with caster level, so any
+/// such table would lie by more the longer a character had been played.
 #[test]
-fn configured_heal_spells_override_discovery() {
+fn heals_are_discovered_cheapest_as_minor_and_dearest_as_major() {
+    let (heals, refused) = healer_book().heal_spells(no_choice(), &BTreeMap::new(), Casting::Spells);
+    assert!(refused.is_empty());
+    let minor = heals.iter().find(|h| h.kind == HealKind::Minor).expect("a minor heal");
+    let major = heals.iter().find(|h| h.kind == HealKind::Major).expect("a major heal");
+    assert!(minor.mana_cost < major.mana_cost);
+    assert!(heals.iter().all(|h| !matches!(h.kind, HealKind::Regen { .. })));
+}
+
+/// Naming a spell in `[bot].minor_heal_spell`/`major_heal_spell` pins the
+/// choice. A name the character does not know is refused out loud —
+/// inventing a `cast` for a spell it lacks would buy one "You do not
+/// know how to cast..." per attempt.
+#[test]
+fn named_heals_override_discovery_and_an_unknown_name_is_refused() {
     let book = healer_book();
-    assert_eq!(
-        book.heal_spells(&["Mend".into()], Casting::Spells),
-        vec![HealSource { name: "mend".into(), cmd: "cast mend".into(), mana_cost: 5 }],
-        "matched case-insensitively"
+    let (heals, refused) = book.heal_spells(
+        HealChoice { minor: "major healing", major: "", regen: "" },
+        &BTreeMap::new(),
+        Casting::Spells,
     );
-    assert!(
-        book.heal_spells(&["godheal".into()], Casting::Spells).is_empty(),
-        "a spell that is not in the book is not a heal this character has"
+    assert_eq!(heals.iter().find(|h| h.kind == HealKind::Minor).unwrap().name, "major healing");
+    assert!(refused.is_empty());
+    let (_, refused) = book.heal_spells(
+        HealChoice { minor: "cure light wounds", major: "", regen: "" },
+        &BTreeMap::new(),
+        Casting::Spells,
     );
+    assert_eq!(refused.len(), 1, "{refused:?}");
+}
+
+/// The regen is only ever named, never discovered, and needs a duration
+/// from the spell table so it is not recast while running.
+#[test]
+fn a_regen_spell_needs_a_duration_and_is_a_third_kind() {
+    let mut book = healer_book();
+    book.spells.push(mud_client::sheet::KnownSpell {
+        level: 5,
+        mana: 6,
+        short: "regn".into(),
+        name: "regeneration".into(),
+    });
+    let mut durations = BTreeMap::new();
+    let (_, refused) = book.heal_spells(
+        HealChoice { minor: "", major: "", regen: "regeneration" },
+        &durations,
+        Casting::Spells,
+    );
+    assert_eq!(refused.len(), 1, "no duration known: {refused:?}");
+    durations.insert("regeneration".into(), 20);
+    let (heals, refused) = book.heal_spells(
+        HealChoice { minor: "", major: "", regen: "regeneration" },
+        &durations,
+        Casting::Spells,
+    );
+    assert!(refused.is_empty());
+    let regen = heals.iter().find(|h| matches!(h.kind, HealKind::Regen { rounds: 20 })).expect("regen");
+    assert_eq!(regen.cmd, "cast regn");
 }
 
 /// `rapid healing` reads like a heal and is not one: duration 60, and
@@ -361,7 +395,7 @@ fn the_near_misses_are_not_heals() {
          \x2011   8    rapd  rapid healing                 \n\
          \x2041   4    bvis  blessed vision                \n",
     );
-    assert!(book.heal_spells(&[], Casting::Spells).is_empty());
+    assert!(book.heal_spells(no_choice(), &BTreeMap::new(), Casting::Spells).0.is_empty());
 }
 
 /// Mystics are a whole vocabulary, not a spelling. The board's own
@@ -392,8 +426,19 @@ fn a_mystic_invokes_powers() {
          \x20 5   4     lay  lay hands                     \n",
     );
     assert_eq!(
-        powers.heal_spells(&["lay hands".into()], Casting::Powers),
-        vec![HealSource { name: "lay hands".into(), cmd: "invoke lay".into(), mana_cost: 4 }]
+        powers
+            .heal_spells(
+                HealChoice { minor: "lay hands", major: "", regen: "" },
+                &BTreeMap::new(),
+                Casting::Powers,
+            )
+            .0,
+        vec![HealSource {
+            name: "lay hands".into(),
+            cmd: "invoke lay".into(),
+            mana_cost: 4,
+            kind: HealKind::Minor,
+        }]
     );
     assert!(Spellbook::parse("You have no powers.\n").spells.is_empty());
 }
@@ -401,7 +446,7 @@ fn a_mystic_invokes_powers() {
 // --- HealState --------------------------------------------------------
 
 fn heal_state() -> HealState {
-    HealState::new(healer_book().heal_spells(&[], Casting::Spells))
+    HealState::new(healer_book().heal_spells(no_choice(), &BTreeMap::new(), Casting::Spells).0)
 }
 
 fn prompt(hp: i32, mana: i32) -> Correlated {
@@ -432,21 +477,21 @@ fn the_pool_picks_the_spell() {
     let now = std::time::Instant::now();
 
     let mut rich = heal_state();
-    rich.on_event(&prompt(20, 9));
-    assert_eq!(rich.attempt(now, &clock), CastAttempt::Send("cast heal".into()));
+    rich.on_event(&prompt(20, 9), now);
+    assert_eq!(rich.attempt(now, &clock, HealNeed::Minor), CastAttempt::Send("cast heal".into()));
 
     let mut thin = heal_state();
-    thin.on_event(&prompt(20, 4));
-    assert_eq!(thin.attempt(now, &clock), CastAttempt::Send("cast heal".into()));
+    thin.on_event(&prompt(20, 4), now);
+    assert_eq!(thin.attempt(now, &clock, HealNeed::Minor), CastAttempt::Send("cast heal".into()));
 
     let mut broke = heal_state();
-    broke.on_event(&prompt(20, 2));
-    assert_eq!(broke.attempt(now, &clock), CastAttempt::Nothing);
+    broke.on_event(&prompt(20, 2), now);
+    assert_eq!(broke.attempt(now, &clock, HealNeed::Minor), CastAttempt::Nothing);
 
     // A pool that has never been seen affords nothing: a character whose
     // prompt carries no mana is not a caster.
     let mut unseen = heal_state();
-    assert_eq!(unseen.attempt(now, &clock), CastAttempt::Nothing);
+    assert_eq!(unseen.attempt(now, &clock, HealNeed::Minor), CastAttempt::Nothing);
 }
 
 /// One cast per round, because the board refuses a second
@@ -457,14 +502,14 @@ fn a_second_cast_in_one_round_is_held() {
     let clock = RoundClock::new();
     let now = std::time::Instant::now();
     let mut heal = heal_state();
-    heal.on_event(&prompt(20, 9));
+    heal.on_event(&prompt(20, 9), now);
 
-    assert_eq!(heal.attempt(now, &clock), CastAttempt::Send("cast heal".into()));
+    assert_eq!(heal.attempt(now, &clock, HealNeed::Minor), CastAttempt::Send("cast heal".into()));
     // The outcome lands, so nothing is owed — but the round has not
     // turned over.
     heal.on_sent("cast heal", CmdId(1));
-    heal.on_event(&answering("You cast minor healing!", CmdId(1)));
-    assert!(matches!(heal.attempt(now, &clock), CastAttempt::Hold(_)));
+    heal.on_event(&answering("You cast minor healing!", CmdId(1)), now);
+    assert!(matches!(heal.attempt(now, &clock, HealNeed::Minor), CastAttempt::Hold(_)));
 }
 
 /// A cast in flight suppresses the next one outright. Nothing is owed
@@ -474,18 +519,19 @@ fn an_owed_outcome_suppresses_the_next_cast() {
     let clock = RoundClock::new();
     let now = std::time::Instant::now();
     let mut heal = heal_state();
-    heal.on_event(&prompt(20, 9));
-    heal.attempt(now, &clock);
+    heal.on_event(&prompt(20, 9), now);
+    heal.attempt(now, &clock, HealNeed::Minor);
     heal.on_sent("cast heal", CmdId(1));
 
     assert!(heal.in_flight());
-    assert_eq!(heal.attempt(now, &clock), CastAttempt::Nothing);
+    assert_eq!(heal.attempt(now, &clock, HealNeed::Minor), CastAttempt::Nothing);
 }
 
 /// Every cast failure is a roll, a pool or a round, and comes round
 /// again — EXCEPT one. "You do not know how to cast %s." means the spell
-/// is not in the book and never will be, so that source is retired and
-/// the next-cheapest takes over.
+/// is not in the book and never will be, so that source is retired.
+/// Retiring it costs only that one kind: the major heal is a separate
+/// source and is untouched.
 #[test]
 fn only_an_unknown_spell_kills_a_source() {
     let clock = RoundClock::new();
@@ -497,28 +543,33 @@ fn only_an_unknown_spell_kills_a_source() {
         "You have already cast a spell this round!",
     ] {
         let mut heal = heal_state();
-        heal.on_event(&prompt(20, 9));
-        heal.attempt(now, &clock);
+        heal.on_event(&prompt(20, 9), now);
+        heal.attempt(now, &clock, HealNeed::Minor);
         heal.on_sent("cast heal", CmdId(1));
-        heal.on_event(&answering(fizzle, CmdId(1)));
+        heal.on_event(&answering(fizzle, CmdId(1)), now);
         heal.new_visit();
         assert_eq!(
-            heal.attempt(now, &clock),
+            heal.attempt(now, &clock, HealNeed::Minor),
             CastAttempt::Send("cast heal".into()),
             "{fizzle:?} is temporary"
         );
     }
 
     let mut heal = heal_state();
-    heal.on_event(&prompt(20, 9));
-    heal.attempt(now, &clock);
+    heal.on_event(&prompt(20, 9), now);
+    heal.attempt(now, &clock, HealNeed::Minor);
     heal.on_sent("cast heal", CmdId(1));
-    heal.on_event(&answering("You do not know how to cast heal.", CmdId(1)));
+    heal.on_event(&answering("You do not know how to cast heal.", CmdId(1)), now);
     heal.new_visit();
     assert_eq!(
-        heal.attempt(now, &clock),
-        CastAttempt::Send("cast mend".into()),
-        "the dead source is skipped, the next-cheapest is tried"
+        heal.attempt(now, &clock, HealNeed::Minor),
+        CastAttempt::Nothing,
+        "the dead minor has no fallback of its own kind"
+    );
+    assert_eq!(
+        heal.attempt(now, &clock, HealNeed::Major),
+        CastAttempt::Send("cast maj".into()),
+        "a different kind is unaffected"
     );
 }
 
@@ -531,27 +582,79 @@ fn a_monsters_cast_is_not_our_outcome() {
     let clock = RoundClock::new();
     let now = std::time::Instant::now();
     let mut heal = heal_state();
-    heal.on_event(&prompt(20, 9));
-    heal.attempt(now, &clock);
+    heal.on_event(&prompt(20, 9), now);
+    heal.attempt(now, &clock, HealNeed::Minor);
     heal.on_sent("cast heal", CmdId(1));
 
-    heal.on_event(&Correlated {
-        event: Event::Line("The cave bear attempted to cast blindness at you, but failed.".into()),
-        answers: None,
-        elsewhere: false,
-    });
+    heal.on_event(
+        &Correlated {
+            event: Event::Line("The cave bear attempted to cast blindness at you, but failed.".into()),
+            answers: None,
+            elsewhere: false,
+        },
+        now,
+    );
     assert!(heal.in_flight(), "somebody else's failure is not ours");
 
     // And an outcome attributed to a DIFFERENT send of ours is not it
     // either.
-    heal.on_event(&answering("You cast starlight!", CmdId(2)));
+    heal.on_event(&answering("You cast starlight!", CmdId(2)), now);
     assert!(heal.in_flight());
+}
+
+// --- which heal ----------------------------------------------------------
+
+#[test]
+fn the_need_picks_the_kind_and_falls_back_to_the_minor() {
+    let clock = RoundClock::new();
+    let now = std::time::Instant::now();
+    let mut s = heal_state();
+    s.on_event(&prompt(20, 9), now);
+    let major_cmd = healer_book()
+        .heal_spells(no_choice(), &BTreeMap::new(), Casting::Spells)
+        .0
+        .into_iter()
+        .find(|h| h.kind == HealKind::Major)
+        .unwrap()
+        .cmd;
+    assert_eq!(s.attempt(now, &clock, HealNeed::Major), CastAttempt::Send(major_cmd));
+    // Too poor for the major: the minor goes out instead.
+    let mut poor = heal_state();
+    poor.on_event(&prompt(20, 4), now);
+    assert_eq!(poor.attempt(now, &clock, HealNeed::Major), CastAttempt::Send("cast heal".into()));
+    // No regen named: the minor.
+    let mut none = heal_state();
+    none.on_event(&prompt(20, 9), now);
+    assert_eq!(none.attempt(now, &clock, HealNeed::Regen), CastAttempt::Send("cast heal".into()));
+}
+
+#[test]
+fn a_running_regen_is_not_recast_until_its_rounds_run_out() {
+    let clock = RoundClock::new();
+    let t0 = std::time::Instant::now();
+    let mut book = healer_book();
+    book.spells.push(mud_client::sheet::KnownSpell { level: 5, mana: 6, short: "regn".into(), name: "regeneration".into() });
+    let mut durations = BTreeMap::new();
+    durations.insert("regeneration".to_string(), 4);
+    let (heals, _) = book.heal_spells(HealChoice { minor: "", major: "", regen: "regeneration" }, &durations, Casting::Spells);
+    let mut s = HealState::new(heals);
+    s.on_event(&prompt(20, 9), t0);
+    assert_eq!(s.attempt(t0, &clock, HealNeed::Regen), CastAttempt::Send("cast regn".into()));
+    s.on_sent("cast regn", CmdId(1));
+    s.on_event(&answering("You cast regeneration on yourself.", CmdId(1)), t0);
+    // Running: the next round in the band falls back to the minor.
+    let t1 = t0 + ROUND;
+    s.on_event(&prompt(20, 9), t1);
+    assert_eq!(s.attempt(t1, &clock, HealNeed::Regen), CastAttempt::Send("cast heal".into()));
+    // Rounds out: the regen again.
+    let t2 = t0 + ROUND * 5;
+    s.on_event(&prompt(20, 9), t2);
+    assert_eq!(s.attempt(t2, &clock, HealNeed::Regen), CastAttempt::Send("cast regn".into()));
 }
 
 // --- buffs ------------------------------------------------------------
 
 use mud_client::sheet::{Buff, BuffState};
-use std::collections::BTreeMap;
 
 /// The shipped figures: bless is spell 14, duration 40 rounds.
 fn durations() -> BTreeMap<String, u32> {

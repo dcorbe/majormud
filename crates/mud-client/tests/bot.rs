@@ -1691,3 +1691,20 @@ fn a_rest_with_a_low_pool_does_not_hide_yet() {
     // HP is over the mark, mana is not: still resting, so no hide yet.
     assert!(bot.on_event(&vitals(96, Some(10), Some(Status::Resting))).is_empty());
 }
+
+// --- which heal ----------------------------------------------------------
+
+#[test]
+fn the_heal_need_follows_the_bands() {
+    use mud_client::bot::heal_need;
+    use mud_client::sheet::HealNeed;
+    let plain = BotConfig::default();
+    assert_eq!(heal_need(&plain, 80), None);
+    assert_eq!(heal_need(&plain, 69), Some(HealNeed::Minor));
+    assert_eq!(heal_need(&plain, 39), Some(HealNeed::Major));
+    let regen = BotConfig { hp_regen_spell: "regeneration".into(), ..BotConfig::default() };
+    assert_eq!(heal_need(&regen, 69), Some(HealNeed::Regen));
+    assert_eq!(heal_need(&regen, 39), Some(HealNeed::Major));
+    let off = BotConfig { minor_heal_at_percent: 0, major_heal_at_percent: 0, ..BotConfig::default() };
+    assert_eq!(heal_need(&off, 10), None);
+}

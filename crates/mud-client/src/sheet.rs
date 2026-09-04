@@ -265,43 +265,81 @@ impl Spellbook {
         book
     }
 
-    /// Every way this character can heal itself, **cheapest first**.
+    /// The heals this character casts, and the names it could not use.
     ///
-    /// `only` overrides the discovery: a non-empty list names the spells
-    /// to use and nothing else is considered, so an operator can stop the
-    /// bot reaching for the expensive one. Names are matched
-    /// case-insensitively against the book's full spell name, and an
-    /// entry the character does not know is silently absent rather than
-    /// an error — the book is the authority on what it knows.
-    ///
-    /// **Cheapest, not biggest.** Sizing the spell to the wound was the
-    /// obvious alternative and it cannot be done honestly: the shipped
-    /// `min`/`max` are the level-1 figures and the real heal scales with
-    /// caster level, so any table here would understate by more the
-    /// longer the character had been played. Mana is the scarce resource,
-    /// an under-heal is retried next round for free, and the book's own
-    /// costs are real data about this character. So: cheapest affordable.
-    pub fn heal_spells(&self, only: &[String], casting: Casting) -> Vec<HealSource> {
-        let wanted = |name: &str| {
+    /// Discovery reads the book: the cheapest heal is the minor and the
+    /// dearest the major, when the two differ. A named minor or major
+    /// wins over discovery. The regen is only ever named, and needs a
+    /// duration from the spell table so it is not recast while running.
+    /// A name the book does not know, or a regen with no duration, is
+    /// refused with the reason, never skipped quietly.
+    pub fn heal_spells(
+        &self,
+        choice: HealChoice,
+        durations: &std::collections::BTreeMap<String, u32>,
+        casting: Casting,
+    ) -> (Vec<HealSource>, Vec<String>) {
+        let mut out = Vec::new();
+        let mut refused = Vec::new();
+        let known = |name: &str| {
             let lower = name.to_lowercase();
-            if only.is_empty() {
-                HEAL_SPELLS.contains(&lower.as_str())
-            } else {
-                only.iter().any(|o| o.to_lowercase() == lower)
-            }
+            self.spells.iter().find(|s| s.name.to_lowercase() == lower)
         };
-        let mut heals: Vec<HealSource> = self
+        let source = |s: &KnownSpell, kind: HealKind| HealSource {
+            name: s.name.clone(),
+            cmd: casting.command(&s.short),
+            mana_cost: s.mana as i32,
+            kind,
+        };
+        let mut heals: Vec<&KnownSpell> = self
             .spells
             .iter()
-            .filter(|s| wanted(&s.name))
-            .map(|s| HealSource {
-                name: s.name.clone(),
-                cmd: casting.command(&s.short),
-                mana_cost: s.mana as i32,
-            })
+            .filter(|s| HEAL_SPELLS.contains(&s.name.to_lowercase().as_str()))
             .collect();
-        heals.sort_by_key(|h| h.mana_cost);
-        heals
+        heals.sort_by_key(|s| s.mana);
+        let pick = |name: &str, fallback: Option<&KnownSpell>, what: &str| -> Result<Option<KnownSpell>, String> {
+            if name.is_empty() {
+                return Ok(fallback.cloned());
+            }
+            match known(name) {
+                Some(s) => Ok(Some(s.clone())),
+                None => Err(format!("{what} `{name}` is not in the spellbook")),
+            }
+        };
+        let minor = match pick(choice.minor, heals.first().copied(), "minor_heal_spell") {
+            Ok(m) => m,
+            Err(why) => {
+                refused.push(why);
+                None
+            }
+        };
+        let dearest = heals.last().copied().filter(|d| Some(d.name.as_str()) != minor.as_ref().map(|m| m.name.as_str()));
+        let major = match pick(choice.major, dearest, "major_heal_spell") {
+            Ok(m) => m,
+            Err(why) => {
+                refused.push(why);
+                None
+            }
+        };
+        if let Some(m) = &minor {
+            out.push(source(m, HealKind::Minor));
+        }
+        if let Some(m) = &major {
+            out.push(source(m, HealKind::Major));
+        }
+        if !choice.regen.is_empty() {
+            match known(choice.regen) {
+                Some(s) => match durations.get(&s.name.to_lowercase()) {
+                    Some(rounds) if *rounds > 0 => out.push(source(s, HealKind::Regen { rounds: *rounds })),
+                    _ => refused.push(format!(
+                        "hp_regen_spell `{}` has no duration in the spell table",
+                        s.name
+                    )),
+                },
+                None => refused.push(format!("hp_regen_spell `{}` is not in the spellbook", choice.regen)),
+            }
+        }
+        (out, refused)
     }
 
     /// The spell that would light a dark room, with the book's mana
@@ -315,18 +353,49 @@ impl Spellbook {
     }
 }
 
+/// What a heal source is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HealKind {
+    Minor,
+    Major,
+    /// A heal over time. `rounds` is its duration from the spell table,
+    /// in combat rounds, and it is not recast while running.
+    Regen { rounds: u32 },
+}
+
+/// The player's choice of heals by book name. Empty means discover, or
+/// for the regen, none.
+#[derive(Debug, Clone, Copy)]
+pub struct HealChoice<'a> {
+    pub minor: &'a str,
+    pub major: &'a str,
+    pub regen: &'a str,
+}
+
+/// Which heal a round wants, decided by the runner from the HP percent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HealNeed {
+    Minor,
+    /// The regen spell if named and not running, else the minor.
+    Regen,
+    /// The major heal if the pool affords it, else the minor.
+    Major,
+}
+
 /// One healing spell this character knows, with what the board says it
-/// costs. There is no item or potion variant: unlike lighting, every way
-/// of healing modelled here fails the same way, so one shape suffices.
+/// costs and what it is for. There is no item or potion variant: unlike
+/// lighting, every way of healing modelled here fails the same way, so
+/// one shape suffices.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HealSource {
     /// The book's full name, for the operator's benefit and for matching
-    /// a `[bot].heal_spells` entry.
+    /// a `[bot].minor_heal_spell` / `major_heal_spell` / `hp_regen_spell`.
     pub name: String,
     /// `cast maj` / `invoke lay`, built by [`Casting::command`].
     pub cmd: String,
     /// From the book, not from configuration.
     pub mana_cost: i32,
+    pub kind: HealKind,
 }
 
 /// What one of the spell machines wants to do right now.
@@ -356,9 +425,11 @@ pub enum CastAttempt {
 ///   re-engage breaks it — the 2026-08-01 death spiral. Casting
 ///   disengages nothing, so it is the only recovery a character has while
 ///   something is still hitting it. That is the whole reason this exists.
-/// - **Sources are not a preference order but a price list.** Lighting
+/// - **Sources are not a preference order but a choice by kind.** Lighting
 ///   walks its sources in order and kills them as they fail; healing
-///   picks the cheapest one the current mana affords, every time.
+///   holds at most one source per [`HealKind`] and the caller's
+///   [`HealNeed`] picks among them, the pool affording it decides the
+///   rest.
 /// - **Failure is nearly always temporary.** A fizzle, an empty pool, a
 ///   second cast in one round: all retried. The single terminal outcome
 ///   is *"You do not know how to cast %s."*, which means the spell is not
@@ -369,7 +440,7 @@ pub enum CastAttempt {
 /// as well as health, so the two marks compose without either knowing
 /// about the other.
 pub struct HealState {
-    /// Cheapest first ([`Spellbook::heal_spells`]).
+    /// At most one per [`HealKind`] ([`Spellbook::heal_spells`]).
     sources: Vec<HealSource>,
     /// Sources the board says are not in the book: dead for the run.
     dead: Vec<bool>,
@@ -382,6 +453,9 @@ pub struct HealState {
     pending: Option<(usize, crate::correlate::CmdId)>,
     /// When the last cast was released, for round pacing.
     last_attempt: Option<std::time::Instant>,
+    /// When the regen was last confirmed cast; `None` means never, or its
+    /// rounds have already run out.
+    regen_cast_at: Option<std::time::Instant>,
 }
 
 impl HealState {
@@ -393,6 +467,7 @@ impl HealState {
             mana: None,
             pending: None,
             last_attempt: None,
+            regen_cast_at: None,
         }
     }
 
@@ -402,7 +477,7 @@ impl HealState {
         self.sources.is_empty()
     }
 
-    /// The spells found, cheapest first — for the startup announcement.
+    /// The heals in play: at most one per [`HealKind`].
     pub fn sources(&self) -> &[HealSource] {
         &self.sources
     }
@@ -412,28 +487,59 @@ impl HealState {
         self.pending.is_some()
     }
 
-    /// The cheapest live source the pool currently affords.
-    fn affordable(&self) -> Option<usize> {
+    /// The live source of `kind` the pool affords.
+    fn affordable(&self, kind: impl Fn(&HealKind) -> bool) -> Option<usize> {
         let mana = self.mana?;
         self.sources
             .iter()
             .zip(&self.dead)
-            .position(|(s, dead)| !dead && s.mana_cost <= mana)
+            .position(|(s, dead)| !dead && kind(&s.kind) && s.mana_cost <= mana)
     }
 
-    /// What healing is worth doing at `now`.
+    /// Is the regen still paying out.
+    fn regen_running(&self, now: std::time::Instant, clock: &crate::world::RoundClock) -> bool {
+        let Some(at) = self.regen_cast_at else {
+            return false;
+        };
+        let rounds = self
+            .sources
+            .iter()
+            .find_map(|s| match s.kind {
+                HealKind::Regen { rounds } => Some(rounds),
+                _ => None,
+            })
+            .unwrap_or(0);
+        now.duration_since(at) < clock.period() * rounds
+    }
+
+    /// What healing is worth doing at `now` for `need`.
     ///
-    /// The caller owns the HP test — this knows about mana and rounds,
-    /// not about marks.
+    /// The caller owns the HP test. This knows about mana, rounds, and
+    /// which source answers which need: the major heal falls back to
+    /// the minor when the pool cannot afford it, and the regen falls
+    /// back to the minor when it is running or not named.
     pub fn attempt(
         &mut self,
         now: std::time::Instant,
         clock: &crate::world::RoundClock,
+        need: HealNeed,
     ) -> CastAttempt {
         if self.pending.is_some() {
             return CastAttempt::Nothing;
         }
-        let Some(i) = self.affordable() else {
+        let minor = || self.affordable(|k| *k == HealKind::Minor);
+        let picked = match need {
+            HealNeed::Minor => minor(),
+            HealNeed::Major => self.affordable(|k| *k == HealKind::Major).or_else(minor),
+            HealNeed::Regen => {
+                if self.regen_running(now, clock) {
+                    minor()
+                } else {
+                    self.affordable(|k| matches!(k, HealKind::Regen { .. })).or_else(minor)
+                }
+            }
+        };
+        let Some(i) = picked else {
             return CastAttempt::Nothing;
         };
         if let Some(at) = self.last_attempt {
@@ -459,7 +565,7 @@ impl HealState {
     /// read when the correlator says it answers OUR cast — a monster's
     /// "%s attempted to cast %s at you, but failed." is routine din and
     /// would otherwise read as our own fizzle.
-    pub fn on_event(&mut self, cor: &crate::correlate::Correlated) {
+    pub fn on_event(&mut self, cor: &crate::correlate::Correlated, now: std::time::Instant) {
         if let crate::events::Event::Prompt {
             mana: Some(mana), ..
         } = &cor.event
@@ -482,9 +588,12 @@ impl HealState {
         if line.contains("do not know how to cast") || line.contains("do not know how to invoke") {
             self.dead[i] = true;
             self.pending = None;
-        } else if line.starts_with("you cast ")
-            || line.starts_with("you invoke ")
-            || line.contains("but fail")
+        } else if line.starts_with("you cast ") || line.starts_with("you invoke ") {
+            if matches!(self.sources[i].kind, HealKind::Regen { .. }) {
+                self.regen_cast_at = Some(now);
+            }
+            self.pending = None;
+        } else if line.contains("but fail")
             || line.contains("spell is resisted")
             || line.contains("resists your spell")
             || line.contains("enough mana to cast")
