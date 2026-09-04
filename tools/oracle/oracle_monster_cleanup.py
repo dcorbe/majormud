@@ -6,7 +6,6 @@
 - drop Oracle's gear at the Healer, then save Vexil at the Weapons Shop
 """
 import re, sys, time
-sys.path.insert(0, "/home/daniel/bbs/tools/oracle")
 from mudlib import Session
 
 def show(s, tag, cmd, settle=1.8):
@@ -19,7 +18,7 @@ def hp(s):
     ms = re.findall(r"\[HP=(-?\d+)", s.clean())
     return int(ms[-1]) if ms else None
 
-V = Session(rawfile="/home/daniel/bbs/re/oracle/oracle_monster_attacks5.raw")
+V = Session(rawfile="../../re/oracle/oracle_monster_attacks5.raw")
 V.login("Vexil")
 V.send("E"); V.dump(4.0)
 DEADLINE = time.time() + 25 * 60

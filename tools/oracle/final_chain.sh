@@ -7,8 +7,8 @@
 #   - Charm lifecycle take-3: Bard vs kobold slaves (charmlvl 1),
 #     arrival-only follow detection, mortal recovery.
 set -u
-cd /home/daniel/bbs/tools/oracle
-LOG=/home/daniel/bbs/re/oracle/final_chain.log
+cd "$(dirname "$0")"
+LOG=../../re/oracle/final_chain.log
 exec >>"$LOG" 2>&1
 
 say() { echo "$(date +%F\ %T) $*"; }

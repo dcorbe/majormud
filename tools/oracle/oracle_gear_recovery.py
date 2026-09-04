@@ -3,7 +3,6 @@
 Strict bail rules: any monster in the arena -> coins only, leave.
 HP <= 28 -> leave at once. Ends saved at the Healer, geared."""
 import re, sys, time
-sys.path.insert(0, "/home/daniel/bbs/tools/oracle")
 from mudlib import Session
 
 def show(s, tag, cmd, settle=1.8):
@@ -34,7 +33,7 @@ def mons_of(out):
     return [n.strip() for n in (m.group(1).split(",") if m else [])
             if n.strip() and n.strip()[0].islower() and "healer" not in n]
 
-O = Session(rawfile="/home/daniel/bbs/re/oracle/oracle_gear_recovery.raw")
+O = Session(rawfile="../../re/oracle/oracle_gear_recovery.raw")
 O.login("Oracle")
 O.send("E"); O.dump(4.0)
 r, out = room(O)

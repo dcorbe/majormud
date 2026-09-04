@@ -21,7 +21,7 @@ FIFO:        <scratch>/blur_cmd.fifo
 import os, re, select, socket, sys, time
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else "."
-RAW = "/home/daniel/bbs/re/oracle/oracle_blur_duration.raw"
+RAW = "../../re/oracle/oracle_blur_duration.raw"
 LOG = f"{BASE}/blur_clean.log"
 FIFO = f"{BASE}/blur_cmd.fifo"
 

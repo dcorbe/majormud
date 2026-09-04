@@ -4,7 +4,7 @@ that can spawn there (region/level match), for the slice-6 oracle expedition."""
 import sqlite3
 from collections import deque
 
-DB = "/home/daniel/bbs/re/mmud_wgnt.sqlite"
+DB = "../../re/mmud_wgnt.sqlite"
 DIRS = ["N","S","E","W","NE","NW","SE","SW","U","D"]
 START = (1, 33)
 BLOCKED_TYPES = {15}   # level gate — refuses L8 Zinvar

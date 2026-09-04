@@ -4,8 +4,8 @@
 # Sleep to 02:30, restart the board for fresh spawns (gated), then run
 # b3 (the d=3 parry point) and E3 (engage lock vs night bats).
 set -u
-cd /home/daniel/bbs/tools/oracle
-LOG=/home/daniel/bbs/re/oracle/overnight_chain.log
+cd "$(dirname "$0")"
+LOG=../../re/oracle/overnight_chain.log
 exec >>"$LOG" 2>&1
 
 say() { echo "$(date +%F\ %T) $*"; }

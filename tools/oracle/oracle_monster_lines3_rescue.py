@@ -2,10 +2,9 @@
 """Rescue: Oracle clears the arena slimes, re-arms from the floor, recovers
 loot; Vexil's socket stays open to record the downed-victim view."""
 import re, sys, time
-sys.path.insert(0, "/home/daniel/bbs/tools/oracle")
 from mudlib import Session
 
-RAWDIR = "/home/daniel/bbs/re/oracle"
+RAWDIR = "../../re/oracle"
 
 def show(sess, tag, cmd, settle=2.0):
     m = sess.mark()

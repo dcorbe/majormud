@@ -3,8 +3,8 @@
 # which the a3/a4 blocks found plentiful 05:30-07:30. Runs after the
 # overnight chain's blocks are long done.
 set -u
-cd /home/daniel/bbs/tools/oracle
-LOG=/home/daniel/bbs/re/oracle/morning_chain.log
+cd "$(dirname "$0")"
+LOG=../../re/oracle/morning_chain.log
 exec >>"$LOG" 2>&1
 
 say() { echo "$(date +%F\ %T) $*"; }
