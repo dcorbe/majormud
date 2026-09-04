@@ -562,8 +562,9 @@ number appears, the 15 second meditate tick. A dash means nothing has
 locked that clock yet. A pool rising within three seconds of one of your
 own casts is the spell landing and moves no clock.
 
-The cadence is MudPlay's measurement of the stock board. The bar is
-repainted four times a second so the numbers move between events.
+The cadence is MudPlay's measurement of the stock board. In `play` the
+bar is repainted four times a second so the numbers move between
+events. The headless `mmc farm` bar repaints on events only.
 
 ## Doors
 

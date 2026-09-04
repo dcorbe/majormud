@@ -313,8 +313,9 @@ of the `mmc` binary. All four become per hour and the label becomes `xp/hr`.
   `1788503928.333`, asserting the room block is credited to the look.
 - **Session.** The state follows the status, and the vitals probe fills both
   maxima.
-- **Tick clock.** Recorded prompt sequences from the captures, one per cycle,
-  plus the artifact window, the silent tick, and the dropped sample.
+- **Tick clock.** Prompt sequences with synthetic instants, one per cycle,
+  plus the cast window, the silent tick, and a stale cycle that must not
+  steal another's tick.
 - **Bot.** The end of a rest and of a meditation, the meditate start rule, the
   heal order at every band with and without a regen spell, the one cast per
   round hold, the hide retry, and no action without Stealth.
