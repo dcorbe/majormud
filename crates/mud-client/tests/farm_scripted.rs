@@ -1336,7 +1336,7 @@ async fn the_gate_meditates_for_mana_and_leaves_when_both_pools_clear_the_mark()
             "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=2]:"
                 .into(),
         ),
-        // verify_start: HP is fit (30/30), mana is not (2/10).
+        // verify_start: HP is fit at 30 of 30, mana is not at 2 of 10.
         (
             "look",
             format!(

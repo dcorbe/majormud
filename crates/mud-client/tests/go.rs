@@ -173,9 +173,9 @@ fn walk_mode_fights_on_the_way_and_run_mode_does_not() {
 
 /// The walk rests to the bot's own mark, the same as a farm would.
 /// `go_config` always clears a farm's own mark rather than inheriting
-/// it: inheriting a stricter one would have a post-death `/go` send
+/// it. Inheriting a stricter one would have a post-death `/go` send
 /// `rest` and sit silently for up to `max_rest_seconds` before its
-/// first step — which is exactly when somebody types this.
+/// first step, which is exactly when somebody types this.
 #[test]
 fn go_rests_to_the_bots_mark_not_the_farms() {
     let base = FarmConfig {

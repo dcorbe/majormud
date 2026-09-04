@@ -157,11 +157,14 @@ pub struct FarmConfig {
     /// the character stands, and resume once it is fit to travel again.
     /// 0 disables the hp trip; dying still stops the walk.
     ///
-    /// Must not exceed `depart_at_percent`, and [`FarmPlan::build`]
-    /// refuses the pair when it does: the defend pump would end, the
-    /// departure gate would release at the lower number, and the very
-    /// next prompt would trip the guard again — a run that burns its
-    /// whole interrupt budget without walking a step.
+    /// The refusal below fires only when this farm sets its own
+    /// `depart_at_percent`: [`FarmPlan::build`] then refuses a pair
+    /// where this value exceeds it, because the defend pump would end,
+    /// the departure gate would release at the lower number, and the
+    /// very next prompt would trip the guard again, burning the whole
+    /// interrupt budget without walking a step. With the default, the
+    /// mark is the bot's `rest_until_percent`, and a profile must keep
+    /// it above this mark itself, since the loader cannot see both.
     pub interrupt_at_percent: u32,
     /// Interruptions tolerated on a single leg before the run gives up.
     /// A character that keeps being stopped is not going to walk this
@@ -211,9 +214,9 @@ impl Default for FarmConfig {
             idle_poke_ms: 5000,
             heal_retry_prompts: 3,
             heal_refused: Vec::new(),
-            // Below the departure gate's default mark (the bot's
-            // `rest_until_percent`), and at the point the bot policy
-            // would itself want to stop and heal.
+            // Below the departure gate's mark, the bot's
+            // `rest_until_percent` by default, and at the point the bot
+            // policy would itself want to stop and heal.
             interrupt_at_percent: 50,
             travel_interrupts: 3,
             defend_seconds: 60,
@@ -2649,10 +2652,10 @@ enum DepartureWait {
 
 /// Hold at the stop until both pools are fit to travel. The bot is not
 /// driving while the navigator walks, so setting off wounded or out of
-/// mana means relying on the travel guard to stop the leg part-way —
-/// cheaper to leave fit. The mark is `cfg.depart_at_percent` if the farm
-/// set its own, otherwise the bot's `rest_until_percent`; either way it
-/// gates HP and mana alike.
+/// mana means relying on the travel guard to stop the leg part-way.
+/// Leaving fit is cheaper. The mark is `cfg.depart_at_percent` if the
+/// farm set its own. Otherwise it is the bot's `rest_until_percent`.
+/// Either way it gates HP and mana alike.
 async fn wait_for_departure_health(
     session: &crate::session::Session,
     cfg: &FarmConfig,
@@ -2709,7 +2712,7 @@ async fn wait_for_departure_health(
         if tokio::time::Instant::now() >= deadline {
             return DepartureWait::Fit;
         }
-        // Actually REST (or meditate), and actually look.
+        // Actually rest or meditate, and actually look.
         //
         // This used to watch `hp` and wait. Two things made that
         // useless on a live board: nothing asked the character to heal,
