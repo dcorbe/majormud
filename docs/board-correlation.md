@@ -53,6 +53,11 @@ reply with the command that caused it.**
    reprompt_disturbed` models this faithfully). In a room with a fight in
    it, a prompt from somebody else's blow clears our in-flight command.
 
+   The prompt has two templates. HP only paints its status inside the
+   frame, `[HP=42 (Resting) ]:`. With a pool it paints the status after
+   the frame, glued to the echo, `[HP=36/MA=12]: (Resting) look`. The
+   parser reads both and the echo reaches the correlator clean.
+
 2. **`Navigator` takes the next room block it sees.** `wait_room` returns
    on the first `RoomSeen`, whoever asked for it. `goto` drains the
    channel before sending a step, which removes blocks already *received*

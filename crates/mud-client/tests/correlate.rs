@@ -68,9 +68,9 @@ fn an_echo_is_the_exact_text_we_sent() {
 
 #[test]
 fn a_status_decoration_on_the_echo_is_stripped() {
-    // The board splices "(Resting) " into lines it emits while the
-    // character rests (DLL 0xe06f6); other markers are uncaptured, so any
-    // single leading parenthesized run strips.
+    // The pool prompt template paints "(Resting) " after "]:", so a
+    // chunk split there leaves it on the echo. Any single leading
+    // parenthesized run strips.
     assert!(is_echo("(Resting) look", "look"));
     assert!(is_echo("(Hiding) n", "n"));
     assert!(!is_echo("(Resting) s", "n"));
@@ -228,7 +228,7 @@ fn unknown_lines_answer_nothing_and_retire_nothing() {
         "7 silver drop to the ground.",
         "The giant rat falls to the ground with a shrill cry!",
         "The room is dimly lit",
-        "(Resting)", // prompt-pileup residue: empty after decoration strip
+        "(Resting)", // a status word cut off a split pool prompt: empty after decoration strip
     ] {
         assert_eq!(ans(&mut c, line(stray), t), None, "{stray:?} must not attribute");
     }

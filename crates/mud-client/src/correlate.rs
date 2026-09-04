@@ -99,9 +99,13 @@ pub struct Correlated {
     pub elsewhere: bool,
 }
 
-/// Strip the board's single leading parenthesized status decoration:
-/// `(Resting) look` -> `look` (DLL 0xe06f6; other markers are uncaptured,
-/// so any single leading `(...)` run strips, spaces inside included).
+/// Strip a leading parenthesized status decoration: `(Resting) look` ->
+/// `look`.
+///
+/// The pool prompt template paints its status AFTER the frame, `[HP=36/
+/// MA=12]: (Resting) look`, and the parser now reads it off the prompt.
+/// This strip stays as defence: a chunk boundary between `]:` and the
+/// word leaves the word on the echo, and the echo must still match.
 pub fn strip_decoration(s: &str) -> &str {
     s.strip_prefix('(')
         .and_then(|rest| rest.split_once(')'))
