@@ -163,26 +163,33 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     // whole session, not just while a farm is attached: a hand-played
     // stretch is worth measuring too.
     let mut exp = crate::progress::ExpMeter::default();
-    // The assist: a bot that fights and loots BESIDE the operator while
-    // no farm runs. Never heals or flees — movement and rest belong to
-    // the person holding the keyboard. `/bot` toggles it; the profile's
-    // `assist_play` starts it on. Rebuilt on every toggle-on so its
-    // latches start clean.
+    // `content` is held for the session's lifetime alongside `graph` and
+    // `spawns`; `on_realm_entry` is its one reader, for the spellbook
+    // probe's class/magictype skip (Task 5 of `one-path-to-content`).
+    // Loaded ahead of the assist below, so its first build reads the
+    // sheet's heal marks the same as every rebuild after it.
+    let (graph, nav, spawns, content) = finish_locator(locator(session.profile()), &session);
+    let durations = content.as_ref().map(|c| crate::views::spell_durations(c)).unwrap_or_default();
+    // The assist: a bot that fights and loots, rests, heals and hides
+    // BESIDE the operator while no farm runs. `/bot` toggles it; the
+    // profile's `assist_play` starts it on. Rebuilt on every toggle-on
+    // so its latches start clean.
     let mut assist: Option<crate::bot::Bot> = None;
-    let assist_config = {
-        let mut cfg = session.profile().bot.clone().unwrap_or(crate::bot::BotConfig {
-            // A profile without a [bot] table still gets a useful
-            // assist: attack and loot are the whole point of asking.
-            auto_combat: true,
-            auto_get: true,
-            ..Default::default()
-        });
-        cfg.auto_heal = false;
-        cfg.auto_flee = false;
-        cfg
-    };
+    let mut assist_heal_state: Option<crate::sheet::HealState> = None;
+    let assist_config = session.profile().bot.clone().unwrap_or(crate::bot::BotConfig {
+        // A profile without a [bot] table still gets a useful
+        // assist: attack and loot are the whole point of asking.
+        auto_combat: true,
+        auto_get: true,
+        ..Default::default()
+    });
     if assist_config.assist_play {
-        assist = Some(crate::bot::Bot::new(assist_config.clone()));
+        let (bot, heal, refusals) = new_assist(&session, &assist_config, &durations);
+        for why in &refusals {
+            eprintln!("-- {why} --");
+        }
+        assist = Some(bot);
+        assist_heal_state = Some(heal);
     }
     // The maintained room model, running in SHADOW: it decides nothing
     // here, it only records where it and the board disagree. The farm
@@ -219,10 +226,6 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     // those arms would silently assign the SHADOWED job binding instead
     // of this clock, compile cleanly, and reset nothing.
     let mut exp_since = std::time::Instant::now();
-    // `content` is held for the session's lifetime alongside `graph` and
-    // `spawns`; `on_realm_entry` is its one reader, for the spellbook
-    // probe's class/magictype skip (Task 5 of `one-path-to-content`).
-    let (graph, nav, spawns, content) = finish_locator(locator(session.profile()), &session);
 
     // Key events come from a blocking reader thread.
     let (key_tx, mut key_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -287,6 +290,17 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                     if job.is_none()
                         && let Some(bot) = assist.as_mut()
                     {
+                        let now = std::time::Instant::now();
+                        if let Some(heal) = assist_heal_state.as_mut() {
+                            heal.on_event(cor, now);
+                            if let crate::events::Event::Prompt { hp, .. } = &cor.event {
+                                let clock = state_rx.borrow().ticks.round.clone();
+                                if let Some(cmd) = assist_heal(&assist_config, bot, heal, &clock, *hp, now) {
+                                    let id = session.send(&cmd);
+                                    heal.on_sent(&cmd, id);
+                                }
+                            }
+                        }
                         for cmd in assist_actions(bot, cor) {
                             session.send(&cmd);
                         }
@@ -358,7 +372,12 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                     // fights that are over, so the assist starts clean for
                     // the same reason `/bot` rebuilds it on every toggle-on.
                     if assist.is_some() {
-                        assist = Some(crate::bot::Bot::new(assist_config.clone()));
+                        let (bot, heal, refusals) = new_assist(&session, &assist_config, &durations);
+                        for why in &refusals {
+                            note(&mut out, &format!("-- {why} --"))?;
+                        }
+                        assist = Some(bot);
+                        assist_heal_state = Some(heal);
                     }
                     for cmd in handover_actions(&ended, assist.is_some()) {
                         session.send(&cmd);
@@ -659,7 +678,14 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                     // Fresh on every start: latches from
                                     // an earlier stretch describe fights
                                     // that are over.
-                                    assist = Some(crate::bot::Bot::new(assist_config.clone()));
+                                    let (bot, heal, refusals) = new_assist(&session, &assist_config, &durations);
+                                    for why in &refusals {
+                                        note(&mut out, &format!("-- {why} --"))?;
+                                    }
+                                    assist = Some(bot);
+                                    assist_heal_state = Some(heal);
+                                } else {
+                                    assist_heal_state = None;
                                 }
                                 // A running job owns the connection and
                                 // never hears the assist, so the toggle
@@ -940,6 +966,26 @@ pub fn handle_key(
     KeyOutcome::Continue
 }
 
+/// Build the assist and its heal state together, so every rebuild — the
+/// profile's own start, the `/bot` toggle, a job handing back — reads
+/// the sheet's marks the same way. The bot hides after a rest only when
+/// `Session::capabilities` says Stealth is trained; before the realm
+/// entry probe fills the stat sheet that reads 0, so the first build of
+/// a session never hides, which matches the assist starting fresh on
+/// every rebuild anyway.
+///
+/// Returns the bot, the heal state, and the sheet's heal refusals for
+/// the caller to print.
+fn new_assist(
+    session: &Session,
+    cfg: &crate::bot::BotConfig,
+    durations: &std::collections::BTreeMap<String, u32>,
+) -> (crate::bot::Bot, crate::sheet::HealState, Vec<String>) {
+    let bot = crate::bot::Bot::new(cfg.clone()).with_hide(session.capabilities().stealth > 0);
+    let sheet = crate::farm::sheet_from(session, cfg, durations);
+    (bot, crate::sheet::HealState::new(sheet.heals.0), sheet.heals.1)
+}
+
 /// The assist's reply to one correlated event: the bot's own decisions,
 /// plus the re-look the farm's pump would have made for it.
 ///
@@ -975,6 +1021,29 @@ pub fn assist_actions(
         out.push("look".into());
     }
     out
+}
+
+/// The assist's heal for one prompt: which kind the marks ask for, and
+/// whether the heal state will cast it this round. The bot decides
+/// nothing here, it only lends its percent arithmetic, so the assist and
+/// the farm's stop loop read the same number.
+pub fn assist_heal(
+    cfg: &crate::bot::BotConfig,
+    bot: &crate::bot::Bot,
+    heal: &mut crate::sheet::HealState,
+    clock: &crate::world::RoundClock,
+    hp: i32,
+    now: std::time::Instant,
+) -> Option<String> {
+    if !cfg.auto_heal || bot.fled() {
+        return None;
+    }
+    let percent = bot.hp_percent(hp)?;
+    let need = crate::bot::heal_need(cfg, percent)?;
+    match heal.attempt(now, clock, need) {
+        crate::sheet::CastAttempt::Send(cmd) => Some(cmd),
+        _ => None,
+    }
 }
 
 /// What the assist needs when a job hands the character back.

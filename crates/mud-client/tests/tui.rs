@@ -1015,3 +1015,40 @@ fn status_line_shows_the_rest_cycle_beside_the_natural_one_while_resting() {
     let s = render_status(&state, now, "mbbs", None, Fix::Unknown, None, None, false, 120);
     assert!(s.contains("HP 27.0/18.0"), "{s}");
 }
+
+// ---------------------------------------------------------------------
+// The assist's own heal, by the profile's marks. `assist_heal` lends the
+// bot's percent arithmetic to the heal state without letting the bot
+// decide anything itself, so the assist and the farm's stop loop read
+// the same number.
+// ---------------------------------------------------------------------
+
+use mud_client::sheet::{Casting, HealChoice, HealState, Spellbook};
+use mud_client::tui::assist_heal;
+use std::collections::BTreeMap;
+
+fn healer() -> HealState {
+    let book = Spellbook::parse("  1    2  mihe   minor healing\n  4    6  mahe   major healing\n");
+    HealState::new(book.heal_spells(HealChoice { minor: "", major: "", regen: "" }, &BTreeMap::new(), Casting::Spells).0)
+}
+
+#[test]
+fn the_assist_casts_by_the_marks_and_once_per_round() {
+    let cfg = BotConfig { auto_heal: true, max_hp: 100, max_mana: 20, ..BotConfig::default() };
+    let bot = Bot::new(cfg.clone());
+    let mut heal = healer();
+    let clock = mud_client::world::RoundClock::new();
+    let now = Instant::now();
+    heal.on_event(
+        &Correlated { event: Event::Prompt { hp: 30, mana: Some(9), status: None }, answers: None, elsewhere: false },
+        now,
+    );
+    assert_eq!(assist_heal(&cfg, &bot, &mut heal, &clock, 30, now), Some("cast mahe".into()));
+    // The same round asks again: held.
+    assert_eq!(assist_heal(&cfg, &bot, &mut heal, &clock, 30, now + Duration::from_secs(1)), None);
+    // Healthy: nothing.
+    assert_eq!(assist_heal(&cfg, &bot, &mut heal, &clock, 90, now + ROUND * 2), None);
+    // Auto heal off: nothing.
+    let off = BotConfig { auto_heal: false, ..cfg.clone() };
+    assert_eq!(assist_heal(&off, &bot, &mut heal, &clock, 30, now + ROUND * 3), None);
+}

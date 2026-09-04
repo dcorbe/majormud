@@ -258,8 +258,8 @@ pub struct BotConfig {
     /// Start `mmc play` with the assist bot already on. The assist is
     /// the TUI's, not this struct's: it fights and loots beside the
     /// operator while no farm runs (`/bot` toggles it live), and it
-    /// never heals or flees — movement and rest belong to the person
-    /// holding the keyboard.
+    /// recovers by the same marks a farm does, and hides after a rest
+    /// when the sheet shows Stealth.
     pub assist_play: bool,
 }
 
