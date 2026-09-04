@@ -1593,11 +1593,11 @@ pub async fn run_farm(
     // with an empty book is a policy that can never fire, and silence
     // would leave the operator believing it was armed.
     let heal = crate::sheet::HealState::new(sheet.heals);
-    if bot_config.spell_at_percent > 0 {
+    if bot_config.minor_heal_at_percent > 0 {
         match heal.sources().first() {
             Some(cheapest) => eprintln!(
                 "healing below {}% with `{}` ({} mana){}",
-                bot_config.spell_at_percent,
+                bot_config.minor_heal_at_percent,
                 cheapest.cmd,
                 cheapest.mana_cost,
                 match heal.sources().len() {
@@ -1606,9 +1606,9 @@ pub async fn run_farm(
                 }
             ),
             None => eprintln!(
-                "spell_at_percent is {} but this character knows no healing spell; \
+                "minor_heal_at_percent is {} but this character knows no healing spell; \
                  it will rest and flee only",
-                bot_config.spell_at_percent
+                bot_config.minor_heal_at_percent
             ),
         }
     }
@@ -2956,12 +2956,12 @@ async fn farm_stop(
         let leaving = bot_config.auto_flee
             && bot.hp_percent(hp_now).is_some_and(|p| p < bot_config.flee_at_percent as i32);
         if bot_config.auto_heal
-            && bot_config.spell_at_percent > 0
+            && bot_config.minor_heal_at_percent > 0
             && !bot.fled()
             && !leaving
             && gate.is_idle()
             && let Some(percent) = bot.hp_percent(hp_now)
-            && percent < bot_config.spell_at_percent as i32
+            && percent < bot_config.minor_heal_at_percent as i32
             && let crate::sheet::CastAttempt::Send(cmd) = casts.heal.attempt(now, clock)
         {
             gate.push(cmd);

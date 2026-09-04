@@ -226,11 +226,11 @@ fn evil_warning_toggle_defaults_off_and_parses() {
 
 /// `heal_at_percent` and `heal_command` named the REST mark and the rest
 /// command back when resting was the only recovery mmc had. Splitting
-/// recovery into three marks renamed them, and every profile written
+/// recovery into more marks renamed them, and every profile written
 /// before that still means rest — so the old spellings must land on
-/// `rest_*` and must not be mistaken for the new spell mark, which stays
-/// off. Silently reinterpreting them as "cast a heal" would start
-/// spending a caster's mana on an mmc upgrade alone.
+/// `rest_*` and must not be mistaken for the minor heal mark.
+/// Reinterpreting them as "cast a heal" would move an old profile's rest
+/// mark onto casting instead.
 #[test]
 fn the_old_heal_keys_still_mean_rest() {
     let p: Profile = toml::from_str(
@@ -254,9 +254,28 @@ fn the_old_heal_keys_still_mean_rest() {
     assert_eq!(bot.rest_at_percent, 60);
     assert_eq!(bot.rest_command, "rest");
     assert_eq!(
-        bot.spell_at_percent, 0,
-        "an old profile must not start casting on an upgrade"
+        bot.minor_heal_at_percent, 70,
+        "the alias must land on rest, not wander into the shipped minor heal default"
     );
+}
+
+/// `spell_at_percent` was the one heal mark. It is the minor mark now
+/// and still parses under its old name.
+#[test]
+fn the_old_spell_mark_is_the_minor_heal_mark() {
+    let p: Profile = toml::from_str(
+        r#"
+        target = "mbbs"
+        host = "127.0.0.1"
+        port = 2327
+        username = "u"
+        password = "p"
+        [bot]
+        spell_at_percent = 75
+        "#,
+    )
+    .unwrap();
+    assert_eq!(p.bot.unwrap().minor_heal_at_percent, 75);
 }
 
 /// The three marks are one ladder and read as one: cast a spell first,
@@ -287,7 +306,7 @@ fn the_three_marks_parse_as_a_ladder() {
     let bot = p.bot.clone().expect("[bot] table");
     assert_eq!(
         (
-            bot.spell_at_percent,
+            bot.minor_heal_at_percent,
             bot.rest_at_percent,
             bot.flee_at_percent
         ),

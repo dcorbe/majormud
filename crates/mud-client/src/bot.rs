@@ -144,39 +144,60 @@ pub struct BotConfig {
     /// and on a shared board a listed item is somebody's gear.
     pub auto_get: bool,
     pub auto_flee: bool,
-    /// Cast a healing spell when hp% drops below this (needs `max_hp`).
-    /// 0 = never, which is the default: a character with no heal in its
-    /// book must not have one invented for it.
+    /// Cast the minor heal when hp% drops below this. 0 = never. Was
+    /// `spell_at_percent`, which still parses.
     ///
-    /// The highest of the three marks, and the only one that works in a
-    /// fight. Casting costs mana, does not disengage combat, and is
-    /// therefore the response to being hurt *while something is still
-    /// hitting you* — see the asymmetry documented on [`Bot::on_hp`].
-    /// The spells themselves come from the character's own spellbook
-    /// ([`crate::sheet::Spellbook::heal_spells`]), and the casting lives
-    /// in [`crate::sheet::HealState`], because confirming a cast needs
-    /// the correlation this pure core deliberately does without.
-    pub spell_at_percent: u32,
-    /// Stop and rest when hp% drops below this (needs `max_hp`).
+    /// The heal marks are the only recovery that works in a fight.
+    /// Casting costs mana and does not disengage combat, so it is the
+    /// answer to being hurt while something is still hitting you. The
+    /// spells come from the character's own spellbook and the casting
+    /// lives in [`crate::sheet::HealState`], because confirming a cast
+    /// needs the correlation this pure core does without.
+    #[serde(alias = "spell_at_percent")]
+    pub minor_heal_at_percent: u32,
+    /// Cast the major heal when hp% drops below this. 0 = never. Below
+    /// this mark the instant heal is wanted, never the slow regen.
+    pub major_heal_at_percent: u32,
+    /// Stop and rest when hp% drops below this. 0 = never.
     ///
     /// Free, restores mana as well as health, and only coherent in an
-    /// empty room — the board disengages combat to rest, so resting
-    /// beside a monster is the death spiral `on_hp` guards against.
+    /// empty room. The board disengages combat to rest, so resting
+    /// beside a monster is the death spiral `on_vitals` guards against.
     ///
     /// The alias is what this knob was called when resting was the only
-    /// recovery there was; profiles written then still mean rest.
+    /// recovery there was. Profiles written then still mean rest.
     #[serde(alias = "heal_at_percent")]
     pub rest_at_percent: u32,
-    /// Flee when hp% drops below this (needs `max_hp`). The lowest mark,
-    /// and it outranks both of the others.
+    /// Rest, or meditate, when mana% drops below this and HP is fine.
+    /// 0 = never. Ignored without a pool.
+    pub mana_rest_at_percent: u32,
+    /// A rest is over once HP and, with a pool, mana are at or above
+    /// this. A meditation is over once mana is. 0 never ends one and
+    /// disables the departure gates.
+    pub rest_until_percent: u32,
+    /// Send `meditate` instead of `rest` when only mana needs
+    /// recovering. Meditate is a quest ability the client cannot
+    /// detect, so the player says.
+    pub meditate: bool,
+    /// Flee when hp% drops below this. The lowest mark, and it outranks
+    /// every other.
     pub flee_at_percent: u32,
-    /// Command issued to rest (`rest` on both targets). Aliased for the
-    /// same reason as `rest_at_percent`.
+    /// Command issued to rest. Aliased for the same reason as
+    /// `rest_at_percent`.
     #[serde(alias = "heal_command")]
     pub rest_command: String,
-    /// Heal spells to use, strongest-last, overriding what
-    /// [`crate::sheet::HEAL_SPELLS`] would discover in the spellbook.
-    /// Empty (the default) means discover.
+    /// The minor heal, by the book's name. Empty means the cheapest
+    /// heal in the book.
+    pub minor_heal_spell: String,
+    /// The major heal, by the book's name. Empty means the dearest heal
+    /// in the book.
+    pub major_heal_spell: String,
+    /// A regen over time spell, by the book's name. Empty means none.
+    /// Cast between the minor and major marks when not already running.
+    pub hp_regen_spell: String,
+    /// The old list form. Folded into the two names by
+    /// [`BotConfig::normalise`] at load.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub heal_spells: Vec<String>,
     /// Buffs to keep up, by spell name — `bless` and the like. These are
     /// NOT healing: they are cast on a duration budget, not at an HP
@@ -229,37 +250,69 @@ pub struct BotConfig {
 }
 
 impl BotConfig {
-    /// Check the recovery marks describe one ladder, before the socket
-    /// opens. Same bargain as [`crate::farm::FarmPlan::build`]: a typo
-    /// should cost an error message, not a dead character.
+    /// Check the marks describe two ladders, before the socket opens.
+    /// A typo should cost an error message, not a dead character.
     ///
-    /// Out of order they do not merely misbehave, they cancel: with the
-    /// rest mark above the spell mark, the bot rests first and never
-    /// reaches a health where casting is still worth mana; with the flee
-    /// mark above either, it runs before it ever tries to recover, and
-    /// `on_hp`'s "flee outranks" ordering makes that permanent.
-    ///
-    /// A mark of 0 is OFF, not "0%", so it is skipped rather than
-    /// compared — the default `spell_at_percent` is 0 and must not make
-    /// every existing profile fail to load.
+    /// Out of order they cancel: with the major mark above the minor,
+    /// the minor never fires. With the rest mark above the until mark,
+    /// the bot rests and stops in the same breath. With the flee mark
+    /// above anything, it runs before it recovers. A mark of 0 is OFF
+    /// and is skipped rather than compared.
     pub fn validate(&self) -> Result<(), String> {
-        let ladder = [
-            ("spell_at_percent", self.spell_at_percent),
-            ("rest_at_percent", self.rest_at_percent),
-            ("flee_at_percent", self.flee_at_percent),
+        let ladders: [&[(&str, u32)]; 3] = [
+            &[
+                ("minor_heal_at_percent", self.minor_heal_at_percent),
+                ("major_heal_at_percent", self.major_heal_at_percent),
+                ("flee_at_percent", self.flee_at_percent),
+            ],
+            &[
+                ("rest_until_percent", self.rest_until_percent),
+                ("rest_at_percent", self.rest_at_percent),
+                ("flee_at_percent", self.flee_at_percent),
+            ],
+            &[
+                ("rest_until_percent", self.rest_until_percent),
+                ("mana_rest_at_percent", self.mana_rest_at_percent),
+            ],
         ];
-        let set: Vec<_> = ladder.iter().filter(|(_, v)| *v != 0).collect();
-        for pair in set.windows(2) {
-            let ((upper, u), (lower, l)) = (pair[0], pair[1]);
-            if u < l {
-                return Err(format!(
-                    "[bot].{upper} ({u}) is below {lower} ({l}): the marks are one ladder, \
-                     spell >= rest >= flee, and out of order the lower one fires first \
-                     and the higher one never gets a chance"
-                ));
+        for ladder in ladders {
+            let set: Vec<_> = ladder.iter().filter(|(_, v)| *v != 0).collect();
+            for pair in set.windows(2) {
+                let ((upper, u), (lower, l)) = (pair[0], pair[1]);
+                if u < l {
+                    return Err(format!(
+                        "[bot].{upper} ({u}) is below {lower} ({l}): the marks are a ladder, \
+                         and out of order the lower one fires first and the higher one never \
+                         gets a chance"
+                    ));
+                }
             }
         }
         Ok(())
+    }
+
+    /// Fold the old `heal_spells` list into the two named spells. The
+    /// first entry is the minor heal and the last the major, unless a
+    /// name is already set.
+    pub fn normalise(&mut self) {
+        if self.minor_heal_spell.is_empty()
+            && let Some(first) = self.heal_spells.first()
+        {
+            self.minor_heal_spell = first.clone();
+        }
+        if self.major_heal_spell.is_empty()
+            && self.heal_spells.len() > 1
+            && let Some(last) = self.heal_spells.last()
+        {
+            self.major_heal_spell = last.clone();
+        }
+    }
+
+    /// Mana as a percentage of the pool, or None without a pool or a
+    /// reading.
+    pub fn mana_percent(&self, mana: Option<i32>) -> Option<i32> {
+        let mana = mana?;
+        (self.max_mana > 0).then(|| mana * 100 / self.max_mana)
     }
 }
 
@@ -270,14 +323,17 @@ impl Default for BotConfig {
             auto_heal: false,
             auto_get: false,
             auto_flee: false,
-            // 0, not a percentage: spell healing is opt-in. Every
-            // profile written before this existed rests and only rests,
-            // and upgrading mmc must not silently start spending their
-            // mana for them.
-            spell_at_percent: 0,
-            rest_at_percent: 50,
-            flee_at_percent: 25,
+            minor_heal_at_percent: 70,
+            major_heal_at_percent: 40,
+            rest_at_percent: 60,
+            mana_rest_at_percent: 30,
+            rest_until_percent: 95,
+            meditate: false,
+            flee_at_percent: 20,
             rest_command: "rest".into(),
+            minor_heal_spell: String::new(),
+            major_heal_spell: String::new(),
+            hp_regen_spell: String::new(),
             heal_spells: Vec::new(),
             buffs: Vec::new(),
             ignore: Vec::new(),
@@ -912,11 +968,12 @@ impl Bot {
     /// Note the bursts come from output, not from a timer: an idle board
     /// sends nothing whatsoever, for minutes at a stretch.
     ///
-    /// The third mark, `spell_at_percent`, is deliberately NOT here.
-    /// Casting a heal has to be confirmed from the board's own wording
-    /// and this core is attribution-blind on purpose — a monster's
-    /// "...attempted to cast X at you, but failed." would read as our own
-    /// fizzle. It lives in [`crate::sheet::HealState`], dispatched by the
+    /// The heal marks, `minor_heal_at_percent` and `major_heal_at_percent`,
+    /// are deliberately NOT here. Casting a heal has to be confirmed from
+    /// the board's own wording, and this core is attribution-blind on
+    /// purpose — a monster's "...attempted to cast X at you, but failed."
+    /// would read as our own fizzle. It lives in
+    /// [`crate::sheet::HealState`], dispatched by the
     /// runner, which is also where the mana floor and the one-cast-per-
     /// round pacing belong. What that leaves here is the ordering these
     /// two marks have always had.

@@ -49,9 +49,12 @@ pub struct Profile {
 /// on is a profile whose owner never finds out about the new knob next to
 /// it. Same habit as the dark-stop warning in `FarmPlan::build`: a
 /// warning, never a refusal.
-const RENAMED_KEYS: [(&str, &str); 2] = [
+const RENAMED_KEYS: [(&str, &str); 5] = [
     ("heal_at_percent", "rest_at_percent"),
     ("heal_command", "rest_command"),
+    ("spell_at_percent", "minor_heal_at_percent"),
+    ("heal_spells", "minor_heal_spell and major_heal_spell"),
+    ("depart_at_percent", "rest_until_percent"),
 ];
 
 impl Profile {
@@ -62,17 +65,18 @@ impl Profile {
     /// only the caller knows whether it is fatal.
     pub fn load(path: &std::path::Path) -> Result<Profile, String> {
         let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-        let profile: Profile = toml::from_str(&text).map_err(|e| e.to_string())?;
+        let mut profile: Profile = toml::from_str(&text).map_err(|e| e.to_string())?;
         for line in text.lines() {
             let key = line.split('=').next().unwrap_or_default().trim();
             if let Some((_, new)) = RENAMED_KEYS.iter().find(|(old, _)| *old == key) {
                 eprintln!(
-                    "profile {}: `{key}` is now `{new}` (still accepted, still means rest)",
+                    "profile {}: `{key}` is now `{new}` (still accepted)",
                     path.display()
                 );
             }
         }
-        if let Some(bot) = &profile.bot {
+        if let Some(bot) = &mut profile.bot {
+            bot.normalise();
             bot.validate()?;
         }
         Ok(profile)

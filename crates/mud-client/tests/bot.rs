@@ -1432,95 +1432,75 @@ fn a_passive_mob_is_not_work() {
     assert!(bot.has_target(&painted(&[("1;35", "giant rat")])));
 }
 
-// --- the recovery ladder ---------------------------------------------
+// --- the recovery ladders -------------------------------------------
 
-/// The three marks are one ladder and the loader says so before the
-/// socket opens. Out of order they cancel rather than merely misbehave:
-/// `on_hp` gives flee absolute priority, so a flee mark above the rest
-/// mark means the character runs instead of ever resting.
 #[test]
-fn an_out_of_order_ladder_is_refused() {
-    let upside_down = BotConfig {
-        spell_at_percent: 30,
-        rest_at_percent: 60,
-        flee_at_percent: 80,
-        ..BotConfig::default()
-    };
-    let err = upside_down.validate().expect_err("this ladder is upside down");
-    assert!(err.contains("spell_at_percent"), "{err}");
-
-    let ordered = BotConfig {
-        spell_at_percent: 80,
-        rest_at_percent: 60,
-        flee_at_percent: 30,
-        ..BotConfig::default()
-    };
-    assert!(ordered.validate().is_ok());
+fn the_defaults_are_mudplays() {
+    let c = BotConfig::default();
+    assert_eq!(c.rest_at_percent, 60);
+    assert_eq!(c.mana_rest_at_percent, 30);
+    assert_eq!(c.rest_until_percent, 95);
+    assert_eq!(c.minor_heal_at_percent, 70);
+    assert_eq!(c.major_heal_at_percent, 40);
+    assert_eq!(c.flee_at_percent, 20);
+    assert!(!c.meditate);
+    assert!(c.validate().is_ok());
 }
 
-/// 0 means OFF, not 0%. The shipped default leaves `spell_at_percent` at
-/// 0, so treating it as a rung would make every profile that predates
-/// spell healing fail to load.
 #[test]
-fn an_unset_mark_is_not_a_rung() {
-    let rest_and_flee_only = BotConfig {
-        spell_at_percent: 0,
-        rest_at_percent: 60,
-        flee_at_percent: 30,
-        ..BotConfig::default()
-    };
-    assert!(rest_and_flee_only.validate().is_ok());
-    assert!(BotConfig::default().validate().is_ok());
+fn the_heal_ladder_refuses_a_major_mark_above_the_minor() {
+    let c = BotConfig { minor_heal_at_percent: 40, major_heal_at_percent: 70, ..BotConfig::default() };
+    let err = c.validate().expect_err("upside down");
+    assert!(err.contains("major_heal_at_percent"), "{err}");
 }
 
-/// The ladder end to end. Nothing above the spell mark, rest only once
-/// the room is clear, and below the flee mark the bot runs and does
-/// nothing else — the invariant `on_hp` has always had.
 #[test]
-fn the_marks_fire_in_order_as_hp_falls() {
-    let cfg = BotConfig {
-        auto_combat: true,
-        auto_heal: true,
-        auto_flee: true,
-        spell_at_percent: 80,
-        rest_at_percent: 60,
-        flee_at_percent: 30,
-        max_hp: 100,
+fn the_rest_ladder_refuses_a_rest_mark_above_the_until_mark() {
+    let c = BotConfig { rest_at_percent: 96, rest_until_percent: 95, ..BotConfig::default() };
+    let err = c.validate().expect_err("upside down");
+    assert!(err.contains("rest_until_percent"), "{err}");
+    let mana = BotConfig { mana_rest_at_percent: 96, ..BotConfig::default() };
+    assert!(mana.validate().is_err());
+}
+
+#[test]
+fn a_flee_mark_above_a_heal_mark_is_refused_and_zero_marks_are_skipped() {
+    let upside_down = BotConfig { flee_at_percent: 50, major_heal_at_percent: 40, ..BotConfig::default() };
+    assert!(upside_down.validate().is_err());
+    let off = BotConfig { minor_heal_at_percent: 0, major_heal_at_percent: 0, ..BotConfig::default() };
+    assert!(off.validate().is_ok());
+}
+
+#[test]
+fn the_old_heal_list_folds_into_the_two_names() {
+    let mut c = BotConfig {
+        heal_spells: vec!["minor healing".into(), "major healing".into()],
         ..BotConfig::default()
     };
+    c.normalise();
+    assert_eq!(c.minor_heal_spell, "minor healing");
+    assert_eq!(c.major_heal_spell, "major healing");
+    let mut one = BotConfig { heal_spells: vec!["mend".into()], ..BotConfig::default() };
+    one.normalise();
+    assert_eq!(one.minor_heal_spell, "mend");
+    assert_eq!(one.major_heal_spell, "");
+    // Names already set win over the list.
+    let mut named = BotConfig {
+        heal_spells: vec!["mend".into()],
+        minor_heal_spell: "minor healing".into(),
+        ..BotConfig::default()
+    };
+    named.normalise();
+    assert_eq!(named.minor_heal_spell, "minor healing");
+}
 
-    // 85%: nothing at all.
-    let mut bot = Bot::new(cfg.clone());
-    bot.on_event(&room(&[]));
-    assert!(bot.on_event(&Event::Prompt { hp: 85, mana: Some(20), status: None }).is_empty());
-
-    // 70%: below the spell mark but above rest. The bot core sends
-    // nothing — casting is the runner's, since it needs correlation —
-    // and crucially it does NOT rest yet.
-    let mut bot = Bot::new(cfg.clone());
-    bot.on_event(&room(&[]));
-    assert!(
-        bot.on_event(&Event::Prompt { hp: 70, mana: Some(20), status: None }).is_empty(),
-        "the spell mark is not the rest mark"
-    );
-
-    // 50%: below rest, room proven clear, so it rests.
-    let mut bot = Bot::new(cfg.clone());
-    bot.on_event(&room(&[]));
-    assert_eq!(
-        bot.on_event(&Event::Prompt { hp: 50, mana: Some(20), status: None }),
-        vec![BotAction::Send("rest".into())]
-    );
-
-    // 25%: below every mark. Flee outranks, and it is the only thing
-    // that goes out.
-    let mut bot = Bot::new(cfg);
-    bot.on_event(&room(&[]));
-    assert_eq!(
-        bot.on_event(&Event::Prompt { hp: 25, mana: Some(20), status: None }),
-        vec![BotAction::Send("north".into())],
-        "the first listed exit, and nothing else: rest must not accompany a flee"
-    );
+#[test]
+fn mana_percent_needs_a_pool() {
+    let none = BotConfig::default();
+    assert_eq!(none.mana_percent(Some(5)), None);
+    let pool = BotConfig { max_mana: 20, ..BotConfig::default() };
+    assert_eq!(pool.mana_percent(Some(5)), Some(25));
+    assert_eq!(pool.mana_percent(None), None);
 }
 
 /// `hp_percent` is the number the marks are compared against, exposed so
