@@ -187,8 +187,9 @@ pub struct BotConfig {
     pub ignore: Vec<String>,
     /// Character max HP; 0 = unknown, disables percent policies.
     pub max_hp: i32,
-    /// Character max mana or kai; 0 = no pool or unknown. Probed with
-    /// `max_hp`, never typed.
+    /// Character max mana or kai; 0 = no pool or unknown. Filled
+    /// alongside `max_hp` whenever that probe runs; never typed, and
+    /// never itself what gates the probe.
     pub max_mana: i32,
     /// Prompts with no blow struck either way before the fight is
     /// presumed over and the target released.

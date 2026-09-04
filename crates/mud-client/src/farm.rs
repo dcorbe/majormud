@@ -1694,9 +1694,10 @@ async fn farm_loop(
     );
 
     // Every percent policy divides by these, and a wrong value mis-scales
-    // heal and flee silently. 0 means the profile did not say, so ask.
+    // heal and flee silently. 0 max_hp means the profile did not say, so
+    // ask, and the same answer carries max_mana.
     let mut bot_config = bot_config.clone();
-    if (bot_config.max_hp == 0 || bot_config.max_mana == 0)
+    if bot_config.max_hp == 0
         && let Some(vitals) = discover_vitals(session).await
     {
         bot_config.max_hp = vitals.max_hp;

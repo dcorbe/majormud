@@ -135,7 +135,6 @@ fn bot() -> mud_client::bot::BotConfig {
     mud_client::bot::BotConfig {
         auto_combat: true,
         max_hp: 30,
-        max_mana: 30,
         ..Default::default()
     }
 }
