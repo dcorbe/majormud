@@ -1,7 +1,7 @@
 //! Event-parser tests. Line patterns are anchored to `mud_core::text`
 //! builders (the canonical output spec).
 
-use mud_client::events::{Actor, Event};
+use mud_client::events::{Actor, Event, Status};
 use mud_client::parse::Parser;
 use mud_core::content::Direction;
 use mud_core::text::{self, color};
@@ -801,4 +801,146 @@ fn a_status_word_round_trips_and_unknown_words_survive() {
     // The field exists and a prompt can carry one.
     let ev = Event::Prompt { hp: 1, mana: None, status: Some(Status::Resting) };
     assert!(matches!(ev, Event::Prompt { status: Some(Status::Resting), .. }));
+}
+
+// --- prompt status ---
+
+#[test]
+fn a_resting_prompt_keeps_its_status_inside_the_frame() {
+    // test.raw, 2026-09-04, the exact bytes a /farm opening look died
+    // on. The HP-only template paints the status before "]:".
+    let ev = parse_all("\x1b[79D\x1b[K\x1b[0;37m[HP=42\x1b[0;37m (Resting) ]:look\r\n");
+    assert_eq!(
+        ev,
+        vec![
+            Event::Prompt { hp: 42, mana: None, status: Some(Status::Resting) },
+            Event::Line("look".into()),
+        ]
+    );
+}
+
+#[test]
+fn a_pool_prompt_carries_its_status_after_the_frame() {
+    // accept-run2.raw: the pool template paints the status after "]:",
+    // glued to whatever follows.
+    let ev = parse_all("[HP=36/MA=12]: (Resting) look\r\n");
+    assert_eq!(
+        ev,
+        vec![
+            Event::Prompt { hp: 36, mana: Some(12), status: Some(Status::Resting) },
+            Event::Line("look".into()),
+        ]
+    );
+}
+
+#[test]
+fn a_resting_pileup_yields_one_prompt_per_redraw() {
+    let ev = parse_all("[HP=16 (Resting) ]:[HP=17 (Resting) ]:exp\r\n");
+    assert_eq!(
+        ev,
+        vec![
+            Event::Prompt { hp: 16, mana: None, status: Some(Status::Resting) },
+            Event::Prompt { hp: 17, mana: None, status: Some(Status::Resting) },
+            Event::Line("exp".into()),
+        ]
+    );
+}
+
+#[test]
+fn a_pool_pileup_keeps_each_status_with_its_own_prompt() {
+    let ev = parse_all("[HP=36/MA=12]: (Resting) [HP=37/MA=12]: (Resting) exp\r\n");
+    assert_eq!(
+        ev,
+        vec![
+            Event::Prompt { hp: 36, mana: Some(12), status: Some(Status::Resting) },
+            Event::Prompt { hp: 37, mana: Some(12), status: Some(Status::Resting) },
+            Event::Line("exp".into()),
+        ]
+    );
+}
+
+#[test]
+fn a_dangling_resting_prompt_emits_at_once() {
+    let mut p = Parser::new();
+    let ev = p.push("\r\n[HP=47 (Resting) ]:");
+    assert_eq!(
+        ev,
+        vec![Event::Prompt { hp: 47, mana: None, status: Some(Status::Resting) }]
+    );
+    assert!(p.finish().is_empty());
+}
+
+#[test]
+fn a_dangling_pool_prompt_with_its_full_status_emits_at_once() {
+    let mut p = Parser::new();
+    let ev = p.push("\r\n[HP=36/MA=12]: (Resting) ");
+    assert_eq!(
+        ev,
+        vec![Event::Prompt { hp: 36, mana: Some(12), status: Some(Status::Resting) }]
+    );
+    assert!(p.finish().is_empty());
+}
+
+#[test]
+fn a_dangling_pool_prompt_waits_for_a_half_arrived_status() {
+    // The status word arrives without its trailing space. Holding the
+    // prompt until the line completes is right: emitting it bare would
+    // lose the status, and the echo behind it would read decorated.
+    let mut p = Parser::new();
+    assert!(p.push("\r\n[HP=36/MA=12]: (Resting)").is_empty());
+    let ev = p.push(" look\r\n");
+    assert_eq!(
+        ev,
+        vec![
+            Event::Prompt { hp: 36, mana: Some(12), status: Some(Status::Resting) },
+            Event::Line("look".into()),
+        ]
+    );
+}
+
+#[test]
+fn a_dangling_bare_pool_prompt_still_emits_at_once() {
+    // Nothing follows "]:" yet. The prompt must not wait for a status
+    // that may never come: the heal gate and Stat retirement key on it.
+    let mut p = Parser::new();
+    let ev = p.push("\r\n[HP=36/MA=12]:");
+    assert_eq!(ev, vec![Event::Prompt { hp: 36, mana: Some(12), status: None }]);
+}
+
+#[test]
+fn meditating_and_negative_hp_parse_in_both_templates() {
+    assert_eq!(
+        parse_all("[HP=-5 (Meditating) ]:"),
+        vec![Event::Prompt { hp: -5, mana: None, status: Some(Status::Meditating) }]
+    );
+    assert_eq!(
+        parse_all("[HP=20/KAI=4]: (Meditating) "),
+        vec![Event::Prompt { hp: 20, mana: Some(4), status: Some(Status::Meditating) }]
+    );
+}
+
+#[test]
+fn an_unknown_status_word_never_hides_the_prompt() {
+    let ev = parse_all("[HP=30 (Stunned) ]:look\r\n");
+    assert_eq!(
+        ev,
+        vec![
+            Event::Prompt { hp: 30, mana: None, status: Some(Status::Other("Stunned".into())) },
+            Event::Line("look".into()),
+        ]
+    );
+}
+
+#[test]
+fn a_status_is_never_read_off_the_line_after_a_bare_hp_prompt() {
+    // Only the pool template paints after "]:". An HP-only prompt
+    // followed by a decorated line leaves the line alone.
+    let ev = parse_all("[HP=30]: (Resting) look\r\n");
+    assert_eq!(
+        ev,
+        vec![
+            Event::Prompt { hp: 30, mana: None, status: None },
+            Event::Line(" (Resting) look".into()),
+        ]
+    );
 }

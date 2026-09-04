@@ -9,14 +9,58 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::events::{Actor, Event, RoomView};
+use crate::events::{Actor, Event, RoomView, Status};
 use crate::wire::{resolve_backspaces, strip_ansi};
 use mud_core::text::{self, color};
 
+// The board has two prompt templates (WCCMMUD.DLL):
+//
+//   [HP=%s%d%s%s]:             HP only, status INSIDE the frame
+//   [HP=%s%d%s/%s=%s%d%s]:%s   with a pool, status AFTER the frame
+//
+// The status slot is ` (Resting) ` or ` (Meditating) `, spaces included.
 // Unanchored: the board redraws the prompt mid-line (rest ticks, typing
 // echo interleaved with async regen).
-static PROMPT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[HP=(-?\d+)(?:/(?:MA|KAI)=(-?\d+))?\]:").unwrap());
+static PROMPT_FRAME_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\[HP=(-?\d+)(?:/(?:MA|KAI)=(-?\d+))?(?: \(([^)]+)\) )?\]:").unwrap()
+});
+// The pool template's trailing status, matched at the start of whatever
+// follows "]:". The trailing space is part of the DLL's slot, so a
+// half-arrived word without it does not match and the prompt is held
+// until the line completes.
+static TRAILING_STATUS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^ \(([^)]+)\) ").unwrap());
+
+/// One prompt found in a stripped line: the byte range it occupies,
+/// status included, and the event it becomes.
+struct FoundPrompt {
+    start: usize,
+    end: usize,
+    event: Event,
+}
+
+/// The first prompt in `text`, whichever template painted it.
+fn find_prompt(text: &str) -> Option<FoundPrompt> {
+    let c = PROMPT_FRAME_RE.captures(text)?;
+    let m = c.get(0).unwrap();
+    let hp = c[1].parse().unwrap();
+    let mana = c.get(2).map(|m| m.as_str().parse().unwrap());
+    let mut status = c.get(3).map(|m| Status::from_word(m.as_str()));
+    let mut end = m.end();
+    // Only the pool template paints after the frame.
+    if mana.is_some()
+        && status.is_none()
+        && let Some(t) = TRAILING_STATUS_RE.captures(&text[end..])
+    {
+        status = Some(Status::from_word(&t[1]));
+        end += t.get(0).unwrap().end();
+    }
+    Some(FoundPrompt {
+        start: m.start(),
+        end,
+        event: Event::Prompt { hp, mana, status },
+    })
+}
 static YOU_HIT_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^You (?:critically )?\w+ (.+) for (-?\d+) damage!$").unwrap());
 static MONSTER_HIT_RE: LazyLock<Regex> =
@@ -102,13 +146,12 @@ impl Parser {
             let cleaned = resolve_backspaces(&strip_ansi(&self.buf));
             let mut rest = cleaned.as_str();
             let mut pending = Vec::new();
-            while let Some(c) = PROMPT_RE.captures(rest) {
-                let m = c.get(0).unwrap();
-                if m.start() != 0 {
+            while let Some(found) = find_prompt(rest) {
+                if found.start != 0 {
                     break;
                 }
-                pending.push(prompt_event(&c));
-                rest = &rest[m.end()..];
+                pending.push(found.event);
+                rest = &rest[found.end..];
             }
             if rest.is_empty() && !pending.is_empty() {
                 events.append(&mut pending);
@@ -139,14 +182,13 @@ impl Parser {
         let mut saw_prompt = false;
         // Prompts can appear anywhere in a physical line (mid-line
         // redraws); classify the segments between them in order.
-        while let Some(c) = PROMPT_RE.captures(rest) {
-            let m = c.get(0).unwrap();
-            let before = &rest[..m.start()];
+        while let Some(found) = find_prompt(rest) {
+            let before = &rest[..found.start];
             if !before.is_empty() {
                 self.classify(before, opening, &sgr, events);
             }
-            events.push(prompt_event(&c));
-            rest = &rest[m.end()..];
+            events.push(found.event);
+            rest = &rest[found.end..];
             // The opening color applied to the first segment only.
             opening = None;
             saw_prompt = true;
@@ -243,14 +285,6 @@ impl Parser {
 impl Default for Parser {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-fn prompt_event(c: &regex::Captures) -> Event {
-    Event::Prompt {
-        hp: c[1].parse().unwrap(),
-        mana: c.get(2).map(|m| m.as_str().parse().unwrap()),
-        status: None,
     }
 }
 

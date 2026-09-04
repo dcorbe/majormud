@@ -28,6 +28,8 @@ use std::time::{Duration, Instant};
 
 use mud_client::correlate::{is_echo, CmdId, Correlator};
 use mud_client::events::{Actor, Event, RoomView};
+use mud_client::parse::Parser;
+use mud_core::text::color;
 
 const TTL: Duration = Duration::from_secs(10);
 
@@ -1067,4 +1069,34 @@ fn a_picklock_is_a_kind_of_its_own() {
         let got = c.on_event(Event::Line(reply.into()), t0);
         assert_eq!(got.answers, Some(CmdId(1)), "{cmd:?} answered by {reply:?}");
     }
+}
+
+// ------------------------------------------------ through the parser
+
+#[test]
+fn a_look_echoed_behind_a_resting_prompt_is_answered_by_its_block() {
+    // test.raw 1788503928, 2026-09-04: /farm sent `look` while resting
+    // and died with "no room block came back". The block came back.
+    // The prompt in front of the echo read `[HP=42 (Resting) ]:`, the
+    // parser did not recognise it, the echo never matched, and the
+    // block was unattributed.
+    let mut p = Parser::new();
+    let mut c = Correlator::new(TTL);
+    let t = Instant::now();
+    c.sent(CmdId(1), "look", t);
+    let raw = format!(
+        "\x1b[79D\x1b[K\x1b[0;37m[HP=42\x1b[0;37m (Resting) ]:look\r\n\
+         {}Dark Cave\x1b[0m\r\n\
+         \x1b[0;37m    This appears to be a natural cave.\x1b[0m\r\n\
+         \x1b[0;32mObvious exits: west, southeast\x1b[0m\r\n",
+        color::ROOM_NAME
+    );
+    let mut answered = None;
+    for ev in p.push(&raw) {
+        let cor = c.on_event(ev, t);
+        if matches!(cor.event, Event::RoomSeen(_)) {
+            answered = cor.answers;
+        }
+    }
+    assert_eq!(answered, Some(CmdId(1)));
 }
