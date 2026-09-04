@@ -1,0 +1,32 @@
+# Claude workspace, never checked in.
+.claude/
+CLAUDE.md
+.superpowers/
+
+# Scratch experiments and disposable working files.
+.scratch/
+
+# Mirrored third-party documentation sites. The mega tests read the MegaMud
+# path corpus from docs/mirrors/megamud.net/www.megamud.net/paths/.
+docs/mirrors/
+
+# Rust
+target/
+
+# Reverse-engineering material: the behavioural spec, the content database,
+# the oracle transcripts and the gang house files. Derived from the game's own
+# binaries and data, and not ours to redistribute. Kept on disk, never tracked.
+re/
+__pycache__/
+
+# Runtime state written by mud-server.
+state.sqlite
+state.sqlite-journal
+state.sqlite-wal
+
+# Stray live-board captures dropped in the working directory: their TX
+# stream carries the account password, so they must never be committed.
+# Root-scoped on purpose. The curated RX-only corpus in re/oracle/ is
+# added by hand and stays tracked.
+/*.raw
+/*_timing.log

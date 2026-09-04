@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/mud-core",
+    "crates/mud-server",
+    "crates/mud-client",
+    "crates/textscreen",
+]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+publish = false
+
+[workspace.lints.clippy]
+all = "warn"
