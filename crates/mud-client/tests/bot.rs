@@ -3,7 +3,7 @@
 //! sockets, no timing.
 
 use mud_client::bot::{Bot, BotAction, BotConfig, picked_up};
-use mud_client::events::{Actor, Event, RoomView};
+use mud_client::events::{Actor, Event, RoomView, Status};
 
 // The Blood Pit's exits are "closed door north, up" verbatim — see the
 // same room asserted in tests/parse.rs. Do not sanitise them here: the
@@ -1518,4 +1518,100 @@ fn hp_percent_answers_only_when_the_marks_could() {
 
     let unknown = Bot::new(BotConfig::default());
     assert_eq!(unknown.hp_percent(25), None, "max_hp unknown");
+}
+
+// --- rest, meditate, and the end of a recovery ------------------------
+
+fn resting_bot(max_mana: i32, meditate: bool) -> Bot {
+    Bot::new(BotConfig {
+        auto_heal: true,
+        max_hp: 100,
+        max_mana,
+        meditate,
+        ..BotConfig::default()
+    })
+}
+
+fn vitals(hp: i32, mana: Option<i32>, status: Option<Status>) -> Event {
+    Event::Prompt { hp, mana, status }
+}
+
+#[test]
+fn rests_below_the_rest_mark_and_not_again_while_resting() {
+    let mut bot = resting_bot(0, false);
+    bot.on_event(&room(&[]));
+    assert_eq!(bot.on_event(&vitals(50, None, None)), vec![BotAction::Send("rest".into())]);
+    // The board shows the rest. No second send.
+    assert!(bot.on_event(&vitals(50, None, Some(Status::Resting))).is_empty());
+    assert!(bot.on_event(&vitals(70, None, Some(Status::Resting))).is_empty());
+}
+
+#[test]
+fn a_rest_is_over_at_the_until_mark_and_nothing_is_sent_to_end_it() {
+    let mut bot = resting_bot(0, false);
+    bot.on_event(&room(&[]));
+    bot.on_event(&vitals(50, None, None));
+    assert!(bot.on_event(&vitals(94, None, Some(Status::Resting))).is_empty());
+    // At the mark the recovery is over. Without stealth that sends
+    // nothing. The character stands on its next action.
+    assert!(bot.on_event(&vitals(95, None, Some(Status::Resting))).is_empty());
+    // Standing again below the rest mark rests again.
+    assert_eq!(bot.on_event(&vitals(50, None, None)), vec![BotAction::Send("rest".into())]);
+}
+
+#[test]
+fn a_rest_waits_for_mana_too_when_there_is_a_pool() {
+    let mut bot = resting_bot(20, false);
+    bot.on_event(&room(&[]));
+    bot.on_event(&vitals(50, Some(5), None));
+    // HP is over the mark, mana is not: still resting.
+    assert!(bot.on_event(&vitals(96, Some(10), Some(Status::Resting))).is_empty());
+    // A meditation only needs mana.
+    let mut m = resting_bot(20, true);
+    m.on_event(&room(&[]));
+    assert_eq!(m.on_event(&vitals(80, Some(2), None)), vec![BotAction::Send("meditate".into())]);
+    assert!(m.on_event(&vitals(80, Some(19), Some(Status::Meditating))).is_empty());
+}
+
+#[test]
+fn low_mana_alone_rests_or_meditates_by_the_switch() {
+    let mut rests = resting_bot(20, false);
+    rests.on_event(&room(&[]));
+    assert_eq!(rests.on_event(&vitals(80, Some(2), None)), vec![BotAction::Send("rest".into())]);
+    let mut meditates = resting_bot(20, true);
+    meditates.on_event(&room(&[]));
+    assert_eq!(meditates.on_event(&vitals(80, Some(2), None)), vec![BotAction::Send("meditate".into())]);
+    // Both pools low: rest, which restores both.
+    let mut both = resting_bot(20, true);
+    both.on_event(&room(&[]));
+    assert_eq!(both.on_event(&vitals(50, Some(2), None)), vec![BotAction::Send("rest".into())]);
+}
+
+#[test]
+fn a_recovery_is_never_sent_into_a_room_with_work() {
+    // room_has_work is judged from what this bot would attack, same as
+    // does_not_rest_while_the_room_lists_a_monster above: auto_combat
+    // has to be on for a listed monster to count as work at all.
+    let mut bot = Bot::new(BotConfig {
+        auto_combat: true,
+        auto_heal: true,
+        max_hp: 100,
+        max_mana: 20,
+        meditate: true,
+        ..BotConfig::default()
+    });
+    bot.on_event(&room(&["kobold thief"]));
+    assert!(bot.on_event(&vitals(50, Some(2), None)).is_empty());
+}
+
+#[test]
+fn the_rest_latch_clears_when_the_board_shows_the_rest_landed() {
+    // A rest that never lands keeps the latch. One that lands and is
+    // then broken by a blow re-arms on the next standing prompt.
+    let mut bot = resting_bot(0, false);
+    bot.on_event(&room(&[]));
+    assert_eq!(bot.on_event(&vitals(50, None, None)), vec![BotAction::Send("rest".into())]);
+    assert!(bot.on_event(&vitals(50, None, None)).is_empty());
+    assert!(bot.on_event(&vitals(51, None, Some(Status::Resting))).is_empty());
+    assert_eq!(bot.on_event(&vitals(48, None, None)), vec![BotAction::Send("rest".into())]);
 }

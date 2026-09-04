@@ -8,7 +8,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::events::Event;
+use crate::events::{Event, Status};
 
 // Coins print "5 copper drop to the ground." — and "1 silver drops to
 // the ground." when there is only one, because the verb agrees with the
@@ -763,7 +763,7 @@ impl Bot {
                 }
                 Vec::new()
             }
-            Event::Prompt { hp, .. } => {
+            Event::Prompt { hp, mana, status } => {
                 // A fight that has gone silent is over, whatever the
                 // board called the ending. Counted here rather than on
                 // the death line because the death line is exactly what
@@ -775,7 +775,7 @@ impl Bot {
                         self.quiet_prompts = 0;
                     }
                 }
-                self.on_hp(*hp)
+                self.on_vitals(*hp, *mana, status.as_ref())
             }
             Event::CombatHit {
                 attacker, target, ..
@@ -955,29 +955,27 @@ impl Bot {
         (self.config.max_hp > 0 && hp > 0).then(|| hp * 100 / self.config.max_hp)
     }
 
-    /// Percent-of-max policies. Flee outranks rest: staying to heal is
-    /// what gets a character killed. Both fire once and re-arm on a
-    /// change of situation, because prompts arrive in bursts: async
-    /// output disturbs the dangling prompt and the board re-prompts, so
-    /// several can land in a row — `[HP=31]:[HP=32]:` on one physical
-    /// line — while the situation has not changed at all. Deciding per
-    /// prompt would send a command per burst and trip flood control,
-    /// which is measured at eight sends 1.3s apart (see
-    /// `tests/board_cadence.rs`).
+    /// Percent of max policies, decided on every prompt.
     ///
-    /// Note the bursts come from output, not from a timer: an idle board
-    /// sends nothing whatsoever, for minutes at a stretch.
+    /// Flee outranks everything: staying to heal is what gets a
+    /// character killed. Then the board's own word on a recovery in
+    /// progress: while the prompt says resting or meditating nothing is
+    /// sent, and the recovery is over once the pools clear
+    /// `rest_until_percent`. The board has no command to end one, so
+    /// being over means the bot is free to act again, and
+    /// [`Bot::on_recovered`] says what it does with that. Below the
+    /// marks, standing, in a clear room, a rest or a meditation goes out
+    /// once, and the latch holds until the board shows it landed.
     ///
-    /// The heal marks, `minor_heal_at_percent` and `major_heal_at_percent`,
-    /// are deliberately NOT here. Casting a heal has to be confirmed from
-    /// the board's own wording, and this core is attribution-blind on
-    /// purpose — a monster's "...attempted to cast X at you, but failed."
-    /// would read as our own fizzle. It lives in
-    /// [`crate::sheet::HealState`], dispatched by the
-    /// runner, which is also where the mana floor and the one-cast-per-
-    /// round pacing belong. What that leaves here is the ordering these
-    /// two marks have always had.
-    fn on_hp(&mut self, hp: i32) -> Vec<BotAction> {
+    /// Prompts arrive in bursts, so every decision here fires once and
+    /// re-arms on a change of situation. Deciding per prompt would send
+    /// a command per burst and trip flood control.
+    ///
+    /// The heal marks are deliberately not here. Casting has to be
+    /// confirmed from the board's own wording and this core is
+    /// attribution blind on purpose. [`heal_need`] picks the kind of
+    /// heal from the percent, and [`crate::sheet::HealState`] casts it.
+    fn on_vitals(&mut self, hp: i32, mana: Option<i32>, status: Option<&Status>) -> Vec<BotAction> {
         // Downed: commands do not land, and HP reads negative.
         let Some(percent) = self.hp_percent(hp) else {
             return Vec::new();
@@ -990,24 +988,44 @@ impl Bot {
             self.fled = true;
             return vec![BotAction::Send(exit_command(exit).to_string())];
         }
-        if percent >= self.config.rest_at_percent as i32 {
+        let mana_percent = self.config.mana_percent(mana);
+        let until = self.config.rest_until_percent as i32;
+        let resting = matches!(status, Some(Status::Resting));
+        let meditating = matches!(status, Some(Status::Meditating));
+        if resting || meditating {
+            // The rest landed. The latch has done its job.
             self.healing = false;
-        } else if self.config.auto_heal
-            && !self.healing
-            // Never rest in a room that holds a fight or work: the board
-            // disengages combat to rest, the un-latch frees the bot, the
-            // next block re-engages and breaks the rest — the live death
-            // spiral (2026-08-01, HP 21/52 vs a cave bear, rest/attack
-            // alternating every ~5s round). Fight or flee are the
-            // occupied-room choices; flee is checked above and already
-            // outranks. No latch is spent on the suppressed path, so the
-            // first prompt after the room is proven clear heals.
-            && self.engaged.is_none()
-            && !self.room_has_work
-        {
-            self.healing = true;
-            return vec![BotAction::Send(self.config.rest_command.clone())];
+            let hp_ok = percent >= until;
+            let mana_ok = mana_percent.is_none_or(|m| m >= until);
+            let over = until > 0 && if resting { hp_ok && mana_ok } else { mana_ok };
+            return if over { self.on_recovered() } else { Vec::new() };
         }
+        let hp_low = percent < self.config.rest_at_percent as i32;
+        let mana_low = self.config.mana_rest_at_percent > 0
+            && mana_percent.is_some_and(|m| m < self.config.mana_rest_at_percent as i32);
+        if !hp_low && !mana_low {
+            self.healing = false;
+            return Vec::new();
+        }
+        // Never rest in a room that holds a fight or work: the board
+        // disengages combat to rest, the un-latch frees the bot, the
+        // next block re-engages and breaks the rest. That was the live
+        // death spiral of 2026-08-01. Fight or flee are the occupied
+        // room choices, and flee is checked above.
+        if !self.config.auto_heal || self.healing || self.engaged.is_some() || self.room_has_work {
+            return Vec::new();
+        }
+        self.healing = true;
+        let cmd = if hp_low || !self.config.meditate {
+            self.config.rest_command.clone()
+        } else {
+            "meditate".to_string()
+        };
+        vec![BotAction::Send(cmd)]
+    }
+
+    /// The recovery is over and the bot is free to act. Nothing yet.
+    fn on_recovered(&mut self) -> Vec<BotAction> {
         Vec::new()
     }
 
