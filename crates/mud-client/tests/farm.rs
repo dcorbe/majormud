@@ -9,8 +9,9 @@ use mud_client::bot::{Bot, BotConfig};
 use mud_client::correlate::{CmdId, Correlated};
 use mud_client::events::{Actor, Event, RoomView};
 use mud_client::farm::{
-    ACK_TIMEOUT, FarmConfig, FarmGuard, FarmPlan, FarmStats, Gate, HealWatch, LOOT_TRIES,
-    StopState, Verdict, is_player_death, parse_health, parse_mana, parse_room_id,
+    ACK_TIMEOUT, FarmConfig, FarmError, FarmGuard, FarmPlan, FarmStats, Gate, HealWatch,
+    LOOT_TRIES, StopState, Verdict, check_departure_mark, is_player_death, parse_health,
+    parse_mana, parse_room_id,
 };
 use mud_client::nav::{Interrupt, TravelGuard};
 use mud_client::session::Switch;
@@ -536,7 +537,7 @@ fn a_meditate_that_never_moves_hp_gives_up_and_rearms() {
 }
 
 #[test]
-fn only_the_rest_command_arms_it() {
+fn a_command_that_is_neither_rest_nor_meditate_does_not_arm_it() {
     let mut w = heal_watch(&[]);
     w.on_sent("a rat");
     for _ in 0..5 {
@@ -2643,4 +2644,22 @@ fn reads_the_mana_pool_off_the_health_line() {
 fn a_health_line_without_a_pool_has_no_mana() {
     assert_eq!(parse_mana("Health:    35/35    [100%]"), None);
     assert_eq!(parse_mana(""), None);
+}
+
+// check_departure_mark: the interrupt mark must sit under the mark the
+// gate will actually rest to, whichever config supplies it.
+// ---------------------------------------------------------------------
+
+#[test]
+fn the_interrupt_mark_is_checked_against_the_bots_mark_when_the_farm_sets_none() {
+    let cfg = FarmConfig { depart_at_percent: None, interrupt_at_percent: 96, ..FarmConfig::default() };
+    let bot = BotConfig { rest_until_percent: 80, ..BotConfig::default() };
+    let err = check_departure_mark(&cfg, &bot).expect_err("96 is above 80");
+    assert!(matches!(err, FarmError::Config(_)), "{err}");
+    assert!(err.to_string().contains("96") && err.to_string().contains("80"), "{err}");
+    let fine = FarmConfig { interrupt_at_percent: 50, ..cfg.clone() };
+    assert!(check_departure_mark(&fine, &bot).is_ok());
+    // A disabled gate checks nothing.
+    let off = BotConfig { rest_until_percent: 0, ..bot.clone() };
+    assert!(check_departure_mark(&cfg, &off).is_ok());
 }

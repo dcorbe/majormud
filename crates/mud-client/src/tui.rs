@@ -187,7 +187,9 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     // hold. Both live beside the bot and are reset with it, because both
     // describe the bot that is running now.
     let mut assist_watch = crate::farm::HealWatch::new(&assist_config, &crate::farm::FarmConfig::default());
-    let mut assist_book_seen = 0usize;
+    // A length no book can have, so the first tick always reads the sheet
+    // and prints its refusals, even for an empty book.
+    let mut assist_book_seen = usize::MAX;
     if assist_config.assist_play {
         let (bot, heal) = new_assist(&session, &assist_config);
         assist = Some(bot);
@@ -382,7 +384,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                         assist_heal_state = Some(heal);
                         assist_watch =
                             crate::farm::HealWatch::new(&assist_config, &crate::farm::FarmConfig::default());
-                        assist_book_seen = 0;
+                        assist_book_seen = usize::MAX;
                     }
                     for cmd in handover_actions(&ended, assist.is_some()) {
                         session.send(&cmd);
@@ -713,7 +715,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                 }
                                 assist_watch =
                                     crate::farm::HealWatch::new(&assist_config, &crate::farm::FarmConfig::default());
-                                assist_book_seen = 0;
+                                assist_book_seen = usize::MAX;
                                 // A running job owns the connection and
                                 // never hears the assist, so the toggle
                                 // reaches it the only way it can: the
@@ -1036,7 +1038,7 @@ pub fn assist_tick(
 ) -> Vec<String> {
     bot.set_hide(session.capabilities().stealth > 0);
     let mut refusals = Vec::new();
-    let spells = session.raw_sheet().1.spells.len();
+    let spells = session.book_len();
     if spells != *book_seen {
         let sheet = crate::farm::sheet_from(session, cfg, durations);
         *heal = crate::sheet::HealState::new(sheet.heals.0);

@@ -1551,6 +1551,21 @@ impl crate::nav::TravelGuard for FarmGuard {
     }
 }
 
+/// The interrupt mark must sit under the mark the gate rests to. The
+/// plan cannot check this when the farm leaves the mark to the bot,
+/// since it never sees the bot's config, so both runners check here.
+pub fn check_departure_mark(cfg: &FarmConfig, bot: &crate::bot::BotConfig) -> Result<(), FarmError> {
+    let mark = cfg.depart_at_percent.unwrap_or(bot.rest_until_percent);
+    if mark != 0 && cfg.interrupt_at_percent > mark {
+        return Err(FarmError::Config(format!(
+            "interrupt_at_percent ({}) is above the departure mark ({mark}): the walk \
+             would set off at {mark}% and be interrupted at once",
+            cfg.interrupt_at_percent
+        )));
+    }
+    Ok(())
+}
+
 /// Run the patrol.
 ///
 /// One sender at a time, by construction. The navigator and the bot both
@@ -1581,16 +1596,7 @@ pub async fn run_farm(
     cfg: &FarmConfig,
     phase: PhaseSink<'_>,
 ) -> Result<(FarmEnd, FarmStats), FarmError> {
-    // The plan cannot check this against the bot's mark, since it never
-    // sees the bot's config. Checked here, where both are in hand.
-    let mark = cfg.depart_at_percent.unwrap_or(bot_config.rest_until_percent);
-    if mark != 0 && cfg.interrupt_at_percent > mark {
-        return Err(FarmError::Config(format!(
-            "interrupt_at_percent ({}) is above the departure mark ({mark}): the patrol \
-             would set off at {mark}% and be interrupted at once",
-            cfg.interrupt_at_percent
-        )));
-    }
+    check_departure_mark(cfg, bot_config)?;
     // The config says how the run STARTS; the session's switch is what
     // every leg reads, so `/bot` can move it while the run is going.
     session.travel_fights().set(cfg.fight_while_travelling);

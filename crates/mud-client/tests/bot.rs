@@ -1504,8 +1504,8 @@ fn mana_percent_needs_a_pool() {
 }
 
 /// `hp_percent` is the number the marks are compared against, exposed so
-/// the runner's cast dispatch cannot drift from `on_hp`'s arithmetic. It
-/// refuses to answer in exactly the two cases `on_hp` refuses to decide:
+/// the runner's cast dispatch cannot drift from `on_vitals`'s arithmetic. It
+/// refuses to answer in exactly the two cases `on_vitals` refuses to decide:
 /// max unknown, and downed (HP reads negative).
 #[test]
 fn hp_percent_answers_only_when_the_marks_could() {

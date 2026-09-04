@@ -230,6 +230,7 @@ pub async fn run_go(
     cfg: &FarmConfig,
     phase: crate::farm::PhaseSink<'_>,
 ) -> Result<GoEnd, FarmError> {
+    crate::farm::check_departure_mark(cfg, bot_config)?;
     // How the walk starts; `/bot` moves the switch from here on. See
     // `run_farm`.
     session.travel_fights().set(cfg.fight_while_travelling);

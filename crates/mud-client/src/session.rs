@@ -858,6 +858,12 @@ impl Session {
         let s = self.sheet.lock().expect("sheet lock");
         (s.inventory.clone(), s.book.clone(), s.casting)
     }
+
+    /// How many spells the session's book holds, read under one lock.
+    /// The assist compares it on every event to notice the probe landing.
+    pub fn book_len(&self) -> usize {
+        self.sheet.lock().expect("sheet lock").book.spells.len()
+    }
 }
 
 /// Feed one correlated event to the session's own purse meter: arm it on
