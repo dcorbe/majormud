@@ -518,6 +518,17 @@ pub struct Bot {
     /// test can consult, the "log it as a correction" the plan calls
     /// for.
     backstab_corrections: u32,
+    /// Hide once a recovery is over. Set by the assist when the sheet
+    /// shows Stealth, never by a farm.
+    hide_when_idle: bool,
+    /// The board answers a successful hide with silence, so this is a
+    /// belief: set by `Attempting to hide...`, cleared by the noticed
+    /// failure wording and by any other send.
+    hidden: bool,
+    /// A hide is out and the board has not moved on. Keeps the burst of
+    /// resting prompts around the echo from sending a second one.
+    hide_pending: bool,
+    hide_tries: u32,
 }
 
 /// One arrival's belief about how the very next `engage` should open —
@@ -575,6 +586,10 @@ impl Bot {
             swept: (String::new(), HashSet::new()),
             opener: None,
             backstab_corrections: 0,
+            hide_when_idle: false,
+            hidden: false,
+            hide_pending: false,
+            hide_tries: 0,
         }
     }
 
@@ -597,6 +612,18 @@ impl Bot {
     /// wrong weapon. See the field's own doc.
     pub fn backstab_corrections(&self) -> u32 {
         self.backstab_corrections
+    }
+
+    /// Hide once a recovery is over. The assist turns this on when the
+    /// sheet shows Stealth. A farm never does, its stops are not idle.
+    pub fn with_hide(mut self, hide: bool) -> Self {
+        self.hide_when_idle = hide;
+        self
+    }
+
+    /// Does the bot believe the character is hidden.
+    pub fn hidden(&self) -> bool {
+        self.hidden
     }
 
     /// Release the one-shot heal/flee latches. Both re-arm on their own
@@ -639,6 +666,17 @@ impl Bot {
 
     /// Feed one parsed event; returns the commands to send now.
     pub fn on_event(&mut self, ev: &Event) -> Vec<BotAction> {
+        let actions = self.decide(ev);
+        // Nearly every command breaks hide. Any send that is not the
+        // hide itself forgets the belief.
+        if actions.iter().any(|BotAction::Send(cmd)| cmd != "hide") {
+            self.hidden = false;
+            self.hide_tries = 0;
+        }
+        actions
+    }
+
+    fn decide(&mut self, ev: &Event) -> Vec<BotAction> {
         match ev {
             Event::RoomSeen(room) => {
                 self.exits = room.exits.clone();
@@ -946,7 +984,7 @@ impl Bot {
 
     /// This character's health as a percentage of max, or `None` when
     /// `max_hp` is unknown (0) or the character is downed and HP reads
-    /// negative — the two cases [`Bot::on_hp`] refuses to decide on.
+    /// negative — the two cases [`Bot::on_vitals`] refuses to decide on.
     ///
     /// Exposed so the runner's spell-heal dispatch reads exactly the
     /// number the rest and flee marks are compared against, rather than
@@ -1000,6 +1038,7 @@ impl Bot {
             let over = until > 0 && if resting { hp_ok && mana_ok } else { mana_ok };
             return if over { self.on_recovered() } else { Vec::new() };
         }
+        self.hide_pending = false;
         let hp_low = percent < self.config.rest_at_percent as i32;
         let mana_low = self.config.mana_rest_at_percent > 0
             && mana_percent.is_some_and(|m| m < self.config.mana_rest_at_percent as i32);
@@ -1024,9 +1063,16 @@ impl Bot {
         vec![BotAction::Send(cmd)]
     }
 
-    /// The recovery is over and the bot is free to act. Nothing yet.
+    /// The recovery is over and the bot is free to act. With Stealth
+    /// that means hide, which also ends the rest. Once, guarded by the
+    /// pending flag, because the echo's own prompt still says resting.
     fn on_recovered(&mut self) -> Vec<BotAction> {
-        Vec::new()
+        if !self.hide_when_idle || self.hidden || self.hide_pending {
+            return Vec::new();
+        }
+        self.hide_pending = true;
+        self.hide_tries = 1;
+        vec![BotAction::Send("hide".into())]
     }
 
     /// Does this text name the monster we are fighting? Matched on the
@@ -1040,6 +1086,17 @@ impl Bot {
     }
 
     fn on_line(&mut self, line: &str) -> Vec<BotAction> {
+        if line.contains("Attempting to hide") {
+            self.hidden = true;
+        }
+        if line.contains("don't think you are hidden") {
+            self.hidden = false;
+            if self.hide_pending && self.hide_tries < 3 {
+                self.hide_tries += 1;
+                return vec![BotAction::Send("hide".into())];
+            }
+            self.hide_pending = false;
+        }
         // The fight ended: re-arm so the next arrival is engaged. Death
         // lines name the template, not the rolled instance, so any death
         // clears — a redundant re-attack is harmless, a permanent latch

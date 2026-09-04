@@ -1615,3 +1615,79 @@ fn the_rest_latch_clears_when_the_board_shows_the_rest_landed() {
     assert!(bot.on_event(&vitals(51, None, Some(Status::Resting))).is_empty());
     assert_eq!(bot.on_event(&vitals(48, None, None)), vec![BotAction::Send("rest".into())]);
 }
+
+// --- hide when idle ----------------------------------------------------
+
+fn hiding_bot() -> Bot {
+    Bot::new(BotConfig { auto_heal: true, max_hp: 100, ..BotConfig::default() }).with_hide(true)
+}
+
+fn line(l: &str) -> Event {
+    Event::Line(l.into())
+}
+
+#[test]
+fn a_finished_rest_hides_once_and_believes_the_attempt() {
+    let mut bot = hiding_bot();
+    bot.on_event(&room(&[]));
+    bot.on_event(&vitals(50, None, None));
+    assert_eq!(
+        bot.on_event(&vitals(95, None, Some(Status::Resting))),
+        vec![BotAction::Send("hide".into())]
+    );
+    // The echo's prompt still says resting. No second hide.
+    assert!(bot.on_event(&vitals(95, None, Some(Status::Resting))).is_empty());
+    assert!(bot.on_event(&line("Attempting to hide...")).is_empty());
+    assert!(bot.hidden());
+    assert!(bot.on_event(&vitals(95, None, None)).is_empty());
+}
+
+#[test]
+fn a_noticed_failure_retries_three_times_then_stops() {
+    let mut bot = hiding_bot();
+    bot.on_event(&room(&[]));
+    bot.on_event(&vitals(50, None, None));
+    assert_eq!(bot.on_event(&vitals(95, None, Some(Status::Resting))), vec![BotAction::Send("hide".into())]);
+    for _ in 0..2 {
+        assert!(bot.on_event(&line("Attempting to hide...")).is_empty());
+        assert_eq!(
+            bot.on_event(&line(" You don't think you are hidden.")),
+            vec![BotAction::Send("hide".into())]
+        );
+        assert!(!bot.hidden());
+    }
+    bot.on_event(&line("Attempting to hide..."));
+    assert!(bot.on_event(&line(" You don't think you are hidden.")).is_empty());
+    assert!(!bot.hidden());
+}
+
+#[test]
+fn any_other_send_forgets_the_hidden_belief() {
+    let mut bot = Bot::new(BotConfig { auto_combat: true, auto_heal: true, max_hp: 100, ..BotConfig::default() })
+        .with_hide(true);
+    bot.on_event(&room(&[]));
+    bot.on_event(&vitals(50, None, None));
+    bot.on_event(&vitals(95, None, Some(Status::Resting)));
+    bot.on_event(&line("Attempting to hide..."));
+    assert!(bot.hidden());
+    assert_eq!(bot.on_event(&room(&["kobold thief"])), vec![BotAction::Send("a thief".into())]);
+    assert!(!bot.hidden());
+}
+
+#[test]
+fn without_stealth_a_finished_rest_hides_nothing() {
+    let mut bot = resting_bot(0, false);
+    bot.on_event(&room(&[]));
+    bot.on_event(&vitals(50, None, None));
+    assert!(bot.on_event(&vitals(95, None, Some(Status::Resting))).is_empty());
+}
+
+#[test]
+fn a_rest_with_a_low_pool_does_not_hide_yet() {
+    let mut bot = Bot::new(BotConfig { auto_heal: true, max_hp: 100, max_mana: 20, ..BotConfig::default() })
+        .with_hide(true);
+    bot.on_event(&room(&[]));
+    bot.on_event(&vitals(50, Some(5), None));
+    // HP is over the mark, mana is not: still resting, so no hide yet.
+    assert!(bot.on_event(&vitals(96, Some(10), Some(Status::Resting))).is_empty());
+}
