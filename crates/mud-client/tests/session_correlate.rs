@@ -11,9 +11,11 @@ use std::time::Duration;
 
 use mud_client::correlate::Correlated;
 use mud_client::events::Event;
+use mud_client::events::Status;
 use mud_client::profile::Profile;
 use mud_client::session::Session;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 
 fn room_block(name: &str) -> String {
     format!("\r\n\x1b[1;36m{name}\r\nObvious exits: north, south\r\n[HP=30/MA=0]:")
@@ -170,4 +172,50 @@ async fn an_untrimmed_send_still_correlates() {
     let bs = blocks(&evs);
     assert_eq!(bs.len(), 2, "{evs:?}");
     assert_eq!(bs[1].answers, Some(id), "{evs:?}");
+}
+
+/// A board that paints a resting prompt on connect, then a bare one.
+async fn resting_board() -> std::net::SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        sock.write_all(b"\r\n[HP=30 (Resting) ]:").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        sock.write_all(b"\r\n[HP=31]:").await.unwrap();
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    });
+    addr
+}
+
+/// Wait until the game state satisfies `done`, or fail after five seconds.
+async fn state_reaches(
+    state: &mut tokio::sync::watch::Receiver<mud_client::session::GameState>,
+    what: &str,
+    mut done: impl FnMut(&mud_client::session::GameState) -> bool,
+) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if done(&state.borrow()) {
+            return;
+        }
+        tokio::time::timeout_at(deadline, state.changed())
+            .await
+            .unwrap_or_else(|_| panic!("state never reached: {what}"))
+            .expect("session closed");
+    }
+}
+
+#[tokio::test]
+async fn the_game_state_follows_the_prompt_status() {
+    let addr = resting_board().await;
+    let session = session_for(addr).await;
+    let mut state = session.state();
+    state_reaches(&mut state, "resting at 30", |s| {
+        s.hp == 30 && s.status == Some(Status::Resting)
+    })
+    .await;
+    // The bare prompt clears it. A status that stuck would keep every
+    // consumer believing in a rest that ended.
+    state_reaches(&mut state, "standing at 31", |s| s.hp == 31 && s.status.is_none()).await;
 }

@@ -86,6 +86,10 @@ pub struct GameState {
     pub hp: i32,
     pub mana: Option<i32>,
     pub room: Option<RoomView>,
+    /// The word the last prompt painted: resting, meditating, or
+    /// nothing. Tracked on every prompt, because the board has no
+    /// wording for the end of a rest. The prompt is the only signal.
+    pub status: Option<crate::events::Status>,
 }
 
 #[derive(Debug)]
@@ -1027,10 +1031,12 @@ pub fn drain(events: &mut broadcast::Receiver<Correlated>, mut seen: impl FnMut(
 /// Fold an event into the rolling state; returns whether it changed.
 fn apply_event(state: &mut GameState, cor: &Correlated) -> bool {
     match &cor.event {
-        Event::Prompt { hp, mana, .. } => {
-            let changed = state.hp != *hp || state.mana != *mana;
+        Event::Prompt { hp, mana, status } => {
+            let changed =
+                state.hp != *hp || state.mana != *mana || state.status != *status;
             state.hp = *hp;
             state.mana = *mana;
+            state.status = status.clone();
             changed
         }
         Event::RoomSeen(room) => {

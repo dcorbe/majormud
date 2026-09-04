@@ -92,6 +92,7 @@ fn status_line_shows_hp_room_and_fits_width() {
             name: "Newhaven, Village Entrance".into(),
             ..Default::default()
         }),
+        status: None,
     };
     let s = render_status(&state, "mbbs", None, Fix::Unknown, None, None, false, 80);
     assert!(s.contains("HP 35"));
@@ -112,6 +113,7 @@ fn status_line_without_room_or_mana() {
         hp: 10,
         mana: None,
         room: None,
+        status: None,
     };
     let s = render_status(&state, "rust", None, Fix::Unknown, None, None, false, 80);
     assert!(s.contains("HP 10"));
@@ -143,6 +145,7 @@ fn without_a_runner_the_bar_is_hp_room_and_target() {
         hp: 33,
         mana: Some(8),
         room: Some(a_room("Newhaven, Narrow Road")),
+        status: None,
     };
     let s = render_status(&state, "mbbs", None, Fix::Unknown, None, None, false, 100);
     assert!(s.contains("HP 33"), "{s}");
@@ -159,6 +162,7 @@ fn with_a_runner_the_bar_gains_activity_and_room_number() {
         hp: 23,
         mana: Some(8),
         room: Some(a_room("Small Cavern")),
+        status: None,
     };
     let phase = mud_client::farm::Phase::Fighting {
         at: RoomId {
@@ -184,6 +188,7 @@ fn a_stale_fix_shows_the_room_with_a_question_mark() {
         hp: 23,
         mana: Some(8),
         room: Some(a_room("Small Cavern")),
+        status: None,
     };
     let stale = render_status(&state, "mbbs", None, Fix::Stale(RoomId { map: 1, room: 2156 }), None, None, false, 120);
     assert!(stale.contains("1/2156?"), "{stale}");
@@ -201,6 +206,7 @@ fn the_bar_is_always_exactly_the_width_asked_for() {
         hp: 5,
         mana: None,
         room: Some(a_room("A Room With A Very Long Name Indeed That Runs On")),
+        status: None,
     };
     for w in [20usize, 80, 120] {
         assert_eq!(render_status(&state, "mbbs", None, Fix::Unknown, None, None, false, w).chars().count(), w);
@@ -215,6 +221,7 @@ fn the_bar_shows_the_experience_rate_when_there_is_one() {
         hp: 27,
         mana: Some(8),
         room: Some(a_room("Small Cavern")),
+        status: None,
     };
     let with = render_status(&state, "mbbs", None, Fix::Unknown, Some(255), None, false, 120);
     assert!(with.contains("255 xp/min"), "{with}");
@@ -233,6 +240,7 @@ fn the_bar_never_contains_a_control_character() {
         hp: 1,
         mana: None,
         room: Some(a_room("Somewhere")),
+        status: None,
     };
     let phase = mud_client::farm::Phase::Failed {
         why: "at 1/2152: timed out waiting for \"room block after movement\"; tail:\n\n  look\n"
@@ -488,7 +496,7 @@ fn the_done_phase_carries_the_reason() {
 #[test]
 fn the_bar_shows_the_level_and_the_time_to_the_next_one() {
     use mud_client::progress::LevelProgress;
-    let state = GameState { hp: 43, mana: Some(10), room: None };
+    let state = GameState { hp: 43, mana: Some(10), room: None, status: None };
     let p = LevelProgress { exp: 57209, level: 3, needed: 7200 };
     let s = render_status(&state, "mbbs", None, Fix::Unknown, Some(100), Some(p), false, 120);
     assert!(s.contains("L3->4 1h12m"), "got {s:?}");
@@ -499,7 +507,7 @@ fn the_bar_shows_the_level_and_the_time_to_the_next_one() {
 #[test]
 fn the_bar_admits_when_it_cannot_estimate() {
     use mud_client::progress::LevelProgress;
-    let state = GameState { hp: 43, mana: Some(10), room: None };
+    let state = GameState { hp: 43, mana: Some(10), room: None, status: None };
     let p = LevelProgress { exp: 1, level: 1, needed: 500 };
     let s = render_status(&state, "mbbs", None, Fix::Unknown, None, Some(p), false, 120);
     assert!(s.contains("L1->2 ?"), "got {s:?}");
@@ -511,7 +519,7 @@ fn the_bar_admits_when_it_cannot_estimate() {
 /// hunt for a Ctrl-F regression that did not exist (2026-08-01).
 #[test]
 fn the_bar_names_the_assist_when_it_is_driving() {
-    let state = GameState { hp: 43, mana: Some(10), room: None };
+    let state = GameState { hp: 43, mana: Some(10), room: None, status: None };
     let s = render_status(&state, "mbbs", None, Fix::Unknown, None, None, true, 120);
     assert!(s.starts_with("assist | "), "got {s:?}");
 }
@@ -520,7 +528,7 @@ fn the_bar_names_the_assist_when_it_is_driving() {
 /// the slot even with the assist configured on.
 #[test]
 fn a_running_farm_outranks_the_assist_in_the_bar() {
-    let state = GameState { hp: 43, mana: Some(10), room: None };
+    let state = GameState { hp: 43, mana: Some(10), room: None, status: None };
     let phase = mud_client::farm::Phase::Done { why: "loops walked".into(), at: None };
     let s = render_status(&state, "mbbs", Some(&phase), Fix::Unknown, None, None, true, 120);
     assert!(!s.contains("assist"), "got {s:?}");
