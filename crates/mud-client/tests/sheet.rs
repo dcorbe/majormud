@@ -675,8 +675,8 @@ fn buff_book() -> Spellbook {
 }
 
 /// A buff needs both halves: the character has to know it, and it has to
-/// last. Anything missing either is refused OUT LOUD rather than dropped
-/// — a buff silently not being kept up looks exactly like one that is.
+/// last. Anything missing either is refused OUT LOUD rather than dropped.
+/// A buff silently not being kept up looks exactly like one that is.
 #[test]
 fn buffs_are_refused_with_a_reason() {
     let (kept, refused) = mud_client::sheet::buffs(
@@ -702,8 +702,8 @@ fn buffs_are_refused_with_a_reason() {
 }
 
 /// The budget, end to end. Cast once, then nothing until the rounds run
-/// out — and only a CONFIRMED cast starts the clock, because a fizzle
-/// leaves the buff genuinely down.
+/// out. Only a CONFIRMED cast starts the clock, because a fizzle leaves
+/// the buff genuinely down.
 #[test]
 fn a_buff_is_recast_when_its_budget_runs_out() {
     let clock = RoundClock::new();

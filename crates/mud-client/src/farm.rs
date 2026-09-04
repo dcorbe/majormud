@@ -1607,12 +1607,15 @@ pub async fn run_farm(
             h.cmd, h.mana_cost
         );
     }
-    if bot_config.minor_heal_at_percent > 0 && bot_config.major_heal_at_percent > 0 && heals.is_empty() {
-        eprintln!(
-            "minor_heal_at_percent is {} but this character knows no healing spell; \
-             it will rest and flee only",
-            bot_config.minor_heal_at_percent
-        );
+    if (bot_config.minor_heal_at_percent > 0 || bot_config.major_heal_at_percent > 0) && heals.is_empty() {
+        let marks = match (bot_config.minor_heal_at_percent, bot_config.major_heal_at_percent) {
+            (minor, 0) => format!("minor_heal_at_percent is {minor}"),
+            (0, major) => format!("major_heal_at_percent is {major}"),
+            (minor, major) => {
+                format!("minor_heal_at_percent is {minor} and major_heal_at_percent is {major}")
+            }
+        };
+        eprintln!("{marks} but this character knows no healing spell; it will rest and flee only");
     }
     let heal = crate::sheet::HealState::new(heals);
     // Same bargain for buffs: say what is being kept up, and say out
