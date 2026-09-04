@@ -769,3 +769,84 @@ async fn entering_the_realm_arms_and_fills_the_sessions_purse() {
         "entering the realm must arm and fill the session's purse before anything else asks for it"
     );
 }
+
+/// A board that answers `inventory` plainly, redirects `spells` with the
+/// mystic KAI wording (`mud_core::text::KAI_NO_SPELLS`), and answers
+/// `powers` with a one-line listing -- everything else echoes generically,
+/// same shape as `realm_entry_board`.
+async fn mystic_realm_entry_board() -> (std::net::SocketAddr, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = std::sync::Arc::clone(&received);
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut pending = String::new();
+        let mut buf = [0u8; 512];
+        while let Ok(n) = sock.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            pending.push_str(&String::from_utf8_lossy(&buf[..n]));
+            while let Some(nl) = pending.find('\n') {
+                let line: String = pending.drain(..=nl).collect();
+                let line = line.trim().to_lowercase();
+                log.lock().unwrap().push(line.clone());
+                let echo = format!("\r\n{line}");
+                let reply = match line.as_str() {
+                    "inventory" => "\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=51/MA=9]:".to_string(),
+                    "spells" => "\r\nYou may not list your spells. You are KAI! You must list your powers.\r\n[HP=51/MA=9]:".to_string(),
+                    "powers" => "\r\n  1  3    heal        Heal Self\r\n[HP=51/MA=9]:".to_string(),
+                    other => format!("\r\nYou say \"{other}\"\r\n[HP=51/MA=9]:"),
+                };
+                sock.write_all(format!("{echo}{reply}").as_bytes()).await.unwrap();
+            }
+        }
+    });
+    (addr, received)
+}
+
+/// Mystics are found out rather than configured: `spells` answers with
+/// the KAI redirect and the client is expected to try `powers` instead,
+/// exactly once, driven entirely by `on_realm_entry`'s background probe
+/// -- this test never sends either command itself.
+///
+/// `probe_sheet` has no terminal wording to watch for on the spell
+/// listing, so each of its asks waits out its own window before
+/// `Session::set_sheet` is called. A text-based `session.expect` on the
+/// transcript would return the instant the board's reply arrives, well
+/// before that. A fixed sleep here went stale the day `stat` joined the
+/// probe and added a window of its own, so this polls the sheet until
+/// the casting flips, bounded by a deadline, instead of guessing the sum.
+#[tokio::test]
+async fn the_mystic_redirect_happens_once_at_login() {
+    let (addr, received) = mystic_realm_entry_board().await;
+    let session = std::sync::Arc::new(session_to(addr).await);
+
+    on_realm_entry(&session, None);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let (_, _, casting) = session.raw_sheet();
+        if casting == mud_client::sheet::Casting::Powers {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "a KAI character must be found out from the redirect, not left on Spells"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    let log = received.lock().unwrap();
+    assert_eq!(
+        log.iter().filter(|l| **l == "spells").count(),
+        1,
+        "spells must be asked exactly once: {log:?}"
+    );
+    assert_eq!(
+        log.iter().filter(|l| **l == "powers").count(),
+        1,
+        "the redirect must fire exactly once, not loop: {log:?}"
+    );
+}
