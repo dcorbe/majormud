@@ -25,15 +25,15 @@ fn lines_that_are_not_awards_are_ignored() {
     assert_eq!(m.total(), 0);
 }
 
-/// Per minute, from an elapsed time passed in rather than read from a
+/// Per hour, from an elapsed time passed in rather than read from a
 /// clock, so the arithmetic is testable.
 #[test]
-fn it_reports_a_rate_per_minute() {
+fn it_reports_a_rate_per_hour() {
     let mut m = ExpMeter::default();
     m.observe("You gain 300 experience.");
     m.observe("You gain 300 experience.");
-    assert_eq!(m.per_minute(Duration::from_secs(120)), Some(300));
-    assert_eq!(m.per_minute(Duration::from_secs(60)), Some(600));
+    assert_eq!(m.per_hour(Duration::from_secs(120)), Some(18_000));
+    assert_eq!(m.per_hour(Duration::from_secs(60)), Some(36_000));
 }
 
 /// Before any time has passed the rate is meaningless, and dividing by
@@ -42,7 +42,7 @@ fn it_reports_a_rate_per_minute() {
 fn too_early_to_say_is_not_zero() {
     let mut m = ExpMeter::default();
     m.observe("You gain 300 experience.");
-    assert_eq!(m.per_minute(Duration::from_secs(0)), None);
+    assert_eq!(m.per_hour(Duration::from_secs(0)), None);
 }
 
 /// The real award line, which carries a thousands separator once the
@@ -92,7 +92,7 @@ fn thousands_separators_do_not_defeat_it() {
 /// would be a lie.
 #[test]
 fn no_experience_needed_reads_as_ready() {
-    assert_eq!(eta_label(0, Some(500)), "ready");
+    assert_eq!(eta_label(0, Some(30_000)), "ready");
 }
 
 /// A rate of nothing gives no estimate rather than infinity. This is the
@@ -105,14 +105,14 @@ fn without_a_rate_there_is_no_estimate() {
 
 #[test]
 fn an_estimate_reads_in_hours_and_minutes() {
-    assert_eq!(eta_label(6_000, Some(100)), "1h0m");
-    assert_eq!(eta_label(4_500, Some(100)), "45m");
-    assert_eq!(eta_label(7_200, Some(100)), "1h12m");
+    assert_eq!(eta_label(6_000, Some(6_000)), "1h0m");
+    assert_eq!(eta_label(4_500, Some(6_000)), "45m");
+    assert_eq!(eta_label(7_200, Some(6_000)), "1h12m");
 }
 
 /// A crawl must not print a number that implies precision it has not
 /// got, and must not overflow the bar.
 #[test]
 fn an_absurd_estimate_is_capped() {
-    assert_eq!(eta_label(10_000_000, Some(1)), ">99h");
+    assert_eq!(eta_label(10_000_000, Some(60)), ">99h");
 }

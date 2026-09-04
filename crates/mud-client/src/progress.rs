@@ -177,22 +177,22 @@ impl ExpMeter {
     /// lifetime-of-session rate with minutes that earned nothing before
     /// the job even started; resetting the total here is only half the
     /// fix — the caller must also restart the elapsed clock it feeds to
-    /// [`Self::per_minute`], or the rate reads as a spike (old total
+    /// [`Self::per_hour`], or the rate reads as a spike (old total
     /// over a near-zero elapsed) instead of the fresh figure this exists
     /// to produce.
     pub fn reset(&mut self) {
         self.total = 0;
     }
 
-    /// Experience per minute over `elapsed`, or `None` when too little
-    /// time has passed for the figure to mean anything — which is a
+    /// Experience per hour over `elapsed`, or `None` when too little
+    /// time has passed for the figure to mean anything, which is a
     /// better answer than a number produced by dividing by nearly zero.
-    pub fn per_minute(&self, elapsed: std::time::Duration) -> Option<i64> {
+    pub fn per_hour(&self, elapsed: std::time::Duration) -> Option<i64> {
         let secs = elapsed.as_secs_f64();
         if secs < 1.0 {
             return None;
         }
-        Some((self.total as f64 * 60.0 / secs).round() as i64)
+        Some((self.total as f64 * 3600.0 / secs).round() as i64)
     }
 }
 
@@ -237,18 +237,18 @@ pub fn level_progress(line: &str) -> Option<LevelProgress> {
 
 /// How long at the current rate, short enough for the status bar.
 ///
-/// Honest about what it does not know: no rate yet (the first minute of
-/// any run, and after every death resets the meter) gives `?` rather
+/// Honest about what it does not know: no rate yet, the first minute of
+/// any run and after every death resets the meter, gives `?` rather
 /// than a fabricated number, and a crawl is capped rather than printed
 /// to false precision.
-pub fn eta_label(needed: i64, per_minute: Option<i64>) -> String {
+pub fn eta_label(needed: i64, per_hour: Option<i64>) -> String {
     if needed <= 0 {
         return "ready".to_string();
     }
-    let Some(rate) = per_minute.filter(|r| *r > 0) else {
+    let Some(rate) = per_hour.filter(|r| *r > 0) else {
         return "?".to_string();
     };
-    let mins = needed / rate;
+    let mins = needed * 60 / rate;
     if mins >= 99 * 60 {
         return ">99h".to_string();
     }

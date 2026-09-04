@@ -449,7 +449,7 @@ fn farm_command(
                             target_label,
                             Some(&phase),
                             room_id,
-                            exp.per_minute(started.elapsed()),
+                            exp.per_hour(started.elapsed()),
                             // Headless `mmc farm` does not poll `exp`:
                             // the bar is a progress feed, not a session
                             // the operator is sitting in front of.

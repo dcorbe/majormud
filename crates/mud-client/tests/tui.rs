@@ -236,10 +236,10 @@ fn the_bar_shows_the_experience_rate_when_there_is_one() {
         ticks: mud_client::world::TickClock::new(),
     };
     let with = render_status(&state, Instant::now(), "mbbs", None, Fix::Unknown, Some(255), None, false, 120);
-    assert!(with.contains("255 xp/min"), "{with}");
+    assert!(with.contains("255 xp/hr"), "{with}");
 
     let without = render_status(&state, Instant::now(), "mbbs", None, Fix::Unknown, None, None, false, 120);
-    assert!(!without.contains("xp/min"), "{without}");
+    assert!(!without.contains("xp/hr"), "{without}");
 }
 
 /// The bar is ONE row. An error carried into it brings a NavError's
@@ -504,7 +504,7 @@ fn the_done_phase_carries_the_reason() {
 
 /// The status bar carries the level and how long until the next one, so
 /// an operator can see whether a stop is worth staying at without doing
-/// arithmetic on the xp/min figure beside it.
+/// arithmetic on the xp/hr figure beside it.
 #[test]
 fn the_bar_shows_the_level_and_the_time_to_the_next_one() {
     use mud_client::progress::LevelProgress;
@@ -516,7 +516,7 @@ fn the_bar_shows_the_level_and_the_time_to_the_next_one() {
         ticks: mud_client::world::TickClock::new(),
     };
     let p = LevelProgress { exp: 57209, level: 3, needed: 7200 };
-    let s = render_status(&state, Instant::now(), "mbbs", None, Fix::Unknown, Some(100), Some(p), false, 120);
+    let s = render_status(&state, Instant::now(), "mbbs", None, Fix::Unknown, Some(6_000), Some(p), false, 120);
     assert!(s.contains("L3->4 1h12m"), "got {s:?}");
 }
 

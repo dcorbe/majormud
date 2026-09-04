@@ -241,7 +241,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
 
     let mut out = std::io::stdout();
     setup_region(&mut out, rows)?;
-    repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
+    repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_hour(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
 
     let result = loop {
         tokio::select! {
@@ -252,7 +252,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                     out.write_all(b"\x1b8")?;
                     out.write_all(&bytes)?;
                     out.write_all(b"\x1b7")?;
-                    repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
+                    repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_hour(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(_) => break Ok(()), // disconnected
@@ -278,7 +278,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                         exp.observe(line);
                         if exp.total() != before {
                             repaint(&mut out, &state_rx, target, job.as_ref(), here,
-                                    exp.per_minute(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
+                                    exp.per_hour(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
                         }
                         // The carried balance is the session's own
                         // answer now (`Session::capabilities`), fed
@@ -341,7 +341,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                         model.note_room(id);
                     }
                 }
-                repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
+                repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_hour(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
             }
             // The bar must follow the runner, not just HP: travelling and
             // fighting can pass without a single point of damage.
@@ -389,13 +389,13 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                     }
                     note(&mut out, &format!("-- {what} ended: {} --", ended.label()))?;
                 }
-                repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
+                repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_hour(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
             }
             _ = tick_paint.tick() => {
-                let bar = bar_text(&state_rx, target, job.as_ref(), here, exp.per_minute(exp_since.elapsed()), level, assist.is_some(), cols);
+                let bar = bar_text(&state_rx, target, job.as_ref(), here, exp.per_hour(exp_since.elapsed()), level, assist.is_some(), cols);
                 if bar != last_bar {
                     last_bar = bar;
-                    repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
+                    repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_hour(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
                 }
             }
             _ = level_tick.tick() => {
@@ -415,7 +415,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                         cols = w;
                         rows = h;
                         setup_region(&mut out, rows)?;
-                        repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
+                        repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_hour(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
                     }
                     TermEvent::Key(key) if key.kind != KeyEventKind::Release => {
                         let was = passthrough;
@@ -746,7 +746,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                             out.write_all(note.as_bytes())?;
                             out.write_all(b"\x1b7")?;
                         }
-                        repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
+                        repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_hour(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
                     }
                     _ => {}
                 }
@@ -1161,7 +1161,7 @@ fn redraw_bottom(
     target: &str,
     phase: Option<&crate::farm::Phase>,
     room_id: crate::lost::Fix,
-    exp_per_min: Option<i64>,
+    exp_per_hour: Option<i64>,
     level: Option<crate::progress::LevelProgress>,
     assist: bool,
     editor: &InputEditor,
@@ -1170,7 +1170,7 @@ fn redraw_bottom(
 ) -> std::io::Result<()> {
     let status_row = rows.saturating_sub(1).max(1);
     let input_row = rows.max(1);
-    let status = render_status(state, now, target, phase, room_id, exp_per_min, level, assist, cols as usize);
+    let status = render_status(state, now, target, phase, room_id, exp_per_hour, level, assist, cols as usize);
     let line = editor.line();
     let cursor_col = 3 + editor.cursor() as u16;
     out.write_all(
@@ -1201,7 +1201,7 @@ pub fn render_status(
     target: &str,
     phase: Option<&crate::farm::Phase>,
     room_id: crate::lost::Fix,
-    exp_per_min: Option<i64>,
+    exp_per_hour: Option<i64>,
     level: Option<crate::progress::LevelProgress>,
     assist: bool,
     width: usize,
@@ -1236,8 +1236,8 @@ pub fn render_status(
             s.push_str(&format!(" [{}/{}{sure}]", id.map, id.room));
         }
     }
-    if let Some(rate) = exp_per_min {
-        s.push_str(&format!(" | {rate} xp/min"));
+    if let Some(rate) = exp_per_hour {
+        s.push_str(&format!(" | {rate} xp/hr"));
     }
     // How long until the next level, at the rate we are actually
     // earning. Refreshed on its own timer, so it goes stale between
@@ -1247,7 +1247,7 @@ pub fn render_status(
             " | L{}->{} {}",
             p.level,
             p.level + 1,
-            crate::progress::eta_label(p.needed, exp_per_min)
+            crate::progress::eta_label(p.needed, exp_per_hour)
         ));
     }
     s.push_str(&format!(" | {target}"));
@@ -1413,7 +1413,7 @@ fn bar_text(
     target: &str,
     job: Option<&Job>,
     here: crate::lost::Fix,
-    exp_per_min: Option<i64>,
+    exp_per_hour: Option<i64>,
     level: Option<crate::progress::LevelProgress>,
     assist: bool,
     cols: u16,
@@ -1424,7 +1424,7 @@ fn bar_text(
         None => here,
     };
     let state = state_rx.borrow().clone();
-    render_status(&state, std::time::Instant::now(), target, phase.as_ref(), room_id, exp_per_min, level, assist, cols as usize)
+    render_status(&state, std::time::Instant::now(), target, phase.as_ref(), room_id, exp_per_hour, level, assist, cols as usize)
 }
 
 /// Redraw the bottom rows, reading the farm's phase when one is running.
@@ -1435,7 +1435,7 @@ fn repaint(
     target: &str,
     job: Option<&Job>,
     here: crate::lost::Fix,
-    exp_per_min: Option<i64>,
+    exp_per_hour: Option<i64>,
     level: Option<crate::progress::LevelProgress>,
     assist: bool,
     editor: &InputEditor,
@@ -1458,7 +1458,7 @@ fn repaint(
         target,
         phase.as_ref(),
         room_id,
-        exp_per_min,
+        exp_per_hour,
         level,
         assist,
         editor,
