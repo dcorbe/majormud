@@ -1688,6 +1688,14 @@ impl Navigator {
     ///   `delay_blocked`, i.e. sent too fast behind another command) —
     ///   NOT armed. Unlike the bare-attempt case above, there is no
     ///   attempt to be optimistic about.
+    ///
+    /// The wordings are matched anywhere on a line, not as whole lines.
+    /// The live board prints "Attempting to sneak..." with no line break
+    /// after it, so a perceived failure lands glued to it on the same
+    /// line ("Attempting to sneak...You don't think you're sneaking.",
+    /// `re/oracle/slice8_abbrevs`). Read as whole lines, that shape
+    /// matched nothing, and the walk sat out its entire step deadline
+    /// after every seen failure.
     async fn arm_sneak(
         &self,
         session: &Session,
@@ -1732,14 +1740,13 @@ impl Navigator {
                     if cor.answers == Some(id) {
                         continue; // the echo itself, not reply body text
                     }
-                    let line = line.trim();
-                    if line == MAY_NOT_SNEAK {
+                    if line.contains(MAY_NOT_SNEAK) {
                         return Ok(false); // hard block; no retry this step
                     }
-                    if line == DONT_THINK_SNEAKING {
+                    if line.contains(DONT_THINK_SNEAKING) {
                         failed = true;
                     }
-                    if line == ATTEMPTING_TO_SNEAK {
+                    if line.contains(ATTEMPTING_TO_SNEAK) {
                         attempted = true;
                     }
                 }

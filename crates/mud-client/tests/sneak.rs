@@ -253,6 +253,32 @@ async fn a_perceived_failure_is_not_believed_armed() {
     assert!(!arrival.sneaking, "a seen failure must not be believed armed");
 }
 
+/// The live board prints the perceived failure on the SAME line as the
+/// attempt, with no line break between them (`re/oracle/slice8_abbrevs`:
+/// "Attempting to sneak...You don't think you're sneaking."). That line
+/// must be read as a seen failure at once. Mutation target: match the
+/// two wordings as whole lines only and neither is seen, so the reader
+/// sits out its whole step deadline before moving on unarmed.
+#[tokio::test]
+async fn a_failure_glued_to_the_attempt_is_read_at_once() {
+    let (addr, log) = sneak_board("Attempting to sneak...You don't think you're sneaking.").await;
+    let session = session_for(addr).await;
+    let navigator = nav_with_timeout(graph_one_hop(), 56, 5_000);
+    let started = std::time::Instant::now();
+    let arrival = navigator
+        .goto(&session, HERE, THERE, &mut NoGuard)
+        .await
+        .unwrap();
+    assert!(!arrival.sneaking, "a seen failure must not be believed armed");
+    assert_eq!(arrival.at, THERE);
+    assert_eq!(log.moves.load(Ordering::SeqCst), 1);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(4),
+        "the failure line must close the reply, not the step deadline: took {:?}",
+        started.elapsed()
+    );
+}
+
 /// Mutation target (Task 5 Step 5, case 2): a hard block must leave the
 /// client unarmed, and must not stop the walk -- it moves anyway,
 /// unsneaked.
