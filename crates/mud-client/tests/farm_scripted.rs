@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use mud_client::bot::BotConfig;
-use mud_client::farm::{FarmConfig, FarmEnd, FarmPlan, run_farm};
+use mud_client::farm::{FarmConfig, FarmEnd, FarmError, FarmPlan, run_farm};
 use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::profile::Profile;
 use mud_client::session::Session;
@@ -1424,5 +1424,61 @@ async fn the_gate_meditates_for_mana_and_leaves_when_both_pools_clear_the_mark()
     assert!(
         !log.iter().any(|l| l == "rest"),
         "hp was already fit; rest must never be sent: {log:?}"
+    );
+}
+
+/// The plan cannot catch this pair. It never sees the bot's config, so
+/// with no farm mark of its own it does not know the departure gate will
+/// release at 80. Caught at run start instead, before a single step goes
+/// out, rather than after the patrol has burned its interrupt budget.
+#[tokio::test]
+async fn an_interrupt_mark_above_the_bots_own_departure_mark_is_refused_at_run_start() {
+    let (addr, received) = scripted_board(vec![(
+        "inventory",
+        "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+            .into(),
+    )])
+    .await;
+    let session = session_for(addr).await;
+    mud_client::farm::probe_sheet(&session, None).await;
+    let after_probe = received.lock().unwrap().len();
+
+    let graph = corridor();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/3".into()],
+        loops: 1,
+        // No farm mark, so the gate falls back to the bot's 80.
+        depart_at_percent: None,
+        interrupt_at_percent: 96,
+        ..FarmConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("the plan cannot see the bot's mark");
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 30,
+        rest_until_percent: 80,
+        ..BotConfig::default()
+    };
+
+    let out = tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, &bot, &cfg, None),
+    )
+    .await
+    .expect("run_farm should refuse at once, not hang");
+
+    let why = match out {
+        Err(FarmError::Config(why)) => why,
+        other => panic!("the pair must be refused: {other:?}"),
+    };
+    assert!(why.contains("96"), "{why}");
+    assert!(why.contains("80"), "{why}");
+
+    let log = received.lock().unwrap();
+    assert_eq!(
+        log.len(),
+        after_probe,
+        "the refusal must come before anything is sent: {log:?}"
     );
 }

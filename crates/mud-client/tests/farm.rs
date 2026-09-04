@@ -520,6 +520,21 @@ fn prompts_do_nothing_when_no_heal_is_outstanding() {
     }
 }
 
+/// A caster's recovery ends on the mana pool as much as on HP, and a
+/// meditate that never lands latches the bot the same way a rest does.
+#[test]
+fn a_meditate_that_never_moves_hp_gives_up_and_rearms() {
+    let mut w = heal_watch(&[]);
+    w.on_sent("meditate");
+
+    assert!(!w.on_event(&prompt(12)), "first prompt sets the baseline");
+    assert!(!w.on_event(&prompt(12)));
+    assert!(
+        w.on_event(&prompt(12)),
+        "three flat prompts means it never landed"
+    );
+}
+
 #[test]
 fn only_the_rest_command_arms_it() {
     let mut w = heal_watch(&[]);

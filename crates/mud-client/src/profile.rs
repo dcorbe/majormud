@@ -49,12 +49,11 @@ pub struct Profile {
 /// on is a profile whose owner never finds out about the new knob next to
 /// it. Same habit as the dark-stop warning in `FarmPlan::build`: a
 /// warning, never a refusal.
-const RENAMED_KEYS: [(&str, &str); 5] = [
+const RENAMED_KEYS: [(&str, &str); 4] = [
     ("heal_at_percent", "rest_at_percent"),
     ("heal_command", "rest_command"),
     ("spell_at_percent", "minor_heal_at_percent"),
     ("heal_spells", "minor_heal_spell and major_heal_spell"),
-    ("depart_at_percent", "rest_until_percent"),
 ];
 
 impl Profile {

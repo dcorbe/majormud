@@ -542,6 +542,7 @@ pub struct Bot {
     /// A hide is out and the board has not moved on. Keeps the burst of
     /// resting prompts around the echo from sending a second one.
     hide_pending: bool,
+    /// Hides sent since the recovery ended, capped at three.
     hide_tries: u32,
 }
 

@@ -157,14 +157,14 @@ pub struct FarmConfig {
     /// the character stands, and resume once it is fit to travel again.
     /// 0 disables the hp trip; dying still stops the walk.
     ///
-    /// The refusal below fires only when this farm sets its own
-    /// `depart_at_percent`: [`FarmPlan::build`] then refuses a pair
-    /// where this value exceeds it, because the defend pump would end,
-    /// the departure gate would release at the lower number, and the
-    /// very next prompt would trip the guard again, burning the whole
-    /// interrupt budget without walking a step. With the default, the
-    /// mark is the bot's `rest_until_percent`, and a profile must keep
-    /// it above this mark itself, since the loader cannot see both.
+    /// A pair where this value exceeds the departure mark is refused,
+    /// because the defend pump would end, the departure gate would
+    /// release at the lower number, and the very next prompt would trip
+    /// the guard again, burning the whole interrupt budget without
+    /// walking a step. [`FarmPlan::build`] refuses it when this farm
+    /// sets its own `depart_at_percent`. With the default, the mark is
+    /// the bot's `rest_until_percent`, which the loader cannot see, so
+    /// [`run_farm`] refuses it at run start instead.
     pub interrupt_at_percent: u32,
     /// Interruptions tolerated on a single leg before the run gives up.
     /// A character that keeps being stopped is not going to walk this
@@ -1112,8 +1112,12 @@ impl HealWatch {
 
     /// Called for every command the gate actually releases. A fresh heal
     /// restarts the watch: new baseline, new patience.
+    ///
+    /// `meditate` counts as well as the rest command. A caster's
+    /// recovery ends on the mana pool as much as on HP, and a meditate
+    /// that never lands latches the same way a rest does.
     pub fn on_sent(&mut self, line: &str) {
-        if line == self.rest_command {
+        if line == self.rest_command || line == "meditate" {
             self.baseline = None;
             self.prompts = Some(0);
         }
@@ -1347,6 +1351,11 @@ pub enum FarmError {
     /// and "the board would not answer".
     Lost(crate::lost::Lost),
     Nav(crate::nav::NavError),
+    /// The run was asked for something that cannot work: a pair of marks
+    /// that would stop the patrol the moment it set off, say. Carries
+    /// the whole sentence, because only the check that made it knows
+    /// which pair it was.
+    Config(String),
     /// The session ended under us.
     Disconnected,
 }
@@ -1359,6 +1368,7 @@ impl std::fmt::Display for FarmError {
             }
             FarmError::Lost(why) => write!(f, "lost: {why}"),
             FarmError::Nav(e) => write!(f, "{e}"),
+            FarmError::Config(why) => write!(f, "{why}"),
             FarmError::Disconnected => write!(f, "disconnected"),
         }
     }
@@ -1571,6 +1581,16 @@ pub async fn run_farm(
     cfg: &FarmConfig,
     phase: PhaseSink<'_>,
 ) -> Result<(FarmEnd, FarmStats), FarmError> {
+    // The plan cannot check this against the bot's mark, since it never
+    // sees the bot's config. Checked here, where both are in hand.
+    let mark = cfg.depart_at_percent.unwrap_or(bot_config.rest_until_percent);
+    if mark != 0 && cfg.interrupt_at_percent > mark {
+        return Err(FarmError::Config(format!(
+            "interrupt_at_percent ({}) is above the departure mark ({mark}): the patrol \
+             would set off at {mark}% and be interrupted at once",
+            cfg.interrupt_at_percent
+        )));
+    }
     // The config says how the run STARTS; the session's switch is what
     // every leg reads, so `/bot` can move it while the run is going.
     session.travel_fights().set(cfg.fight_while_travelling);
@@ -1622,7 +1642,7 @@ pub async fn run_farm(
                 format!("minor_heal_at_percent is {minor} and major_heal_at_percent is {major}")
             }
         };
-        eprintln!("{marks} but this character knows no healing spell; it will rest and flee only");
+        eprintln!("{marks} but this character knows no healing spell. It will rest and flee only");
     }
     let heal = crate::sheet::HealState::new(heals);
     // Same bargain for buffs: say what is being kept up, and say out
@@ -2699,7 +2719,8 @@ async fn wait_for_departure_health(
         // out — re-defending there would un-make the cap's decision.
         // The travel guard covers whatever follows it out.
         let hp_fit = hp >= hp_target && hp > 0;
-        let mana_fit = mana_target.is_none_or(|t| mana.is_some_and(|m| m >= t));
+        // An unknown reading is read as fit, the way the bot reads it.
+        let mana_fit = mana_target.is_none_or(|t| mana.is_none_or(|m| m >= t));
         if hp_fit && mana_fit {
             return DepartureWait::Fit;
         }
@@ -2985,7 +3006,7 @@ async fn farm_stop(
         // - mana and the round, both inside `HealState::attempt`.
         //
         // `hp_percent` is the bot's own arithmetic, borrowed rather than
-        // recomputed, so this mark and the two in `on_hp` can never
+        // recomputed, so this mark and `on_vitals` can never
         // disagree about what 60% means. The value is copied out of the
         // watch first: a `Ref` held across the body would block the
         // session actor from publishing the next prompt.
@@ -3157,7 +3178,7 @@ async fn farm_stop(
             // an attack on health: `Bot::on_event` picks the biggest
             // threat off the room block and engages it. Three rules that
             // are each right on their own close the loop — a heal is
-            // suppressed while the room holds work (`Bot::on_hp`, and
+            // suppressed while the room holds work (`Bot::on_vitals`, and
             // rightly: resting beside a monster is its own death
             // spiral), `recover` is deliberately not hp-guarded (see its
             // note), and the attack has no floor. Measured live
