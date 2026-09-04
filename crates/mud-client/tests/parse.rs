@@ -944,3 +944,17 @@ fn a_status_is_never_read_off_the_line_after_a_bare_hp_prompt() {
         ]
     );
 }
+
+#[test]
+fn only_a_single_word_reads_as_a_trailing_status() {
+    // The DLL's two statuses are single words. Anything else after a
+    // pool prompt is the line's own text and stays on it.
+    let ev = parse_all("[HP=36/MA=12]: (not a status) look\r\n");
+    assert_eq!(
+        ev,
+        vec![
+            Event::Prompt { hp: 36, mana: Some(12), status: None },
+            Event::Line(" (not a status) look".into()),
+        ]
+    );
+}

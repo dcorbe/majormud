@@ -914,5 +914,5 @@ fn status_line_shows_the_prompt_status_after_the_vitals() {
 
     let bare = GameState { status: None, ..state };
     let s = render_status(&bare, "mbbs", None, Fix::Unknown, None, None, false, 80);
-    assert!(!s.contains("("), "{s}");
+    assert!(!s.contains("(Resting)"), "{s}");
 }

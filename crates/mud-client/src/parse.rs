@@ -22,14 +22,16 @@ use mud_core::text::{self, color};
 // Unanchored: the board redraws the prompt mid-line (rest ticks, typing
 // echo interleaved with async regen).
 static PROMPT_FRAME_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\[HP=(-?\d+)(?:/(?:MA|KAI)=(-?\d+))?(?: \(([^)]+)\) )?\]:").unwrap()
+    Regex::new(r"\[HP=(-?\d+)(?:/(?:MA|KAI)=(-?\d+))?(?: \(([A-Za-z]+)\) )?\]:").unwrap()
 });
 // The pool template's trailing status, matched at the start of whatever
 // follows "]:". The trailing space is part of the DLL's slot, so a
 // half-arrived word without it does not match and the prompt is held
-// until the line completes.
+// until the line completes. A single word, because the DLL's two
+// statuses are single words and anything wider would swallow the line's
+// own text.
 static TRAILING_STATUS_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^ \(([^)]+)\) ").unwrap());
+    LazyLock::new(|| Regex::new(r"^ \(([A-Za-z]+)\) ").unwrap());
 
 /// One prompt found in a stripped line: the byte range it occupies,
 /// status included, and the event it becomes.

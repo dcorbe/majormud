@@ -174,13 +174,16 @@ async fn an_untrimmed_send_still_correlates() {
     assert_eq!(bs[1].answers, Some(id), "{evs:?}");
 }
 
-/// A board that paints a resting prompt on connect, then a bare one.
+/// A board that paints a resting prompt on connect, then the same HP with
+/// no status, then a changed HP.
 async fn resting_board() -> std::net::SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         let (mut sock, _) = listener.accept().await.unwrap();
         sock.write_all(b"\r\n[HP=30 (Resting) ]:").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        sock.write_all(b"\r\n[HP=30]:").await.unwrap();
         tokio::time::sleep(Duration::from_millis(300)).await;
         sock.write_all(b"\r\n[HP=31]:").await.unwrap();
         tokio::time::sleep(Duration::from_secs(5)).await;
@@ -215,7 +218,9 @@ async fn the_game_state_follows_the_prompt_status() {
         s.hp == 30 && s.status == Some(Status::Resting)
     })
     .await;
-    // The bare prompt clears it. A status that stuck would keep every
-    // consumer believing in a rest that ended.
-    state_reaches(&mut state, "standing at 31", |s| s.hp == 31 && s.status.is_none()).await;
+    // Same HP, no status. A rest usually ends at unchanged vitals, and
+    // only the status term in the state's change check tells a watcher
+    // it ended.
+    state_reaches(&mut state, "standing at 30", |s| s.hp == 30 && s.status.is_none()).await;
+    state_reaches(&mut state, "standing at 31", |s| s.hp == 31).await;
 }

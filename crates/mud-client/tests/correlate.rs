@@ -1100,3 +1100,30 @@ fn a_look_echoed_behind_a_resting_prompt_is_answered_by_its_block() {
     }
     assert_eq!(answered, Some(CmdId(1)));
 }
+
+#[test]
+fn a_status_split_from_its_pool_prompt_still_lets_the_echo_match() {
+    // A chunk boundary can land between "]:" and " (Resting) ". The
+    // prompt then emits bare and the status rides on the echo, which
+    // the correlator strips as a decoration.
+    let mut p = Parser::new();
+    let mut c = Correlator::new(TTL);
+    let t = Instant::now();
+    c.sent(CmdId(1), "look", t);
+    let mut events = p.push("\r\n[HP=36/MA=12]:");
+    events.extend(p.push(" (Resting) look\r\n"));
+    let raw = format!(
+        "{}Dark Cave\x1b[0m\r\n\x1b[0;32mObvious exits: west\x1b[0m\r\n",
+        color::ROOM_NAME
+    );
+    events.extend(p.push(&raw));
+    assert!(matches!(events[0], Event::Prompt { hp: 36, mana: Some(12), status: None }));
+    let mut answered = None;
+    for ev in events {
+        let cor = c.on_event(ev, t);
+        if matches!(cor.event, Event::RoomSeen(_)) {
+            answered = cor.answers;
+        }
+    }
+    assert_eq!(answered, Some(CmdId(1)));
+}
