@@ -199,12 +199,13 @@ keeps refusing marks out of order. Defaults follow MudPlay's health settings.
 
 | key | default | meaning |
 |---|---|---|
-| `rest_at_percent` | 60 | exists. Below this, out of combat, rest. |
+| `rest_at_percent` | 60 | exists, was 50. Below this HP mark, out of combat, rest. |
+| `mana_rest_at_percent` | 30 | new. Below this mana mark, out of combat, rest or meditate. |
 | `rest_until_percent` | 95 | new. Recovery is over when HP is at or above it and, with a pool, mana too. |
-| `meditate_at_percent` | 0 | new. Below this mana mark, send `meditate`. Off unless set. |
-| `minor_heal_at_percent` | 70 | replaces `spell_at_percent`, kept as an alias. Below it, cast the minor heal. |
+| `meditate` | false | new. A mana-only recovery sends `meditate` instead of `rest`. |
+| `minor_heal_at_percent` | 70 | replaces `spell_at_percent`, kept as an alias. Was 0, off. Below it, cast the minor heal. |
 | `major_heal_at_percent` | 40 | new. Below it, cast the major heal. |
-| `flee_at_percent` | 30 | exists. Leave a fight only below this. |
+| `flee_at_percent` | 20 | exists, was 25. Leave a fight only below this. |
 | `minor_heal_spell` | discovered | replaces `heal_spells`. Empty means the cheapest heal in the book. |
 | `major_heal_spell` | discovered | empty means the dearest heal in the book. |
 | `hp_regen_spell` | none | a regen over time spell, named by the player. |
@@ -214,17 +215,30 @@ keeps refusing marks out of order. Defaults follow MudPlay's health settings.
 `rest_until_percent` gets it as the rest mark, with the rename notice the
 loader already prints for the two older keys.
 
+The defaults are MudPlay's, from its `HealthSettings`: `RestIfBelowHp` 60,
+`RestIfBelowMa` 30, `RestMaxHp` and `RestMaxMa` 95, `MinorHealCombatTrigger`
+70, `MajorHealCombatTrigger` 40, `RunIfBelowHp` 20, `UseMeditateAbility` off.
+Two of them move existing client defaults, and one changes a policy: spell
+healing was opt in so that upgrading never spent a profile's mana unasked. With
+70 as the default, a profile whose spellbook holds a heal starts casting it
+below 70 after upgrading. The loader says so once when a profile has heals in
+the book and no heal mark of its own.
+
 Meditate is a quest ability. The client cannot tell whether the character has
-it, so `meditate_at_percent` is the switch as well as the mark. The runner
-says so once and ignores it on a character whose probe found no pool.
+it, so `meditate` is a switch the player sets. The runner says so once and
+ignores it on a character whose probe found no pool.
 
 ### Which recovery to send
 
 Out of combat, with the room clear, on every prompt:
 
 - HP below `rest_at_percent`: send `rest`. Rest restores both pools.
-- HP fine, mana below `meditate_at_percent`: send `meditate`.
+- HP fine, mana below `mana_rest_at_percent`: send `meditate` when the
+  `meditate` switch is on, else `rest`.
 - Both need recovery: send `rest`.
+
+This is MudPlay's `ChooseRestCommand` without its `MeditateBeforeResting`
+knob, which nobody has asked for.
 
 A recovery is over when the status is Resting or Meditating and the pools are
 at or above `rest_until_percent`, HP and mana both for a rest, mana for a
