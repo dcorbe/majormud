@@ -516,6 +516,17 @@ correctly: "Newhaven, Narrow Road" is two rooms, and the exit set picks
 While a runner is attached its own belief wins, since it knows which of
 two same-named rooms it actually walked to.
 
+While the character rests or meditates the board paints a word into its
+prompt, and the bar repeats it after the vitals:
+
+```
+ HP 42 MA 12 (Resting) | Dark Cave [1/2160] | mbbs
+```
+
+The board has no wording for the end of a rest. The prompt is the only
+signal, so the word is tracked on every prompt and disappears the moment
+the board stops painting it.
+
 Tracking needs the room database. The path comes from `[farm].content`
 when the profile has one, else the same default `mmc path` uses; without
 it the bar shows the name alone, as it always did.

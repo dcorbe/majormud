@@ -1061,6 +1061,9 @@ pub fn render_status(
     if let Some(ma) = state.mana {
         s.push_str(&format!(" MA {ma}"));
     }
+    if let Some(status) = &state.status {
+        s.push_str(&format!(" ({})", status.word()));
+    }
     if let Some(room) = &state.room {
         s.push_str(&format!(" | {}", room.name));
         if let Some(id) = room_id.last_known() {

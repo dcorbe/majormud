@@ -1,7 +1,7 @@
 //! Pure-logic tests for the interactive client: line editor and status
 //! bar rendering. The terminal loop itself is thin glue over these.
 
-use mud_client::events::RoomView;
+use mud_client::events::{RoomView, Status};
 use mud_client::lost::Fix;
 use mud_client::session::GameState;
 use mud_client::tui::{InputEditor, render_status};
@@ -899,4 +899,20 @@ fn a_job_ending_with_the_assist_off_pokes_nothing() {
     let at = RoomId { map: 1, room: 2226 };
     let done = Phase::Done { why: "arrived at 1/2226".into(), at: Some(at) };
     assert_eq!(handover_actions(&done, false), Vec::<String>::new());
+}
+
+#[test]
+fn status_line_shows_the_prompt_status_after_the_vitals() {
+    let state = GameState {
+        hp: 42,
+        mana: Some(12),
+        room: None,
+        status: Some(Status::Resting),
+    };
+    let s = render_status(&state, "mbbs", None, Fix::Unknown, None, None, false, 80);
+    assert!(s.contains("HP 42 MA 12 (Resting)"), "{s}");
+
+    let bare = GameState { status: None, ..state };
+    let s = render_status(&bare, "mbbs", None, Fix::Unknown, None, None, false, 80);
+    assert!(!s.contains("("), "{s}");
 }
