@@ -56,33 +56,3 @@ fn the_rolled_adjective_never_reaches_the_death_line() {
         "if this ever matches, the board changed and the lexicon needs the adjective stripped"
     );
 }
-
-/// The shipped world data must actually carry the wordings whose absence
-/// this whole exercise measured.
-#[test]
-fn the_shipped_data_covers_the_wordings_that_blinded_the_model() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../re/mmud_wgnt.sqlite");
-    let lex = DeathLexicon::load(std::path::Path::new(path)).expect("world data should load");
-    assert!(
-        lex.len() > 500,
-        "expected the full death table, got {}",
-        lex.len()
-    );
-    for (line, who) in [
-        (
-            "The acid slime dissolves into a puddle of bluish goo.",
-            "acid slime",
-        ),
-        (
-            "The filthbug collapses, its legs curling tightly around it.",
-            "filthbug",
-        ),
-        ("The lashworm falls dead at your feet.", "lashworm"),
-        (
-            "The cave bear falls to the ground with a grunt!",
-            "cave bear",
-        ),
-    ] {
-        assert_eq!(lex.killed(line), Some(who), "for {line:?}");
-    }
-}

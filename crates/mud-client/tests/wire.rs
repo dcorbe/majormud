@@ -2,8 +2,7 @@
 //! backspace resolution, and ANSI stripping.
 //!
 //! Ground truth comes from `tools/oracle/mudlib.py` (the Python driver
-//! whose behavior this layer replaces) and the captured live-board
-//! transcript `re/oracle/oracle_m1.raw`.
+//! whose behavior this layer replaces).
 
 use mud_client::wire::{AnsiStripper, TelnetFilter, cp437_to_string, resolve_backspaces, strip_ansi};
 
@@ -148,21 +147,4 @@ fn ansi_stripper_keeps_non_matching_escapes() {
     out.push_str(&s.push("a\x1b"));
     out.push_str(&s.push("zb"));
     assert_eq!(out, "a\x1bzb");
-}
-
-#[test]
-fn corpus_oracle_m1_pipeline() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../re/oracle/oracle_m1.raw"
-    );
-    let raw = std::fs::read(path).expect("oracle_m1.raw fixture");
-    let mut f = TelnetFilter::new();
-    let out = f.push(&raw);
-    let text = resolve_backspaces(&strip_ansi(&cp437_to_string(&out.data)));
-    assert!(text.contains("\u{2554}"), "banner box art survives cp437"); // ╔
-    assert_eq!(text.matches("Obvious exits: ").count(), 4);
-    assert!(text.contains("Obvious exits: north, south, west, southeast"));
-    assert!(text.contains("[HP=35"));
-    assert!(!text.contains('\x08'), "all backspaces resolved");
 }

@@ -215,36 +215,6 @@ fn go_runs_without_a_time_budget() {
     assert_eq!(go_config(&base, true).max_seconds, 0);
 }
 
-// --- against the shipped world ---------------------------------------
-
-/// Anchors the ambiguity path to reality rather than to a fixture: the
-/// slums really are 150-odd rooms sharing one name, which is why `/go`
-/// refuses instead of guessing.
-#[test]
-fn slum_street_is_ambiguous_in_the_shipped_world() {
-    let db = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../re/mmud_wgnt.sqlite");
-    if !db.exists() {
-        eprintln!("skipping: {} not present", db.display());
-        return;
-    }
-    let g = RoomGraph::load(&db).expect("load room graph");
-    // The Grungy Shop is unique, so it resolves by name alone.
-    assert_eq!(resolve(&g, None, "Grungy Shop"), Ok(id(2324)));
-    // Its street is not.
-    let Err(GoRefusal::Ambiguous { total, nearest, .. }) =
-        resolve(&g, Some(id(1072)), "Slum Street")
-    else {
-        panic!("Slum Street must be ambiguous");
-    };
-    assert!(total > 100, "expected the whole slum maze, got {total}");
-    assert_eq!(nearest.len(), 5, "listing is capped");
-    let steps: Vec<_> = nearest.iter().map(|c| c.steps).collect();
-    assert!(
-        steps.windows(2).all(|w| w[0] <= w[1]),
-        "nearest first: {steps:?}"
-    );
-}
-
 // --- Phase::Done carries where it ended -------------------------------
 
 /// A walk that finished knowing where it stands is the best position

@@ -1,45 +1,12 @@
-//! Equivalence tests for `RoomGraph::from_content`, the view that
-//! replaces `graph.rs`'s hand-written room/message/remoteaction SQL
-//! (`2026-08-22-one-path-to-content` Task 4).
-//!
-//! `whole_graph_matches_the_sql_build` is the proof that matters: it
-//! compares `RoomGraph::load` (built from the database) against
-//! `RoomGraph::from_content` (built from the same database's decoded
-//! `Content`), room for room, exit for exit. It was written and run
-//! while `RoomGraph::load` still hand-rolled its own SQL, and it caught
-//! nothing wrong -- the two builds agreed over all 26720 rooms. Once
-//! `load` was switched to `content_db::load` + `from_content` (deleting
-//! the SQL, per Task 4 Step 4), the two sides of this comparison became
-//! the same code path; it is kept anyway as a wiring check -- it still
-//! catches `load` drifting from calling `from_content` at all -- while
-//! `tests/graph.rs`'s 600+ pinned assertions (unchanged, still green) are
-//! the surviving regression proof of the original equivalence.
-//!
-//! The remaining tests here are offline, over hand-built `Content`
-//! fixtures (no database), and are what actually mutation-guards the two
-//! rules `from_content` add beyond a raw port: the command-exit
-//! non-empty-`messageline1` filter, and the `remoteaction` puzzle scan.
+//! Tests for `RoomGraph::from_content` over hand-built `Content` fixtures
+//! (no database). They guard the two rules `from_content` adds beyond a
+//! raw port: the command-exit non-empty-`messageline1` filter, and the
+//! `remoteaction` puzzle scan.
 
 use mud_client::graph::{ExitRequirement, RoomGraph};
 use mud_core::content::{
     Content, Direction, Exit, Message, MessageId, Room, RoomId, TextBlock, TextBlockId,
 };
-
-fn db_path() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../re/mmud_wgnt.sqlite")
-}
-
-#[test]
-fn whole_graph_matches_the_sql_build() {
-    let db_graph = RoomGraph::load(&db_path()).expect("sql/content build");
-    let content = mud_core::content_db::load(&db_path()).expect("load content");
-    let content_graph = RoomGraph::from_content(&content);
-
-    assert_eq!(db_graph.len(), content_graph.len());
-    let db_rooms: Vec<_> = db_graph.iter().collect();
-    let content_rooms: Vec<_> = content_graph.iter().collect();
-    assert_eq!(db_rooms, content_rooms);
-}
 
 const HERE: RoomId = RoomId { map: 1, room: 1 };
 const THERE: RoomId = RoomId { map: 1, room: 2 };

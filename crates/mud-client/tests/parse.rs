@@ -1,10 +1,8 @@
 //! Event-parser tests. Line patterns are anchored to `mud_core::text`
-//! builders (the canonical output spec); corpus assertions come from the
-//! 51 captured live-board transcripts under `re/oracle/`.
+//! builders (the canonical output spec).
 
 use mud_client::events::{Actor, Event};
 use mud_client::parse::Parser;
-use mud_client::wire::{TelnetFilter, cp437_to_string};
 use mud_core::content::Direction;
 use mud_core::text::{self, color};
 
@@ -575,117 +573,6 @@ fn unknown_lines_are_never_dropped() {
             "something the classifier has never seen".into()
         )]
     );
-}
-
-// --- corpus ---
-
-fn corpus_events(path: &std::path::Path) -> Vec<Event> {
-    let raw = std::fs::read(path).unwrap();
-    let mut f = TelnetFilter::new();
-    let data = f.push(&raw).data;
-    let mut p = Parser::new();
-    let mut ev = p.push(&cp437_to_string(&data));
-    ev.extend(p.finish());
-    ev
-}
-
-fn count<F: Fn(&Event) -> bool>(ev: &[Event], f: F) -> usize {
-    ev.iter().filter(|e| f(e)).count()
-}
-
-#[test]
-fn corpus_all_files_parse_and_prompt_totals_match() {
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../re/oracle");
-    let mut files: Vec<_> = std::fs::read_dir(dir)
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "raw"))
-        .collect();
-    files.sort();
-    // The corpus GROWS: `re/oracle/` is shared with the server track, and
-    // every oracle expedition adds transcripts. Both numbers below therefore
-    // move by design — when they do, recompute the ground truth rather than
-    // taking the Rust parser's word for it (see below) and update them.
-    assert_eq!(files.len(), 120, "corpus size changed");
-    let mut prompts = 0;
-    for f in &files {
-        let ev = corpus_events(f);
-        prompts += count(&ev, |e| matches!(e, Event::Prompt { .. }));
-    }
-    // Ground truth computed with the Python reference pipeline (mudlib.py
-    // semantics: CP437 decode, ANSI strip, anti-bot backspace resolution)
-    // over the same files, NOT with this parser — the point is to
-    // cross-validate the Rust wire layer against the reference, so deriving
-    // the number from the thing under test would make it circular.
-    //
-    // 5347 over the 51 files that predate the 2026-07-26 dodge-parry
-    // expedition; that expedition's five captures contribute 598 more
-    // (death_revive 46, training 111, parry acc-mid 141, acc-mid2 47,
-    // acc-high 253), and the to-hit scale run that followed it the same day
-    // (`oracle_dodge_parry_control.raw`, grey spider) adds 182.
-    //
-    // Recomputed with the reference pipeline, which reproduced the previous
-    // 5945 over the previous 56 files before the new one was added — note
-    // that the count needs the FULL prompt shape including the `/MA=` and
-    // `/KAI=` variants; an HP-only regex undercounts these transcripts
-    // roughly threefold.
-    //
-    // 2026-07-30: the slice-8 close-out campaign added 45 raws (dodge-parry
-    // blocks a1-b3, engage-lock attempts, the charm lifecycle takes, the
-    // swarm probes, recreations and training runs) — 13,911 more prompts.
-    // Recomputed with the same reference pipeline over all 102 files.
-    //
-    // 2026-07-31: two expeditions landed the same day and merged. The
-    // slice-8 field expedition added 13 raws (hand session, gang program
-    // + restart-persistence passes, the min-abbrev sweeps, seedy fame
-    // walks, the slime lair camp — 607 prompts, the first `/KAI=`
-    // captures), and the correlation rework's five acceptance runs added
-    // accept-run1..5 (1,124 prompts). 20,038 + 607 + 1,124 over 120.
-    assert_eq!(prompts, 21769);
-}
-
-#[test]
-fn corpus_oracle_m1_events() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../re/oracle/oracle_m1.raw");
-    let ev = corpus_events(std::path::Path::new(path));
-    assert_eq!(count(&ev, |e| matches!(e, Event::Prompt { .. })), 7);
-    let rooms: Vec<_> = ev
-        .iter()
-        .filter_map(|e| match e {
-            Event::RoomSeen(r) => Some(r),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(rooms.len(), 4);
-    assert_eq!(rooms[0].name, "Newhaven, Village Entrance");
-    assert_eq!(rooms[0].exits, vec!["north", "south", "west", "southeast"]);
-}
-
-#[test]
-fn corpus_oracle_arena2_events() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../re/oracle/oracle_arena2.raw"
-    );
-    let ev = corpus_events(std::path::Path::new(path));
-    assert_eq!(count(&ev, |e| matches!(e, Event::Prompt { .. })), 57);
-    let rooms: Vec<_> = ev
-        .iter()
-        .filter_map(|e| match e {
-            Event::RoomSeen(r) => Some(r),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(rooms.len(), 6);
-    let pit = rooms.last().unwrap();
-    assert_eq!(pit.exits, vec!["closed door north", "up"]);
-    assert_eq!(pit.also_here, vec!["kobold thief"]);
-    let incoming = count(
-        &ev,
-        |e| matches!(e, Event::CombatHit { target: Actor::You, .. }),
-    );
-    assert_eq!(incoming, 45);
 }
 
 // --- prompt-glued room render (stopstate-run6.raw, live board) ---

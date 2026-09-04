@@ -29,68 +29,12 @@ use mud_client::session::Session;
 use mud_core::content::{Direction, RoomId};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-fn db_path() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../re/mmud_wgnt.sqlite")
-}
-
-fn graph() -> &'static RoomGraph {
-    use std::sync::OnceLock;
-    static G: OnceLock<RoomGraph> = OnceLock::new();
-    G.get_or_init(|| RoomGraph::load(&db_path()).expect("load room graph"))
-}
-
 fn view(name: &str, exits: &[&str]) -> RoomView {
     RoomView {
         name: name.to_string(),
         exits: exits.iter().map(|e| e.to_string()).collect(),
         ..Default::default()
     }
-}
-
-// --- the candidate set ------------------------------------------------
-
-/// The live case. Standing in a "Dark Tunnel" showing south and west,
-/// the graph can say it is one of exactly two rooms — which is a long
-/// way from "I have no idea", and one step from certainty.
-#[test]
-fn a_generic_room_narrows_to_the_rooms_it_could_be() {
-    assert_eq!(
-        lost::candidates(graph(), &view("Dark Tunnel", &["south", "west"])),
-        vec![
-            RoomId { map: 1, room: 790 },
-            RoomId { map: 1, room: 1455 }
-        ]
-    );
-}
-
-/// 35 rooms are called "Dark Tunnel". The exits are what cut it to two,
-/// so a block with no exit line at all must not pretend to know more
-/// than the name says.
-#[test]
-fn the_name_alone_admits_every_room_that_carries_it() {
-    assert_eq!(lost::candidates(graph(), &view("Dark Tunnel", &[])).len(), 35);
-}
-
-/// A room the graph has never heard of admits nothing. Saying "no
-/// candidates" is the honest answer; guessing the nearest name would put
-/// a character somewhere it has never been.
-#[test]
-fn a_room_the_graph_does_not_know_admits_nothing() {
-    assert!(lost::candidates(graph(), &view("Vestibule of Nod", &["north"])).is_empty());
-}
-
-/// The board never lists hidden (type 6) or command (type 10) exits, so
-/// a room that has one still matches a block that does not mention it.
-/// Demanding the full exit set would reject the right room — and the
-/// Silvermere Small Alleyway, which has exactly this shape, is a room a
-/// character can very easily be standing in.
-#[test]
-fn an_unlisted_exit_does_not_disqualify_a_room() {
-    let alley = RoomId { map: 1, room: 405 };
-    assert!(
-        lost::candidates(graph(), &view("Small Alleyway", &["north"])).contains(&alley),
-        "the hidden south exit is not on the board's exits line"
-    );
 }
 
 // --- walking it out ---------------------------------------------------

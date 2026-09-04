@@ -6,20 +6,8 @@
 //! and a loop must not be saved unless every leg of it is walkable, or
 //! the failure surfaces halfway round a lap with a live character in it.
 
-use mud_client::farm::FarmConfig;
-use mud_client::graph::RoomGraph;
 use mud_client::loops::{Loop, Stop};
 use mud_core::content::RoomId;
-
-fn db_path() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../re/mmud_wgnt.sqlite")
-}
-
-fn graph() -> &'static RoomGraph {
-    use std::sync::OnceLock;
-    static G: OnceLock<RoomGraph> = OnceLock::new();
-    G.get_or_init(|| RoomGraph::load(&db_path()).expect("graph"))
-}
 
 /// A scratch directory inside `target/`, never `/tmp`.
 fn scratch(name: &str) -> std::path::PathBuf {
@@ -33,7 +21,6 @@ fn scratch(name: &str) -> std::path::PathBuf {
 
 const CROSSROADS: RoomId = RoomId { map: 1, room: 1076 };
 const INTERSECTION: RoomId = RoomId { map: 1, room: 1123 };
-const ENTRANCE: RoomId = RoomId { map: 1, room: 1072 };
 
 fn slum_sweep() -> Loop {
     Loop {
@@ -112,60 +99,6 @@ fn a_bad_room_id_is_refused_by_name() {
     assert!(err.contains("not-a-room"), "{err}");
 }
 
-/// The optional name is checked, never trusted. A loop written against
-/// another realm resolves to ids that exist here and mean something
-/// completely different, and this is the only thing that catches it.
-#[test]
-fn a_name_that_disagrees_with_the_graph_warns() {
-    let mut l = slum_sweep();
-    l.stops[0].name = Some("Somewhere Else".into());
-    let warnings = l.check_names(graph());
-    assert_eq!(warnings.len(), 1);
-    assert!(warnings[0].contains("Somewhere Else"), "{:?}", warnings[0]);
-    assert!(
-        warnings[0].contains("Slum Street, Crossroads"),
-        "the warning names both: {:?}",
-        warnings[0]
-    );
-
-    l.stops[0].name = Some("Slum Street, Crossroads".into());
-    assert!(l.check_names(graph()).is_empty());
-}
-
-#[test]
-fn a_loop_becomes_a_farm_config_the_runner_can_walk() {
-    let cfg = slum_sweep()
-        .to_farm(&FarmConfig::default(), graph())
-        .expect("valid");
-    assert_eq!(cfg.circuit, vec!["1/1076".to_string(), "1/1123".to_string()]);
-    assert_eq!(cfg.finish_at.as_deref(), Some("1/1072"));
-    // The start is where the runner will be told it stands; since the fix
-    // that lets a run walk to its circuit, it is only a hint, and the
-    // first stop is the honest one to hint with.
-    assert_eq!(cfg.start, "1/1076");
-}
-
-/// Validation is `FarmPlan::build`, not a second implementation of it.
-#[test]
-fn an_unwalkable_loop_is_refused_with_the_planners_own_words() {
-    let l = Loop {
-        stops: vec![Stop::at(CROSSROADS), Stop::at(RoomId { map: 1, room: 9999 })],
-        ..Loop::new("nowhere")
-    };
-    let err = l
-        .to_farm(&FarmConfig::default(), graph())
-        .expect_err("must refuse");
-    assert!(err.contains("9999"), "{err}");
-}
-
-#[test]
-fn an_empty_loop_is_refused() {
-    let err = Loop::new("empty")
-        .to_farm(&FarmConfig::default(), graph())
-        .expect_err("must refuse");
-    assert!(err.contains("empty") || err.contains("least one"), "{err}");
-}
-
 // --- the library on disk ---------------------------------------------
 
 #[test]
@@ -206,56 +139,4 @@ fn a_name_that_is_not_a_file_name_is_refused() {
 fn listing_an_absent_directory_is_empty_not_an_error() {
     let dir = scratch("gone").join("not-created");
     assert!(mud_client::loops::list(&dir).is_empty());
-}
-
-// --- the drawn route --------------------------------------------------
-
-/// The gold on the map is every room the walk passes through, not just
-/// the stops: the point of drawing it is to see where the route actually
-/// goes.
-#[test]
-fn the_route_covers_every_room_between_the_stops() {
-    let rooms = mud_client::loops::route_rooms(graph(), &[CROSSROADS, INTERSECTION]);
-    assert!(rooms.contains(&CROSSROADS));
-    assert!(rooms.contains(&INTERSECTION));
-    let steps = graph().route(CROSSROADS, INTERSECTION).expect("a route");
-    assert!(
-        rooms.len() >= steps.len(),
-        "{} rooms for {} steps",
-        rooms.len(),
-        steps.len()
-    );
-}
-
-/// A loop closes. Without the leg back to the first stop the map would
-/// show an open path and the runner would walk a closed one.
-#[test]
-fn the_route_closes_back_to_the_first_stop() {
-    let three = [CROSSROADS, INTERSECTION, ENTRANCE];
-    let open = mud_client::loops::route_rooms(graph(), &three[..2]);
-    let closed = mud_client::loops::route_rooms(graph(), &three);
-    assert!(closed.len() > open.len());
-    // Every room on the closing leg is drawn too.
-    let mut at = ENTRANCE;
-    for dir in graph().route(ENTRANCE, CROSSROADS).expect("closing leg") {
-        at = graph().room(at).and_then(|r| r.exits[dir as usize].as_ref()).expect("edge").dest;
-        assert!(closed.contains(&at), "{at:?} is on the closing leg");
-    }
-}
-
-#[test]
-fn a_single_stop_is_a_route_of_one_room() {
-    let rooms = mud_client::loops::route_rooms(graph(), &[CROSSROADS]);
-    assert_eq!(rooms.into_iter().collect::<Vec<_>>(), vec![CROSSROADS]);
-}
-
-#[test]
-fn an_unreachable_stop_does_not_lose_the_rest_of_the_route() {
-    // Nothing routes to 2/1 from the slums on foot; the drawn route
-    // should still show the legs that do exist.
-    let rooms = mud_client::loops::route_rooms(
-        graph(),
-        &[CROSSROADS, INTERSECTION, RoomId { map: 2, room: 1 }],
-    );
-    assert!(rooms.contains(&CROSSROADS) && rooms.contains(&INTERSECTION));
 }

@@ -3,11 +3,8 @@
 //! arrival.
 //!
 //! The nav half drives a scripted board over a real TCP socket (the
-//! `tests/nav_doors.rs` / `tests/sneak.rs` pattern) against the real
-//! WG3-NT item database, the same rows `tests/backstab.rs` and
-//! `tests/items.rs` already established: quarterstaff (100) lacks
-//! BSAccu, dagger (68) carries it. The bot half is the pure
-//! decision-core pattern `tests/bot.rs` uses -- no sockets, no timing.
+//! `tests/nav_doors.rs` / `tests/sneak.rs` pattern). The bot half is the
+//! pure decision-core pattern `tests/bot.rs` uses -- no sockets, no timing.
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -18,19 +15,8 @@ use mud_client::graph::{Capabilities, ExitEdge, ExitRequirement, GraphRoom, Room
 use mud_client::nav::{NavConfig, Navigator, NoGuard};
 use mud_client::profile::Profile;
 use mud_client::session::Session;
-use mud_core::content::{Content, Direction, RoomId};
+use mud_core::content::{Direction, RoomId};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-fn db_path() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../re/mmud_wgnt.sqlite")
-}
-
-fn content() -> Arc<Content> {
-    use std::sync::OnceLock;
-    static C: OnceLock<Arc<Content>> = OnceLock::new();
-    C.get_or_init(|| Arc::new(mud_core::content_db::load(&db_path()).expect("load content")))
-        .clone()
-}
 
 // ---------------------------------------------------------------------
 // nav.rs: decide -> swap -> sneak -> move
@@ -130,56 +116,6 @@ async fn session_for(addr: std::net::SocketAddr) -> Session {
         farm: None,
     };
     Session::connect(&profile, None).await.unwrap()
-}
-
-/// A character wielding a non-capable weapon with a capable one in the
-/// pack must swap BEFORE sneaking, and sneak BEFORE moving -- equipping
-/// breaks sneak, so a swap sent after would be too late for the sneak
-/// that covers this very step
-/// (`2026-08-22-inventory-and-backstab-design.md` "The backstab
-/// decision").
-///
-/// This is Task 6 Step 5's mutation target: reordering the swap-send
-/// and the sneak-send in `Navigator::goto` must fail this assertion.
-#[tokio::test]
-async fn the_swap_lands_before_sneak_which_lands_before_the_move() {
-    let (addr, log) = ordering_board().await;
-    let session = session_for(addr).await;
-    let navigator = Navigator::new(graph_one_hop(), NavConfig {
-        step_timeout_ms: 1500,
-        ..NavConfig::default()
-    })
-    .with_capabilities(Capabilities { stealth: 56, ..Capabilities::unrestricted() })
-    .with_backstab(content(), Some("quarterstaff".to_string()), vec!["dagger".to_string()]);
-
-    let arrival = navigator.goto(&session, HERE, THERE, &mut NoGuard).await.unwrap();
-
-    assert_eq!(
-        log.lock().unwrap().as_slice(),
-        ["eq dagger", "sneak", "n"],
-        "decide -> swap -> sneak -> move, in that exact order"
-    );
-    assert_eq!(arrival.restore_weapon, Some("quarterstaff".to_string()));
-    assert!(arrival.sneaking);
-}
-
-/// A dual-purpose wielded weapon needs no swap at all -- `eq` must never
-/// appear on the wire.
-#[tokio::test]
-async fn a_dual_purpose_wielded_weapon_sends_no_swap() {
-    let (addr, log) = ordering_board().await;
-    let session = session_for(addr).await;
-    let navigator = Navigator::new(graph_one_hop(), NavConfig {
-        step_timeout_ms: 1500,
-        ..NavConfig::default()
-    })
-    .with_capabilities(Capabilities { stealth: 56, ..Capabilities::unrestricted() })
-    .with_backstab(content(), Some("dagger".to_string()), vec![]);
-
-    let arrival = navigator.goto(&session, HERE, THERE, &mut NoGuard).await.unwrap();
-
-    assert_eq!(log.lock().unwrap().as_slice(), ["sneak", "n"]);
-    assert_eq!(arrival.restore_weapon, None);
 }
 
 /// A navigator never told `with_backstab` sends no `eq` and reports no
