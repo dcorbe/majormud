@@ -224,3 +224,28 @@ async fn the_game_state_follows_the_prompt_status() {
     state_reaches(&mut state, "standing at 30", |s| s.hp == 30 && s.status.is_none()).await;
     state_reaches(&mut state, "standing at 31", |s| s.hp == 31).await;
 }
+
+/// A board whose HP rises between two prompts, then rests.
+async fn regen_board() -> std::net::SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        sock.write_all(b"\r\n[HP=30]:").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        sock.write_all(b"\r\n[HP=32]:").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        sock.write_all(b"\r\n[HP=32 (Resting) ]:").await.unwrap();
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    });
+    addr
+}
+
+#[tokio::test]
+async fn the_game_state_carries_the_tick_clock() {
+    let addr = regen_board().await;
+    let session = session_for(addr).await;
+    let mut state = session.state();
+    state_reaches(&mut state, "natural cycle anchored", |s| s.ticks.hp_natural.active()).await;
+    state_reaches(&mut state, "rest cycle running", |s| s.ticks.hp_rest.active()).await;
+}

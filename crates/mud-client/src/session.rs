@@ -90,6 +90,9 @@ pub struct GameState {
     /// nothing. Tracked on every prompt, because the board has no
     /// wording for the end of a rest. The prompt is the only signal.
     pub status: Option<crate::events::Status>,
+    /// The board's round and regen cycles, inferred from what arrives.
+    /// See [`crate::world::TickClock`].
+    pub ticks: crate::world::TickClock,
 }
 
 #[derive(Debug)]
@@ -528,8 +531,9 @@ impl Session {
                         // awaits.
                         let mut guard = correlator.lock().expect("correlator lock");
                         for ev in batch {
-                            let cor = guard.on_event(ev, Instant::now());
-                            state_tx.send_if_modified(|s| apply_event(s, &cor));
+                            let now = Instant::now();
+                            let cor = guard.on_event(ev, now);
+                            state_tx.send_if_modified(|s| apply_event(s, &cor, now));
                             feed_purse(&purse, &cor);
                             feed_stats(&stats, &cor);
                             feed_contents(&contents, &equipment, &cor);
@@ -551,8 +555,9 @@ impl Session {
                 if !tail.is_empty() {
                     let mut guard = correlator.lock().expect("correlator lock");
                     for ev in tail {
-                        let cor = guard.on_event(ev, Instant::now());
-                        state_tx.send_if_modified(|s| apply_event(s, &cor));
+                        let now = Instant::now();
+                        let cor = guard.on_event(ev, now);
+                        state_tx.send_if_modified(|s| apply_event(s, &cor, now));
                         feed_purse(&purse, &cor);
                         feed_stats(&stats, &cor);
                         feed_contents(&contents, &equipment, &cor);
@@ -1029,8 +1034,11 @@ pub fn drain(events: &mut broadcast::Receiver<Correlated>, mut seen: impl FnMut(
 }
 
 /// Fold an event into the rolling state; returns whether it changed.
-fn apply_event(state: &mut GameState, cor: &Correlated) -> bool {
-    match &cor.event {
+fn apply_event(state: &mut GameState, cor: &Correlated, now: Instant) -> bool {
+    let ticks_before = state.ticks.clone();
+    state.ticks.on_event(cor, now);
+    let ticked = state.ticks != ticks_before;
+    let changed = match &cor.event {
         Event::Prompt { hp, mana, status } => {
             let changed =
                 state.hp != *hp || state.mana != *mana || state.status != *status;
@@ -1046,11 +1054,12 @@ fn apply_event(state: &mut GameState, cor: &Correlated) -> bool {
             // list — so adopting a peek would both walk the client's
             // position and report the neighbour's occupants as present.
             if cor.elsewhere {
-                return false;
+                return ticked;
             }
             state.room = Some(room.clone());
             true
         }
         _ => false,
-    }
+    };
+    changed || ticked
 }
