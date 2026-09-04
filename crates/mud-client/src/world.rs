@@ -458,6 +458,17 @@ pub struct Pile {
     /// character cannot carry (encumbrance refusal) stays listed in
     /// every block forever, so an unbounded work item would never drain.
     pub tries: u32,
+    /// A `get` has gone out since the floor last said this pile was
+    /// there, and nothing has answered it yet. The acknowledgement
+    /// removes the pile; a block that lists it again, or a second drop
+    /// onto it, clears this and makes it work once more.
+    ///
+    /// Without it the runner asked twice for every pile (live,
+    /// 2026-09-04): the gate acks on the `get`'s ECHO, the verdict ran
+    /// on that same event, and the "You picked up" line one event
+    /// behind it had not folded yet. `tries` alone cannot tell "asked
+    /// and unanswered" from "asked and refused", and the cap is three.
+    pub asked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -726,6 +737,7 @@ impl Here {
                             count,
                             since: prior.map_or(now, |p| p.since),
                             tries: prior.map_or(0, |p| p.tries),
+                            asked: false,
                             denom,
                         }
                     })
@@ -767,12 +779,18 @@ impl Here {
                     match self.piles.iter_mut().find(|p| p.denom == denom) {
                         // A second kill onto the same floor: the board
                         // renders one merged pile, so the counts add.
-                        Some(pile) => pile.count += count,
+                        // Fresh coins are fresh evidence, whatever
+                        // became of a get already out.
+                        Some(pile) => {
+                            pile.count += count;
+                            pile.asked = false;
+                        }
                         None => self.piles.push(Pile {
                             denom,
                             count,
                             since: now,
                             tries: 0,
+                            asked: false,
                         }),
                     }
                     return;
@@ -859,25 +877,27 @@ impl Here {
         self.seeded.is_some()
     }
 
-    /// A pile still worth a `get`: on the floor, and under the attempt
-    /// cap.
+    /// A pile still worth a `get`: on the floor, under the attempt
+    /// cap, and not already asked for since the floor last listed it.
     ///
     /// Derived, never queued. Work that lives in a `Vec<WorkItem>` has
     /// to be kept in step with the world by whoever mutates it, and the
     /// floor is already modelled — asking it a question costs nothing
     /// and cannot go stale on its own.
     pub fn unswept(&self, cap: u32) -> Option<&Pile> {
-        self.piles.iter().find(|p| p.tries < cap)
+        self.piles.iter().find(|p| p.tries < cap && !p.asked)
     }
 
     /// Record that a `get` went out for this denomination. Called by
     /// whoever sends it, so the try cap counts ATTEMPTS rather than
     /// blocks — an encumbrance refusal produces neither an
     /// acknowledgement nor a change in the render, and counting either
-    /// of those would never terminate.
+    /// of those would never terminate. The pile stops being work until
+    /// the next block lists it again (see [`Pile::asked`]).
     pub fn note_get_attempt(&mut self, denom: &str) {
         if let Some(pile) = self.piles.iter_mut().find(|p| p.denom == denom) {
             pile.tries += 1;
+            pile.asked = true;
         }
     }
 

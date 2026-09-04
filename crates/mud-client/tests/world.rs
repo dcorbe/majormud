@@ -803,14 +803,40 @@ fn an_unswept_pile_is_work_until_the_cap() {
 
     // A `get` the board neither acknowledged nor refused visibly: the
     // pile is listed by every block and the count never terminates, so
-    // the ATTEMPTS do.
+    // the ATTEMPTS do. Each attempt waits for the block that lists the
+    // pile again -- a get already out is not work until something new
+    // says the pile is still there.
     here.note_get_attempt("silver");
-    assert!(here.unswept(2).is_some(), "one try of two");
+    assert!(here.unswept(2).is_none(), "a get is out and nothing has answered it");
+    let relisted = answering(Event::RoomSeen(view_with_loot(&["11 silver nobles"])), CmdId(1));
+    here.on_event(&relisted, now);
+    assert!(here.unswept(2).is_some(), "one try of two, and the block lists it again");
     here.note_get_attempt("silver");
+    here.on_event(&relisted, now);
     assert!(
         here.unswept(2).is_none(),
         "a pile the character cannot carry must stop being work"
     );
+}
+
+/// A second kill onto the same floor merges into the listed pile and
+/// is new evidence there are coins to take, whatever became of the
+/// get already out.
+#[test]
+fn a_fresh_drop_puts_a_pile_with_a_get_out_back_to_work() {
+    let now = Instant::now();
+    let mut here = Here::default();
+    here.on_event(
+        &unsolicited(Event::Line("11 silver drop to the ground.".into())),
+        now,
+    );
+    here.note_get_attempt("silver");
+    assert!(here.unswept(2).is_none());
+    here.on_event(
+        &unsolicited(Event::Line("3 silver drop to the ground.".into())),
+        now,
+    );
+    assert_eq!(here.unswept(2).map(|p| p.count), Some(14));
 }
 
 /// The acknowledgement takes it off the floor outright, whatever the

@@ -1204,6 +1204,14 @@ fn block(also_here: &[&str]) -> Event {
     block_named(STOP, also_here)
 }
 
+/// The stop's block with coins on the floor and nobody standing there.
+fn block_with_loot(items: &[&str]) -> Event {
+    Event::RoomSeen(RoomView {
+        items: items.iter().map(|s| s.to_string()).collect(),
+        ..view_named(STOP, &[])
+    })
+}
+
 /// The id every test look goes out under. `pending_look` clears on each
 /// accepted answer, so reusing one id across sequential asks is safe.
 const LOOK_ID: CmdId = CmdId(77);
@@ -1538,8 +1546,51 @@ fn a_pile_at_the_try_cap_releases_the_stop() {
             }
         );
         w.here.note_get_attempt("silver");
+        // Refused without a word, and the next block lists it again.
+        w.look_and_see(&block_with_loot(&["11 silver nobles"]), t0);
     }
     assert_eq!(w.verdict(t0), Verdict::Empty, "the budget drained");
+}
+
+/// Every pile was fetched twice live (2026-09-04): the gate acks on
+/// the ECHO of `get silver`, the next verdict ran on that same event,
+/// and the "You picked up" line one event behind it had not folded
+/// yet. The pile still read as work, a second `get` went out, and the
+/// board answered it "You don't see any silver nobles" a full pace
+/// later. One wasted round per pile, on every kill.
+///
+/// A `get` that has gone out is not work again until something new
+/// says the pile is still there. The acknowledgement takes it off the
+/// floor; a block that lists it again puts it back to work.
+#[test]
+fn a_pile_with_a_get_out_is_not_asked_for_again_on_the_echo() {
+    let t0 = Instant::now();
+    let mut w = Stop::new(combat_bot(), 0);
+    w.look_and_see(&block(&[]), t0);
+    w.feed(&Event::Line("2 silver drop to the ground.".into()), t0);
+    w.feed(&Event::Line("18 copper drop to the ground.".into()), t0);
+    assert_eq!(
+        w.verdict(t0),
+        Verdict::Loot {
+            denom: "silver".into()
+        }
+    );
+    w.here.note_get_attempt("silver");
+    // The echo, attributed to the get: the gate is idle again and the
+    // acknowledgement is still one event away.
+    w.fold(answering(Event::Line("get silver".into()), CmdId(78)), t0);
+    assert_eq!(
+        w.verdict(t0),
+        Verdict::Loot {
+            denom: "copper".into()
+        },
+        "the silver is spoken for; the copper is next"
+    );
+    w.here.note_get_attempt("copper");
+    w.feed(&Event::Line("You picked up 2 silver nobles".into()), t0);
+    w.fold(answering(Event::Line("get copper".into()), CmdId(79)), t0);
+    w.feed(&Event::Line("You picked up 18 copper farthings".into()), t0);
+    assert_eq!(w.verdict(t0), Verdict::Empty, "both swept, one get each");
 }
 
 /// The other half of `is_kill_line` names nobody, so the model cannot
