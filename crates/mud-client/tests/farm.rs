@@ -996,7 +996,7 @@ fn a_refused_template_no_longer_trips_the_sighting_guard() {
 #[test]
 fn a_threshold_above_the_departure_gate_is_refused() {
     let cfg = FarmConfig {
-        depart_at_percent: 80,
+        depart_at_percent: Some(80),
         interrupt_at_percent: 90,
         ..config("1/1", &["1/2"])
     };
@@ -1008,7 +1008,7 @@ fn a_threshold_above_the_departure_gate_is_refused() {
 #[test]
 fn a_threshold_at_the_departure_gate_is_allowed() {
     let cfg = FarmConfig {
-        depart_at_percent: 80,
+        depart_at_percent: Some(80),
         interrupt_at_percent: 80,
         ..config("1/1", &["1/2"])
     };
@@ -1019,7 +1019,7 @@ fn a_threshold_at_the_departure_gate_is_allowed() {
 #[test]
 fn a_disabled_departure_gate_constrains_nothing() {
     let cfg = FarmConfig {
-        depart_at_percent: 0,
+        depart_at_percent: Some(0),
         interrupt_at_percent: 101,
         ..config("1/1", &["1/2"])
     };

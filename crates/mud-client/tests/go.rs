@@ -171,14 +171,18 @@ fn walk_mode_fights_on_the_way_and_run_mode_does_not() {
     assert!(!go_config(&base, false).fight_while_travelling);
 }
 
-/// Inheriting the farm's 80% departure gate would have a post-death
-/// `/go` send `rest` and sit silently for up to `max_rest_seconds`
-/// before its first step — which is exactly when somebody types this.
+/// The walk rests to the bot's own mark, the same as a farm would.
+/// `go_config` always clears a farm's own mark rather than inheriting
+/// it: inheriting a stricter one would have a post-death `/go` send
+/// `rest` and sit silently for up to `max_rest_seconds` before its
+/// first step — which is exactly when somebody types this.
 #[test]
-fn go_never_waits_at_the_departure_gate() {
-    let base = FarmConfig::default();
-    assert_eq!(base.depart_at_percent, 80, "the farm's gate, for contrast");
-    assert_eq!(go_config(&base, true).depart_at_percent, 0);
+fn go_rests_to_the_bots_mark_not_the_farms() {
+    let base = FarmConfig {
+        depart_at_percent: Some(80),
+        ..FarmConfig::default()
+    };
+    assert_eq!(go_config(&base, true).depart_at_percent, None);
 }
 
 /// `open` is still tried and still free; this only stops a weaponless

@@ -172,14 +172,10 @@ pub fn resolve(graph: &RoomGraph, from: Option<RoomId>, typed: &str) -> Result<R
 pub fn go_config(base: &FarmConfig, walking: bool) -> FarmConfig {
     FarmConfig {
         fight_while_travelling: walking,
-        // A patrol should not set off wounded, so the farm waits at 80%.
-        // Travel is not a patrol: inheriting that gate would have a
-        // post-death `/go` send `rest` and sit silently for up to
-        // `max_rest_seconds` before taking its first step, which is
-        // exactly the moment somebody types this command.
-        // `interrupt_at_percent` still guards the leg once it is moving,
-        // and anyone who wants to rest first can type `rest`.
-        depart_at_percent: 0,
+        // The walk rests to the bot's mark like a farm does. A profile
+        // that wants the old instant start sets `rest_until_percent`
+        // to 0.
+        depart_at_percent: None,
         // `open` is tried first and costs nothing; `picklock` follows and
         // costs a command and no health, so nothing here needs to force
         // it off for an interactive walk. Whether it is ever attempted

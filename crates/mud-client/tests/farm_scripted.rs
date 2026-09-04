@@ -38,23 +38,30 @@ fn room_block(name: &str, also_here: Option<&str>, exits: &str) -> String {
 /// The prompt after a block is how HP reaches the client, so scenarios
 /// about the departure gate pick the number each block carries.
 fn room_block_hp(name: &str, also_here: Option<&str>, exits: &str, hp: i32) -> String {
-    room_block_vitals(name, also_here, exits, hp, 0)
+    room_block_vitals(name, also_here, exits, hp, 0, None)
 }
 
-/// As above, with a mana pool. The prompt is the only place mana ever
-/// reaches the client, so any scenario about casting has to carry it.
+/// As above, with a mana pool and an optional status word ("Meditating",
+/// "Resting") the way the board tacks one onto the prompt itself. The
+/// prompt is the only place mana or status ever reaches the client, so
+/// any scenario about casting or the departure gate has to carry them.
 fn room_block_vitals(
     name: &str,
     also_here: Option<&str>,
     exits: &str,
     hp: i32,
     mana: i32,
+    status: Option<&str>,
 ) -> String {
     let also = match also_here {
         Some(names) => format!("Also here: {names}.\r\n"),
         None => String::new(),
     };
-    format!("\r\n\x1b[1;36m{name}\r\n{also}Obvious exits: {exits}\r\n[HP={hp}/MA={mana}]:")
+    let status = match status {
+        Some(word) => format!(" ({word}) "),
+        None => String::new(),
+    };
+    format!("\r\n\x1b[1;36m{name}\r\n{also}Obvious exits: {exits}\r\n[HP={hp}/MA={mana}]:{status}")
 }
 
 /// A block with floor loot: the "You notice ... here." line rides
@@ -252,7 +259,7 @@ async fn a_monster_entering_mid_leg_is_fought_where_it_stands() {
         circuit: vec!["1/3".into()],
         loops: 1,
         idle_poke_ms: 500,
-        depart_at_percent: 0,
+        depart_at_percent: Some(0),
         // The hard pin: an entry is the farm noticing work, not an
         // emergency. If it touched the interrupt budget, this run
         // would end TooHurt instead of LoopsDone.
@@ -372,7 +379,7 @@ async fn a_rest_contested_by_an_arrival_defends_instead_of_dozing() {
         loops: 1,
         idle_poke_ms: 500,
         // The gate is ON: 80% of 30 = 24, and the character sits at 20.
-        depart_at_percent: 80,
+        depart_at_percent: Some(80),
         // Short leash so the BLIND failure mode (rest to the deadline,
         // then depart wounded past the rat) fails fast instead of
         // hanging the suite.
@@ -479,7 +486,7 @@ async fn a_pile_on_a_travel_leg_is_swept_without_losing_the_lap() {
         circuit: vec!["1/3".into()],
         loops: 1,
         idle_poke_ms: 500,
-        depart_at_percent: 0,
+        depart_at_percent: Some(0),
         travel_interrupts: 0,
         ..FarmConfig::default()
     };
@@ -579,7 +586,7 @@ async fn an_endless_stop_is_left_when_its_cap_expires() {
         circuit: vec!["1/2".into()],
         loops: 1,
         idle_poke_ms: 500,
-        depart_at_percent: 0,
+        depart_at_percent: Some(0),
         // The standoff needs a respawn budget to BE a standoff. Every
         // kill now empties the model outright, so with no budget the
         // stop would simply end -- correctly, on a farm that was told
@@ -707,7 +714,7 @@ async fn a_flee_rests_before_it_walks_back() {
         loops: 1,
         idle_poke_ms: 500,
         // 80% of 30 = 24: fit to depart at 30, not at 10.
-        depart_at_percent: 80,
+        depart_at_percent: Some(80),
         max_rest_seconds: 5,
         travel_interrupts: 0,
         ..FarmConfig::default()
@@ -797,13 +804,13 @@ async fn a_fight_below_the_spell_mark_is_healed_not_rested() {
         ),
         (
             "look",
-            format!("\r\nlook{}", room_block_vitals("Guard Post", None, "north", 30, 20)),
+            format!("\r\nlook{}", room_block_vitals("Guard Post", None, "north", 30, 20, None)),
         ),
         (
             "n",
             format!(
                 "\r\nn{}",
-                room_block_vitals("Inner Ward", Some("cave bear"), "south", 30, 20)
+                room_block_vitals("Inner Ward", Some("cave bear"), "south", 30, 20, None)
             ),
         ),
         // The arrival block names the bear and is attributed to the
@@ -832,7 +839,7 @@ async fn a_fight_below_the_spell_mark_is_healed_not_rested() {
             "look",
             format!(
                 "\r\nlook{}",
-                room_block_vitals("Inner Ward", None, "south", 27, 17)
+                room_block_vitals("Inner Ward", None, "south", 27, 17, None)
             ),
         ),
     ])
@@ -851,7 +858,7 @@ async fn a_fight_below_the_spell_mark_is_healed_not_rested() {
         circuit: vec!["1/2".into()],
         loops: 1,
         idle_poke_ms: 500,
-        depart_at_percent: 0,
+        depart_at_percent: Some(0),
         travel_interrupts: 0,
         ..FarmConfig::default()
     };
@@ -918,20 +925,20 @@ async fn below_the_flee_mark_it_runs_and_does_not_cast() {
         ),
         (
             "look",
-            format!("\r\nlook{}", room_block_vitals("Guard Post", None, "north", 30, 20)),
+            format!("\r\nlook{}", room_block_vitals("Guard Post", None, "north", 30, 20, None)),
         ),
         (
             "n",
             format!(
                 "\r\nn{}",
-                room_block_vitals("Inner Ward", Some("cave bear"), "south", 30, 20)
+                room_block_vitals("Inner Ward", Some("cave bear"), "south", 30, 20, None)
             ),
         ),
         (
             "look",
             format!(
                 "\r\nlook{}",
-                room_block_vitals("Inner Ward", Some("cave bear"), "south", 30, 20)
+                room_block_vitals("Inner Ward", Some("cave bear"), "south", 30, 20, None)
             ),
         ),
         // 5 of 30 is 16% — under the flee mark, and under the spell mark
@@ -944,7 +951,7 @@ async fn below_the_flee_mark_it_runs_and_does_not_cast() {
         ),
         (
             "south",
-            format!("\r\nsouth{}", room_block_vitals("Guard Post", None, "north", 5, 20)),
+            format!("\r\nsouth{}", room_block_vitals("Guard Post", None, "north", 5, 20, None)),
         ),
         (
             "rest",
@@ -952,11 +959,11 @@ async fn below_the_flee_mark_it_runs_and_does_not_cast() {
         ),
         (
             "n",
-            format!("\r\nn{}", room_block_vitals("Inner Ward", None, "south", 30, 20)),
+            format!("\r\nn{}", room_block_vitals("Inner Ward", None, "south", 30, 20, None)),
         ),
         (
             "look",
-            format!("\r\nlook{}", room_block_vitals("Inner Ward", None, "south", 30, 20)),
+            format!("\r\nlook{}", room_block_vitals("Inner Ward", None, "south", 30, 20, None)),
         ),
     ])
     .await;
@@ -974,7 +981,7 @@ async fn below_the_flee_mark_it_runs_and_does_not_cast() {
         circuit: vec!["1/2".into()],
         loops: 1,
         idle_poke_ms: 500,
-        depart_at_percent: 80,
+        depart_at_percent: Some(80),
         max_rest_seconds: 5,
         travel_interrupts: 0,
         ..FarmConfig::default()
@@ -1036,13 +1043,13 @@ async fn with_fleeing_off_the_flee_mark_does_not_suppress_the_cast() {
         ),
         (
             "look",
-            format!("\r\nlook{}", room_block_vitals("Guard Post", None, "north", 30, 20)),
+            format!("\r\nlook{}", room_block_vitals("Guard Post", None, "north", 30, 20, None)),
         ),
         (
             "n",
             format!(
                 "\r\nn{}",
-                room_block_vitals("Inner Ward", Some("cave bear"), "south", 30, 20)
+                room_block_vitals("Inner Ward", Some("cave bear"), "south", 30, 20, None)
             ),
         ),
         // 5 of 30 is 16%: below the spell mark, below rest, below flee.
@@ -1058,7 +1065,7 @@ async fn with_fleeing_off_the_flee_mark_does_not_suppress_the_cast() {
         ),
         (
             "look",
-            format!("\r\nlook{}", room_block_vitals("Inner Ward", None, "south", 14, 17)),
+            format!("\r\nlook{}", room_block_vitals("Inner Ward", None, "south", 14, 17, None)),
         ),
     ])
     .await;
@@ -1076,7 +1083,7 @@ async fn with_fleeing_off_the_flee_mark_does_not_suppress_the_cast() {
         circuit: vec!["1/2".into()],
         loops: 1,
         idle_poke_ms: 500,
-        depart_at_percent: 0,
+        depart_at_percent: Some(0),
         travel_interrupts: 0,
         ..FarmConfig::default()
     };
@@ -1202,7 +1209,7 @@ async fn a_roam_never_steps_into_a_walled_room() {
         loops: 0,
         max_seconds: 8,
         idle_poke_ms: 500,
-        depart_at_percent: 0,
+        depart_at_percent: Some(0),
         stop_seconds: 2,
         ..FarmConfig::default()
     };
@@ -1286,7 +1293,7 @@ async fn a_clean_arrival_is_not_re_asked_at_the_stop() {
         circuit: vec!["1/3".into()],
         loops: 1,
         idle_poke_ms: 500,
-        depart_at_percent: 0,
+        depart_at_percent: Some(0),
         ..FarmConfig::default()
     };
     let plan = FarmPlan::build(&cfg, &graph).expect("plan");
@@ -1316,5 +1323,106 @@ async fn a_clean_arrival_is_not_re_asked_at_the_stop() {
     assert!(
         !log[last_step..].iter().any(|l| l == "look"),
         "the arrival block already said what the look asks for: {log:?}"
+    );
+}
+
+/// The gate reads both pools. HP is fit, mana is not, so the gate sends
+/// `meditate`, and departs once the poke shows the pool over the mark.
+#[tokio::test]
+async fn the_gate_meditates_for_mana_and_leaves_when_both_pools_clear_the_mark() {
+    let (addr, received) = scripted_board(vec![
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=2]:"
+                .into(),
+        ),
+        // verify_start: HP is fit (30/30), mana is not (2/10).
+        (
+            "look",
+            format!(
+                "\r\nlook{}",
+                room_block_vitals("Guard Post", None, "north", 30, 2, None)
+            ),
+        ),
+        // HP needs nothing, so the gate meditates instead of resting.
+        (
+            "meditate",
+            "\r\nmeditate\r\nYou are now meditating.\r\n[HP=30/MA=2]: (Meditating) ".into(),
+        ),
+        // The gate's poke shows mana over the mark: 9 of 10 is 90%.
+        (
+            "look",
+            format!(
+                "\r\nlook{}",
+                room_block_vitals("Guard Post", None, "north", 30, 9, Some("Meditating"))
+            ),
+        ),
+        ("n", format!("\r\nn{}", room_block_hp("Inner Ward", None, "north south", 30))),
+        ("n", format!("\r\nn{}", room_block_hp("Keep", None, "south", 30))),
+        ("look", format!("\r\nlook{}", room_block_hp("Keep", None, "south", 30))),
+    ])
+    .await;
+    let session = session_for(addr).await;
+    // run_farm no longer probes the inventory/spellbook itself
+    // (Task 4: read once, at realm entry) -- these scripts still
+    // open with those replies, so the probe has to run explicitly
+    // here, exactly where `tui::on_realm_entry`/`mmc farm`'s own
+    // startup would run it on a real connection.
+    mud_client::farm::probe_sheet(&session, None).await;
+
+    let graph = corridor();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/3".into()],
+        loops: 1,
+        idle_poke_ms: 500,
+        // No farm mark set: the gate falls back to the bot's own
+        // `rest_until_percent`.
+        depart_at_percent: None,
+        max_rest_seconds: 5,
+        travel_interrupts: 0,
+        ..FarmConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 30,
+        max_mana: 10,
+        meditate: true,
+        rest_until_percent: 80,
+        ..BotConfig::default()
+    };
+
+    let (end, stats) = match tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, &bot, &cfg, None),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    {
+        Ok(out) => out,
+        Err(e) => panic!(
+            "the run must survive the mana gate: {e:?}\nboard received: {:?}",
+            received.lock().unwrap()
+        ),
+    };
+
+    assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
+
+    // The story in order: meditated for mana, and only then departed.
+    // HP was already fit, so `rest` must never be sent.
+    let log = received.lock().unwrap();
+    let meditate = log
+        .iter()
+        .position(|l| l == "meditate")
+        .expect("the gate meditated for mana");
+    let depart = log.iter().position(|l| l == "n").expect("the leg departed");
+    assert!(
+        meditate < depart,
+        "meditate must precede departure: {log:?}"
+    );
+    assert!(
+        !log.iter().any(|l| l == "rest"),
+        "hp was already fit; rest must never be sent: {log:?}"
     );
 }

@@ -431,7 +431,7 @@ fn farm_config(circuit: &[&str], loops: u32) -> FarmConfig {
         idle_poke_ms: 150,
         // HP gating off: these tests are about the circuit, and the
         // depart gate has nothing to do while nothing is hitting us.
-        depart_at_percent: 0,
+        depart_at_percent: Some(0),
         ..FarmConfig::default()
     }
 }

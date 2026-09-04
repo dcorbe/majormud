@@ -104,11 +104,11 @@ pub struct FarmConfig {
     /// announcement whatsoever — so the wait is spent re-asking, not
     /// listening.
     pub dwell_empty_seconds: u64,
-    /// Never start a leg below this hp% (needs a known max HP); 0
-    /// disables the gate. This is the first of the two travel defences:
-    /// it keeps a wounded character from setting off at all, while
-    /// `interrupt_at_percent` stops one that gets hurt on the way.
-    pub depart_at_percent: u32,
+    /// Never start a leg below this hp%. `None`, the default, means the
+    /// bot's `rest_until_percent`, which also gates mana. Set it to keep
+    /// a farm's own mark, or to 0 to disable the gate for this farm
+    /// alone.
+    pub depart_at_percent: Option<u32>,
     /// How long to hold off sending after the board says it dropped our
     /// input ("Why don't you slow down for a few seconds?").
     pub slowdown_backoff_ms: u64,
@@ -202,7 +202,7 @@ impl Default for FarmConfig {
             max_seconds: 0,
             stop_seconds: 0,
             dwell_empty_seconds: 0,
-            depart_at_percent: 80,
+            depart_at_percent: None,
             fight_while_travelling: true,
             slowdown_backoff_ms: 5000,
             // 5s x the 3-prompt dwell leaves an empty stop after about
@@ -211,8 +211,9 @@ impl Default for FarmConfig {
             idle_poke_ms: 5000,
             heal_retry_prompts: 3,
             heal_refused: Vec::new(),
-            // Below the 80% departure gate, and at the point the bot
-            // policy would itself want to stop and heal.
+            // Below the departure gate's default mark (the bot's
+            // `rest_until_percent`), and at the point the bot policy
+            // would itself want to stop and heal.
             interrupt_at_percent: 50,
             travel_interrupts: 3,
             defend_seconds: 60,
@@ -277,12 +278,15 @@ impl FarmPlan {
         if cfg.circuit.is_empty() {
             return Err("circuit is empty; [farm].circuit needs at least one room".into());
         }
-        if cfg.depart_at_percent != 0 && cfg.interrupt_at_percent > cfg.depart_at_percent {
+        if let Some(depart) = cfg.depart_at_percent
+            && depart != 0
+            && cfg.interrupt_at_percent > depart
+        {
             return Err(format!(
                 "interrupt_at_percent ({}) is above depart_at_percent ({}): \
                  the patrol would set off at {}% and be interrupted immediately, \
                  burning its interrupt budget without walking a step",
-                cfg.interrupt_at_percent, cfg.depart_at_percent, cfg.depart_at_percent
+                cfg.interrupt_at_percent, depart, depart
             ));
         }
         let resolve = |s: &String| -> Result<RoomId, String> {
@@ -2643,9 +2647,12 @@ enum DepartureWait {
     Contested,
 }
 
-/// Hold at the stop until HP is fit to travel. The bot is not driving
-/// while the navigator walks, so setting off wounded means relying on
-/// the travel guard to stop the leg part-way — cheaper to leave fit.
+/// Hold at the stop until both pools are fit to travel. The bot is not
+/// driving while the navigator walks, so setting off wounded or out of
+/// mana means relying on the travel guard to stop the leg part-way —
+/// cheaper to leave fit. The mark is `cfg.depart_at_percent` if the farm
+/// set its own, otherwise the bot's `rest_until_percent`; either way it
+/// gates HP and mana alike.
 async fn wait_for_departure_health(
     session: &crate::session::Session,
     cfg: &FarmConfig,
@@ -2654,10 +2661,12 @@ async fn wait_for_departure_health(
     // predicate-only role the sighting guard's bot plays.
     sight: &crate::bot::Bot,
 ) -> DepartureWait {
-    if cfg.depart_at_percent == 0 || bot_config.max_hp <= 0 {
+    let mark = cfg.depart_at_percent.unwrap_or(bot_config.rest_until_percent);
+    if mark == 0 || bot_config.max_hp <= 0 {
         return DepartureWait::Fit;
     }
-    let target = bot_config.max_hp * cfg.depart_at_percent as i32 / 100;
+    let hp_target = bot_config.max_hp * mark as i32 / 100;
+    let mana_target = (bot_config.max_mana > 0).then(|| bot_config.max_mana * mark as i32 / 100);
     let mut state = session.state();
     // Never rest beside a monster — and keep never doing it for the
     // whole wait, not only at its door. The one-shot version of this
@@ -2674,10 +2683,11 @@ async fn wait_for_departure_health(
     let deadline = tokio::time::Instant::now() + Duration::from_secs(cfg.max_rest_seconds);
     let poke = Duration::from_millis(cfg.idle_poke_ms.max(1000));
     loop {
-        let (hp, contested) = {
+        let (hp, mana, contested) = {
             let s = state.borrow();
             (
                 s.hp,
+                s.mana,
                 s.room.as_ref().is_some_and(|room| sight.has_target(room)),
             )
         };
@@ -2685,7 +2695,9 @@ async fn wait_for_departure_health(
         // decided to leave (a capped stop that never went quiet) walks
         // out — re-defending there would un-make the cap's decision.
         // The travel guard covers whatever follows it out.
-        if hp >= target && hp > 0 {
+        let hp_fit = hp >= hp_target && hp > 0;
+        let mana_fit = mana_target.is_none_or(|t| mana.is_some_and(|m| m >= t));
+        if hp_fit && mana_fit {
             return DepartureWait::Fit;
         }
         // A downed character cannot rest its way back over the gate;
@@ -2697,7 +2709,7 @@ async fn wait_for_departure_health(
         if tokio::time::Instant::now() >= deadline {
             return DepartureWait::Fit;
         }
-        // Actually REST, and actually look.
+        // Actually REST (or meditate), and actually look.
         //
         // This used to watch `hp` and wait. Two things made that
         // useless on a live board: nothing asked the character to heal,
@@ -2706,7 +2718,14 @@ async fn wait_for_departure_health(
         // if it happened. It was a 120-second sleep that then departed
         // at whatever HP it started with.
         if !sent_heal {
-            session.send(&bot_config.rest_command);
+            // Rest restores both pools. Meditate only mana, and only
+            // when the player said the character has it.
+            let cmd = if !hp_fit || !bot_config.meditate {
+                bot_config.rest_command.as_str()
+            } else {
+                "meditate"
+            };
+            session.send(cmd);
             sent_heal = true;
         }
         // A poke is what produces the prompt that carries HP; without one
