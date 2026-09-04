@@ -27,9 +27,11 @@ pub const ROUND: Duration = Duration::from_millis(5130);
 
 /// Cadence of the board's regen ticks on the stock realm, measured by
 /// MudPlay. Passive HP and mana share one 30 second pulse, resting HP
-/// ticks every 20 seconds, meditating mana every 15 seconds. The board
-/// announces none of them. They are inferred from a pool rising
-/// between two prompts.
+/// ticks every 20 seconds, meditating mana every 15 seconds. MudPlay's
+/// seed for meditate is 10 seconds, and its stock realm profile
+/// overrides it to 15 after a live re-measurement, which is the number
+/// used here. The board announces none of them. They are inferred from
+/// a pool rising between two prompts.
 pub const REGEN_NATURAL: Duration = Duration::from_secs(30);
 pub const REGEN_REST: Duration = Duration::from_secs(20);
 pub const REGEN_MEDITATE: Duration = Duration::from_secs(15);
@@ -53,11 +55,8 @@ pub struct RegenCycle {
 
 impl RegenCycle {
     pub fn new(period: Duration) -> Self {
+        assert!(!period.is_zero(), "a regen cycle needs a period");
         RegenCycle { period, anchor: None }
-    }
-
-    pub fn period(&self) -> Duration {
-        self.period
     }
 
     pub fn active(&self) -> bool {
@@ -75,13 +74,20 @@ impl RegenCycle {
         self.anchor = None;
     }
 
-    /// Is a gain at `now` this cycle's own tick: running, and a period
-    /// has passed since the anchor, less the grace.
+    /// Is a gain at `now` this cycle's own tick: running, at least a
+    /// period since the anchor less the grace, and within the grace of
+    /// a projected boundary either side.
     pub fn is_due(&self, now: Instant) -> bool {
-        match self.anchor {
-            Some(anchor) => now.saturating_duration_since(anchor) + CLAIM_GRACE >= self.period,
-            None => false,
+        let Some(anchor) = self.anchor else {
+            return false;
+        };
+        let elapsed = now.saturating_duration_since(anchor);
+        if elapsed + CLAIM_GRACE < self.period {
+            return false;
         }
+        let steps = (elapsed.as_nanos() / self.period.as_nanos()) as u32;
+        let phase = elapsed - self.period * steps;
+        phase <= CLAIM_GRACE || phase + CLAIM_GRACE >= self.period
     }
 
     /// A real tick landed: re-anchor on it.
@@ -199,7 +205,7 @@ impl TickClock {
                 natural = true;
             }
             if natural {
-                self.mana_natural.start(now);
+                self.mana_natural.observe(now);
             }
         }
 
@@ -222,7 +228,7 @@ impl TickClock {
                 natural = true;
             }
             if natural {
-                self.hp_natural.start(now);
+                self.hp_natural.observe(now);
             }
         }
     }

@@ -916,7 +916,7 @@ fn a_cycle_is_due_a_period_after_its_anchor_less_the_grace() {
     c.observe(t0);
     assert!(!c.is_due(t0 + Duration::from_secs(10)));
     assert!(c.is_due(t0 + REGEN_NATURAL - CLAIM_GRACE));
-    assert!(c.is_due(t0 + REGEN_NATURAL + Duration::from_secs(40)));
+    assert!(c.is_due(t0 + REGEN_NATURAL + CLAIM_GRACE));
 }
 
 #[test]
@@ -927,6 +927,20 @@ fn observe_reanchors_a_running_cycle() {
     let t1 = t0 + Duration::from_secs(31);
     c.observe(t1);
     assert_eq!(c.time_to_next(t1), Some(REGEN_NATURAL));
+}
+
+#[test]
+fn a_stale_cycle_is_due_only_near_a_projected_boundary() {
+    let mut c = RegenCycle::new(REGEN_NATURAL);
+    let t0 = Instant::now();
+    c.observe(t0);
+    // Three periods on, mid period: not this cycle's tick.
+    assert!(!c.is_due(t0 + REGEN_NATURAL * 3 + Duration::from_secs(12)));
+    // Just before and just after the fourth boundary: due.
+    assert!(c.is_due(t0 + REGEN_NATURAL * 4 - Duration::from_millis(500)));
+    assert!(c.is_due(t0 + REGEN_NATURAL * 4 + Duration::from_millis(500)));
+    // Well past the grace after a boundary: not due.
+    assert!(!c.is_due(t0 + REGEN_NATURAL * 4 + Duration::from_secs(3)));
 }
 
 #[test]
@@ -1021,6 +1035,17 @@ fn resting_starts_the_rest_cycle_and_a_bare_prompt_stops_it() {
 }
 
 #[test]
+fn an_unknown_status_word_stops_the_bonus_cycles() {
+    let mut c = TickClock::new();
+    let t0 = Instant::now();
+    c.on_event(&prompt(30, Some(10), Some(Status::Resting)), t0);
+    assert!(c.hp_rest.active());
+    c.on_event(&prompt(30, Some(10), Some(Status::Other("Stunned".into()))), t0 + Duration::from_secs(1));
+    assert!(!c.hp_rest.active());
+    assert!(!c.mana_meditate.active());
+}
+
+#[test]
 fn a_due_gain_while_resting_credits_the_rest_cycle_not_the_natural_one() {
     let mut c = TickClock::new();
     let t0 = Instant::now();
@@ -1029,6 +1054,25 @@ fn a_due_gain_while_resting_credits_the_rest_cycle_not_the_natural_one() {
     c.on_event(&prompt(33, None, Some(Status::Resting)), t1);
     assert_eq!(c.hp_rest.time_to_next(t1), Some(REGEN_REST));
     assert!(!c.hp_natural.active());
+}
+
+#[test]
+fn a_stale_natural_cycle_does_not_steal_a_rest_tick() {
+    // Rested to full, silent for minutes, then hurt. The first rest
+    // tick after that belongs to the rest cycle alone.
+    let mut c = TickClock::new();
+    let t0 = Instant::now();
+    c.on_event(&prompt(30, None, None), t0);
+    let t1 = t0 + Duration::from_secs(5);
+    c.on_event(&prompt(32, None, None), t1);
+    let rest_at = t1 + Duration::from_secs(200);
+    c.on_event(&prompt(20, None, Some(Status::Resting)), rest_at);
+    let tick = rest_at + REGEN_REST;
+    c.on_event(&prompt(23, None, Some(Status::Resting)), tick);
+    assert_eq!(c.hp_rest.time_to_next(tick), Some(REGEN_REST));
+    // 220 s after its anchor the natural cycle sits mid period and
+    // must not have moved onto the rest tick.
+    assert_eq!(c.hp_natural.time_to_next(tick), Some(REGEN_NATURAL * 8 - Duration::from_secs(220)));
 }
 
 #[test]
@@ -1089,6 +1133,20 @@ fn mana_rising_anchors_the_natural_mana_cycle_and_the_hp_pulse() {
     c.on_event(&prompt(30, Some(12), None), t1);
     assert_eq!(c.mana_natural.time_to_next(t1), Some(REGEN_NATURAL));
     assert_eq!(c.hp_natural.time_to_next(t1), Some(REGEN_NATURAL));
+}
+
+#[test]
+fn a_natural_tick_on_one_pool_reanchors_the_other() {
+    let mut c = TickClock::new();
+    let t0 = Instant::now();
+    c.on_event(&prompt(30, Some(10), None), t0);
+    let t1 = t0 + Duration::from_secs(5);
+    c.on_event(&prompt(32, Some(10), None), t1);
+    // HP sits at max from here. Mana keeps ticking and carries the
+    // shared pulse onto the HP cycle.
+    let t2 = t1 + REGEN_NATURAL + Duration::from_millis(400);
+    c.on_event(&prompt(32, Some(12), None), t2);
+    assert_eq!(c.hp_natural.time_to_next(t2), Some(REGEN_NATURAL));
 }
 
 #[test]

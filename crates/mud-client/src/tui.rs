@@ -202,6 +202,11 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     // The countdowns in the bar move between events, so the bar is
     // repainted on its own short timer as well as on every event.
     let mut tick_paint = tokio::time::interval(std::time::Duration::from_millis(250));
+    // A stalled loop must not catch up with a burst of repaints.
+    tick_paint.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // The bar text the timer arm last painted, so a countdown that has
+    // not moved a full tenth of a second does not repaint at all.
+    let mut last_bar = String::new();
     // Whether the character is standing in the realm at all. A tokio
     // interval's FIRST tick completes immediately, so without this the
     // very first `exp` went out into the username prompt the instant the
@@ -363,7 +368,11 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                 repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
             }
             _ = tick_paint.tick() => {
-                repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
+                let bar = bar_text(&state_rx, target, job.as_ref(), here, exp.per_minute(exp_since.elapsed()), level, assist.is_some(), cols);
+                if bar != last_bar {
+                    last_bar = bar;
+                    repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
+                }
             }
             _ = level_tick.tick() => {
                 // Only while a game is actually running — see `in_realm`.
@@ -1249,6 +1258,29 @@ fn note(out: &mut impl std::io::Write, text: &str) -> std::io::Result<()> {
     out.write_all(format!("\r\n{}\r\n", text.replace('\n', "\r\n")).as_bytes())?;
     out.write_all(b"\x1b7")?;
     Ok(())
+}
+
+/// The status bar's text, without painting it. Same phase and room
+/// lookups as `repaint`, so the timer arm can tell whether a fresh
+/// repaint would actually change anything before it pays for one.
+#[allow(clippy::too_many_arguments)]
+fn bar_text(
+    state_rx: &tokio::sync::watch::Receiver<GameState>,
+    target: &str,
+    job: Option<&Job>,
+    here: crate::lost::Fix,
+    exp_per_min: Option<i64>,
+    level: Option<crate::progress::LevelProgress>,
+    assist: bool,
+    cols: u16,
+) -> String {
+    let phase = job.map(|j| j.phase.borrow().clone());
+    let room_id = match phase.as_ref().and_then(|p| p.room()) {
+        Some(at) => crate::lost::Fix::Confirmed(at),
+        None => here,
+    };
+    let state = state_rx.borrow().clone();
+    render_status(&state, std::time::Instant::now(), target, phase.as_ref(), room_id, exp_per_min, level, assist, cols as usize)
 }
 
 /// Redraw the bottom rows, reading the farm's phase when one is running.
