@@ -250,6 +250,7 @@ fn prompt_event(c: &regex::Captures) -> Event {
     Event::Prompt {
         hp: c[1].parse().unwrap(),
         mana: c.get(2).map(|m| m.as_str().parse().unwrap()),
+        status: None,
     }
 }
 

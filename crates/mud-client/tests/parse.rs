@@ -18,7 +18,7 @@ fn parse_all(input: &str) -> Vec<Event> {
 #[test]
 fn prompt_plain() {
     let ev = parse_all("\x1b[0;37m[HP=35\x1b[0;37m]:\x1b[0m");
-    assert_eq!(ev, vec![Event::Prompt { hp: 35, mana: None }]);
+    assert_eq!(ev, vec![Event::Prompt { hp: 35, mana: None, status: None }]);
 }
 
 #[test]
@@ -28,7 +28,7 @@ fn prompt_negative_hp_while_downed() {
         ev,
         vec![Event::Prompt {
             hp: -12,
-            mana: None
+            mana: None, status: None
         }]
     );
 }
@@ -39,14 +39,14 @@ fn prompt_with_mana_and_kai() {
         parse_all("[HP=26/MA=12]:"),
         vec![Event::Prompt {
             hp: 26,
-            mana: Some(12)
+            mana: Some(12), status: None
         }]
     );
     assert_eq!(
         parse_all("[HP=20/KAI=4]:"),
         vec![Event::Prompt {
             hp: 20,
-            mana: Some(4)
+            mana: Some(4), status: None
         }]
     );
 }
@@ -63,7 +63,7 @@ fn prompt_soh_marker_does_not_stick_to_the_echo() {
     assert_eq!(
         ev,
         vec![
-            Event::Prompt { hp: 27, mana: None },
+            Event::Prompt { hp: 27, mana: None, status: None },
             Event::Line("look".into())
         ]
     );
@@ -76,7 +76,7 @@ fn prompt_soh_marker_does_not_delay_the_prompt() {
     // retirement and the heal gate key on the live prompt.
     let mut p = Parser::new();
     let ev = p.push("[HP=27]:\x01");
-    assert_eq!(ev, vec![Event::Prompt { hp: 27, mana: None }]);
+    assert_eq!(ev, vec![Event::Prompt { hp: 27, mana: None, status: None }]);
     assert!(p.finish().is_empty());
 }
 
@@ -86,7 +86,7 @@ fn prompt_emitted_midstream_without_newline() {
     // it immediately (expect/bot logic keys on it), not on finish().
     let mut p = Parser::new();
     let ev = p.push("\r\n[HP=35]:");
-    assert_eq!(ev, vec![Event::Prompt { hp: 35, mana: None }]);
+    assert_eq!(ev, vec![Event::Prompt { hp: 35, mana: None, status: None }]);
     assert_eq!(p.finish(), vec![]);
 }
 
@@ -98,7 +98,7 @@ fn prompt_followed_by_async_line() {
     assert_eq!(
         ev,
         vec![
-            Event::Prompt { hp: 35, mana: None },
+            Event::Prompt { hp: 35, mana: None, status: None },
             Event::CombatHit {
                 attacker: Actor::Other("The kobold thief".into()),
                 target: Actor::You,
@@ -120,7 +120,7 @@ fn prompt_redrawn_midline() {
             Event::Line(".......".into()),
             Event::Prompt {
                 hp: 19,
-                mana: Some(18)
+                mana: Some(18), status: None
             },
             Event::Line(".........".into()),
         ]
@@ -131,12 +131,12 @@ fn prompt_redrawn_midline() {
         vec![
             Event::Prompt {
                 hp: 42,
-                mana: Some(43)
+                mana: Some(43), status: None
             },
             Event::Line("l".into()),
             Event::Prompt {
                 hp: 43,
-                mana: Some(46)
+                mana: Some(46), status: None
             },
             Event::Line("ook".into()),
         ]
@@ -172,7 +172,7 @@ fn room_block_full() {
         }
         other => panic!("expected RoomSeen, got {other:?}"),
     }
-    assert_eq!(ev[1], Event::Prompt { hp: 35, mana: None });
+    assert_eq!(ev[1], Event::Prompt { hp: 35, mana: None, status: None });
 }
 
 #[test]
@@ -785,4 +785,20 @@ fn real_movements_survive_the_narrowing() {
             other => panic!("{line:?} should still be an arrival, got {other:?}"),
         }
     }
+}
+
+// --- status ---
+
+#[test]
+fn a_status_word_round_trips_and_unknown_words_survive() {
+    use mud_client::events::Status;
+    assert_eq!(Status::from_word("Resting"), Status::Resting);
+    assert_eq!(Status::from_word("Meditating"), Status::Meditating);
+    assert_eq!(Status::from_word("Stunned"), Status::Other("Stunned".into()));
+    assert_eq!(Status::Resting.word(), "Resting");
+    assert_eq!(Status::Meditating.word(), "Meditating");
+    assert_eq!(Status::Other("Stunned".into()).word(), "Stunned");
+    // The field exists and a prompt can carry one.
+    let ev = Event::Prompt { hp: 1, mana: None, status: Some(Status::Resting) };
+    assert!(matches!(ev, Event::Prompt { status: Some(Status::Resting), .. }));
 }

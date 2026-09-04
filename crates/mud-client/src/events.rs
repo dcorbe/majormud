@@ -57,12 +57,46 @@ pub struct RoomView {
     pub items: Vec<String>,
 }
 
+/// The word the board paints into the prompt while the character is
+/// in a recovery state. The DLL has exactly two, ` (Resting) ` and
+/// ` (Meditating) `. Anything else the board ever paints lands in
+/// `Other` so a new word can never hide a prompt again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Status {
+    Resting,
+    Meditating,
+    Other(String),
+}
+
+impl Status {
+    pub fn from_word(word: &str) -> Status {
+        match word {
+            "Resting" => Status::Resting,
+            "Meditating" => Status::Meditating,
+            other => Status::Other(other.to_string()),
+        }
+    }
+
+    pub fn word(&self) -> &str {
+        match self {
+            Status::Resting => "Resting",
+            Status::Meditating => "Meditating",
+            Status::Other(word) => word,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     RoomSeen(RoomView),
     /// `[HP=35]:` / `[HP=26/MA=12]:` / `[HP=20/KAI=4]:` — HP may be
-    /// negative while downed.
-    Prompt { hp: i32, mana: Option<i32> },
+    /// negative while downed. `status` is the word the board paints
+    /// while resting or meditating, `None` on a bare prompt.
+    Prompt {
+        hp: i32,
+        mana: Option<i32>,
+        status: Option<Status>,
+    },
     CombatHit {
         attacker: Actor,
         target: Actor,

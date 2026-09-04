@@ -12,7 +12,7 @@ use mud_client::session::drain;
 
 fn prompt(hp: i32) -> Correlated {
     Correlated {
-        event: Event::Prompt { hp, mana: None },
+        event: Event::Prompt { hp, mana: None, status: None },
         answers: None,
         elsewhere: false,
     }

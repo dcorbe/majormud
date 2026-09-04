@@ -115,7 +115,7 @@ fn the_ordinary_prompt_retires_a_pending_stat() {
     assert_eq!(c.on_event(Event::Line("Name: Beef".into()), t).answers, None);
     // ...but the prompt that follows the whole reply retires the entry.
     assert_eq!(
-        c.on_event(Event::Prompt { hp: 22, mana: None }, t).answers,
+        c.on_event(Event::Prompt { hp: 22, mana: None, status: None }, t).answers,
         Some(CmdId(1))
     );
 }
@@ -134,7 +134,7 @@ fn the_ordinary_prompt_retires_nothing_for_a_move() {
     c.sent(CmdId(1), "n", t);
     assert_eq!(c.on_event(Event::Line("n".into()), t).answers, Some(CmdId(1)));
     assert_eq!(
-        c.on_event(Event::Prompt { hp: 22, mana: None }, t).answers,
+        c.on_event(Event::Prompt { hp: 22, mana: None, status: None }, t).answers,
         None
     );
 }

@@ -231,7 +231,7 @@ use mud_client::events::Event;
 #[test]
 fn a_game_prompt_means_we_are_in_the_realm() {
     assert_eq!(
-        realm_presence(&Event::Prompt { hp: 43, mana: Some(10) }),
+        realm_presence(&Event::Prompt { hp: 43, mana: Some(10), status: None }),
         Some(true)
     );
 }

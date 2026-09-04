@@ -169,11 +169,11 @@ fn heals_below_threshold() {
         ..BotConfig::default()
     });
     assert!(
-        bot.on_event(&Event::Prompt { hp: 25, mana: None })
+        bot.on_event(&Event::Prompt { hp: 25, mana: None, status: None })
             .is_empty(),
         "62% hp: no heal"
     );
-    let actions = bot.on_event(&Event::Prompt { hp: 19, mana: None });
+    let actions = bot.on_event(&Event::Prompt { hp: 19, mana: None, status: None });
     assert_eq!(actions, vec![BotAction::Send("rest".into())]);
 }
 
@@ -200,7 +200,7 @@ fn does_not_rest_while_the_room_lists_a_monster() {
     // The block engages the bear; the low prompt must fight on, not rest.
     assert_eq!(bot.on_event(&room(&["cave bear"])).len(), 1);
     assert!(
-        bot.on_event(&Event::Prompt { hp: 21, mana: None }).is_empty(),
+        bot.on_event(&Event::Prompt { hp: 21, mana: None, status: None }).is_empty(),
         "resting mid-fight is the spiral"
     );
 }
@@ -214,7 +214,7 @@ fn does_not_rest_after_combat_off_while_the_room_still_has_work() {
     bot.on_event(&room(&["cave bear"]));
     bot.on_event(&Event::Line("*Combat Off*".into()));
     assert!(
-        bot.on_event(&Event::Prompt { hp: 21, mana: None }).is_empty(),
+        bot.on_event(&Event::Prompt { hp: 21, mana: None, status: None }).is_empty(),
         "the room was never proven clear"
     );
 }
@@ -226,10 +226,10 @@ fn rests_once_the_room_is_proven_clear() {
     let mut bot = healing_fighter();
     bot.on_event(&room(&["cave bear"]));
     bot.on_event(&Event::Line("*Combat Off*".into()));
-    assert!(bot.on_event(&Event::Prompt { hp: 21, mana: None }).is_empty());
+    assert!(bot.on_event(&Event::Prompt { hp: 21, mana: None, status: None }).is_empty());
     bot.on_event(&room(&[]));
     assert_eq!(
-        bot.on_event(&Event::Prompt { hp: 21, mana: None }),
+        bot.on_event(&Event::Prompt { hp: 21, mana: None, status: None }),
         vec![BotAction::Send("rest".into())]
     );
 }
@@ -239,16 +239,16 @@ fn rests_once_the_room_is_proven_clear() {
 fn a_walk_in_makes_resting_wrong_again() {
     let mut bot = healing_fighter();
     bot.on_event(&room(&[]));
-    assert_eq!(bot.on_event(&Event::Prompt { hp: 21, mana: None }).len(), 1);
+    assert_eq!(bot.on_event(&Event::Prompt { hp: 21, mana: None, status: None }).len(), 1);
     // HP recovers past the threshold: the heal debounce releases.
-    bot.on_event(&Event::Prompt { hp: 40, mana: None });
+    bot.on_event(&Event::Prompt { hp: 40, mana: None, status: None });
     // A rat walks in (and is engaged); dropping low again must not rest.
     bot.on_event(&Event::ActorEntered {
         name: "giant rat".into(),
         from: None,
     });
     assert!(
-        bot.on_event(&Event::Prompt { hp: 21, mana: None }).is_empty(),
+        bot.on_event(&Event::Prompt { hp: 21, mana: None, status: None }).is_empty(),
         "an arrival is work; rest would be broken by the fight"
     );
 }
@@ -268,7 +268,7 @@ fn an_ignored_occupant_does_not_block_resting() {
     });
     bot.on_event(&room(&["town guard"]));
     assert_eq!(
-        bot.on_event(&Event::Prompt { hp: 21, mana: None }),
+        bot.on_event(&Event::Prompt { hp: 21, mana: None, status: None }),
         vec![BotAction::Send("rest".into())]
     );
 }
@@ -282,7 +282,7 @@ fn heal_requires_known_max_hp() {
         ..BotConfig::default()
     });
     assert!(
-        bot.on_event(&Event::Prompt { hp: 1, mana: None })
+        bot.on_event(&Event::Prompt { hp: 1, mana: None, status: None })
             .is_empty()
     );
 }
@@ -297,7 +297,7 @@ fn flees_below_flee_threshold_via_last_known_exit() {
     });
     // Bot learns the room first.
     bot.on_event(&room(&[]));
-    let actions = bot.on_event(&Event::Prompt { hp: 8, mana: None });
+    let actions = bot.on_event(&Event::Prompt { hp: 8, mana: None, status: None });
     assert_eq!(actions, vec![BotAction::Send("north".into())]);
 }
 
@@ -312,7 +312,7 @@ fn flee_takes_priority_over_heal() {
         ..BotConfig::default()
     });
     bot.on_event(&room(&[]));
-    let actions = bot.on_event(&Event::Prompt { hp: 5, mana: None });
+    let actions = bot.on_event(&Event::Prompt { hp: 5, mana: None, status: None });
     assert_eq!(actions, vec![BotAction::Send("north".into())]);
 }
 
@@ -326,7 +326,7 @@ fn does_not_repeat_heal_while_still_hurt() {
         ..BotConfig::default()
     });
     assert_eq!(
-        bot.on_event(&Event::Prompt { hp: 19, mana: None }),
+        bot.on_event(&Event::Prompt { hp: 19, mana: None, status: None }),
         vec![BotAction::Send("rest".into())]
     );
     // Prompts arrive in bursts — async output disturbs the dangling
@@ -334,20 +334,20 @@ fn does_not_repeat_heal_while_still_hurt() {
     // the heal band. One "rest" covers them; re-sending on each prompt
     // trips flood control.
     assert!(
-        bot.on_event(&Event::Prompt { hp: 18, mana: None })
+        bot.on_event(&Event::Prompt { hp: 18, mana: None, status: None })
             .is_empty()
     );
     assert!(
-        bot.on_event(&Event::Prompt { hp: 17, mana: None })
+        bot.on_event(&Event::Prompt { hp: 17, mana: None, status: None })
             .is_empty()
     );
     // Back above the threshold, then hurt again: heal again.
     assert!(
-        bot.on_event(&Event::Prompt { hp: 30, mana: None })
+        bot.on_event(&Event::Prompt { hp: 30, mana: None, status: None })
             .is_empty()
     );
     assert_eq!(
-        bot.on_event(&Event::Prompt { hp: 15, mana: None }),
+        bot.on_event(&Event::Prompt { hp: 15, mana: None, status: None }),
         vec![BotAction::Send("rest".into())]
     );
 }
@@ -366,7 +366,7 @@ fn heals_when_hurt_but_no_exit_is_known() {
     // No room block seen yet, so there is no exit to flee through;
     // the heal policy still applies.
     assert_eq!(
-        bot.on_event(&Event::Prompt { hp: 5, mana: None }),
+        bot.on_event(&Event::Prompt { hp: 5, mana: None, status: None }),
         vec![BotAction::Send("rest".into())]
     );
 }
@@ -532,7 +532,7 @@ fn flees_through_a_closed_door() {
     // "closed door north" is a display token; the command is "north".
     bot.on_event(&room(&[]));
     assert_eq!(
-        bot.on_event(&Event::Prompt { hp: 8, mana: None }),
+        bot.on_event(&Event::Prompt { hp: 8, mana: None, status: None }),
         vec![BotAction::Send("north".into())]
     );
 }
@@ -546,20 +546,20 @@ fn flees_once_per_room_not_once_per_prompt() {
         ..BotConfig::default()
     });
     bot.on_event(&room(&[]));
-    assert_eq!(bot.on_event(&Event::Prompt { hp: 8, mana: None }).len(), 1);
+    assert_eq!(bot.on_event(&Event::Prompt { hp: 8, mana: None, status: None }).len(), 1);
     // Prompts arrive in bursts and can even double up on one physical
     // line; flooding movement while dying is the worst case.
     assert!(
-        bot.on_event(&Event::Prompt { hp: 7, mana: None })
+        bot.on_event(&Event::Prompt { hp: 7, mana: None, status: None })
             .is_empty()
     );
     assert!(
-        bot.on_event(&Event::Prompt { hp: 6, mana: None })
+        bot.on_event(&Event::Prompt { hp: 6, mana: None, status: None })
             .is_empty()
     );
     // Arriving somewhere new re-arms it: still hurt, so keep running.
     bot.on_event(&room(&[]));
-    assert_eq!(bot.on_event(&Event::Prompt { hp: 6, mana: None }).len(), 1);
+    assert_eq!(bot.on_event(&Event::Prompt { hp: 6, mana: None, status: None }).len(), 1);
 }
 
 #[test]
@@ -571,9 +571,9 @@ fn rearm_releases_a_heal_that_never_landed() {
         max_hp: 40,
         ..BotConfig::default()
     });
-    assert_eq!(bot.on_event(&Event::Prompt { hp: 19, mana: None }).len(), 1);
+    assert_eq!(bot.on_event(&Event::Prompt { hp: 19, mana: None, status: None }).len(), 1);
     assert!(
-        bot.on_event(&Event::Prompt { hp: 19, mana: None })
+        bot.on_event(&Event::Prompt { hp: 19, mana: None, status: None })
             .is_empty()
     );
     // A heal that never lands leaves HP low forever, so the debounce
@@ -581,7 +581,7 @@ fn rearm_releases_a_heal_that_never_landed() {
     // evidence of refusal.
     bot.rearm();
     assert_eq!(
-        bot.on_event(&Event::Prompt { hp: 19, mana: None }),
+        bot.on_event(&Event::Prompt { hp: 19, mana: None, status: None }),
         vec![BotAction::Send("rest".into())]
     );
 }
@@ -601,7 +601,7 @@ fn stays_quiet_while_downed() {
     assert!(
         bot.on_event(&Event::Prompt {
             hp: -161,
-            mana: None
+            mana: None, status: None
         })
         .is_empty()
     );
@@ -714,7 +714,7 @@ fn a_fight_that_goes_quiet_releases_the_latch() {
     assert_eq!(bot.engaged(), Some("kobold thief"));
 
     for _ in 0..BotConfig::default().combat_idle_prompts {
-        bot.on_event(&Event::Prompt { hp: 30, mana: None });
+        bot.on_event(&Event::Prompt { hp: 30, mana: None, status: None });
     }
 
     assert_eq!(bot.engaged(), None, "nothing has happened for several prompts");
@@ -734,7 +734,7 @@ fn an_ongoing_fight_keeps_the_latch() {
             target: Actor::Other("The kobold thief".into()),
             damage: 4,
         });
-        bot.on_event(&Event::Prompt { hp: 30, mana: None });
+        bot.on_event(&Event::Prompt { hp: 30, mana: None, status: None });
     }
 
     assert_eq!(
@@ -754,7 +754,7 @@ fn a_missed_swing_counts_as_the_fight_continuing() {
         bot.on_event(&Event::CombatMiss {
             line: "You swing at the kobold thief and miss!".into(),
         });
-        bot.on_event(&Event::Prompt { hp: 30, mana: None });
+        bot.on_event(&Event::Prompt { hp: 30, mana: None, status: None });
     }
 
     assert_eq!(bot.engaged(), Some("kobold thief"));
@@ -851,7 +851,7 @@ fn a_burst_of_prompts_between_rounds_does_not_abandon_the_fight() {
             damage: 4,
         });
         for _ in 0..5 {
-            bot.on_event(&Event::Prompt { hp: 30, mana: None });
+            bot.on_event(&Event::Prompt { hp: 30, mana: None, status: None });
         }
     }
 
@@ -1492,7 +1492,7 @@ fn the_marks_fire_in_order_as_hp_falls() {
     // 85%: nothing at all.
     let mut bot = Bot::new(cfg.clone());
     bot.on_event(&room(&[]));
-    assert!(bot.on_event(&Event::Prompt { hp: 85, mana: Some(20) }).is_empty());
+    assert!(bot.on_event(&Event::Prompt { hp: 85, mana: Some(20), status: None }).is_empty());
 
     // 70%: below the spell mark but above rest. The bot core sends
     // nothing — casting is the runner's, since it needs correlation —
@@ -1500,7 +1500,7 @@ fn the_marks_fire_in_order_as_hp_falls() {
     let mut bot = Bot::new(cfg.clone());
     bot.on_event(&room(&[]));
     assert!(
-        bot.on_event(&Event::Prompt { hp: 70, mana: Some(20) }).is_empty(),
+        bot.on_event(&Event::Prompt { hp: 70, mana: Some(20), status: None }).is_empty(),
         "the spell mark is not the rest mark"
     );
 
@@ -1508,7 +1508,7 @@ fn the_marks_fire_in_order_as_hp_falls() {
     let mut bot = Bot::new(cfg.clone());
     bot.on_event(&room(&[]));
     assert_eq!(
-        bot.on_event(&Event::Prompt { hp: 50, mana: Some(20) }),
+        bot.on_event(&Event::Prompt { hp: 50, mana: Some(20), status: None }),
         vec![BotAction::Send("rest".into())]
     );
 
@@ -1517,7 +1517,7 @@ fn the_marks_fire_in_order_as_hp_falls() {
     let mut bot = Bot::new(cfg);
     bot.on_event(&room(&[]));
     assert_eq!(
-        bot.on_event(&Event::Prompt { hp: 25, mana: Some(20) }),
+        bot.on_event(&Event::Prompt { hp: 25, mana: Some(20), status: None }),
         vec![BotAction::Send("north".into())],
         "the first listed exit, and nothing else: rest must not accompany a flee"
     );

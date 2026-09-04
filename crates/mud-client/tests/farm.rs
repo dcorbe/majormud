@@ -238,7 +238,7 @@ fn gate() -> Gate {
 }
 
 fn prompt(hp: i32) -> Event {
-    Event::Prompt { hp, mana: None }
+    Event::Prompt { hp, mana: None, status: None }
 }
 
 /// An event nobody asked for.
@@ -2092,6 +2092,7 @@ fn mana(l: &mut LightState, mana: i32) {
     l.on_event(&unsolicited(Event::Prompt {
         hp: 50,
         mana: Some(mana),
+        status: None,
     }));
 }
 

@@ -1027,7 +1027,7 @@ pub fn drain(events: &mut broadcast::Receiver<Correlated>, mut seen: impl FnMut(
 /// Fold an event into the rolling state; returns whether it changed.
 fn apply_event(state: &mut GameState, cor: &Correlated) -> bool {
     match &cor.event {
-        Event::Prompt { hp, mana } => {
+        Event::Prompt { hp, mana, .. } => {
             let changed = state.hp != *hp || state.mana != *mana;
             state.hp = *hp;
             state.mana = *mana;

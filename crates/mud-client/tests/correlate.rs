@@ -39,7 +39,7 @@ fn room(name: &str) -> Event {
 }
 
 fn prompt() -> Event {
-    Event::Prompt { hp: 45, mana: Some(8) }
+    Event::Prompt { hp: 45, mana: Some(8), status: None }
 }
 
 fn line(l: &str) -> Event {

@@ -63,7 +63,7 @@ impl ProgressView {
                 }
                 Some(s)
             }
-            Event::Prompt { hp, mana } => {
+            Event::Prompt { hp, mana, .. } => {
                 if self.last_hp == Some(*hp) {
                     return None;
                 }

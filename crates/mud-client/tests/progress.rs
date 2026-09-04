@@ -45,12 +45,12 @@ fn combat_damage_is_reported() {
 #[test]
 fn hp_is_reported_only_when_it_changes() {
     let mut view = ProgressView::new(false);
-    assert!(view.on_event(&Event::Prompt { hp: 33, mana: None }).is_some());
+    assert!(view.on_event(&Event::Prompt { hp: 33, mana: None, status: None }).is_some());
     assert!(
-        view.on_event(&Event::Prompt { hp: 33, mana: None }).is_none(),
+        view.on_event(&Event::Prompt { hp: 33, mana: None, status: None }).is_none(),
         "an unchanged prompt is noise"
     );
-    assert!(view.on_event(&Event::Prompt { hp: 21, mana: None }).is_some());
+    assert!(view.on_event(&Event::Prompt { hp: 21, mana: None, status: None }).is_some());
 }
 
 /// Flood control means the board DROPPED input. That is never noise.

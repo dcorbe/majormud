@@ -406,7 +406,7 @@ fn heal_state() -> HealState {
 
 fn prompt(hp: i32, mana: i32) -> Correlated {
     Correlated {
-        event: Event::Prompt { hp, mana: Some(mana) },
+        event: Event::Prompt { hp, mana: Some(mana), status: None },
         answers: None,
         elsewhere: false,
     }
