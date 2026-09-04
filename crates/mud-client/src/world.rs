@@ -22,6 +22,81 @@ use std::time::{Duration, Instant};
 /// waits arbitrary made-up delays.
 pub const ROUND: Duration = Duration::from_millis(5130);
 
+/// Cadence of the board's regen ticks on the stock realm, measured by
+/// MudPlay. Passive HP and mana share one 30 second pulse, resting HP
+/// ticks every 20 seconds, meditating mana every 15 seconds. The board
+/// announces none of them. They are inferred from a pool rising
+/// between two prompts.
+pub const REGEN_NATURAL: Duration = Duration::from_secs(30);
+pub const REGEN_REST: Duration = Duration::from_secs(20);
+pub const REGEN_MEDITATE: Duration = Duration::from_secs(15);
+/// A pool rising this soon after one of our own casts is the spell
+/// landing, not a tick.
+pub const CAST_WINDOW: Duration = Duration::from_secs(3);
+/// How early a gain may land and still be read as the cycle's own tick.
+pub const CLAIM_GRACE: Duration = Duration::from_millis(750);
+
+/// One regen cadence: a phase anchor and a period.
+///
+/// Ported from MudPlay's `RegenCycle`. The anchor is the instant of the
+/// last observed tick, or of the start when nothing has been observed
+/// yet. The next tick is projected in exact period steps from it, so a
+/// tick nobody could see, a pool already full, keeps the phase.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegenCycle {
+    period: Duration,
+    anchor: Option<Instant>,
+}
+
+impl RegenCycle {
+    pub fn new(period: Duration) -> Self {
+        RegenCycle { period, anchor: None }
+    }
+
+    pub fn period(&self) -> Duration {
+        self.period
+    }
+
+    pub fn active(&self) -> bool {
+        self.anchor.is_some()
+    }
+
+    /// Anchor here unless already running.
+    pub fn start(&mut self, now: Instant) {
+        if self.anchor.is_none() {
+            self.anchor = Some(now);
+        }
+    }
+
+    pub fn stop(&mut self) {
+        self.anchor = None;
+    }
+
+    /// Is a gain at `now` this cycle's own tick: running, and a period
+    /// has passed since the anchor, less the grace.
+    pub fn is_due(&self, now: Instant) -> bool {
+        match self.anchor {
+            Some(anchor) => now.saturating_duration_since(anchor) + CLAIM_GRACE >= self.period,
+            None => false,
+        }
+    }
+
+    /// A real tick landed: re-anchor on it.
+    pub fn observe(&mut self, now: Instant) {
+        self.anchor = Some(now);
+    }
+
+    /// Time until the next projected tick, in exact period steps from
+    /// the anchor. None while the cycle is not running.
+    pub fn time_to_next(&self, now: Instant) -> Option<Duration> {
+        let anchor = self.anchor?;
+        let elapsed = now.saturating_duration_since(anchor);
+        let steps = (elapsed.as_nanos() / self.period.as_nanos()) as u32;
+        let next = anchor + self.period * (steps + 1);
+        Some(next.saturating_duration_since(now))
+    }
+}
+
 /// Phase-locked round tracker. Combat lines arrive in bursts on round
 /// boundaries; observing them locks the phase, and consumers ask "when
 /// does the next round start" instead of sleeping guesses.
@@ -32,6 +107,7 @@ pub const ROUND: Duration = Duration::from_millis(5130);
 /// round!"). Buff upkeep additionally uses [`RoundClock::period`] to
 /// turn a spell's duration in ROUNDS — which is how the shipped data
 /// expresses it — into wall time.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoundClock {
     period: Duration,
     /// The start of the most recently observed burst.
@@ -64,6 +140,11 @@ impl RoundClock {
 
     pub fn period(&self) -> Duration {
         self.period
+    }
+
+    /// Has a volley ever locked the phase.
+    pub fn locked(&self) -> bool {
+        self.last_burst.is_some()
     }
 
     /// The earliest instant strictly after `t` that begins a new round.

@@ -5,7 +5,9 @@ use std::time::{Duration, Instant};
 
 use mud_client::correlate::{CmdId, Correlated};
 use mud_client::events::{Event, RoomView};
-use mud_client::world::{DivergenceKind, Here, OccupantKind, ROUND, RoundClock};
+use mud_client::world::{
+    CLAIM_GRACE, DivergenceKind, Here, OccupantKind, REGEN_NATURAL, ROUND, RegenCycle, RoundClock,
+};
 
 fn unsolicited(ev: Event) -> Correlated {
     Correlated {
@@ -868,4 +870,68 @@ fn re_noting_the_same_room_keeps_the_beliefs() {
     here.on_event(&answering(Event::RoomSeen(view(&["cave bear"])), ASK), now);
     here.note_room(RoomId { map: 1, room: 2146 });
     assert_eq!(here.occupants.len(), 1, "same room, same beliefs");
+}
+
+// ---------------------------------------------------------------------
+// RegenCycle: one phase anchor with a period. Pure and clock-injected.
+// ---------------------------------------------------------------------
+
+#[test]
+fn an_unstarted_cycle_has_no_next_tick() {
+    let c = RegenCycle::new(REGEN_NATURAL);
+    assert!(!c.active());
+    assert_eq!(c.time_to_next(Instant::now()), None);
+    assert!(!c.is_due(Instant::now()));
+}
+
+#[test]
+fn start_anchors_once_and_stop_forgets() {
+    let mut c = RegenCycle::new(REGEN_NATURAL);
+    let t0 = Instant::now();
+    c.start(t0);
+    // A second start does not move a running anchor.
+    c.start(t0 + Duration::from_secs(5));
+    assert_eq!(c.time_to_next(t0 + Duration::from_secs(5)), Some(Duration::from_secs(25)));
+    c.stop();
+    assert!(!c.active());
+    assert_eq!(c.time_to_next(t0), None);
+}
+
+#[test]
+fn time_to_next_counts_in_period_steps_from_the_anchor() {
+    // A silent tick at full HP moves no anchor. The projection still
+    // lands on the board's cadence.
+    let mut c = RegenCycle::new(REGEN_NATURAL);
+    let t0 = Instant::now();
+    c.observe(t0);
+    assert_eq!(c.time_to_next(t0 + Duration::from_secs(70)), Some(Duration::from_secs(20)));
+    assert_eq!(c.time_to_next(t0), Some(REGEN_NATURAL));
+}
+
+#[test]
+fn a_cycle_is_due_a_period_after_its_anchor_less_the_grace() {
+    let mut c = RegenCycle::new(REGEN_NATURAL);
+    let t0 = Instant::now();
+    c.observe(t0);
+    assert!(!c.is_due(t0 + Duration::from_secs(10)));
+    assert!(c.is_due(t0 + REGEN_NATURAL - CLAIM_GRACE));
+    assert!(c.is_due(t0 + REGEN_NATURAL + Duration::from_secs(40)));
+}
+
+#[test]
+fn observe_reanchors_a_running_cycle() {
+    let mut c = RegenCycle::new(REGEN_NATURAL);
+    let t0 = Instant::now();
+    c.observe(t0);
+    let t1 = t0 + Duration::from_secs(31);
+    c.observe(t1);
+    assert_eq!(c.time_to_next(t1), Some(REGEN_NATURAL));
+}
+
+#[test]
+fn the_round_clock_says_whether_it_is_locked() {
+    let mut clock = RoundClock::new();
+    assert!(!clock.locked());
+    clock.observe(Instant::now());
+    assert!(clock.locked());
 }
