@@ -801,6 +801,39 @@ async fn no_sighting_when_fight_while_travelling_is_off() {
     );
 }
 
+/// The `/bot` toggle mid-run. A run launched running (`fight_while_travelling
+/// = false`) walks past the rat on the way out; the switch is flipped
+/// while it stands at the cellar, and the leg back through the yard
+/// sights the rat and kills it.
+#[tokio::test]
+async fn flipping_the_switch_mid_run_starts_the_sightings() {
+    let server = start().await;
+    let session = logged_in(server.local_addr(), "Flipper").await;
+
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 0,
+        ..BotConfig::default()
+    };
+    let cfg = FarmConfig {
+        fight_while_travelling: false,
+        ..farm_config(&["1/3", "1/1"], 1)
+    };
+    let flip = async {
+        session
+            .expect("Rat Cellar", Duration::from_secs(10))
+            .await
+            .expect("the run should reach the cellar with the rat still alive behind it");
+        session.travel_fights().set(true);
+    };
+    let (run, ()) = tokio::join!(farm(&session, bot, cfg), flip);
+    let (end, stats) = run.expect("farm run");
+
+    assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
+    assert_eq!(stats.sightings, 1, "the leg back must sight the rat: {stats:?}");
+    assert_eq!(stats.kills, 1, "and kill it: {stats:?}");
+}
+
 /// Before relying on the refusal, prove the world produces it: a fresh
 /// character swinging at the behaviour-0 beetle is turned down, and the
 /// wording is the one `bot.rs` matches on.

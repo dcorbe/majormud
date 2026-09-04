@@ -13,6 +13,7 @@ use mud_client::farm::{
     StopState, Verdict, is_player_death, parse_health, parse_room_id,
 };
 use mud_client::nav::{Interrupt, TravelGuard};
+use mud_client::session::Switch;
 use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_core::content::{Direction, RoomId};
 
@@ -894,6 +895,70 @@ fn a_sighting_guard_trips_only_for_something_the_bot_would_attack() {
     assert_eq!(g.on_room(&player), None);
     // No predicate attached: structurally inert.
     assert_eq!(guard(100, 50).on_room(&rat), None);
+}
+
+/// The `/bot` toggle mid-walk. A guard that follows a switch reads it
+/// at every decision, so a sighting, an entry and a blow each stop the
+/// walk only while the switch is on — and start stopping it again the
+/// moment it is turned back on.
+#[test]
+fn a_guard_that_follows_a_switch_reads_it_at_every_decision() {
+    let switch = Switch::new(false);
+    let mut g = guard(100, 50)
+        .sighting(Bot::new(BotConfig {
+            auto_combat: true,
+            ..BotConfig::default()
+        }))
+        .follows(switch.clone());
+    let rat = RoomView {
+        name: "Dungeon, Entrance".into(),
+        also_here: vec!["thin giant rat".into()],
+        ..RoomView::default()
+    };
+    let entered = Event::ActorEntered {
+        name: "giant rat".into(),
+        from: Some("north".into()),
+    };
+    let hit = Event::CombatHit {
+        attacker: Actor::Other("giant rat".into()),
+        target: Actor::You,
+        damage: 3,
+    };
+    assert_eq!(g.on_room(&rat), None);
+    assert_eq!(g.on_event(&entered), None);
+    assert_eq!(g.on_event(&hit), None);
+
+    switch.set(true);
+    match g.on_room(&rat) {
+        Some(Interrupt::Sighted { room }) => assert_eq!(room, rat),
+        other => panic!("expected Sighted, got {other:?}"),
+    }
+    assert_eq!(
+        g.on_event(&entered),
+        Some(Interrupt::Entered {
+            name: "giant rat".into()
+        })
+    );
+    assert_eq!(
+        g.on_event(&hit),
+        Some(Interrupt::Attacked {
+            by: "giant rat".into()
+        })
+    );
+
+    switch.set(false);
+    assert_eq!(g.on_room(&rat), None);
+    assert_eq!(g.on_event(&entered), None);
+    assert_eq!(g.on_event(&hit), None);
+}
+
+/// Death and the HP gate are not fights: a switched-off guard still
+/// hands back for them, exactly as a running guard always has.
+#[test]
+fn a_switched_off_guard_still_stops_for_death_and_the_hp_gate() {
+    let mut g = guard(100, 50).follows(Switch::new(false));
+    assert_eq!(g.on_event(&prompt(-1)), Some(Interrupt::Died));
+    assert_eq!(g.on_event(&prompt(40)), Some(Interrupt::Hurt { hp: 40 }));
 }
 
 /// A template the board refused stops tripping for the whole run — the

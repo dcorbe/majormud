@@ -148,6 +148,10 @@ pub struct FarmConfig {
     /// Turn it off for legs whose point is to get somewhere. The
     /// character then still stops for the HP gate and for dying — it
     /// simply does not turn and swing at everything on the way.
+    ///
+    /// The STARTING position only: the runner seeds the session's live
+    /// switch from it ([`crate::session::Session::travel_fights`]), and
+    /// the `/bot` toggle moves that switch while the run is going.
     pub fight_while_travelling: bool,
     /// Stop walking a leg when hp drops below this percent, defend where
     /// the character stands, and resume once it is fit to travel again.
@@ -1357,11 +1361,14 @@ pub struct FarmGuard {
     max_hp: i32,
     hurt_at_percent: u32,
     username: String,
-    /// Stop and fight when something swings at us, rather than walking on
-    /// while it does. On unless the caller explicitly wants to run.
-    fight_back: bool,
+    /// Stop and fight — for a blow, a whiff, an entry or a sighting —
+    /// rather than walk on. Read at every decision, never copied: the
+    /// `/bot` toggle flips it under a walk in progress
+    /// ([`FarmGuard::follows`]). On unless the caller explicitly wants
+    /// to run.
+    fights: crate::session::Switch,
     /// Stop for rooms this bot would fight in. None (recover, the walk
-    /// home, `fight_while_travelling = false`) sights nothing.
+    /// home, a leg that already defended this room) sights nothing.
     sight: Option<crate::bot::Bot>,
 }
 
@@ -1371,9 +1378,19 @@ impl FarmGuard {
             max_hp,
             hurt_at_percent,
             username: username.to_string(),
-            fight_back: true,
+            fights: crate::session::Switch::new(true),
             sight: None,
         }
+    }
+
+    /// Read the fight decision off a shared switch instead of the fixed
+    /// one this guard was built with. What `/bot` mid-walk lands on: the
+    /// switch is the session's ([`crate::session::Session::travel_fights`]),
+    /// the terminal flips it, and the next sighting, entry or blow this
+    /// guard judges is judged under the new setting.
+    pub fn follows(mut self, fights: crate::session::Switch) -> Self {
+        self.fights = fights;
+        self
     }
 
     /// Stop for rooms this bot would fight in — the live incident was a
@@ -1401,7 +1418,7 @@ impl FarmGuard {
     /// swing at everything on the way.
     pub fn running(max_hp: i32, hurt_at_percent: u32, username: &str) -> Self {
         FarmGuard {
-            fight_back: false,
+            fights: crate::session::Switch::new(false),
             ..FarmGuard::new(max_hp, hurt_at_percent, username)
         }
     }
@@ -1444,7 +1461,7 @@ impl crate::nav::TravelGuard for FarmGuard {
                 attacker: crate::events::Actor::Other(name),
                 target: crate::events::Actor::You,
                 ..
-            } if self.fight_back => Some(Interrupt::Attacked { by: name.clone() }),
+            } if self.fights.get() => Some(Interrupt::Attacked { by: name.clone() }),
             // A whiff aimed at us proves occupancy exactly like a landed
             // blow — the stop pump already lives by that rule (see
             // `StopState::on_event`), and run5 (2026-08-01) showed why
@@ -1460,7 +1477,7 @@ impl crate::nav::TravelGuard for FarmGuard {
             // minutes (cwgaming, 2026-08-01: every leg out of the
             // Arena was whiffed at three times). Landed damage still
             // spends budget via the CombatHit arm above.
-            Event::CombatMiss { line } if self.fight_back && whiff_at_us(line) => {
+            Event::CombatMiss { line } if self.fights.get() && whiff_at_us(line) => {
                 Some(Interrupt::Entered {
                     name: "something unseen".into(),
                 })
@@ -1473,7 +1490,8 @@ impl crate::nav::TravelGuard for FarmGuard {
             // the walk home keep walking, exactly as they ignore what
             // an arrival block lists.
             Event::ActorEntered { name, .. }
-                if self.sight.as_ref().is_some_and(|b| b.would_attack(name)) =>
+                if self.fights.get()
+                    && self.sight.as_ref().is_some_and(|b| b.would_attack(name)) =>
             {
                 Some(Interrupt::Entered { name: name.clone() })
             }
@@ -1482,6 +1500,9 @@ impl crate::nav::TravelGuard for FarmGuard {
     }
 
     fn on_room(&mut self, room: &crate::events::RoomView) -> Option<crate::nav::Interrupt> {
+        if !self.fights.get() {
+            return None;
+        }
         let bot = self.sight.as_ref()?;
         // A listed coin pile is work exactly like a listed monster: the
         // defence pump this trips sweeps it (fight first if both), and
@@ -1522,6 +1543,9 @@ pub async fn run_farm(
     cfg: &FarmConfig,
     phase: PhaseSink<'_>,
 ) -> Result<(FarmEnd, FarmStats), FarmError> {
+    // The config says how the run STARTS; the session's switch is what
+    // every leg reads, so `/bot` can move it while the run is going.
+    session.travel_fights().set(cfg.fight_while_travelling);
     // The board's own per-monster death wordings, so the room model can
     // see a kill somebody ELSE landed. Best effort: without it the model
     // falls back to the award-and-one-phrase test it always had.
@@ -2223,29 +2247,24 @@ pub(crate) async fn travel(
     use crate::nav::{Interrupt, NavErrorKind};
     set_phase(phase, Phase::WaitingToDepart);
 
-    let mut guard = if cfg.fight_while_travelling {
-        // Sighting rides the same intent switch: "take fights on the
-        // way" covers a monster the arrival block LISTS, not only one
-        // that has already drawn blood. The bot is a predicate — never
-        // fed events — and shares the run's refusals, so a template the
-        // board refused stops tripping legs run-wide.
-        FarmGuard::new(
-            bot_config.max_hp,
-            cfg.interrupt_at_percent,
-            &session.profile().username,
-        )
-        .sighting(crate::bot::Bot::with_refusals(
-            bot_config.clone(),
-            threat.clone(),
-            refusals.clone(),
-        ))
-    } else {
-        FarmGuard::running(
-            bot_config.max_hp,
-            cfg.interrupt_at_percent,
-            &session.profile().username,
-        )
-    };
+    // Whether the leg stops for fights at all is the session's live
+    // switch (`/bot` flips it mid-walk), read at each sighting, entry
+    // and blow rather than fixed here. Sighting rides the same switch:
+    // "take fights on the way" covers a monster the arrival block
+    // LISTS, not only one that has already drawn blood. The bot is a
+    // predicate — never fed events — and shares the run's refusals, so
+    // a template the board refused stops tripping legs run-wide.
+    let mut guard = FarmGuard::new(
+        bot_config.max_hp,
+        cfg.interrupt_at_percent,
+        &session.profile().username,
+    )
+    .sighting(crate::bot::Bot::with_refusals(
+        bot_config.clone(),
+        threat.clone(),
+        refusals.clone(),
+    ))
+    .follows(session.travel_fights().clone());
     let mut budget = cfg.travel_interrupts;
     // Desync recoveries this leg may spend. Bounded because the recovery
     // WALKS: an unbounded one that keeps landing somewhere it cannot
@@ -2276,11 +2295,11 @@ pub(crate) async fn travel(
         // the quiet it made. The `last_sighted` memo breaks the cycle
         // when the defence cannot clear it (unkillable, refused): the
         // leg then departs wounded, which is what the travel guard is
-        // for. A leg that walks past fights on purpose
-        // (`fight_while_travelling = false`) departs wounded directly.
+        // for. A leg that walks past fights on purpose (the switch off)
+        // departs wounded directly.
         if let DepartureWait::Contested =
             wait_for_departure_health(session, cfg, bot_config, &sight).await
-            && cfg.fight_while_travelling
+            && session.travel_fights().get()
             && last_sighted != Some(*current)
         {
             last_sighted = Some(*current);

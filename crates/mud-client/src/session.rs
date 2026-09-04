@@ -297,6 +297,26 @@ struct RawSheet {
     casting: Casting,
 }
 
+/// A yes/no shared between the terminal and a job running on the same
+/// session, read by the job at each decision rather than copied once
+/// at launch. Cloning shares the value.
+#[derive(Clone, Debug, Default)]
+pub struct Switch(Arc<std::sync::atomic::AtomicBool>);
+
+impl Switch {
+    pub fn new(on: bool) -> Self {
+        Switch(Arc::new(std::sync::atomic::AtomicBool::new(on)))
+    }
+
+    pub fn get(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn set(&self, on: bool) {
+        self.0.store(on, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
 pub struct Session {
     cmd_tx: mpsc::UnboundedSender<Cmd>,
     shared: Arc<Shared>,
@@ -308,6 +328,11 @@ pub struct Session {
     /// Current send-pacing interval in ms, shared with the writer task.
     /// See [`Session::set_pace`].
     pace_ms: Arc<AtomicU64>,
+    /// Whether a walk on this session stops to fight what it meets.
+    /// Seeded by the runner from its config when a job starts and
+    /// flipped by the `/bot` toggle while it runs. See
+    /// [`Session::travel_fights`].
+    travel_fights: Switch,
     /// The session's own running balance, kept current by the reader
     /// task off whichever `i` reply arrives -- ours or a caller's.
     purse: Arc<Mutex<PurseTracker>>,
@@ -547,6 +572,7 @@ impl Session {
             profile: profile.clone(),
             next_id: AtomicU64::new(1),
             pace_ms,
+            travel_fights: Switch::default(),
             purse,
             stats,
             toll_log,
@@ -570,6 +596,15 @@ impl Session {
     pub fn set_pace(&self, pace: Duration) {
         self.pace_ms
             .store(pace.as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The live "fight while travelling" switch. A walk's travel guard
+    /// reads it at every sighting, entry and blow, so the `/bot` toggle
+    /// changes a walk already in progress — the same retune-a-live-job
+    /// shape as [`Session::set_pace`]. [`crate::farm::run_farm`] and
+    /// [`crate::go::run_go`] seed it from their config at entry.
+    pub fn travel_fights(&self) -> &Switch {
+        &self.travel_fights
     }
 
     /// Queue a line for sending (CRLF appended); pacing applies. The

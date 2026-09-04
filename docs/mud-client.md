@@ -382,6 +382,13 @@ fight is a walk that stays stuck wherever something picked a fight. What
 stop the leg. After three interruptions the walk gives up and reports the
 room it is standing in.
 
+The toggle works mid-walk. Pressing `/bot` while a `/go` or a `/farm`
+is running changes what the walk does from its next sighting, entry or
+blow onward. It does not stop a step already sent, and a walk that has
+already stopped to defend finishes that defence first. A `/farm` starts
+from the profile's `fight_while_travelling` and follows the toggle from
+then on.
+
 Two deliberate differences from `/farm`, both because this answers a
 keystroke rather than running unattended:
 

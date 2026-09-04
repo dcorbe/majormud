@@ -8,14 +8,17 @@
 //! second one written fresh would omit them, look correct, and
 //! rediscover them on a live character.
 //!
-//! **Walk versus run** is the `/bot` toggle, and it lands on
-//! [`crate::farm::FarmConfig::fight_while_travelling`]. The two switches
-//! read as contradictory until you separate them: that flag decides
-//! whether the walk *stops*, while [`crate::bot::BotConfig::auto_combat`]
-//! decides what the defence *does once stopped*. Run mode wants the
-//! first off and the second on, because the board refuses movement
-//! outright while in combat — a walk that would not fight is a walk that
-//! stays stuck wherever something picked a fight.
+//! **Walk versus run** is the `/bot` toggle. Its state when `/go` is
+//! typed seeds [`crate::farm::FarmConfig::fight_while_travelling`], and
+//! every later press moves the session's live switch
+//! ([`crate::session::Session::travel_fights`]) under the walk in
+//! progress. The two switches read as contradictory until you separate
+//! them: that flag decides whether the walk *stops*, while
+//! [`crate::bot::BotConfig::auto_combat`] decides what the defence
+//! *does once stopped*. Run mode wants the first off and the second on,
+//! because the board refuses movement outright while in combat — a walk
+//! that would not fight is a walk that stays stuck wherever something
+//! picked a fight.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -159,8 +162,9 @@ pub fn resolve(graph: &RoomGraph, from: Option<RoomId>, typed: &str) -> Result<R
 /// The config a `/go` runs under, from the profile's `[farm]` table (or
 /// its defaults when the profile has no farm at all).
 ///
-/// `walking` is the `/bot` toggle: on means take the fights on the way,
-/// off means walk past them.
+/// `walking` is the `/bot` toggle as it stood when `/go` was typed: on
+/// means take the fights on the way, off means walk past them. Later
+/// presses reach the walk through the session's switch, not this.
 ///
 /// Three fields deliberately diverge from what a farm would use. Each is
 /// the difference between a command that answers a keystroke and one
@@ -230,6 +234,9 @@ pub async fn run_go(
     cfg: &FarmConfig,
     phase: crate::farm::PhaseSink<'_>,
 ) -> Result<GoEnd, FarmError> {
+    // How the walk starts; `/bot` moves the switch from here on. See
+    // `run_farm`.
+    session.travel_fights().set(cfg.fight_while_travelling);
     // The board's own per-monster death wordings, so the room model can
     // see a kill somebody else landed. Best effort, as in `run_farm`.
     if let Err(e) = crate::deaths::init(&cfg.content) {

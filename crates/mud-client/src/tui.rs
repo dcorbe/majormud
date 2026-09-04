@@ -640,14 +640,31 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                 }
                             }
                             KeyOutcome::ToggleAssist => {
-                                if assist.take().is_none() {
+                                let on = assist.take().is_none();
+                                if on {
                                     // Fresh on every start: latches from
                                     // an earlier stretch describe fights
                                     // that are over.
                                     assist = Some(crate::bot::Bot::new(assist_config.clone()));
-                                    note(&mut out, "-- bot assist on: fighting and looting beside you (/bot to stop) --")?;
-                                } else {
-                                    note(&mut out, "-- bot assist off --")?;
+                                }
+                                // A running job owns the connection and
+                                // never hears the assist, so the toggle
+                                // reaches it the only way it can: the
+                                // session's fight switch, which its
+                                // travel guard reads at every decision.
+                                // A walk already stopped to defend
+                                // finishes that defence either way.
+                                match (&job, on) {
+                                    (Some(j), true) => {
+                                        session.travel_fights().set(true);
+                                        note(&mut out, &format!("-- bot assist on: the {} fights what it meets from here (/bot to stop) --", j.what))?;
+                                    }
+                                    (Some(j), false) => {
+                                        session.travel_fights().set(false);
+                                        note(&mut out, &format!("-- bot assist off: the {} walks past fights from here --", j.what))?;
+                                    }
+                                    (None, true) => note(&mut out, "-- bot assist on: fighting and looting beside you (/bot to stop) --")?,
+                                    (None, false) => note(&mut out, "-- bot assist off --")?,
                                 }
                             }
                             KeyOutcome::Continue => {}
