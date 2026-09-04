@@ -134,7 +134,106 @@ git commit -m "feat(client): the experience rate reads per hour"
 
 ---
 
-### Task 2: Verify and ship
+### Task 2: Recovery follow-ups from review
+
+Five small items the recovery phase's final review left open. Each is a few lines.
+
+**Files:**
+- Modify: `crates/mud-client/src/session.rs` (beside `raw_sheet`)
+- Modify: `crates/mud-client/src/tui.rs` (`assist_tick`, the `assist_book_seen` local and its resets)
+- Modify: `crates/mud-client/src/farm.rs` (the departure mark check at the top of `run_farm`)
+- Modify: `crates/mud-client/src/go.rs` (`run_go`)
+- Modify: `crates/mud-client/tests/farm.rs` (the `HealWatch` test names, and a new test), `crates/mud-client/tests/bot.rs:1507-1508`
+
+**Interfaces:**
+- Produces: `Session::book_len(&self) -> usize`, the spellbook's spell count read under one lock.
+- Produces: `pub fn check_departure_mark(cfg: &FarmConfig, bot: &BotConfig) -> Result<(), FarmError>` in `farm.rs`, used by both `run_farm` and `run_go`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `crates/mud-client/tests/farm.rs`, adding `check_departure_mark` to the `use mud_client::farm::{..}` import:
+
+```rust
+// check_departure_mark: the interrupt mark must sit under the mark the
+// gate will actually rest to, whichever config supplies it.
+// ---------------------------------------------------------------------
+
+#[test]
+fn the_interrupt_mark_is_checked_against_the_bots_mark_when_the_farm_sets_none() {
+    let cfg = FarmConfig { depart_at_percent: None, interrupt_at_percent: 96, ..FarmConfig::default() };
+    let bot = BotConfig { rest_until_percent: 80, ..BotConfig::default() };
+    let err = check_departure_mark(&cfg, &bot).expect_err("96 is above 80");
+    assert!(matches!(err, FarmError::Config(_)), "{err}");
+    assert!(err.to_string().contains("96") && err.to_string().contains("80"), "{err}");
+    let fine = FarmConfig { interrupt_at_percent: 50, ..cfg.clone() };
+    assert!(check_departure_mark(&fine, &bot).is_ok());
+    // A disabled gate checks nothing.
+    let off = BotConfig { rest_until_percent: 0, ..bot.clone() };
+    assert!(check_departure_mark(&cfg, &off).is_ok());
+}
+```
+
+`BotConfig` and `FarmError` may need importing in that file. Rename the existing `HealWatch` test `only_the_rest_command_arms_it` to `a_command_that_is_neither_rest_nor_meditate_does_not_arm_it`.
+
+In `crates/mud-client/tests/bot.rs` near lines 1507 and 1508, two doc comments still name `Bot::on_hp`. Change them to `Bot::on_vitals`.
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `cargo test -p mud-client --test farm checked_against_the_bots_mark 2>&1 | tail -5`
+Expected: compile error, no `check_departure_mark`.
+
+- [ ] **Step 3: One check for both runners**
+
+In `crates/mud-client/src/farm.rs`, move the check that sits at the top of `run_farm` into:
+
+```rust
+/// The interrupt mark must sit under the mark the gate rests to. The
+/// plan cannot check this when the farm leaves the mark to the bot,
+/// since it never sees the bot's config, so both runners check here.
+pub fn check_departure_mark(cfg: &FarmConfig, bot: &crate::bot::BotConfig) -> Result<(), FarmError> {
+    let mark = cfg.depart_at_percent.unwrap_or(bot.rest_until_percent);
+    if mark != 0 && cfg.interrupt_at_percent > mark {
+        return Err(FarmError::Config(format!(
+            "interrupt_at_percent ({}) is above the departure mark ({mark}): the walk \
+             would set off at {mark}% and be interrupted at once",
+            cfg.interrupt_at_percent
+        )));
+    }
+    Ok(())
+}
+```
+
+and call `check_departure_mark(cfg, bot_config)?;` as the first statement of both `run_farm` and `run_go`.
+
+- [ ] **Step 4: The book length and the first rebuild**
+
+In `crates/mud-client/src/session.rs`, beside `raw_sheet`:
+
+```rust
+    /// How many spells the session's book holds, read under one lock.
+    /// The assist compares it on every event to notice the probe landing.
+    pub fn book_len(&self) -> usize {
+        self.sheet.lock().expect("sheet lock").book.spells.len()
+    }
+```
+
+In `crates/mud-client/src/tui.rs`, `assist_tick` reads `session.book_len()` instead of `session.raw_sheet().1.spells.len()`. Every place `assist_book_seen` is set to `0` sets it to `usize::MAX` instead, with a comment at the local's declaration: `// A length no book can have, so the first tick always reads the sheet and prints its refusals, even for an empty book.`
+
+- [ ] **Step 5: Run the suites**
+
+Run: `cargo build --workspace 2>&1 | grep -E "^(error|warning)"; cargo test -p mud-client 2>&1 | grep -E "^test result|FAILED" | sort | uniq -c`
+Expected: no errors, all pass.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/mud-client
+git commit -m "fix(client): the go walk checks the departure mark too, and the assist reads its book once"
+```
+
+---
+
+### Task 3: Verify and ship
 
 - [ ] **Step 1: Whole workspace**
 
