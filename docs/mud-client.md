@@ -51,11 +51,17 @@ auto_combat = true
 auto_heal = true
 auto_flee = true
 auto_get = true            # coins only; floor items are never announced
-spell_at_percent = 80      # cast a heal below this; 0 = never
-rest_at_percent = 60       # stop and rest below this
-flee_at_percent = 30       # run below this
+minor_heal_at_percent = 70 # cast the minor heal below this; 0 = never
+major_heal_at_percent = 40 # cast the major heal below this; 0 = never
+rest_at_percent = 60       # rest below this
+mana_rest_at_percent = 30  # rest, or meditate, below this mana
+rest_until_percent = 95    # a rest or a meditation is over at this
+flee_at_percent = 20       # run below this
+meditate = false           # send meditate for mana. A quest ability, so you say.
 rest_command = "rest"
-heal_spells = []           # empty = discover from the spellbook
+minor_heal_spell = ""      # empty = the cheapest heal in the book
+major_heal_spell = ""      # empty = the dearest
+hp_regen_spell = ""        # a heal over time, cast between the two marks
 buffs = ["bless"]          # kept up on a duration budget, not an HP mark
 ignore = ["guard", "healer"]
 # max_hp and max_mana omitted: the runner probes the board for them at startup
@@ -103,35 +109,34 @@ board takes `SET WARNING ON|OFF` (an explicit setter, so idempotent),
 while `mud-server` implements a bare `set evil` toggle. That divergence is
 the reimplementation's, not the board's.
 
-### The three recovery marks
-
-Being hurt has three answers and they are not interchangeable. All three
-are percentages of `max_hp`, which the runner probes at startup, and all
-three do nothing at all while `max_hp` is unknown.
+### The recovery marks
 
 | mark | response | costs | works in a fight |
 |---|---|---|---|
-| `spell_at_percent` | cast a healing spell | mana | **yes** |
+| `minor_heal_at_percent` | cast the minor heal, or the regen between the marks | mana | **yes** |
+| `major_heal_at_percent` | cast the major heal | mana | **yes** |
 | `rest_at_percent` | `rest` | nothing | no |
+| `mana_rest_at_percent` | `rest`, or `meditate` with the switch on | nothing | no |
 | `flee_at_percent` | walk out the first exit | the room | n/a |
 
-They are one ladder and the loader refuses a profile whose marks are out
-of order. `0` means *off*, not *0%* — `spell_at_percent` defaults to 0, so
-a profile written before spell healing existed keeps resting and only
-resting.
+They are two ladders and the loader refuses a profile whose marks are out
+of order: `minor_heal >= major_heal >= flee`, and `rest_until >= rest_at
+>= flee`, with `mana_rest_at` under `rest_until`. `0` means *off*.
 
-As health falls with `80 / 60 / 30`:
+As health falls with the defaults:
 
 ```
-85%   nothing
-70%   cast a heal
-50%   cast a heal; rest as well, but only if the room is clear
-25%   run — and nothing else
+80%   nothing
+65%   cast the minor heal, or the regen if one is named and not running
+55%   cast a heal; rest as well, but only if the room is clear
+35%   cast the major heal
+15%   run, and nothing else
 ```
 
-**Flee outranks everything**, which is why the last line is bare. Staying
-to heal is what gets a character killed, and that ordering has been in
-`Bot::on_hp` since a live death produced it.
+A rest or a meditation is over when the pools reach `rest_until_percent`,
+HP and mana for a rest, mana for a meditation. The board has no command
+to end one. The character stands on its next action, and with Stealth on
+the sheet the assist's next action is `hide`. The defaults are MudPlay's.
 
 #### Why casting works mid-fight and resting does not
 
@@ -153,11 +158,20 @@ from the board's own wording rather than assumed.
 
 #### Choosing the spells
 
-`heal_spells` empty (the default) means **discover**: the client reads the
-character's own spellbook and uses what is in it, cheapest first, with the
-mana costs the book itself reports. Nothing is invented — a character with
-no heal in its book simply never casts one. List names in `heal_spells` to
-pin the choice instead.
+`minor_heal_spell` and `major_heal_spell` empty mean **discover**: the
+client reads the character's own spellbook, takes the cheapest heal as
+the minor and the dearest as the major, with the mana costs the book
+reports. Name one to pin it. A name the book does not know is refused at
+startup with the reason.
+
+`hp_regen_spell` is only ever named. It is a heal over time, cast between
+the minor and major marks when it is not already running, and its
+duration comes from the shipped spell table in combat rounds, the same
+way a buff's does. Below the major mark the instant heal is always
+preferred, since a regen pays out a round later.
+
+The old `heal_spells` list still parses: its first entry becomes the
+minor and its last the major.
 
 Mystics are handled: `powers` and `invoke` replace `spells` and `cast`, and
 the Kai pool replaces mana. The client works out which from the board's own
@@ -194,6 +208,11 @@ to help is mana spent too late to matter.
 command back when resting was the only recovery there was. Both still parse
 and still mean rest; the client says so once at load.
 
+`spell_at_percent` is the old name of `minor_heal_at_percent`. `heal_spells`
+is the old form of `minor_heal_spell` and `major_heal_spell` together, its
+first entry the minor and its last the major. `depart_at_percent` under
+`[farm]` is a farm-only override of `rest_until_percent`.
+
 ### `[farm]`
 
 - **`start`** — where the character *stands at login*, not where the
@@ -210,7 +229,10 @@ and still mean rest; the client says so once at load.
   walks it out. It fires on **every** route out including Ctrl-C, and is
   skipped only on a death. Validated at build time from every stop the run
   can end at, not just the start.
-- **`depart_at_percent`** (80) — never start a leg below this.
+- **`depart_at_percent`** (unset) — never start a leg below this. Unset
+  means the bot's `rest_until_percent`, which gates mana too and sends
+  `meditate` when the switch is on. Set it to give this farm its own
+  mark, or `0` to disable the gate for it.
   `interrupt_at_percent` (50) stops one that gets hurt on the way; it must
   not exceed `depart_at_percent` or the plan is rejected.
 - **`idle_poke_ms`** (5000) — an idle board sends *nothing*, not even a
@@ -375,6 +397,10 @@ asked again.
 | on | **Walk** — stops for anything the bot would attack or loot, clears the room, resumes |
 | off | **Run** — keeps moving, engages only when the board refuses the move |
 
+The assist recovers by the same marks a farm does: it rests, meditates
+and casts heals, and after a rest it hides when the sheet shows Stealth.
+Fleeing follows `auto_flee` as it does for a farm.
+
 Run mode still fights, and has to: the board answers a move with *"You
 may not enter that room while in combat"*, so a walk that would never
 fight is a walk that stays stuck wherever something picked a fight. What
@@ -395,15 +421,15 @@ was answered with, and the assist is rebuilt fresh at that moment, so
 without the look it would stand among whatever the destination lists
 without ever having seen it.
 
-Two deliberate differences from `/farm`, both because this answers a
+One deliberate difference from `/farm`, because this answers a
 keystroke rather than running unattended:
 
-- **No departure gate.** A farm rests to 80% before setting off; `/go`
-  leaves immediately. Inheriting that gate would make a post-death `/go`
-  sit silently resting for up to two minutes before its first step.
 - **No door bashing.** `open` is still tried and still free, so ordinary
   closed doors are no obstacle; a *locked* one fails loudly instead of
   grinding sixty failed bashes. Type `bash <dir>` yourself.
+
+The walk rests to the bot's mark before its first step, as a farm does.
+Set `rest_until_percent = 0` for the old instant start.
 
 `/go` needs the room database. The default path is **relative**
 (`re/mmud_wgnt.sqlite`), so a `play` started outside the repo root will
