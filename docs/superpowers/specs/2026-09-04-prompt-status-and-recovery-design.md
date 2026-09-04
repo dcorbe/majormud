@@ -120,10 +120,10 @@ One known hole. The board writes a pool prompt and its status in one call, but
 a chunk boundary can land between `]:` and ` (Resting) `. The prompt then
 emits bare and the status word reaches the correlator as a decorated echo,
 which `strip_decoration` already handles. The status is missing for that one
-prompt and back on the next. Every rule in Part 3 is level triggered on the
-status together with the vitals, never on a status vanishing, so a blink can
-fire nothing. The tick clock does restart its rest cycle on one, which costs
-that cycle one credited tick and nothing else.
+prompt and back on the next. The rules in Part 3 read the status together with
+the vitals on every prompt. A blink reads as standing for one prompt, which
+costs one redundant rest and nothing else. The tick clock does restart its rest
+cycle on one, which costs that cycle one credited tick and nothing else.
 
 ### Carrying it
 

@@ -129,7 +129,7 @@ As health falls with the defaults:
 80%   nothing
 65%   cast the minor heal, or the regen if one is named and not running
 55%   cast a heal; rest as well, but only if the room is clear
-35%   cast the major heal
+35%   cast the major heal, and rest if the room is clear
 15%   run, and nothing else
 ```
 
@@ -170,6 +170,9 @@ duration comes from the shipped spell table in combat rounds, the same
 way a buff's does. Below the major mark the instant heal is always
 preferred, since a regen pays out a round later.
 
+A book whose only heal is the named regen spell casts nothing below the
+major mark, where the slow regen is never wanted.
+
 The old `heal_spells` list still parses: its first entry becomes the
 minor and its last the major.
 
@@ -182,7 +185,7 @@ redirect, so nothing needs configuring.
 `bless` is **not** a heal — it is a 40-round buff worth +3, and it restores
 no health. There is no HP mark that makes sense for it, so buffs are kept up
 on a **duration budget** instead: cast in a quiet room, recast when the
-rounds run out. Naming one in `heal_spells` would do nothing useful.
+rounds run out. Naming one in `minor_heal_spell` would do nothing useful.
 
 The duration comes from the shipped `spell` table via `[farm].content`, in
 combat rounds, and it is a **floor**: the real duration scales with caster
@@ -210,8 +213,7 @@ and still mean rest; the client says so once at load.
 
 `spell_at_percent` is the old name of `minor_heal_at_percent`. `heal_spells`
 is the old form of `minor_heal_spell` and `major_heal_spell` together, its
-first entry the minor and its last the major. `depart_at_percent` under
-`[farm]` is a farm-only override of `rest_until_percent`.
+first entry the minor and its last the major.
 
 ### `[farm]`
 
@@ -229,12 +231,19 @@ first entry the minor and its last the major. `depart_at_percent` under
   walks it out. It fires on **every** route out including Ctrl-C, and is
   skipped only on a death. Validated at build time from every stop the run
   can end at, not just the start.
-- **`depart_at_percent`** (unset) — never start a leg below this. Unset
-  means the bot's `rest_until_percent`, which gates mana too and sends
-  `meditate` when the switch is on. Set it to give this farm its own
-  mark, or `0` to disable the gate for it.
-  `interrupt_at_percent` (50) stops one that gets hurt on the way; it must
-  not exceed `depart_at_percent` or the plan is rejected.
+- **`depart_at_percent`** is unset by default and means never start a leg
+  below this mark. Unset, the mark is the bot's `rest_until_percent`,
+  which gates mana too and sends `meditate` when the switch is on. Set it
+  to give this farm its own mark. Set it to `0` to disable the gate for
+  this farm alone.
+  **`interrupt_at_percent`**, 50 by default, stops a leg that gets hurt on
+  the way. It must not exceed the departure mark. A farm that sets its own
+  `depart_at_percent` has the pair rejected when the plan is built. A farm
+  that does not is refused at run start instead, where the bot's mark is
+  finally in hand.
+  **`max_rest_seconds`**, 120 by default, caps how long the departure gate
+  may spend recovering. A caster resting both pools to 95 usually reaches
+  this cap first, since mana climbs by one tick every 15 or 30 seconds.
 - **`idle_poke_ms`** (5000) — an idle board sends *nothing*, not even a
   prompt, for minutes at a stretch. The poke is the only thing that
   produces prompts at an empty stop, and it doubles as a respawn check.
