@@ -850,3 +850,45 @@ async fn the_mystic_redirect_happens_once_at_login() {
         "the redirect must fire exactly once, not loop: {log:?}"
     );
 }
+
+// ---------------------------------------------------------------------
+// A job handing the character back. The walk's last step answered with
+// the destination's block, and the walk consumed it: the assist is
+// rebuilt fresh at the handover and has never seen the room. Live,
+// 2026-09-04: a `/go` ended in a Dark Cave listing a giant rat and a
+// cave worm, the worm lunged, and the assist stood there until the
+// operator typed the backstab. The handover pokes a look, and the
+// assist engages off its attributed answer exactly as it does after a
+// fight.
+// ---------------------------------------------------------------------
+
+use mud_client::farm::Phase;
+use mud_client::tui::handover_actions;
+
+#[test]
+fn a_job_ending_somewhere_known_pokes_a_look_for_the_assist() {
+    let at = RoomId { map: 1, room: 2226 };
+    let done = Phase::Done { why: "arrived at 1/2226".into(), at: Some(at) };
+    assert_eq!(handover_actions(&done, true), vec!["look".to_string()]);
+    let placed = Phase::Placed { at, steps: 0 };
+    assert_eq!(handover_actions(&placed, true), vec!["look".to_string()]);
+}
+
+/// Nothing is sent for a job that does not know where it left the
+/// character: after a death the board is not even at a room prompt.
+#[test]
+fn a_job_ending_nowhere_known_pokes_nothing() {
+    let died = Phase::Done { why: "died".into(), at: None };
+    assert_eq!(handover_actions(&died, true), Vec::<String>::new());
+    let failed = Phase::Failed { why: "no route".into() };
+    assert_eq!(handover_actions(&failed, true), Vec::<String>::new());
+}
+
+/// With the assist off the operator gets the keyboard back and nothing
+/// else; a look nobody acts on is a wasted round trip.
+#[test]
+fn a_job_ending_with_the_assist_off_pokes_nothing() {
+    let at = RoomId { map: 1, room: 2226 };
+    let done = Phase::Done { why: "arrived at 1/2226".into(), at: Some(at) };
+    assert_eq!(handover_actions(&done, false), Vec::<String>::new());
+}

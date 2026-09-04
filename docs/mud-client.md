@@ -389,6 +389,12 @@ already stopped to defend finishes that defence first. A `/farm` starts
 from the profile's `fight_while_travelling` and follows the toggle from
 then on.
 
+When the walk ends with `/bot` on, the client sends one `look` before
+handing the keyboard back. The walk consumed the block its last step
+was answered with, and the assist is rebuilt fresh at that moment, so
+without the look it would stand among whatever the destination lists
+without ever having seen it.
+
 Two deliberate differences from `/farm`, both because this answers a
 keystroke rather than running unattended:
 

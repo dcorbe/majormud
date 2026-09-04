@@ -336,15 +336,11 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                     // room blocks `track` sees, which is exactly why
                     // `/where` exists: it resolves rooms no single block
                     // can. Adopt it before the channel is dropped.
-                    let (why, placed) = match phase_rx.take() {
-                        Some(rx) => {
-                            let p = rx.borrow().clone();
-                            (p.label(), p.room())
-                        }
-                        None => ("done".into(), None),
-                    };
-                    let why: String = why;
-                    if let Some(at) = placed {
+                    let ended = phase_rx
+                        .take()
+                        .map(|rx| rx.borrow().clone())
+                        .unwrap_or(crate::farm::Phase::Done { why: "done".into(), at: None });
+                    if let Some(at) = ended.room() {
                         here = crate::lost::Fix::Confirmed(at);
                         model.note_room(at);
                     }
@@ -356,7 +352,10 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                     if assist.is_some() {
                         assist = Some(crate::bot::Bot::new(assist_config.clone()));
                     }
-                    note(&mut out, &format!("-- {what} ended: {why} --"))?;
+                    for cmd in handover_actions(&ended, assist.is_some()) {
+                        session.send(&cmd);
+                    }
+                    note(&mut out, &format!("-- {what} ended: {} --", ended.label()))?;
                 }
                 repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
             }
@@ -961,6 +960,31 @@ pub fn assist_actions(
         out.push("look".into());
     }
     out
+}
+
+/// What the assist needs when a job hands the character back.
+///
+/// A job consumes every block its own steps are answered with, and the
+/// assist is rebuilt fresh at the handover (see the job-end arm of
+/// [`play`]), so the room the job ended in is one the assist has never
+/// seen. A `/go` that arrives among monsters used to end exactly there:
+/// the walk's last block listed a giant rat and a cave worm, the worm
+/// lunged, and the assist stood idle until the operator typed the
+/// backstab. Live, 2026-09-04. A blow landing on us is deliberately not
+/// answered by a counter-attack either, see the `CombatHit` arm of
+/// `Bot::on_event`, so nothing else would ever have started the fight.
+///
+/// The poke is a look, for the same reason the fight-over poke in
+/// [`assist_actions`] is: the assist believes only a block that answers
+/// a command, and a look's answer is attributed and names everyone
+/// standing here now. Only a job that ended somewhere KNOWN is worth
+/// it, since after a death the board is not even at a room prompt. And
+/// only with the assist on, since nobody else acts on the answer.
+pub fn handover_actions(ended: &crate::farm::Phase, assist: bool) -> Vec<String> {
+    match ended.room() {
+        Some(_) if assist => vec!["look".into()],
+        _ => Vec::new(),
+    }
 }
 
 fn setup_region(out: &mut impl std::io::Write, rows: u16) -> std::io::Result<()> {
