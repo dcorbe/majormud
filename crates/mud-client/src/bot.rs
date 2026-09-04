@@ -631,8 +631,16 @@ impl Bot {
     /// Hide once a recovery is over. The assist turns this on when the
     /// sheet shows Stealth. A farm never does, its stops are not idle.
     pub fn with_hide(mut self, hide: bool) -> Self {
-        self.hide_when_idle = hide;
+        self.set_hide(hide);
         self
+    }
+
+    /// The same switch as [`Bot::with_hide`], settable after the build.
+    /// The assist needs it: it is built before the realm entry probe has
+    /// read the stat sheet, so Stealth reads 0 at the build and only
+    /// becomes known a few prompts later.
+    pub fn set_hide(&mut self, hide: bool) {
+        self.hide_when_idle = hide;
     }
 
     /// Does the bot believe the character is hidden.

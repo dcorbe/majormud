@@ -5,9 +5,11 @@ use mud_client::correlate::Correlated;
 use mud_client::events::{Actor, Event, RoomView, Status};
 use mud_client::lost::Fix;
 use mud_client::session::GameState;
-use mud_client::tui::{InputEditor, render_status};
+use mud_client::sheet::{Casting, HealChoice, HealState, Spellbook};
+use mud_client::tui::{InputEditor, assist_heal, render_status};
 use mud_client::world::{TickClock, ROUND};
 use mud_core::content::RoomId;
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 #[test]
@@ -1022,10 +1024,6 @@ fn status_line_shows_the_rest_cycle_beside_the_natural_one_while_resting() {
 // decide anything itself, so the assist and the farm's stop loop read
 // the same number.
 // ---------------------------------------------------------------------
-
-use mud_client::sheet::{Casting, HealChoice, HealState, Spellbook};
-use mud_client::tui::assist_heal;
-use std::collections::BTreeMap;
 
 fn healer() -> HealState {
     let book = Spellbook::parse("  1    2  mihe   minor healing\n  4    6  mahe   major healing\n");

@@ -183,11 +183,13 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
         auto_get: true,
         ..Default::default()
     });
+    // Rests the assist sends and the spells its book was last read to
+    // hold. Both live beside the bot and are reset with it, because both
+    // describe the bot that is running now.
+    let mut assist_watch = crate::farm::HealWatch::new(&assist_config, &crate::farm::FarmConfig::default());
+    let mut assist_book_seen = 0usize;
     if assist_config.assist_play {
-        let (bot, heal, refusals) = new_assist(&session, &assist_config, &durations);
-        for why in &refusals {
-            eprintln!("-- {why} --");
-        }
+        let (bot, heal) = new_assist(&session, &assist_config);
         assist = Some(bot);
         assist_heal_state = Some(heal);
     }
@@ -288,21 +290,24 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                     // While a farm runs it owns the connection outright;
                     // the assist only drives a hand-played session.
                     if job.is_none()
-                        && let Some(bot) = assist.as_mut()
+                        && let (Some(bot), Some(heal)) =
+                            (assist.as_mut(), assist_heal_state.as_mut())
                     {
-                        let now = std::time::Instant::now();
-                        if let Some(heal) = assist_heal_state.as_mut() {
-                            heal.on_event(cor, now);
-                            if let crate::events::Event::Prompt { hp, .. } = &cor.event {
-                                let clock = state_rx.borrow().ticks.round.clone();
-                                if let Some(cmd) = assist_heal(&assist_config, bot, heal, &clock, *hp, now) {
-                                    let id = session.send(&cmd);
-                                    heal.on_sent(&cmd, id);
-                                }
-                            }
-                        }
-                        for cmd in assist_actions(bot, cor) {
-                            session.send(&cmd);
+                        let clock = state_rx.borrow().ticks.round.clone();
+                        let refusals = assist_tick(
+                            &session,
+                            &assist_config,
+                            &durations,
+                            bot,
+                            heal,
+                            &mut assist_watch,
+                            &mut assist_book_seen,
+                            &clock,
+                            cor,
+                            std::time::Instant::now(),
+                        );
+                        for why in refusals {
+                            note(&mut out, &format!("-- {why} --"))?;
                         }
                     }
                     // Shadow bookkeeping, farm-free sessions only: while
@@ -372,12 +377,12 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                     // fights that are over, so the assist starts clean for
                     // the same reason `/bot` rebuilds it on every toggle-on.
                     if assist.is_some() {
-                        let (bot, heal, refusals) = new_assist(&session, &assist_config, &durations);
-                        for why in &refusals {
-                            note(&mut out, &format!("-- {why} --"))?;
-                        }
+                        let (bot, heal) = new_assist(&session, &assist_config);
                         assist = Some(bot);
                         assist_heal_state = Some(heal);
+                        assist_watch =
+                            crate::farm::HealWatch::new(&assist_config, &crate::farm::FarmConfig::default());
+                        assist_book_seen = 0;
                     }
                     for cmd in handover_actions(&ended, assist.is_some()) {
                         session.send(&cmd);
@@ -560,15 +565,37 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                                 // to plan a route must not
                                                 // also stop the assist
                                                 // fighting for you.
+                                                // The round clock is snapshotted here
+                                                // because the closure cannot hold a borrow
+                                                // of the state watch across the view's
+                                                // whole run. A map session is short, and
+                                                // the worst a stale snapshot costs is a
+                                                // cast held back one round.
+                                                let assist_clock = state_rx.borrow().ticks.round.clone();
                                                 let mut on_event = |cor: &crate::correlate::Correlated| {
                                                     if let crate::events::Event::Line(line) = &cor.event {
                                                         exp.observe(line);
                                                     }
                                                     if job.is_none()
-                                                        && let Some(bot) = assist.as_mut()
+                                                        && let (Some(bot), Some(heal)) =
+                                                            (assist.as_mut(), assist_heal_state.as_mut())
                                                     {
-                                                        for cmd in assist_actions(bot, cor) {
-                                                            session.send(&cmd);
+                                                        let refusals = assist_tick(
+                                                            &session,
+                                                            &assist_config,
+                                                            &durations,
+                                                            bot,
+                                                            heal,
+                                                            &mut assist_watch,
+                                                            &mut assist_book_seen,
+                                                            &assist_clock,
+                                                            cor,
+                                                            std::time::Instant::now(),
+                                                        );
+                                                        // The map owns the screen, so there
+                                                        // is no `note` to print through.
+                                                        for why in refusals {
+                                                            eprintln!("-- {why} --");
                                                         }
                                                     }
                                                 };
@@ -678,15 +705,15 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                     // Fresh on every start: latches from
                                     // an earlier stretch describe fights
                                     // that are over.
-                                    let (bot, heal, refusals) = new_assist(&session, &assist_config, &durations);
-                                    for why in &refusals {
-                                        note(&mut out, &format!("-- {why} --"))?;
-                                    }
+                                    let (bot, heal) = new_assist(&session, &assist_config);
                                     assist = Some(bot);
                                     assist_heal_state = Some(heal);
                                 } else {
                                     assist_heal_state = None;
                                 }
+                                assist_watch =
+                                    crate::farm::HealWatch::new(&assist_config, &crate::farm::FarmConfig::default());
+                                assist_book_seen = 0;
                                 // A running job owns the connection and
                                 // never hears the assist, so the toggle
                                 // reaches it the only way it can: the
@@ -966,24 +993,72 @@ pub fn handle_key(
     KeyOutcome::Continue
 }
 
-/// Build the assist and its heal state together, so every rebuild — the
-/// profile's own start, the `/bot` toggle, a job handing back — reads
-/// the sheet's marks the same way. The bot hides after a rest only when
-/// `Session::capabilities` says Stealth is trained; before the realm
-/// entry probe fills the stat sheet that reads 0, so the first build of
-/// a session never hides, which matches the assist starting fresh on
-/// every rebuild anyway.
+/// Build the assist and its heal state together, so every rebuild reads
+/// the same way. The rebuilds are the profile's own start, the `/bot`
+/// toggle, and a job handing the character back.
 ///
-/// Returns the bot, the heal state, and the sheet's heal refusals for
-/// the caller to print.
-fn new_assist(
+/// Both come out blank. The heal state has no sources and the bot is
+/// told whatever `Session::capabilities` says about Stealth right now,
+/// which on the first build of a session is nothing at all, because the
+/// realm entry probe has not read the stat sheet or the spellbook yet.
+/// [`assist_tick`] reads both on the first tick after the probe lands
+/// and on every tick after that, so a build before the probe costs a few
+/// prompts rather than the whole session.
+fn new_assist(session: &Session, cfg: &crate::bot::BotConfig) -> (crate::bot::Bot, crate::sheet::HealState) {
+    let bot = crate::bot::Bot::new(cfg.clone()).with_hide(session.capabilities().stealth > 0);
+    (bot, crate::sheet::HealState::new(Vec::new()))
+}
+
+/// One correlated event for the assist while no job runs: keep its
+/// sheet current, feed the heal state, cast when a heal is due, rearm a
+/// rest that plainly failed, and let the bot decide the rest.
+///
+/// Returns any heal refusals discovered on a rebuild, for the caller to
+/// print. Everything else it decides it sends itself.
+///
+/// The sheet is re-read on every tick because the assist is built
+/// before the realm entry probe answers. An assist started by
+/// `assist_play` used to keep the empty book and the missing Stealth it
+/// was built with for the whole session, so it never cast a heal and
+/// never hid.
+#[allow(clippy::too_many_arguments)]
+pub fn assist_tick(
     session: &Session,
     cfg: &crate::bot::BotConfig,
     durations: &std::collections::BTreeMap<String, u32>,
-) -> (crate::bot::Bot, crate::sheet::HealState, Vec<String>) {
-    let bot = crate::bot::Bot::new(cfg.clone()).with_hide(session.capabilities().stealth > 0);
-    let sheet = crate::farm::sheet_from(session, cfg, durations);
-    (bot, crate::sheet::HealState::new(sheet.heals.0), sheet.heals.1)
+    bot: &mut crate::bot::Bot,
+    heal: &mut crate::sheet::HealState,
+    watch: &mut crate::farm::HealWatch,
+    book_seen: &mut usize,
+    clock: &crate::world::RoundClock,
+    cor: &crate::correlate::Correlated,
+    now: std::time::Instant,
+) -> Vec<String> {
+    bot.set_hide(session.capabilities().stealth > 0);
+    let mut refusals = Vec::new();
+    let spells = session.raw_sheet().1.spells.len();
+    if spells != *book_seen {
+        let sheet = crate::farm::sheet_from(session, cfg, durations);
+        *heal = crate::sheet::HealState::new(sheet.heals.0);
+        *book_seen = spells;
+        refusals = sheet.heals.1;
+    }
+    heal.on_event(cor, now);
+    if watch.on_event(&cor.event) {
+        bot.rearm();
+    }
+    if let crate::events::Event::Prompt { hp, .. } = &cor.event
+        && let Some(cmd) = assist_heal(cfg, bot, heal, clock, *hp, now)
+    {
+        let id = session.send(&cmd);
+        heal.on_sent(&cmd, id);
+        watch.on_sent(&cmd);
+    }
+    for cmd in assist_actions(bot, cor) {
+        session.send(&cmd);
+        watch.on_sent(&cmd);
+    }
+    refusals
 }
 
 /// The assist's reply to one correlated event: the bot's own decisions,

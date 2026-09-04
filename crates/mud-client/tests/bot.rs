@@ -1674,6 +1674,21 @@ fn any_other_send_forgets_the_hidden_belief() {
     assert!(!bot.hidden());
 }
 
+/// The assist is built before the realm entry probe reads the stat
+/// sheet, so Stealth reads 0 at the build and the switch has to be
+/// settable afterwards. Without this the assist never hid all session.
+#[test]
+fn stealth_learned_after_the_build_still_hides() {
+    let mut bot = Bot::new(BotConfig { auto_heal: true, max_hp: 100, ..BotConfig::default() });
+    bot.set_hide(true);
+    bot.on_event(&room(&[]));
+    bot.on_event(&vitals(50, None, None));
+    assert_eq!(
+        bot.on_event(&vitals(95, None, Some(Status::Resting))),
+        vec![BotAction::Send("hide".into())]
+    );
+}
+
 #[test]
 fn without_stealth_a_finished_rest_hides_nothing() {
     let mut bot = resting_bot(0, false);
