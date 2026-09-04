@@ -4,9 +4,10 @@
 use std::time::{Duration, Instant};
 
 use mud_client::correlate::{CmdId, Correlated};
-use mud_client::events::{Event, RoomView};
+use mud_client::events::{Event, RoomView, Status};
 use mud_client::world::{
-    CLAIM_GRACE, DivergenceKind, Here, OccupantKind, REGEN_NATURAL, ROUND, RegenCycle, RoundClock,
+    CAST_WINDOW, CLAIM_GRACE, DivergenceKind, Here, OccupantKind, REGEN_MEDITATE, REGEN_NATURAL,
+    REGEN_REST, ROUND, RegenCycle, RoundClock, TickClock,
 };
 
 fn unsolicited(ev: Event) -> Correlated {
@@ -934,4 +935,166 @@ fn the_round_clock_says_whether_it_is_locked() {
     assert!(!clock.locked());
     clock.observe(Instant::now());
     assert!(clock.locked());
+}
+
+// ---------------------------------------------------------------------
+// TickClock: the board never announces a tick. A pool rising between
+// two prompts is one, a volley is a round, and our own cast is neither.
+// ---------------------------------------------------------------------
+
+fn prompt(hp: i32, mana: Option<i32>, status: Option<Status>) -> Correlated {
+    unsolicited(Event::Prompt { hp, mana, status })
+}
+
+fn hit() -> Event {
+    Event::CombatHit {
+        attacker: mud_client::events::Actor::Other("The giant rat".into()),
+        target: mud_client::events::Actor::You,
+        damage: 3,
+    }
+}
+
+#[test]
+fn the_first_prompt_only_sets_the_baseline() {
+    let mut c = TickClock::new();
+    c.on_event(&prompt(30, None, None), Instant::now());
+    assert!(!c.hp_natural.active());
+}
+
+#[test]
+fn hp_rising_between_prompts_anchors_the_natural_cycle() {
+    let mut c = TickClock::new();
+    let t0 = Instant::now();
+    c.on_event(&prompt(30, None, None), t0);
+    let t1 = t0 + Duration::from_secs(5);
+    c.on_event(&prompt(32, None, None), t1);
+    assert_eq!(c.hp_natural.time_to_next(t1), Some(REGEN_NATURAL));
+    // Natural HP and natural mana ride one server pulse.
+    assert_eq!(c.mana_natural.time_to_next(t1), Some(REGEN_NATURAL));
+}
+
+#[test]
+fn hp_falling_anchors_nothing() {
+    let mut c = TickClock::new();
+    let t0 = Instant::now();
+    c.on_event(&prompt(30, None, None), t0);
+    c.on_event(&prompt(25, None, None), t0 + Duration::from_secs(5));
+    assert!(!c.hp_natural.active());
+}
+
+#[test]
+fn a_gain_a_period_later_is_the_cycles_own_tick() {
+    let mut c = TickClock::new();
+    let t0 = Instant::now();
+    c.on_event(&prompt(30, None, None), t0);
+    let t1 = t0 + Duration::from_secs(5);
+    c.on_event(&prompt(32, None, None), t1);
+    let t2 = t1 + REGEN_NATURAL - Duration::from_millis(500);
+    c.on_event(&prompt(34, None, None), t2);
+    assert_eq!(c.hp_natural.time_to_next(t2), Some(REGEN_NATURAL));
+}
+
+#[test]
+fn a_gain_well_before_the_period_reanchors_the_natural_cycle() {
+    // MudPlay's rule: a gain no running cycle can claim anchors the
+    // natural cycle on itself. The board's cadence corrects it on the
+    // next real tick.
+    let mut c = TickClock::new();
+    let t0 = Instant::now();
+    c.on_event(&prompt(30, None, None), t0);
+    let t1 = t0 + Duration::from_secs(5);
+    c.on_event(&prompt(32, None, None), t1);
+    let t2 = t1 + Duration::from_secs(10);
+    c.on_event(&prompt(33, None, None), t2);
+    assert_eq!(c.hp_natural.time_to_next(t2), Some(REGEN_NATURAL));
+}
+
+#[test]
+fn resting_starts_the_rest_cycle_and_a_bare_prompt_stops_it() {
+    let mut c = TickClock::new();
+    let t0 = Instant::now();
+    c.on_event(&prompt(30, None, Some(Status::Resting)), t0);
+    assert!(c.hp_rest.active());
+    assert!(!c.mana_meditate.active());
+    c.on_event(&prompt(30, None, None), t0 + Duration::from_secs(1));
+    assert!(!c.hp_rest.active());
+}
+
+#[test]
+fn a_due_gain_while_resting_credits_the_rest_cycle_not_the_natural_one() {
+    let mut c = TickClock::new();
+    let t0 = Instant::now();
+    c.on_event(&prompt(30, None, Some(Status::Resting)), t0);
+    let t1 = t0 + REGEN_REST;
+    c.on_event(&prompt(33, None, Some(Status::Resting)), t1);
+    assert_eq!(c.hp_rest.time_to_next(t1), Some(REGEN_REST));
+    assert!(!c.hp_natural.active());
+}
+
+#[test]
+fn a_gain_just_after_our_cast_is_the_spell_not_a_tick() {
+    let mut c = TickClock::new();
+    let t0 = Instant::now();
+    c.on_event(&prompt(30, Some(10), None), t0);
+    let cast = t0 + Duration::from_secs(1);
+    c.on_event(&answering(Event::Line("cast heal".into()), ASK), cast);
+    c.on_event(&prompt(40, Some(6), None), cast + Duration::from_secs(1));
+    assert!(!c.hp_natural.active());
+    // Past the window a gain counts again.
+    let later = cast + CAST_WINDOW + Duration::from_secs(1);
+    c.on_event(&prompt(42, Some(6), None), later);
+    assert_eq!(c.hp_natural.time_to_next(later), Some(REGEN_NATURAL));
+}
+
+#[test]
+fn a_cast_line_nobody_answered_opens_no_window() {
+    // A monster's "attempted to cast" din is unattributed and is not
+    // our spell.
+    let mut c = TickClock::new();
+    let t0 = Instant::now();
+    c.on_event(&prompt(30, None, None), t0);
+    c.on_event(&unsolicited(Event::Line("cast heal".into())), t0 + Duration::from_secs(1));
+    let t1 = t0 + Duration::from_secs(2);
+    c.on_event(&prompt(32, None, None), t1);
+    assert_eq!(c.hp_natural.time_to_next(t1), Some(REGEN_NATURAL));
+}
+
+#[test]
+fn a_volley_locks_the_round() {
+    let mut c = TickClock::new();
+    let t0 = Instant::now();
+    assert_eq!(c.time_to_round(t0), None);
+    c.on_event(&unsolicited(hit()), t0);
+    assert_eq!(c.time_to_round(t0 + Duration::from_secs(1)), Some(ROUND - Duration::from_secs(1)));
+}
+
+#[test]
+fn meditating_starts_the_meditate_cycle_and_a_due_gain_credits_it() {
+    let mut c = TickClock::new();
+    let t0 = Instant::now();
+    c.on_event(&prompt(30, Some(10), Some(Status::Meditating)), t0);
+    assert!(c.mana_meditate.active());
+    let t1 = t0 + REGEN_MEDITATE;
+    c.on_event(&prompt(30, Some(12), Some(Status::Meditating)), t1);
+    assert_eq!(c.mana_meditate.time_to_next(t1), Some(REGEN_MEDITATE));
+    assert!(!c.mana_natural.active());
+}
+
+#[test]
+fn mana_rising_anchors_the_natural_mana_cycle_and_the_hp_pulse() {
+    let mut c = TickClock::new();
+    let t0 = Instant::now();
+    c.on_event(&prompt(30, Some(10), None), t0);
+    let t1 = t0 + Duration::from_secs(5);
+    c.on_event(&prompt(30, Some(12), None), t1);
+    assert_eq!(c.mana_natural.time_to_next(t1), Some(REGEN_NATURAL));
+    assert_eq!(c.hp_natural.time_to_next(t1), Some(REGEN_NATURAL));
+}
+
+#[test]
+fn a_room_block_moves_no_clock() {
+    let mut c = TickClock::new();
+    let before = c.clone();
+    c.on_event(&unsolicited(Event::RoomSeen(view(&[]))), Instant::now());
+    assert_eq!(c, before);
 }

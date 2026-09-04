@@ -187,6 +187,12 @@ pub fn is_movement(cmd: &str) -> bool {
     matches!(kind_of(cmd), Kind::Move)
 }
 
+/// Is this command a spell cast? The tick clock uses it to keep a
+/// cast's own healing from reading as a regen tick.
+pub fn is_cast(cmd: &str) -> bool {
+    matches!(kind_of(cmd), Kind::Cast)
+}
+
 fn kind_of(cmd: &str) -> Kind {
     const DIRS: [&str; 20] = [
         "n", "s", "e", "w", "ne", "nw", "se", "sw", "u", "d", "north", "south", "east", "west",

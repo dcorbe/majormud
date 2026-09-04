@@ -15,6 +15,9 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use crate::correlate::Correlated;
+use crate::events::{Event, Status};
+
 /// The board's combat/regen round, measured live: whiff bursts arrive
 /// 5.12–5.13s apart (run2/run3 captures, 2026-07-31). Everything the
 /// board does to us is quantised to it — swings, casts, regen — so
@@ -94,6 +97,134 @@ impl RegenCycle {
         let steps = (elapsed.as_nanos() / self.period.as_nanos()) as u32;
         let next = anchor + self.period * (steps + 1);
         Some(next.saturating_duration_since(now))
+    }
+}
+
+/// The board's clocks, inferred. It announces no tick, so the round is
+/// read off volleys and the regen cycles off a pool rising between two
+/// prompts. Ported from MudPlay's `TickEngine` and `RegenTracker`.
+///
+/// The rules, in the order `on_event` applies them:
+///
+/// 1. Any hit or miss line is a volley and locks the round.
+/// 2. The attributed echo of one of our own casts opens a window in
+///    which a rising pool is the spell landing, not a tick.
+/// 3. On every prompt the rest and meditate cycles follow the status:
+///    running while it says so, stopped when it stops.
+/// 4. A pool rising outside the cast window credits whichever running
+///    cycle is due, both if both are. If none is, the natural cycle
+///    anchors on the gain. Natural HP and natural mana share one server
+///    pulse, so a natural credit on one starts the other if it is not
+///    running.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TickClock {
+    pub round: RoundClock,
+    pub hp_natural: RegenCycle,
+    pub hp_rest: RegenCycle,
+    pub mana_natural: RegenCycle,
+    pub mana_meditate: RegenCycle,
+    last_hp: Option<i32>,
+    last_mana: Option<i32>,
+    last_cast: Option<Instant>,
+}
+
+impl Default for TickClock {
+    fn default() -> Self {
+        TickClock::new()
+    }
+}
+
+impl TickClock {
+    pub fn new() -> Self {
+        TickClock {
+            round: RoundClock::new(),
+            hp_natural: RegenCycle::new(REGEN_NATURAL),
+            hp_rest: RegenCycle::new(REGEN_REST),
+            mana_natural: RegenCycle::new(REGEN_NATURAL),
+            mana_meditate: RegenCycle::new(REGEN_MEDITATE),
+            last_hp: None,
+            last_mana: None,
+            last_cast: None,
+        }
+    }
+
+    /// Fold one correlated event at `now`.
+    pub fn on_event(&mut self, cor: &Correlated, now: Instant) {
+        match &cor.event {
+            Event::CombatHit { .. } | Event::CombatMiss { .. } => self.round.observe(now),
+            Event::Line(line)
+                if cor.answers.is_some()
+                    && crate::correlate::is_cast(crate::correlate::strip_decoration(line.trim())) =>
+            {
+                self.last_cast = Some(now);
+            }
+            Event::Prompt { hp, mana, status } => self.on_prompt(*hp, *mana, status.as_ref(), now),
+            _ => {}
+        }
+    }
+
+    /// Time until the next round. None until a volley has locked one.
+    pub fn time_to_round(&self, now: Instant) -> Option<Duration> {
+        self.round
+            .locked()
+            .then(|| self.round.next_round_after(now).saturating_duration_since(now))
+    }
+
+    fn on_prompt(&mut self, hp: i32, mana: Option<i32>, status: Option<&Status>, now: Instant) {
+        match status {
+            Some(Status::Resting) => self.hp_rest.start(now),
+            _ => self.hp_rest.stop(),
+        }
+        match status {
+            Some(Status::Meditating) => self.mana_meditate.start(now),
+            _ => self.mana_meditate.stop(),
+        }
+        let quiet = self
+            .last_cast
+            .is_none_or(|cast| now.saturating_duration_since(cast) >= CAST_WINDOW);
+
+        let hp_rose = self.last_hp.is_some_and(|last| hp > last);
+        self.last_hp = Some(hp);
+        if hp_rose && quiet {
+            let rest = self.hp_rest.is_due(now);
+            if rest {
+                self.hp_rest.observe(now);
+            }
+            let mut natural = self.hp_natural.is_due(now);
+            if natural {
+                self.hp_natural.observe(now);
+            }
+            if !rest && !natural {
+                self.hp_natural.observe(now);
+                natural = true;
+            }
+            if natural {
+                self.mana_natural.start(now);
+            }
+        }
+
+        let Some(mana) = mana else {
+            return;
+        };
+        let mana_rose = self.last_mana.is_some_and(|last| mana > last);
+        self.last_mana = Some(mana);
+        if mana_rose && quiet {
+            let meditate = self.mana_meditate.is_due(now);
+            if meditate {
+                self.mana_meditate.observe(now);
+            }
+            let mut natural = self.mana_natural.is_due(now);
+            if natural {
+                self.mana_natural.observe(now);
+            }
+            if !meditate && !natural {
+                self.mana_natural.observe(now);
+                natural = true;
+            }
+            if natural {
+                self.hp_natural.start(now);
+            }
+        }
     }
 }
 
