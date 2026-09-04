@@ -1,16 +1,17 @@
 //! Generates the `Ability` enum from the reverse-engineered ability table.
 //!
-//! Source of truth: `re/docs/ability_ids.tsv` (id, name, description). One
-//! description (id 42) contains a raw newline, so rows are stitched back
-//! together before parsing: a line that does not start with `<digits>\t` is a
-//! continuation of the previous row's description.
+//! Source of truth: `ability_ids.tsv` beside this file (id, name, description),
+//! a copy of the table recovered in `re/docs/`. One description (id 42)
+//! contains a raw newline, so rows are stitched back together before parsing:
+//! a line that does not start with `<digits>\t` is a continuation of the
+//! previous row's description.
 
 use std::env;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
-const TSV_PATH: &str = "../../re/docs/ability_ids.tsv";
+const TSV_PATH: &str = "ability_ids.tsv";
 
 struct Row {
     id: u16,
