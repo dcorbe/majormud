@@ -18,7 +18,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use mud_client::bot::BotConfig;
-use mud_client::farm::{FarmConfig, probe_sheet};
+use mud_client::farm::{FarmConfig, FarmError, probe_sheet};
 use mud_client::go::{GoEnd, go_config, run_go};
 use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::profile::Profile;
@@ -391,5 +391,48 @@ async fn a_second_go_in_one_session_sends_no_spells() {
         log.iter().filter(|l| **l == "spells").count(),
         1,
         "spells must be asked once, at the probe -- not again by either /go: {log:?}"
+    );
+}
+
+/// `check_departure_mark` runs first in `run_go`, same as it does in
+/// `run_farm`: a walk that will set off already interrupted is caught
+/// before the opening look goes out, not after.
+#[tokio::test]
+async fn a_walk_refuses_an_interrupt_mark_above_the_bots_mark_before_sending_anything() {
+    let (addr, received) = scripted_board(vec![]).await;
+    let session = session_for(addr).await;
+    let graph = corridor();
+    let cfg = go_config(
+        &FarmConfig {
+            interrupt_at_percent: 96,
+            ..Default::default()
+        },
+        false,
+    );
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 30,
+        rest_until_percent: 80,
+        ..BotConfig::default()
+    };
+
+    let out = tokio::time::timeout(
+        Duration::from_secs(10),
+        run_go(&session, graph, Some(START), STOP, &bot, &cfg, None),
+    )
+    .await
+    .expect("run_go should refuse at once, not hang");
+
+    let why = match out {
+        Err(FarmError::Config(why)) => why,
+        other => panic!("the pair must be refused: {other:?}"),
+    };
+    assert!(why.contains("96"), "{why}");
+    assert!(why.contains("80"), "{why}");
+
+    let log = received.lock().unwrap();
+    assert!(
+        log.is_empty(),
+        "the refusal must come before anything is sent: {log:?}"
     );
 }

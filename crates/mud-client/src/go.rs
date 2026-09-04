@@ -288,10 +288,9 @@ pub async fn run_go(
     // on legs that never pass through the dark; the three-second spell
     // collection this used to pay per walk is gone.
     //
-    // Healing is deliberately empty here whatever the book says: `/go`
-    // is a walk the operator asked for, and `go_config` already zeroes
-    // the departure gate so it never rests either. Recovery on a walk
-    // belongs to the person who typed it.
+    // The walk rests to the bot's mark like a farm does. Healing is
+    // left empty on purpose: casting recovery on a walk belongs to the
+    // person who typed it.
     let sheet = crate::farm::sheet_from(session, &bot_config, &Default::default());
     let mut casts = crate::farm::Casts {
         light: crate::sheet::LightState::new(sheet.light),

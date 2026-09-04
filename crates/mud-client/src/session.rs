@@ -302,6 +302,10 @@ struct RawSheet {
     inventory: Inventory,
     book: Spellbook,
     casting: Casting,
+    /// Whether [`Session::set_sheet`] has stored a reading yet. `false`
+    /// until the realm entry probe lands, so [`Session::book_len`] can
+    /// tell an unread sheet apart from a genuinely empty book.
+    read: bool,
 }
 
 /// A yes/no shared between the terminal and a job running on the same
@@ -846,6 +850,7 @@ impl Session {
         s.inventory = inventory;
         s.book = book;
         s.casting = casting;
+        s.read = true;
     }
 
     /// The session's own cached inventory, spellbook, and casting
@@ -859,10 +864,12 @@ impl Session {
         (s.inventory.clone(), s.book.clone(), s.casting)
     }
 
-    /// How many spells the session's book holds, read under one lock.
-    /// The assist compares it on every event to notice the probe landing.
-    pub fn book_len(&self) -> usize {
-        self.sheet.lock().expect("sheet lock").book.spells.len()
+    /// How many spells the stored book holds, read under one lock. None
+    /// until the realm entry probe has stored a sheet, so a caller can
+    /// tell unread from empty.
+    pub fn book_len(&self) -> Option<usize> {
+        let s = self.sheet.lock().expect("sheet lock");
+        s.read.then(|| s.book.spells.len())
     }
 }
 

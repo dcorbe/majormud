@@ -1003,9 +1003,8 @@ pub fn handle_key(
 /// told whatever `Session::capabilities` says about Stealth right now,
 /// which on the first build of a session is nothing at all, because the
 /// realm entry probe has not read the stat sheet or the spellbook yet.
-/// [`assist_tick`] reads both on the first tick after the probe lands
-/// and on every tick after that, so a build before the probe costs a few
-/// prompts rather than the whole session.
+/// [`assist_tick`] reads the sheet on its first tick after the probe has
+/// stored one, and refreshes the hide flag on every tick.
 fn new_assist(session: &Session, cfg: &crate::bot::BotConfig) -> (crate::bot::Bot, crate::sheet::HealState) {
     let bot = crate::bot::Bot::new(cfg.clone()).with_hide(session.capabilities().stealth > 0);
     (bot, crate::sheet::HealState::new(Vec::new()))
@@ -1036,9 +1035,9 @@ pub fn assist_tick(
     cor: &crate::correlate::Correlated,
     now: std::time::Instant,
 ) -> Vec<String> {
+    let Some(spells) = session.book_len() else { return Vec::new() };
     bot.set_hide(session.capabilities().stealth > 0);
     let mut refusals = Vec::new();
-    let spells = session.book_len();
     if spells != *book_seen {
         let sheet = crate::farm::sheet_from(session, cfg, durations);
         *heal = crate::sheet::HealState::new(sheet.heals.0);
