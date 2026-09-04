@@ -13,7 +13,7 @@ use crate::events::{Actor, Event, RoomView, Status};
 use crate::wire::{resolve_backspaces, strip_ansi};
 use mud_core::text::{self, color};
 
-// The board has two prompt templates (WCCMMUD.DLL):
+// The board has two prompt templates. The source is WCCMMUD.DLL.
 //
 //   [HP=%s%d%s%s]:             HP only, status INSIDE the frame
 //   [HP=%s%d%s/%s=%s%d%s]:%s   with a pool, status AFTER the frame

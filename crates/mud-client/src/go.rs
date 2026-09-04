@@ -272,8 +272,8 @@ pub async fn run_go(
     }
 
     // Every percent policy divides by these, and a wrong value mis-scales
-    // heal and flee silently. 0 max_hp means the profile did not say, so
-    // ask, and the same answer carries max_mana.
+    // the travel guard silently. 0 max_hp means the profile did not say,
+    // so ask, and the same answer carries max_mana.
     let mut bot_config = bot_config.clone();
     if bot_config.max_hp == 0
         && let Some(vitals) = crate::farm::discover_vitals(session).await
