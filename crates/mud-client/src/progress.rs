@@ -176,7 +176,7 @@ impl ExpMeter {
     /// Zero the running total. A long `/go` or `/farm` dilutes the
     /// lifetime-of-session rate with minutes that earned nothing before
     /// the job even started; resetting the total here is only half the
-    /// fix — the caller must also restart the elapsed clock it feeds to
+    /// fix. The caller must also restart the elapsed clock it feeds to
     /// [`Self::per_hour`], or the rate reads as a spike (old total
     /// over a near-zero elapsed) instead of the fresh figure this exists
     /// to produce.
@@ -237,10 +237,10 @@ pub fn level_progress(line: &str) -> Option<LevelProgress> {
 
 /// How long at the current rate, short enough for the status bar.
 ///
-/// Honest about what it does not know: no rate yet, the first minute of
-/// any run and after every death resets the meter, gives `?` rather
-/// than a fabricated number, and a crawl is capped rather than printed
-/// to false precision.
+/// Honest about what it does not know. There is no rate for the first
+/// minute of any run, and every death resets the meter, so the answer
+/// is `?` rather than a fabricated number, and a crawl is capped rather
+/// than printed to false precision.
 pub fn eta_label(needed: i64, per_hour: Option<i64>) -> String {
     if needed <= 0 {
         return "ready".to_string();
@@ -248,7 +248,8 @@ pub fn eta_label(needed: i64, per_hour: Option<i64>) -> String {
     let Some(rate) = per_hour.filter(|r| *r > 0) else {
         return "?".to_string();
     };
-    let mins = needed * 60 / rate;
+    // The figure comes off the wire, so it cannot be trusted to fit.
+    let mins = needed.saturating_mul(60) / rate;
     if mins >= 99 * 60 {
         return ">99h".to_string();
     }

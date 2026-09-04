@@ -540,6 +540,13 @@ absent, but the **position is still tracked**:
  HP 38 MA 10 | Newhaven, Narrow Road [1/2146] | mbbs
 ```
 
+With the rate and the level known the bar also shows experience per
+hour and the time to the next level at that rate.
+
+```
+ HP 38 MA 10 | Tick 3.2 | HP 12.3 | MA 21.0 | Newhaven, Narrow Road [1/2146] | 4200 xp/hr | L3->4 1h12m | mbbs
+```
+
 A room block is a room block whoever caused it, so the client localizes
 every one through `localize_view` regardless of whether you typed the
 move or the runner did. That handles the cold start too — the first block
