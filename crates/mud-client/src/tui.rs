@@ -199,6 +199,9 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     // with it would be unreadable, so this is deliberately a slow tick.
     let mut level: Option<crate::progress::LevelProgress> = None;
     let mut level_tick = tokio::time::interval(LEVEL_POLL);
+    // The countdowns in the bar move between events, so the bar is
+    // repainted on its own short timer as well as on every event.
+    let mut tick_paint = tokio::time::interval(std::time::Duration::from_millis(250));
     // Whether the character is standing in the realm at all. A tokio
     // interval's FIRST tick completes immediately, so without this the
     // very first `exp` went out into the username prompt the instant the
@@ -357,6 +360,9 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                     }
                     note(&mut out, &format!("-- {what} ended: {} --", ended.label()))?;
                 }
+                repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
+            }
+            _ = tick_paint.tick() => {
                 repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_minute(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
             }
             _ = level_tick.tick() => {
@@ -998,6 +1004,7 @@ fn setup_region(out: &mut impl std::io::Write, rows: u16) -> std::io::Result<()>
 fn redraw_bottom(
     out: &mut impl std::io::Write,
     state: &GameState,
+    now: std::time::Instant,
     target: &str,
     phase: Option<&crate::farm::Phase>,
     room_id: crate::lost::Fix,
@@ -1010,7 +1017,7 @@ fn redraw_bottom(
 ) -> std::io::Result<()> {
     let status_row = rows.saturating_sub(1).max(1);
     let input_row = rows.max(1);
-    let status = render_status(state, target, phase, room_id, exp_per_min, level, assist, cols as usize);
+    let status = render_status(state, now, target, phase, room_id, exp_per_min, level, assist, cols as usize);
     let line = editor.line();
     let cursor_col = 3 + editor.cursor() as u16;
     out.write_all(
@@ -1037,6 +1044,7 @@ fn redraw_bottom(
 #[allow(clippy::too_many_arguments)]
 pub fn render_status(
     state: &GameState,
+    now: std::time::Instant,
     target: &str,
     phase: Option<&crate::farm::Phase>,
     room_id: crate::lost::Fix,
@@ -1064,6 +1072,7 @@ pub fn render_status(
     if let Some(status) = &state.status {
         s.push_str(&format!(" ({})", status.word()));
     }
+    s.push_str(&format!(" | {}", tick_readout(state, now)));
     if let Some(room) = &state.room {
         s.push_str(&format!(" | {}", room.name));
         if let Some(id) = room_id.last_known() {
@@ -1098,6 +1107,31 @@ pub fn render_status(
         out.push(' ');
     }
     out.into_iter().collect()
+}
+
+/// The clock countdowns: the round, then HP, then mana when the
+/// character has a pool. A cycle nobody has observed yet shows `-`. The
+/// second number in a pair is the rest or meditate cycle, shown only
+/// while it runs.
+fn tick_readout(state: &GameState, now: std::time::Instant) -> String {
+    fn secs(d: Option<std::time::Duration>) -> String {
+        match d {
+            Some(d) => format!("{:.1}", d.as_secs_f64()),
+            None => "-".into(),
+        }
+    }
+    let t = &state.ticks;
+    let mut s = format!("Tick {} | HP {}", secs(t.time_to_round(now)), secs(t.hp_natural.time_to_next(now)));
+    if t.hp_rest.active() {
+        s.push_str(&format!("/{}", secs(t.hp_rest.time_to_next(now))));
+    }
+    if state.mana.is_some() {
+        s.push_str(&format!(" | MA {}", secs(t.mana_natural.time_to_next(now))));
+        if t.mana_meditate.active() {
+            s.push_str(&format!("/{}", secs(t.mana_meditate.time_to_next(now))));
+        }
+    }
+    s
 }
 
 /// A one-line status bar with a scrolling region above it.
@@ -1244,6 +1278,7 @@ fn repaint(
     redraw_bottom(
         out,
         &state,
+        std::time::Instant::now(),
         target,
         phase.as_ref(),
         room_id,

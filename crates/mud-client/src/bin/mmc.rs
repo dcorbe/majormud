@@ -445,6 +445,7 @@ fn farm_command(
                         };
                         mud_client::tui::render_status(
                             &state,
+                            std::time::Instant::now(),
                             target_label,
                             Some(&phase),
                             room_id,

@@ -1,11 +1,14 @@
 //! Pure-logic tests for the interactive client: line editor and status
 //! bar rendering. The terminal loop itself is thin glue over these.
 
-use mud_client::events::{RoomView, Status};
+use mud_client::correlate::Correlated;
+use mud_client::events::{Actor, Event, RoomView, Status};
 use mud_client::lost::Fix;
 use mud_client::session::GameState;
 use mud_client::tui::{InputEditor, render_status};
+use mud_client::world::{TickClock, ROUND};
 use mud_core::content::RoomId;
+use std::time::{Duration, Instant};
 
 #[test]
 fn editor_inserts_and_takes_line() {
@@ -95,16 +98,16 @@ fn status_line_shows_hp_room_and_fits_width() {
         status: None,
         ticks: mud_client::world::TickClock::new(),
     };
-    let s = render_status(&state, "mbbs", None, Fix::Unknown, None, None, false, 80);
+    let s = render_status(&state, Instant::now(), "mbbs", None, Fix::Unknown, None, None, false, 80);
     assert!(s.contains("HP 35"));
     assert!(s.contains("MA 12"));
     assert!(s.contains("Newhaven, Village Entrance"));
     assert!(s.contains("mbbs"));
 
     // Width is respected (padded or truncated to exactly `width`).
-    let narrow = render_status(&state, "mbbs", None, Fix::Unknown, None, None, false, 20);
+    let narrow = render_status(&state, Instant::now(), "mbbs", None, Fix::Unknown, None, None, false, 20);
     assert_eq!(narrow.chars().count(), 20);
-    let wide = render_status(&state, "mbbs", None, Fix::Unknown, None, None, false, 120);
+    let wide = render_status(&state, Instant::now(), "mbbs", None, Fix::Unknown, None, None, false, 120);
     assert_eq!(wide.chars().count(), 120);
 }
 
@@ -117,7 +120,7 @@ fn status_line_without_room_or_mana() {
         status: None,
         ticks: mud_client::world::TickClock::new(),
     };
-    let s = render_status(&state, "rust", None, Fix::Unknown, None, None, false, 80);
+    let s = render_status(&state, Instant::now(), "rust", None, Fix::Unknown, None, None, false, 80);
     assert!(s.contains("HP 10"));
     assert!(!s.contains("MA "));
     assert_eq!(s.chars().count(), 80);
@@ -150,7 +153,7 @@ fn without_a_runner_the_bar_is_hp_room_and_target() {
         status: None,
         ticks: mud_client::world::TickClock::new(),
     };
-    let s = render_status(&state, "mbbs", None, Fix::Unknown, None, None, false, 100);
+    let s = render_status(&state, Instant::now(), "mbbs", None, Fix::Unknown, None, None, false, 100);
     assert!(s.contains("HP 33"), "{s}");
     assert!(s.contains("MA 8"), "{s}");
     assert!(s.contains("Newhaven, Narrow Road"), "{s}");
@@ -175,7 +178,7 @@ fn with_a_runner_the_bar_gains_activity_and_room_number() {
         },
         target: "cave bear".into(),
     };
-    let s = render_status(&state, "mbbs", Some(&phase), Fix::Confirmed(RoomId { map: 1, room: 2156 }), None, None, false, 120);
+    let s = render_status(&state, Instant::now(), "mbbs", Some(&phase), Fix::Confirmed(RoomId { map: 1, room: 2156 }), None, None, false, 120);
     assert!(s.contains("attacking cave bear"), "{s}");
     assert!(s.contains("HP 23"), "{s}");
     assert!(s.contains("Small Cavern"), "{s}");
@@ -195,10 +198,10 @@ fn a_stale_fix_shows_the_room_with_a_question_mark() {
         status: None,
         ticks: mud_client::world::TickClock::new(),
     };
-    let stale = render_status(&state, "mbbs", None, Fix::Stale(RoomId { map: 1, room: 2156 }), None, None, false, 120);
+    let stale = render_status(&state, Instant::now(), "mbbs", None, Fix::Stale(RoomId { map: 1, room: 2156 }), None, None, false, 120);
     assert!(stale.contains("1/2156?"), "{stale}");
 
-    let confirmed = render_status(&state, "mbbs", None, Fix::Confirmed(RoomId { map: 1, room: 2156 }), None, None, false, 120);
+    let confirmed = render_status(&state, Instant::now(), "mbbs", None, Fix::Confirmed(RoomId { map: 1, room: 2156 }), None, None, false, 120);
     assert!(confirmed.contains("1/2156]"), "{confirmed}");
     assert!(!confirmed.contains("1/2156?"), "{confirmed}");
 }
@@ -215,7 +218,7 @@ fn the_bar_is_always_exactly_the_width_asked_for() {
         ticks: mud_client::world::TickClock::new(),
     };
     for w in [20usize, 80, 120] {
-        assert_eq!(render_status(&state, "mbbs", None, Fix::Unknown, None, None, false, w).chars().count(), w);
+        assert_eq!(render_status(&state, Instant::now(), "mbbs", None, Fix::Unknown, None, None, false, w).chars().count(), w);
     }
 }
 
@@ -230,10 +233,10 @@ fn the_bar_shows_the_experience_rate_when_there_is_one() {
         status: None,
         ticks: mud_client::world::TickClock::new(),
     };
-    let with = render_status(&state, "mbbs", None, Fix::Unknown, Some(255), None, false, 120);
+    let with = render_status(&state, Instant::now(), "mbbs", None, Fix::Unknown, Some(255), None, false, 120);
     assert!(with.contains("255 xp/min"), "{with}");
 
-    let without = render_status(&state, "mbbs", None, Fix::Unknown, None, None, false, 120);
+    let without = render_status(&state, Instant::now(), "mbbs", None, Fix::Unknown, None, None, false, 120);
     assert!(!without.contains("xp/min"), "{without}");
 }
 
@@ -254,7 +257,7 @@ fn the_bar_never_contains_a_control_character() {
         why: "at 1/2152: timed out waiting for \"room block after movement\"; tail:\n\n  look\n"
             .into(),
     };
-    let s = render_status(&state, "mbbs", Some(&phase), Fix::Unknown, None, None, false, 120);
+    let s = render_status(&state, Instant::now(), "mbbs", Some(&phase), Fix::Unknown, None, None, false, 120);
     assert!(
         !s.chars().any(|c| c.is_control()),
         "a control character in a fixed-row bar wrecks the display: {s:?}"
@@ -377,8 +380,7 @@ async fn ctrl_f_takes_the_keyboard_back_from_any_job() {
 // ---------------------------------------------------------------------
 
 use mud_client::bot::{Bot, BotConfig};
-use mud_client::correlate::{CmdId, Correlated};
-use mud_client::events::Event;
+use mud_client::correlate::CmdId;
 use mud_client::tui::assist_actions;
 
 fn assist_bot() -> Bot {
@@ -512,7 +514,7 @@ fn the_bar_shows_the_level_and_the_time_to_the_next_one() {
         ticks: mud_client::world::TickClock::new(),
     };
     let p = LevelProgress { exp: 57209, level: 3, needed: 7200 };
-    let s = render_status(&state, "mbbs", None, Fix::Unknown, Some(100), Some(p), false, 120);
+    let s = render_status(&state, Instant::now(), "mbbs", None, Fix::Unknown, Some(100), Some(p), false, 120);
     assert!(s.contains("L3->4 1h12m"), "got {s:?}");
 }
 
@@ -529,7 +531,7 @@ fn the_bar_admits_when_it_cannot_estimate() {
         ticks: mud_client::world::TickClock::new(),
     };
     let p = LevelProgress { exp: 1, level: 1, needed: 500 };
-    let s = render_status(&state, "mbbs", None, Fix::Unknown, None, Some(p), false, 120);
+    let s = render_status(&state, Instant::now(), "mbbs", None, Fix::Unknown, None, Some(p), false, 120);
     assert!(s.contains("L1->2 ?"), "got {s:?}");
 }
 
@@ -546,7 +548,7 @@ fn the_bar_names_the_assist_when_it_is_driving() {
         status: None,
         ticks: mud_client::world::TickClock::new(),
     };
-    let s = render_status(&state, "mbbs", None, Fix::Unknown, None, None, true, 120);
+    let s = render_status(&state, Instant::now(), "mbbs", None, Fix::Unknown, None, None, true, 120);
     assert!(s.starts_with("assist | "), "got {s:?}");
 }
 
@@ -562,7 +564,7 @@ fn a_running_farm_outranks_the_assist_in_the_bar() {
         ticks: mud_client::world::TickClock::new(),
     };
     let phase = mud_client::farm::Phase::Done { why: "loops walked".into(), at: None };
-    let s = render_status(&state, "mbbs", Some(&phase), Fix::Unknown, None, None, true, 120);
+    let s = render_status(&state, Instant::now(), "mbbs", Some(&phase), Fix::Unknown, None, None, true, 120);
     assert!(!s.contains("assist"), "got {s:?}");
 }
 
@@ -731,7 +733,7 @@ fn the_bar_shows_where_a_go_is_walking() {
             room: 2324,
         },
     };
-    let bar = render_status(&state, "mbbs", Some(&phase), Fix::Unknown, None, None, false, 100);
+    let bar = render_status(&state, Instant::now(), "mbbs", Some(&phase), Fix::Unknown, None, None, false, 100);
     assert!(bar.contains("1/2324"), "{bar}");
 }
 
@@ -942,10 +944,74 @@ fn status_line_shows_the_prompt_status_after_the_vitals() {
         status: Some(Status::Resting),
         ticks: mud_client::world::TickClock::new(),
     };
-    let s = render_status(&state, "mbbs", None, Fix::Unknown, None, None, false, 80);
+    let s = render_status(&state, Instant::now(), "mbbs", None, Fix::Unknown, None, None, false, 80);
     assert!(s.contains("HP 42 MA 12 (Resting)"), "{s}");
 
     let bare = GameState { status: None, ..state };
-    let s = render_status(&bare, "mbbs", None, Fix::Unknown, None, None, false, 80);
+    let s = render_status(&bare, Instant::now(), "mbbs", None, Fix::Unknown, None, None, false, 80);
     assert!(!s.contains("(Resting)"), "{s}");
+}
+
+fn ticks_after(events: &[(Event, Duration)], t0: Instant) -> TickClock {
+    let mut clock = TickClock::new();
+    for (ev, at) in events {
+        let cor = Correlated { event: ev.clone(), answers: None, elsewhere: false };
+        clock.on_event(&cor, t0 + *at);
+    }
+    clock
+}
+
+#[test]
+fn status_line_shows_dashes_until_a_clock_is_locked() {
+    let state = GameState {
+        hp: 42,
+        mana: None,
+        room: None,
+        status: None,
+        ticks: TickClock::new(),
+    };
+    let s = render_status(&state, Instant::now(), "mbbs", None, Fix::Unknown, None, None, false, 120);
+    assert!(s.contains("| Tick - | HP - |"), "{s}");
+    // No pool, no mana countdown.
+    assert!(!s.contains("MA "), "{s}");
+}
+
+#[test]
+fn status_line_counts_down_the_round_and_the_regen_cycles() {
+    let t0 = Instant::now();
+    let hit = Event::CombatHit {
+        attacker: Actor::Other("The giant rat".into()),
+        target: Actor::You,
+        damage: 2,
+    };
+    let ticks = ticks_after(
+        &[
+            (Event::Prompt { hp: 30, mana: Some(10), status: None }, Duration::ZERO),
+            (Event::Prompt { hp: 32, mana: Some(12), status: None }, Duration::from_secs(1)),
+            (hit, Duration::from_secs(2)),
+        ],
+        t0,
+    );
+    let state = GameState { hp: 32, mana: Some(12), room: None, status: None, ticks };
+    let now = t0 + Duration::from_secs(3);
+    let s = render_status(&state, now, "mbbs", None, Fix::Unknown, None, None, false, 120);
+    let round = (ROUND - Duration::from_secs(1)).as_secs_f64();
+    assert!(s.contains(&format!("Tick {round:.1} | HP 28.0 | MA 28.0")), "{s}");
+}
+
+#[test]
+fn status_line_shows_the_rest_cycle_beside_the_natural_one_while_resting() {
+    let t0 = Instant::now();
+    let ticks = ticks_after(
+        &[
+            (Event::Prompt { hp: 30, mana: None, status: None }, Duration::ZERO),
+            (Event::Prompt { hp: 32, mana: None, status: None }, Duration::from_secs(1)),
+            (Event::Prompt { hp: 32, mana: None, status: Some(Status::Resting) }, Duration::from_secs(2)),
+        ],
+        t0,
+    );
+    let state = GameState { hp: 32, mana: None, room: None, status: Some(Status::Resting), ticks };
+    let now = t0 + Duration::from_secs(4);
+    let s = render_status(&state, now, "mbbs", None, Fix::Unknown, None, None, false, 120);
+    assert!(s.contains("HP 27.0/18.0"), "{s}");
 }

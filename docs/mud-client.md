@@ -544,6 +544,27 @@ is resolved, which is only possible when it is unambiguous.
 The bar is skipped when stdout is not a terminal, so piping the feed to a
 file gives lines rather than escape sequences.
 
+### The tick clock
+
+The board never says when it ticks. The client infers three clocks and
+shows their countdowns in the bar:
+
+```
+ HP 42 MA 12 (Resting) | Tick 3.2 | HP 12.3/4.5 | MA 21.0 | Dark Cave [1/2160] | mbbs
+```
+
+`Tick` is the combat round, locked by any hit or miss line and 5.13
+seconds long. `HP` and `MA` are the regen cycles. Passive HP and mana
+share one 30 second pulse, which the client anchors on a pool rising
+between two prompts. While the prompt says resting a second HP number
+appears, the 20 second rest tick. While it says meditating a second MA
+number appears, the 15 second meditate tick. A dash means nothing has
+locked that clock yet. A pool rising within three seconds of one of your
+own casts is the spell landing and moves no clock.
+
+The cadence is MudPlay's measurement of the stock board. The bar is
+repainted four times a second so the numbers move between events.
+
 ## Doors
 
 A route through a door or gate opens it rather than stopping. Door and
