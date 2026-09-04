@@ -1208,17 +1208,33 @@ pub struct Vitals {
 /// `0` disables them outright. Nothing else in the client parses a
 /// maximum. The prompt only carries the current values, so the runner
 /// asks rather than trusting a number typed into a profile.
+///
+/// The answer is read from the lines that arrive after the ask, and
+/// only a line that parses as the report counts. This used to wait for
+/// the word `Health:` anywhere in the unread transcript, and the stat
+/// sheet has an ability score spelled exactly that way. Nothing consumes
+/// the sheet from the transcript, so the wait matched it at once, read
+/// nothing new, and left `max_hp` at 0. A character at 6 of 47 hits
+/// then farmed on with rest, flee and the departure gate all silently
+/// off. That was the run of 2026-09-04.
 pub async fn discover_vitals(session: &crate::session::Session) -> Option<Vitals> {
-    let mark = session.mark();
+    let mut events = session.events();
+    crate::session::drain(&mut events, |_| {});
     session.send("health");
-    session
-        .expect("Health:", std::time::Duration::from_secs(15))
-        .await
-        .ok()?;
-    let text = session.since(mark);
-    let (_, max_hp) = parse_health(&text)?;
-    let max_mana = parse_mana(&text).map(|(_, max)| max).unwrap_or(0);
-    Some(Vitals { max_hp, max_mana })
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        match tokio::time::timeout_at(deadline, events.recv()).await {
+            Ok(Ok(Correlated { event: Event::Line(line), .. })) => {
+                if let Some((_, max_hp)) = parse_health(&line) {
+                    let max_mana = parse_mana(&line).map(|(_, max)| max).unwrap_or(0);
+                    return Some(Vitals { max_hp, max_mana });
+                }
+            }
+            Ok(Ok(_)) => continue,
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+            Ok(Err(_)) | Err(_) => return None,
+        }
+    }
 }
 
 /// Why the run stopped.
