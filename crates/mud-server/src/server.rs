@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use mud_core::content::Content;
 use mud_core::game::{AccountProfile, Core, CoreConfig, Event, Gender, Player, SessionId};
-use textscreen::cp437;
+use mud_core::cp437;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};

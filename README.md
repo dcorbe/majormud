@@ -14,7 +14,6 @@ here are built from that specification.
 | `mud-core` | The game engine. Pure game logic, deterministic given state, input and RNG seed. |
 | `mud-server` | Content loading, networking and persistence around `mud-core`. Listens on port 2325. |
 | `mud-client` | `mmc`, an automated client for the original game: interactive play, headless Lua runs, routing, farming. See `docs/mud-client.md`. |
-| `textscreen` | A CP437 text screen: the cell grid and the painter that turns it into ANSI. Used by the server and the client's terminal UI. |
 
 ## Building and testing
 

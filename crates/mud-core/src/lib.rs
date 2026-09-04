@@ -9,6 +9,7 @@ pub mod combat;
 pub mod command;
 pub mod content;
 pub mod content_db;
+pub mod cp437;
 pub mod crime;
 pub mod gang;
 pub mod game;

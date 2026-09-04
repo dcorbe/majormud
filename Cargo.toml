@@ -4,7 +4,6 @@ members = [
     "crates/mud-core",
     "crates/mud-server",
     "crates/mud-client",
-    "crates/textscreen",
 ]
 
 [workspace.package]

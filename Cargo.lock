@@ -489,7 +489,6 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
- "textscreen",
  "tokio",
  "toml",
 ]
@@ -509,7 +508,6 @@ dependencies = [
  "clap",
  "mud-core",
  "rusqlite",
- "textscreen",
  "tokio",
 ]
 
@@ -835,10 +833,6 @@ dependencies = [
  "quote",
  "unicode-ident",
 ]
-
-[[package]]
-name = "textscreen"
-version = "0.1.0"
 
 [[package]]
 name = "tokio"

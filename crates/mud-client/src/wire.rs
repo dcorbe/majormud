@@ -96,9 +96,9 @@ impl Default for TelnetFilter {
 }
 
 /// Decode CP437 (DOS codepage) bytes to a String. The table lives in
-/// `textscreen::cp437` — the server encodes with the same one, so the two
+/// `mud_core::cp437`. The server encodes with the same one, so the two
 /// ends of a fixture run cannot drift apart.
-pub use textscreen::cp437::decode_wire as cp437_to_string;
+pub use mud_core::cp437::decode_wire as cp437_to_string;
 
 /// Apply backspace semantics: each 0x08 removes the preceding character.
 /// The live board hides junk-char+backspace pairs inside words as an
