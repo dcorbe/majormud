@@ -172,7 +172,11 @@ fn listed(room: &crate::graph::GraphRoom) -> BTreeSet<Direction> {
         .filter(|(i, _)| {
             room.exits[*i]
                 .as_ref()
-                .is_some_and(|e| !crate::nav::is_hidden(e.exit_type) && e.command.is_none())
+                .is_some_and(|e| {
+                    !crate::nav::is_hidden(e.exit_type)
+                        && !crate::nav::is_remote_action(e.exit_type)
+                        && e.command.is_none()
+                })
         })
         .map(|(_, d)| *d)
         .collect()

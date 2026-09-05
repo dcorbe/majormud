@@ -210,6 +210,51 @@ async fn a_maze_gives_up_inside_its_budget_and_says_so() {
 
 /// A block the graph cannot place at all is not something walking can
 /// fix, so it must not spend a single command trying.
+/// A type-12 remote-action slot (a lever or button) is never printed on
+/// the "Obvious exits" line, so it must not count toward a room's
+/// on-sight signature. The Crypt lever hall (1/1038, 1/1044) has a real
+/// north exit and a type-12 south slot that pulls a lever in another
+/// room; the board shows only "north". Counting the phantom south gave
+/// the hall the signature {N,S}, which no board view of it can match, so
+/// the exact test dropped the true room and the client placed the
+/// character in whatever plain dead-end hall happened to match {N}.
+/// Live, test.raw 2026-09-05: pulled the lever, then could not say where
+/// it was standing.
+#[test]
+fn a_remote_action_slot_is_not_a_visible_exit() {
+    let lever = RoomId { map: 1, room: 1038 };
+    let decoy = RoomId { map: 1, room: 2000 };
+    let north_of_lever = RoomId { map: 1, room: 1037 };
+    let lever_target = RoomId { map: 1, room: 1056 };
+    let north_of_decoy = RoomId { map: 1, room: 2001 };
+
+    let mut hall = room("Crypt, Stone Hallway", &[(Direction::North, north_of_lever)]);
+    // The south slot is the lever: a type-12 remote action onto another
+    // room, which the board never lists.
+    hall.exits[Direction::South as usize] = Some(ExitEdge {
+        dest: lever_target,
+        exit_type: 12,
+        command: None,
+        requirement: ExitRequirement::None,
+    });
+
+    let g = RoomGraph::from_rooms(vec![
+        (lever, hall),
+        (decoy, room("Crypt, Stone Hallway", &[(Direction::North, north_of_decoy)])),
+        (north_of_lever, room("Crypt, Stone Hallway", &[(Direction::South, lever)])),
+        (north_of_decoy, room("Crypt, Stone Hallway", &[(Direction::South, decoy)])),
+        (lever_target, room("Crypt, Antechamber", &[(Direction::North, lever)])),
+    ]);
+
+    // The board shows only north in the lever hall.
+    let seen = view("Crypt, Stone Hallway", &["north"]);
+    let here = lost::candidates(&g, &seen);
+    assert!(
+        here.contains(&lever),
+        "the lever hall must be a candidate for its own board view, got {here:?}"
+    );
+}
+
 #[tokio::test]
 async fn an_unknown_room_is_refused_without_walking() {
     let (addr, moves) = board(|_| "\r\n[HP=68/MA=18]:".to_string()).await;

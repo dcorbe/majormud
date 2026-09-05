@@ -347,6 +347,18 @@ pub fn is_door(exit_type: i64) -> bool {
     matches!(exit_type, 2 | 7 | 0xb)
 }
 
+/// Is this a remote-action slot: a lever or button, exit type 12?
+///
+/// The board never prints one on the "Obvious exits" line — Nightmare's
+/// own map editor skips it too (`frmMap.frm`: "if it's a remote action,
+/// dont map it") — and walking its direction does nothing. It is not an
+/// exit at all but a control on some other room's exit, so anything that
+/// reads the exits line the board would show has to exclude it, the same
+/// way it excludes hidden and command exits.
+pub fn is_remote_action(exit_type: i64) -> bool {
+    exit_type == 12
+}
+
 /// Is this exit hidden until SEARCH reveals it (`theft.md` §9)?
 ///
 /// 1,383 shipped exits are, and the board neither lists them on the
