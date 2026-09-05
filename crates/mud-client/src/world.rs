@@ -521,7 +521,7 @@ fn words(line: &str) -> Vec<&str> {
 /// Matching is by whole word, never by substring: "The wererat squeals
 /// in agony, and dies!" carries "rat" and used to take the giant rat
 /// with it.
-fn victim(occupants: &[Occupant], line: &str) -> Option<usize> {
+fn victim(occupants: &[Occupant], line: &str, struck: Option<&str>) -> Option<usize> {
     let noun = match crate::deaths::killed(line) {
         Some(template) => crate::bot::target_word(template).to_lowercase(),
         None => {
@@ -532,15 +532,54 @@ fn victim(occupants: &[Occupant], line: &str) -> Option<usize> {
                 .find(|noun| said.iter().any(|w| w.eq_ignore_ascii_case(noun)))?
         }
     };
-    // Longest-standing first: instances are interchangeable to every
-    // consumer, so the tie needs a rule only to keep the fold
+    let fits = || {
+        occupants
+            .iter()
+            .enumerate()
+            .filter(|(_, o)| crate::bot::target_word(&o.name).eq_ignore_ascii_case(&noun))
+    };
+    // The instance our own swing named is the corpse when it fits: the
+    // death line cannot tell "small skeleton" from "skeleton", and the
+    // swing line can.
+    if let Some(hit) = struck
+        && let Some((i, _)) = fits().find(|(_, o)| o.name.eq_ignore_ascii_case(hit))
+    {
+        return Some(i);
+    }
+    // Otherwise longest-standing first: instances are interchangeable
+    // to every consumer, so the tie needs a rule only to keep the fold
     // deterministic.
-    occupants
-        .iter()
-        .enumerate()
-        .filter(|(_, o)| crate::bot::target_word(&o.name).eq_ignore_ascii_case(&noun))
-        .min_by_key(|(_, o)| o.since)
-        .map(|(i, _)| i)
+    fits().min_by_key(|(_, o)| o.since).map(|(i, _)| i)
+}
+
+/// Which occupant did our own swing just hit?
+///
+/// "You slice small skeleton for 9 damage!", "You critically slash
+/// skeleton for 51 damage!", "You surprise cut giant bat for 57 damage!"
+/// — the verb phrase varies, the shape does not: our line, the target's
+/// full name, the damage. The name is matched as a whole-word run so
+/// "small skeleton" is preferred over the "skeleton" inside it, and
+/// "rat" never claims a wererat. A miss ("You swing at giant bat!") names
+/// nobody's damage and is not read.
+fn struck_by_us<'a>(occupants: &'a [Occupant], line: &str) -> Option<&'a str> {
+    if !(line.starts_with("You ") && line.ends_with("damage!")) {
+        return None;
+    }
+    let said = words(line);
+    let mut best: Option<&Occupant> = None;
+    for o in occupants {
+        let name = words(&o.name);
+        if name.is_empty() {
+            continue;
+        }
+        let present = said
+            .windows(name.len())
+            .any(|w| w.iter().zip(&name).all(|(a, b)| a.eq_ignore_ascii_case(b)));
+        if present && best.is_none_or(|b| words(&b.name).len() < name.len()) {
+            best = Some(o);
+        }
+    }
+    best.map(|o| o.name.as_str())
 }
 
 fn kind_of(name: &str) -> OccupantKind {
@@ -617,6 +656,12 @@ pub struct Here {
     /// behind the character for the contents of the one ahead (live,
     /// cwgaming 2026-08-01).
     seeded: Option<String>,
+    /// The occupant our own last swing named — "You critically slash
+    /// skeleton for 51 damage!" — as the full instance name. A death
+    /// line names only the TEMPLATE, and a room can hold two instances
+    /// of one ("small skeleton" and "skeleton", Crypt, live 2026-09-05),
+    /// so the swing is the only line that says which of them fell.
+    struck: Option<String>,
 }
 
 impl Here {
@@ -691,6 +736,7 @@ impl Here {
                     self.occupants.clear();
                     self.piles.clear();
                     self.seeded = None;
+                    self.struck = None;
                 }
                 // Reconcile BEFORE the reseed below overwrites the
                 // model with the block: this is the only instant the
@@ -823,13 +869,18 @@ impl Here {
                 // is still a corpse — while `Bot` must keep using the
                 // first, or somebody else's kill would unlatch it from
                 // a fight that is still going.
+                if let Some(name) = struck_by_us(&self.occupants, line) {
+                    self.struck = Some(name.to_string());
+                    return;
+                }
                 if crate::bot::is_kill_line(line) || crate::deaths::killed(line).is_some() {
                     // ONE death, one corpse. The view goes stale either
                     // way — something died out of it — but which
                     // occupant left is a question with a single answer,
                     // and `victim` is where it is asked.
-                    if let Some(i) = victim(&self.occupants, line) {
+                    if let Some(i) = victim(&self.occupants, line, self.struck.as_deref()) {
                         self.occupants.remove(i);
+                        self.struck = None;
                     }
                     self.view = None;
                 } else if crate::bot::is_combat_off(line) || line.starts_with("You say \"") {
@@ -924,6 +975,7 @@ impl Here {
         self.view = None;
         self.occupants.clear();
         self.piles.clear();
+        self.struck = None;
         // Beliefs go; the measurement stays. Clearing the tally here
         // would discard exactly the evidence a bad run produces, and the
         // next block seeds rather than indicts an emptied model.

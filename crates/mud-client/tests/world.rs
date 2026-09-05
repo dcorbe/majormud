@@ -651,7 +651,60 @@ fn lexicon() {
             "wererat".to_string(),
             "The wererat squeals in agony, and dies!".to_string(),
         ),
+        (
+            "skeleton".to_string(),
+            "The skeleton crumbles into a pile of dust.".to_string(),
+        ),
     ]));
+}
+
+/// Two instances of one template share its death line, and the rolled
+/// adjective is the only thing telling them apart: "small skeleton" and
+/// "skeleton" in the Crypt (live, test.raw 2026-09-05). Our own swing
+/// names the instance it hit -- "You critically slash skeleton for 51
+/// damage!" -- so when the template's death line follows, that is the
+/// corpse. Taking the longest-standing noun match instead removed
+/// "small skeleton" while "skeleton" was the one that fell, and the next
+/// look reported one occupant extra and one missing.
+#[test]
+fn a_kill_takes_the_instance_our_swing_named() {
+    lexicon();
+    let now = Instant::now();
+    let mut here = Here::default();
+    here.on_event(
+        &answering(Event::RoomSeen(view(&["small skeleton", "skeleton"])), ASK),
+        now,
+    );
+    here.on_event(
+        &unsolicited(Event::Line("You critically slash skeleton for 51 damage!".into())),
+        now,
+    );
+    here.on_event(
+        &unsolicited(Event::Line("The skeleton crumbles into a pile of dust.".into())),
+        now,
+    );
+    let names: Vec<_> = here.occupants.iter().map(|o| o.name.as_str()).collect();
+    assert_eq!(names, vec!["small skeleton"]);
+
+    // And the other way round: hitting the small one takes the small one.
+    let mut here = Here::default();
+    here.on_event(
+        &answering(Event::RoomSeen(view(&["small skeleton", "skeleton"])), ASK),
+        now,
+    );
+    here.on_event(
+        &unsolicited(Event::Line("You slice small skeleton for 9 damage!".into())),
+        now,
+    );
+    here.on_event(
+        &unsolicited(Event::Line("The skeleton crumbles into a pile of dust.".into())),
+        now,
+    );
+    let names: Vec<_> = here.occupants.iter().map(|o| o.name.as_str()).collect();
+    assert_eq!(names, vec!["skeleton"]);
+    // The look that follows agrees with the model, so nothing diverges.
+    here.on_event(&answering(Event::RoomSeen(view(&["skeleton"])), ASK), now);
+    assert_eq!(here.reconcile.total(), 0, "the look after the kill agrees");
 }
 
 /// Another player's kill: no experience award (it was not ours) and a
