@@ -88,7 +88,11 @@ count, or one action 0.
 
 The Crypt pair Daniel named: 1/1044 holds "pull lever" as action 1 and
 1/1038 holds it as action 2, both on 1/1056 north, state 48 with `para2 = -2`,
-so either order works. That is the capture case for a multi room puzzle.
+so either order works. Captured 2026-09-05: each pull answered "You pull the
+lever. Off in the distance you hear a small click." and the lever room heard
+nothing else. The target hallway then listed "dark passageway north" on its
+exits line, the exit's `para4` label with the direction filled in, and
+walking it landed in 1/1063.
 
 ### Search only clears bit 2
 
@@ -123,7 +127,8 @@ client already has.
 
 Item type 7 is the key type, 88 items. The inventory reply carries a key
 ring line after the carrying line. Live it reads "You have no keys." when
-empty. Its wording with keys present is not captured.
+empty and "You have the following keys:  black star key." with one on the
+ring, two spaces after the colon (test.raw 2026-09-05).
 
 ### What is not known
 
@@ -131,7 +136,6 @@ None of these are in `re/docs`, the oracle transcripts or `mud-core`:
 
 - What the board prints when a key is used on a key door, and whether `open`
   uses the key by itself or a verb is needed.
-- The key ring line with keys on it.
 - What the board says at an item gate without the item.
 - Whether a state 1 hidden exit answers a search.
 
@@ -164,8 +168,8 @@ The `i` reply is four lines: carrying, keys, wealth, encumbrance. The purse
 reader already sends `i` and reads the carrying line for coins. It becomes a
 pack reader that fills both. The carrying line is split on commas, the
 trailing worn suffix and leading count are stripped as today. The key line is
-everything after the first colon when it is not the empty ring line. The
-exact prefix is a constant pinned by capture.
+everything after the first colon when it is not the empty ring line, split
+on commas, trailing period dropped.
 
 ### Sharing it
 
@@ -343,9 +347,9 @@ reads `re/`.
 - `roam`: a region grows through a solvable puzzle and not through an
   unsolvable one.
 
-Live captures pin the constants: the Crypt levers at 1/1044 and 1/1038 then
-north from 1/1056, one key door on map 1 with the key held, the inventory
-reply with a key, and one search at a state 1 hidden exit.
+Live captures pin the constants. Held: the Crypt levers and the inventory
+reply with a key. Owed: one key door on map 1 with its key held, and one
+search at a state 1 hidden exit.
 
 ## Not in scope
 
