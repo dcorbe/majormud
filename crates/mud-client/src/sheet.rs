@@ -131,9 +131,18 @@ pub fn class_caster_group(content: &mud_core::content::Content, class_name: &str
 pub struct Inventory {
     /// Carried items as the board lists them, wrapping rejoined.
     pub items: Vec<String>,
+    /// The key ring as the board lists it: "You have the following
+    /// keys:  black star key." Empty on "You have no keys." Keys live
+    /// on a ring of their own, not in the carried list, so the walker
+    /// has to read this line to know it holds one.
+    pub keys: Vec<String>,
     /// `Encumbrance: 119/2880` — carried and capacity.
     pub encumbrance: Option<(i64, i64)>,
 }
+
+/// The ring line's lead-in, live 2026-09-05. The board pads it with two
+/// spaces after the colon, which `trim` absorbs.
+const KEY_RING_PREFIX: &str = "You have the following keys:";
 
 impl Inventory {
     /// Parse the reply to `inv`.
@@ -153,6 +162,16 @@ impl Inventory {
                         let cap = b.split(|c: char| !c.is_ascii_digit()).next()?;
                         Some((a.trim().parse().ok()?, cap.parse().ok()?))
                     });
+                continue;
+            }
+            if let Some(rest) = line.trim_start().strip_prefix(KEY_RING_PREFIX) {
+                inv.keys = rest
+                    .trim()
+                    .trim_end_matches('.')
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
                 continue;
             }
             // The carried list wraps at the terminal width, mid-item, so

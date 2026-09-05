@@ -803,3 +803,47 @@ fn a_buff_is_not_cast_without_the_mana_for_it() {
     buffs.on_event(&prompt(30, 4), t0);
     assert_eq!(buffs.attempt(t0, &clock), CastAttempt::Send("cast bles".into()));
 }
+
+/// The ring line, live 2026-09-05 with one key: two spaces after the
+/// colon and a trailing period. It follows the carried list, which
+/// wraps mid-item, so the parser has to close the carried list on it.
+#[test]
+fn inventory_reads_the_key_ring() {
+    let inv = Inventory::parse(
+        "You are carrying 38 runic coins, ninjato (Weapon Hand), white gold\n\
+         ring\n\
+         You have the following keys:  black star key.\n\
+         Wealth: 38982274 copper farthings\n\
+         Encumbrance: 430/1680 - Light [25%]\n",
+    );
+    assert_eq!(
+        inv.items,
+        vec![
+            "38 runic coins".to_string(),
+            "ninjato (Weapon Hand)".to_string(),
+            "white gold ring".to_string(),
+        ]
+    );
+    assert_eq!(inv.keys, vec!["black star key".to_string()]);
+}
+
+/// Two keys are comma separated like the carried list.
+#[test]
+fn inventory_reads_several_keys() {
+    let inv = Inventory::parse(
+        "You are carrying nothing.\n\
+         You have the following keys:  black star key, bone key.\n\
+         Wealth: 0 copper farthings\n",
+    );
+    assert_eq!(
+        inv.keys,
+        vec!["black star key".to_string(), "bone key".to_string()]
+    );
+}
+
+#[test]
+fn an_empty_key_ring_reads_as_no_keys() {
+    let inv = Inventory::parse("You are carrying nothing.\nYou have no keys.\n");
+    assert!(inv.keys.is_empty());
+}
+
