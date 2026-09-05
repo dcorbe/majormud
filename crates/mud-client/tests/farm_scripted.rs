@@ -1516,8 +1516,8 @@ async fn a_lap_of_quiet_stops_sneaks_once() {
         ),
         ("look", format!("\r\nlook{}", room_block("Guard Post", None, "north"))),
         ("sneak", "\r\nsneak\r\nAttempting to sneak...\r\n[HP=30/MA=0]:".into()),
-        ("n", format!("\r\nn{}", room_block("Inner Ward", None, "north south"))),
-        ("n", format!("\r\nn{}", room_block("Keep", None, "south"))),
+        ("n", format!("\r\nn\r\nSneaking...{}", room_block("Inner Ward", None, "north south"))),
+        ("n", format!("\r\nn\r\nSneaking...{}", room_block("Keep", None, "south"))),
     ])
     .await;
     let session = session_for(addr).await;
@@ -1585,7 +1585,7 @@ async fn a_stop_that_swings_rearms_the_next_leg() {
         // sneak bought is a backstab.
         (
             "n",
-            format!("\r\nn{}", room_block("Inner Ward", Some("giant rat"), "north south")),
+            format!("\r\nn\r\nSneaking...{}", room_block("Inner Ward", Some("giant rat"), "north south")),
         ),
         (
             "bs rat",
@@ -1593,7 +1593,7 @@ async fn a_stop_that_swings_rearms_the_next_leg() {
                 .into(),
         ),
         ("sneak", "\r\nsneak\r\nAttempting to sneak...\r\n[HP=30/MA=0]:".into()),
-        ("n", format!("\r\nn{}", room_block("Keep", None, "south"))),
+        ("n", format!("\r\nn\r\nSneaking...{}", room_block("Keep", None, "south"))),
     ])
     .await;
     let session = session_for(addr).await;

@@ -687,6 +687,27 @@ fn a_carried_through_bash_is_confirmed_by_the_line_and_retired_by_its_block() {
 }
 
 #[test]
+fn a_sneaky_move_owns_its_sneaking_line_and_its_break_and_then_its_block() {
+    // Live board, settled 2026-09-04 (theft.md §11.1): a move made
+    // while sneaking prints "Sneaking..." after its echo, a break on
+    // that move prints "You make a sound as you enter the room!" after
+    // that, and the block follows. Both lines confirm (attribute, keep
+    // pending): the walk reads them for its belief, and the block is
+    // still the move's answer.
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "n", t);
+    ans(&mut c, line("n"), t);
+    assert_eq!(ans(&mut c, line("Sneaking..."), t), Some(CmdId(1)));
+    assert_eq!(
+        ans(&mut c, line("You make a sound as you enter the room!"), t),
+        Some(CmdId(1))
+    );
+    assert_eq!(ans(&mut c, room("Sewer Tunnel"), t), Some(CmdId(1)));
+    assert_eq!(ans(&mut c, room("Sewer Tunnel"), t), None); // retired
+}
+
+#[test]
 fn open_light_get_and_heal_replies_complete_their_commands() {
     let t = Instant::now();
     for (cmd, reply) in [

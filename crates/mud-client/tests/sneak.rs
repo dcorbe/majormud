@@ -29,55 +29,34 @@ fn room_block(name: &str, exits: &str) -> String {
     format!("\r\n\x1b[1;36m{name}\r\nObvious exits: {exits}\r\n[HP=30/MA=0]:")
 }
 
-/// A board with one plain (doorless) exit north from HERE to THERE,
-/// whose `sneak` reply is whatever `sneak_reply` says -- the raw body
-/// text between the echo and the closing prompt, exactly as `mud-core`
-/// would print it (a bare "Attempting to sneak...", that plus the
-/// perception-gated failure line, or the hard-block refusal alone).
-async fn sneak_board(sneak_reply: &'static str) -> (std::net::SocketAddr, Arc<SneakLog>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let log = Arc::new(SneakLog::default());
-    let counter = Arc::clone(&log);
-    tokio::spawn(async move {
-        let (mut sock, _) = listener.accept().await.unwrap();
-        sock.write_all(room_block("Guard Post", "north").as_bytes())
-            .await
-            .unwrap();
-        let mut buf = [0u8; 512];
-        while let Ok(n) = sock.read(&mut buf).await {
-            if n == 0 {
-                break;
-            }
-            let line = String::from_utf8_lossy(&buf[..n]).trim().to_lowercase();
-            let echo = format!("\r\n{line}");
-            let reply = match line.as_str() {
-                "sneak" => {
-                    counter.sneaks.fetch_add(1, Ordering::SeqCst);
-                    format!("\r\n{sneak_reply}\r\n[HP=30/MA=0]:")
-                }
-                "n" | "north" => {
-                    counter.moves.fetch_add(1, Ordering::SeqCst);
-                    room_block("Inner Ward", "south")
-                }
-                other => format!("\r\nYou say \"{other}\"\r\n[HP=30/MA=0]:"),
-            };
-            sock.write_all(format!("{echo}{reply}").as_bytes()).await.unwrap();
-        }
-    });
-    (addr, log)
+/// How the scripted board's own sneak state behaves. The board models
+/// the live rules (`theft.md` §11.1, settled 2026-09-04): a move made
+/// while armed opens with "Sneaking...", a break on that move adds
+/// "You make a sound as you enter the room!" after it, and a move made
+/// unarmed says neither.
+#[derive(Clone, Copy, Default)]
+struct Board {
+    /// The character is already sneaking when the client connects.
+    starts_armed: bool,
+    /// A `sneak` answered with the reply text actually arms. `false`
+    /// models the reply shapes that do not (a seen failure, a hard
+    /// block, silence) and the bare attempt that failed silently.
+    arms: bool,
+    /// The `sneak` (0-indexed) that fails silently despite `arms`: a
+    /// bare "Attempting to sneak..." with nothing behind it.
+    silent_fail_on_arm: Option<usize>,
+    /// The move (0-indexed: 0 is the first `n`) whose transit roll
+    /// breaks the sneak.
+    break_on_move: Option<usize>,
 }
 
-const FAR: RoomId = RoomId { map: 1, room: 3 };
-
-/// A board with a two-hop north/north corridor (Guard Post -> Inner
-/// Ward -> Keep), whose `sneak` reply is `sneak_reply` every time it is
-/// sent, and which announces "You make a sound as you enter the room!"
-/// on the move landing in `break_on_move` (0-indexed: 0 is the first
-/// `n`, 1 is the second) if given.
-async fn persistent_sneak_board(
+/// A two-hop north/north corridor (Guard Post -> Inner Ward -> Keep)
+/// whose `sneak` reply is `sneak_reply` -- the raw body text between
+/// the echo and the closing prompt, exactly as `mud-core` would print
+/// it -- and whose moves answer according to `board`.
+async fn sneak_board(
     sneak_reply: &'static str,
-    break_on_move: Option<usize>,
+    board: Board,
 ) -> (std::net::SocketAddr, Arc<SneakLog>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -89,6 +68,8 @@ async fn persistent_sneak_board(
             .await
             .unwrap();
         let mut buf = [0u8; 512];
+        let mut armed = board.starts_armed;
+        let mut arm_index = 0usize;
         let mut move_index = 0usize;
         while let Ok(n) = sock.read(&mut buf).await {
             if n == 0 {
@@ -98,7 +79,10 @@ async fn persistent_sneak_board(
             let echo = format!("\r\n{line}");
             let reply = match line.as_str() {
                 "sneak" => {
+                    let idx = arm_index;
+                    arm_index += 1;
                     counter.sneaks.fetch_add(1, Ordering::SeqCst);
+                    armed = board.arms && board.silent_fail_on_arm != Some(idx);
                     format!("\r\n{sneak_reply}\r\n[HP=30/MA=0]:")
                 }
                 "n" | "north" => {
@@ -110,11 +94,15 @@ async fn persistent_sneak_board(
                     } else {
                         room_block("Keep", "south")
                     };
-                    if break_on_move == Some(idx) {
-                        format!("\r\nYou make a sound as you enter the room!{block}")
-                    } else {
-                        block
+                    let mut out = String::new();
+                    if armed {
+                        out.push_str("\r\nSneaking...");
+                        if board.break_on_move == Some(idx) {
+                            out.push_str("\r\nYou make a sound as you enter the room!");
+                            armed = false;
+                        }
                     }
+                    out + &block
                 }
                 other => format!("\r\nYou say \"{other}\"\r\n[HP=30/MA=0]:"),
             };
@@ -123,6 +111,8 @@ async fn persistent_sneak_board(
     });
     (addr, log)
 }
+
+const FAR: RoomId = RoomId { map: 1, room: 3 };
 
 fn graph_two_hop() -> Arc<RoomGraph> {
     let mut here = GraphRoom {
@@ -223,18 +213,18 @@ fn nav_with_timeout(graph: Arc<RoomGraph>, stealth: u32, step_timeout_ms: u64) -
 }
 
 /// The ordinary case: a bare "Attempting to sneak..." with no failure
-/// line is the best evidence this reply shape ever gives, and is
-/// treated as armed.
+/// line is believed armed for this step -- no second `sneak` -- and the
+/// move's own "Sneaking..." is what confirms it.
 #[tokio::test]
-async fn a_bare_attempt_with_no_failure_line_is_believed_armed() {
-    let (addr, log) = sneak_board("Attempting to sneak...").await;
+async fn a_bare_attempt_is_confirmed_by_the_move() {
+    let (addr, log) = sneak_board("Attempting to sneak...", Board { arms: true, ..Board::default() }).await;
     let session = session_for(addr).await;
     let navigator = nav(graph_one_hop(), 56);
     let arrival = navigator
         .goto(&session, HERE, THERE, &mut NoGuard, false)
         .await
         .unwrap();
-    assert!(arrival.sneaking, "a bare attempt with nothing else must read as armed");
+    assert!(arrival.sneaking, "the move said Sneaking...");
     assert_eq!(log.sneaks.load(Ordering::SeqCst), 1);
     assert_eq!(log.moves.load(Ordering::SeqCst), 1);
 }
@@ -243,7 +233,11 @@ async fn a_bare_attempt_with_no_failure_line_is_believed_armed() {
 /// believed over the optimistic default.
 #[tokio::test]
 async fn a_perceived_failure_is_not_believed_armed() {
-    let (addr, _log) = sneak_board("Attempting to sneak...\r\nYou don't think you're sneaking.").await;
+    let (addr, _log) = sneak_board(
+        "Attempting to sneak...\r\nYou don't think you're sneaking.",
+        Board::default(),
+    )
+    .await;
     let session = session_for(addr).await;
     let navigator = nav(graph_one_hop(), 56);
     let arrival = navigator
@@ -261,7 +255,11 @@ async fn a_perceived_failure_is_not_believed_armed() {
 /// sits out its whole step deadline before moving on unarmed.
 #[tokio::test]
 async fn a_failure_glued_to_the_attempt_is_read_at_once() {
-    let (addr, log) = sneak_board("Attempting to sneak...You don't think you're sneaking.").await;
+    let (addr, log) = sneak_board(
+        "Attempting to sneak...You don't think you're sneaking.",
+        Board::default(),
+    )
+    .await;
     let session = session_for(addr).await;
     let navigator = nav_with_timeout(graph_one_hop(), 56, 5_000);
     let started = std::time::Instant::now();
@@ -284,7 +282,7 @@ async fn a_failure_glued_to_the_attempt_is_read_at_once() {
 /// unsneaked.
 #[tokio::test]
 async fn a_hard_block_is_not_believed_armed_and_does_not_stop_the_walk() {
-    let (addr, log) = sneak_board("You may not sneak right now!").await;
+    let (addr, log) = sneak_board("You may not sneak right now!", Board::default()).await;
     let session = session_for(addr).await;
     let navigator = nav(graph_one_hop(), 56);
     let arrival = navigator
@@ -300,7 +298,7 @@ async fn a_hard_block_is_not_believed_armed_and_does_not_stop_the_walk() {
 /// never send `sneak` at all.
 #[tokio::test]
 async fn zero_stealth_never_sends_sneak() {
-    let (addr, log) = sneak_board("Attempting to sneak...").await;
+    let (addr, log) = sneak_board("Attempting to sneak...", Board { arms: true, ..Board::default() }).await;
     let session = session_for(addr).await;
     let navigator = nav(graph_one_hop(), 0);
     let arrival = navigator
@@ -318,7 +316,7 @@ async fn zero_stealth_never_sends_sneak() {
 /// about.
 #[tokio::test]
 async fn silence_is_not_believed_armed() {
-    let (addr, log) = sneak_board("").await;
+    let (addr, log) = sneak_board("", Board::default()).await;
     let session = session_for(addr).await;
     let navigator = nav_with_timeout(graph_one_hop(), 56, 400);
     let arrival = navigator
@@ -335,7 +333,7 @@ async fn silence_is_not_believed_armed() {
 /// step regardless of belief and this fails (`log.sneaks` becomes 2).
 #[tokio::test]
 async fn one_sneak_covers_several_steps() {
-    let (addr, log) = persistent_sneak_board("Attempting to sneak...", None).await;
+    let (addr, log) = sneak_board("Attempting to sneak...", Board { arms: true, ..Board::default() }).await;
     let session = session_for(addr).await;
     let navigator = nav(graph_two_hop(), 56);
     let arrival = navigator
@@ -361,7 +359,11 @@ async fn one_sneak_covers_several_steps() {
 async fn the_break_line_clears_the_belief_and_the_next_step_rearms() {
     // Break announced on move index 0 -- entering Inner Ward, the first
     // step of the two-step walk.
-    let (addr, log) = persistent_sneak_board("Attempting to sneak...", Some(0)).await;
+    let (addr, log) = sneak_board(
+        "Attempting to sneak...",
+        Board { arms: true, break_on_move: Some(0), ..Board::default() },
+    )
+    .await;
     let session = session_for(addr).await;
     let navigator = nav(graph_two_hop(), 56);
     let arrival = navigator
@@ -388,7 +390,11 @@ async fn the_break_line_clears_the_belief_and_the_next_step_rearms() {
 /// ignore the carried belief and `log.sneaks` reads 1.
 #[tokio::test]
 async fn a_carried_belief_skips_the_arm() {
-    let (addr, log) = persistent_sneak_board("Attempting to sneak...", None).await;
+    let (addr, log) = sneak_board(
+        "Attempting to sneak...",
+        Board { starts_armed: true, arms: true, ..Board::default() },
+    )
+    .await;
     let session = session_for(addr).await;
     let navigator = nav(graph_two_hop(), 56);
     let arrival = navigator
@@ -406,7 +412,11 @@ async fn a_carried_belief_skips_the_arm() {
 /// formed itself.
 #[tokio::test]
 async fn a_carried_belief_still_rearms_after_a_break() {
-    let (addr, log) = persistent_sneak_board("Attempting to sneak...", Some(0)).await;
+    let (addr, log) = sneak_board(
+        "Attempting to sneak...",
+        Board { starts_armed: true, arms: true, break_on_move: Some(0), ..Board::default() },
+    )
+    .await;
     let session = session_for(addr).await;
     let navigator = nav(graph_two_hop(), 56);
     let arrival = navigator
@@ -422,7 +432,7 @@ async fn a_carried_belief_still_rearms_after_a_break() {
 /// character did not move, so nothing about its sneak changed.
 #[tokio::test]
 async fn a_walk_of_no_steps_keeps_the_carried_belief() {
-    let (addr, log) = persistent_sneak_board("Attempting to sneak...", None).await;
+    let (addr, log) = sneak_board("Attempting to sneak...", Board { starts_armed: true, ..Board::default() }).await;
     let session = session_for(addr).await;
     let navigator = nav(graph_two_hop(), 56);
     let arrival = navigator
@@ -431,4 +441,63 @@ async fn a_walk_of_no_steps_keeps_the_carried_belief() {
         .unwrap();
     assert!(arrival.sneaking);
     assert_eq!(log.sneaks.load(Ordering::SeqCst), 0);
+}
+
+/// The same bare reply, but the arm failed silently (theft.md §11.1:
+/// a failed sneak roll whose perception roll also misses prints
+/// nothing). Three of some thirty did in the capture that settled
+/// this (2026-09-04). The move says nothing, and that silence is the
+/// answer: not sneaking. Mutation target: believe the bare attempt
+/// over the move and `arrival.sneaking` stays `true`.
+#[tokio::test]
+async fn a_bare_attempt_that_failed_silently_is_read_off_the_move() {
+    let (addr, log) = sneak_board("Attempting to sneak...", Board::default()).await;
+    let session = session_for(addr).await;
+    let navigator = nav(graph_one_hop(), 56);
+    let arrival = navigator
+        .goto(&session, HERE, THERE, &mut NoGuard, false)
+        .await
+        .unwrap();
+    assert!(!arrival.sneaking, "the move said nothing, so the arm did not take");
+    assert_eq!(log.sneaks.load(Ordering::SeqCst), 1, "one attempt this step");
+    assert_eq!(log.moves.load(Ordering::SeqCst), 1);
+}
+
+/// A silent arm failure costs exactly one unsneaked step: the move
+/// reveals it, and the next step arms again.
+#[tokio::test]
+async fn a_silent_arm_failure_rearms_on_the_next_step() {
+    let (addr, log) = sneak_board(
+        "Attempting to sneak...",
+        Board { arms: true, silent_fail_on_arm: Some(0), ..Board::default() },
+    )
+    .await;
+    let session = session_for(addr).await;
+    let navigator = nav(graph_two_hop(), 56);
+    let arrival = navigator
+        .goto(&session, HERE, FAR, &mut NoGuard, false)
+        .await
+        .unwrap();
+    assert!(arrival.sneaking, "the second arm took, and the second move said so");
+    assert_eq!(log.sneaks.load(Ordering::SeqCst), 2, "arm, silent failure, arm again");
+    assert_eq!(log.moves.load(Ordering::SeqCst), 2);
+}
+
+/// A carried belief the board does not share -- the caller thought the
+/// character was still sneaking, the board did not -- is corrected by
+/// the first move's silence, and the next step arms. This is what makes
+/// a caller's conservative clearing cheap in the other direction too:
+/// whichever way the belief is wrong, one move puts it right.
+#[tokio::test]
+async fn a_carried_belief_the_board_contradicts_is_corrected_by_the_first_move() {
+    let (addr, log) = sneak_board("Attempting to sneak...", Board { arms: true, ..Board::default() }).await;
+    let session = session_for(addr).await;
+    let navigator = nav(graph_two_hop(), 56);
+    let arrival = navigator
+        .goto(&session, HERE, FAR, &mut NoGuard, true)
+        .await
+        .unwrap();
+    assert!(arrival.sneaking, "armed before the second step, confirmed by its move");
+    assert_eq!(log.sneaks.load(Ordering::SeqCst), 1, "no arm on the first step, one on the second");
+    assert_eq!(log.moves.load(Ordering::SeqCst), 2);
 }

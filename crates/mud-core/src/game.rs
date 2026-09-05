@@ -16764,6 +16764,15 @@ impl Core {
         // (the board "tells you when it stops"), not a separate,
         // independently-rolled aside layered over a state that never
         // actually changed.
+        // A move made while armed says so to the mover before anything
+        // else (live board, settled 2026-09-04, theft.md §11.1): the
+        // line is the board's confirmation that the character was
+        // sneaking going into the transit, whatever the roll below
+        // makes of it. A client reads its sneak state off this line,
+        // not off `cmd_sneak`'s reply, which can fail silently.
+        if was_armed {
+            self.output_line(session, "Sneaking...");
+        }
         let broke = was_armed && !sneaking;
         if broke {
             self.output_line(session, "You make a sound as you enter the room!");

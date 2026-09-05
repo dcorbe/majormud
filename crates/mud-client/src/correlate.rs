@@ -450,10 +450,18 @@ fn completes(kind: Kind, ev: &Event) -> bool {
 /// `mud_client::nav::SNEAK_BROKE`, which reads this same line for the
 /// walk's own belief-tracking). Literal duplicated rather than shared,
 /// same call this file already made for "walk through".
+///
+/// A sneaky move that holds announces itself too: "Sneaking..." on its
+/// own line, right after the echo and before the block (live board,
+/// settled 2026-09-04; `theft.md` §11.1). Same shape, same reason: the
+/// walk reads it for its belief (`mud_client::nav::SNEAK_HELD`), and a
+/// break on the same move prints after it, not instead of it.
 fn confirms(kind: Kind, line: &str) -> bool {
     let line = line.to_lowercase();
     (matches!(kind, Kind::Bash) && line.contains("walk through"))
-        || (matches!(kind, Kind::Move) && line.contains("you make a sound as you enter the room"))
+        || (matches!(kind, Kind::Move)
+            && (line.trim_start().starts_with("sneaking...")
+                || line.contains("you make a sound as you enter the room")))
 }
 
 struct Entry {

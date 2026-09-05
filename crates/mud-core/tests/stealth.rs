@@ -517,6 +517,38 @@ fn sneak_transit_reroll_can_fail_after_arming() {
     panic!("never observed a failed transit roll in 100 attempts");
 }
 
+/// A move made while armed opens with "Sneaking..." to the mover,
+/// whatever the transit roll then does; on a break the announcement
+/// follows it, never replaces it. A move made unarmed says neither.
+/// Live board, settled 2026-09-04 (theft.md §11.1): this line, not
+/// `cmd_sneak`'s reply, is what a client can trust about its sneak.
+#[test]
+fn an_armed_move_says_sneaking_before_anything_else() {
+    let mut core = Core::new(world_with_reroll_classes(), CoreConfig::default());
+    let sneaker = core.attach_player(person("Shade", 3, false));
+    core.drain_events();
+
+    core.input(sneaker, "n");
+    let unarmed = texts(&core.drain_events(), sneaker);
+    assert!(!unarmed.contains("Sneaking..."), "an unarmed move says nothing: {unarmed:?}");
+    core.input(sneaker, "s");
+    core.drain_events();
+
+    for _ in 0..100 {
+        arm_sneak(&mut core, sneaker);
+        core.input(sneaker, "n");
+        let to_sneaker = texts(&core.drain_events(), sneaker);
+        let said = to_sneaker.find("Sneaking...").expect("an armed move says so");
+        if let Some(broke) = to_sneaker.find("You make a sound as you enter the room!") {
+            assert!(said < broke, "the break follows the confirmation: {to_sneaker:?}");
+        }
+        if core.player_snapshot(sneaker).location == THERE {
+            core.input(sneaker, "s");
+            core.drain_events();
+        }
+    }
+}
+
 #[test]
 fn sneak_transit_reroll_passing_stays_sneaky() {
     // Armed + roll passes -> the sneaky path: perception-filtered
