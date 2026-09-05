@@ -68,9 +68,9 @@ pub fn picked_up(line: &str) -> Option<(u32, String)> {
 }
 
 /// The board's acknowledgement of an ITEM pickup: "You picked up a
-/// silver holy amulet" (live, oracle_charm_lifecycle), "You picked up
-/// a black star key". Coins are [`picked_up`]'s and are refused here,
-/// and the leading article is dropped.
+/// silver holy amulet", captured live in oracle_charm_lifecycle, and
+/// "You picked up a black star key". Coins are [`picked_up`]'s and are
+/// refused here, and the leading article is dropped.
 static PICKED_UP_ITEM_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^You picked up (?:an? |the )?(.+?)\.?$").unwrap());
 
