@@ -245,6 +245,11 @@ pub struct Capabilities {
     /// nothing. "Unrestricted" means every already-existing cost is
     /// affordable, not that a brand new optional action gets taken.
     pub stealth: u32,
+    /// What the character carries, shared with every other navigator
+    /// and bot for the same character. `None` until a caller with the
+    /// item table hands one over, see [`crate::session::Session::set_content`],
+    /// and a walker with no pack holds nothing.
+    pub pack: Option<crate::pack::PackHandle>,
 }
 
 impl Capabilities {
@@ -264,6 +269,11 @@ impl Capabilities {
             // cost, so "unrestricted" leaves it off rather than arming
             // it for every caller that has never heard of it.
             stealth: 0,
+            // Not "everything": an unlimited pack would route every
+            // walker through item gates and key doors it cannot pass,
+            // and the cost of that mistake is a character stranded at
+            // one. A missing item is the safe answer.
+            pack: None,
         }
     }
 
@@ -275,6 +285,11 @@ impl Capabilities {
     /// apart.
     pub fn is_known_free(&self, room: RoomId, dir: Direction) -> bool {
         self.tolls_known_free.is_free(room, dir)
+    }
+
+    /// Does this walker hold the item, on the ring or in the pack?
+    pub fn has_item(&self, id: mud_core::content::ItemId) -> bool {
+        self.pack.as_ref().is_some_and(|p| p.has(id))
     }
 }
 
@@ -913,3 +928,4 @@ struct Reached {
     hops: usize,
     via: Option<(RoomId, Direction)>,
 }
+

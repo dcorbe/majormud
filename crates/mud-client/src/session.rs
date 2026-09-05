@@ -799,6 +799,7 @@ impl Session {
             tolls_known_free: Arc::clone(&self.toll_log),
             picklocks: self.stats().picklocks.unwrap_or(0),
             stealth: self.stats().stealth.unwrap_or(0),
+            pack: None,
         }
     }
 
@@ -1076,3 +1077,4 @@ fn apply_event(state: &mut GameState, cor: &Correlated, now: Instant) -> bool {
     };
     changed || ticked
 }
+

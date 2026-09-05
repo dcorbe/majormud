@@ -75,3 +75,38 @@ fn state_free_requirements_keep_their_old_prices() {
         );
     }
 }
+
+/// A walker with no pack holds nothing, and so does the unrestricted
+/// walker: an unlimited pack would route every character through item
+/// gates it cannot pass, which is the wrong direction to be wrong in.
+#[test]
+fn a_walker_holds_nothing_until_handed_a_pack() {
+    use mud_client::pack::PackHandle;
+    use mud_client::sheet::Inventory;
+    use mud_core::content::{Content, Item, ItemId};
+    use std::sync::Arc;
+
+    assert!(!Capabilities::default().has_item(ItemId(172)));
+    assert!(!Capabilities::unrestricted().has_item(ItemId(172)));
+
+    let mut content = Content::default();
+    content.add_item(Item {
+        id: ItemId(172),
+        name: "black star key".into(),
+        item_type: 7,
+        ..Default::default()
+    });
+    let pack = PackHandle::new(Arc::new(content));
+    pack.refresh(&Inventory {
+        items: Vec::new(),
+        keys: vec!["black star key".into()],
+        encumbrance: None,
+    });
+    let caps = Capabilities {
+        pack: Some(pack),
+        ..Capabilities::unrestricted()
+    };
+    assert!(caps.has_item(ItemId(172)));
+    assert!(!caps.has_item(ItemId(173)));
+}
+
