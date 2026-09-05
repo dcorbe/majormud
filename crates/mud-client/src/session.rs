@@ -1117,4 +1117,3 @@ fn apply_event(state: &mut GameState, cor: &Correlated, now: Instant) -> bool {
     };
     changed || ticked
 }
-

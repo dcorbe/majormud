@@ -928,4 +928,3 @@ struct Reached {
     hops: usize,
     via: Option<(RoomId, Direction)>,
 }
-

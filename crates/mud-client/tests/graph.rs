@@ -109,4 +109,3 @@ fn a_walker_holds_nothing_until_handed_a_pack() {
     assert!(caps.has_item(ItemId(172)));
     assert!(!caps.has_item(ItemId(173)));
 }
-

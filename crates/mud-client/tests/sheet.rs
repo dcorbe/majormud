@@ -846,4 +846,3 @@ fn an_empty_key_ring_reads_as_no_keys() {
     let inv = Inventory::parse("You are carrying nothing.\nYou have no keys.\n");
     assert!(inv.keys.is_empty());
 }
-
