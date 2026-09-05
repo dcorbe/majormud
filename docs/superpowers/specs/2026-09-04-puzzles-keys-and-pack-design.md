@@ -132,10 +132,16 @@ ring, two spaces after the colon (test.raw 2026-09-05).
 
 ### What is not known
 
+Captured 2026-09-05 at the Black House door on Slum Street: `unlock e` is
+not a command and falls through to say. `use black star key east` answers
+"You successfully unlocked the door.", the same line a pick gives, and the
+door still needs `open e`, which answers "The door is now open." So the key
+verb is `use <key name> <direction>` and the reply is already known to the
+walker. The database has that door as 1/1224 east, key item 172, pick
+modifier -99: unpickable under 100 Picklocks and free with the key.
+
 None of these are in `re/docs`, the oracle transcripts or `mud-core`:
 
-- What the board prints when a key is used on a key door, and whether `open`
-  uses the key by itself or a verb is needed.
 - What the board says at an item gate without the item.
 - Whether a state 1 hidden exit answers a search.
 
@@ -313,9 +319,10 @@ picklocks > 0`, in one place, with the shipped modifiers as test cases.
 ### The walk
 
 At a key door with the key: `open <dir>`. If the board answers with the
-locked line, send the key verb. That verb and its reply are one constant
-each, pinned by capture. A successful reply is followed by the existing
-unlocked then open then step flow. Without the key the existing pick and bash
+locked line, send `use <key name> <direction>` with the key's name from the
+pack and the full direction word. The reply is the unlocked line the walker
+already reads after a pick, so the existing unlocked then open then step
+flow follows. Without the key the existing pick and bash
 flow runs unchanged, and routing has already checked that picking can
 succeed.
 
@@ -347,9 +354,9 @@ reads `re/`.
 - `roam`: a region grows through a solvable puzzle and not through an
   unsolvable one.
 
-Live captures pin the constants. Held: the Crypt levers and the inventory
-reply with a key. Owed: one key door on map 1 with its key held, and one
-search at a state 1 hidden exit.
+Live captures pin the constants. Held: the Crypt levers, the inventory
+reply with a key, and the key door. Owed: one search at a state 1 hidden
+exit.
 
 ## Not in scope
 
