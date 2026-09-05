@@ -367,8 +367,10 @@ fn completes(kind: Kind, ev: &Event) -> bool {
         // lock gives, or the skill check fails and the door stays shut.
         // The failure wording is shared with an unpickable exit type --
         // both mean "this door did not open", which is all the walk
-        // needs to decide whether to roll again.
-        Kind::Picklock => has("unlocked the door") || has("skill fails you"),
+        // needs to decide whether to roll again. The success line ends
+        // in the exit's own leaf word, `door` or `gate` (§8.5), so the
+        // match stops before it.
+        Kind::Picklock => has("unlocked the") || has("skill fails you"),
         Kind::Bash => {
             has("bashed the")
                 || has("bash through fail")

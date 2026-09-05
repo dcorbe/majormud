@@ -1082,6 +1082,10 @@ fn a_picklock_is_a_kind_of_its_own() {
         // The board takes any prefix from `pi`; the client sends the
         // full word, but a hand-typed one must correlate too.
         ("pick s", "You unlocked the door."),
+        // theft.md §8.5: "You successfully unlocked the %s." with `gate`
+        // for a type-0xb exit. Live, test.raw 2026-09-05, at the
+        // graveyard gates: the reply was never attributed to the pick.
+        ("picklock n", "You successfully unlocked the gate."),
     ] {
         let mut c = Correlator::new(Duration::from_secs(30));
         c.sent(CmdId(1), cmd, t0);

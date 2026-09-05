@@ -388,9 +388,12 @@ const DOOR_BLOCKED: [&str; 7] = [
 /// step still has to be walked ("You bashed the door open.", 0xd54b0).
 const DOOR_YIELDED: [&str; 3] = ["is now open", "was already open", "bashed the"];
 
-/// The lock gave, but the LATCH did not: "You unlocked the door." leaves
-/// the door standing shut, so the walk still owes it an `open` before
-/// the step.
+/// The lock gave, but the LATCH did not: "You successfully unlocked the
+/// door." leaves the door standing shut, so the walk still owes it an
+/// `open` before the step. The leaf word is `gate` on a type-0xb exit
+/// (`theft.md` §8.5's "You successfully unlocked the %s."), so the match
+/// stops before it: pinned to "door", the graveyard gates were picked
+/// live (test.raw 2026-09-05) and the walk then sent nothing at all.
 ///
 /// This lived in [`DOOR_YIELDED`] and that was wrong. Yielded means the
 /// way is clear and the direction can be sent; unlocked means one more
@@ -398,7 +401,7 @@ const DOOR_YIELDED: [&str; 3] = ["is now open", "was already open", "bashed the"
 /// closed door and the leg died there (live, 2026-08-22: "the
 /// picklocking worked, but it forgot to try opening the door and then
 /// gave up").
-const DOOR_UNLOCKED: &str = "unlocked the door";
+const DOOR_UNLOCKED: &str = "unlocked the";
 
 /// The board's answer when the exit is not there at all. The graph and
 /// the board disagree, so the walk is somewhere other than it believes —

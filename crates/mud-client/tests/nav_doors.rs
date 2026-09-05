@@ -171,6 +171,16 @@ fn nav(graph: Arc<RoomGraph>) -> Navigator {
 /// door still stands shut, so it must then be opened before it can be
 /// walked through.
 async fn pick_then_open_board() -> (std::net::SocketAddr, Arc<DoorLog>) {
+    pick_then_open_board_worded("door").await
+}
+
+/// The same board with `leaf` as the word the board uses for what is in
+/// the way: "door" for a type-7 exit, "gate" for a type-0xb one. The
+/// success line is theft.md §8.5's "You successfully unlocked the %s.",
+/// which is what the live board prints (test.raw 2026-09-05: "You
+/// successfully unlocked the gate." at the graveyard gates, after which
+/// the walk sent nothing at all).
+async fn pick_then_open_board_worded(leaf: &'static str) -> (std::net::SocketAddr, Arc<DoorLog>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let log = Arc::new(DoorLog::default());
@@ -179,7 +189,7 @@ async fn pick_then_open_board() -> (std::net::SocketAddr, Arc<DoorLog>) {
         let (mut sock, _) = listener.accept().await.unwrap();
         let mut locked = true;
         let mut open = false;
-        sock.write_all(room_block("Guard Post", "closed door north").as_bytes())
+        sock.write_all(room_block("Guard Post", &format!("closed {leaf} north")).as_bytes())
             .await
             .unwrap();
         let mut buf = [0u8; 512];
@@ -193,30 +203,30 @@ async fn pick_then_open_board() -> (std::net::SocketAddr, Arc<DoorLog>) {
                 "n" | "north" => {
                     counter.moves.fetch_add(1, Ordering::SeqCst);
                     if open {
-                        room_block("Inner Ward", "open door south")
+                        room_block("Inner Ward", &format!("open {leaf} south"))
                     } else {
-                        "\r\nThe door is closed.\r\n[HP=30/MA=0]:".to_string()
+                        format!("\r\nThe {leaf} is closed.\r\n[HP=30/MA=0]:")
                     }
                 }
                 "open n" | "open north" => {
                     counter.opens.fetch_add(1, Ordering::SeqCst);
                     if locked {
-                        "\r\nThe door is locked.\r\n[HP=30/MA=0]:".to_string()
+                        format!("\r\nThe {leaf} is locked.\r\n[HP=30/MA=0]:")
                     } else {
                         open = true;
-                        "\r\nThe door is now open.\r\n[HP=30/MA=0]:".to_string()
+                        format!("\r\nThe {leaf} is now open.\r\n[HP=30/MA=0]:")
                     }
                 }
                 "picklock n" | "picklock north" => {
                     counter.picks.fetch_add(1, Ordering::SeqCst);
                     // Unlocked, NOT open. This is the whole point.
                     locked = false;
-                    "\r\nYou unlocked the door.\r\n[HP=30/MA=0]:".to_string()
+                    format!("\r\nYou successfully unlocked the {leaf}.\r\n[HP=30/MA=0]:")
                 }
                 "bash n" | "bash north" => {
                     counter.bashes.fetch_add(1, Ordering::SeqCst);
                     open = true;
-                    "\r\nYou bashed the door open.\r\n[HP=30/MA=0]:".to_string()
+                    format!("\r\nYou bashed the {leaf} open.\r\n[HP=30/MA=0]:")
                 }
                 other => format!("\r\nYou say \"{other}\"\r\n[HP=30/MA=0]:"),
             };
@@ -772,6 +782,42 @@ async fn a_locked_door_is_picked_by_a_character_with_the_skill() {
         0,
         "picking succeeded, so nothing should have been bashed"
     );
+}
+
+/// The graveyard gates (live, test.raw 2026-09-05): `picklock n` was
+/// answered "You successfully unlocked the gate." and the walk then sent
+/// nothing for the rest of the session. The unlocked wording is
+/// theft.md §8.5's "You successfully unlocked the %s." with `gate` for a
+/// type-0xb exit, and both the walker and the correlator had pinned the
+/// `door` spelling.
+#[tokio::test]
+async fn a_locked_gate_is_picked_opened_and_walked_through() {
+    let (addr, log) = pick_then_open_board_worded("gate").await;
+    let session = session_for(addr).await;
+    let n = Navigator::new(
+        graph_with_exit(0xb),
+        NavConfig {
+            step_timeout_ms: 1500,
+            bash_doors: false,
+            ..NavConfig::default()
+        },
+    );
+
+    let at = tokio::time::timeout(
+        Duration::from_secs(10),
+        n.goto(&session, HERE, THERE, &mut NoGuard, false),
+    )
+    .await
+    .expect("goto should not hang")
+    .expect("should have picked the gate and walked through");
+
+    assert_eq!(at.at, THERE);
+    assert!(log.picks.load(Ordering::SeqCst) >= 1, "a locked gate needs a pick");
+    assert!(
+        log.opens.load(Ordering::SeqCst) >= 2,
+        "the gate is unlocked, not open: it still owes an open after the pick"
+    );
+    assert_eq!(log.bashes.load(Ordering::SeqCst), 0);
 }
 
 /// A character with no Picklocks does not pick — the roll costs a
