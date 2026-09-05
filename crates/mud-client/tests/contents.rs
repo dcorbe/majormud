@@ -52,6 +52,59 @@ async fn inventory_board() -> std::net::SocketAddr {
     addr
 }
 
+/// The same board with one key on the ring, the live reply of
+/// 2026-09-05.
+async fn keyed_inventory_board() -> std::net::SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut pending = String::new();
+        let mut buf = [0u8; 512];
+        while let Ok(n) = sock.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            pending.push_str(&String::from_utf8_lossy(&buf[..n]));
+            while let Some(nl) = pending.find('\n') {
+                let line: String = pending.drain(..=nl).collect();
+                let line = line.trim();
+                let reply = if line.eq_ignore_ascii_case("i") {
+                    "i\r\n\
+                     You are carrying 38 runic coins, ninjato (Weapon Hand)\r\n\
+                     You have the following keys:  black star key.\r\n\
+                     Wealth: 38982274 copper farthings\r\n\
+                     Encumbrance: 430/1680 - Light [25%]\r\n\
+                     [HP=30/MA=0]:"
+                        .to_string()
+                } else {
+                    format!("\r\nYou say \"{line}\"\r\n[HP=30/MA=0]:")
+                };
+                sock.write_all(reply.as_bytes()).await.unwrap();
+            }
+        }
+    });
+    addr
+}
+
+fn key_table() -> std::sync::Arc<mud_core::content::Content> {
+    use mud_core::content::{Content, Item, ItemId};
+    let mut content = Content::default();
+    content.add_item(Item {
+        id: ItemId(172),
+        name: "black star key".into(),
+        item_type: 7,
+        ..Default::default()
+    });
+    content.add_item(Item {
+        id: ItemId(500),
+        name: "ninjato".into(),
+        item_type: 1,
+        ..Default::default()
+    });
+    std::sync::Arc::new(content)
+}
+
 async fn session_for(addr: std::net::SocketAddr) -> Session {
     let profile = Profile {
         target: mud_client::dialect::Target::MbbsEmu,
@@ -125,4 +178,48 @@ async fn a_second_i_replaces_the_first_reading() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     let second = session.contents();
     assert_eq!(second.items.len(), 3, "contents must be an assignment, not an accumulation");
+}
+
+/// The pack rides the same reply as the contents: once the session has
+/// the item table, every `i` refreshes both, and `capabilities()` hands
+/// out the shared handle.
+#[tokio::test]
+async fn an_i_reply_refreshes_the_capabilities_pack() {
+    use mud_core::content::ItemId;
+    let addr = keyed_inventory_board().await;
+    let session = session_for(addr).await;
+    session.set_content(key_table());
+    assert!(!session.capabilities().has_item(ItemId(172)));
+    session.send("i");
+    wait_for_contents(&session).await;
+    let caps = session.capabilities();
+    assert!(caps.has_item(ItemId(172)), "the ring key");
+    assert!(caps.has_item(ItemId(500)), "the wielded weapon");
+    assert!(!caps.has_item(ItemId(501)));
+}
+
+/// Without the table there is no pack to refresh, and capabilities say
+/// so rather than pretending.
+#[tokio::test]
+async fn without_the_table_there_is_no_pack() {
+    use mud_core::content::ItemId;
+    let addr = keyed_inventory_board().await;
+    let session = session_for(addr).await;
+    session.send("i");
+    wait_for_contents(&session).await;
+    assert!(session.pack_handle().is_none());
+    assert!(!session.capabilities().has_item(ItemId(172)));
+}
+
+/// Handing the table over after a reply has already landed resolves
+/// the reading the session already holds.
+#[tokio::test]
+async fn set_content_resolves_the_reading_already_held() {
+    use mud_core::content::ItemId;
+    let addr = keyed_inventory_board().await;
+    let session = session_for(addr).await;
+    session.send("i");
+    wait_for_contents(&session).await;
+    session.set_content(key_table());
+    assert!(session.capabilities().has_item(ItemId(172)));
 }

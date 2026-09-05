@@ -381,6 +381,12 @@ pub struct Session {
     ///
     /// [`Navigator`]: crate::nav::Navigator
     equipment: Arc<Mutex<Equipment>>,
+    /// The character's pack by item id, refreshed off every `i` reply
+    /// once a caller has handed over the item table with
+    /// [`Session::set_content`]. `None` before that: the session cannot
+    /// resolve names on its own, and it does not load the world
+    /// database on its own account.
+    pack: Arc<Mutex<Option<crate::pack::PackHandle>>>,
 }
 
 impl Session {
@@ -417,6 +423,7 @@ impl Session {
             buffer: None,
         }));
         let equipment = Arc::new(Mutex::new(Equipment::new()));
+        let pack = Arc::new(Mutex::new(None));
 
         let mut raw_file = match &capture {
             Some(c) => Some(File::create(&c.raw)?),
@@ -501,6 +508,7 @@ impl Session {
             let stats = Arc::clone(&stats);
             let contents = Arc::clone(&contents);
             let equipment = Arc::clone(&equipment);
+            let pack = Arc::clone(&pack);
             tokio::spawn(async move {
                 let mut filter = TelnetFilter::new();
                 let mut stripper = AnsiStripper::new();
@@ -540,7 +548,7 @@ impl Session {
                             state_tx.send_if_modified(|s| apply_event(s, &cor, now));
                             feed_purse(&purse, &cor);
                             feed_stats(&stats, &cor);
-                            feed_contents(&contents, &equipment, &cor);
+                            feed_contents(&contents, &equipment, &pack, &cor);
                             feed_equipment(&equipment, &cor);
                             let _ = events_tx.send(cor);
                         }
@@ -564,7 +572,7 @@ impl Session {
                         state_tx.send_if_modified(|s| apply_event(s, &cor, now));
                         feed_purse(&purse, &cor);
                         feed_stats(&stats, &cor);
-                        feed_contents(&contents, &equipment, &cor);
+                        feed_contents(&contents, &equipment, &pack, &cor);
                         feed_equipment(&equipment, &cor);
                         let _ = events_tx.send(cor);
                     }
@@ -592,6 +600,7 @@ impl Session {
             sheet,
             contents,
             equipment,
+            pack,
         })
     }
 
@@ -793,13 +802,15 @@ impl Session {
     /// whether this character can pick a lock is a fact read off the
     /// board's own `stat` sheet, not a setting an operator manages.
     /// `stealth` follows the identical pattern for the Stealth skill.
+    /// The pack is the shared handle from `set_content`, or `None` until
+    /// then.
     pub fn capabilities(&self) -> Capabilities {
         Capabilities {
             purse: self.purse.lock().expect("purse lock").meter.current(),
             tolls_known_free: Arc::clone(&self.toll_log),
             picklocks: self.stats().picklocks.unwrap_or(0),
             stealth: self.stats().stealth.unwrap_or(0),
-            pack: None,
+            pack: self.pack_handle(),
         }
     }
 
@@ -821,6 +832,24 @@ impl Session {
     /// only ever as fresh as the last `i` anyone on this session sent.
     pub fn contents(&self) -> Inventory {
         self.contents.lock().expect("contents lock").current.clone()
+    }
+
+    /// Hand the session the item table so it can keep a pack by id.
+    ///
+    /// Called once by whoever loads the world database for this
+    /// session: `mmc play` at realm entry, `run_go` and `run_farm` at
+    /// their start. Resolves the reading the session already holds, so
+    /// a table handed over after the first `i` still gives a full pack.
+    /// A second call replaces the table and re-resolves.
+    pub fn set_content(&self, content: Arc<mud_core::content::Content>) {
+        let handle = crate::pack::PackHandle::new(content);
+        handle.refresh(&self.contents());
+        *self.pack.lock().expect("pack lock") = Some(handle);
+    }
+
+    /// The shared pack, or `None` until [`Session::set_content`].
+    pub fn pack_handle(&self) -> Option<crate::pack::PackHandle> {
+        self.pack.lock().expect("pack lock").clone()
     }
 
     /// The session's own wielded-weapon model, as this session has
@@ -975,7 +1004,12 @@ fn feed_stats(stats: &Mutex<StatTracker>, cor: &Correlated) {
 /// whatever text happens to precede the next `[HP=...]:`. Watching for
 /// it directly means a reply is parsed as soon as it is complete rather
 /// than waiting on a prompt that might be several lines further out.
-fn feed_contents(contents: &Mutex<ContentsTracker>, equipment: &Mutex<Equipment>, cor: &Correlated) {
+fn feed_contents(
+    contents: &Mutex<ContentsTracker>,
+    equipment: &Mutex<Equipment>,
+    pack: &Mutex<Option<crate::pack::PackHandle>>,
+    cor: &Correlated,
+) {
     let Event::Line(line) = &cor.event else {
         return;
     };
@@ -1004,6 +1038,12 @@ fn feed_contents(contents: &Mutex<ContentsTracker>, equipment: &Mutex<Equipment>
         // the "first `i` listing" `Equipment::seed` wants, whichever
         // caller happened to send it.
         equipment.lock().expect("equipment lock").seed(&tracker.current.items);
+        // The pack is the same reading by id. Refreshed here, under the
+        // contents lock, so a caller that sees the new contents also
+        // sees the new pack.
+        if let Some(handle) = pack.lock().expect("pack lock").as_ref() {
+            handle.refresh(&tracker.current);
+        }
         tracker.buffer = None;
     }
 }
