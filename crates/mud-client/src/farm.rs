@@ -699,6 +699,17 @@ pub struct StopState {
     /// first), the answer predates reality and must be re-asked, not
     /// believed.
     pending_look: Option<(crate::correlate::CmdId, Instant)>,
+    /// The `get` owed an answer: its send id and when it went out.
+    ///
+    /// The gate goes idle on a command's echo, and the board answers a
+    /// pickup one event later with "You picked up ...". A stop proven
+    /// empty at a zero dwell ended in that gap, and the answer went
+    /// unread along with everything the bot does on it: the `i` that
+    /// re-reads the pack after a key pickup. Same discipline as
+    /// `pending_look`: only the line answering OUR send settles it, and
+    /// the wait is bounded by `recheck`, because a refused get answers
+    /// in wordings nobody has catalogued.
+    pending_get: Option<(crate::correlate::CmdId, Instant)>,
     /// When a death line landed that the board has not finished
     /// narrating.
     ///
@@ -730,6 +741,7 @@ impl StopState {
             observed: None,
             resolving: None,
             pending_look: None,
+            pending_get: None,
             empty_since: None,
             blind: false,
         }
@@ -742,6 +754,8 @@ impl StopState {
         let line = line.trim();
         if line.eq_ignore_ascii_case("look") {
             self.pending_look = Some((id, Instant::now()));
+        } else if line.to_lowercase().starts_with("get ") {
+            self.pending_get = Some((id, Instant::now()));
         } else if crate::correlate::is_movement(&line.to_lowercase()) {
             // Our own move (a flee) is about to change the room: any
             // in-flight answer predates it — the symmetric hole to the
@@ -762,6 +776,7 @@ impl StopState {
         self.observed = None;
         self.empty_since = None;
         self.pending_look = None;
+        self.pending_get = None;
         self.blind = false;
         self.resolving = None;
     }
@@ -833,6 +848,17 @@ impl StopState {
         let answers_look = cor
             .answers
             .is_some_and(|a| self.pending_look.is_some_and(|(id, _)| a == id));
+        // The pickup line answering OUR get settles it. The echo is
+        // attributed to the same id and is not the answer, and a pickup
+        // line answering nobody is somebody else's.
+        if let Event::Line(line) = &cor.event
+            && cor
+                .answers
+                .is_some_and(|a| self.pending_get.is_some_and(|(id, _)| a == id))
+            && (crate::bot::picked_up(line).is_some() || crate::bot::picked_up_item(line).is_some())
+        {
+            self.pending_get = None;
+        }
         match &cor.event {
             // A prompt means the board answered SOMETHING. It says nothing
             // about who is standing here, and that is the whole point.
@@ -986,6 +1012,15 @@ impl StopState {
                 return Verdict::Waiting { until: at + self.recheck };
             }
             return Verdict::Ask;
+        }
+        // A get owed its answer is the same shape as a look owed one,
+        // and the wait is bounded the same way. An overdue get falls
+        // through: its answer was eaten, or came in a wording nobody
+        // reads, and the stop's ordinary reasoning takes over.
+        if let Some((_, at)) = self.pending_get
+            && now.duration_since(at) < self.recheck
+        {
+            return Verdict::Waiting { until: at + self.recheck };
         }
         if self.blind {
             return Verdict::Blind;

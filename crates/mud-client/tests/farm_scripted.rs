@@ -1698,7 +1698,6 @@ async fn a_key_at_a_stop_is_picked_up_and_the_pack_reread() {
         idle_poke_ms: 500,
         depart_at_percent: Some(0),
         travel_interrupts: 0,
-        dwell_empty_seconds: 1,
         ..FarmConfig::default()
     };
     let bot = mud_client::bot::BotConfig {

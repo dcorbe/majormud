@@ -2077,6 +2077,79 @@ fn a_dark_answer_settles_an_outstanding_look() {
     assert_eq!(w.verdict(t0), Verdict::Blind);
 }
 
+/// A `get` is answered one event after its echo, and the gate goes idle
+/// on the echo. With a zero dwell a proven-empty stop ended in that gap
+/// and the answer went unread, and so did everything the bot does with
+/// it: the `i` that re-reads the pack after a key pickup, which
+/// tests/farm_scripted.rs reproduces. The stop owes a get its answer
+/// the same way it owes a look one.
+#[test]
+fn a_stop_does_not_end_while_a_get_is_unanswered() {
+    let t0 = Instant::now();
+    let mut w = Stop::new(combat_bot(), 0);
+    w.look_and_see(&block(&[]), t0);
+    assert_eq!(w.verdict(t0), Verdict::Empty, "proven empty");
+
+    let get = CmdId(78);
+    w.sent("get black star key", get);
+    assert_ne!(
+        w.verdict(t0),
+        Verdict::Empty,
+        "left the stop owing a pickup line to a get already sent"
+    );
+
+    // The echo answers the get in the correlator's eyes and settles
+    // nothing here: it is the send bouncing back, not the reply.
+    w.fold(answering(Event::Line("get black star key".into()), get), t0);
+    assert_ne!(w.verdict(t0), Verdict::Empty, "the echo settled the get");
+
+    // Somebody else's pickup settles nothing either.
+    w.feed(&Event::Line("You picked up a black star key".into()), t0);
+    assert_ne!(
+        w.verdict(t0),
+        Verdict::Empty,
+        "an unsolicited pickup settled the get"
+    );
+
+    // Ours does.
+    w.fold(
+        answering(Event::Line("You picked up a black star key".into()), get),
+        t0,
+    );
+    assert_eq!(w.verdict(t0), Verdict::Empty);
+}
+
+/// A coin pickup is a get's answer too.
+#[test]
+fn a_coin_pickup_settles_an_outstanding_get() {
+    let t0 = Instant::now();
+    let mut w = Stop::new(combat_bot(), 0);
+    w.look_and_see(&block(&[]), t0);
+    let get = CmdId(78);
+    w.sent("get silver", get);
+    assert_ne!(w.verdict(t0), Verdict::Empty);
+    w.fold(answering(Event::Line("You picked up 11 silver nobles".into()), get), t0);
+    assert_eq!(w.verdict(t0), Verdict::Empty);
+}
+
+/// A get whose answer never comes, a refusal in a wording nobody has
+/// catalogued, must not hold the stop forever. The wait is bounded by
+/// the recheck window, like a look's, and past it the stop is back to
+/// its ordinary reasoning.
+#[test]
+fn an_overdue_get_does_not_hold_the_stop() {
+    let t0 = Instant::now();
+    let mut w = Stop::new(combat_bot(), 0);
+    w.look_and_see(&block(&[]), t0);
+    w.sent("get black star key", CmdId(78));
+    let later = t0 + Duration::from_millis(POKE_MS + 100);
+    assert!(
+        !matches!(w.verdict(later), Verdict::Waiting { .. }),
+        "an overdue get still held the stop: {:?}",
+        w.verdict(later)
+    );
+}
+
 /// The light-recovery flow: `light` + `look` go out, and the gate is
 /// idle the moment the look's ECHO acks — one event before its answer.
 /// Blind-before-pending ended the stop right there, owing the lit
