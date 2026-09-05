@@ -966,6 +966,7 @@ impl StopState {
         self.resolving = None;
         // Anything already in flight predates the reset.
         self.pending_look = None;
+        self.pending_get = None;
         self.empty_since = None;
         self.blind = false;
     }

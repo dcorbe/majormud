@@ -2142,11 +2142,37 @@ fn an_overdue_get_does_not_hold_the_stop() {
     let mut w = Stop::new(combat_bot(), 0);
     w.look_and_see(&block(&[]), t0);
     w.sent("get black star key", CmdId(78));
+    assert!(
+        matches!(w.verdict(t0), Verdict::Waiting { .. }),
+        "a fresh get did not hold the stop"
+    );
     let later = t0 + Duration::from_millis(POKE_MS + 100);
     assert!(
         !matches!(w.verdict(later), Verdict::Waiting { .. }),
         "an overdue get still held the stop: {:?}",
         w.verdict(later)
+    );
+}
+
+/// A lag discards everything already in flight. The same reasoning
+/// `reset`'s own doc comment gives for `pending_look` applies to a `get`
+/// sent shortly before the lag: its old timestamp must not survive to
+/// hold the stop `Waiting` after the reset was supposed to forget it.
+#[test]
+fn a_reset_forgets_an_outstanding_get() {
+    let t0 = Instant::now();
+    let mut w = Stop::new(combat_bot(), 0);
+    w.look_and_see(&block(&[]), t0);
+    w.sent("get black star key", CmdId(78));
+    assert!(
+        matches!(w.verdict(t0), Verdict::Waiting { .. }),
+        "the get did not hold the stop before the reset"
+    );
+    w.reset();
+    assert!(
+        !matches!(w.verdict(t0), Verdict::Waiting { .. }),
+        "the reset did not forget the outstanding get: {:?}",
+        w.verdict(t0)
     );
 }
 
