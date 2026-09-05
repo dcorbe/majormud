@@ -51,6 +51,7 @@ auto_combat = true
 auto_heal = true
 auto_flee = true
 auto_get = true            # coins only; floor items are never announced
+take_keys = true           # keys the ring lacks; independent of auto_get
 minor_heal_at_percent = 70 # cast the minor heal below this; 0 = never
 major_heal_at_percent = 40 # cast the major heal below this; 0 = never
 rest_at_percent = 60       # rest below this
@@ -695,3 +696,4 @@ while the feature does nothing.
 The corpus goldens count files in `re/oracle/`, which the **server** track
 also writes into during oracle runs. They will fail spuriously while
 another session is mid-capture.
+
