@@ -699,8 +699,16 @@ impl Bot {
     /// floor from somebody's dropped dagger. `None` leaves key pickup
     /// off, whatever `take_keys` says.
     pub fn with_pack(mut self, pack: Option<crate::pack::PackHandle>) -> Self {
-        self.pack = pack;
+        self.set_pack(pack);
         self
+    }
+
+    /// The same switch as [`Bot::with_pack`], settable after the build.
+    /// The assist needs it for the same reason it needs
+    /// [`Bot::set_hide`]: it is built before realm entry has called
+    /// `Session::set_content`, so the build always sees `None`.
+    pub fn set_pack(&mut self, pack: Option<crate::pack::PackHandle>) {
+        self.pack = pack;
     }
 
     /// Does the bot believe the character is hidden.

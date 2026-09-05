@@ -1804,6 +1804,21 @@ fn without_a_pack_no_item_is_taken() {
     assert!(bot.on_event(&floor(&["black star key"])).is_empty());
 }
 
+/// The play assist builds its bot before realm entry hands the pack
+/// over, so it is built with none and would otherwise never learn one.
+/// `set_pack` is what lets it take a key it could not have taken at
+/// the build.
+#[test]
+fn set_pack_after_the_build_lets_a_bot_take_a_key() {
+    let mut bot = Bot::new(BotConfig::default());
+    assert!(bot.on_event(&floor(&["black star key"])).is_empty());
+    bot.set_pack(Some(key_pack(&[])));
+    assert_eq!(
+        bot.on_event(&floor(&["black star key"])),
+        vec![BotAction::Send("get black star key".into())]
+    );
+}
+
 /// One ask per visit: the board relists the floor on every block, and
 /// a refused pickup would otherwise be asked for at the pacer floor
 /// forever, the same rule the coin sweep already has.

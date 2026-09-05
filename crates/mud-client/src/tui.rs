@@ -1039,6 +1039,10 @@ pub fn assist_tick(
 ) -> Vec<String> {
     let Some(spells) = session.book_len() else { return Vec::new() };
     bot.set_hide(session.capabilities().stealth > 0);
+    // The assist is built before realm entry calls `set_content` and
+    // hands the pack over, the same reason the hide flag is refreshed
+    // here rather than trusted from the build.
+    bot.set_pack(session.pack_handle());
     let mut refusals = Vec::new();
     if spells != *book_seen {
         let sheet = crate::farm::sheet_from(session, cfg, durations);
