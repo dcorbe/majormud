@@ -47,7 +47,7 @@ fn a_key_is_item_type_seven() {
 /// The live reply of 2026-09-05, trimmed: coins first, worn gear with
 /// its slot suffix, loose gear, and the ring line.
 #[test]
-fn resolve_sorts_carried_worn_and_keys_by_id() {
+fn resolve_places_carried_worn_and_keys_by_id() {
     let pack = Pack::resolve(
         &content(),
         &inventory(
