@@ -67,6 +67,24 @@ pub fn picked_up(line: &str) -> Option<(u32, String)> {
     Some((c[1].parse().ok()?, c[2].to_string()))
 }
 
+/// The board's acknowledgement of an ITEM pickup: "You picked up a
+/// silver holy amulet" (live, oracle_charm_lifecycle), "You picked up
+/// a black star key". Coins are [`picked_up`]'s and are refused here,
+/// and the leading article is dropped.
+static PICKED_UP_ITEM_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^You picked up (?:an? |the )?(.+?)\.?$").unwrap());
+
+/// Did the board just confirm an item, not coins, left the floor and
+/// entered the pack? Returns the item's name as printed.
+pub fn picked_up_item(line: &str) -> Option<String> {
+    if picked_up(line).is_some() {
+        return None;
+    }
+    PICKED_UP_ITEM_RE
+        .captures(line)
+        .map(|c| c[1].to_string())
+}
+
 /// Somebody ELSE swept the floor: "Mystic picked up some coins."
 /// (VERIFIED, cwrun2.raw — 35 of them in one shared Arena session).
 ///
@@ -157,6 +175,13 @@ pub struct BotConfig {
     /// *items* are never taken — the board drops carried loot silently,
     /// and on a shared board a listed item is somebody's gear.
     pub auto_get: bool,
+    /// Pick up keys listed on the floor that the ring does not hold.
+    /// On by default and independent of `auto_get`: a key is not loot,
+    /// it is the difference between a door and a wall, and the walker
+    /// cannot plan a route through a key door it has not found the key
+    /// for. Needs the pack, so it does nothing until the session has
+    /// the item table.
+    pub take_keys: bool,
     pub auto_flee: bool,
     /// Cast the minor heal when hp% drops below this. 0 = never. Was
     /// `spell_at_percent`, which still parses.
@@ -336,6 +361,7 @@ impl Default for BotConfig {
             auto_combat: false,
             auto_heal: false,
             auto_get: false,
+            take_keys: true,
             auto_flee: false,
             minor_heal_at_percent: 70,
             major_heal_at_percent: 40,
@@ -515,6 +541,13 @@ pub struct Bot {
     /// drop line's job. Name-keyed, so the same-named-twin hazard costs
     /// a missed pile, never a loop.
     swept: (String, HashSet<String>),
+    /// Keys already asked for this visit, keyed by room the same way
+    /// `swept` is, and for the same reason: the board relists the
+    /// floor on every block.
+    taken: (String, HashSet<String>),
+    /// The character's pack, when the owner had an item table to give.
+    /// Without it no floor listing can be told to be a key.
+    pack: Option<crate::pack::PackHandle>,
     /// What the very next `engage` should open with, primed by
     /// [`Bot::arm_backstab_opener`] from the walk that produced the
     /// CURRENT room (`crate::nav::Arrival::sneaking` /
@@ -599,6 +632,8 @@ impl Bot {
             refused,
             cooling: None,
             swept: (String::new(), HashSet::new()),
+            taken: (String::new(), HashSet::new()),
+            pack: None,
             opener: None,
             backstab_corrections: 0,
             hide_when_idle: false,
@@ -642,6 +677,14 @@ impl Bot {
     /// becomes known a few prompts later.
     pub fn set_hide(&mut self, hide: bool) {
         self.hide_when_idle = hide;
+    }
+
+    /// Hand the bot the character's pack, so it can tell a key on the
+    /// floor from somebody's dropped dagger. `None` leaves key pickup
+    /// off, whatever `take_keys` says.
+    pub fn with_pack(mut self, pack: Option<crate::pack::PackHandle>) -> Self {
+        self.pack = pack;
+        self
     }
 
     /// Does the bot believe the character is hidden.
@@ -779,6 +822,29 @@ impl Bot {
                             && self.swept.1.insert(denom.clone())
                         {
                             actions.push(BotAction::Send(format!("get {denom}")));
+                        }
+                    }
+                }
+                // Keys are fetched whether or not coins are: a key is
+                // the difference between a door and a wall on every
+                // later route, and it is not somebody's loot the way a
+                // dropped weapon is. Same per-visit memo as the sweep,
+                // same reason.
+                if self.config.take_keys && self.engaged.is_none() {
+                    if let Some(pack) = &self.pack {
+                        if self.taken.0 != room.name {
+                            self.taken = (room.name.clone(), HashSet::new());
+                        }
+                        for entry in &room.items {
+                            let Some(item) = crate::items::resolve(pack.content(), entry) else {
+                                continue;
+                            };
+                            if crate::pack::is_key(item)
+                                && !pack.has(item.id)
+                                && self.taken.1.insert(item.name.clone())
+                            {
+                                actions.push(BotAction::Send(format!("get {}", item.name)));
+                            }
                         }
                     }
                 }
@@ -1171,6 +1237,12 @@ impl Bot {
         // evidence only -- see `backstab_corrections`'s doc.
         if line == mud_core::text::CANNOT_BACKSTAB_WEAPON {
             self.backstab_corrections += 1;
+        }
+        // An item reached the pack. Re-read it from the board rather
+        // than adding the item by inference: the reply is the truth
+        // and the refresh is free.
+        if self.config.take_keys && self.pack.is_some() && picked_up_item(line).is_some() {
+            return vec![BotAction::Send("i".into())];
         }
         if !self.config.auto_get {
             return Vec::new();

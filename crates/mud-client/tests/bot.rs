@@ -1723,3 +1723,129 @@ fn the_heal_need_follows_the_bands() {
     let off = BotConfig { minor_heal_at_percent: 0, major_heal_at_percent: 0, ..BotConfig::default() };
     assert_eq!(heal_need(&off, 10), None);
 }
+
+// --- keys on the floor -------------------------------------------------
+
+fn key_pack(on_ring: &[&str]) -> mud_client::pack::PackHandle {
+    use mud_client::pack::PackHandle;
+    use mud_client::sheet::Inventory;
+    use mud_core::content::{Content, Item, ItemId};
+    let mut content = Content::default();
+    content.add_item(Item {
+        id: ItemId(172),
+        name: "black star key".into(),
+        item_type: 7,
+        ..Default::default()
+    });
+    content.add_item(Item {
+        id: ItemId(5),
+        name: "rusty dagger".into(),
+        item_type: 1,
+        ..Default::default()
+    });
+    let handle = PackHandle::new(std::sync::Arc::new(content));
+    handle.refresh(&Inventory {
+        items: Vec::new(),
+        keys: on_ring.iter().map(|s| s.to_string()).collect(),
+        encumbrance: None,
+    });
+    handle
+}
+
+fn floor(items: &[&str]) -> Event {
+    Event::RoomSeen(RoomView {
+        name: "Slum Street".into(),
+        exits: vec!["north".into()],
+        also_here: vec![],
+        items: items.iter().map(|s| s.to_string()).collect(),
+        also_here_sgr: Vec::new(),
+    })
+}
+
+/// Default on, and independent of the coin sweep: `auto_get` is off
+/// here and the key is still fetched.
+#[test]
+fn a_key_on_the_floor_is_taken() {
+    let mut bot = Bot::new(BotConfig::default()).with_pack(Some(key_pack(&[])));
+    assert_eq!(
+        bot.on_event(&floor(&["black star key"])),
+        vec![BotAction::Send("get black star key".into())]
+    );
+}
+
+#[test]
+fn a_key_already_on_the_ring_is_left() {
+    let mut bot = Bot::new(BotConfig::default()).with_pack(Some(key_pack(&["black star key"])));
+    assert!(bot.on_event(&floor(&["black star key"])).is_empty());
+}
+
+/// Somebody's dropped dagger is somebody's dagger.
+#[test]
+fn an_item_that_is_not_a_key_is_left() {
+    let mut bot = Bot::new(BotConfig::default()).with_pack(Some(key_pack(&[])));
+    assert!(bot.on_event(&floor(&["rusty dagger"])).is_empty());
+}
+
+#[test]
+fn take_keys_off_leaves_keys() {
+    let mut bot = Bot::new(BotConfig {
+        take_keys: false,
+        ..BotConfig::default()
+    })
+    .with_pack(Some(key_pack(&[])));
+    assert!(bot.on_event(&floor(&["black star key"])).is_empty());
+}
+
+/// Without a pack the bot cannot tell a key from a dagger, so it takes
+/// nothing rather than everything.
+#[test]
+fn without_a_pack_no_item_is_taken() {
+    let mut bot = Bot::new(BotConfig::default());
+    assert!(bot.on_event(&floor(&["black star key"])).is_empty());
+}
+
+/// One ask per visit: the board relists the floor on every block, and
+/// a refused pickup would otherwise be asked for at the pacer floor
+/// forever, the same rule the coin sweep already has.
+#[test]
+fn a_key_is_asked_for_once_per_visit() {
+    let mut bot = Bot::new(BotConfig::default()).with_pack(Some(key_pack(&[])));
+    assert_eq!(bot.on_event(&floor(&["black star key"])).len(), 1);
+    assert!(bot.on_event(&floor(&["black star key"])).is_empty());
+}
+
+/// The board's acknowledgement of an item pickup, and the re-read that
+/// follows it: the pack is refreshed from the board, never inferred.
+#[test]
+fn a_pickup_confirmation_asks_for_the_inventory() {
+    let mut bot = Bot::new(BotConfig::default()).with_pack(Some(key_pack(&[])));
+    assert_eq!(
+        bot.on_event(&Event::Line("You picked up a black star key".into())),
+        vec![BotAction::Send("i".into())]
+    );
+}
+
+/// A coin pickup is the sweep's business and does not touch the pack.
+#[test]
+fn a_coin_pickup_does_not_ask_for_the_inventory() {
+    let mut bot = Bot::new(BotConfig::default()).with_pack(Some(key_pack(&[])));
+    assert!(
+        bot.on_event(&Event::Line("You picked up 11 silver nobles".into()))
+            .is_empty()
+    );
+}
+
+#[test]
+fn picked_up_item_reads_the_item_and_not_the_coins() {
+    use mud_client::bot::picked_up_item;
+    assert_eq!(
+        picked_up_item("You picked up a black star key"),
+        Some("black star key".to_string())
+    );
+    assert_eq!(
+        picked_up_item("You picked up a silver holy amulet"),
+        Some("silver holy amulet".to_string())
+    );
+    assert_eq!(picked_up_item("You picked up 11 silver nobles"), None);
+    assert_eq!(picked_up_item("Mystic picked up some coins."), None);
+}
