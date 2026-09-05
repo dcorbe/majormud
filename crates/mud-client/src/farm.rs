@@ -848,14 +848,20 @@ impl StopState {
         let answers_look = cor
             .answers
             .is_some_and(|a| self.pending_look.is_some_and(|(id, _)| a == id));
-        // The pickup line answering OUR get settles it. The echo is
-        // attributed to the same id and is not the answer, and a pickup
-        // line answering nobody is somebody else's.
+        // The pickup line answering OUR get settles it, and so does a
+        // refusal ("You don't see black star key here!", "You don't see
+        // any silver") — nothing worth waiting for is coming back, and
+        // holding the stop for the whole `recheck` window on a `get`
+        // that plainly failed cost 5s live where a pickup left at once.
+        // The echo is attributed to the same id and is not the answer,
+        // and either line answering nobody is somebody else's.
         if let Event::Line(line) = &cor.event
             && cor
                 .answers
                 .is_some_and(|a| self.pending_get.is_some_and(|(id, _)| a == id))
-            && (crate::bot::picked_up(line).is_some() || crate::bot::picked_up_item(line).is_some())
+            && (crate::bot::picked_up(line).is_some()
+                || crate::bot::picked_up_item(line).is_some()
+                || line.starts_with("You don't see"))
         {
             self.pending_get = None;
         }

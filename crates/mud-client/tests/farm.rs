@@ -2132,6 +2132,36 @@ fn a_coin_pickup_settles_an_outstanding_get() {
     assert_eq!(w.verdict(t0), Verdict::Empty);
 }
 
+/// A refusal settles the get exactly like a pickup: nothing worth
+/// waiting for is coming back. Before this it held the stop for the
+/// whole `recheck` window (5s by default) on a `get` that plainly
+/// failed, where a pickup left at once.
+#[test]
+fn a_refused_get_settles_at_once() {
+    let t0 = Instant::now();
+    let mut w = Stop::new(combat_bot(), 0);
+    w.look_and_see(&block(&[]), t0);
+    let get = CmdId(78);
+    w.sent("get black star key", get);
+    assert_ne!(w.verdict(t0), Verdict::Empty, "left the stop owing a get");
+
+    // An unattributed refusal settles nothing -- it could be stale, or
+    // somebody else's.
+    w.feed(&Event::Line("You don't see black star key here!".into()), t0);
+    assert_ne!(
+        w.verdict(t0),
+        Verdict::Empty,
+        "an unsolicited refusal settled the get"
+    );
+
+    // Ours does, and at once.
+    w.fold(
+        answering(Event::Line("You don't see black star key here!".into()), get),
+        t0,
+    );
+    assert_eq!(w.verdict(t0), Verdict::Empty);
+}
+
 /// A get whose answer never comes, a refusal in a wording nobody has
 /// catalogued, must not hold the stop forever. The wait is bounded by
 /// the recheck window, like a look's, and past it the stop is back to
