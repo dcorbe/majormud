@@ -165,6 +165,7 @@ async fn goto_walks_verified_route() {
             RoomId { map: 1, room: 1 },
             RoomId { map: 1, room: 3 },
             &mut NoGuard,
+            false,
         )
         .await
         .expect("navigate gates -> market");
@@ -192,6 +193,7 @@ async fn goto_detects_desync_on_name_mismatch() {
             RoomId { map: 1, room: 1 },
             RoomId { map: 1, room: 3 },
             &mut NoGuard,
+            false,
         )
         .await
         .expect_err("must detect desync");
@@ -220,6 +222,7 @@ async fn goto_without_route_fails_fast() {
             RoomId { map: 1, room: 1 },
             RoomId { map: 9, room: 9 },
             &mut NoGuard,
+            false,
         )
         .await
         .expect_err("no route");
@@ -287,6 +290,7 @@ async fn a_phantom_exit_relocalizes_instead_of_waiting_out_the_clock() {
             RoomId { map: 1, room: 1 },
             RoomId { map: 1, room: 3 },
             &mut NoGuard,
+            false,
         )
         .await
         .expect_err("the board has no east exit here");
@@ -355,6 +359,7 @@ async fn a_hurt_guard_finishes_the_step_before_handing_back() {
             RoomId { map: 1, room: 1 },
             RoomId { map: 1, room: 3 },
             &mut TripsOnRoom("Town Square"),
+            false,
         )
         .await
         .expect_err("the guard tripped");
@@ -389,6 +394,7 @@ async fn a_hurt_guard_arming_on_the_last_step_still_hands_back() {
             RoomId { map: 1, room: 1 },
             RoomId { map: 1, room: 3 },
             &mut TripsOnRoom("Market Street"),
+            false,
         )
         .await
         .expect_err("arriving is not the same as being fit to carry on");
@@ -424,6 +430,7 @@ async fn a_death_guard_does_not_wait_out_the_step() {
             RoomId { map: 1, room: 1 },
             RoomId { map: 1, room: 3 },
             &mut TripsOnLine,
+            false,
         )
         .await
         .expect_err("the guard tripped");
@@ -451,6 +458,7 @@ async fn an_unarmed_guard_changes_nothing() {
             RoomId { map: 1, room: 1 },
             RoomId { map: 1, room: 3 },
             &mut NoGuard,
+            false,
         )
         .await
         .expect("navigate gates -> market");
@@ -489,6 +497,7 @@ async fn a_sighted_room_is_reported_at_the_room_the_block_described() {
             RoomId { map: 1, room: 1 },
             RoomId { map: 1, room: 3 },
             &mut SightsRoom("Town Square"),
+            false,
         )
         .await
         .expect_err("the guard sighted something");
@@ -523,6 +532,7 @@ async fn a_sighting_on_the_last_step_still_hands_back() {
             RoomId { map: 1, room: 1 },
             RoomId { map: 1, room: 3 },
             &mut SightsRoom("Market Street"),
+            false,
         )
         .await
         .expect_err("the guard sighted at the destination");
@@ -554,6 +564,7 @@ async fn a_stale_attributed_answer_is_not_a_sighting() {
             RoomId { map: 1, room: 1 },
             RoomId { map: 1, room: 3 },
             &mut SightsRoom("Town Gates"),
+            false,
         )
         .await
         .expect("a stale answer must not sight");
@@ -582,6 +593,7 @@ async fn a_sighting_on_a_recovery_look_reports_where_we_stand() {
             RoomId { map: 1, room: 1 },
             RoomId { map: 1, room: 3 },
             &mut SightsRoom("Town Gates"),
+            false,
         )
         .await
         .expect_err("the recovery look names the sighted room");

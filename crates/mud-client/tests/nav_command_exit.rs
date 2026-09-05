@@ -139,7 +139,7 @@ async fn a_command_exit_is_spoken_not_walked() {
 
     let at = tokio::time::timeout(
         Duration::from_secs(10),
-        nav.goto(&session, DOCKS, PIER, &mut NoGuard),
+        nav.goto(&session, DOCKS, PIER, &mut NoGuard, false),
     )
     .await
     .expect("must not hang")
@@ -169,7 +169,7 @@ async fn without_the_command_the_walk_stalls_at_the_dock() {
 
     let err = tokio::time::timeout(
         Duration::from_secs(10),
-        nav.goto(&session, DOCKS, PIER, &mut NoGuard),
+        nav.goto(&session, DOCKS, PIER, &mut NoGuard, false),
     )
     .await
     .expect("must not hang")

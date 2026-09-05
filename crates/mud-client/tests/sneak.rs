@@ -231,7 +231,7 @@ async fn a_bare_attempt_with_no_failure_line_is_believed_armed() {
     let session = session_for(addr).await;
     let navigator = nav(graph_one_hop(), 56);
     let arrival = navigator
-        .goto(&session, HERE, THERE, &mut NoGuard)
+        .goto(&session, HERE, THERE, &mut NoGuard, false)
         .await
         .unwrap();
     assert!(arrival.sneaking, "a bare attempt with nothing else must read as armed");
@@ -247,7 +247,7 @@ async fn a_perceived_failure_is_not_believed_armed() {
     let session = session_for(addr).await;
     let navigator = nav(graph_one_hop(), 56);
     let arrival = navigator
-        .goto(&session, HERE, THERE, &mut NoGuard)
+        .goto(&session, HERE, THERE, &mut NoGuard, false)
         .await
         .unwrap();
     assert!(!arrival.sneaking, "a seen failure must not be believed armed");
@@ -266,7 +266,7 @@ async fn a_failure_glued_to_the_attempt_is_read_at_once() {
     let navigator = nav_with_timeout(graph_one_hop(), 56, 5_000);
     let started = std::time::Instant::now();
     let arrival = navigator
-        .goto(&session, HERE, THERE, &mut NoGuard)
+        .goto(&session, HERE, THERE, &mut NoGuard, false)
         .await
         .unwrap();
     assert!(!arrival.sneaking, "a seen failure must not be believed armed");
@@ -288,7 +288,7 @@ async fn a_hard_block_is_not_believed_armed_and_does_not_stop_the_walk() {
     let session = session_for(addr).await;
     let navigator = nav(graph_one_hop(), 56);
     let arrival = navigator
-        .goto(&session, HERE, THERE, &mut NoGuard)
+        .goto(&session, HERE, THERE, &mut NoGuard, false)
         .await
         .unwrap();
     assert!(!arrival.sneaking, "\"You may not sneak right now!\" must not be believed armed");
@@ -304,7 +304,7 @@ async fn zero_stealth_never_sends_sneak() {
     let session = session_for(addr).await;
     let navigator = nav(graph_one_hop(), 0);
     let arrival = navigator
-        .goto(&session, HERE, THERE, &mut NoGuard)
+        .goto(&session, HERE, THERE, &mut NoGuard, false)
         .await
         .unwrap();
     assert!(!arrival.sneaking);
@@ -322,7 +322,7 @@ async fn silence_is_not_believed_armed() {
     let session = session_for(addr).await;
     let navigator = nav_with_timeout(graph_one_hop(), 56, 400);
     let arrival = navigator
-        .goto(&session, HERE, THERE, &mut NoGuard)
+        .goto(&session, HERE, THERE, &mut NoGuard, false)
         .await
         .unwrap();
     assert!(!arrival.sneaking, "silence must not be believed armed");
@@ -339,7 +339,7 @@ async fn one_sneak_covers_several_steps() {
     let session = session_for(addr).await;
     let navigator = nav(graph_two_hop(), 56);
     let arrival = navigator
-        .goto(&session, HERE, FAR, &mut NoGuard)
+        .goto(&session, HERE, FAR, &mut NoGuard, false)
         .await
         .unwrap();
     assert!(arrival.sneaking, "still believed sneaking at the far end");
@@ -365,7 +365,7 @@ async fn the_break_line_clears_the_belief_and_the_next_step_rearms() {
     let session = session_for(addr).await;
     let navigator = nav(graph_two_hop(), 56);
     let arrival = navigator
-        .goto(&session, HERE, FAR, &mut NoGuard)
+        .goto(&session, HERE, FAR, &mut NoGuard, false)
         .await
         .unwrap();
     assert!(
@@ -378,4 +378,57 @@ async fn the_break_line_clears_the_belief_and_the_next_step_rearms() {
         "arm once, break on the first step, re-arm once for the second"
     );
     assert_eq!(log.moves.load(Ordering::SeqCst), 2);
+}
+
+/// The belief is the CALLER's to carry: a walk told the character is
+/// already sneaking must not spend a round re-arming. Live 2026-09-04
+/// (test_timing.log): a roam issues one `goto` per room, and every one
+/// of them started unarmed, so the client typed `sneak` before every
+/// single step of a walk that was already sneaking. Mutation target:
+/// ignore the carried belief and `log.sneaks` reads 1.
+#[tokio::test]
+async fn a_carried_belief_skips_the_arm() {
+    let (addr, log) = persistent_sneak_board("Attempting to sneak...", None).await;
+    let session = session_for(addr).await;
+    let navigator = nav(graph_two_hop(), 56);
+    let arrival = navigator
+        .goto(&session, HERE, FAR, &mut NoGuard, true)
+        .await
+        .unwrap();
+    assert!(arrival.sneaking, "still believed sneaking at the far end");
+    assert_eq!(arrival.at, FAR);
+    assert_eq!(log.sneaks.load(Ordering::SeqCst), 0, "already sneaking: nothing to arm");
+    assert_eq!(log.moves.load(Ordering::SeqCst), 2);
+}
+
+/// A carried belief is still just a belief: the break line clears it
+/// and the next step re-arms, exactly as it does for one the walk
+/// formed itself.
+#[tokio::test]
+async fn a_carried_belief_still_rearms_after_a_break() {
+    let (addr, log) = persistent_sneak_board("Attempting to sneak...", Some(0)).await;
+    let session = session_for(addr).await;
+    let navigator = nav(graph_two_hop(), 56);
+    let arrival = navigator
+        .goto(&session, HERE, FAR, &mut NoGuard, true)
+        .await
+        .unwrap();
+    assert!(arrival.sneaking, "re-armed before the final step");
+    assert_eq!(log.sneaks.load(Ordering::SeqCst), 1, "one re-arm after the break");
+    assert_eq!(log.moves.load(Ordering::SeqCst), 2);
+}
+
+/// A walk of no steps hands the carried belief straight back: the
+/// character did not move, so nothing about its sneak changed.
+#[tokio::test]
+async fn a_walk_of_no_steps_keeps_the_carried_belief() {
+    let (addr, log) = persistent_sneak_board("Attempting to sneak...", None).await;
+    let session = session_for(addr).await;
+    let navigator = nav(graph_two_hop(), 56);
+    let arrival = navigator
+        .goto(&session, HERE, HERE, &mut NoGuard, true)
+        .await
+        .unwrap();
+    assert!(arrival.sneaking);
+    assert_eq!(log.sneaks.load(Ordering::SeqCst), 0);
 }

@@ -263,7 +263,7 @@ async fn a_closed_door_is_opened_and_traversed() {
 
     let at = tokio::time::timeout(
         Duration::from_secs(10),
-        n.goto(&session, HERE, THERE, &mut NoGuard),
+        n.goto(&session, HERE, THERE, &mut NoGuard, false),
     )
     .await
     .expect("goto should not hang")
@@ -284,7 +284,7 @@ async fn a_locked_door_is_bashed() {
 
     let at = tokio::time::timeout(
         Duration::from_secs(10),
-        n.goto(&session, HERE, THERE, &mut NoGuard),
+        n.goto(&session, HERE, THERE, &mut NoGuard, false),
     )
     .await
     .expect("goto should not hang")
@@ -315,7 +315,7 @@ async fn bashing_can_be_switched_off() {
 
     let result = tokio::time::timeout(
         Duration::from_secs(10),
-        n.goto(&session, HERE, THERE, &mut NoGuard),
+        n.goto(&session, HERE, THERE, &mut NoGuard, false),
     )
     .await
     .expect("goto should not hang");
@@ -337,7 +337,7 @@ async fn a_plain_exit_is_never_opened() {
 
     let _ = tokio::time::timeout(
         Duration::from_secs(10),
-        n.goto(&session, HERE, THERE, &mut NoGuard),
+        n.goto(&session, HERE, THERE, &mut NoGuard, false),
     )
     .await
     .expect("goto should not hang");
@@ -382,7 +382,7 @@ async fn a_step_refused_for_combat_hands_back_at_once() {
     let started = std::time::Instant::now();
     let err = tokio::time::timeout(
         Duration::from_secs(10),
-        n.goto(&session, HERE, THERE, &mut NoGuard),
+        n.goto(&session, HERE, THERE, &mut NoGuard, false),
     )
     .await
     .expect("goto should not hang")
@@ -442,7 +442,7 @@ async fn a_dark_room_is_navigated_by_dead_reckoning() {
 
     let at = tokio::time::timeout(
         Duration::from_secs(10),
-        n.goto(&session, HERE, THERE, &mut NoGuard),
+        n.goto(&session, HERE, THERE, &mut NoGuard, false),
     )
     .await
     .expect("goto should not hang")
@@ -521,7 +521,7 @@ async fn a_bash_that_fails_is_rolled_again_until_the_door_gives() {
 
     let at = tokio::time::timeout(
         Duration::from_secs(10),
-        n.goto(&session, HERE, THERE, &mut NoGuard),
+        n.goto(&session, HERE, THERE, &mut NoGuard, false),
     )
     .await
     .expect("goto should not hang")
@@ -543,7 +543,7 @@ async fn a_door_that_never_yields_fails_cleanly_within_the_retry_budget() {
     let started = std::time::Instant::now();
     let result = tokio::time::timeout(
         Duration::from_secs(30),
-        n.goto(&session, HERE, THERE, &mut NoGuard),
+        n.goto(&session, HERE, THERE, &mut NoGuard, false),
     )
     .await
     .expect("goto should not hang");
@@ -611,7 +611,7 @@ async fn a_guard_interrupt_breaks_the_bash_loop() {
 
     let err = tokio::time::timeout(
         Duration::from_secs(10),
-        n.goto(&session, HERE, THERE, &mut ArmOnHit),
+        n.goto(&session, HERE, THERE, &mut ArmOnHit, false),
     )
     .await
     .expect("goto should not hang")
@@ -675,7 +675,7 @@ async fn a_whiff_during_door_work_stops_the_walk() {
 
     let err = tokio::time::timeout(
         Duration::from_secs(10),
-        n.goto(&session, HERE, THERE, &mut guard),
+        n.goto(&session, HERE, THERE, &mut guard, false),
     )
     .await
     .expect("goto should not hang")
@@ -718,7 +718,7 @@ async fn a_softened_door_refusal_is_still_a_blocked_door() {
 
     let at = tokio::time::timeout(
         Duration::from_secs(10),
-        n.goto(&session, HERE, THERE, &mut NoGuard),
+        n.goto(&session, HERE, THERE, &mut NoGuard, false),
     )
     .await
     .expect("goto should not hang")
@@ -759,7 +759,7 @@ async fn a_locked_door_is_picked_by_a_character_with_the_skill() {
 
     let at = tokio::time::timeout(
         Duration::from_secs(10),
-        n.goto(&session, HERE, THERE, &mut NoGuard),
+        n.goto(&session, HERE, THERE, &mut NoGuard, false),
     )
     .await
     .expect("goto should not hang")
@@ -797,7 +797,7 @@ async fn a_character_with_no_picklocks_does_not_pick() {
 
     let result = tokio::time::timeout(
         Duration::from_secs(10),
-        n.goto(&session, HERE, THERE, &mut NoGuard),
+        n.goto(&session, HERE, THERE, &mut NoGuard, false),
     )
     .await
     .expect("goto should not hang");
@@ -832,7 +832,7 @@ async fn a_locked_door_says_it_is_locked_rather_than_timing_out() {
 
     let err = tokio::time::timeout(
         Duration::from_secs(10),
-        n.goto(&session, HERE, THERE, &mut NoGuard),
+        n.goto(&session, HERE, THERE, &mut NoGuard, false),
     )
     .await
     .expect("goto should not hang")
@@ -867,7 +867,7 @@ async fn a_picked_lock_is_opened_before_it_is_walked() {
 
     let at = tokio::time::timeout(
         Duration::from_secs(10),
-        n.goto(&session, HERE, THERE, &mut NoGuard),
+        n.goto(&session, HERE, THERE, &mut NoGuard, false),
     )
     .await
     .expect("goto should not hang")

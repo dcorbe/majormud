@@ -131,7 +131,7 @@ async fn a_navigator_with_no_backstab_prep_sends_no_swap() {
     })
     .with_capabilities(Capabilities { stealth: 56, ..Capabilities::unrestricted() });
 
-    let arrival = navigator.goto(&session, HERE, THERE, &mut NoGuard).await.unwrap();
+    let arrival = navigator.goto(&session, HERE, THERE, &mut NoGuard, false).await.unwrap();
 
     assert_eq!(log.lock().unwrap().as_slice(), ["sneak", "n"]);
     assert_eq!(arrival.restore_weapon, None);

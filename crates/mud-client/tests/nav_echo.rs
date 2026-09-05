@@ -150,7 +150,7 @@ async fn a_stale_render_before_the_echo_does_not_satisfy_the_step() {
 
     let at = tokio::time::timeout(
         Duration::from_secs(10),
-        n.goto(&session, HERE, THERE, &mut NoGuard),
+        n.goto(&session, HERE, THERE, &mut NoGuard, false),
     )
     .await
     .expect("goto should not hang")
@@ -176,7 +176,7 @@ async fn a_double_echoed_step_lands_once() {
 
     let at = tokio::time::timeout(
         Duration::from_secs(10),
-        n.goto(&session, HERE, THERE, &mut NoGuard),
+        n.goto(&session, HERE, THERE, &mut NoGuard, false),
     )
     .await
     .expect("goto should not hang")
@@ -199,7 +199,7 @@ async fn an_echoless_render_never_satisfies_a_step() {
 
     let result = tokio::time::timeout(
         Duration::from_secs(10),
-        n.goto(&session, HERE, THERE, &mut NoGuard),
+        n.goto(&session, HERE, THERE, &mut NoGuard, false),
     )
     .await
     .expect("goto should not hang");
@@ -227,7 +227,7 @@ async fn a_look_refusal_wording_provokes_no_door_handling() {
 
     let result = tokio::time::timeout(
         Duration::from_secs(10),
-        n.goto(&session, HERE, THERE, &mut NoGuard),
+        n.goto(&session, HERE, THERE, &mut NoGuard, false),
     )
     .await
     .expect("goto should not hang");
@@ -285,7 +285,7 @@ async fn a_refused_step_between_same_named_twins_does_not_drift() {
 
     let err = tokio::time::timeout(
         Duration::from_secs(10),
-        n.goto(&session, HERE, THERE, &mut NoGuard),
+        n.goto(&session, HERE, THERE, &mut NoGuard, false),
     )
     .await
     .expect("goto should not hang")
@@ -385,7 +385,7 @@ async fn a_mob_entering_behind_the_echo_interrupts_before_the_next_step() {
 
     let err = tokio::time::timeout(
         Duration::from_secs(10),
-        n.goto(&session, HERE, FAR, &mut guard),
+        n.goto(&session, HERE, FAR, &mut guard, false),
     )
     .await
     .expect("goto should not hang")
@@ -423,7 +423,7 @@ async fn a_whiff_behind_the_echo_interrupts_a_fighting_walk() {
 
     let err = tokio::time::timeout(
         Duration::from_secs(10),
-        n.goto(&session, HERE, FAR, &mut guard),
+        n.goto(&session, HERE, FAR, &mut guard, false),
     )
     .await
     .expect("goto should not hang")
@@ -465,7 +465,7 @@ async fn a_players_arrival_does_not_interrupt() {
 
     let at = tokio::time::timeout(
         Duration::from_secs(10),
-        n.goto(&session, HERE, FAR, &mut guard),
+        n.goto(&session, HERE, FAR, &mut guard, false),
     )
     .await
     .expect("goto should not hang")

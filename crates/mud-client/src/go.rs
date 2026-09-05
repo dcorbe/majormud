@@ -316,6 +316,9 @@ pub async fn run_go(
         Instant::now(),
         &mut stats,
         phase,
+        // A person typed this walk; what they were doing before it is
+        // not known here, so it starts unarmed.
+        false,
     )
     .await?;
 

@@ -1482,3 +1482,163 @@ async fn an_interrupt_mark_above_the_bots_own_departure_mark_is_refused_at_run_s
         "the refusal must come before anything is sent: {log:?}"
     );
 }
+
+/// Sneak persists on the board, so a lap of quiet stops is one `sneak`
+/// long, not one per stop. Live 2026-09-04 (test_timing.log, a sewer
+/// roam): every room was its own leg, every leg opened with `sneak`,
+/// and the board answered "Attempting to sneak..." to a character it
+/// was already sneaking. The belief has to outlive the leg that formed
+/// it: through the stop that spent nothing, into the next leg.
+/// Mutation target: reset the belief per leg and the second `sneak`
+/// comes back.
+/// The `stat` sheet a sneaking lap opens with: Stealth is what lets
+/// the walker sneak at all (`Session::capabilities`).
+const NINJA_SHEET: &str = "\r\nstat\r\n\
+Name: Beef                             Lives/CP:    9/100\r\n\
+Race: Dark-Elf    Exp: 0               Perception:     43\r\n\
+Class: Ninja      Level: 1             Stealth:        56\r\n\
+Hits:    30/30    Armour Class:   0/0  Thievery:        0\r\n\
+                                       Traps:          29\r\n\
+                                       Picklocks:      31\r\n\
+Strength:  40     Agility: 50          Tracking:       26\r\n\
+Intellect: 50     Health:  30          Martial Arts:   51\r\n\
+Willpower: 30     Charm:   40          MagicRes:       35\r\n\
+[HP=30/MA=0]:";
+
+#[tokio::test]
+async fn a_lap_of_quiet_stops_sneaks_once() {
+    let (addr, received) = scripted_board(vec![
+        ("stat", NINJA_SHEET.into()),
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        ("look", format!("\r\nlook{}", room_block("Guard Post", None, "north"))),
+        ("sneak", "\r\nsneak\r\nAttempting to sneak...\r\n[HP=30/MA=0]:".into()),
+        ("n", format!("\r\nn{}", room_block("Inner Ward", None, "north south"))),
+        ("n", format!("\r\nn{}", room_block("Keep", None, "south"))),
+    ])
+    .await;
+    let session = session_for(addr).await;
+    mud_client::farm::probe_sheet(&session, None).await;
+    assert_eq!(session.capabilities().stealth, 56, "the sheet must have been read");
+
+    let graph = corridor();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/2".into(), "1/3".into()],
+        loops: 1,
+        idle_poke_ms: 500,
+        depart_at_percent: Some(0),
+        ..FarmConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 30,
+        ..BotConfig::default()
+    };
+
+    let (end, stats) = match tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, &bot, &cfg, None),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    {
+        Ok(out) => out,
+        Err(e) => panic!(
+            "the lap must finish: {e:?}\nboard received: {:?}",
+            received.lock().unwrap()
+        ),
+    };
+    assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
+
+    let log = received.lock().unwrap();
+    assert_eq!(log.iter().filter(|l| *l == "n").count(), 2, "both legs walked: {log:?}");
+    assert_eq!(
+        log.iter().filter(|l| *l == "sneak").count(),
+        1,
+        "one arm covers a lap of quiet stops: {log:?}"
+    );
+}
+
+/// The other half of carrying the belief: a stop that swings has
+/// spent it. The character sneaks into the first stop, opens with a
+/// backstab off that belief, and the leg out must arm again -- the
+/// board never says that the attack broke the sneak, so the stop has
+/// to. Mutation target: keep the belief through the stop's sends and
+/// the second `sneak` never goes out.
+#[tokio::test]
+async fn a_stop_that_swings_rearms_the_next_leg() {
+    let (addr, received) = scripted_board(vec![
+        ("stat", NINJA_SHEET.into()),
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        ("look", format!("\r\nlook{}", room_block("Guard Post", None, "north"))),
+        ("sneak", "\r\nsneak\r\nAttempting to sneak...\r\n[HP=30/MA=0]:".into()),
+        // The first stop, with work listed on arrival: the opener the
+        // sneak bought is a backstab.
+        (
+            "n",
+            format!("\r\nn{}", room_block("Inner Ward", Some("giant rat"), "north south")),
+        ),
+        (
+            "bs rat",
+            "\r\nbs rat\r\nYou backstab giant rat for 20 damage!\r\nThe giant rat falls to the ground with a tortured squeak.\r\nYou gain 25 experience.\r\n*Combat Off*\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        ("sneak", "\r\nsneak\r\nAttempting to sneak...\r\n[HP=30/MA=0]:".into()),
+        ("n", format!("\r\nn{}", room_block("Keep", None, "south"))),
+    ])
+    .await;
+    let session = session_for(addr).await;
+    mud_client::farm::probe_sheet(&session, None).await;
+
+    let graph = corridor();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/2".into(), "1/3".into()],
+        loops: 1,
+        idle_poke_ms: 500,
+        depart_at_percent: Some(0),
+        ..FarmConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 30,
+        ..BotConfig::default()
+    };
+
+    let (end, stats) = match tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, &bot, &cfg, None),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    {
+        Ok(out) => out,
+        Err(e) => panic!(
+            "the lap must finish: {e:?}\nboard received: {:?}",
+            received.lock().unwrap()
+        ),
+    };
+    assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
+    assert!(stats.kills >= 1, "the rat should have died: {stats:?}");
+
+    let log = received.lock().unwrap();
+    let swing = log.iter().position(|l| l == "bs rat").expect("opened with a backstab: {log:?}");
+    let sneaks: Vec<usize> = log
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| *l == "sneak")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(sneaks.len(), 2, "armed once in, once out: {log:?}");
+    assert!(sneaks[0] < swing && swing < sneaks[1], "the swing spent the first arm: {log:?}");
+}

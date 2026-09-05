@@ -285,12 +285,14 @@ pub struct Arrival {
     /// passing transit roll and only clears on a break, not on every
     /// move) — so `true` here does not mean "just armed this step", it
     /// means "still believed sneaking as of this arrival", which can be
-    /// carried over from several steps back. It still says nothing
-    /// about a LATER fight in the same room: a break discovered on the
-    /// NEXT step's move would clear it for that step, not retroactively
-    /// for this one. `false` for a walk of no steps (already there) and
-    /// for any walk this navigator's [`Capabilities::stealth`] is zero
-    /// for, same honest default [`Navigator::arm_sneak`] itself returns.
+    /// carried over from several steps back, or from the belief the
+    /// caller handed [`Navigator::goto`] to begin with. It still says
+    /// nothing about a LATER fight in the same room: a break discovered
+    /// on the NEXT step's move would clear it for that step, not
+    /// retroactively for this one. A walk of no steps (already there)
+    /// hands the caller's belief back unchanged; a walk this
+    /// navigator's [`Capabilities::stealth`] is zero for never arms,
+    /// same honest default [`Navigator::arm_sneak`] itself returns.
     ///
     /// [`Capabilities::stealth`]: crate::graph::Capabilities::stealth
     pub sneaking: bool,
@@ -752,12 +754,23 @@ impl Navigator {
     ///   death. `at` is then the last room verified before the fatal
     ///   step, which is as true as anything can be — and the run is
     ///   over regardless.
+    ///
+    /// `sneaking` is what the caller believes about the character's
+    /// sneak as the walk starts. Sneak is a state of the character on
+    /// the board, not of one walk: a roam issues one walk per room, and
+    /// a walk that always started unarmed typed `sneak` before every
+    /// step of a character that was already sneaking (live 2026-09-04).
+    /// The walk only arms when the belief does not hold, reports what
+    /// it believes at the end, and the caller carries that into the
+    /// next walk -- clearing it itself for anything it does in between
+    /// that the board counts as a break (an attack, a search, a swap).
     pub async fn goto(
         &self,
         session: &Session,
         from: RoomId,
         to: RoomId,
         guard: &mut impl TravelGuard,
+        sneaking: bool,
     ) -> Result<Arrival, NavError> {
         let mut current = from;
         let mut failures = 0u32;
@@ -773,10 +786,11 @@ impl Navigator {
         // Whether the LAST step attempted believed itself armed, and the
         // primary weapon to restore if that step swapped for a backstab
         // opener — see `Arrival::sneaking`/`Arrival::restore_weapon`.
-        // Reset to the "nothing happened" default on every assignment
-        // below rather than accumulated, so a walk of zero steps (or one
-        // that never reaches `with_backstab`/stealth) reports honestly.
-        let mut last_sneaking = false;
+        // Starts from the caller's belief, so a walk of zero steps hands
+        // it straight back; the restore is reset on every assignment
+        // below rather than accumulated, so a walk that never reaches
+        // `with_backstab` reports honestly.
+        let mut last_sneaking = sneaking;
         let mut last_restore: Option<String> = None;
         // The wielded weapon this walk currently believes, refreshed by
         // its own swaps — see `Navigator::with_backstab`'s doc. `None`
@@ -942,7 +956,7 @@ impl Navigator {
                 // it from a fresh `sneak` every time -- a stealthy
                 // character pays the round ONCE, not once per step. Only
                 // send `sneak` when the belief does not already hold:
-                // the first step of a walk, or any step right after a
+                // a walk the caller began unarmed, or any step right after a
                 // break (see the `sneak_broke` handling below).
                 if !last_sneaking {
                     last_sneaking = self

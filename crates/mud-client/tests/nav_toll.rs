@@ -160,7 +160,7 @@ async fn a_crossing_that_does_not_deduct_is_remembered_as_free() {
 
     let at = tokio::time::timeout(
         Duration::from_secs(20),
-        n.goto(&session, GATE, BEYOND, &mut NoGuard),
+        n.goto(&session, GATE, BEYOND, &mut NoGuard, false),
     )
     .await
     .expect("goto should not hang")
@@ -193,7 +193,7 @@ async fn a_crossing_that_deducts_stays_tolled() {
 
     let at = tokio::time::timeout(
         Duration::from_secs(20),
-        n.goto(&session, GATE, BEYOND, &mut NoGuard),
+        n.goto(&session, GATE, BEYOND, &mut NoGuard, false),
     )
     .await
     .expect("goto should not hang")

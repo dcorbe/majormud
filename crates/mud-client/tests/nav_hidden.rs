@@ -172,7 +172,7 @@ async fn a_hidden_exit_is_searched_until_it_is_found() {
 
     let at = tokio::time::timeout(
         Duration::from_secs(20),
-        n.goto(&session, HERE, THERE, &mut NoGuard),
+        n.goto(&session, HERE, THERE, &mut NoGuard, false),
     )
     .await
     .expect("goto should not hang")
@@ -196,7 +196,7 @@ async fn an_already_revealed_exit_is_walked_without_searching() {
 
     let at = tokio::time::timeout(
         Duration::from_secs(20),
-        n.goto(&session, HERE, THERE, &mut NoGuard),
+        n.goto(&session, HERE, THERE, &mut NoGuard, false),
     )
     .await
     .expect("goto should not hang")
@@ -219,7 +219,7 @@ async fn a_refused_plain_exit_is_never_searched() {
 
     let result = tokio::time::timeout(
         Duration::from_secs(20),
-        n.goto(&session, HERE, THERE, &mut NoGuard),
+        n.goto(&session, HERE, THERE, &mut NoGuard, false),
     )
     .await
     .expect("goto should not hang");
@@ -241,7 +241,7 @@ async fn a_puzzle_concealed_exit_is_never_searched() {
 
     let result = tokio::time::timeout(
         Duration::from_secs(20),
-        n.goto(&session, HERE, THERE, &mut NoGuard),
+        n.goto(&session, HERE, THERE, &mut NoGuard, false),
     )
     .await
     .expect("goto should not hang");
@@ -271,7 +271,7 @@ async fn searching_can_be_switched_off() {
 
     let result = tokio::time::timeout(
         Duration::from_secs(20),
-        n.goto(&session, HERE, THERE, &mut NoGuard),
+        n.goto(&session, HERE, THERE, &mut NoGuard, false),
     )
     .await
     .expect("goto should not hang");
@@ -290,7 +290,7 @@ async fn an_exit_that_never_reveals_fails_cleanly_within_the_roll_budget() {
 
     let result = tokio::time::timeout(
         Duration::from_secs(60),
-        n.goto(&session, HERE, THERE, &mut NoGuard),
+        n.goto(&session, HERE, THERE, &mut NoGuard, false),
     )
     .await
     .expect("goto should not hang");
@@ -354,7 +354,7 @@ async fn a_guard_interrupt_breaks_the_search_loop() {
 
     let err = tokio::time::timeout(
         Duration::from_secs(20),
-        n.goto(&session, HERE, THERE, &mut ArmOnHit),
+        n.goto(&session, HERE, THERE, &mut ArmOnHit, false),
     )
     .await
     .expect("goto should not hang")

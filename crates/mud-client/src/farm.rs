@@ -1779,6 +1779,15 @@ async fn farm_loop(
         eprintln!("roaming {} rooms", region.len());
     }
 
+    // The run's belief about the character's sneak, carried from each
+    // walk through the stop it ended at and into the next walk -- see
+    // `Navigator::goto`. Owned here because sneak is a state of the
+    // character, and the run is the one thing that sees every command
+    // the character is given. A roam is one walk per room, so a belief
+    // scoped to one walk had the client typing `sneak` before every
+    // step (live 2026-09-04).
+    let mut sneaking = false;
+
     loop {
         // What to work next. A circuit hands over its whole lap in
         // order; a roam hands over one room at a time, chosen fresh each
@@ -1801,11 +1810,12 @@ async fn farm_loop(
             // out with it; the stop then starts from that evidence
             // instead of re-asking the board. `arm` carries what that
             // same step believed about sneaking/the swap -- see
-            // `LegEnd::Arrived`'s doc -- defaulting to the honest
-            // "nothing happened" reading for a zero-step leg (already
-            // at `stop`), the same default an un-opted-in walk reports.
+            // `LegEnd::Arrived`'s doc. A zero-step leg (already at
+            // `stop`) changes nothing about the sneak, so the belief
+            // carried in is the belief handed on; the swap is the
+            // honest "nothing happened" default either way.
             let mut arrival = None;
-            let mut arm = (false, None);
+            let mut arm = (sneaking, None);
             if current != stop {
                 match travel(
                     session,
@@ -1822,12 +1832,13 @@ async fn farm_loop(
                     started,
                     &mut stats,
                     phase,
+                    sneaking,
                 )
                 .await?
                 {
-                    LegEnd::Arrived { seen, sneaking, restore_weapon } => {
+                    LegEnd::Arrived { seen, sneaking: believed, restore_weapon } => {
                         arrival = seen;
-                        arm = (sneaking, restore_weapon);
+                        arm = (believed, restore_weapon);
                     }
                     LegEnd::Died => return Ok((FarmEnd::Died, stats)),
                     LegEnd::TimeUp => return Ok((FarmEnd::TimeUp, stats)),
@@ -1860,7 +1871,7 @@ async fn farm_loop(
             )
             .await?
             {
-                StopEnd::Dwelt => {}
+                StopEnd::Dwelt { sneaking: kept } => sneaking = kept,
                 StopEnd::Died => return Ok((FarmEnd::Died, stats)),
                 StopEnd::TimeUp => return Ok((FarmEnd::TimeUp, stats)),
             }
@@ -1941,7 +1952,10 @@ pub async fn go_to_finish(
     // and a route that desyncs twice is telling you the graph and the
     // board disagree about this part of the world.
     let mut guard = FarmGuard::new(0, 0, &session.profile().username);
-    let err = match nav.goto(session, at, finish, &mut guard).await {
+    // Unarmed: the run that just ended may have left the character
+    // sneaking, but nothing carried that belief out of it, and one
+    // round at the end of a run is cheaper than trusting a guess.
+    let err = match nav.goto(session, at, finish, &mut guard, false).await {
         Ok(_) => return Ok(()),
         Err(e) => e,
     };
@@ -1956,7 +1970,7 @@ pub async fn go_to_finish(
         .await
         .map_err(FarmError::Lost)?
         .at;
-    nav.goto(session, at, finish, &mut guard)
+    nav.goto(session, at, finish, &mut guard, false)
         .await
         .map(|_| ())
         .map_err(FarmError::Nav)
@@ -2330,9 +2344,15 @@ pub(crate) async fn travel(
     started: Instant,
     stats: &mut FarmStats,
     phase: PhaseSink<'_>,
+    // What the caller believes about the character's sneak as the leg
+    // begins -- see `Navigator::goto`. Handed on through `LegEnd::
+    // Arrived`, and cleared here by everything the leg itself does
+    // between walks that the board would count as a break.
+    sneaking: bool,
 ) -> Result<LegEnd, FarmError> {
     use crate::nav::{Interrupt, NavErrorKind};
     set_phase(phase, Phase::WaitingToDepart);
+    let mut sneaking = sneaking;
 
     // Whether the leg stops for fights at all is the session's live
     // switch (`/bot` flips it mid-walk), read at each sighting, entry
@@ -2384,8 +2404,11 @@ pub(crate) async fn travel(
         // leg then departs wounded, which is what the travel guard is
         // for. A leg that walks past fights on purpose (the switch off)
         // departs wounded directly.
-        if let DepartureWait::Contested =
-            wait_for_departure_health(session, cfg, bot_config, &sight).await
+        let departure = wait_for_departure_health(session, cfg, bot_config, &sight).await;
+        if let DepartureWait::Fit { rested: true } = departure {
+            sneaking = false;
+        }
+        if let DepartureWait::Contested = departure
             && session.travel_fights().get()
             && last_sighted != Some(*current)
         {
@@ -2398,7 +2421,10 @@ pub(crate) async fn travel(
             )
             .await?
             {
-                StopEnd::Dwelt => continue,
+                StopEnd::Dwelt { sneaking: kept } => {
+                    sneaking = kept;
+                    continue;
+                }
                 StopEnd::Died => return Ok(LegEnd::Died),
                 StopEnd::TimeUp => return Ok(LegEnd::TimeUp),
             }
@@ -2408,12 +2434,15 @@ pub(crate) async fn travel(
         // blind — today's behavior, now the explicit fallback. A fade
         // mid-leg still walks the remaining dark steps blind and is
         // caught at the stop by the Blind verdict + recast.
-        if !casts.light.lit() && leg_needs_light(graph, *current, stop) {
-            ensure_lit(session, &mut casts.light, clock).await;
+        if !casts.light.lit()
+            && leg_needs_light(graph, *current, stop)
+            && ensure_lit(session, &mut casts.light, clock).await
+        {
+            sneaking = false;
         }
     set_phase(phase, Phase::Travelling { to: stop });
 
-        let err = match nav.goto(session, *current, stop, &mut guard).await {
+        let err = match nav.goto(session, *current, stop, &mut guard, sneaking).await {
             // The block the last step was answered with IS the stop's,
             // attributed to our own command — the same evidence an
             // interrupted leg hands up below, and the same evidence a
@@ -2434,8 +2463,10 @@ pub(crate) async fn travel(
         // Every exit from here writes the position first. A resumed leg
         // that started from a stale `current` would be walking a route
         // computed from a lie, which is the failure verified navigation
-        // exists to prevent.
+        // exists to prevent. The belief is written the same way: the
+        // walk's last word on it is truer than what the leg began with.
         *current = err.at;
+        sneaking = err.sneaking;
 
         match err.kind {
             NavErrorKind::Interrupted(Interrupt::Died) => return Ok(LegEnd::Died),
@@ -2502,7 +2533,10 @@ pub(crate) async fn travel(
                 )
                 .await?
                 {
-                    StopEnd::Dwelt => continue,
+                    StopEnd::Dwelt { sneaking: kept } => {
+                        sneaking = kept;
+                        continue;
+                    }
                     StopEnd::Died => return Ok(LegEnd::Died),
                     StopEnd::TimeUp => return Ok(LegEnd::TimeUp),
                 }
@@ -2545,7 +2579,10 @@ pub(crate) async fn travel(
                 )
                 .await?
                 {
-                    StopEnd::Dwelt => continue,
+                    StopEnd::Dwelt { sneaking: kept } => {
+                        sneaking = kept;
+                        continue;
+                    }
                     StopEnd::Died => return Ok(LegEnd::Died),
                     StopEnd::TimeUp => return Ok(LegEnd::TimeUp),
                 }
@@ -2599,8 +2636,10 @@ pub(crate) async fn travel(
                 stats.relocalizations += 1;
                 // Where the WALK ended, not where it began: relocalize
                 // moves, and routing from the old room would be routing
-                // from somewhere nobody is.
+                // from somewhere nobody is. It moved unsneaked and
+                // unwatched, so the belief does not survive it either.
                 *current = placed.at;
+                sneaking = false;
                 continue;
             }
             _ => Err(FarmError::Nav(err))?,
@@ -2655,30 +2694,32 @@ async fn ensure_lit(
     session: &crate::session::Session,
     light: &mut crate::sheet::LightState,
     clock: &crate::world::RoundClock,
-) {
+) -> bool {
     if light.lit() {
-        return;
+        return false;
     }
     let mut events = session.events();
     crate::session::drain(&mut events, |_| {});
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let mut cast = false;
     loop {
         if light.lit() || tokio::time::Instant::now() >= deadline {
-            return;
+            return cast;
         }
         match light.attempt(Instant::now(), clock) {
             crate::sheet::CastAttempt::Send(cmd) => {
                 let id = session.send(&cmd);
                 light.on_sent(&cmd, id);
+                cast = true;
             }
             crate::sheet::CastAttempt::Hold(_) => {}
-            crate::sheet::CastAttempt::Nothing if !light.in_flight() => return,
+            crate::sheet::CastAttempt::Nothing if !light.in_flight() => return cast,
             crate::sheet::CastAttempt::Nothing => {}
         }
         match tokio::time::timeout(Duration::from_millis(300), events.recv()).await {
             Ok(Ok(cor)) => light.on_event(&cor),
             Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
-            Ok(Err(_)) => return,
+            Ok(Err(_)) => return cast,
             Err(_) => {}
         }
     }
@@ -2686,9 +2727,12 @@ async fn ensure_lit(
 
 /// How the departure wait ended: fit to walk (or past caring — the
 /// deadline expired), or standing beside work that has to be dealt
-/// with before resting can mean anything.
+/// with before resting can mean anything. `rested` says whether a
+/// rest or meditate went out on the way to fit: the caller's sneak
+/// belief cannot survive one, since nothing announces what the board
+/// did to it.
 enum DepartureWait {
-    Fit,
+    Fit { rested: bool },
     Contested,
 }
 
@@ -2708,7 +2752,7 @@ async fn wait_for_departure_health(
 ) -> DepartureWait {
     let mark = cfg.depart_at_percent.unwrap_or(bot_config.rest_until_percent);
     if mark == 0 || bot_config.max_hp <= 0 {
-        return DepartureWait::Fit;
+        return DepartureWait::Fit { rested: false };
     }
     let hp_target = bot_config.max_hp * mark as i32 / 100;
     let mana_target = (bot_config.max_mana > 0).then(|| bot_config.max_mana * mark as i32 / 100);
@@ -2744,7 +2788,7 @@ async fn wait_for_departure_health(
         // An unknown reading is read as fit, the way the bot reads it.
         let mana_fit = mana_target.is_none_or(|t| mana.is_none_or(|m| m >= t));
         if hp_fit && mana_fit {
-            return DepartureWait::Fit;
+            return DepartureWait::Fit { rested: sent_heal };
         }
         // A downed character cannot rest its way back over the gate;
         // hand it to the defence pump, whose death handling is the one
@@ -2753,7 +2797,7 @@ async fn wait_for_departure_health(
             return DepartureWait::Contested;
         }
         if tokio::time::Instant::now() >= deadline {
-            return DepartureWait::Fit;
+            return DepartureWait::Fit { rested: sent_heal };
         }
         // Actually rest or meditate, and actually look.
         //
@@ -2778,7 +2822,7 @@ async fn wait_for_departure_health(
         // there is nothing to observe.
         match tokio::time::timeout(poke, state.changed()).await {
             Ok(Ok(())) => {}
-            Ok(Err(_)) => return DepartureWait::Fit,
+            Ok(Err(_)) => return DepartureWait::Fit { rested: sent_heal },
             Err(_) => {
                 // The poke exists only to provoke a prompt that carries
                 // HP into GameState; its own answer is irrelevant, so no
@@ -2792,7 +2836,14 @@ async fn wait_for_departure_health(
 }
 
 enum StopEnd {
-    Dwelt,
+    /// The stop is over and the character is still standing at it.
+    /// `sneaking` is what is left of the belief the stop was primed
+    /// with: kept only if nothing but `look` went out. Anything else
+    /// -- a swing, a `get`, a rest, a cast -- is read as a break,
+    /// because the board announces none of them and a belief that is
+    /// wrong the other way walks the next leg unhidden while trusting
+    /// a backstab opener it does not have.
+    Dwelt { sneaking: bool },
     Died,
     TimeUp,
 }
@@ -2884,6 +2935,10 @@ async fn farm_stop(
     // own starting state (no opener primed), so a call site with
     // nothing real to report changes nothing.
     bot.arm_backstab_opener(sneaking, restore_weapon);
+    // What survives of `sneaking` for the leg out -- see
+    // `StopEnd::Dwelt`. Cleared where commands actually go out, the one
+    // point every send passes through.
+    let mut still_sneaking = sneaking;
     let mut gate = Gate::new(backoff);
     let mut rest_watch = HealWatch::new(bot_config, cfg);
     // Health, for the spell mark. Read from the session's published
@@ -2935,7 +2990,7 @@ async fn farm_stop(
         // Defending is capped: see FarmConfig::defend_seconds for why a
         // stop that cannot go quiet must still end.
         if until.is_some_and(|d| Instant::now() >= d) {
-            return Ok(StopEnd::Dwelt);
+            return Ok(StopEnd::Dwelt { sneaking: still_sneaking });
         }
 
         // What the stop's own evidence says to do, decided BEFORE waiting
@@ -2972,7 +3027,7 @@ async fn farm_stop(
             // acknowledgement still in flight is evidence in flight.
             Verdict::Empty => {
                 if gate.is_idle() {
-                    return Ok(StopEnd::Dwelt);
+                    return Ok(StopEnd::Dwelt { sneaking: still_sneaking });
                 }
             }
             Verdict::Blind => {
@@ -3002,7 +3057,7 @@ async fn farm_stop(
                     // governs, or we walk on and leave whatever is
                     // hitting us behind.
                     crate::sheet::CastAttempt::Nothing if !defending && gate.is_idle() => {
-                        return Ok(StopEnd::Dwelt);
+                        return Ok(StopEnd::Dwelt { sneaking: still_sneaking });
                     }
                     _ => {}
                 }
@@ -3099,6 +3154,9 @@ async fn farm_stop(
 
         // Release whatever the gate is willing to send.
         while let Some(cmd) = gate.poll(now) {
+            if cmd != "look" {
+                still_sneaking = false;
+            }
             rest_watch.on_sent(&cmd);
             let id = session.send(&cmd);
             gate.confirm(id);
@@ -3187,7 +3245,9 @@ async fn farm_stop(
                 return recover(session, nav, graph, stop, room)
                     .await
                     .map(|end| match end {
-                        RecoverEnd::Back => StopEnd::Dwelt,
+                        // A flee and a walk back: whatever was believed
+                        // before, nothing about it survived that.
+                        RecoverEnd::Back => StopEnd::Dwelt { sneaking: false },
                         RecoverEnd::Died => StopEnd::Died,
                     });
             }
@@ -3309,7 +3369,8 @@ async fn recover(
         .map_err(FarmError::Lost)?
         .at;
     let mut guard = FarmGuard::death_only(&session.profile().username);
-    match nav.goto(session, at, stop, &mut guard).await {
+    // A flee is a move the board does not sneak: unarmed.
+    match nav.goto(session, at, stop, &mut guard, false).await {
         Ok(_) => Ok(RecoverEnd::Back),
         Err(e) if matches!(e.kind, crate::nav::NavErrorKind::Interrupted(_)) => {
             Ok(RecoverEnd::Died)
