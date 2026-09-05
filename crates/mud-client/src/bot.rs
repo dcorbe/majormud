@@ -67,22 +67,38 @@ pub fn picked_up(line: &str) -> Option<(u32, String)> {
     Some((c[1].parse().ok()?, c[2].to_string()))
 }
 
-/// The board's acknowledgement of an ITEM pickup: "You picked up a
-/// silver holy amulet", captured live in oracle_charm_lifecycle, and
-/// "You picked up a black star key". Coins are [`picked_up`]'s and are
-/// refused here, and the leading article is dropped.
+/// The stock wording is "You took <item>.", the DLL's `%s` string
+/// (`took_item` in `mud-core::text`, ported from WCCMMUD.DLL, verified
+/// against `crates/mud-core/tests/inventory.rs`). "You picked up
+/// <item>" (no trailing period), captured live in
+/// oracle_charm_lifecycle, is kept for the reimplemented board this
+/// client actually plays, whose item wording has never been captured.
+/// Coins are [`picked_up`]'s and are refused here, and the leading
+/// article is dropped.
 static PICKED_UP_ITEM_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^You picked up (?:an? |the )?(.+?)\.?$").unwrap());
 
+/// The DLL's stock wording: "You took <item>.".
+static TOOK_ITEM_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^You took (.+)\.$").unwrap());
+
 /// Did the board just confirm an item, not coins, left the floor and
 /// entered the pack? Returns the item's name as printed.
+///
+/// The DLL also prints "You took %d damage." and "You took %d damage!"
+/// for a landed blow, sharing the "You took " prefix with a pickup: a
+/// name ending in "damage" is refused so a hit is never read as one.
 pub fn picked_up_item(line: &str) -> Option<String> {
     if picked_up(line).is_some() {
         return None;
     }
-    PICKED_UP_ITEM_RE
+    let caps = TOOK_ITEM_RE
         .captures(line)
-        .map(|c| c[1].to_string())
+        .or_else(|| PICKED_UP_ITEM_RE.captures(line))?;
+    let name = caps[1].to_string();
+    if name.ends_with("damage") {
+        return None;
+    }
+    Some(name)
 }
 
 /// Somebody ELSE swept the floor: "Mystic picked up some coins."

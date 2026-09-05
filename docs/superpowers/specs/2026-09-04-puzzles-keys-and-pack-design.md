@@ -193,9 +193,11 @@ never updated by inference. The board can refuse a pickup silently.
 `BotConfig.take_keys`, default true, separate from `auto_get` which sweeps
 coins and defaults false. When a room block lists an item that resolves to a
 type 7 item and the pack does not hold it, the bot sends `get <name>` and
-waits for the pickup confirmation. Items print "You picked up a silver holy
-amulet", already seen live, so the existing coin regex widens to items. After
-a confirmed pickup the bot re-reads the pack.
+waits for the pickup confirmation. Items print "You took <item>." on the
+stock board, the string is in the DLL and mud-core ports it, while coins
+print "You picked up ...". The reimplemented board's item wording is
+uncaptured, so both are accepted and a damage line, "You took 12 damage.",
+is refused. After a confirmed pickup the bot re-reads the pack.
 
 ## Part 2: buttons and levers
 

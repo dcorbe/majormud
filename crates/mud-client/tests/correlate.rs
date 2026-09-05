@@ -1096,6 +1096,28 @@ fn a_picklock_is_a_kind_of_its_own() {
     }
 }
 
+/// The stock board's item wording, "You took <item>." from the DLL, not
+/// the invented "you picked up" kept for the reimplemented board's
+/// still-uncaptured item reply. A "You took 12 damage." line shares the
+/// prefix with a landed blow, not a pickup, and must not retire the get.
+#[test]
+fn a_get_is_answered_by_you_took_and_not_by_damage() {
+    let t0 = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "get black star key", t0);
+    ans(&mut c, line("get black star key"), t0);
+    assert_eq!(
+        ans(&mut c, line("You took 12 damage."), t0),
+        None,
+        "a damage line answered the get"
+    );
+    assert_eq!(
+        ans(&mut c, line("You took black star key."), t0),
+        Some(CmdId(1)),
+        "the real pickup was not attributed"
+    );
+}
+
 // ------------------------------------------------ through the parser
 
 #[test]

@@ -1820,7 +1820,7 @@ fn a_key_is_asked_for_once_per_visit() {
 fn a_pickup_confirmation_asks_for_the_inventory() {
     let mut bot = Bot::new(BotConfig::default()).with_pack(Some(key_pack(&[])));
     assert_eq!(
-        bot.on_event(&Event::Line("You picked up a black star key".into())),
+        bot.on_event(&Event::Line("You took black star key.".into())),
         vec![BotAction::Send("i".into())]
     );
 }
@@ -1839,13 +1839,19 @@ fn a_coin_pickup_does_not_ask_for_the_inventory() {
 fn picked_up_item_reads_the_item_and_not_the_coins() {
     use mud_client::bot::picked_up_item;
     assert_eq!(
-        picked_up_item("You picked up a black star key"),
+        picked_up_item("You took black star key."),
         Some("black star key".to_string())
     );
+    // The reimplemented live board's uncaptured wording, kept pending a
+    // capture.
     assert_eq!(
         picked_up_item("You picked up a silver holy amulet"),
         Some("silver holy amulet".to_string())
     );
     assert_eq!(picked_up_item("You picked up 11 silver nobles"), None);
     assert_eq!(picked_up_item("Mystic picked up some coins."), None);
+    // Shares the "You took " prefix with a pickup, but it is a landed
+    // blow, not an item.
+    assert_eq!(picked_up_item("You took 12 damage."), None);
+    assert_eq!(picked_up_item("You took 12 damage!"), None);
 }

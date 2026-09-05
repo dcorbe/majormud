@@ -2104,7 +2104,7 @@ fn a_stop_does_not_end_while_a_get_is_unanswered() {
     assert_ne!(w.verdict(t0), Verdict::Empty, "the echo settled the get");
 
     // Somebody else's pickup settles nothing either.
-    w.feed(&Event::Line("You picked up a black star key".into()), t0);
+    w.feed(&Event::Line("You took black star key.".into()), t0);
     assert_ne!(
         w.verdict(t0),
         Verdict::Empty,
@@ -2113,7 +2113,7 @@ fn a_stop_does_not_end_while_a_get_is_unanswered() {
 
     // Ours does.
     w.fold(
-        answering(Event::Line("You picked up a black star key".into()), get),
+        answering(Event::Line("You took black star key.".into()), get),
         t0,
     );
     assert_eq!(w.verdict(t0), Verdict::Empty);

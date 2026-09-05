@@ -424,7 +424,11 @@ fn completes(kind: Kind, ev: &Event) -> bool {
                 || has("may not search while attacking")
                 || has("why would you want to search that")
         }
-        Kind::Get => has("you picked up"),
+        // The stock wording, "you took ", is also the DLL's damage line
+        // ("you took 12 damage.") -- excluded so a landed blow never
+        // retires a pending get. "you picked up" is the reimplemented
+        // board's uncaptured item wording, kept alongside it.
+        Kind::Get => has("you picked up") || (has("you took ") && !has("damage")),
         Kind::BuyHealing => has("wounds are healed"),
         // No line completes it — see the `Event::Prompt` arm above.
         Kind::Stat => false,

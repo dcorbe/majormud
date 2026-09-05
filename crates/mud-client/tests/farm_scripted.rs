@@ -1668,7 +1668,7 @@ async fn a_key_at_a_stop_is_picked_up_and_the_pack_reread() {
         ),
         (
             "get black star key",
-            "\r\nget black star key\r\nYou picked up a black star key\r\n[HP=30/MA=0]:".into(),
+            "\r\nget black star key\r\nYou took black star key.\r\n[HP=30/MA=0]:".into(),
         ),
         (
             "i",
