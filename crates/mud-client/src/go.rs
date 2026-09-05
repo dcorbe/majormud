@@ -239,21 +239,25 @@ pub async fn run_go(
     if let Err(e) = crate::deaths::init(&cfg.content) {
         eprintln!("death wordings unavailable ({e}); shared-room kills will be missed");
     }
-    let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone())
-        .with_capabilities(session.capabilities());
-    // Item identity for the backstab opener -- best effort, same
-    // "reload the path again" pattern as the threat/duration tables
-    // `run_farm` already loads. `session.wielded()`/`.contents()` are
-    // themselves best-effort (whatever this session has read so far),
-    // exactly as `session.capabilities()`'s purse already is above.
-    let nav = match RoomGraph::load_content(&cfg.content) {
+    // The table goes to the session before the capabilities are read,
+    // so the walk routes with the pack. Best effort, as before: a
+    // session handed the table earlier keeps it when this load fails.
+    let content = match RoomGraph::load_content(&cfg.content) {
         Ok(content) => {
-            nav.with_backstab(Arc::new(content), session.wielded(), session.contents().items)
+            let content = Arc::new(content);
+            session.set_content(Arc::clone(&content));
+            Some(content)
         }
         Err(e) => {
             eprintln!("item identity unavailable ({e}); backstab opener disabled");
-            nav
+            None
         }
+    };
+    let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone())
+        .with_capabilities(session.capabilities());
+    let nav = match content {
+        Some(content) => nav.with_backstab(content, session.wielded(), session.contents().items),
+        None => nav,
     };
 
     let seen = crate::farm::look_around(session, "the go walk's look").await?;

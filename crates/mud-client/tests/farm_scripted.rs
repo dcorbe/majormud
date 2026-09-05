@@ -1642,3 +1642,89 @@ async fn a_stop_that_swings_rearms_the_next_leg() {
     assert_eq!(sneaks.len(), 2, "armed once in, once out: {log:?}");
     assert!(sneaks[0] < swing && swing < sneaks[1], "the swing spent the first arm: {log:?}");
 }
+
+/// A key on the floor of a stop is fetched and the pack re-read, with
+/// the coin sweep off. The table is handed to the session by the test
+/// the way `mmc play` hands it over at realm entry, since the farm's
+/// own load of `re/` is not available here.
+#[tokio::test]
+async fn a_key_at_a_stop_is_picked_up_and_the_pack_reread() {
+    let (addr, received) = scripted_board(vec![
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nYou have no keys.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        ("look", format!("\r\nlook{}", room_block("Guard Post", None, "north"))),
+        ("n", format!("\r\nn{}", room_block("Inner Ward", None, "north south"))),
+        // The key rides the arrival block itself: with no monster there
+        // and no dwell configured, the stop is quiet the instant it is
+        // seeded, so a look asked only after that would never go out.
+        // The pickup has to be driven off the same block the sighting
+        // bot is seeded from, and the `get` goes out ahead of any look.
+        (
+            "n",
+            format!("\r\nn{}", room_block_items("Keep", &["black star key"], "south")),
+        ),
+        (
+            "get black star key",
+            "\r\nget black star key\r\nYou picked up a black star key\r\n[HP=30/MA=0]:".into(),
+        ),
+        (
+            "i",
+            "\r\ni\r\nYou are carrying nothing.\r\nYou have the following keys:  black star key.\r\nWealth: 0 copper farthings\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        ("look", format!("\r\nlook{}", room_block("Keep", None, "south"))),
+    ])
+    .await;
+    let session = session_for(addr).await;
+    mud_client::farm::probe_sheet(&session, None).await;
+
+    let mut content = mud_core::content::Content::default();
+    content.add_item(mud_core::content::Item {
+        id: mud_core::content::ItemId(172),
+        name: "black star key".into(),
+        item_type: 7,
+        ..Default::default()
+    });
+    session.set_content(Arc::new(content));
+
+    let graph = corridor();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/3".into()],
+        loops: 1,
+        idle_poke_ms: 500,
+        depart_at_percent: Some(0),
+        travel_interrupts: 0,
+        dwell_empty_seconds: 1,
+        ..FarmConfig::default()
+    };
+    let bot = mud_client::bot::BotConfig {
+        max_hp: 30,
+        ..Default::default()
+    };
+    let plan = mud_client::farm::FarmPlan::build(&cfg, &graph).unwrap();
+    let (end, _) = tokio::time::timeout(
+        Duration::from_secs(20),
+        mud_client::farm::run_farm(&session, graph, &plan, &bot, &cfg, None),
+    )
+    .await
+    .expect("the run should finish")
+    .expect("the run should succeed");
+    assert_eq!(end, mud_client::farm::FarmEnd::LoopsDone);
+
+    let lines = received.lock().unwrap().clone();
+    let get = lines.iter().position(|l| l == "get black star key");
+    let reread = lines.iter().rposition(|l| l == "i");
+    assert!(get.is_some(), "the key was never asked for: {lines:?}");
+    assert!(
+        reread.is_some_and(|r| r > get.unwrap()),
+        "the pack was not re-read after the pickup: {lines:?}"
+    );
+    assert!(
+        session.capabilities().has_item(mud_core::content::ItemId(172)),
+        "the re-read did not reach the pack"
+    );
+}

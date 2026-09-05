@@ -1006,7 +1006,9 @@ pub fn handle_key(
 /// [`assist_tick`] reads the sheet on its first tick after the probe has
 /// stored one, and refreshes the hide flag on every tick.
 fn new_assist(session: &Session, cfg: &crate::bot::BotConfig) -> (crate::bot::Bot, crate::sheet::HealState) {
-    let bot = crate::bot::Bot::new(cfg.clone()).with_hide(session.capabilities().stealth > 0);
+    let bot = crate::bot::Bot::new(cfg.clone())
+        .with_hide(session.capabilities().stealth > 0)
+        .with_pack(session.pack_handle());
     (bot, crate::sheet::HealState::new(Vec::new()))
 }
 
@@ -1867,6 +1869,11 @@ fn import_loop(graph: &crate::graph::RoomGraph, file: &std::path::Path) -> Vec<S
 /// (no world database, or the caller never held one) leaves probing
 /// exactly as it always was.
 pub fn on_realm_entry(session: &Arc<Session>, content: Option<Arc<mud_core::content::Content>>) {
+    // The pack resolves off the `i` sent just below, so the table has
+    // to be in place first.
+    if let Some(content) = &content {
+        session.set_content(Arc::clone(content));
+    }
     session.send("exp");
     session.send("i");
     let probe_session = Arc::clone(session);

@@ -1716,22 +1716,29 @@ async fn farm_loop(
     // while the legs between them cut straight through a wall whenever
     // that was cheaper — a fence you can walk through is not a fence.
     let nav = {
-        let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone())
-            .with_capabilities(session.capabilities());
-        // Item identity for the backstab opener -- best effort, same
-        // "reload the path again" pattern as the threat table just
-        // below. `session.wielded()`/`.contents()` are themselves
-        // best-effort (whatever this session has read so far).
-        let nav = match RoomGraph::load_content(&cfg.content) {
-            Ok(content) => nav.with_backstab(
-                std::sync::Arc::new(content),
-                session.wielded(),
-                session.contents().items,
-            ),
+        // Item identity for the pack and the backstab opener. The table
+        // goes to the session first, so the capabilities read below
+        // already carry the pack. Best effort, same "reload the path
+        // again" pattern as the threat table just below: a session that
+        // was handed the table earlier keeps it when this load fails.
+        let content = match RoomGraph::load_content(&cfg.content) {
+            Ok(content) => {
+                let content = std::sync::Arc::new(content);
+                session.set_content(std::sync::Arc::clone(&content));
+                Some(content)
+            }
             Err(e) => {
                 eprintln!("item identity unavailable ({e}); backstab opener disabled");
-                nav
+                None
             }
+        };
+        let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone())
+            .with_capabilities(session.capabilities());
+        let nav = match content {
+            Some(content) => {
+                nav.with_backstab(content, session.wielded(), session.contents().items)
+            }
+            None => nav,
         };
         match &plan.roam {
             Some(walls) => nav.fenced(walls.clone(), plan.start.map),
@@ -2366,11 +2373,10 @@ pub(crate) async fn travel(
         cfg.interrupt_at_percent,
         &session.profile().username,
     )
-    .sighting(crate::bot::Bot::with_refusals(
-        bot_config.clone(),
-        threat.clone(),
-        refusals.clone(),
-    ))
+    .sighting(
+        crate::bot::Bot::with_refusals(bot_config.clone(), threat.clone(), refusals.clone())
+            .with_pack(session.pack_handle()),
+    )
     .follows(session.travel_fights().clone());
     let mut budget = cfg.travel_interrupts;
     // Desync recoveries this leg may spend. Bounded because the recovery
@@ -2390,7 +2396,8 @@ pub(crate) async fn travel(
     let mut last_sighted: Option<RoomId> = None;
     // Predicate-only, like the guard's sighting bot: judges whether the
     // departure gate is standing beside work (never fed events).
-    let sight = crate::bot::Bot::with_refusals(bot_config.clone(), threat.clone(), refusals.clone());
+    let sight = crate::bot::Bot::with_refusals(bot_config.clone(), threat.clone(), refusals.clone())
+        .with_pack(session.pack_handle());
 
     loop {
         if time_up(started, cfg).is_some() {
@@ -2928,7 +2935,8 @@ async fn farm_stop(
         ..bot_config.clone()
     };
     let mut bot =
-        crate::bot::Bot::with_refusals(stop_config.clone(), threat.clone(), refusals.clone());
+        crate::bot::Bot::with_refusals(stop_config.clone(), threat.clone(), refusals.clone())
+            .with_pack(session.pack_handle());
     // Prime the opener from what the leg that brought us here believed
     // -- see this function's own `sneaking`/`restore_weapon` doc. Safe
     // to call unconditionally: `false` is exactly `Bot::with_refusals`'s
@@ -3186,8 +3194,12 @@ async fn farm_stop(
             // carrying a stale "nothing here" across would walk out on
             // everything still standing in it.
             Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {
-                bot =
-                    crate::bot::Bot::with_refusals(stop_config.clone(), threat.clone(), refusals.clone());
+                bot = crate::bot::Bot::with_refusals(
+                    stop_config.clone(),
+                    threat.clone(),
+                    refusals.clone(),
+                )
+                .with_pack(session.pack_handle());
                 gate = Gate::new(backoff);
                 seen.reset();
                 here.reset();
@@ -3273,7 +3285,8 @@ async fn farm_stop(
             // means it was not, and then walking back is no worse than
             // what this replaced.
             let flee_sight =
-                crate::bot::Bot::with_refusals(bot_config.clone(), threat.clone(), refusals.clone());
+                crate::bot::Bot::with_refusals(bot_config.clone(), threat.clone(), refusals.clone())
+                    .with_pack(session.pack_handle());
             if let DepartureWait::Contested =
                 wait_for_departure_health(session, cfg, bot_config, &flee_sight).await
             {
@@ -3285,8 +3298,8 @@ async fn farm_stop(
             // Back at the stop with a clean slate. Nothing observed
             // before the flee describes the room we are standing in now.
             events = session.events();
-            bot =
-                crate::bot::Bot::with_refusals(stop_config.clone(), threat.clone(), refusals.clone());
+            bot = crate::bot::Bot::with_refusals(stop_config.clone(), threat.clone(), refusals.clone())
+                .with_pack(session.pack_handle());
             gate = Gate::new(backoff);
             rest_watch = HealWatch::new(bot_config, cfg);
             seen = StopState::new(stop_name.clone(), cfg);
