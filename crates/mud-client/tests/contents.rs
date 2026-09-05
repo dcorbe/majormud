@@ -87,6 +87,42 @@ async fn keyed_inventory_board() -> std::net::SocketAddr {
     addr
 }
 
+/// The same board with two keys on the ring, for the second-table
+/// refresh test: the reply never changes, only what the session knows
+/// how to resolve does.
+async fn two_keys_inventory_board() -> std::net::SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut pending = String::new();
+        let mut buf = [0u8; 512];
+        while let Ok(n) = sock.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            pending.push_str(&String::from_utf8_lossy(&buf[..n]));
+            while let Some(nl) = pending.find('\n') {
+                let line: String = pending.drain(..=nl).collect();
+                let line = line.trim();
+                let reply = if line.eq_ignore_ascii_case("i") {
+                    "i\r\n\
+                     You are carrying 38 runic coins, ninjato (Weapon Hand)\r\n\
+                     You have the following keys:  black star key, second key.\r\n\
+                     Wealth: 38982274 copper farthings\r\n\
+                     Encumbrance: 430/1680 - Light [25%]\r\n\
+                     [HP=30/MA=0]:"
+                        .to_string()
+                } else {
+                    format!("\r\nYou say \"{line}\"\r\n[HP=30/MA=0]:")
+                };
+                sock.write_all(reply.as_bytes()).await.unwrap();
+            }
+        }
+    });
+    addr
+}
+
 fn key_table() -> std::sync::Arc<mud_core::content::Content> {
     use mud_core::content::{Content, Item, ItemId};
     let mut content = Content::default();
@@ -222,4 +258,42 @@ async fn set_content_resolves_the_reading_already_held() {
     wait_for_contents(&session).await;
     session.set_content(key_table());
     assert!(session.capabilities().has_item(ItemId(172)));
+}
+
+/// A second `set_content` swaps the table but must stay the SAME
+/// shared pack: a handle taken out after the first call is still the
+/// pack every later reply refreshes, or it goes stale forever the
+/// moment a second table (a farm's own load, after `mmc play`'s realm
+/// entry) is handed over.
+#[tokio::test]
+async fn a_second_set_content_keeps_the_pack_every_holder_shares() {
+    use mud_core::content::{Content, Item, ItemId};
+    let addr = two_keys_inventory_board().await;
+    let session = session_for(addr).await;
+
+    session.set_content(key_table());
+    let first_handle = session.pack_handle().expect("a pack handle after the first set_content");
+
+    let mut richer = Content::default();
+    richer.add_item(Item {
+        id: ItemId(172),
+        name: "black star key".into(),
+        item_type: 7,
+        ..Default::default()
+    });
+    richer.add_item(Item {
+        id: ItemId(173),
+        name: "second key".into(),
+        item_type: 7,
+        ..Default::default()
+    });
+    session.set_content(std::sync::Arc::new(richer));
+
+    session.send("i");
+    wait_for_contents(&session).await;
+
+    assert!(
+        first_handle.has(ItemId(173)),
+        "the handle taken before the second set_content never saw the new table's key"
+    );
 }

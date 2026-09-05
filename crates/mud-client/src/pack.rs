@@ -150,4 +150,19 @@ impl PackHandle {
     pub fn content(&self) -> &Arc<Content> {
         &self.content
     }
+
+    /// A handle over a different item table, sharing THIS handle's
+    /// pack rather than minting a new one.
+    ///
+    /// `Session::set_content` uses this on every call after the first:
+    /// a fresh `PackHandle::new` would give the new table its own
+    /// empty `Arc<Mutex<Pack>>`, and every bot or navigator already
+    /// holding the earlier handle would keep watching a pack nothing
+    /// refreshes again.
+    pub fn with_table(&self, content: Arc<Content>) -> PackHandle {
+        PackHandle {
+            content,
+            pack: Arc::clone(&self.pack),
+        }
+    }
 }

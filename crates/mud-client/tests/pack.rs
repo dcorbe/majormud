@@ -117,3 +117,28 @@ fn a_handle_refresh_is_shared_by_its_clones() {
     assert!(other.has(ItemId(172)));
     assert_eq!(other.snapshot().keys, vec![ItemId(172)]);
 }
+
+/// `with_table` swaps the item table but keeps the SAME shared pack —
+/// the mechanism `Session::set_content` uses on a second call so a
+/// handle taken out before it is not orphaned by the new table.
+#[test]
+fn with_table_shares_the_pack_with_a_second_table() {
+    let handle = PackHandle::new(Arc::new(content()));
+    handle.refresh(&inventory(&[], &["black star key"]));
+
+    let mut richer = content();
+    richer.add_item(item(600, "second key", 7));
+    let retabled = handle.with_table(Arc::new(richer));
+
+    // The table swapped, but the reading already resolved rides along
+    // -- `with_table` shares the pack, it does not reset it.
+    assert!(retabled.has(ItemId(172)));
+
+    // And the two share one pack: a refresh through either is seen by
+    // both.
+    retabled.refresh(&inventory(&[], &["second key"]));
+    assert!(
+        handle.has(ItemId(600)),
+        "the original handle did not see the shared refresh"
+    );
+}

@@ -840,9 +840,15 @@ impl Session {
     /// session: `mmc play` at realm entry, `run_go` and `run_farm` at
     /// their start. Resolves the reading the session already holds, so
     /// a table handed over after the first `i` still gives a full pack.
-    /// A second call replaces the table and re-resolves.
+    /// A second call swaps the table and re-resolves into the SAME
+    /// shared pack (`PackHandle::with_table`), so every earlier holder
+    /// -- a bot, a navigator -- sees it too, rather than being left
+    /// watching a pack nothing refreshes again.
     pub fn set_content(&self, content: Arc<mud_core::content::Content>) {
-        let handle = crate::pack::PackHandle::new(content);
+        let handle = match self.pack.lock().expect("pack lock").as_ref() {
+            Some(h) => h.with_table(content),
+            None => crate::pack::PackHandle::new(content),
+        };
         handle.refresh(&self.contents());
         *self.pack.lock().expect("pack lock") = Some(handle);
     }
