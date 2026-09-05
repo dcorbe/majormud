@@ -255,6 +255,59 @@ fn a_remote_action_slot_is_not_a_visible_exit() {
     );
 }
 
+/// A hidden exit that has been revealed IS printed, so a room's board
+/// view may list it or not. The Crypt hallway 1/1056 lists south, east
+/// and west until its levers are pulled, then "dark passageway north"
+/// as well (live, test.raw 2026-09-05). Both views describe the same
+/// room and the exact test must accept both, while a plain four-way
+/// crossroads with no hidden exit must not match the three-way view.
+#[test]
+fn a_revealed_hidden_exit_still_matches_its_room() {
+    let hall = RoomId { map: 1, room: 1056 };
+    let crossroads = RoomId { map: 1, room: 1032 };
+    let elsewhere = RoomId { map: 1, room: 999 };
+    let mut r = room(
+        "Crypt, Stone Hallway",
+        &[
+            (Direction::South, elsewhere),
+            (Direction::East, elsewhere),
+            (Direction::West, elsewhere),
+        ],
+    );
+    r.exits[Direction::North as usize] = Some(ExitEdge {
+        dest: elsewhere,
+        exit_type: 6,
+        command: None,
+        requirement: ExitRequirement::Hidden { searchable: false },
+    });
+    let g = RoomGraph::from_rooms(vec![
+        (hall, r),
+        (
+            crossroads,
+            room(
+                "Crypt, Stone Hallway",
+                &[
+                    (Direction::North, elsewhere),
+                    (Direction::South, elsewhere),
+                    (Direction::East, elsewhere),
+                    (Direction::West, elsewhere),
+                ],
+            ),
+        ),
+        (elsewhere, room("Elsewhere", &[])),
+    ]);
+
+    let concealed = view("Crypt, Stone Hallway", &["south", "east", "west"]);
+    assert_eq!(lost::candidates(&g, &concealed), vec![hall]);
+
+    let revealed = view(
+        "Crypt, Stone Hallway",
+        &["dark passageway north", "south", "east", "west"],
+    );
+    let here = lost::candidates(&g, &revealed);
+    assert!(here.contains(&hall), "the hall with its passage open: {here:?}");
+}
+
 #[tokio::test]
 async fn an_unknown_room_is_refused_without_walking() {
     let (addr, moves) = board(|_| "\r\n[HP=68/MA=18]:".to_string()).await;

@@ -784,6 +784,65 @@ fn localize_view_refuses_when_still_ambiguous() {
     );
 }
 
+/// Two same-named rooms one hop apart: the Crypt's upper and lower
+/// "Crypt, Small Chamber" (1/1063 above, 1/1070 below, joined by the
+/// stairs). Standing in the lower one and looking, the block names the
+/// room the character is IN, and the exits say which one: up only. The
+/// name-only one-hop rule scanned the neighbours before the room itself
+/// and returned the upper chamber, so `/go` routed from a room one floor
+/// up and its first step was a `d` into the floor (live, test.raw
+/// 2026-09-05, four times over).
+#[test]
+fn localize_view_prefers_the_same_named_neighbour_whose_exits_match() {
+    let mk = |name: &str, exits: &[(Direction, RoomId)]| {
+        let mut r = GraphRoom {
+            name: name.into(),
+            exits: Default::default(),
+            light: 0,
+            ..Default::default()
+        };
+        for (d, dest) in exits {
+            r.exits[*d as usize] = Some(ExitEdge {
+                dest: *dest,
+                exit_type: 0,
+                command: None,
+                requirement: ExitRequirement::None,
+            });
+        }
+        r
+    };
+    let hall = RoomId { map: 1, room: 1056 };
+    let upper = RoomId { map: 1, room: 1063 };
+    let lower = RoomId { map: 1, room: 1070 };
+    let graph = RoomGraph::from_rooms(vec![
+        (hall, mk("Crypt, Stone Hallway", &[(Direction::North, upper)])),
+        (
+            upper,
+            mk(
+                "Crypt, Small Chamber",
+                &[(Direction::South, hall), (Direction::Down, lower)],
+            ),
+        ),
+        (lower, mk("Crypt, Small Chamber", &[(Direction::Up, upper)])),
+    ]);
+    let nav = Navigator::new(Arc::new(graph), NavConfig::default());
+    // Standing below and looking: the answer is where we stand.
+    assert_eq!(
+        nav.localize_view(lower, &view("Crypt, Small Chamber", &["up"])),
+        Some(lower)
+    );
+    // Standing above and looking: likewise.
+    assert_eq!(
+        nav.localize_view(upper, &view("Crypt, Small Chamber", &["south", "down"])),
+        Some(upper)
+    );
+    // Believed above, block says below: the step down landed.
+    assert_eq!(
+        nav.localize_view(upper, &view("Crypt, Small Chamber", &["up"])),
+        Some(lower)
+    );
+}
+
 /// Position tracking has to work from a cold start, with no previous
 /// room to hop from -- the first block after logging in. localize_view's
 /// global search is what makes that possible, so it must not depend on

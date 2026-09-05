@@ -138,14 +138,14 @@ fn consistent(
     pool: impl Iterator<Item = RoomId>,
     seen: &RoomView,
 ) -> Vec<RoomId> {
-    let observed: BTreeSet<Direction> = seen.exits.iter().filter_map(|e| direction_of(e)).collect();
+    let observed = observed(seen);
     let named: Vec<RoomId> = pool
         .filter(|id| graph.room(*id).is_some_and(|r| r.name == seen.name))
         .collect();
     let exact: Vec<RoomId> = named
         .iter()
         .copied()
-        .filter(|id| graph.room(*id).is_some_and(|r| listed(r) == observed))
+        .filter(|id| graph.room(*id).is_some_and(|r| matches(r, &observed)))
         .collect();
     if !exact.is_empty() {
         return exact;
@@ -160,11 +160,39 @@ fn consistent(
         .collect()
 }
 
-/// The directions this room's "Obvious exits" line names.
+/// Does this room's exits line, as the board would print it, fit what
+/// the board printed?
 ///
-/// Everything the room has except hidden (6) and command (10) exits: the
-/// board prints neither, which is the whole reason the alleyway at 1/405
-/// looks like a dead end and the Newhaven ferry looks like a dock.
+/// Exact on everything the board always prints, tolerant on what it
+/// prints only sometimes. A hidden exit is absent from the line until it
+/// is found or its lever is pulled, then present under its own label
+/// ("dark passageway north", 1/1056 after the Crypt levers, live
+/// 2026-09-05), and the board re-hides it minutes later. Both views
+/// describe one room, so the rule is: every always-printed exit must be
+/// there, and anything else on the line must be one of the room's hidden
+/// exits.
+pub fn matches(room: &crate::graph::GraphRoom, observed: &BTreeSet<Direction>) -> bool {
+    let always = listed(room);
+    always.is_subset(observed)
+        && observed.iter().all(|d| {
+            always.contains(d)
+                || room.exits[*d as usize]
+                    .as_ref()
+                    .is_some_and(|e| crate::nav::is_hidden(e.exit_type))
+        })
+}
+
+/// The directions this block's "Obvious exits" line names.
+pub fn observed(seen: &RoomView) -> BTreeSet<Direction> {
+    seen.exits.iter().filter_map(|e| direction_of(e)).collect()
+}
+
+/// The directions this room's "Obvious exits" line always names.
+///
+/// Everything the room has except hidden (6), command (10) and
+/// remote-action (12) exits: the board prints none of them, which is the
+/// whole reason the alleyway at 1/405 looks like a dead end, the Newhaven
+/// ferry looks like a dock, and a lever room looks like a corridor's end.
 fn listed(room: &crate::graph::GraphRoom) -> BTreeSet<Direction> {
     crate::graph::DIRECTIONS
         .iter()

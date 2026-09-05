@@ -1237,9 +1237,42 @@ impl Navigator {
     /// forced.
     pub fn localize_view(&self, at: RoomId, seen: &crate::events::RoomView) -> Option<RoomId> {
         // A one-hop answer is still the best answer when it exists: it
-        // needs no disambiguation and cannot be fooled by a twin.
-        if let Some(near) = self.localize(at, &seen.name) {
-            return Some(near);
+        // needs no disambiguation and cannot be fooled by a twin far
+        // away. It CAN be fooled by a twin next door -- the Crypt's two
+        // "Crypt, Small Chamber" rooms are one flight of stairs apart,
+        // and a look from the lower one used to answer the upper one,
+        // so `/go` routed from a floor above and stepped `d` into the
+        // ground (live, test.raw 2026-09-05). When more than one room in
+        // reach carries the name, the exits on the block decide; the
+        // name alone decides only when it names one room.
+        let near: Vec<RoomId> = self
+            .graph
+            .room(at)
+            .into_iter()
+            .flat_map(|r| r.exits.iter().flatten().map(|e| e.dest))
+            .chain([at])
+            .filter(|&id| self.graph.room(id).is_some_and(|r| r.name == seen.name))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        match near.as_slice() {
+            [only] => return Some(*only),
+            [] => {}
+            several => {
+                let observed = crate::lost::observed(seen);
+                let fits: Vec<RoomId> = several
+                    .iter()
+                    .copied()
+                    .filter(|id| {
+                        self.graph
+                            .room(*id)
+                            .is_some_and(|r| crate::lost::matches(r, &observed))
+                    })
+                    .collect();
+                if let [only] = fits.as_slice() {
+                    return Some(*only);
+                }
+            }
         }
         match crate::lost::candidates(&self.graph, seen).as_slice() {
             [only] => Some(*only),
