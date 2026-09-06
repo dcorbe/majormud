@@ -1861,7 +1861,7 @@ async fn farm_loop(
     // purse still over the mark judges the same way at the next stop
     // and would walk the character to the same bank for the same
     // nothing, every stop, forever.
-    let bank_cfg = session.profile().bank.clone();
+    let bank_cfg = session.profile().bank;
     let mut gate = crate::bank::BankGate::new();
     if bank_cfg.auto_deposit
         && let Some(reading) = crate::bank::Reading::of(&crate::bank::read_inventory(session).await)
@@ -3101,7 +3101,7 @@ async fn farm_stop(
     // rooms the graph mislabels.
     let mut was_blind_this_visit = false;
     casts.new_visit();
-    let username = session.profile().username.clone();
+    let username = session.profile().username;
     let backoff = Duration::from_millis(cfg.slowdown_backoff_ms);
     let poke_after = Duration::from_millis(cfg.idle_poke_ms);
 

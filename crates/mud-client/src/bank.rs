@@ -513,7 +513,7 @@ pub async fn run_bank(
     };
     let mut clock = crate::world::RoundClock::new();
     let mut stats = FarmStats::default();
-    let bank = session.profile().bank.clone();
+    let bank = session.profile().bank;
     let end = errand(
         session,
         &nav,

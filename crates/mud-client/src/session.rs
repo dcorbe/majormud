@@ -177,6 +177,8 @@ enum Cmd {
     /// Unpaced raw bytes (telnet negotiation replies, FSD keystrokes).
     /// Excluded from correlation: not line-shaped, never echoed as one.
     Raw(Vec<u8>),
+    /// Shut the socket's write side and stop the writer.
+    Close,
 }
 
 /// How long the correlator waits on an unanswered command before its
@@ -331,10 +333,21 @@ impl Switch {
 pub struct Session {
     cmd_tx: mpsc::UnboundedSender<Cmd>,
     shared: Arc<Shared>,
-    events_tx: broadcast::Sender<Correlated>,
-    raw_tx: broadcast::Sender<Vec<u8>>,
+    /// `None` once `close` has dropped it. Held behind a lock rather
+    /// than as a bare `Sender` because a broadcast channel only reports
+    /// `Closed` to its receivers once every sender clone is gone — the
+    /// reader task's own clone dies with it on abort, but this one, kept
+    /// so `events` can mint fresh subscribers for the whole life of the
+    /// session, would otherwise outlive `close` and keep the stream open.
+    events_tx: Mutex<Option<broadcast::Sender<Correlated>>>,
+    /// Same reasoning as `events_tx`.
+    raw_tx: Mutex<Option<broadcast::Sender<Vec<u8>>>>,
     state_rx: watch::Receiver<GameState>,
-    profile: Profile,
+    profile: std::sync::RwLock<Profile>,
+    /// The reader task, so `close` can stop it. Dropping the read half
+    /// is what closes the socket for good once the writer has shut its
+    /// side.
+    reader: tokio::task::AbortHandle,
     next_id: AtomicU64,
     /// Current send-pacing interval in ms, shared with the writer task.
     /// See [`Session::set_pace`].
@@ -491,6 +504,11 @@ impl Session {
                             }
                             let _ = write_half.flush().await;
                         }
+                        Cmd::Close => {
+                            use tokio::io::AsyncWriteExt as _;
+                            let _ = write_half.shutdown().await;
+                            break;
+                        }
                     }
                 }
             });
@@ -498,7 +516,7 @@ impl Session {
 
         // Reader task: telnet -> capture -> raw broadcast -> parser ->
         // events/state; stripped text -> transcript + timing RX lines.
-        {
+        let reader = {
             let shared = Arc::clone(&shared);
             let events_tx = events_tx.clone();
             let raw_tx = raw_tx.clone();
@@ -581,16 +599,17 @@ impl Session {
                     t.write("RX", rx_line.trim_end_matches(['\r', '\n']));
                 }
                 shared.close();
-            });
-        }
+            })
+        };
 
         Ok(Session {
             cmd_tx,
             shared,
-            events_tx,
-            raw_tx,
+            events_tx: Mutex::new(Some(events_tx)),
+            raw_tx: Mutex::new(Some(raw_tx)),
             state_rx,
-            profile: profile.clone(),
+            profile: std::sync::RwLock::new(profile.clone()),
+            reader: reader.abort_handle(),
             next_id: AtomicU64::new(1),
             pace_ms,
             travel_fights: Switch::default(),
@@ -604,9 +623,32 @@ impl Session {
         })
     }
 
-    /// The profile this session was opened with.
-    pub fn profile(&self) -> &Profile {
-        &self.profile
+    /// The profile this session runs under. A clone: `/set` replaces it
+    /// with [`Session::set_profile`], and a job reads it when it starts.
+    pub fn profile(&self) -> Profile {
+        self.profile.read().expect("profile lock").clone()
+    }
+
+    /// Replace the profile. The next job start reads the new one. Nothing
+    /// running re-reads it.
+    pub fn set_profile(&self, profile: Profile) {
+        *self.profile.write().expect("profile lock") = profile;
+    }
+
+    /// Close the line: the writer shuts the socket's write side, the
+    /// reader stops so the read half drops, and every pending expect
+    /// wakes with the closed error. Idempotent.
+    ///
+    /// Also drops this session's own `events_tx`/`raw_tx` clones, not
+    /// just the reader task's: a broadcast channel only reports `Closed`
+    /// to its subscribers once every sender is gone, and these two
+    /// outlive the reader by design (see their doc on [`Session`]).
+    pub fn close(&self) {
+        let _ = self.cmd_tx.send(Cmd::Close);
+        self.reader.abort();
+        self.events_tx.lock().expect("events_tx lock").take();
+        self.raw_tx.lock().expect("raw_tx lock").take();
+        self.shared.close();
     }
 
     /// Retune send pacing on a live session. Takes effect from the next
@@ -776,13 +818,27 @@ impl Session {
         tr.text[start..].to_string()
     }
 
+    /// A fresh subscriber. After `close`, `events_tx` is gone: this
+    /// hands back a receiver over a channel whose sender was dropped on
+    /// the spot, so it reads as already closed rather than panicking.
     pub fn events(&self) -> broadcast::Receiver<Correlated> {
-        self.events_tx.subscribe()
+        self.events_tx
+            .lock()
+            .expect("events_tx lock")
+            .as_ref()
+            .map(|tx| tx.subscribe())
+            .unwrap_or_else(|| broadcast::channel(1).1)
     }
 
-    /// Raw post-telnet bytes, for terminal passthrough.
+    /// Raw post-telnet bytes, for terminal passthrough. Same closed-after-
+    /// `close` behaviour as [`Session::events`].
     pub fn raw(&self) -> broadcast::Receiver<Vec<u8>> {
-        self.raw_tx.subscribe()
+        self.raw_tx
+            .lock()
+            .expect("raw_tx lock")
+            .as_ref()
+            .map(|tx| tx.subscribe())
+            .unwrap_or_else(|| broadcast::channel(1).1)
     }
 
     pub fn state(&self) -> watch::Receiver<GameState> {
@@ -1127,3 +1183,4 @@ fn apply_event(state: &mut GameState, cor: &Correlated, now: Instant) -> bool {
     };
     changed || ticked
 }
+

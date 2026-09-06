@@ -177,7 +177,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     // probe's class/magictype skip (Task 5 of `one-path-to-content`).
     // Loaded ahead of the assist below, so its first build reads the
     // sheet's heal marks the same as every rebuild after it.
-    let (graph, nav, spawns, content) = finish_locator(locator(session.profile()), &session);
+    let (graph, nav, spawns, content) = finish_locator(locator(&session.profile()), &session);
     let durations = content.as_ref().map(|c| crate::views::spell_durations(c)).unwrap_or_default();
     // The assist: a bot that fights and loots, rests, heals and hides
     // BESIDE the operator while no farm runs. `/bot` toggles it; the
@@ -185,7 +185,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     // so its latches start clean.
     let mut assist: Option<crate::bot::Bot> = None;
     let mut assist_heal_state: Option<crate::sheet::HealState> = None;
-    let assist_config = session.profile().bot.clone().unwrap_or(crate::bot::BotConfig {
+    let assist_config = session.profile().bot.unwrap_or(crate::bot::BotConfig {
         // A profile without a [bot] table still gets a useful
         // assist: attack and loot are the whole point of asking.
         auto_combat: true,
@@ -456,7 +456,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                 note(&mut out, &match graph.as_ref() {
                                     None => vec![format!(
                                         "-- loop: no room database at {} --",
-                                        content_path(session.profile()).display()
+                                        content_path(&session.profile()).display()
                                     )],
                                     Some(g) => import_loop(g, std::path::Path::new(&file)),
                                 }.join("\n"))?;
@@ -501,7 +501,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                         // operator hunting the wrong bug.
                                         None => note(&mut out, &format!(
                                             "-- go: no room database at {} --",
-                                            content_path(session.profile()).display()
+                                            content_path(&session.profile()).display()
                                         ))?,
                                         Some(g) => match crate::go::resolve(g, here.confirmed(), &target) {
                                             Err(refusal) => note(&mut out, &refusal.lines().join("\n"))?,
@@ -544,7 +544,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                     match graph.as_ref() {
                                         None => note(&mut out, &format!(
                                             "-- bank: no room database at {} --",
-                                            content_path(session.profile()).display()
+                                            content_path(&session.profile()).display()
                                         ))?,
                                         Some(g) => {
                                             let started = start_bank(
@@ -569,7 +569,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                 match graph.as_ref() {
                                     None => note(&mut out, &format!(
                                         "-- where: no room database at {} --",
-                                        content_path(session.profile()).display()
+                                        content_path(&session.profile()).display()
                                     ))?,
                                     Some(g) => {
                                         let started = start_where(session.clone(), g.clone(), here.confirmed());
@@ -590,7 +590,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                     },
                                     _ => note(&mut out, &format!(
                                         "-- room: no room database at {} --",
-                                        content_path(session.profile()).display()
+                                        content_path(&session.profile()).display()
                                     ))?,
                                 }
                             }
@@ -737,7 +737,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                     },
                                     _ => note(&mut out, &format!(
                                         "-- map: no room database at {} --",
-                                        content_path(session.profile()).display()
+                                        content_path(&session.profile()).display()
                                     ))?,
                                 }
                             }
@@ -1623,7 +1623,7 @@ fn repaint(
 /// not a reason to drop the connection — being told "no [farm] table" and
 /// staying logged in is strictly better than being thrown out.
 fn start_farm(session: Arc<Session>, loop_name: Option<&str>) -> Result<Job, String> {
-    let profile = session.profile().clone();
+    let profile = session.profile();
     // A named loop replaces the circuit, not the policy: every knob in
     // the profile's [farm] table -- the hp gates, the dwell budgets, the
     // nav limits -- still applies to it. The library holds routes, not
@@ -1664,7 +1664,7 @@ fn start_roam(
     walls: crate::roam::Walls,
     here: crate::lost::Fix,
 ) -> Result<Job, String> {
-    let profile = session.profile().clone();
+    let profile = session.profile();
     let cfg = profile.farm.clone().unwrap_or_default();
     let graph = Arc::new(crate::graph::RoomGraph::load(&cfg.content)?);
     // Where the character stands is what the region is measured from, so
@@ -1764,7 +1764,7 @@ fn start_go(
     bot: crate::bot::BotConfig,
     walking: bool,
 ) -> Job {
-    let profile = session.profile().clone();
+    let profile = session.profile();
     let base = profile.farm.clone().unwrap_or_else(|| crate::farm::FarmConfig {
         // A profile with no [farm] table still gets a working `/go`; it
         // just needs to be told where the rooms live, and that is the
@@ -1817,7 +1817,7 @@ fn start_bank(
     bot: crate::bot::BotConfig,
     walking: bool,
 ) -> Job {
-    let profile = session.profile().clone();
+    let profile = session.profile();
     let base = profile.farm.clone().unwrap_or_else(|| crate::farm::FarmConfig {
         content: content_path(&profile),
         ..Default::default()

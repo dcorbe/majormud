@@ -51,7 +51,7 @@ pub async fn finish_creation(session: &Session) -> Result<(), ExpectError> {
     session.expect("Do you want to be Lawful?", t).await?;
     session.send("No");
     session.expect("[HP=", t).await?;
-    apply_evil_preference(session, session.profile()).await?;
+    apply_evil_preference(session, &session.profile()).await?;
     Ok(())
 }
 

@@ -763,7 +763,7 @@ pub async fn run(
     let _screen = Screen::enter()?;
     let mut out = std::io::stdout();
     let mut buffered: Vec<u8> = Vec::new();
-    let username = session.profile().username.clone();
+    let username = session.profile().username;
     paint(&mut out, view)?;
 
     loop {

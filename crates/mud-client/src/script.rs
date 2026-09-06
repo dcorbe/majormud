@@ -103,7 +103,7 @@ fn build_mud_api(
             "login",
             lua.create_function(move |_, ()| {
                 let outcome = rt
-                    .block_on(dialect::login(&s, s.profile()))
+                    .block_on(dialect::login(&s, &s.profile()))
                     .map_err(mlua::Error::external)?;
                 Ok(match outcome {
                     LoginOutcome::InGame => "ingame",
