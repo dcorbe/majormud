@@ -784,17 +784,40 @@ impl Navigator {
         self
     }
 
-    /// Is picking a locked door worth attempting right now?
+    /// The pick modifier of the lock in the way, for [`crate::graph::pickable`].
+    /// A lever gate lost its modifier to the puzzle and reads 0, which
+    /// keeps today's rule for it: any Picklocks at all is worth a roll.
+    fn pick_modifier(requirement: &crate::graph::ExitRequirement) -> i32 {
+        match requirement {
+            crate::graph::ExitRequirement::Door { pick, .. }
+            | crate::graph::ExitRequirement::KeyDoor { pick, .. } => *pick,
+            _ => 0,
+        }
+    }
+
+    /// Is picking this lock worth attempting right now?
     ///
     /// Two independent vetoes, either one enough to refuse: the
-    /// character may simply have no Picklocks (`capabilities.picklocks`,
-    /// read off the `stat` sheet — see [`crate::session::Session::stats`]
-    /// — rather than an operator-managed switch), or a fence may forbid
-    /// it regardless of skill (see [`Navigator::fenced`]). A character
-    /// with the skill and no fence still just fails the roll sometimes —
-    /// that is the board's own dice, not this gate.
-    fn can_pick(&self) -> bool {
-        self.capabilities.picklocks > 0 && !self.picking_fenced_off
+    /// formula may say the character cannot pick this modifier at all
+    /// (`capabilities.picklocks`, read off the `stat` sheet, see
+    /// [`crate::session::Session::stats`], against the lock's own
+    /// modifier), or a fence may forbid it regardless of skill (see
+    /// [`Navigator::fenced`]). A character the formula allows still
+    /// just fails the roll sometimes, that is the board's own dice, not
+    /// this gate.
+    fn can_pick(&self, modifier: i32) -> bool {
+        crate::graph::pickable(modifier, self.capabilities.picklocks) && !self.picking_fenced_off
+    }
+
+    /// The name to say in `use <key> <direction>`: the key's row in the
+    /// item table, only when the pack holds it. `None` means there is
+    /// nothing to use and the lock is what remains.
+    fn key_name(&self, key: mud_core::content::ItemId) -> Option<String> {
+        let pack = self.capabilities.pack.as_ref()?;
+        if !pack.has(key) {
+            return None;
+        }
+        pack.content().items.get(&key).map(|item| item.name.clone())
     }
 
     /// The route this walk is allowed to take.
@@ -1535,6 +1558,56 @@ impl Navigator {
             StepEvent::DoorBlocked => {}
         }
 
+        // A key door with the key on the ring. `use <key> <direction>`
+        // answers with the same unlocked line a pick does and the door
+        // still wants its open. The reply is unattributed, so it is
+        // read the way a lever phrase is. The key may have been spent,
+        // 37 shipped keys have one use, so the pack is re-read from
+        // the board before routing trusts it again.
+        if let crate::graph::ExitRequirement::KeyDoor { key, .. } = requirement {
+            if let Some(name) = self.key_name(*key) {
+                let command = format!("use {name} {}", mud_core::text::direction_shown(step));
+                let answer = self
+                    .ask(session, &command, Some(DOOR_UNLOCKED), guard, armed)
+                    .await?;
+                // Clear what the use queued so the open below is
+                // answered by its own lines, and show every event to
+                // the guard on the way out, exactly as after a plan.
+                crate::session::drain(events, |ev| {
+                    *armed = armed.take().or_else(|| guard.on_event(&ev.event));
+                });
+                if let Some(interrupt) = armed.take() {
+                    return Err(NavErrorKind::Interrupted(interrupt));
+                }
+                if answer == Answer::Replied {
+                    self.read_purse(session, events, guard, armed).await?;
+                    let opened = session.send(&format!("open {dir}"));
+                    return match self.wait_room(events, guard, armed, opened, sneak_seen).await? {
+                        StepEvent::DoorYielded => {
+                            let again = session.send(dir);
+                            self.arrival(
+                                here, expected, BlindContext::AfterMove, events, guard, armed,
+                                again, sneak_seen,
+                            )
+                            .await
+                            .map(StepOutcome::Arrived)
+                        }
+                        StepEvent::CombatBlocked => Err(NavErrorKind::Interrupted(Interrupt::Attacked {
+                            by: "combat".into(),
+                        })),
+                        // Unlocked and still refusing to open is not
+                        // something the key can help with.
+                        _ => Err(NavErrorKind::DoorLocked {
+                            dir: dir.to_string(),
+                            tried: "used the key, but the door would not open".into(),
+                        }),
+                    };
+                }
+                // The key did nothing here. The lock is the story
+                // again, and picking and bashing below get their turn.
+            }
+        }
+
         // A lever on a gate toggles its lock, mud-core's
         // `remote_gate_toggle`, so a locked gate the graph calls a
         // puzzle gets its lever pulled before any pick or bash is spent
@@ -1581,7 +1654,8 @@ impl Navigator {
         // on a type-7 lock that wanted Picklocks and was never going to
         // yield to force. A character without the skill just fails the
         // roll, which costs commands rather than health.
-        if self.can_pick() {
+        let modifier = Self::pick_modifier(requirement);
+        if self.can_pick(modifier) {
             let mut rolls = 0u32;
             while rolls < PICK_RETRIES {
                 // Same reasoning as the bash loop: the guard IS the
@@ -1644,12 +1718,13 @@ impl Navigator {
         }
 
         if !self.bash_doors {
+            let key_door = matches!(requirement, crate::graph::ExitRequirement::KeyDoor { .. });
             return Err(NavErrorKind::DoorLocked {
                 dir: dir.to_string(),
-                tried: if self.can_pick() {
-                    format!("{PICK_RETRIES} picks, bashing off")
-                } else {
-                    "can't pick, bashing off".into()
+                tried: match (self.can_pick(modifier), key_door) {
+                    (true, _) => format!("{PICK_RETRIES} picks, bashing off"),
+                    (false, true) => "no key, can't pick, bashing off".into(),
+                    (false, false) => "can't pick, bashing off".into(),
                 },
             });
         }
@@ -2229,7 +2304,8 @@ impl Navigator {
     /// this is the reading the toll learner compares before and after a
     /// crossing. Bounded by the same step deadline as a walk step: an
     /// `i` that never answers is exactly as informative as a step that
-    /// never lands.
+    /// never lands. The same `i` reply refreshes the session's pack,
+    /// which is why a key use reads the purse it does not need.
     async fn read_purse(
         &self,
         session: &Session,
