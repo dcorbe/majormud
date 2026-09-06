@@ -9,6 +9,7 @@ use crate::dialect::Target;
 use crate::farm::FarmConfig;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Profile {
     pub target: Target,
     pub host: String,
@@ -61,6 +62,26 @@ const RENAMED_KEYS: [(&str, &str); 4] = [
     ("heal_spells", "minor_heal_spell and major_heal_spell"),
 ];
 
+impl Default for Profile {
+    /// What the lobby starts from: a telnet port and nothing else. The
+    /// host is empty on purpose, so nothing dials until `/connect` or
+    /// `/set host` names one.
+    fn default() -> Self {
+        Profile {
+            target: Target::default(),
+            host: String::new(),
+            port: 23,
+            username: String::new(),
+            password: String::new(),
+            pace_ms: None,
+            disable_evil_warnings: false,
+            bot: None,
+            farm: None,
+            bank: crate::bank::BankConfig::default(),
+        }
+    }
+}
+
 impl Profile {
     /// Read and parse a profile, reporting renamed keys on stderr.
     ///
@@ -96,4 +117,14 @@ impl Profile {
             },
         }
     }
+
+    /// A headless command has no lobby to wait in. A profile that names
+    /// no host is refused before anything dials.
+    pub fn require_host(&self) -> Result<(), String> {
+        if self.host.is_empty() {
+            return Err("no host set".into());
+        }
+        Ok(())
+    }
 }
+

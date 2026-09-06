@@ -15,8 +15,9 @@ use serde::{Deserialize, Serialize};
 use crate::profile::Profile;
 use crate::session::{ExpectError, Session};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Target {
+    #[default]
     #[serde(rename = "mbbs")]
     MbbsEmu,
     #[serde(rename = "rust")]
@@ -198,3 +199,4 @@ pub fn realm_presence(ev: &crate::events::Event) -> Option<bool> {
         _ => None,
     }
 }
+

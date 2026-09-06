@@ -383,3 +383,31 @@ fn a_bank_room_that_is_not_an_id_is_refused() {
     assert!(err.contains("[bank].at"), "{err}");
     assert!(BankConfig::default().validate().is_ok());
 }
+
+/// The lobby starts from nothing and fills the profile in with `/set`,
+/// so an empty document has to be a profile.
+#[test]
+fn an_empty_document_is_the_default_profile() {
+    let p: Profile = toml::from_str("").unwrap();
+    assert_eq!(p, Profile::default());
+    assert_eq!(p.target, Target::MbbsEmu);
+    assert_eq!(p.port, 23);
+    assert!(p.host.is_empty());
+    assert!(p.username.is_empty());
+    assert!(p.bot.is_none());
+    assert!(p.farm.is_none());
+}
+
+/// A headless command has no lobby to wait in, so it refuses a profile
+/// that names no host instead of dialling nowhere.
+#[test]
+fn a_profile_without_a_host_is_refused_by_require_host() {
+    let empty = Profile::default();
+    assert!(empty.require_host().is_err());
+    let named = Profile {
+        host: "127.0.0.1".into(),
+        ..Profile::default()
+    };
+    assert!(named.require_host().is_ok());
+}
+

@@ -88,6 +88,10 @@ fn run_command(
             return ExitCode::FAILURE;
         }
     };
+    if let Err(e) = profile.require_host() {
+        eprintln!("profile {}: {e}", profile_path.display());
+        return ExitCode::FAILURE;
+    }
     let capture = capture.map(|base| Capture {
         raw: base.with_extension("raw"),
         timing: Some(append_to_stem(base, "_timing.log")),
@@ -350,6 +354,10 @@ fn farm_command(
             return ExitCode::FAILURE;
         }
     };
+    if let Err(e) = profile.require_host() {
+        eprintln!("profile {}: {e}", profile_path.display());
+        return ExitCode::FAILURE;
+    }
     let Some(farm_config) = profile.farm.clone() else {
         eprintln!(
             "profile {} has no [farm] table: nothing to patrol",
@@ -629,4 +637,5 @@ fn append_to_stem(base: &std::path::Path, suffix: &str) -> std::path::PathBuf {
     s.push(suffix);
     std::path::PathBuf::from(s)
 }
+
 
