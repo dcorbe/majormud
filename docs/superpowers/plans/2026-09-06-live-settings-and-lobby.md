@@ -875,7 +875,9 @@ fn the_listing_walks_keys_in_file_order_and_renders_toml() {
         vec![
             ("bot.rest_at_percent".to_string(), "60".to_string()),
             ("bot.rest_until_percent".to_string(), "95".to_string()),
-        ]
+            ("bot.rest_command".to_string(), "\"rest\"".to_string()),
+        ],
+        "a prefix pattern takes every key it starts, rest_command included"
     );
     let all = s.list("");
     assert_eq!(all.len(), KEYS.len());
@@ -1041,7 +1043,7 @@ fn a_unique_key_completes_after_set() {
     let c = complete("/set bot.ign", 12, VERBS).unwrap();
     assert_eq!((c.start, c.end, c.text.as_str()), (5, 12, "bot.ignore_coins "));
     assert!(c.list.is_empty());
-    let c = complete("/unset bank.a", 13, VERBS).unwrap();
+    let c = complete("/unset bank.at", 14, VERBS).unwrap();
     assert_eq!(c.text, "bank.at ");
 }
 
@@ -1053,7 +1055,8 @@ fn several_candidates_grow_to_the_common_prefix_and_then_list() {
         c.list,
         vec![
             "bot.rest_at_percent".to_string(),
-            "bot.rest_until_percent".to_string()
+            "bot.rest_until_percent".to_string(),
+            "bot.rest_command".to_string()
         ]
     );
     let c = complete("/set bot.min", 12, VERBS).unwrap();
@@ -1778,7 +1781,7 @@ fn a_bank_key_does_not_touch_the_assist() {
 fn a_listing_is_one_row_per_key() {
     let mut s = Settings::default();
     let applied = apply_settings(&KeyOutcome::SetList { pattern: "bot.rest".into() }, &mut s).unwrap();
-    assert_eq!(applied.note.lines().count(), 2, "{}", applied.note);
+    assert_eq!(applied.note.lines().count(), 3, "{}", applied.note);
     assert!(applied.note.lines().all(|l| l.contains(" = ")));
     assert!(!applied.profile_changed);
     let none = apply_settings(&KeyOutcome::SetList { pattern: "zebra".into() }, &mut s).unwrap();
