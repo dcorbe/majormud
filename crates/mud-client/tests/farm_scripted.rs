@@ -2414,10 +2414,85 @@ async fn an_unreachable_bank_switches_deposits_off_without_ending_the_run() {
     );
 }
 
-/// A roam whose fence walls the bank off. The character still has to
-/// put its coin down, so the errand crosses the fence, and it walks
-/// back into the region afterwards, because the roam picks its next
-/// room from inside the fence.
+/// The corridor with the bank a level below Inner Ward. Down and up
+/// leave the plane a roam is confined to, so the bank is outside every
+/// roam of this corridor and there is no fenced way back from it: the
+/// errand has to walk both ways itself.
+fn corridor_with_a_bank_below() -> Arc<RoomGraph> {
+    let mut start = GraphRoom {
+        name: "Guard Post".into(),
+        exits: Default::default(),
+        light: 0,
+        ..Default::default()
+    };
+    start.exits[Direction::North as usize] = Some(ExitEdge {
+        dest: MIDWAY,
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::None,
+    });
+    let mut midway = GraphRoom {
+        name: "Inner Ward".into(),
+        exits: Default::default(),
+        light: 0,
+        ..Default::default()
+    };
+    midway.exits[Direction::North as usize] = Some(ExitEdge {
+        dest: STOP,
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::None,
+    });
+    midway.exits[Direction::South as usize] = Some(ExitEdge {
+        dest: START,
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::None,
+    });
+    midway.exits[Direction::Down as usize] = Some(ExitEdge {
+        dest: BANK,
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::None,
+    });
+    let mut stop = GraphRoom {
+        name: "Keep".into(),
+        exits: Default::default(),
+        light: 0,
+        ..Default::default()
+    };
+    stop.exits[Direction::South as usize] = Some(ExitEdge {
+        dest: MIDWAY,
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::None,
+    });
+    let mut bank = GraphRoom {
+        name: "Bank of Godfrey".into(),
+        exits: Default::default(),
+        light: 0,
+        shop: 8,
+        ..Default::default()
+    };
+    bank.exits[Direction::Up as usize] = Some(ExitEdge {
+        dest: MIDWAY,
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::None,
+    });
+    Arc::new(RoomGraph::from_rooms(vec![
+        (START, start),
+        (MIDWAY, midway),
+        (STOP, stop),
+        (BANK, bank),
+    ]))
+}
+
+/// A roam whose fence leaves the bank outside it. The character still
+/// has to put its coin down, so the errand crosses the fence, and it
+/// walks back into the region afterwards: the roam picks its next room
+/// from inside the fence, and from the bank there is no room inside the
+/// fence it can reach at all.
 #[tokio::test]
 async fn a_roam_leaves_its_fence_to_bank_and_walks_back() {
     use mud_client::roam::Walls;
@@ -2440,7 +2515,7 @@ async fn a_roam_leaves_its_fence_to_bank_and_walks_back() {
             "n",
             format!(
                 "\r\nn{}",
-                room_block_items("Inner Ward", &["1200 copper farthings"], "north south east")
+                room_block_items("Inner Ward", &["1200 copper farthings"], "north south down")
             ),
         ),
         (
@@ -2448,8 +2523,9 @@ async fn a_roam_leaves_its_fence_to_bank_and_walks_back() {
             "\r\nget copper\r\nYou picked up 1200 copper farthings\r\n[HP=30/MA=0]:".into(),
         ),
         ("i", carrying_1200.into()),
-        // East is walled off, so only an unfenced walk gets here.
-        ("e", format!("\r\ne{}", room_block("Bank of Godfrey", None, "west"))),
+        // Down leaves the plane the roam is fenced to, so only an
+        // unfenced walk gets here.
+        ("d", format!("\r\nd{}", room_block("Bank of Godfrey", None, "up"))),
         ("i", carrying_1200.into()),
         (
             "deposit 1200",
@@ -2460,8 +2536,10 @@ async fn a_roam_leaves_its_fence_to_bank_and_walks_back() {
             "\r\ni\r\nYou are carrying nothing.\r\nYou have no keys.\r\nWealth: 0 copper farthings\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
                 .into(),
         ),
-        // Back inside the fence, to the room the errand left.
-        ("w", format!("\r\nw{}", room_block("Inner Ward", None, "north south east"))),
+        // Back inside the fence, to the room the errand left. Nothing
+        // else can walk this: the rotation cannot see a region room
+        // from the bank at all.
+        ("u", format!("\r\nu{}", room_block("Inner Ward", None, "north south down"))),
         // And on with the roam: Guard Post is the next region room.
         ("s", format!("\r\ns{}", room_block("Guard Post", None, "north"))),
     ])
@@ -2470,7 +2548,7 @@ async fn a_roam_leaves_its_fence_to_bank_and_walks_back() {
     mud_client::farm::probe_sheet(&session, None).await;
     session.set_content(Arc::new(content_with_bank()));
 
-    let graph = corridor_with_bank();
+    let graph = corridor_with_a_bank_below();
     let cfg = FarmConfig {
         loops: 0,
         max_seconds: 8,
@@ -2486,9 +2564,9 @@ async fn a_roam_leaves_its_fence_to_bank_and_walks_back() {
         max_hp: 30,
         ..BotConfig::default()
     };
-    // Keep is walled off too, so the region is Guard Post and Inner
-    // Ward and the roam simply alternates between them once the errand
-    // is done.
+    // Keep is walled off, so the region is Guard Post and Inner Ward
+    // and the roam simply alternates between them once the errand is
+    // done. The bank is outside the region whether it is walled or not.
     let plan = FarmPlan::roaming(START, Walls::new([BANK, STOP]), &graph)
         .expect("a roam of two rooms");
     let (end, stats) = match tokio::time::timeout(
@@ -2509,9 +2587,9 @@ async fn a_roam_leaves_its_fence_to_bank_and_walks_back() {
     assert_eq!(stats.deposited_farthings, 1200, "{stats:?}");
 
     let log = received.lock().unwrap().clone();
-    let east = log
+    let down = log
         .iter()
-        .position(|l| l == "e")
+        .position(|l| l == "d")
         .unwrap_or_else(|| panic!("the errand never left the fence: {log:?}"));
     let deposit = log
         .iter()
@@ -2519,11 +2597,11 @@ async fn a_roam_leaves_its_fence_to_bank_and_walks_back() {
         .unwrap_or_else(|| panic!("no deposit went out: {log:?}"));
     let back = log
         .iter()
-        .position(|l| l == "w")
+        .position(|l| l == "u")
         .unwrap_or_else(|| panic!("the roam stayed at the bank: {log:?}"));
-    assert!(east < deposit && deposit < back, "{log:?}");
+    assert!(down < deposit && deposit < back, "{log:?}");
     assert!(
-        !log[back..].iter().any(|l| l == "e"),
+        !log[back..].iter().any(|l| l == "d"),
         "the roam went back out of the fence: {log:?}"
     );
     assert_eq!(
