@@ -1581,23 +1581,14 @@ impl Navigator {
                 }
                 if answer == Answer::Replied {
                     self.read_purse(session, events, guard, armed).await?;
-                    let opened = session.send(&format!("open {dir}"));
-                    return match self.wait_room(events, guard, armed, opened, sneak_seen).await? {
-                        StepEvent::DoorYielded => {
-                            let again = session.send(dir);
-                            self.arrival(
-                                here, expected, BlindContext::AfterMove, events, guard, armed,
-                                again, sneak_seen,
-                            )
-                            .await
-                            .map(StepOutcome::Arrived)
-                        }
-                        StepEvent::CombatBlocked => Err(NavErrorKind::Interrupted(Interrupt::Attacked {
-                            by: "combat".into(),
-                        })),
+                    return match self
+                        .open_then_step(dir, here, expected, session, events, guard, armed, sneak_seen)
+                        .await?
+                    {
+                        Some(outcome) => Ok(outcome),
                         // Unlocked and still refusing to open is not
                         // something the key can help with.
-                        _ => Err(NavErrorKind::DoorLocked {
+                        None => Err(NavErrorKind::DoorLocked {
                             dir: dir.to_string(),
                             tried: "used the key, but the door would not open".into(),
                         }),
@@ -1627,23 +1618,13 @@ impl Navigator {
             if let Some(interrupt) = armed.take() {
                 return Err(NavErrorKind::Interrupted(interrupt));
             }
-            let opened = session.send(&format!("open {dir}"));
-            match self.wait_room(events, guard, armed, opened, sneak_seen).await? {
-                StepEvent::DoorYielded => {
-                    let again = session.send(dir);
-                    return self
-                        .arrival(here, expected, BlindContext::AfterMove, events, guard, armed, again, sneak_seen)
-                        .await
-                        .map(StepOutcome::Arrived);
-                }
-                StepEvent::CombatBlocked => {
-                    return Err(NavErrorKind::Interrupted(Interrupt::Attacked {
-                        by: "combat".into(),
-                    }));
-                }
-                // Still locked after the lever: the lock is the story
-                // again, and picking and bashing below get their turn.
-                _ => {}
+            // Still locked after the lever: the lock is the story
+            // again, and picking and bashing below get their turn.
+            if let Some(outcome) = self
+                .open_then_step(dir, here, expected, session, events, guard, armed, sneak_seen)
+                .await?
+            {
+                return Ok(outcome);
             }
         }
 
@@ -1669,20 +1650,14 @@ impl Navigator {
                     // and only then walk -- sending the direction here
                     // walks into a closed door.
                     StepEvent::DoorUnlocked => {
-                        let opened = session.send(&format!("open {dir}"));
-                        return match self.wait_room(events, guard, armed, opened, sneak_seen).await? {
-                            StepEvent::DoorYielded => {
-                                let again = session.send(dir);
-                                self.arrival(
-                                    here, expected, BlindContext::AfterMove, events, guard, armed,
-                                    again, sneak_seen,
-                                )
-                                .await
-                                .map(StepOutcome::Arrived)
-                            }
+                        return match self
+                            .open_then_step(dir, here, expected, session, events, guard, armed, sneak_seen)
+                            .await?
+                        {
+                            Some(outcome) => Ok(outcome),
                             // Unlocked and still refusing to open is not
                             // something more picking will help with.
-                            _ => Err(NavErrorKind::DoorLocked {
+                            None => Err(NavErrorKind::DoorLocked {
                                 dir: dir.to_string(),
                                 tried: "picked the lock, but the door would not open".into(),
                             }),
@@ -1803,6 +1778,42 @@ impl Navigator {
             dir: dir.to_string(),
             tried: format!("did not yield to {BASH_RETRIES} bashes"),
         })
+    }
+
+    /// The `open` a freshly unlocked door still wants, and the step
+    /// through it.
+    ///
+    /// Every way of unlocking a door leaves it shut, so a pick, a key
+    /// and a lever all end in the same two commands: `open <dir>`, then
+    /// the direction once the door yields. `Some` is the step, taken
+    /// and read. `None` is an open the door refused, and the caller
+    /// decides what that means: a spent pick and a spent key report it,
+    /// a lever gate falls through to the lock instead.
+    #[allow(clippy::too_many_arguments)]
+    async fn open_then_step(
+        &self,
+        dir: &str,
+        here: &str,
+        expected: &str,
+        session: &Session,
+        events: &mut tokio::sync::broadcast::Receiver<crate::correlate::Correlated>,
+        guard: &mut impl TravelGuard,
+        armed: &mut Option<Interrupt>,
+        sneak_seen: &mut SneakSeen,
+    ) -> Result<Option<StepOutcome>, NavErrorKind> {
+        let opened = session.send(&format!("open {dir}"));
+        match self.wait_room(events, guard, armed, opened, sneak_seen).await? {
+            StepEvent::DoorYielded => {
+                let again = session.send(dir);
+                self.arrival(here, expected, BlindContext::AfterMove, events, guard, armed, again, sneak_seen)
+                    .await
+                    .map(|seen| Some(StepOutcome::Arrived(seen)))
+            }
+            StepEvent::CombatBlocked => Err(NavErrorKind::Interrupted(Interrupt::Attacked {
+                by: "combat".into(),
+            })),
+            _ => Ok(None),
+        }
     }
 
     /// Reveal a hidden exit (type 6) the board has just denied, then walk
