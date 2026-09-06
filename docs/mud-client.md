@@ -336,9 +336,11 @@ case where no room block is coming at all.
 
 - **`step_timeout_ms`** (15000) — per-step arrival deadline.
 - **`bash_doors`** (true) — fall back to bashing a door that `open` will
-  not shift. Bashing costs HP (*"You take %d damage for bashing the
-  door!"*) and needs a weapon, so it is a switch; turning it off makes a
-  locked door a hard stop.
+  not shift and the character cannot pick. Bashing costs HP (*"You take
+  %d damage for bashing the door!"*) and needs a weapon, so it is a
+  switch. Turning it off makes a locked door the character cannot pick a
+  wall: routing goes around it, and a route that has no way around says
+  `no route`.
 
 ## Full-screen board screens (`train stats`)
 
@@ -496,20 +498,19 @@ long way instead, and a room the walls cut off entirely is simply
 unreachable — `no route`, which is what you asked for.
 
 **Doors are outside a roam, all of them**, whether or not you marked
-them. The client has no key handling of any kind — keys in the inventory
-are not parsed, exits' key ids are not read, and there is no `unlock`
-verb — so its entire repertoire for a shut door is `open`, then bash
-until a counter runs out. Live on cwgaming, 2026-08-03: the board
-answered `open n` with *"The door is locked."* and the walk sent **88
-bashes across four approaches, spending 36 HP of a 75-HP character** on a
-type-7 lock that wanted Picklocks and was never going to yield to force.
+them. Live on cwgaming, 2026-08-03: the board answered `open n` with
+*"The door is locked."* and the walk sent **88 bashes across four
+approaches, spending 36 HP of a 75-HP character** on a type-7 lock that
+wanted Picklocks and was never going to yield to force. A roam always
+has somewhere else to be, so skipping a door costs nothing and trying
+one is paid for in health. A patrol with a circuit is a different
+bargain, its stops were named by you and a door in the way has to be
+opened, so `[farm.nav].bash_doors` still governs there.
 
-A roam always has somewhere else to be, so skipping a door costs nothing
-and trying one is paid for in health. A patrol with a circuit is a
-different bargain — its stops were named by you and a door in the way has
-to be opened — so `[farm.nav].bash_doors` still governs there and is
-untouched. This is a roam rule, and a stopgap: it goes away when there is
-something better than force to offer a lock.
+**Item gates are inside a roam** for the character carrying the item
+and a wall for one who is not. The region is flooded with the
+character's own pack, the same way it is with the character's own
+levers.
 
 **Buttons and levers are inside a roam.** The area is flooded with the
 character's own capabilities, so a passage this character can open is
@@ -632,6 +633,50 @@ command per step against flood control.
 
 Both direction forms work (`open n` and `open north`, verified live).
 
+### Locks
+
+Every door and gate carries a lock state and a pick modifier in the room
+record, and the graph reads both. 416 of the 449 shipped type 7 doors
+are locked in the data. The pick roll is `theft.md` §8.2: the skill
+must be at least 1 and `genrdn(0,100) < modifier + Picklocks`. So a lock
+is pickable at all only when `Picklocks >= 1` and `modifier + Picklocks
+> 0`. Below that line the pick fails every time, and the walk never
+spends a roll there.
+
+Routing prices a lock by that formula. A door the character can pick
+costs the door plus the expected rolls, capped at the price of a
+searchable hidden exit. A lock it cannot pick costs the door when
+`bash_doors` is on, since force is a separate roll, and is a wall when
+it is off. The lock state is the boot state: a lock with a positive
+modifier never re-locks once picked, so a door the data calls locked can
+stand open all day. The walk tries `open` first regardless.
+
+## Keys and item gates
+
+A type 2 door wants a key, one of 88 key items, and the key ring is read
+off the `i` reply along with the pack. With the key on the ring the door
+is priced like any other and the walk opens it: `open e` says *"The door
+is locked."*, then `use black star key east` with the key's full name
+and the full direction word answers *"You successfully unlocked the
+door."*, the same line a pick gives, and `open e` then opens it. Captured
+at the Black House on Slum Street, 2026-09-05. `unlock` is not a
+command. Most keys are spent by use, 37 of them on the first, so the
+pack is re-read from the board after every key use rather than updated
+by inference.
+
+Without the key the door is a lock like any other, priced and picked by
+the formula above, except that a key door nobody can pick is a wall
+whether or not bashing is on. A key the board does not accept at a door
+is answered with some other line, and the walk then treats the lock as
+the story again.
+
+A type 3 exit is passable only while carrying an item. 173 ship, 7 of
+them wanting nothing. Routing checks the pack and the walk takes it as a
+plain step. Without the item it is a wall.
+
+The bot picks up any key it sees on the floor that the ring lacks,
+`[bot].take_keys`, on by default.
+
 ## Buttons and levers
 
 Some passages open on a phrase. A room's type 12 exit slot is not an
@@ -730,9 +775,10 @@ while the feature does nothing.
 - `tests/bot.rs`, `tests/farm.rs` — the pure decision cores, no sockets.
 - `tests/nav.rs`, `tests/farm_live.rs`, `tests/live_server.rs` — against
   the in-process `mud-server`.
-- `tests/dialect.rs`, `tests/nav_doors.rs`, `tests/farm_scripted.rs` —
-  against scripted boards, for behaviour `mud-server` does not model (the
-  MBBSEmu login, the open/bash command family, spell healing).
+- `tests/dialect.rs`, `tests/nav_doors.rs`, `tests/nav_keys.rs`,
+  `tests/farm_scripted.rs` — against scripted boards, for behaviour
+  `mud-server` does not model (the MBBSEmu login, the open/bash command
+  family, spell healing).
 - `tests/sheet.rs` — the spellbook, and the three spell machines
   (lighting, healing, buff upkeep) as pure state.
 - `tests/bot_corpus.rs`, `tests/farm_corpus.rs`, `tests/parse.rs` — replay
