@@ -249,6 +249,54 @@ fn a_save_replaces_the_file_and_leaves_no_temporary() {
     assert!(!temp.exists(), "the temporary is renamed away, not left behind");
 }
 
+/// The rename installs a new file, and the profile holds a password in
+/// plain text, so the mode the operator set has to come with it.
+#[test]
+#[cfg(unix)]
+fn a_save_keeps_the_files_mode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = scratch("private.toml");
+    std::fs::write(&path, COMMENTED).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let mut s = Settings::load(&path).unwrap();
+    s.set("bot.rest_at_percent", "45").unwrap();
+    s.save(None).unwrap();
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "the password in it is still nobody else's");
+}
+
+/// A write that cannot happen reports the profile, which is the file
+/// the operator named, and takes the temporary with it rather than
+/// leaving a half written sibling next to a good profile.
+#[test]
+#[cfg(unix)]
+fn a_failed_write_reports_the_profile_and_drops_the_temporary() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("blocked");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("profile.toml");
+    let temp = dir.join("profile.toml.tmp");
+    std::fs::write(&path, COMMENTED).unwrap();
+    std::fs::write(&temp, "half a document\n").unwrap();
+    std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o400)).unwrap();
+    // Root ignores the mode bits, and then the test can say nothing.
+    if std::fs::write(&temp, "x").is_ok() {
+        return;
+    }
+    let mut s = Settings::parse(COMMENTED).unwrap();
+    s.set("port", "2400").unwrap();
+    let err = s.save(Some(&path)).unwrap_err();
+    assert!(
+        err.starts_with(&format!("{}: ", path.display())),
+        "the error names the profile, not the sibling: {err}"
+    );
+    assert!(!temp.exists(), "the temporary does not survive a failed write");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), COMMENTED);
+}
+
 /// What the rename buys: a save that cannot finish leaves the profile
 /// exactly as it was. A directory nobody may write to refuses the new
 /// file, where a write straight onto the target would have emptied it
@@ -276,6 +324,10 @@ fn a_failed_save_leaves_the_old_file_whole() {
     }
     assert!(result.is_err(), "the directory refuses the write");
     assert_eq!(after, COMMENTED, "the old profile is still whole");
+    assert!(
+        !dir.join("profile.toml.tmp").exists(),
+        "a failed write takes its temporary with it"
+    );
     assert!(s.dirty(), "nothing was saved, so the edit is still unsaved");
 }
 

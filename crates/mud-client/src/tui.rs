@@ -1400,6 +1400,18 @@ pub struct Applied {
     pub bot_changed: bool,
 }
 
+/// What one edit prints. Unsaved work is a fact about the settings and
+/// not about the command, so a `/set` that wrote the value a key already
+/// carried says nothing about saving: there is nothing to save.
+fn edit_note(settings: &crate::settings::Settings, key: &str) -> String {
+    let value = settings.value(key).unwrap_or_default();
+    if settings.dirty() {
+        format!("-- {key} = {value}, unsaved until /save --")
+    } else {
+        format!("-- {key} = {value} --")
+    }
+}
+
 /// Run one settings command against the settings. `None` when the
 /// outcome is not one. The note is ready to print.
 pub fn apply_settings(outcome: &KeyOutcome, settings: &mut crate::settings::Settings) -> Option<Applied> {
@@ -1426,10 +1438,7 @@ pub fn apply_settings(outcome: &KeyOutcome, settings: &mut crate::settings::Sett
         }
         KeyOutcome::Set { key, value } => match settings.set(key, value) {
             Ok(()) => Some(Applied {
-                note: format!(
-                    "-- {key} = {}, unsaved until /save --",
-                    settings.value(key).unwrap_or_default()
-                ),
+                note: edit_note(settings, key),
                 profile_changed: true,
                 bot_changed: key.starts_with("bot."),
             }),
@@ -1437,10 +1446,7 @@ pub fn apply_settings(outcome: &KeyOutcome, settings: &mut crate::settings::Sett
         },
         KeyOutcome::Unset { key } => match settings.unset(key) {
             Ok(()) => Some(Applied {
-                note: format!(
-                    "-- {key} = {}, unsaved until /save --",
-                    settings.value(key).unwrap_or_default()
-                ),
+                note: edit_note(settings, key),
                 profile_changed: true,
                 bot_changed: key.starts_with("bot."),
             }),

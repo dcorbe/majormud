@@ -1091,6 +1091,16 @@ fn set_changes_the_profile_and_says_so_unsaved() {
     assert!(applied.note.contains("bot.rest_at_percent = 45"), "{}", applied.note);
     assert!(applied.note.contains("unsaved"), "{}", applied.note);
     assert_eq!(s.profile().bot.as_ref().unwrap().rest_at_percent, 45);
+    // Nothing to save is nothing to say about saving.
+    let mut clean = Settings::parse("[bot]\nrest_at_percent = 60\n").unwrap();
+    let applied = apply_settings(
+        &KeyOutcome::Set { key: "bot.rest_at_percent".into(), value: "60".into() },
+        &mut clean,
+    )
+    .unwrap();
+    assert!(!clean.dirty(), "60 is what the document already said");
+    assert!(applied.note.contains("bot.rest_at_percent = 60"), "{}", applied.note);
+    assert!(!applied.note.contains("unsaved"), "{}", applied.note);
 }
 
 #[test]

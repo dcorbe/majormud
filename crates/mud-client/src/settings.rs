@@ -171,8 +171,17 @@ impl Settings {
         // hand-written file gone. The temporary is a sibling so the
         // rename stays on one filesystem, which is where it is atomic.
         let temp = temp_path(&path);
-        std::fs::write(&temp, self.doc.to_string())
-            .map_err(|e| format!("{}: {e}", temp.display()))?;
+        if let Err(e) = std::fs::write(&temp, self.doc.to_string()) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(format!("{}: {e}", path.display()));
+        }
+        // The rename installs a new file, so the target's own mode has
+        // to be carried onto it first. A profile chmod'd to 600 for the
+        // password it holds would otherwise come back readable by
+        // everyone on the machine.
+        if let Ok(meta) = std::fs::metadata(&path) {
+            let _ = std::fs::set_permissions(&temp, meta.permissions());
+        }
         if let Err(e) = std::fs::rename(&temp, &path) {
             let _ = std::fs::remove_file(&temp);
             return Err(format!("{}: {e}", path.display()));
