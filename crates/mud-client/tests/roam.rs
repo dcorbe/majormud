@@ -123,3 +123,34 @@ fn the_rotation_never_picks_a_room_it_cannot_reach() {
         None
     );
 }
+
+/// A guard post whose north exit wants the fork carried.
+fn gated_world() -> RoomGraph {
+    let mut post = room("Guard Post", &[]);
+    post.exits[Direction::North as usize] = Some(ExitEdge {
+        dest: VAULT,
+        exit_type: 3,
+        command: None,
+        requirement: ExitRequirement::ItemGate { item: FORK },
+    });
+    RoomGraph::from_rooms(vec![
+        (POST, post),
+        (VAULT, room("Vault", &[(Direction::South, POST)])),
+    ])
+}
+
+/// An item gate is inside a roam for the character carrying the item
+/// and a wall for one who is not. Doors stay outside either way.
+#[test]
+fn a_region_grows_through_an_item_gate_only_with_the_item() {
+    let graph = gated_world();
+    let walls = Walls::default();
+    assert_eq!(
+        region(&graph, POST, &walls, &with_fork()),
+        BTreeSet::from([POST, VAULT])
+    );
+    assert_eq!(
+        region(&graph, POST, &walls, &empty_handed()),
+        BTreeSet::from([POST])
+    );
+}
