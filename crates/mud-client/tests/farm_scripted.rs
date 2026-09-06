@@ -1995,13 +1995,18 @@ fn content_with_bank() -> mud_core::content::Content {
     c
 }
 
-/// A pile over the coin mark at the stop: the stop sweeps it, the
-/// runner reads the purse, the gate trips, and the run walks to the
-/// bank, reads the purse again, deposits, and reads it once more. The
-/// lap ends from the bank.
+/// A pile at the stop that lifts the weight class: the stop sweeps it,
+/// the runner reads the purse, the gate sees Light become Medium, and
+/// the run walks to the bank, reads the purse again, deposits, and
+/// reads it once more. The lap ends from the bank.
+///
+/// The crossing is measured against the reading the run took at its
+/// own start, so this only trips when that reading was taken. The
+/// count gate is off here for the same reason: it would trip on the
+/// purse alone and prove nothing about the run-start reading.
 #[tokio::test]
-async fn a_pile_over_the_mark_sends_the_run_to_the_bank() {
-    let carrying_1200 = "\r\ni\r\nYou are carrying 1200 copper farthings\r\nYou have no keys.\r\nWealth: 1200 copper farthings\r\nEncumbrance: 400/2400 - None [16%]\r\n[HP=30/MA=0]:";
+async fn a_pile_that_lifts_the_weight_class_sends_the_run_to_the_bank() {
+    let carrying_3900 = "\r\ni\r\nYou are carrying 3900 copper farthings\r\nYou have no keys.\r\nWealth: 3900 copper farthings\r\nEncumbrance: 1800/2400 - Medium [75%]\r\n[HP=30/MA=0]:";
     let (addr, received) = scripted_board(vec![
         (
             "inventory",
@@ -2011,10 +2016,11 @@ async fn a_pile_over_the_mark_sends_the_run_to_the_bank() {
         ("look", format!("\r\nlook{}", room_block("Guard Post", None, "north"))),
         // The gate seeds itself from a fresh `i` before the first leg:
         // the startup probe sends `inventory`, which the contents
-        // tracker never sees, so the run reads the purse itself.
+        // tracker never sees, so the run reads the purse itself. The
+        // character is already carrying coins, and is already Light.
         (
             "i",
-            "\r\ni\r\nYou are carrying nothing.\r\nYou have no keys.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+            "\r\ni\r\nYou are carrying 900 copper farthings\r\nYou have no keys.\r\nWealth: 900 copper farthings\r\nEncumbrance: 800/2400 - Light [33%]\r\n[HP=30/MA=0]:"
                 .into(),
         ),
         ("n", format!("\r\nn{}", room_block("Inner Ward", None, "north south east"))),
@@ -2022,36 +2028,43 @@ async fn a_pile_over_the_mark_sends_the_run_to_the_bank() {
             "n",
             format!(
                 "\r\nn{}",
-                room_block_items("Keep", &["1200 copper farthings"], "south")
+                room_block_items("Keep", &["3000 copper farthings"], "south")
             ),
         ),
         (
             "get copper",
-            "\r\nget copper\r\nYou picked up 1200 copper farthings\r\n[HP=30/MA=0]:".into(),
+            "\r\nget copper\r\nYou picked up 3000 copper farthings\r\n[HP=30/MA=0]:".into(),
         ),
         // No re-look scripted: the arrival block already proved the
         // stop holds no work, so the pump ends on the sweep. The board
         // answers strictly in order, so an entry nothing asks for would
         // wall off everything after it.
         // The stop is over. The runner reads the purse and the gate
-        // trips on 1200 coins.
-        ("i", carrying_1200.into()),
+        // sees the class it seeded with, Light, become Medium.
+        ("i", carrying_3900.into()),
         ("s", format!("\r\ns{}", room_block("Inner Ward", None, "north south east"))),
         ("e", format!("\r\ne{}", room_block("Bank of Godfrey", None, "west"))),
         // At the bank: read, deposit, read again.
-        ("i", carrying_1200.into()),
+        ("i", carrying_3900.into()),
         (
-            "deposit 1200",
-            "\r\ndeposit 1200\r\nYou deposit 1200 copper farthings.\r\n[HP=30/MA=0]:".into(),
+            "deposit 3900",
+            "\r\ndeposit 3900\r\nYou deposit 3900 copper farthings.\r\n[HP=30/MA=0]:".into(),
         ),
         (
             "i",
-            "\r\ni\r\nYou are carrying nothing.\r\nYou have no keys.\r\nWealth: 0 copper farthings\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+            "\r\ni\r\nYou are carrying nothing.\r\nYou have no keys.\r\nWealth: 0 copper farthings\r\nEncumbrance: 500/2400 - None [20%]\r\n[HP=30/MA=0]:"
                 .into(),
         ),
     ])
     .await;
-    let session = session_for(addr).await;
+    let session = session_with_bank(
+        addr,
+        mud_client::bank::BankConfig {
+            deposit_at_coins: 0,
+            ..Default::default()
+        },
+    )
+    .await;
     mud_client::farm::probe_sheet(&session, None).await;
     session.set_content(Arc::new(content_with_bank()));
 
@@ -2090,13 +2103,13 @@ async fn a_pile_over_the_mark_sends_the_run_to_the_bank() {
     assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
     assert_eq!(stats.coin_pickups, 1, "{stats:?}");
     assert_eq!(stats.deposits, 1, "{stats:?}");
-    assert_eq!(stats.deposited_farthings, 1200, "{stats:?}");
+    assert_eq!(stats.deposited_farthings, 3900, "{stats:?}");
 
     let log = received.lock().unwrap().clone();
     let get = log.iter().position(|l| l == "get copper").expect("the pile was swept");
     let deposit = log
         .iter()
-        .position(|l| l == "deposit 1200")
+        .position(|l| l == "deposit 3900")
         .unwrap_or_else(|| panic!("no deposit went out: {log:?}"));
     assert!(get < deposit, "{log:?}");
     let reads: Vec<usize> = log
