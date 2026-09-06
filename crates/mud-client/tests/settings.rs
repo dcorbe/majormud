@@ -199,6 +199,49 @@ fn save_keeps_comments_and_order() {
     );
 }
 
+/// The save is a write to a sibling and a rename, so the target is
+/// never truncated and the sibling never survives a good save.
+#[test]
+fn a_save_replaces_the_file_and_leaves_no_temporary() {
+    let path = scratch("replaced.toml");
+    let temp = scratch("replaced.toml.tmp");
+    std::fs::write(&path, "host = \"old\"\n").unwrap();
+    let mut s = Settings::parse(COMMENTED).unwrap();
+    s.save(Some(&path)).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), COMMENTED);
+    assert!(!temp.exists(), "the temporary is renamed away, not left behind");
+}
+
+/// What the rename buys: a save that cannot finish leaves the profile
+/// exactly as it was. A directory nobody may write to refuses the new
+/// file, where a write straight onto the target would have emptied it
+/// first and then failed.
+#[test]
+#[cfg(unix)]
+fn a_failed_save_leaves_the_old_file_whole() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("readonly");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("profile.toml");
+    std::fs::write(&path, COMMENTED).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    // Root ignores the mode bits, and then the test can say nothing.
+    let enforced = std::fs::write(dir.join("probe"), "x").is_err();
+    let mut s = Settings::parse(COMMENTED).unwrap();
+    s.set("port", "2400").unwrap();
+    let result = s.save(Some(&path));
+    let after = std::fs::read_to_string(&path).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    if !enforced {
+        return;
+    }
+    assert!(result.is_err(), "the directory refuses the write");
+    assert_eq!(after, COMMENTED, "the old profile is still whole");
+    assert!(s.dirty(), "nothing was saved, so the edit is still unsaved");
+}
+
 #[test]
 fn save_without_a_path_needs_one_once() {
     let mut s = Settings::default();

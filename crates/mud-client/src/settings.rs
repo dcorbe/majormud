@@ -165,8 +165,18 @@ impl Settings {
             Some(p) => p,
             None => return Err("no file to save to: /save <file>".into()),
         };
-        std::fs::write(&path, self.doc.to_string())
-            .map_err(|e| format!("{}: {e}", path.display()))?;
+        // Written to a sibling and renamed on, never onto the target
+        // itself. A plain write truncates first, so a failure partway
+        // through leaves the profile empty and the only copy of a
+        // hand-written file gone. The temporary is a sibling so the
+        // rename stays on one filesystem, which is where it is atomic.
+        let temp = temp_path(&path);
+        std::fs::write(&temp, self.doc.to_string())
+            .map_err(|e| format!("{}: {e}", temp.display()))?;
+        if let Err(e) = std::fs::rename(&temp, &path) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(format!("{}: {e}", path.display()));
+        }
         self.path = Some(path.clone());
         self.dirty = false;
         Ok(path)
@@ -256,6 +266,14 @@ impl Settings {
         let text = toml::to_string(&profile).expect("a profile serialises");
         text.parse().expect("a serialised profile parses")
     }
+}
+
+/// Where `save` writes before it renames onto the target: the target's
+/// own name with `.tmp` on the end, in the target's directory.
+fn temp_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".tmp");
+    path.with_file_name(name)
 }
 
 /// The one parse and the one validation, shared by every edit and every
