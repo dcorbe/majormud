@@ -8,11 +8,11 @@
 //! map -- all folded into `content::Exit::dest` at decode time.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use mud_core::content::{Content, Direction, MessageId, RoomId};
+use mud_core::content::{Content, Direction, ItemId, MessageId, RoomId};
 
 /// Direction index order, shared with the room record's exit arrays.
 pub const DIRECTIONS: [Direction; 10] = [
@@ -136,6 +136,11 @@ pub struct ExitEdge {
 
 /// Exit type for a command exit — see [`ExitEdge::command`].
 pub const COMMAND_EXIT: i64 = 10;
+
+/// Exit type for a remote action slot, a button or a lever. Never an
+/// edge: the graph decodes it into a [`crate::puzzle::PuzzleAction`] on
+/// the exit it opens and drops the slot.
+pub const REMOTE_ACTION_EXIT: i64 = 12;
 
 /// What taking this exit costs the walk, in units of one plain step.
 ///
@@ -508,7 +513,7 @@ impl RoomGraph {
     /// per-view filtering below (command-message trimming, the
     /// `remoteaction` scan) is new work.
     pub fn from_content(content: &Content) -> Self {
-        let remote_actions = Self::remote_actions_from_content(content);
+        let mut remote_actions = Self::remote_actions_from_content(content);
         let mut rooms = BTreeMap::new();
         for (id, room) in &content.rooms {
             let mut graph_room = GraphRoom {
@@ -524,9 +529,23 @@ impl RoomGraph {
                 },
                 light: i64::from(room.light),
             };
+            for exit in room.exits.iter().flatten() {
+                let exit_type = i64::from(exit.exit_type);
+                if exit_type != REMOTE_ACTION_EXIT {
+                    continue;
+                }
+                // A button or lever. Not an edge: it is recorded against
+                // the exit it opens and the slot itself vanishes.
+                if let Some((key, action)) = Self::slot(content, *id, exit) {
+                    remote_actions.entry(key).or_default().push(action);
+                }
+            }
             for (d, exit) in room.exits.iter().enumerate() {
                 let Some(exit) = exit else { continue };
                 let exit_type = i64::from(exit.exit_type);
+                if exit_type == REMOTE_ACTION_EXIT {
+                    continue;
+                }
                 let param = i64::from(exit.param);
                 graph_room.exits[d] = Some(ExitEdge {
                     dest: exit.dest,
@@ -540,14 +559,23 @@ impl RoomGraph {
             rooms.insert(*id, graph_room);
         }
         // Second pass, because the target exit may be read before or
-        // after the room that opens it.
-        for ((target, exit), actions) in remote_actions {
+        // after the room that opens it, and because the hop count needs
+        // every room in place.
+        for ((target, exit), mut actions) in remote_actions {
             let word = content
                 .rooms
                 .get(&target)
                 .and_then(|r| r.exits[exit].as_ref())
                 .map(|e| e.param)
                 .unwrap_or(0);
+            let wanted: BTreeSet<RoomId> = actions.iter().map(|a| a.room).collect();
+            let hops = Self::hops_from(&rooms, target, &wanted);
+            for action in &mut actions {
+                action.hops = hops.get(&action.room).copied();
+            }
+            // Nearest first, so a plan that may pick any one action
+            // picks the closest. Unreachable rooms sort last.
+            actions.sort_by_key(|a| (a.hops.unwrap_or(u32::MAX), a.room, a.number));
             let Some(edge) = rooms
                 .get_mut(&target)
                 .and_then(|r| r.exits[exit].as_mut())
@@ -583,10 +611,95 @@ impl RoomGraph {
         (!line.is_empty()).then_some(line)
     }
 
+    /// Decode one type 12 slot: which exit it opens and what doing so
+    /// takes. Nightmare's map source decodes the same fields, frmMap.frm
+    /// near line 21705 in the bbs backup. `None` for a slot with no
+    /// phrase or an unusable action number.
+    fn slot(
+        content: &Content,
+        actor: RoomId,
+        exit: &mud_core::content::Exit,
+    ) -> Option<((RoomId, usize), crate::puzzle::PuzzleAction)> {
+        // para2 below 10 is a bare exit index for action 0. Otherwise
+        // the tens are the action and the ones the exit index.
+        let para2 = u32::try_from(exit.param2).ok()?;
+        let (number, index) = if para2 < 10 {
+            (0, para2)
+        } else {
+            (para2 / 10, para2 % 10)
+        };
+        let number = u8::try_from(number).ok().filter(|n| *n <= 10)?;
+        let index = usize::try_from(index).ok()?;
+        let phrases: Vec<String> = Self::message_lines(content, exit.param).take(2).collect();
+        if phrases.is_empty() {
+            return None;
+        }
+        let reply = Self::message_lines(content, exit.param3).next();
+        let item = u16::try_from(exit.param4)
+            .ok()
+            .filter(|id| *id != 0)
+            .map(ItemId);
+        Some((
+            (exit.dest, index),
+            crate::puzzle::PuzzleAction {
+                room: actor,
+                number,
+                phrases,
+                item,
+                reply,
+                hops: None,
+            },
+        ))
+    }
+
+    /// The non-blank lines of a message, trimmed, in order. Empty when
+    /// the id is zero or unknown.
+    fn message_lines(content: &Content, id: i32) -> impl Iterator<Item = String> + '_ {
+        u16::try_from(id)
+            .ok()
+            .filter(|m| *m != 0)
+            .and_then(|m| content.messages.get(&MessageId(m)))
+            .into_iter()
+            .flat_map(|m| m.lines.iter())
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+    }
+
+    /// Steps from `from` to each of `wanted` by the fewest edges, over
+    /// the rooms built so far. Stops as soon as every wanted room is
+    /// found. A room it never reaches is absent from the answer.
+    fn hops_from(
+        rooms: &BTreeMap<RoomId, GraphRoom>,
+        from: RoomId,
+        wanted: &BTreeSet<RoomId>,
+    ) -> BTreeMap<RoomId, u32> {
+        let mut found = BTreeMap::new();
+        let mut seen = BTreeSet::from([from]);
+        let mut frontier = VecDeque::from([(from, 0u32)]);
+        while let Some((at, hops)) = frontier.pop_front() {
+            if wanted.contains(&at) {
+                found.insert(at, hops);
+                if found.len() == wanted.len() {
+                    break;
+                }
+            }
+            let Some(room) = rooms.get(&at) else { continue };
+            for edge in room.exits.iter().flatten() {
+                if rooms.contains_key(&edge.dest) && seen.insert(edge.dest) {
+                    frontier.push_back((edge.dest, hops + 1));
+                }
+            }
+        }
+        found
+    }
+
     /// The old hand-written `load_remote_actions`, over a decoded
     /// [`Content`] instead of a live connection: same grammar, same
     /// per-line parse, sourced from `room.command_block` +
     /// `content.textblocks` instead of the `room JOIN textblock` query.
+    /// Feeds the same map as the type 12 slots decoded in
+    /// [`Self::slot`], which are the main mechanism: this `cmdtext`
+    /// form is the rarer, hand-scripted one.
     fn remote_actions_from_content(
         content: &Content,
     ) -> BTreeMap<(RoomId, usize), Vec<crate::puzzle::PuzzleAction>> {
@@ -620,7 +733,7 @@ impl RoomGraph {
                     }
                     let nums: Vec<i64> = w.filter_map(|n| n.parse().ok()).collect();
                     // remoteaction <room> <msg> <action> <exit>
-                    let [target, _msg, action, exit] = nums[..] else {
+                    let [target, msg, action, exit] = nums[..] else {
                         continue;
                     };
                     let (Ok(target), Ok(exit), Ok(number)) =
@@ -644,12 +757,15 @@ impl RoomGraph {
                         .find(|a| a.room == actor && a.number == number)
                     {
                         Some(a) => a.phrases.push(phrase.to_string()),
+                        // The directive's message pair prints the room
+                        // line first and the actor line second, which
+                        // is the other way round from a slot's para3.
                         None => entry.push(crate::puzzle::PuzzleAction {
                             room: actor,
                             number,
                             phrases: vec![phrase.to_string()],
                             item: None,
-                            reply: None,
+                            reply: Self::message_lines(content, i32::try_from(msg).unwrap_or(0)).nth(1),
                             hops: None,
                         }),
                     }

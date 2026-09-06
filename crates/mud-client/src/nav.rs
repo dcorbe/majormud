@@ -354,9 +354,11 @@ pub fn is_door(exit_type: i64) -> bool {
 /// dont map it") — and walking its direction does nothing. It is not an
 /// exit at all but a control on some other room's exit, so anything that
 /// reads the exits line the board would show has to exclude it, the same
-/// way it excludes hidden and command exits.
+/// way it excludes hidden and command exits. A loaded graph carries no
+/// slot at all since the graph decodes them into puzzles, so this only
+/// matters for a fixture built by hand.
 pub fn is_remote_action(exit_type: i64) -> bool {
-    exit_type == 12
+    exit_type == crate::graph::REMOTE_ACTION_EXIT
 }
 
 /// Is this exit hidden until SEARCH reveals it (`theft.md` §9)?
