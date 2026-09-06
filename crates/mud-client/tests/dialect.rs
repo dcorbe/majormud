@@ -32,6 +32,7 @@ fn profile_with(addr: std::net::SocketAddr, disable_evil_warnings: bool) -> Prof
         disable_evil_warnings,
         bot: None,
         farm: None,
+        bank: Default::default(),
     }
 }
 

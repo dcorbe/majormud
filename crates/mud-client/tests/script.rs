@@ -20,6 +20,7 @@ fn profile_for(addr: std::net::SocketAddr, target: Target) -> Profile {
         disable_evil_warnings: false,
         bot: None,
         farm: None,
+        bank: Default::default(),
     }
 }
 

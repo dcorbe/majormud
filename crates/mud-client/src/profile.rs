@@ -41,6 +41,11 @@ pub struct Profile {
     /// farming route configured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub farm: Option<FarmConfig>,
+    /// Deposit policy, as `[bank]`. Absent means the defaults, which
+    /// deposit at a thousand coins or a weight class crossing, keep
+    /// nothing, and use the nearest bank. See [`crate::bank::BankConfig`].
+    #[serde(default)]
+    pub bank: crate::bank::BankConfig,
 }
 
 /// Keys that were renamed, and what they are called now. Deserialisation
@@ -78,6 +83,7 @@ impl Profile {
             bot.normalise();
             bot.validate()?;
         }
+        profile.bank.validate()?;
         Ok(profile)
     }
 

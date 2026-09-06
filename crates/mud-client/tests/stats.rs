@@ -156,6 +156,7 @@ async fn session_to(addr: std::net::SocketAddr) -> Session {
         disable_evil_warnings: false,
         bot: None,
         farm: None,
+        bank: Default::default(),
     };
     Session::connect(&profile, None).await.unwrap()
 }

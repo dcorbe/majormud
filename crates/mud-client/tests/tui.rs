@@ -316,6 +316,7 @@ async fn session_to(addr: std::net::SocketAddr) -> mud_client::session::Session 
         disable_evil_warnings: false,
         bot: None,
         farm: None,
+        bank: Default::default(),
     };
     mud_client::session::Session::connect(&profile, None)
         .await

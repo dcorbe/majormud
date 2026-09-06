@@ -6,6 +6,7 @@
 //! backspace obfuscation) and the in-repo `mud-server` reimplementation.
 
 pub mod backstab;
+pub mod bank;
 pub mod bot;
 pub mod cli;
 pub mod correlate;

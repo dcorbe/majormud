@@ -320,3 +320,66 @@ fn the_three_marks_parse_as_a_ladder() {
     let back: Profile = toml::from_str(&toml::to_string(&p).unwrap()).unwrap();
     assert_eq!(p, back);
 }
+
+use mud_client::bank::BankConfig;
+
+/// A profile with no `[bank]` table gets the defaults: deposits on,
+/// a thousand coins, the class crossing, nothing kept, nearest bank.
+#[test]
+fn a_profile_without_a_bank_table_gets_the_defaults() {
+    let p: Profile = toml::from_str(
+        r#"
+        target = "mbbs"
+        host = "h"
+        port = 1
+        username = "u"
+        password = "p"
+        "#,
+    )
+    .unwrap();
+    assert_eq!(p.bank, BankConfig::default());
+    assert!(p.bank.auto_deposit);
+    assert_eq!(p.bank.deposit_at_coins, 1000);
+    assert!(p.bank.deposit_on_weight_class);
+    assert_eq!(p.bank.keep_gold, 0);
+    assert_eq!(p.bank.at, None);
+}
+
+#[test]
+fn a_bank_table_overrides_each_default_on_its_own() {
+    let p: Profile = toml::from_str(
+        r#"
+        target = "mbbs"
+        host = "h"
+        port = 1
+        username = "u"
+        password = "p"
+
+        [bank]
+        keep_gold = 5
+        at = "1/297"
+        "#,
+    )
+    .unwrap();
+    assert_eq!(p.bank.keep_gold, 5);
+    assert_eq!(p.bank.keep().farthings(), 500);
+    assert_eq!(p.bank.at.as_deref(), Some("1/297"));
+    assert_eq!(
+        p.bank.at_room(),
+        Some(mud_core::content::RoomId { map: 1, room: 297 })
+    );
+    assert_eq!(p.bank.deposit_at_coins, 1000, "untouched keys keep their defaults");
+}
+
+/// `at` is a room id. A word there is a typo, and a typo should cost
+/// an error message before the socket opens.
+#[test]
+fn a_bank_room_that_is_not_an_id_is_refused() {
+    let cfg = BankConfig {
+        at: Some("Bank of Godfrey".into()),
+        ..BankConfig::default()
+    };
+    let err = cfg.validate().expect_err("a name is not an id");
+    assert!(err.contains("[bank].at"), "{err}");
+    assert!(BankConfig::default().validate().is_ok());
+}

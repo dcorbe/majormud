@@ -171,6 +171,7 @@ async fn session_for(addr: std::net::SocketAddr) -> Session {
         disable_evil_warnings: false,
         bot: None,
         farm: None,
+        bank: Default::default(),
     };
     let session = Session::connect(&profile, None).await.unwrap();
     session.set_content(table());

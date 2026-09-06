@@ -1870,3 +1870,21 @@ fn picked_up_item_reads_the_item_and_not_the_coins() {
     assert_eq!(picked_up_item("You took 12 damage."), None);
     assert_eq!(picked_up_item("You took 12 damage!"), None);
 }
+
+/// The ignore list names denominations as `get` takes them. Anything
+/// else is a typo the profile loader should refuse.
+#[test]
+fn ignore_coins_accepts_only_the_five_denominations() {
+    let ok = BotConfig {
+        ignore_coins: vec!["copper".into(), "silver".into()],
+        ..BotConfig::default()
+    };
+    assert!(ok.validate().is_ok());
+    let bad = BotConfig {
+        ignore_coins: vec!["coppers".into()],
+        ..BotConfig::default()
+    };
+    let err = bad.validate().expect_err("not a denomination");
+    assert!(err.contains("ignore_coins"), "{err}");
+    assert!(err.contains("copper, silver, gold, platinum, runic"), "{err}");
+}

@@ -198,6 +198,13 @@ pub struct BotConfig {
     /// for. Needs the pack, so it does nothing until the session has
     /// the item table.
     pub take_keys: bool,
+    /// Denominations the sweep leaves on the floor, named as `get`
+    /// takes them: copper, silver, gold, platinum, runic. At higher
+    /// levels a copper pile is not worth the send. Applies to every
+    /// sweep site: the kill's drop line, the room render, and the
+    /// stop's own floor model.
+    #[serde(default)]
+    pub ignore_coins: Vec<String>,
     pub auto_flee: bool,
     /// Cast the minor heal when hp% drops below this. 0 = never. Was
     /// `spell_at_percent`, which still parses.
@@ -314,6 +321,15 @@ impl BotConfig {
     /// above anything, it runs before it recovers. A mark of 0 is OFF
     /// and is skipped rather than compared.
     pub fn validate(&self) -> Result<(), String> {
+        for word in &self.ignore_coins {
+            if !crate::purse::DENOMINATION_WORDS.contains(&word.as_str()) {
+                return Err(format!(
+                    "[bot].ignore_coins names {word:?}, which is not a denomination: \
+                     the words are {}",
+                    crate::purse::DENOMINATION_WORDS.join(", ")
+                ));
+            }
+        }
         let ladders: [&[(&str, u32)]; 3] = [
             &[
                 ("minor_heal_at_percent", self.minor_heal_at_percent),
@@ -378,6 +394,7 @@ impl Default for BotConfig {
             auto_heal: false,
             auto_get: false,
             take_keys: true,
+            ignore_coins: Vec::new(),
             auto_flee: false,
             minor_heal_at_percent: 70,
             major_heal_at_percent: 40,

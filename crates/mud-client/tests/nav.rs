@@ -133,6 +133,7 @@ async fn logged_in_session(addr: std::net::SocketAddr) -> Arc<Session> {
         disable_evil_warnings: false,
         bot: None,
         farm: None,
+        bank: Default::default(),
     };
     let session = Arc::new(Session::connect(&profile, None).await.unwrap());
     let outcome = dialect::login(&session, &profile).await.unwrap();

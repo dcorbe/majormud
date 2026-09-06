@@ -378,6 +378,7 @@ async fn logged_in_with(
         disable_evil_warnings,
         bot: None,
         farm: None,
+        bank: Default::default(),
     };
     let session = Arc::new(Session::connect(&profile, None).await.unwrap());
     dialect::login(&session, &profile).await.unwrap();
