@@ -936,7 +936,17 @@ impl Here {
     /// floor is already modelled — asking it a question costs nothing
     /// and cannot go stale on its own.
     pub fn unswept(&self, cap: u32) -> Option<&Pile> {
-        self.piles.iter().find(|p| p.tries < cap && !p.asked)
+        self.unswept_wanted(cap, &|_| true)
+    }
+
+    /// As [`Here::unswept`], over the denominations `wants` accepts.
+    /// The floor lists what is there. What is worth a `get` is the
+    /// policy's call, and an ignored pile must neither be fetched nor
+    /// hold a stop open.
+    pub fn unswept_wanted(&self, cap: u32, wants: &dyn Fn(&str) -> bool) -> Option<&Pile> {
+        self.piles
+            .iter()
+            .find(|p| p.tries < cap && !p.asked && wants(&p.denom))
     }
 
     /// Record that a `get` went out for this denomination. Called by

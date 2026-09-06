@@ -1888,3 +1888,65 @@ fn ignore_coins_accepts_only_the_five_denominations() {
     assert!(err.contains("ignore_coins"), "{err}");
     assert!(err.contains("copper, silver, gold, platinum, runic"), "{err}");
 }
+
+fn loot_room(items: &[&str]) -> Event {
+    Event::RoomSeen(RoomView {
+        items: items.iter().map(|s| s.to_string()).collect(),
+        ..view(&[])
+    })
+}
+
+fn sweeping_bot(ignore: &[&str]) -> Bot {
+    Bot::new(BotConfig {
+        auto_get: true,
+        ignore_coins: ignore.iter().map(|s| s.to_string()).collect(),
+        ..BotConfig::default()
+    })
+}
+
+/// A listed pile of an ignored denomination is left where it is, and
+/// a pile of any other denomination in the same block is still taken.
+#[test]
+fn an_ignored_denomination_is_not_swept_from_the_render() {
+    let mut bot = sweeping_bot(&["copper"]);
+    let actions = bot.on_event(&loot_room(&["49 copper farthings", "11 silver nobles"]));
+    assert_eq!(actions, vec![BotAction::Send("get silver".into())]);
+}
+
+/// The kill's drop line is the other sweep site, and it honours the
+/// same list.
+#[test]
+fn an_ignored_denomination_is_not_swept_from_a_drop_line() {
+    let mut bot = sweeping_bot(&["copper"]);
+    bot.on_event(&room(&[]));
+    assert!(bot
+        .on_event(&Event::Line("49 copper drop to the ground.".into()))
+        .is_empty());
+    assert_eq!(
+        bot.on_event(&Event::Line("11 silver drop to the ground.".into())),
+        vec![BotAction::Send("get silver".into())]
+    );
+}
+
+/// The travel guard asks whether a room is worth stopping for. A floor
+/// that holds only ignored coins is not.
+#[test]
+fn a_floor_of_ignored_coins_is_not_worth_stopping_for() {
+    let bot = sweeping_bot(&["copper"]);
+    let only_copper = RoomView {
+        items: vec!["49 copper farthings".into()],
+        ..view(&[])
+    };
+    assert!(!bot.has_loot(&only_copper));
+    let with_silver = RoomView {
+        items: vec!["49 copper farthings".into(), "11 silver nobles".into()],
+        ..view(&[])
+    };
+    assert!(bot.has_loot(&with_silver));
+    assert!(bot.wants_coin("silver"));
+    assert!(!bot.wants_coin("copper"));
+    assert!(
+        !Bot::new(BotConfig::default()).wants_coin("silver"),
+        "with auto_get off nothing is wanted"
+    );
+}

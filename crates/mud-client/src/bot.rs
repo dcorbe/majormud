@@ -857,9 +857,10 @@ impl Bot {
                 // Standing over a pile mid-fight is how loot gets a
                 // character killed; standing over one BEFORE the fight
                 // costs at most a round of grace.
-                if self.config.auto_get && self.engaged.is_none() {
+                if self.engaged.is_none() {
                     for entry in &room.items {
                         if let Some((_, denom)) = coin_pile(entry)
+                            && self.wants_coin(&denom)
                             && self.swept.1.insert(denom.clone())
                         {
                             actions.push(BotAction::Send(format!("get {denom}")));
@@ -1014,7 +1015,18 @@ impl Bot {
     /// consulted — whether a pile is worth STOPPING for and whether this
     /// instance already tried it are different questions.
     pub fn has_loot(&self, room: &crate::events::RoomView) -> bool {
-        self.config.auto_get && room.items.iter().any(|entry| COIN_PILE_RE.is_match(entry))
+        room.items
+            .iter()
+            .filter_map(|entry| coin_pile(entry))
+            .any(|(_, denom)| self.wants_coin(&denom))
+    }
+
+    /// Would the policy pick up this denomination? `auto_get` and not
+    /// on the ignore list. Every sweep site asks this one question:
+    /// the render sweep, the drop-line sweep, `has_loot`, and the
+    /// stop's floor model through `StopState::verdict`.
+    pub fn wants_coin(&self, denom: &str) -> bool {
+        self.config.auto_get && !self.config.ignore_coins.iter().any(|d| d == denom)
     }
 
     /// Would we swing at this name at all? The toggle, the case rule that
@@ -1285,9 +1297,6 @@ impl Bot {
         if self.config.take_keys && self.pack.is_some() && picked_up_item(line).is_some() {
             return vec![BotAction::Send("i".into())];
         }
-        if !self.config.auto_get {
-            return Vec::new();
-        }
         // Consult the same per-visit memo the room-render sweep uses
         // (~line 602): a kill's drop line and the room's own "You
         // notice ..." listing name the SAME pile, and without this a
@@ -1307,6 +1316,7 @@ impl Bot {
         // already performs on every room change; it does not survive
         // being asked about a room it has not seen yet.
         coin_drop(line)
+            .filter(|(_, denom)| self.wants_coin(denom))
             .filter(|(_, denom)| self.swept.1.insert(denom.clone()))
             .map(|(_, denom)| vec![BotAction::Send(format!("get {denom}"))])
             .unwrap_or_default()

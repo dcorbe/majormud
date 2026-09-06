@@ -1235,3 +1235,31 @@ fn a_room_block_moves_no_clock() {
     c.on_event(&unsolicited(Event::RoomSeen(view(&[]))), Instant::now());
     assert_eq!(c, before);
 }
+
+/// The stop's floor model is the third sweep site. Work it reports is
+/// filtered by what the policy wants, so an ignored pile never holds a
+/// stop open and a wanted pile behind it is still found.
+#[test]
+fn unswept_work_skips_denominations_nobody_wants() {
+    let now = Instant::now();
+    let mut here = Here::default();
+    here.on_event(
+        &answering(
+            Event::RoomSeen(view_with_loot(&["49 copper farthings", "11 silver nobles"])),
+            CmdId(1),
+        ),
+        now,
+    );
+    let not_copper = |denom: &str| denom != "copper";
+    assert_eq!(
+        here.unswept_wanted(2, &not_copper).map(|p| p.denom.as_str()),
+        Some("silver")
+    );
+    let nothing = |_: &str| false;
+    assert!(here.unswept_wanted(2, &nothing).is_none());
+    assert_eq!(
+        here.unswept(2).map(|p| p.denom.as_str()),
+        Some("copper"),
+        "the unfiltered question still answers first-listed"
+    );
+}

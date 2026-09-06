@@ -1181,6 +1181,7 @@ fn stop_state(linger_secs: u64) -> StopState {
 fn combat_bot() -> Bot {
     Bot::new(BotConfig {
         auto_combat: true,
+        auto_get: true,
         ignore: vec!["town guard".into()],
         ..BotConfig::default()
     })
@@ -2842,4 +2843,28 @@ fn the_interrupt_mark_is_checked_against_the_bots_mark_when_the_farm_sets_none()
     // A disabled gate checks nothing.
     let off = BotConfig { rest_until_percent: 0, ..bot.clone() };
     assert!(check_departure_mark(&cfg, &off).is_ok());
+}
+
+/// The stop verdict sweeps through the bot's ignore list: a floor that
+/// holds only ignored coins is finished, not `Loot`.
+#[test]
+fn a_stop_ends_over_ignored_coins() {
+    let t0 = Instant::now();
+    let bot = Bot::new(BotConfig {
+        auto_combat: true,
+        auto_get: true,
+        ignore_coins: vec!["copper".into()],
+        ..BotConfig::default()
+    });
+    let mut w = Stop::new(bot, 0);
+    w.look_and_see(&block(&[]), t0);
+    w.feed(&Event::Line("49 copper drop to the ground.".into()), t0);
+    assert_eq!(w.verdict(t0), Verdict::Empty, "copper is not work");
+    w.feed(&Event::Line("11 silver drop to the ground.".into()), t0);
+    assert_eq!(
+        w.verdict(t0),
+        Verdict::Loot {
+            denom: "silver".into()
+        }
+    );
 }
