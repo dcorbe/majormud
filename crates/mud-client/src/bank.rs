@@ -139,7 +139,7 @@ pub fn choose_bank(
 }
 
 /// The encumbrance descriptor as `mud-core`'s `text::encumbrance_descriptor`
-/// prints it. That function is the authority; this is a restatement so
+/// prints it. That function is the authority. This is a restatement so
 /// the client can compare two readings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum WeightClass {
