@@ -333,6 +333,14 @@ async fn a_rest_contested_by_an_arrival_defends_instead_of_dozing() {
             "look",
             format!("\r\nlook{}", room_block_hp("Guard Post", None, "north", 20)),
         ),
+        // The gate seeds itself from a fresh `i` before the first
+        // leg. The startup probe sends `inventory`, which the contents
+        // tracker never sees, so the run reads the purse itself.
+        (
+            "i",
+            "\r\ni\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=20/MA=0]:"
+                .into(),
+        ),
         (
             "rest",
             "\r\nrest\r\nYou are now resting.\r\n[HP=20/MA=0]:".into(),
@@ -1190,6 +1198,14 @@ async fn a_roam_never_steps_into_a_walled_room() {
             "look",
             format!("\r\nlook{}", room_block("Guard Post", None, "north east")),
         ),
+        // The gate seeds itself from a fresh `i` before the first
+        // leg. The startup probe sends `inventory`, which the contents
+        // tracker never sees, so the run reads the purse itself.
+        (
+            "i",
+            "\r\ni\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
         // No `look` per stop: the step that lands on a room is answered
         // with that room's block, and the stop opens from it. A roam
         // spends one command per room worked, which is the whole point
@@ -1330,6 +1346,14 @@ async fn a_roam_drops_a_room_whose_lever_it_cannot_reach() {
         (
             "look",
             format!("\r\nlook{}", room_block("Guard Post", None, "east")),
+        ),
+        // The gate seeds itself from a fresh `i` before the first
+        // leg. The startup probe sends `inventory`, which the contents
+        // tracker never sees, so the run reads the purse itself.
+        (
+            "i",
+            "\r\ni\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
         ),
         // The vault's wall, refused the way a concealed exit is. The
         // board never opens it, because the lever is never pulled.
@@ -1976,6 +2000,14 @@ async fn a_pile_over_the_mark_sends_the_run_to_the_bank() {
                 .into(),
         ),
         ("look", format!("\r\nlook{}", room_block("Guard Post", None, "north"))),
+        // The gate seeds itself from a fresh `i` before the first leg:
+        // the startup probe sends `inventory`, which the contents
+        // tracker never sees, so the run reads the purse itself.
+        (
+            "i",
+            "\r\ni\r\nYou are carrying nothing.\r\nYou have no keys.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
         ("n", format!("\r\nn{}", room_block("Inner Ward", None, "north south east"))),
         (
             "n",
@@ -2089,6 +2121,14 @@ async fn a_refused_deposit_switches_deposits_off_for_the_run() {
                 .into(),
         ),
         ("look", format!("\r\nlook{}", room_block("Guard Post", None, "north"))),
+        // The gate seeds itself from a fresh `i` before the first leg:
+        // the startup probe sends `inventory`, which the contents
+        // tracker never sees, so the run reads the purse itself.
+        (
+            "i",
+            "\r\ni\r\nYou are carrying nothing.\r\nYou have no keys.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
         ("n", format!("\r\nn{}", room_block("Inner Ward", None, "north south east"))),
         (
             "n",

@@ -1840,10 +1840,14 @@ async fn farm_loop(
     // step (live 2026-09-04).
     let mut sneaking = false;
 
-    // The deposit policy and its gate. Seeded from the realm-entry
-    // reading so the first crossing is measured from what the character
-    // carried when the run began. Judged only after a stop that
-    // confirmed a coin pickup, see `coin_pickups`.
+    // The deposit policy and its gate. Seeded from a fresh `i` so the
+    // first crossing is measured from what the character carries now.
+    // Not from `session.contents()`: `mmc farm` fills that from nothing
+    // at all, because the contents tracker arms on the literal `i` and
+    // the startup probe sends `inventory`, and in play the reading it
+    // holds can be hours old. One send per run buys a gate that starts
+    // from the truth. Judged only after a stop that confirmed a coin
+    // pickup, see `coin_pickups`.
     //
     // An errand that deposits nothing switches the gate off for the
     // rest of the run. The gate remembers readings, not refusals, so a
@@ -1852,7 +1856,9 @@ async fn farm_loop(
     // nothing, every stop, forever.
     let bank_cfg = session.profile().bank.clone();
     let mut gate = crate::bank::BankGate::new();
-    if let Some(reading) = crate::bank::Reading::of(&session.contents()) {
+    if bank_cfg.auto_deposit
+        && let Some(reading) = crate::bank::Reading::of(&crate::bank::read_inventory(session).await)
+    {
         gate.seed(reading);
     }
     let mut judged_pickups = 0u32;

@@ -706,7 +706,9 @@ A farm picks up every pile it kills over. Coins weigh a third of a unit
 each, so a long run drifts the character up a weight class, and a death
 loses the lot. So the run judges a deposit gate after any stop where the
 board confirmed a coin pickup, on one fresh `i`, and detours when it
-trips.
+trips. The run reads the purse once at its start as well, so the first
+weight-class crossing is measured from what the character carries now
+rather than from a reading of unknown age.
 
 Two gates, either one enough:
 
