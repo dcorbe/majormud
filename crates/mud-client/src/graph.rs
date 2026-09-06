@@ -124,7 +124,7 @@ impl ExitRequirement {
                 // No key exists for it, so the lock is all there is.
                 None => ExitRequirement::Door { locked: true, pick: modifier(para3) },
             },
-            // A few shipped gates want item 0, which is no item at all.
+            // One loadable shipped gate wants item 0, which is no item at all.
             3 => match item(para1) {
                 Some(item) => ExitRequirement::ItemGate { item },
                 None => ExitRequirement::None,
@@ -308,13 +308,13 @@ pub struct Capabilities {
     /// capabilities, never crosses a door at all.
     pub bash_doors: bool,
     /// The shape of the world rather than one character: every item
-    /// gate and key door is passable. Set only by the map queries
-    /// [`RoomGraph::route`] and [`RoomGraph::distances`], which have no
-    /// character to ask, and never by a walker. The spec's empty pack
-    /// rule is about walkers, a walk through a gate the pack cannot
-    /// pass strands the character, and a map answer that walls off a
-    /// gate refuses a patrol circuit at config load for a walk the
-    /// character may well be able to make.
+    /// gate, key door and puzzle item is passable. Set only by the map
+    /// queries [`RoomGraph::route`] and [`RoomGraph::distances`], which
+    /// have no character to ask, and never by a walker. The spec's
+    /// empty pack rule is about walkers, a walk through a gate the pack
+    /// cannot pass strands the character, and a map answer that walls
+    /// off a gate refuses a patrol circuit at config load for a walk
+    /// the character may well be able to make.
     pub every_item: bool,
 }
 
@@ -366,7 +366,8 @@ impl Capabilities {
         self.tolls_known_free.is_free(room, dir)
     }
 
-    /// Does this walker hold the item, on the ring or in the pack?
+    /// Does this walker hold the item, on the ring or in the pack? The
+    /// world's own capabilities hold everything, see [`Capabilities::world`].
     pub fn has_item(&self, id: mud_core::content::ItemId) -> bool {
         self.every_item || self.pack.as_ref().is_some_and(|p| p.has(id))
     }

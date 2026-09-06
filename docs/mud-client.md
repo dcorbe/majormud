@@ -440,8 +440,12 @@ keystroke rather than running unattended:
   closed doors are no obstacle. A lock the character can pick is picked.
   A lock the character cannot pick is a wall for routing when bashing is
   off, so `/go` goes around it and says `no route` when there is no way
-  around. That is the trade: the walk never grinds bashes, and a door it
-  cannot open is not named. Bash it by hand and `/go` again.
+  around. The exception is a lock with a positive pick modifier, which
+  never re-locks once anyone has picked it, so routing treats it as an
+  ordinary door. If it turns out to be shut after all and the character
+  cannot pick it, the walk stops there and names the door and the
+  direction. Either way the walk never grinds bashes. Bash it by hand
+  and `/go` again.
 
 The walk rests to the bot's mark before its first step, as a farm does.
 Set `rest_until_percent = 0` for the old instant start.
@@ -674,9 +678,9 @@ whether or not bashing is on. A key the board does not accept at a door
 is answered with some other line, and the walk then treats the lock as
 the story again.
 
-A type 3 exit is passable only while carrying an item. A few of them
-want nothing. Routing checks the pack and the walk takes it as a plain
-step. Without the item it is a wall.
+A type 3 exit is passable only while carrying an item. One of them
+wants nothing. Routing checks the pack and the walk takes it as a
+plain step. Without the item it is a wall.
 
 The bot picks up any key it sees on the floor that the ring lacks,
 `[bot].take_keys`, on by default.
