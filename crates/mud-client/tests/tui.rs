@@ -1051,3 +1051,9 @@ fn the_assist_casts_by_the_marks_and_once_per_round() {
     let off = BotConfig { auto_heal: false, ..cfg.clone() };
     assert_eq!(assist_heal(&off, &bot, &mut heal, &clock, 30, now + ROUND * 3), None);
 }
+
+#[test]
+fn bank_is_its_own_outcome() {
+    assert_eq!(slash("/bank"), Some(KeyOutcome::Bank));
+    assert_eq!(slash("  /bank  "), Some(KeyOutcome::Bank));
+}

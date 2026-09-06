@@ -513,6 +513,34 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                     }
                                 }
                             }
+                            KeyOutcome::Bank => {
+                                if let Some(j) = job.as_ref() {
+                                    note(&mut out, &format!("-- {} already running (Ctrl-F to take over) --", j.what))?;
+                                } else {
+                                    match graph.as_ref() {
+                                        None => note(&mut out, &format!(
+                                            "-- bank: no room database at {} --",
+                                            content_path(session.profile()).display()
+                                        ))?,
+                                        Some(g) => {
+                                            let started = start_bank(
+                                                session.clone(),
+                                                g.clone(),
+                                                here.confirmed(),
+                                                assist_config.clone(),
+                                                assist.is_some(),
+                                            );
+                                            // See the StartFarm arm above:
+                                            // total and clock reset together.
+                                            exp.reset();
+                                            exp_since = std::time::Instant::now();
+                                            note(&mut out, "-- banking (Ctrl-F to take over) --")?;
+                                            phase_rx = Some(started.phase.clone());
+                                            job = Some(started);
+                                        }
+                                    }
+                                }
+                            }
                             KeyOutcome::Where => {
                                 match graph.as_ref() {
                                     None => note(&mut out, &format!(
@@ -837,6 +865,8 @@ pub enum KeyOutcome {
     Go {
         target: String,
     },
+    /// Walk to the bank and deposit above the keep floor, now.
+    Bank,
     /// Print what the world database knows about a room. `None` means the
     /// one the character is standing in — unlike `/go`, a bare `/room` is
     /// the commonest form rather than a mistake.
@@ -894,6 +924,7 @@ pub fn slash(line: &str) -> Option<KeyOutcome> {
         "/go" => Some(KeyOutcome::Go {
             target: rest.to_string(),
         }),
+        "/bank" => Some(KeyOutcome::Bank),
         "/where" => Some(KeyOutcome::Where),
         "/room" => Some(KeyOutcome::Room {
             target: (!rest.is_empty()).then(|| rest.to_string()),
@@ -915,6 +946,7 @@ fn help_text() -> &'static str {
 /loop import <file>  read a MegaMud .mp path into the library
 /bot                 toggle the fight/loot assist (walk vs. run for /go)
 /go <room>           walk to a room, by id (1/2324) or name
+/bank                walk to the nearest bank and deposit the purse
 /where               work out which room you're standing in
 /room [target]       what the world database knows about a room (default: here)
 /map [target]        draw the plane around a room (default: here)
@@ -1663,6 +1695,56 @@ fn start_go(
         handle,
         phase: rx,
         what: "go",
+    }
+}
+
+/// `/bank`. The same job shape as `start_go`, ending in a `Phase::Done`
+/// that says what was deposited and where, or why nothing was.
+fn start_bank(
+    session: Arc<Session>,
+    graph: Arc<crate::graph::RoomGraph>,
+    hint: Option<mud_core::content::RoomId>,
+    bot: crate::bot::BotConfig,
+    walking: bool,
+) -> Job {
+    let profile = session.profile().clone();
+    let base = profile.farm.clone().unwrap_or_else(|| crate::farm::FarmConfig {
+        content: content_path(&profile),
+        ..Default::default()
+    });
+    let cfg = crate::go::go_config(&base, walking);
+    session.set_pace(profile.pace());
+    let (tx, rx) = tokio::sync::watch::channel(crate::farm::Phase::default());
+    let handle = tokio::spawn(async move {
+        let end = match crate::bank::run_bank(&session, graph, hint, &bot, &cfg, Some(&tx)).await {
+            Ok(crate::bank::ErrandEnd::Deposited { farthings, at, bank }) => {
+                crate::farm::Phase::Done {
+                    why: format!("deposited {farthings} copper farthings at {bank}"),
+                    at: Some(at),
+                }
+            }
+            Ok(crate::bank::ErrandEnd::Nothing(why)) => crate::farm::Phase::Done {
+                why: format!("nothing deposited: {why}"),
+                at: None,
+            },
+            Ok(crate::bank::ErrandEnd::Died) => {
+                crate::farm::Phase::Done { why: "died".into(), at: None }
+            }
+            Ok(crate::bank::ErrandEnd::TimeUp) => {
+                crate::farm::Phase::Done { why: "time up".into(), at: None }
+            }
+            Ok(crate::bank::ErrandEnd::TooHurt) => crate::farm::Phase::Done {
+                why: "stopped: travel interrupt budget spent".into(),
+                at: None,
+            },
+            Err(e) => crate::farm::Phase::Failed { why: e.to_string() },
+        };
+        let _ = tx.send(end);
+    });
+    Job {
+        handle,
+        phase: rx,
+        what: "bank",
     }
 }
 

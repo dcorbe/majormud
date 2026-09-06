@@ -420,3 +420,94 @@ pub(crate) async fn errand(
         None => Ok(ErrandEnd::Nothing("no reply to the deposit".into())),
     }
 }
+
+/// `/bank`: from wherever the character stands, walk to the bank and
+/// deposit above the keep floor. The setup is `go::run_go`'s: place the
+/// character, discover vitals, build the navigator and the casting
+/// state, then hand over to the errand. The gate is not consulted, the
+/// operator asked.
+pub async fn run_bank(
+    session: &Session,
+    graph: std::sync::Arc<RoomGraph>,
+    hint: Option<RoomId>,
+    bot_config: &crate::bot::BotConfig,
+    cfg: &FarmConfig,
+    phase: PhaseSink<'_>,
+) -> Result<ErrandEnd, FarmError> {
+    crate::farm::check_departure_mark(cfg, bot_config)?;
+    session.travel_fights().set(cfg.fight_while_travelling);
+    if let Err(e) = crate::deaths::init(&cfg.content) {
+        eprintln!("death wordings unavailable ({e}); shared-room kills will be missed");
+    }
+    let content = match RoomGraph::load_content(&cfg.content) {
+        Ok(content) => {
+            let content = std::sync::Arc::new(content);
+            session.set_content(std::sync::Arc::clone(&content));
+            Some(content)
+        }
+        Err(_) => session.pack_handle().map(|h| std::sync::Arc::clone(h.content())),
+    };
+    let Some(content) = content else {
+        return Ok(ErrandEnd::Nothing(format!(
+            "no room database at {}",
+            cfg.content.display()
+        )));
+    };
+    let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone())
+        .with_capabilities(session.capabilities())
+        .with_backstab(
+            std::sync::Arc::clone(&content),
+            session.wielded(),
+            session.contents().items,
+        );
+    let seen = crate::farm::look_around(session, "the bank walk's look").await?;
+    let hint = hint.unwrap_or(RoomId { map: 0, room: 0 });
+    let mut current = crate::lost::place(session, &graph, &nav, hint, &seen)
+        .await
+        .map_err(FarmError::Lost)?
+        .at;
+    let mut bot_config = bot_config.clone();
+    if bot_config.max_hp == 0
+        && let Some(vitals) = crate::farm::discover_vitals(session).await
+    {
+        bot_config.max_hp = vitals.max_hp;
+        bot_config.max_mana = vitals.max_mana;
+    }
+    let threat = std::sync::Arc::new(
+        RoomGraph::load_threat(&cfg.content).unwrap_or_else(|_| crate::bot::ThreatTable::new()),
+    );
+    let refusals = crate::bot::Refusals::default();
+    let sheet = crate::farm::sheet_from(session, &bot_config, &Default::default());
+    let mut casts = Casts {
+        light: crate::sheet::LightState::new(sheet.light),
+        heal: crate::sheet::HealState::new(Vec::new()),
+        buff: crate::sheet::BuffState::new(Vec::new()),
+    };
+    let mut clock = crate::world::RoundClock::new();
+    let mut stats = FarmStats::default();
+    let bank = session.profile().bank.clone();
+    let end = errand(
+        session,
+        &nav,
+        &graph,
+        &content,
+        &bank,
+        cfg,
+        &bot_config,
+        &threat,
+        &refusals,
+        &mut casts,
+        &mut clock,
+        Instant::now(),
+        &mut stats,
+        phase,
+        &mut current,
+    )
+    .await?;
+    if !matches!(end, ErrandEnd::Died)
+        && let Some(cmd) = casts.light.extinguish()
+    {
+        session.send(&cmd);
+    }
+    Ok(end)
+}
