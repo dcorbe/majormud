@@ -610,6 +610,17 @@ enum StepEvent {
     Blind,
 }
 
+/// How the board answered a line the correlator cannot attribute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Answer {
+    /// The wanted reply line arrived before the next prompt.
+    Replied,
+    /// The next prompt came without it.
+    Prompted,
+    /// The board said the line out loud. It was not a command here.
+    SaidAloud,
+}
+
 /// What the walk had just asked when the board answered it could not see.
 ///
 /// The dark line is identical either way, so the question is the only
@@ -1964,32 +1975,28 @@ impl Navigator {
         }
     }
 
-    /// Speak one action's phrase in the room it belongs to and read the
-    /// answer.
+    /// Send a line the correlator files as opaque and read what comes
+    /// back.
     ///
-    /// A fresh receiver, subscribed before the send, so nothing an inner
-    /// walk left behind can be mistaken for the reply. The reply body is
-    /// unattributed, `kind_of` files a phrase as `Opaque`, so the read
-    /// is [`Navigator::arm_sneak`]'s: skip the echo, then classify what
-    /// arrives before the next prompt. The slot's own reply line ends
-    /// the read early. The board saying the phrase out loud means it
-    /// was not a command here, and no retry can change that.
-    async fn speak(
+    /// A fresh receiver, subscribed before the send, so nothing an
+    /// inner walk left behind can be mistaken for the reply. The reply
+    /// body is unattributed, `kind_of` files a phrase or a `use` as
+    /// `Opaque`, so the read is [`Navigator::arm_sneak`]'s: skip the
+    /// echo, then classify what arrives before the next prompt.
+    /// `reply`, lowercased, ends the read early when it arrives. The
+    /// board saying the line out loud means it was not a command here.
+    async fn ask(
         &self,
         session: &Session,
-        action: &crate::puzzle::PuzzleAction,
-        dir: &str,
+        command: &str,
+        reply: Option<&str>,
         guard: &mut impl TravelGuard,
         armed: &mut Option<Interrupt>,
-    ) -> Result<(), NavErrorKind> {
-        let phrase = action.phrases.first().ok_or_else(|| NavErrorKind::Puzzle {
-            dir: dir.to_string(),
-            tried: "the slot has no phrase".into(),
-        })?;
+    ) -> Result<Answer, NavErrorKind> {
         let mut events = session.events();
-        let id = session.send(phrase);
-        let spoken = phrase.to_lowercase();
-        let reply = action.reply.as_deref().map(str::to_lowercase);
+        let id = session.send(command);
+        let spoken = command.to_lowercase();
+        let reply = reply.map(str::to_lowercase);
         let mut echoed = false;
         let deadline = tokio::time::Instant::now() + self.step_timeout;
         loop {
@@ -2006,7 +2013,7 @@ impl Navigator {
             let cor = match ev {
                 Err(_) => {
                     return Err(NavErrorKind::Expect(ExpectError::Timeout {
-                        needle: format!("reply to {phrase}"),
+                        needle: format!("reply to {command}"),
                         tail: String::new(),
                     }));
                 }
@@ -2024,18 +2031,43 @@ impl Navigator {
                     }
                     let line = line.to_lowercase();
                     if line.starts_with(SAID_ALOUD) && line.contains(&spoken) {
-                        return Err(NavErrorKind::Puzzle {
-                            dir: dir.to_string(),
-                            tried: format!("{phrase:?} was said aloud, not acted on"),
-                        });
+                        return Ok(Answer::SaidAloud);
                     }
                     if reply.as_deref().is_some_and(|r| line.contains(r)) {
-                        return Ok(());
+                        return Ok(Answer::Replied);
                     }
                 }
-                crate::events::Event::Prompt { .. } if echoed => return Ok(()),
+                crate::events::Event::Prompt { .. } if echoed => return Ok(Answer::Prompted),
                 _ => {}
             }
+        }
+    }
+
+    /// Speak one action's phrase in the room it belongs to and read the
+    /// answer. The slot's own reply line ends the read early. The board
+    /// saying the phrase out loud means it was not a command here, and
+    /// no retry can change that.
+    async fn speak(
+        &self,
+        session: &Session,
+        action: &crate::puzzle::PuzzleAction,
+        dir: &str,
+        guard: &mut impl TravelGuard,
+        armed: &mut Option<Interrupt>,
+    ) -> Result<(), NavErrorKind> {
+        let phrase = action.phrases.first().ok_or_else(|| NavErrorKind::Puzzle {
+            dir: dir.to_string(),
+            tried: "the slot has no phrase".into(),
+        })?;
+        match self
+            .ask(session, phrase, action.reply.as_deref(), guard, armed)
+            .await?
+        {
+            Answer::SaidAloud => Err(NavErrorKind::Puzzle {
+                dir: dir.to_string(),
+                tried: format!("{phrase:?} was said aloud, not acted on"),
+            }),
+            Answer::Replied | Answer::Prompted => Ok(()),
         }
     }
 
