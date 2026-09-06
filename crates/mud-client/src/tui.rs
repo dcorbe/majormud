@@ -747,9 +747,7 @@ async fn play(
                                 }.join("\n"))?;
                             }
                             KeyOutcome::StartFarm { loop_name } => {
-                                if let Err(why) = needs_username(&session.profile()) {
-                                    note(&mut out, &format!("-- {why} --"))?;
-                                } else if let Some(j) = job.as_ref() {
+                                if let Some(j) = job.as_ref() {
                                     // Reachable mid-run now that the editor
                                     // works while farming: one job only.
                                     note(&mut out, &format!("-- {} already running (Ctrl-F to take over) --", j.what))?;
@@ -776,9 +774,7 @@ async fn play(
                                 }
                             }
                             KeyOutcome::Go { target } => {
-                                if let Err(why) = needs_username(&session.profile()) {
-                                    note(&mut out, &format!("-- {why} --"))?;
-                                } else if let Some(j) = job.as_ref() {
+                                if let Some(j) = job.as_ref() {
                                     note(&mut out, &format!("-- {} already running (Ctrl-F to take over) --", j.what))?;
                                 } else {
                                     match graph.as_ref() {
@@ -802,34 +798,36 @@ async fn play(
                                                     .map(|r| format!(", {} steps", r.len()))
                                                     .unwrap_or_default();
                                                 let how = if assist.is_some() { "walking" } else { "running" };
-                                                let started = start_go(
+                                                match start_go(
                                                     session.clone(),
                                                     g.clone(),
                                                     here.confirmed(),
                                                     to,
                                                     assist_config.clone(),
                                                     assist.is_some(),
-                                                );
-                                                // See the StartFarm arm
-                                                // above: total and clock
-                                                // reset together.
-                                                exp.reset();
-                                                exp_since = std::time::Instant::now();
-                                                note(&mut out, &format!(
-                                                    "-- {how} to {name} [{}/{}]{steps} (Ctrl-F to take over) --",
-                                                    to.map, to.room
-                                                ))?;
-                                                phase_rx = Some(started.phase.clone());
-                                                job = Some(started);
+                                                ) {
+                                                    Err(e) => note(&mut out, &format!("-- {e} --"))?,
+                                                    Ok(started) => {
+                                                        // See the StartFarm arm
+                                                        // above: total and clock
+                                                        // reset together.
+                                                        exp.reset();
+                                                        exp_since = std::time::Instant::now();
+                                                        note(&mut out, &format!(
+                                                            "-- {how} to {name} [{}/{}]{steps} (Ctrl-F to take over) --",
+                                                            to.map, to.room
+                                                        ))?;
+                                                        phase_rx = Some(started.phase.clone());
+                                                        job = Some(started);
+                                                    }
+                                                }
                                             }
                                         },
                                     }
                                 }
                             }
                             KeyOutcome::Bank => {
-                                if let Err(why) = needs_username(&session.profile()) {
-                                    note(&mut out, &format!("-- {why} --"))?;
-                                } else if let Some(j) = job.as_ref() {
+                                if let Some(j) = job.as_ref() {
                                     note(&mut out, &format!("-- {} already running (Ctrl-F to take over) --", j.what))?;
                                 } else {
                                     match graph.as_ref() {
@@ -837,41 +835,41 @@ async fn play(
                                             "-- bank: no room database at {} --",
                                             world_path.display()
                                         ))?,
-                                        Some(g) => {
-                                            let started = start_bank(
-                                                session.clone(),
-                                                g.clone(),
-                                                here.confirmed(),
-                                                assist_config.clone(),
-                                                assist.is_some(),
-                                            );
-                                            // See the StartFarm arm above:
-                                            // total and clock reset together.
-                                            exp.reset();
-                                            exp_since = std::time::Instant::now();
-                                            note(&mut out, "-- banking (Ctrl-F to take over) --")?;
-                                            phase_rx = Some(started.phase.clone());
-                                            job = Some(started);
-                                        }
+                                        Some(g) => match start_bank(
+                                            session.clone(),
+                                            g.clone(),
+                                            here.confirmed(),
+                                            assist_config.clone(),
+                                            assist.is_some(),
+                                        ) {
+                                            Err(e) => note(&mut out, &format!("-- {e} --"))?,
+                                            Ok(started) => {
+                                                // See the StartFarm arm above:
+                                                // total and clock reset together.
+                                                exp.reset();
+                                                exp_since = std::time::Instant::now();
+                                                note(&mut out, "-- banking (Ctrl-F to take over) --")?;
+                                                phase_rx = Some(started.phase.clone());
+                                                job = Some(started);
+                                            }
+                                        },
                                     }
                                 }
                             }
                             KeyOutcome::Where => {
-                                if let Err(why) = needs_username(&session.profile()) {
-                                    note(&mut out, &format!("-- {why} --"))?;
-                                } else {
-                                    match graph.as_ref() {
-                                        None => note(&mut out, &format!(
-                                            "-- where: no room database at {} --",
-                                            world_path.display()
-                                        ))?,
-                                        Some(g) => {
-                                            let started = start_where(session.clone(), g.clone(), here.confirmed());
+                                match graph.as_ref() {
+                                    None => note(&mut out, &format!(
+                                        "-- where: no room database at {} --",
+                                        world_path.display()
+                                    ))?,
+                                    Some(g) => match start_where(session.clone(), g.clone(), here.confirmed()) {
+                                        Err(e) => note(&mut out, &format!("-- {e} --"))?,
+                                        Ok(started) => {
                                             note(&mut out, "-- working out where you are (Ctrl-F to take over) --")?;
                                             phase_rx = Some(started.phase.clone());
                                             job = Some(started);
                                         }
-                                    }
+                                    },
                                 }
                             }
                             KeyOutcome::Room { target } => {
@@ -1011,20 +1009,24 @@ async fn play(
                                                 }
                                                 crate::mapview::ViewAction::Go(to) => {
                                                     let name = g.room(to).map(|r| r.name.clone()).unwrap_or_default();
-                                                    let started = start_go(
+                                                    match start_go(
                                                         session.clone(),
                                                         g.clone(),
                                                         here.confirmed(),
                                                         to,
                                                         assist_config.clone(),
                                                         assist.is_some(),
-                                                    );
-                                                    note(&mut out, &format!(
-                                                        "-- walking to {name} [{}/{}] (Ctrl-F to take over) --",
-                                                        to.map, to.room
-                                                    ))?;
-                                                    phase_rx = Some(started.phase.clone());
-                                                    job = Some(started);
+                                                    ) {
+                                                        Err(e) => note(&mut out, &format!("-- {e} --"))?,
+                                                        Ok(started) => {
+                                                            note(&mut out, &format!(
+                                                                "-- walking to {name} [{}/{}] (Ctrl-F to take over) --",
+                                                                to.map, to.room
+                                                            ))?;
+                                                            phase_rx = Some(started.phase.clone());
+                                                            job = Some(started);
+                                                        }
+                                                    }
                                                 }
                                                 _ => {}
                                             }
@@ -2075,8 +2077,15 @@ fn repaint(
 /// with, so `/farm` needs no arguments. Errors are the operator's to read,
 /// not a reason to drop the connection — being told "no [farm] table" and
 /// staying logged in is strictly better than being thrown out.
-fn start_farm(session: Arc<Session>, loop_name: Option<&str>) -> Result<Job, String> {
+///
+/// Refused outright when the profile has no username, because a runner
+/// that cannot recognise the character's own death line drives a corpse
+/// around the board. The check lives here rather than at the call sites
+/// so that a new caller cannot forget it. Public for the test that pins
+/// the refusal.
+pub fn start_farm(session: Arc<Session>, loop_name: Option<&str>) -> Result<Job, String> {
     let profile = session.profile();
+    needs_username(&profile)?;
     // A named loop replaces the circuit, not the policy: every knob in
     // the profile's [farm] table -- the hp gates, the dwell budgets, the
     // nav limits -- still applies to it. The library holds routes, not
@@ -2112,12 +2121,19 @@ fn start_farm(session: Arc<Session>, loop_name: Option<&str>) -> Result<Job, Str
 /// gone. Everything else — the hp gates, the dwell budgets, the nav
 /// limits — still comes from the profile's `[farm]` table, exactly as a
 /// named loop does. The library holds routes; the profile holds policy.
-fn start_roam(
+///
+/// Refused outright when the profile has no username, because a runner
+/// that cannot recognise the character's own death line drives a corpse
+/// around the board. The check lives here rather than at the call sites
+/// so that a new caller cannot forget it. Public for the test that pins
+/// the refusal.
+pub fn start_roam(
     session: Arc<Session>,
     walls: crate::roam::Walls,
     here: crate::lost::Fix,
 ) -> Result<Job, String> {
     let profile = session.profile();
+    needs_username(&profile)?;
     let cfg = profile.farm.clone().unwrap_or_default();
     let graph = Arc::new(crate::graph::RoomGraph::load(&cfg.content)?);
     // Where the character stands is what the region is measured from, so
@@ -2209,15 +2225,22 @@ fn spawn_run(
 /// does not change a walk already in flight: the mode is captured here,
 /// and a walk that changed its mind halfway would be very hard to
 /// reason about from the keyboard.
-fn start_go(
+///
+/// Refused outright when the profile has no username, because a runner
+/// that cannot recognise the character's own death line drives a corpse
+/// around the board. The check lives here rather than at the call sites
+/// so that a new caller cannot forget it. Public for the test that pins
+/// the refusal.
+pub fn start_go(
     session: Arc<Session>,
     graph: Arc<crate::graph::RoomGraph>,
     hint: Option<mud_core::content::RoomId>,
     to: mud_core::content::RoomId,
     bot: crate::bot::BotConfig,
     walking: bool,
-) -> Job {
+) -> Result<Job, String> {
     let profile = session.profile();
+    needs_username(&profile)?;
     let base = profile.farm.clone().unwrap_or_else(|| crate::farm::FarmConfig {
         // A profile with no [farm] table still gets a working `/go`; it
         // just needs to be told where the rooms live, and that is the
@@ -2254,23 +2277,30 @@ fn start_go(
         };
         let _ = tx.send(end);
     });
-    Job {
+    Ok(Job {
         handle,
         phase: rx,
         what: "go",
-    }
+    })
 }
 
 /// `/bank`. The same job shape as `start_go`, ending in a `Phase::Done`
 /// that says what was deposited and where, or why nothing was.
-fn start_bank(
+///
+/// Refused outright when the profile has no username, because a runner
+/// that cannot recognise the character's own death line drives a corpse
+/// around the board. The check lives here rather than at the call sites
+/// so that a new caller cannot forget it. Public for the test that pins
+/// the refusal.
+pub fn start_bank(
     session: Arc<Session>,
     graph: Arc<crate::graph::RoomGraph>,
     hint: Option<mud_core::content::RoomId>,
     bot: crate::bot::BotConfig,
     walking: bool,
-) -> Job {
+) -> Result<Job, String> {
     let profile = session.profile();
+    needs_username(&profile)?;
     let base = profile.farm.clone().unwrap_or_else(|| crate::farm::FarmConfig {
         content: content_path(&profile),
         ..Default::default()
@@ -2304,11 +2334,11 @@ fn start_bank(
         };
         let _ = tx.send(end);
     });
-    Job {
+    Ok(Job {
         handle,
         phase: rx,
         what: "bank",
-    }
+    })
 }
 
 /// The room database this profile uses: `[farm].content` when it has
@@ -2321,11 +2351,18 @@ fn start_bank(
 /// up to [`crate::lost::BUDGET`] steps. Everything that sends on this
 /// connection goes through the one job slot, so that the runner and the
 /// operator can never both be driving.
-fn start_where(
+///
+/// Refused outright when the profile has no username, because a runner
+/// that cannot recognise the character's own death line drives a corpse
+/// around the board. The check lives here rather than at the call sites
+/// so that a new caller cannot forget it. Public for the test that pins
+/// the refusal.
+pub fn start_where(
     session: Arc<Session>,
     graph: Arc<crate::graph::RoomGraph>,
     hint: Option<mud_core::content::RoomId>,
-) -> Job {
+) -> Result<Job, String> {
+    needs_username(&session.profile())?;
     session.set_pace(session.profile().pace());
     let (tx, rx) = tokio::sync::watch::channel(crate::farm::Phase::default());
     let handle = tokio::spawn(async move {
@@ -2348,11 +2385,11 @@ fn start_where(
         };
         let _ = tx.send(end);
     });
-    Job {
+    Ok(Job {
         handle,
         phase: rx,
         what: "where",
-    }
+    })
 }
 
 /// That default is RELATIVE, so a `play` started anywhere but the repo

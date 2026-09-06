@@ -1279,3 +1279,57 @@ fn a_missing_world_database_is_none_and_asked_again_next_time() {
     assert!(cache.world(nowhere).is_none());
 }
 
+
+/// Every job start refuses a character with no name, and the refusal
+/// says the same thing wherever it comes from. The gate is inside the
+/// start functions rather than at their call sites, which is what makes
+/// the map's roam and go refuse too.
+#[tokio::test]
+async fn every_job_start_refuses_without_a_username() {
+    use mud_client::graph::{GraphRoom, RoomGraph};
+    use mud_client::tui::{start_bank, start_farm, start_go, start_roam, start_where};
+    use std::sync::Arc;
+
+    let addr = banner_board().await;
+    let profile = Profile {
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        ..Default::default()
+    };
+    assert!(profile.username.is_empty(), "the character has no name");
+    let session = Arc::new(Session::connect(&profile, None).await.unwrap());
+    let here = mud_core::content::RoomId { map: 1, room: 1 };
+    let graph = Arc::new(RoomGraph::from_rooms(vec![(
+        here,
+        GraphRoom {
+            name: "Home".into(),
+            ..Default::default()
+        },
+    )]));
+    let bot = mud_client::bot::BotConfig::default();
+    let refusals = vec![
+        start_farm(session.clone(), None).err(),
+        start_roam(
+            session.clone(),
+            mud_client::roam::Walls::new([]),
+            mud_client::lost::Fix::Confirmed(here),
+        )
+        .err(),
+        start_go(
+            session.clone(),
+            graph.clone(),
+            Some(here),
+            here,
+            bot.clone(),
+            false,
+        )
+        .err(),
+        start_bank(session.clone(), graph.clone(), Some(here), bot, false).err(),
+        start_where(session.clone(), graph.clone(), Some(here)).err(),
+    ];
+    for refusal in refusals {
+        let why = refusal.expect("a job started without a username");
+        assert!(why.contains("username is empty"), "{why}");
+    }
+}
+
