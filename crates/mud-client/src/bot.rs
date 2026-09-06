@@ -1029,10 +1029,10 @@ impl Bot {
     }
 
     /// Is this denomination on the ignore list? The list alone, blind
-    /// to `auto_get` — consulted by the stop's floor model through
+    /// to `auto_get`. The stop's floor model consults it through
     /// `StopState::verdict`, whose bot has `auto_get` forced off so it
-    /// is not also a loot owner. One place reads `ignore_coins`; both
-    /// questions go through it.
+    /// is not also a loot owner. This is the one place that reads
+    /// `ignore_coins`, and `wants_coin` goes through it.
     pub fn ignores_coin(&self, denom: &str) -> bool {
         self.config.ignore_coins.iter().any(|d| d == denom)
     }
