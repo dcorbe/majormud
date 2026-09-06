@@ -1864,13 +1864,19 @@ async fn farm_loop(
     // reading so the first crossing is measured from what the character
     // carried when the run began. Judged only after a stop that
     // confirmed a coin pickup, see `coin_pickups`.
+    //
+    // An errand that deposits nothing switches the gate off for the
+    // rest of the run. The gate remembers readings, not refusals, so a
+    // purse still over the mark judges the same way at the next stop
+    // and would walk the character to the same bank for the same
+    // nothing, every stop, forever.
     let bank_cfg = session.profile().bank.clone();
     let mut gate = crate::bank::BankGate::new();
     if let Some(reading) = crate::bank::Reading::of(&session.contents()) {
         gate.seed(reading);
     }
     let mut judged_pickups = 0u32;
-    let mut bank_warned = false;
+    let mut bank_off = false;
 
     loop {
         // What to work next. A circuit hands over its whole lap in
@@ -1991,6 +1997,7 @@ async fn farm_loop(
                 StopEnd::TimeUp => return Ok((FarmEnd::TimeUp, stats)),
             }
             if bank_cfg.auto_deposit
+                && !bank_off
                 && stats.coin_pickups > judged_pickups
                 && let Some(content) = &content
             {
@@ -2034,10 +2041,10 @@ async fn farm_loop(
                             }
                         }
                         crate::bank::ErrandEnd::Nothing(why) => {
-                            if !bank_warned {
-                                eprintln!("bank: {why}");
-                                bank_warned = true;
-                            }
+                            eprintln!(
+                                "bank: {why}. Deposits are off for the rest of this run"
+                            );
+                            bank_off = true;
                         }
                     }
                 }

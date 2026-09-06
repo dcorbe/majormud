@@ -2022,6 +2022,9 @@ async fn a_pile_over_the_mark_sends_the_run_to_the_bank() {
         idle_poke_ms: 500,
         depart_at_percent: Some(0),
         travel_interrupts: 0,
+        // No world database: the errand reads the table the test
+        // handed the session, and this says so out loud.
+        content: std::path::PathBuf::from("no-such-content.sqlite"),
         ..FarmConfig::default()
     };
     let bot = BotConfig {
@@ -2071,4 +2074,113 @@ async fn a_pile_over_the_mark_sends_the_run_to_the_bank() {
     );
     let east = log.iter().position(|l| l == "e").expect("the walk to the bank");
     assert!(east < deposit, "deposited before arriving: {log:?}");
+}
+
+/// The board refuses the deposit. The errand ends without banking
+/// anything, and the gate goes off for the rest of the run: the second
+/// lap sweeps another pile over the same mark and stays where it is.
+#[tokio::test]
+async fn a_refused_deposit_switches_deposits_off_for_the_run() {
+    let carrying_1200 = "\r\ni\r\nYou are carrying 1200 copper farthings\r\nYou have no keys.\r\nWealth: 1200 copper farthings\r\nEncumbrance: 400/2400 - None [16%]\r\n[HP=30/MA=0]:";
+    let (addr, received) = scripted_board(vec![
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nYou have no keys.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        ("look", format!("\r\nlook{}", room_block("Guard Post", None, "north"))),
+        ("n", format!("\r\nn{}", room_block("Inner Ward", None, "north south east"))),
+        (
+            "n",
+            format!(
+                "\r\nn{}",
+                room_block_items("Keep", &["1200 copper farthings"], "south")
+            ),
+        ),
+        (
+            "get copper",
+            "\r\nget copper\r\nYou picked up 1200 copper farthings\r\n[HP=30/MA=0]:".into(),
+        ),
+        ("i", carrying_1200.into()),
+        ("s", format!("\r\ns{}", room_block("Inner Ward", None, "north south east"))),
+        ("e", format!("\r\ne{}", room_block("Bank of Godfrey", None, "west"))),
+        ("i", carrying_1200.into()),
+        // The refusal. Nothing leaves the purse.
+        (
+            "deposit 1200",
+            "\r\ndeposit 1200\r\nPlease specify a more reasonable amount.\r\n[HP=30/MA=0]:".into(),
+        ),
+        ("i", carrying_1200.into()),
+        // The second lap walks back from the bank and sweeps another
+        // pile. The purse is still over the mark, so only the switch
+        // keeps the character out of the bank.
+        ("w", format!("\r\nw{}", room_block("Inner Ward", None, "north south east"))),
+        (
+            "n",
+            format!(
+                "\r\nn{}",
+                room_block_items("Keep", &["1200 copper farthings"], "south")
+            ),
+        ),
+        (
+            "get copper",
+            "\r\nget copper\r\nYou picked up 1200 copper farthings\r\n[HP=30/MA=0]:".into(),
+        ),
+        // Scripted for a second judgement that must never happen. The
+        // board is answered in order and nothing follows this, so an
+        // entry the runner never asks for is the proof the gate is off.
+        ("i", carrying_1200.into()),
+    ])
+    .await;
+    let session = session_for(addr).await;
+    mud_client::farm::probe_sheet(&session, None).await;
+    session.set_content(Arc::new(content_with_bank()));
+
+    let graph = corridor_with_bank();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/3".into()],
+        loops: 2,
+        idle_poke_ms: 500,
+        depart_at_percent: Some(0),
+        travel_interrupts: 0,
+        content: std::path::PathBuf::from("no-such-content.sqlite"),
+        ..FarmConfig::default()
+    };
+    let bot = BotConfig {
+        auto_get: true,
+        max_hp: 30,
+        ..BotConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let (end, stats) = match tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, &bot, &cfg, None),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    {
+        Ok(out) => out,
+        Err(e) => panic!(
+            "a refused deposit must not end the run: {e:?}\nboard received: {:?}",
+            received.lock().unwrap()
+        ),
+    };
+    assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
+    assert_eq!(stats.deposits, 0, "{stats:?}");
+    assert_eq!(stats.deposited_farthings, 0, "{stats:?}");
+    assert_eq!(stats.coin_pickups, 2, "{stats:?}");
+
+    let log = received.lock().unwrap().clone();
+    let deposits: Vec<usize> = log
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| *l == "deposit 1200")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(deposits.len(), 1, "the deposit was retried: {log:?}");
+    assert!(
+        !log[deposits[0]..].contains(&"s".to_string()),
+        "the errand ran a second time: {log:?}"
+    );
 }

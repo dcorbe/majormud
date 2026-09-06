@@ -362,7 +362,23 @@ pub(crate) async fn errand(
             session, nav, graph, current, to, cfg, bot_config, threat, refusals, casts, clock,
             started, stats, phase, false,
         )
-        .await?;
+        .await;
+        // A bank the walk cannot reach ends the errand, not the run: a
+        // roam's fence can forbid the room `choose_bank` picked, and a
+        // configured `at` can sit behind a door no route opens. Every
+        // other error is the run's, so a disconnect still ends it.
+        // `travel` has already written `current` on the error path, so
+        // the next leg starts from wherever the walk stopped.
+        let leg = match leg {
+            Ok(leg) => leg,
+            Err(FarmError::Nav(e)) => {
+                return Ok(ErrandEnd::Nothing(format!(
+                    "no way to the bank at {}/{}: {e}",
+                    to.map, to.room
+                )));
+            }
+            Err(e) => return Err(e),
+        };
         match leg {
             LegEnd::Arrived { .. } => {}
             LegEnd::Died => return Ok(ErrandEnd::Died),
