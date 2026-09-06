@@ -111,6 +111,7 @@ fn a_walker_holds_nothing_until_handed_a_pack() {
 
     assert!(!Capabilities::default().has_item(ItemId(172)));
     assert!(!Capabilities::unrestricted().has_item(ItemId(172)));
+    assert!(Capabilities::world().has_item(ItemId(172)), "the map holds everything");
 
     let mut content = Content::default();
     content.add_item(Item {
@@ -325,4 +326,9 @@ fn an_item_gate_is_a_step_with_the_item_and_a_wall_without() {
         ..Capabilities::unrestricted()
     };
     assert_eq!(exit_cost_for(&gate, 3, edge, Direction::North, &holder), Cost::Steps(1));
+    assert_eq!(
+        exit_cost_for(&gate, 3, edge, Direction::North, &Capabilities::world()),
+        Cost::Steps(1),
+        "a map query is not a walker"
+    );
 }

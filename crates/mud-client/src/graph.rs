@@ -307,6 +307,15 @@ pub struct Capabilities {
     /// and a roam, the one thing that routes with the session's own
     /// capabilities, never crosses a door at all.
     pub bash_doors: bool,
+    /// The shape of the world rather than one character: every item
+    /// gate and key door is passable. Set only by the map queries
+    /// [`RoomGraph::route`] and [`RoomGraph::distances`], which have no
+    /// character to ask, and never by a walker. The spec's empty pack
+    /// rule is about walkers, a walk through a gate the pack cannot
+    /// pass strands the character, and a map answer that walls off a
+    /// gate refuses a patrol circuit at config load for a walk the
+    /// character may well be able to make.
+    pub every_item: bool,
 }
 
 impl Capabilities {
@@ -333,6 +342,17 @@ impl Capabilities {
             pack: None,
             // Every already existing cost is affordable, and bashing is a cost.
             bash_doors: true,
+            // A walker never holds everything.
+            every_item: false,
+        }
+    }
+
+    /// The world's own shape: [`Capabilities::unrestricted`] and every
+    /// item. For map queries only, see [`Capabilities::every_item`].
+    pub fn world() -> Capabilities {
+        Capabilities {
+            every_item: true,
+            ..Capabilities::unrestricted()
         }
     }
 
@@ -348,7 +368,7 @@ impl Capabilities {
 
     /// Does this walker hold the item, on the ring or in the pack?
     pub fn has_item(&self, id: mud_core::content::ItemId) -> bool {
-        self.pack.as_ref().is_some_and(|p| p.has(id))
+        self.every_item || self.pack.as_ref().is_some_and(|p| p.has(id))
     }
 }
 
@@ -1003,7 +1023,7 @@ impl RoomGraph {
     /// and it counts the steps of the route [`RoomGraph::route`] would
     /// actually pick — the two run the same search, so they cannot drift.
     pub fn distances(&self, from: RoomId) -> BTreeMap<RoomId, usize> {
-        self.distances_within_for(from, &|_, _| true, &Capabilities::unrestricted())
+        self.distances_within_for(from, &|_, _| true, &Capabilities::world())
     }
 
     /// As [`RoomGraph::distances`], over the edges `allow` accepts, for
@@ -1031,7 +1051,7 @@ impl RoomGraph {
     /// Cheapest by [`exit_cost`], not shortest: a walk that saves three
     /// streets by gambling on a hidden exit has not saved anything.
     pub fn route(&self, from: RoomId, to: RoomId) -> Option<Vec<Direction>> {
-        self.route_within_for(from, to, &|_, _| true, &Capabilities::unrestricted())
+        self.route_within_for(from, to, &|_, _| true, &Capabilities::world())
     }
 
     /// As [`RoomGraph::route`], over the edges `allow` accepts.
