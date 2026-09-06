@@ -1181,7 +1181,6 @@ fn stop_state(linger_secs: u64) -> StopState {
 fn combat_bot() -> Bot {
     Bot::new(BotConfig {
         auto_combat: true,
-        auto_get: true,
         ignore: vec!["town guard".into()],
         ..BotConfig::default()
     })

@@ -1022,11 +1022,19 @@ impl Bot {
     }
 
     /// Would the policy pick up this denomination? `auto_get` and not
-    /// on the ignore list. Every sweep site asks this one question:
-    /// the render sweep, the drop-line sweep, `has_loot`, and the
-    /// stop's floor model through `StopState::verdict`.
+    /// on the ignore list. The render sweep, the drop-line sweep, and
+    /// `has_loot` all ask this one question.
     pub fn wants_coin(&self, denom: &str) -> bool {
-        self.config.auto_get && !self.config.ignore_coins.iter().any(|d| d == denom)
+        self.config.auto_get && !self.ignores_coin(denom)
+    }
+
+    /// Is this denomination on the ignore list? The list alone, blind
+    /// to `auto_get` — consulted by the stop's floor model through
+    /// `StopState::verdict`, whose bot has `auto_get` forced off so it
+    /// is not also a loot owner. One place reads `ignore_coins`; both
+    /// questions go through it.
+    pub fn ignores_coin(&self, denom: &str) -> bool {
+        self.config.ignore_coins.iter().any(|d| d == denom)
     }
 
     /// Would we swing at this name at all? The toggle, the case rule that

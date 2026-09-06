@@ -1949,4 +1949,13 @@ fn a_floor_of_ignored_coins_is_not_worth_stopping_for() {
         !Bot::new(BotConfig::default()).wants_coin("silver"),
         "with auto_get off nothing is wanted"
     );
+    let ignoring_with_auto_get_off = Bot::new(BotConfig {
+        ignore_coins: vec!["copper".into()],
+        ..BotConfig::default()
+    });
+    assert!(
+        ignoring_with_auto_get_off.ignores_coin("copper"),
+        "the list is read on its own, regardless of the toggle"
+    );
+    assert!(!ignoring_with_auto_get_off.ignores_coin("silver"));
 }

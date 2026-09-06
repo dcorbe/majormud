@@ -1059,7 +1059,7 @@ impl StopState {
         // monster that would have taken a swing gets a round of grace
         // instead. `LOOT_TRIES` caps the attempts, so a refused sweep
         // (encumbrance) cannot hold the stop.
-        if let Some(pile) = here.unswept_wanted(LOOT_TRIES, &|denom| bot.wants_coin(denom)) {
+        if let Some(pile) = here.unswept_wanted(LOOT_TRIES, &|denom| !bot.ignores_coin(denom)) {
             return Verdict::Loot {
                 denom: pile.denom.clone(),
             };
@@ -2993,14 +2993,21 @@ async fn farm_stop(
     let mut events = session.events();
     crate::session::drain(&mut events, |_| {});
 
-    // Two ways a pile's `get` can be sent here: the bot's own render
-    // and drop-line sweep, and `Verdict::Loot` reading `Here`'s floor
-    // model. Both now ask the same `wants_coin`, so an ignored
-    // denomination is silent in both, and the `gate.is_idle()` guard on
-    // the `Loot` branch below is what keeps a wanted one a single send
-    // -- whichever path sees the pile first queues it, and the other
-    // finds the gate already busy.
-    let stop_config = bot_config.clone();
+    // One loot owner per path. `Here` models the floor at a stop and
+    // `Verdict::Loot` is what sweeps it, so the stop's bot must not
+    // also react to drop lines -- two owners means two `get`s for one
+    // pile, and the second is a wasted command with no acknowledgement
+    // to retire it.
+    //
+    // Deliberately NOT the shared `bot_config`: the travel guard's
+    // sighting bot reads `auto_get` through `Bot::has_loot` to decide
+    // whether a listed pile is worth STOPPING for, and clearing it
+    // there would silently walk legs past money again. `Bot` also keeps
+    // its own sweeping for the TUI assist, which has no `Here` at all.
+    let stop_config = crate::bot::BotConfig {
+        auto_get: false,
+        ..bot_config.clone()
+    };
     let mut bot =
         crate::bot::Bot::with_refusals(stop_config.clone(), threat.clone(), refusals.clone())
             .with_pack(session.pack_handle());
