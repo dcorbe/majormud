@@ -16,11 +16,13 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Interactive session against a target board
+    /// Interactive session against a target board, or the lobby when no
+    /// profile is given
     Play {
-        /// Character profile (TOML)
+        /// Character profile (TOML). Without one the client starts in
+        /// the lobby: `/connect host[:port]`, then `/save <file>`.
         #[arg(long)]
-        profile: PathBuf,
+        profile: Option<PathBuf>,
         /// Capture basename: writes `<capture>.raw` and `<capture>_timing.log`
         #[arg(long)]
         capture: Option<PathBuf>,
@@ -86,3 +88,4 @@ pub enum Command {
         quiet: bool,
     },
 }
+

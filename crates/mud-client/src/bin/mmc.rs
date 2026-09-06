@@ -10,7 +10,9 @@ use mud_client::session::{Capture, Session};
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        Command::Play { profile, capture } => play_command(&profile, capture.as_deref()),
+        Command::Play { profile, capture } => {
+            play_command(profile.as_deref(), capture.as_deref())
+        }
         Command::Run {
             script,
             profile,
@@ -33,13 +35,19 @@ fn main() -> ExitCode {
     }
 }
 
-fn play_command(profile_path: &std::path::Path, capture: Option<&std::path::Path>) -> ExitCode {
-    let profile = match Profile::load(profile_path) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("profile {}: {e}", profile_path.display());
-            return ExitCode::FAILURE;
-        }
+fn play_command(
+    profile_path: Option<&std::path::Path>,
+    capture: Option<&std::path::Path>,
+) -> ExitCode {
+    let settings = match profile_path {
+        Some(path) => match mud_client::settings::Settings::load(path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("profile {}: {e}", path.display());
+                return ExitCode::FAILURE;
+            }
+        },
+        None => mud_client::settings::Settings::default(),
     };
     let capture = capture.map(|base| Capture {
         raw: base.with_extension("raw"),
@@ -53,20 +61,7 @@ fn play_command(profile_path: &std::path::Path, capture: Option<&std::path::Path
         }
     };
     rt.block_on(async {
-        let session = match Session::connect(&profile, capture).await {
-            Ok(s) => Arc::new(s),
-            Err(e) => {
-                eprintln!("connect {}:{}: {e}", profile.host, profile.port);
-                return ExitCode::FAILURE;
-            }
-        };
-        // Interactive play is not paced. `pace_ms` is flood control,
-        // which is for automation; applied to a person it delays every
-        // command after the first in a burst by the full interval, so a
-        // farm-tuned profile makes walking cost 2.5s a step. The session
-        // keeps the REAL profile, so `/farm` can put its pace back.
-        session.set_pace(std::time::Duration::ZERO);
-        match mud_client::tui::play(session).await {
+        match mud_client::tui::run(settings, capture).await {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("terminal error: {e}");
@@ -637,5 +632,4 @@ fn append_to_stem(base: &std::path::Path, suffix: &str) -> std::path::PathBuf {
     s.push(suffix);
     std::path::PathBuf::from(s)
 }
-
 

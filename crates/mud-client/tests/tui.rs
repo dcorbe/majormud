@@ -1192,3 +1192,89 @@ fn connect_target_defaults_the_port_to_telnet() {
     assert!(connect_target("").is_err());
 }
 
+use mud_client::session::Session;
+use mud_client::tui::{ContentCache, LobbyStep, lobby_step};
+
+async fn banner_board() -> std::net::SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+        let (mut sock, _) = listener.accept().await.unwrap();
+        sock.write_all(b"Welcome to the Test Board\r\nUsername: ").await.unwrap();
+        let mut hold = [0u8; 64];
+        use tokio::io::AsyncReadExt;
+        let _ = sock.read(&mut hold).await;
+    });
+    addr
+}
+
+/// The lobby's whole job: settings, then `/connect`, then a session that
+/// sees the board. The terminal loop around it cannot be driven from a
+/// test, so this drives the seam it is built on.
+#[tokio::test]
+async fn the_lobby_sets_host_and_port_then_connects_and_sees_the_banner() {
+    let addr = banner_board().await;
+    let mut settings = Settings::default();
+    let mut armed = false;
+    let (step, note) = lobby_step(KeyOutcome::Send("look".into()), &mut settings, &mut armed);
+    assert!(matches!(step, LobbyStep::Stay));
+    assert!(note.unwrap().contains("not connected"));
+    let (step, _) = lobby_step(slash(&format!("/connect {}:{}", addr.ip(), addr.port())).unwrap(), &mut settings, &mut armed);
+    assert!(matches!(step, LobbyStep::Connect));
+    assert_eq!(settings.profile().host, addr.ip().to_string());
+    assert_eq!(settings.profile().port, addr.port());
+    assert!(settings.dirty(), "the host and port are settings, so /save keeps them");
+    let session = Session::connect(settings.profile(), None).await.unwrap();
+    session.expect("Welcome to the Test Board", std::time::Duration::from_secs(5)).await.unwrap();
+}
+
+#[test]
+fn the_lobby_refuses_to_connect_nowhere_and_refuses_jobs() {
+    let mut settings = Settings::default();
+    let mut armed = false;
+    let (step, note) = lobby_step(KeyOutcome::Connect { target: None }, &mut settings, &mut armed);
+    assert!(matches!(step, LobbyStep::Stay));
+    assert!(note.unwrap().contains("no host"));
+    let (step, note) = lobby_step(KeyOutcome::StartFarm { loop_name: None }, &mut settings, &mut armed);
+    assert!(matches!(step, LobbyStep::Stay));
+    assert!(note.unwrap().contains("not connected"));
+}
+
+#[test]
+fn quit_in_the_lobby_asks_once_while_unsaved() {
+    let mut settings = Settings::default();
+    let mut armed = false;
+    settings.set("host", "\"h\"").unwrap();
+    let (step, note) = lobby_step(KeyOutcome::Quit, &mut settings, &mut armed);
+    assert!(matches!(step, LobbyStep::Stay));
+    assert!(note.unwrap().contains("unsaved"));
+    let (step, _) = lobby_step(KeyOutcome::Quit, &mut settings, &mut armed);
+    assert!(matches!(step, LobbyStep::Quit));
+    let mut armed = false;
+    let (step, _) = lobby_step(KeyOutcome::QuitNow, &mut settings, &mut armed);
+    assert!(matches!(step, LobbyStep::Quit), "Ctrl-Q never asks");
+    let mut clean = Settings::default();
+    let (step, _) = lobby_step(KeyOutcome::Quit, &mut clean, &mut armed);
+    assert!(matches!(step, LobbyStep::Quit), "nothing unsaved, nothing to ask");
+}
+
+#[test]
+fn a_command_between_two_quits_disarms_the_second() {
+    let mut settings = Settings::default();
+    settings.set("host", "\"h\"").unwrap();
+    let mut armed = false;
+    let (step, _) = lobby_step(KeyOutcome::Quit, &mut settings, &mut armed);
+    assert!(matches!(step, LobbyStep::Stay));
+    let _ = lobby_step(KeyOutcome::SetList { pattern: String::new() }, &mut settings, &mut armed);
+    let (step, _) = lobby_step(KeyOutcome::Quit, &mut settings, &mut armed);
+    assert!(matches!(step, LobbyStep::Stay), "the refusal is for two /quit in a row");
+}
+
+#[test]
+fn a_missing_world_database_is_none_and_asked_again_next_time() {
+    let mut cache = ContentCache::default();
+    let nowhere = std::path::Path::new("nowhere/at/all.sqlite");
+    assert!(cache.world(nowhere).is_none());
+    assert!(cache.world(nowhere).is_none());
+}

@@ -131,3 +131,23 @@ fn farm_brief_and_quiet_are_optional_and_exclusive() {
         Cli::try_parse_from(["mmc", "farm", "--profile", "p.toml", "--brief", "--quiet"]).is_err()
     );
 }
+
+#[test]
+fn play_without_a_profile_opens_the_lobby() {
+    use clap::Parser;
+    use mud_client::cli::Command;
+    let cli = Cli::parse_from(["mmc", "play"]);
+    match cli.command {
+        Command::Play { profile, capture } => {
+            assert!(profile.is_none());
+            assert!(capture.is_none());
+        }
+        _ => panic!("expected play"),
+    }
+    let cli = Cli::parse_from(["mmc", "play", "--profile", "chars/dan.toml"]);
+    match cli.command {
+        Command::Play { profile, .. } => assert_eq!(profile.unwrap().to_str(), Some("chars/dan.toml")),
+        _ => panic!("expected play"),
+    }
+}
+

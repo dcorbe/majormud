@@ -137,13 +137,244 @@ impl Default for InputEditor {
     }
 }
 
-/// Run the interactive client until the user quits (Ctrl-Q or /quit).
+/// Why `play` returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayEnd {
+    /// The operator quit. The program ends.
+    Quit,
+    /// The line closed, by the board or by `/disconnect`. Back to the
+    /// lobby with the settings intact.
+    Closed,
+}
+
+/// The lobby's answer to one submitted line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LobbyStep {
+    Stay,
+    Connect,
+    Quit,
+}
+
+/// One outcome against the lobby: settings commands, `/connect`, `/help`
+/// and `/quit`. Everything that needs a board says so. `quit_armed` is
+/// the unsaved-settings refusal: set by a refused `/quit`, cleared by
+/// any other command, so two `/quit` in a row exit.
+pub fn lobby_step(
+    outcome: KeyOutcome,
+    settings: &mut crate::settings::Settings,
+    quit_armed: &mut bool,
+) -> (LobbyStep, Option<String>) {
+    if !matches!(outcome, KeyOutcome::Quit | KeyOutcome::Continue) {
+        *quit_armed = false;
+    }
+    if let Some(applied) = apply_settings(&outcome, settings) {
+        return (LobbyStep::Stay, Some(applied.note));
+    }
+    match outcome {
+        KeyOutcome::Continue => (LobbyStep::Stay, None),
+        KeyOutcome::QuitNow => (LobbyStep::Quit, None),
+        KeyOutcome::Quit => {
+            if settings.dirty() && !*quit_armed {
+                *quit_armed = true;
+                (LobbyStep::Stay, Some("-- unsaved settings: /save, or /quit again --".into()))
+            } else {
+                (LobbyStep::Quit, None)
+            }
+        }
+        KeyOutcome::Connect { target } => {
+            if let Some(target) = target {
+                let (host, port) = match connect_target(&target) {
+                    Ok(t) => t,
+                    Err(e) => return (LobbyStep::Stay, Some(format!("-- {e} --"))),
+                };
+                if let Err(e) = settings
+                    .set("host", &format!("{host:?}"))
+                    .and_then(|()| settings.set("port", &port.to_string()))
+                {
+                    return (LobbyStep::Stay, Some(format!("-- connect: {e} --")));
+                }
+            }
+            if settings.profile().host.is_empty() {
+                return (LobbyStep::Stay, Some("-- connect: no host: /connect host[:port] --".into()));
+            }
+            (LobbyStep::Connect, None)
+        }
+        KeyOutcome::Help => (LobbyStep::Stay, Some(help_text().to_string())),
+        KeyOutcome::Note(text) | KeyOutcome::Refuse(text) => (LobbyStep::Stay, Some(text)),
+        KeyOutcome::Send(_)
+        | KeyOutcome::Raw(_)
+        | KeyOutcome::Disconnect
+        | KeyOutcome::StartFarm { .. }
+        | KeyOutcome::Loops { .. }
+        | KeyOutcome::ImportLoop { .. }
+        | KeyOutcome::TakeOver
+        | KeyOutcome::ToggleAssist
+        | KeyOutcome::Go { .. }
+        | KeyOutcome::Bank
+        | KeyOutcome::Where
+        | KeyOutcome::Room { .. }
+        | KeyOutcome::Map { .. } => (
+            LobbyStep::Stay,
+            Some("-- not connected: /connect host[:port] --".into()),
+        ),
+        KeyOutcome::SetList { .. }
+        | KeyOutcome::Set { .. }
+        | KeyOutcome::Unset { .. }
+        | KeyOutcome::Save { .. }
+        | KeyOutcome::Load { .. } => (LobbyStep::Stay, None),
+    }
+}
+
+/// Run the client until the operator quits. A loop of two states: the
+/// lobby, which has no session, and `play`, which has one. A profile
+/// with a host connects at once. A line that closes lands in the lobby
+/// with the settings intact. The terminal is set up once, here, and put
+/// back once, here.
+pub async fn run(
+    mut settings: crate::settings::Settings,
+    mut capture: Option<crate::session::Capture>,
+) -> std::io::Result<()> {
+    crossterm::terminal::enable_raw_mode()?;
+    let (key_tx, mut key_rx) = tokio::sync::mpsc::unbounded_channel();
+    std::thread::spawn(move || {
+        while let Ok(ev) = crossterm::event::read() {
+            if key_tx.send(ev).is_err() {
+                break;
+            }
+        }
+    });
+    let mut out = std::io::stdout();
+    let (_, rows) = crossterm::terminal::size()?;
+    setup_region(&mut out, rows)?;
+    for warning in settings.warnings() {
+        note(&mut out, &format!("-- {warning} --"))?;
+    }
+    let mut cache = ContentCache::default();
+    let mut connect_now = !settings.profile().host.is_empty();
+    let result = loop {
+        if !connect_now {
+            match lobby(&mut out, &mut key_rx, &mut settings).await {
+                Ok(LobbyStep::Connect) => {}
+                Ok(_) => break Ok(()),
+                Err(e) => break Err(e),
+            }
+        }
+        connect_now = false;
+        let profile = settings.profile().clone();
+        // A capture names two files and creating them truncates, so it
+        // records the first connection only.
+        let session = match Session::connect(&profile, capture.take()).await {
+            Ok(s) => Arc::new(s),
+            Err(e) => {
+                note(&mut out, &format!("-- connect {}:{}: {e} --", profile.host, profile.port))?;
+                continue;
+            }
+        };
+        // Interactive play is not paced. `pace_ms` is flood control,
+        // which is for automation. The session keeps the real profile,
+        // so `/farm` can put its pace back.
+        session.set_pace(std::time::Duration::ZERO);
+        match play(session, &mut settings, &mut cache, &mut key_rx, &mut out).await {
+            Ok(PlayEnd::Quit) => break Ok(()),
+            Ok(PlayEnd::Closed) => note(&mut out, "-- disconnected. /connect to go back --")?,
+            Err(e) => break Err(e),
+        }
+    };
+    let (_, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    let _ = out.write_all(b"\x1b[r");
+    let _ = out.write_all(format!("\x1b[{rows};1H\r\n").as_bytes());
+    let _ = out.flush();
+    let _ = crossterm::terminal::disable_raw_mode();
+    result
+}
+
+/// The client with no session: an input line that takes the settings
+/// commands, `/connect`, `/help` and `/quit`.
+async fn lobby(
+    out: &mut std::io::Stdout,
+    key_rx: &mut tokio::sync::mpsc::UnboundedReceiver<TermEvent>,
+    settings: &mut crate::settings::Settings,
+) -> std::io::Result<LobbyStep> {
+    let (mut cols, mut rows) = crossterm::terminal::size()?;
+    setup_region(out, rows)?;
+    let mut editor = InputEditor::new();
+    let mut passthrough = false;
+    let mut quit_armed = false;
+    lobby_paint(out, settings, &editor, cols, rows)?;
+    loop {
+        let Some(ev) = key_rx.recv().await else {
+            return Ok(LobbyStep::Quit);
+        };
+        match ev {
+            TermEvent::Resize(w, h) => {
+                cols = w;
+                rows = h;
+                setup_region(out, rows)?;
+            }
+            TermEvent::Key(key) if key.kind != KeyEventKind::Release => {
+                let outcome = handle_key(&key, &mut editor, &mut passthrough, false);
+                // There is no board to pass keys through to.
+                passthrough = false;
+                let (step, text) = lobby_step(outcome, settings, &mut quit_armed);
+                if let Some(text) = text {
+                    note(out, &text)?;
+                }
+                if step != LobbyStep::Stay {
+                    return Ok(step);
+                }
+            }
+            _ => {}
+        }
+        lobby_paint(out, settings, &editor, cols, rows)?;
+    }
+}
+
+/// The lobby's bar and input line. The same two rows `play` paints,
+/// with nothing to report but where `/connect` would go.
+fn lobby_paint(
+    out: &mut std::io::Stdout,
+    settings: &crate::settings::Settings,
+    editor: &InputEditor,
+    cols: u16,
+    rows: u16,
+) -> std::io::Result<()> {
+    let profile = settings.profile();
+    let mut status = format!("not connected  {}:{}", profile.host, profile.port);
+    if settings.dirty() {
+        status.push_str("  unsaved");
+    }
+    let width = cols as usize;
+    let status: String = status.chars().take(width).collect();
+    let status = format!("{status:width$}");
+    let status_row = rows.saturating_sub(1).max(1);
+    let input_row = rows.max(1);
+    let line = editor.line();
+    let cursor_col = 3 + editor.cursor() as u16;
+    out.write_all(
+        format!(
+            "\x1b[{status_row};1H\x1b[2K\x1b[7m{status}\x1b[0m\
+             \x1b[{input_row};1H\x1b[2K> {line}\x1b[{input_row};{cursor_col}H"
+        )
+        .as_bytes(),
+    )?;
+    out.flush()
+}
+
+/// One connected session, until it closes or the operator quits.
 ///
 /// Layout: rows 1..h-2 are a DECSTBM scroll region receiving the raw
 /// server stream verbatim; row h-1 is the status bar; row h is the
 /// input line. The server-side cursor position is kept with DECSC/DECRC
 /// around every passthrough write.
-pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
+async fn play(
+    session: Arc<Session>,
+    settings: &mut crate::settings::Settings,
+    cache: &mut ContentCache,
+    key_rx: &mut tokio::sync::mpsc::UnboundedReceiver<TermEvent>,
+    // Reborrowed all through the loop, hence the `mut` binding:
+    // `&mut out` has to name a fresh borrow each time.
+    mut out: &mut std::io::Stdout,
+) -> std::io::Result<PlayEnd> {
     let mut raw_rx = session.raw();
     let mut events = session.events();
     let mut state_rx = session.state();
@@ -152,10 +383,12 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
         crate::dialect::Target::RustServer => "rust",
     };
 
-    crossterm::terminal::enable_raw_mode()?;
     let (mut cols, mut rows) = crossterm::terminal::size()?;
     let mut editor = InputEditor::new();
     let mut passthrough = false;
+    // The unsaved-settings refusal, exactly as the lobby makes it: set
+    // by a refused `/quit`, cleared by any other command.
+    let mut quit_armed = false;
     // Set while the runner drives this session; carries its phase for the
     // status bar and the handle needed to call it off.
     let mut job: Option<Job> = None;
@@ -177,7 +410,8 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     // probe's class/magictype skip (Task 5 of `one-path-to-content`).
     // Loaded ahead of the assist below, so its first build reads the
     // sheet's heal marks the same as every rebuild after it.
-    let (graph, nav, spawns, content) = finish_locator(locator(&session.profile()), &session);
+    let (graph, nav, spawns, content) =
+        finish_locator(cache.world(&content_path(&session.profile())), &session);
     let durations = content.as_ref().map(|c| crate::views::spell_durations(c)).unwrap_or_default();
     // The assist: a bot that fights and loots, rests, heals and hides
     // BESIDE the operator while no farm runs. `/bot` toggles it; the
@@ -185,7 +419,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     // so its latches start clean.
     let mut assist: Option<crate::bot::Bot> = None;
     let mut assist_heal_state: Option<crate::sheet::HealState> = None;
-    let assist_config = assist_config_for(&session.profile());
+    let mut assist_config = assist_config_for(&session.profile());
     // Rests the assist sends and the spells its book was last read to
     // hold. Both live beside the bot and are reset with it, because both
     // describe the bot that is running now.
@@ -234,21 +468,10 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     // of this clock, compile cleanly, and reset nothing.
     let mut exp_since = std::time::Instant::now();
 
-    // Key events come from a blocking reader thread.
-    let (key_tx, mut key_rx) = tokio::sync::mpsc::unbounded_channel();
-    std::thread::spawn(move || {
-        while let Ok(ev) = crossterm::event::read() {
-            if key_tx.send(ev).is_err() {
-                break;
-            }
-        }
-    });
-
-    let mut out = std::io::stdout();
     setup_region(&mut out, rows)?;
     repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_hour(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
 
-    let result = loop {
+    loop {
         tokio::select! {
             bytes = raw_rx.recv() => match bytes {
                 Ok(bytes) => {
@@ -260,7 +483,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                     repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_hour(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(_) => break Ok(()), // disconnected
+                Err(_) => break Ok(PlayEnd::Closed), // disconnected
             },
             ev = events.recv() => {
                 // The display comes from raw passthrough, so nothing is
@@ -334,7 +557,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                 }
             }
             changed = state_rx.changed() => {
-                if changed.is_err() { break Ok(()); }
+                if changed.is_err() { break Ok(PlayEnd::Closed); }
                 if let (Some(nav), Some(room)) = (nav.as_ref(), state_rx.borrow().room.clone()) {
                     here = crate::lost::refix(nav, here, &room);
                     // The shadow model keys identity on the printed name
@@ -414,7 +637,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                 }
             }
             ev = key_rx.recv() => {
-                let Some(ev) = ev else { break Ok(()) };
+                let Some(ev) = ev else { break Ok(PlayEnd::Quit) };
                 match ev {
                     TermEvent::Resize(w, h) => {
                         cols = w;
@@ -426,23 +649,59 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                         let was = passthrough;
                         let outcome =
                             handle_key(&key, &mut editor, &mut passthrough, job.is_some());
+                        if !matches!(outcome, KeyOutcome::Quit | KeyOutcome::Continue) {
+                            quit_armed = false;
+                        }
+                        if let Some(applied) = apply_settings(&outcome, settings) {
+                            note(&mut out, &applied.note)?;
+                            if applied.profile_changed {
+                                session.set_profile(settings.profile().clone());
+                            }
+                            if applied.bot_changed {
+                                assist_config = assist_config_for(settings.profile());
+                                if assist.is_some() {
+                                    let (bot, heal) = new_assist(&session, &assist_config);
+                                    assist = Some(bot);
+                                    assist_heal_state = Some(heal);
+                                    assist_watch = crate::farm::HealWatch::new(&assist_config, &crate::farm::FarmConfig::default());
+                                    assist_book_seen = usize::MAX;
+                                    note(&mut out, "-- bot assist rebuilt with the new settings --")?;
+                                }
+                            }
+                        }
                         match outcome {
-                            KeyOutcome::Quit => break Ok(()),
-                            KeyOutcome::QuitNow => break Ok(()),
+                            KeyOutcome::Quit => {
+                                if settings.dirty() && !quit_armed {
+                                    quit_armed = true;
+                                    note(&mut out, "-- unsaved settings: /save, or /quit again --")?;
+                                } else {
+                                    break Ok(PlayEnd::Quit);
+                                }
+                            }
+                            KeyOutcome::QuitNow => break Ok(PlayEnd::Quit),
                             KeyOutcome::Send(line) => {
                                 session.send(&line);
                             }
                             KeyOutcome::Raw(bytes) => session.send_raw(&bytes),
                             KeyOutcome::Note(text) => note(&mut out, &text)?,
+                            KeyOutcome::Disconnect => {
+                                // Nothing else to tidy: the loop ends
+                                // here and `run` drops the session with
+                                // its phase channel.
+                                if let Some(j) = job.take() {
+                                    j.handle.abort();
+                                }
+                                session.close();
+                                break Ok(PlayEnd::Closed);
+                            }
+                            KeyOutcome::Connect { .. } => {
+                                note(&mut out, "-- already connected: /disconnect first --")?;
+                            }
                             KeyOutcome::SetList { .. }
                             | KeyOutcome::Set { .. }
                             | KeyOutcome::Unset { .. }
                             | KeyOutcome::Save { .. }
-                            | KeyOutcome::Load { .. }
-                            | KeyOutcome::Connect { .. }
-                            | KeyOutcome::Disconnect => {
-                                note(&mut out, "-- not wired yet --")?;
-                            }
+                            | KeyOutcome::Load { .. } => {}
                             KeyOutcome::Loops { name } => {
                                 note(&mut out, &describe_loops(graph.as_deref(), name.as_deref()).join("\n"))?;
                             }
@@ -456,9 +715,11 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                 }.join("\n"))?;
                             }
                             KeyOutcome::StartFarm { loop_name } => {
-                                // Reachable mid-run now that the editor
-                                // works while farming: one job only.
-                                if let Some(j) = job.as_ref() {
+                                if let Err(why) = needs_username(&session.profile()) {
+                                    note(&mut out, &format!("-- {why} --"))?;
+                                } else if let Some(j) = job.as_ref() {
+                                    // Reachable mid-run now that the editor
+                                    // works while farming: one job only.
                                     note(&mut out, &format!("-- {} already running (Ctrl-F to take over) --", j.what))?;
                                 } else {
                                     match start_farm(session.clone(), loop_name.as_deref()) {
@@ -483,7 +744,9 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                 }
                             }
                             KeyOutcome::Go { target } => {
-                                if let Some(j) = job.as_ref() {
+                                if let Err(why) = needs_username(&session.profile()) {
+                                    note(&mut out, &format!("-- {why} --"))?;
+                                } else if let Some(j) = job.as_ref() {
                                     note(&mut out, &format!("-- {} already running (Ctrl-F to take over) --", j.what))?;
                                 } else {
                                     match graph.as_ref() {
@@ -532,7 +795,9 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                 }
                             }
                             KeyOutcome::Bank => {
-                                if let Some(j) = job.as_ref() {
+                                if let Err(why) = needs_username(&session.profile()) {
+                                    note(&mut out, &format!("-- {why} --"))?;
+                                } else if let Some(j) = job.as_ref() {
                                     note(&mut out, &format!("-- {} already running (Ctrl-F to take over) --", j.what))?;
                                 } else {
                                     match graph.as_ref() {
@@ -650,7 +915,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                                 crate::mapview::run(
                                                     &session,
                                                     &mut view,
-                                                    &mut key_rx,
+                                                    key_rx,
                                                     &mut raw_rx,
                                                     &mut events,
                                                     nav.as_ref(),
@@ -677,7 +942,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                                 note(&mut out, &format!("-- {why} --"))?;
                                             }
                                             match exit.action {
-                                                crate::mapview::ViewAction::Quit => break Ok(()),
+                                                crate::mapview::ViewAction::Quit => break Ok(PlayEnd::Quit),
                                                 crate::mapview::ViewAction::Save(l) => {
                                                     let dir = crate::loops::dir();
                                                     note(&mut out, &match l.save(&dir) {
@@ -748,38 +1013,46 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                                 }
                             }
                             KeyOutcome::ToggleAssist => {
-                                let on = assist.take().is_none();
-                                if on {
-                                    // Fresh on every start: latches from
-                                    // an earlier stretch describe fights
-                                    // that are over.
-                                    let (bot, heal) = new_assist(&session, &assist_config);
-                                    assist = Some(bot);
-                                    assist_heal_state = Some(heal);
+                                // Only on the way ON: an assist already
+                                // running has to be allowed to stop.
+                                if assist.is_none()
+                                    && let Err(why) = needs_username(&session.profile())
+                                {
+                                    note(&mut out, &format!("-- {why} --"))?;
                                 } else {
-                                    assist_heal_state = None;
-                                }
-                                assist_watch =
-                                    crate::farm::HealWatch::new(&assist_config, &crate::farm::FarmConfig::default());
-                                assist_book_seen = usize::MAX;
-                                // A running job owns the connection and
-                                // never hears the assist, so the toggle
-                                // reaches it the only way it can: the
-                                // session's fight switch, which its
-                                // travel guard reads at every decision.
-                                // A walk already stopped to defend
-                                // finishes that defence either way.
-                                match (&job, on) {
-                                    (Some(j), true) => {
-                                        session.travel_fights().set(true);
-                                        note(&mut out, &format!("-- bot assist on: the {} fights what it meets from here (/bot to stop) --", j.what))?;
+                                    let on = assist.take().is_none();
+                                    if on {
+                                        // Fresh on every start: latches from
+                                        // an earlier stretch describe fights
+                                        // that are over.
+                                        let (bot, heal) = new_assist(&session, &assist_config);
+                                        assist = Some(bot);
+                                        assist_heal_state = Some(heal);
+                                    } else {
+                                        assist_heal_state = None;
                                     }
-                                    (Some(j), false) => {
-                                        session.travel_fights().set(false);
-                                        note(&mut out, &format!("-- bot assist off: the {} walks past fights from here --", j.what))?;
+                                    assist_watch =
+                                        crate::farm::HealWatch::new(&assist_config, &crate::farm::FarmConfig::default());
+                                    assist_book_seen = usize::MAX;
+                                    // A running job owns the connection and
+                                    // never hears the assist, so the toggle
+                                    // reaches it the only way it can: the
+                                    // session's fight switch, which its
+                                    // travel guard reads at every decision.
+                                    // A walk already stopped to defend
+                                    // finishes that defence either way.
+                                    match (&job, on) {
+                                        (Some(j), true) => {
+                                            session.travel_fights().set(true);
+                                            note(&mut out, &format!("-- bot assist on: the {} fights what it meets from here (/bot to stop) --", j.what))?;
+                                        }
+                                        (Some(j), false) => {
+                                            session.travel_fights().set(false);
+                                            note(&mut out, &format!("-- bot assist off: the {} walks past fights from here --", j.what))?;
+                                        }
+                                        (None, true) => note(&mut out, "-- bot assist on: fighting and looting beside you (/bot to stop) --")?,
+                                        (None, false) => note(&mut out, "-- bot assist off --")?,
                                     }
-                                    (None, true) => note(&mut out, "-- bot assist on: fighting and looting beside you (/bot to stop) --")?,
-                                    (None, false) => note(&mut out, "-- bot assist off --")?,
                                 }
                             }
                             KeyOutcome::Continue => {}
@@ -800,14 +1073,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                 }
             }
         }
-    };
-
-    // Reset scroll region and leave the terminal usable.
-    let _ = out.write_all(b"\x1b[r");
-    let _ = out.write_all(format!("\x1b[{rows};1H\r\n").as_bytes());
-    let _ = out.flush();
-    let _ = crossterm::terminal::disable_raw_mode();
-    result
+    }
 }
 
 /// Returns true when the user asked to quit.
@@ -2183,7 +2449,7 @@ fn import_loop(graph: &crate::graph::RoomGraph, file: &std::path::Path) -> Vec<S
 /// spawned task needs an owned handle that outlives this function
 /// returning.
 ///
-/// `content`, when the caller has one loaded (see [`locator`]), is
+/// `content`, when the caller has one loaded (see [`load_world`]), is
 /// handed straight to [`crate::farm::probe_sheet`] so it can skip or
 /// retarget the spellbook probe on a confidently-known class; `None`
 /// (no world database, or the caller never held one) leaves probing
@@ -2202,46 +2468,67 @@ pub fn on_realm_entry(session: &Arc<Session>, content: Option<Arc<mud_core::cont
     });
 }
 
-/// Loads the world files: the graph and the spawn table. Takes a
-/// `Profile`, not a `Session` — on purpose. It runs before any session
-/// is guaranteed to exist and its job is "is there a world database",
-/// nothing about who is playing or what they can afford. It builds no
-/// `Navigator` at all: see [`finish_locator`], the only place one gets
-/// built, so there is no unwired one for a second caller to reach for
-/// by mistake.
-fn locator(
-    profile: &crate::profile::Profile,
-) -> Option<(
+/// The world files one content path loads: graph, spawn table and the
+/// content decoder.
+pub type World = (
     Arc<crate::graph::RoomGraph>,
     Arc<crate::spawn::SpawnTable>,
     Arc<mud_core::content::Content>,
-)> {
-    let db = content_path(profile);
+);
+
+/// World files by content path, loaded once per path for the life of
+/// the program. A second connection on the same database reuses the
+/// first load. A path that fails to load is not remembered, so a file
+/// that appears later is found.
+#[derive(Default)]
+pub struct ContentCache {
+    worlds: std::collections::HashMap<std::path::PathBuf, World>,
+}
+
+impl ContentCache {
+    pub fn world(&mut self, db: &std::path::Path) -> Option<World> {
+        if let Some(world) = self.worlds.get(db) {
+            return Some(world.clone());
+        }
+        let world = load_world(db)?;
+        self.worlds.insert(db.to_path_buf(), world.clone());
+        Some(world)
+    }
+}
+
+/// Loads the world files for one content path: the graph, the spawn
+/// table and the content decoder. Takes a path, not a `Session`, on
+/// purpose. It runs before any session is guaranteed to exist and its
+/// job is "is there a world database", nothing about who is playing or
+/// what they can afford. It builds no `Navigator` at all: see
+/// [`finish_locator`], the only place one gets built, so there is no
+/// unwired one for a second caller to reach for by mistake.
+fn load_world(db: &std::path::Path) -> Option<World> {
     // The hand-played session keeps its own room model, and it needs the
     // death wordings as much as the farm does — more, on a shared board.
-    let _ = crate::deaths::init(&db);
-    let graph = Arc::new(crate::graph::RoomGraph::load(&db).ok()?);
+    let _ = crate::deaths::init(db);
+    let graph = Arc::new(crate::graph::RoomGraph::load(db).ok()?);
     // Same file as the graph, so this fails only when that one would
     // have: both are one answer to "is there a world database".
-    let spawns = Arc::new(crate::spawn::SpawnTable::load(&db).ok()?);
+    let spawns = Arc::new(crate::spawn::SpawnTable::load(db).ok()?);
     // The one decoder, held for the life of the session (spec
     // `2026-08-22-one-path-to-content-design.md`). Not yet consumed —
     // `graph` and `spawns` above still read the database on their own —
     // the views that replace those reads are a later task in the same
     // plan. Failure here is folded into the same "no world database"
     // answer as the other two.
-    let content = Arc::new(mud_core::content_db::load(&db).ok()?);
+    let content = Arc::new(mud_core::content_db::load(db).ok()?);
     Some((graph, spawns, content))
 }
 
-/// Finish what [`locator`] began: build the interactive play loop's own
+/// Finish what [`load_world`] began: build the interactive play loop's own
 /// `Navigator`, with the session's real capabilities applied AT
 /// CONSTRUCTION — never a separate step a second caller could skip.
 ///
-/// `locator` used to hand back a ready-made `Navigator` of its own,
+/// `load_world` used to hand back a ready-made `Navigator` of its own,
 /// which stayed representable on `Capabilities::unrestricted()` even
 /// after this function existed to fix one up: nothing in the type
-/// system stopped a future caller from taking `locator`'s navigator
+/// system stopped a future caller from taking `load_world`'s navigator
 /// directly and walking with it unwired. Moving construction here
 /// removes the unwired value itself rather than merely leaving it
 /// unreached.
