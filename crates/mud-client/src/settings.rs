@@ -228,7 +228,13 @@ impl Settings {
         match profile_of(&self.doc) {
             Ok(profile) => {
                 self.profile = profile;
-                self.dirty = true;
+                // Only a real change is unsaved work. Setting a key to
+                // the value it already carries, or unsetting one that
+                // was never there, used to arm the /quit refusal over a
+                // document nobody had touched.
+                if self.doc.to_string() != before.to_string() {
+                    self.dirty = true;
+                }
                 Ok(())
             }
             Err(e) => {

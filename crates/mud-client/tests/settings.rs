@@ -73,6 +73,19 @@ fn a_wrong_type_is_refused_and_nothing_changes() {
     assert!(!s.dirty());
 }
 
+/// Dirty means unsaved work, so a write that changed no text is not
+/// one. The /quit refusal reads this.
+#[test]
+fn a_write_that_changes_nothing_leaves_the_settings_clean() {
+    let mut s = Settings::parse(COMMENTED).unwrap();
+    s.set("bot.rest_at_percent", "60").unwrap();
+    assert!(!s.dirty(), "the key already said 60:\n{}", s.text());
+    s.unset("bot.max_hp").unwrap();
+    assert!(!s.dirty(), "the key was never there");
+    s.set("bot.rest_at_percent", "45").unwrap();
+    assert!(s.dirty(), "this one is a change");
+}
+
 #[test]
 fn an_unknown_key_is_refused_before_the_text_changes() {
     let mut s = Settings::parse(COMMENTED).unwrap();
