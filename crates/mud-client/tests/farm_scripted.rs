@@ -187,6 +187,15 @@ async fn scripted_board(
 }
 
 async fn session_for(addr: std::net::SocketAddr) -> Session {
+    session_with_bank(addr, Default::default()).await
+}
+
+/// A session whose profile carries a chosen `[bank]` table, for the
+/// scenarios that turn on what the operator configured.
+async fn session_with_bank(
+    addr: std::net::SocketAddr,
+    bank: mud_client::bank::BankConfig,
+) -> Session {
     let profile = Profile {
         target: mud_client::dialect::Target::MbbsEmu,
         host: addr.ip().to_string(),
@@ -197,7 +206,7 @@ async fn session_for(addr: std::net::SocketAddr) -> Session {
         disable_evil_warnings: false,
         bot: None,
         farm: None,
-        bank: Default::default(),
+        bank,
     };
     Session::connect(&profile, None).await.unwrap()
 }
@@ -2222,6 +2231,173 @@ async fn a_refused_deposit_switches_deposits_off_for_the_run() {
     assert!(
         !log[deposits[0]..].contains(&"s".to_string()),
         "the errand ran a second time: {log:?}"
+    );
+}
+
+/// The corridor with a bank room nothing leads into: the bank has its
+/// way out and no way in, so a route to it does not exist.
+fn corridor_with_a_stranded_bank() -> Arc<RoomGraph> {
+    let mut start = GraphRoom {
+        name: "Guard Post".into(),
+        exits: Default::default(),
+        light: 0,
+        ..Default::default()
+    };
+    start.exits[Direction::North as usize] = Some(ExitEdge {
+        dest: MIDWAY,
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::None,
+    });
+    let mut midway = GraphRoom {
+        name: "Inner Ward".into(),
+        exits: Default::default(),
+        light: 0,
+        ..Default::default()
+    };
+    midway.exits[Direction::North as usize] = Some(ExitEdge {
+        dest: STOP,
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::None,
+    });
+    midway.exits[Direction::South as usize] = Some(ExitEdge {
+        dest: START,
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::None,
+    });
+    let mut stop = GraphRoom {
+        name: "Keep".into(),
+        exits: Default::default(),
+        light: 0,
+        ..Default::default()
+    };
+    stop.exits[Direction::South as usize] = Some(ExitEdge {
+        dest: MIDWAY,
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::None,
+    });
+    let mut bank = GraphRoom {
+        name: "Bank of Godfrey".into(),
+        exits: Default::default(),
+        light: 0,
+        shop: 8,
+        ..Default::default()
+    };
+    bank.exits[Direction::West as usize] = Some(ExitEdge {
+        dest: MIDWAY,
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::None,
+    });
+    Arc::new(RoomGraph::from_rooms(vec![
+        (START, start),
+        (MIDWAY, midway),
+        (STOP, stop),
+        (BANK, bank),
+    ]))
+}
+
+/// `[bank].at` names a real bank the walk cannot route to. The gate
+/// trips, the errand chooses the configured room, the walk fails with a
+/// navigation error, and that ends the errand rather than the run:
+/// deposits go off, the lap finishes, and nothing else is sent.
+#[tokio::test]
+async fn an_unreachable_bank_switches_deposits_off_without_ending_the_run() {
+    let (addr, received) = scripted_board(vec![
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nYou have no keys.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        ("look", format!("\r\nlook{}", room_block("Guard Post", None, "north"))),
+        (
+            "i",
+            "\r\ni\r\nYou are carrying nothing.\r\nYou have no keys.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        ("n", format!("\r\nn{}", room_block("Inner Ward", None, "north south"))),
+        (
+            "n",
+            format!(
+                "\r\nn{}",
+                room_block_items("Keep", &["1200 copper farthings"], "south")
+            ),
+        ),
+        (
+            "get copper",
+            "\r\nget copper\r\nYou picked up 1200 copper farthings\r\n[HP=30/MA=0]:".into(),
+        ),
+        // The gate's read. The errand starts here and gets no further:
+        // the board is answered in order and nothing follows, so any
+        // command after this one would be an echo the runner cannot use.
+        (
+            "i",
+            "\r\ni\r\nYou are carrying 1200 copper farthings\r\nYou have no keys.\r\nWealth: 1200 copper farthings\r\nEncumbrance: 400/2400 - None [16%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+    ])
+    .await;
+    let session = session_with_bank(
+        addr,
+        mud_client::bank::BankConfig {
+            at: Some("1/4".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+    mud_client::farm::probe_sheet(&session, None).await;
+    session.set_content(Arc::new(content_with_bank()));
+
+    let graph = corridor_with_a_stranded_bank();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/3".into()],
+        loops: 1,
+        idle_poke_ms: 500,
+        depart_at_percent: Some(0),
+        travel_interrupts: 0,
+        content: std::path::PathBuf::from("no-such-content.sqlite"),
+        ..FarmConfig::default()
+    };
+    let bot = BotConfig {
+        auto_get: true,
+        max_hp: 30,
+        ..BotConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let (end, stats) = match tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, &bot, &cfg, None),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    {
+        Ok(out) => out,
+        Err(e) => panic!(
+            "a bank no route reaches must not end the run: {e:?}\nboard received: {:?}",
+            received.lock().unwrap()
+        ),
+    };
+    assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
+    assert_eq!(stats.coin_pickups, 1, "{stats:?}");
+    assert_eq!(stats.deposits, 0, "{stats:?}");
+
+    let log = received.lock().unwrap().clone();
+    assert!(
+        !log.iter().any(|l| l.starts_with("deposit")),
+        "a deposit went out from outside the bank: {log:?}"
+    );
+    let gate = log
+        .iter()
+        .rposition(|l| l == "i")
+        .expect("the gate read the purse");
+    let walked = ["n", "s", "e", "w"];
+    assert!(
+        !log[gate + 1..].iter().any(|l| walked.contains(&l.as_str())),
+        "the errand walked somewhere with no route: {log:?}"
     );
 }
 
