@@ -49,19 +49,6 @@ pub struct Profile {
     pub bank: crate::bank::BankConfig,
 }
 
-/// Keys that were renamed, and what they are called now. Deserialisation
-/// accepts both (`#[serde(alias)]` on the fields), so this exists only to
-/// SAY SO — a profile that keeps working while its vocabulary has moved
-/// on is a profile whose owner never finds out about the new knob next to
-/// it. Same habit as the dark-stop warning in `FarmPlan::build`: a
-/// warning, never a refusal.
-const RENAMED_KEYS: [(&str, &str); 4] = [
-    ("heal_at_percent", "rest_at_percent"),
-    ("heal_command", "rest_command"),
-    ("spell_at_percent", "minor_heal_at_percent"),
-    ("heal_spells", "minor_heal_spell and major_heal_spell"),
-];
-
 impl Default for Profile {
     /// What the lobby starts from: a telnet port and nothing else. The
     /// host is empty on purpose, so nothing dials until `/connect` or
@@ -85,27 +72,15 @@ impl Default for Profile {
 impl Profile {
     /// Read and parse a profile, reporting renamed keys on stderr.
     ///
-    /// The three call sites (`play`, `run`, `farm`) had this open-coded
-    /// identically; the error string is the caller's to print, because
-    /// only the caller knows whether it is fatal.
+    /// The headless commands call this. The parse and the validation
+    /// live in `settings`, which `play` uses directly so it can edit
+    /// what it loaded.
     pub fn load(path: &std::path::Path) -> Result<Profile, String> {
-        let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-        let mut profile: Profile = toml::from_str(&text).map_err(|e| e.to_string())?;
-        for line in text.lines() {
-            let key = line.split('=').next().unwrap_or_default().trim();
-            if let Some((_, new)) = RENAMED_KEYS.iter().find(|(old, _)| *old == key) {
-                eprintln!(
-                    "profile {}: `{key}` is now `{new}` (still accepted)",
-                    path.display()
-                );
-            }
+        let settings = crate::settings::Settings::load(path)?;
+        for warning in settings.warnings() {
+            eprintln!("profile {}: {warning}", path.display());
         }
-        if let Some(bot) = &mut profile.bot {
-            bot.normalise();
-            bot.validate()?;
-        }
-        profile.bank.validate()?;
-        Ok(profile)
+        Ok(settings.profile().clone())
     }
 
     pub fn pace(&self) -> Duration {

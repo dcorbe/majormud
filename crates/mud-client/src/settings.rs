@@ -81,11 +81,6 @@ pub const KEYS: &[&str] = &[
 /// accepts both, so this exists to SAY SO: a profile that keeps working
 /// while its vocabulary has moved on is a profile whose owner never finds
 /// out about the new knob next to it. A warning, never a refusal.
-///
-/// Unused here: `Profile::load` still owns printing this notice. Task 3
-/// moves that call here and deletes `profile.rs`'s copy of this table,
-/// which is why it stays duplicated for one commit.
-#[allow(dead_code)]
 const RENAMED_KEYS: [(&str, &str); 4] = [
     ("heal_at_percent", "rest_at_percent"),
     ("heal_command", "rest_command"),
@@ -152,6 +147,36 @@ impl Settings {
     /// The document as it would be saved.
     pub fn text(&self) -> String {
         self.doc.to_string()
+    }
+
+    /// Read a profile file. The path is remembered for `save`.
+    pub fn load(path: &Path) -> Result<Settings, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let mut settings = Settings::parse(&text)?;
+        settings.path = Some(path.to_path_buf());
+        Ok(settings)
+    }
+
+    /// Write the document. `None` means the remembered path, and with
+    /// none remembered the caller has to name one. A path given here is
+    /// remembered.
+    pub fn save(&mut self, path: Option<&Path>) -> Result<PathBuf, String> {
+        let path = match path.map(Path::to_path_buf).or_else(|| self.path.clone()) {
+            Some(p) => p,
+            None => return Err("no file to save to: /save <file>".into()),
+        };
+        std::fs::write(&path, self.doc.to_string())
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        self.path = Some(path.clone());
+        self.dirty = false;
+        Ok(path)
+    }
+
+    /// One line per renamed key the document still uses.
+    pub fn warnings(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        collect_renamed(self.doc.as_table(), &mut out);
+        out
     }
 
     /// Write one key. `text` is parsed as a TOML value. When that fails
@@ -258,3 +283,15 @@ fn drop_aliases(table: &mut Table, leaf: &str) {
         }
     }
 }
+
+fn collect_renamed(table: &Table, out: &mut Vec<String>) {
+    for (key, item) in table.iter() {
+        if let Some((_, new)) = RENAMED_KEYS.iter().find(|(old, _)| *old == key) {
+            out.push(format!("`{key}` is now `{new}` (still accepted)"));
+        }
+        if let Some(t) = item.as_table() {
+            collect_renamed(t, out);
+        }
+    }
+}
+

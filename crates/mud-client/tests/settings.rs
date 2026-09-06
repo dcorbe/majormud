@@ -174,3 +174,63 @@ fn flatten(table: &toml::Table, prefix: &str, out: &mut Vec<String>) {
         }
     }
 }
+
+fn scratch(name: &str) -> std::path::PathBuf {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("settings");
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.join(name)
+}
+
+#[test]
+fn save_keeps_comments_and_order() {
+    let path = scratch("commented.toml");
+    std::fs::write(&path, COMMENTED).unwrap();
+    let mut s = Settings::load(&path).unwrap();
+    assert_eq!(s.path(), Some(path.as_path()));
+    s.set("bot.rest_at_percent", "45").unwrap();
+    let saved = s.save(None).unwrap();
+    assert_eq!(saved, path);
+    assert!(!s.dirty());
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        text,
+        COMMENTED.replace("rest_at_percent = 60", "rest_at_percent = 45"),
+        "every comment and every line stays where it was"
+    );
+}
+
+#[test]
+fn save_without_a_path_needs_one_once() {
+    let mut s = Settings::default();
+    s.set("host", "\"127.0.0.1\"").unwrap();
+    let err = s.save(None).unwrap_err();
+    assert!(err.contains("/save <file>"), "{err}");
+    let path = scratch("fresh.toml");
+    s.save(Some(&path)).unwrap();
+    assert_eq!(s.path(), Some(path.as_path()));
+    s.set("port", "2327").unwrap();
+    s.save(None).unwrap();
+    assert!(std::fs::read_to_string(&path).unwrap().contains("port = 2327"));
+}
+
+#[test]
+fn load_reports_renamed_keys_and_still_parses() {
+    let s = Settings::parse(
+        r#"
+[bot]
+heal_at_percent = 50
+heal_command = "rest"
+"#,
+    )
+    .unwrap();
+    let warnings = s.warnings();
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(warnings[0].contains("`heal_at_percent` is now `rest_at_percent`"));
+    assert_eq!(s.profile().bot.as_ref().unwrap().rest_at_percent, 50);
+}
+
+#[test]
+fn a_missing_file_is_an_error_not_a_default() {
+    assert!(Settings::load(&scratch("nowhere.toml")).is_err());
+}
+
