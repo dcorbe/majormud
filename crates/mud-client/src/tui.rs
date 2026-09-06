@@ -431,9 +431,24 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
                     TermEvent::Key(key) if key.kind != KeyEventKind::Release => {
                         let was = passthrough;
                         let outcome =
-                            handle_key(&key, &mut editor, &session, &mut passthrough, job.is_some());
+                            handle_key(&key, &mut editor, &mut passthrough, job.is_some());
                         match outcome {
                             KeyOutcome::Quit => break Ok(()),
+                            KeyOutcome::QuitNow => break Ok(()),
+                            KeyOutcome::Send(line) => {
+                                session.send(&line);
+                            }
+                            KeyOutcome::Raw(bytes) => session.send_raw(&bytes),
+                            KeyOutcome::Note(text) => note(&mut out, &text)?,
+                            KeyOutcome::SetList { .. }
+                            | KeyOutcome::Set { .. }
+                            | KeyOutcome::Unset { .. }
+                            | KeyOutcome::Save { .. }
+                            | KeyOutcome::Load { .. }
+                            | KeyOutcome::Connect { .. }
+                            | KeyOutcome::Disconnect => {
+                                note(&mut out, "-- not wired yet --")?;
+                            }
                             KeyOutcome::Loops { name } => {
                                 note(&mut out, &describe_loops(graph.as_deref(), name.as_deref()).join("\n"))?;
                             }
@@ -846,6 +861,14 @@ pub fn key_bytes(key: &KeyEvent) -> Option<Vec<u8>> {
     })
 }
 
+/// Every verb `slash` claims, for completion. A verb here that `slash`
+/// does not claim, or that `help_text` does not list, fails the test
+/// `every_verb_in_the_completion_list_is_claimed_and_in_help`.
+pub const VERBS: &[&str] = &[
+    "/quit", "/farm", "/loop", "/bot", "/go", "/bank", "/where", "/room", "/map", "/help",
+    "/set", "/unset", "/save", "/load", "/connect", "/disconnect",
+];
+
 /// What a keystroke asked the client to do. Returned rather than acted
 /// on, because starting a farm needs to spawn a task and own its handle —
 /// which is `play`'s business, not the key handler's.
@@ -853,6 +876,38 @@ pub fn key_bytes(key: &KeyEvent) -> Option<Vec<u8>> {
 pub enum KeyOutcome {
     Continue,
     Quit,
+    /// A line for the board. The caller sends it: the handler has no
+    /// session, so the lobby and play share it.
+    Send(String),
+    /// Passthrough bytes for the board, likewise.
+    Raw(Vec<u8>),
+    /// Print this and send nothing. Completion candidates, mostly.
+    Note(String),
+    /// Ctrl-Q: exit without the unsaved-settings check `/quit` makes.
+    QuitNow,
+    /// `/set` with a pattern or nothing: list.
+    SetList {
+        pattern: String,
+    },
+    /// `/set key value`: write.
+    Set {
+        key: String,
+        value: String,
+    },
+    Unset {
+        key: String,
+    },
+    Save {
+        file: Option<String>,
+    },
+    Load {
+        file: String,
+    },
+    /// `/connect [host[:port]]`. Unparsed here, `connect_target` parses.
+    Connect {
+        target: Option<String>,
+    },
+    Disconnect,
     /// Start the runner. `Some(name)` walks a loop from the library
     /// instead of the profile's own `[farm].circuit`.
     StartFarm {
@@ -942,13 +997,44 @@ pub fn slash(line: &str) -> Option<KeyOutcome> {
             target: (!rest.is_empty()).then(|| rest.to_string()),
         }),
         "/help" | "/?" => Some(KeyOutcome::Help),
+        "/set" => match rest.split_once(char::is_whitespace) {
+            Some((key, _)) if key.contains('*') => Some(KeyOutcome::Refuse(format!(
+                "set: {key} is a pattern, which lists; give one key a value"
+            ))),
+            Some((key, value)) => Some(KeyOutcome::Set {
+                key: key.to_string(),
+                value: value.trim().to_string(),
+            }),
+            None => Some(KeyOutcome::SetList {
+                pattern: rest.to_string(),
+            }),
+        },
+        "/unset" if rest.is_empty() => Some(KeyOutcome::Refuse(
+            "unset: which key? try `/unset bank.at`".into(),
+        )),
+        "/unset" => Some(KeyOutcome::Unset {
+            key: rest.to_string(),
+        }),
+        "/save" => Some(KeyOutcome::Save {
+            file: (!rest.is_empty()).then(|| rest.to_string()),
+        }),
+        "/load" if rest.is_empty() => Some(KeyOutcome::Refuse(
+            "load: which file? try `/load chars/dan.toml`".into(),
+        )),
+        "/load" => Some(KeyOutcome::Load {
+            file: rest.to_string(),
+        }),
+        "/connect" => Some(KeyOutcome::Connect {
+            target: (!rest.is_empty()).then(|| rest.to_string()),
+        }),
+        "/disconnect" => Some(KeyOutcome::Disconnect),
         _ => None,
     }
 }
 
 /// Text for `/help`. A function rather than a `const` so it reads next
 /// to `slash`, the thing it has to stay in sync with.
-fn help_text() -> &'static str {
+pub fn help_text() -> &'static str {
     "/quit                disconnect and exit
 /farm [loop]         patrol the profile's circuit, or a named loop from the library
 /loop [name]         list the loop library, or show one loop's stops
@@ -960,18 +1046,27 @@ fn help_text() -> &'static str {
 /room [target]       what the world database knows about a room (default: here)
 /map [target]        draw the plane around a room (default: here)
 /help, /?            this list
+/set [pattern]       list settings, all or those the glob matches (bot, bot.rest*, *heal*)
+/set <key> <value>   change a setting now; the value is TOML, a bare word is a string
+/unset <key>         remove a setting so its default applies
+/save [file]         write the settings; the file is remembered
+/load <file>         read settings from a file
+/connect [host[:port]]  connect, setting host and port when given
+/disconnect          close the line and return to the lobby
+Tab                  complete a slash verb or a setting key
 
 Ctrl-F  take the keyboard back from a running farm/go/where/roam
 Ctrl-P  toggle passthrough, for full-screen board screens (train stats)
 Ctrl-Q  quit"
 }
 
-/// One keystroke against the session. Public for the keyboard-contract
-/// tests: what farming swallows, what the editor keeps, what goes out.
+/// One keystroke against the editor. Pure: what to send comes back as
+/// `Send` or `Raw` and the caller sends it, so the lobby, which has
+/// nothing to send to, and play share this. Public for the keyboard
+/// contract tests.
 pub fn handle_key(
     key: &KeyEvent,
     editor: &mut InputEditor,
-    session: &Session,
     passthrough: &mut bool,
     farming: bool,
 ) -> KeyOutcome {
@@ -989,30 +1084,26 @@ pub fn handle_key(
     if farming && key.modifiers.contains(KeyModifiers::CONTROL) {
         return match key.code {
             KeyCode::Char('f') => KeyOutcome::TakeOver,
-            KeyCode::Char('q') => KeyOutcome::Quit,
+            KeyCode::Char('q') => KeyOutcome::QuitNow,
             _ => KeyOutcome::Continue,
         };
     }
-    // Ctrl-P swaps between typing commands and driving a full-screen
-    // board screen. Both are needed: the line editor wants the arrows for
-    // its cursor and history, an FSD room wants them as cursor keys, and
-    // nothing can satisfy both at once.
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('p') {
         *passthrough = !*passthrough;
         return KeyOutcome::Continue;
     }
     if *passthrough {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
-            return KeyOutcome::Quit;
+            return KeyOutcome::QuitNow;
         }
-        if let Some(bytes) = key_bytes(key) {
-            session.send_raw(&bytes);
-        }
-        return KeyOutcome::Continue;
+        return match key_bytes(key) {
+            Some(bytes) => KeyOutcome::Raw(bytes),
+            None => KeyOutcome::Continue,
+        };
     }
     match key.code {
         KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            return KeyOutcome::Quit;
+            return KeyOutcome::QuitNow;
         }
         KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => editor.insert(c),
         KeyCode::Backspace => editor.backspace(),
@@ -1022,14 +1113,20 @@ pub fn handle_key(
         KeyCode::End => editor.end(),
         KeyCode::Up => editor.history_prev(),
         KeyCode::Down => editor.history_next(),
-        KeyCode::Enter => {
-            let line = editor.take_line();
-            match slash(&line) {
-                Some(outcome) => return outcome,
-                None => {
-                    session.send(&line);
+        KeyCode::Tab => {
+            if let Some(c) = crate::settings::complete(&editor.line(), editor.cursor(), VERBS) {
+                editor.replace(c.start, c.end, &c.text);
+                if !c.list.is_empty() {
+                    return KeyOutcome::Note(c.list.join("  "));
                 }
             }
+        }
+        KeyCode::Enter => {
+            let line = editor.take_line();
+            return match slash(&line) {
+                Some(outcome) => outcome,
+                None => KeyOutcome::Send(line),
+            };
         }
         _ => {}
     }

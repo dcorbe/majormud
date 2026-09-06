@@ -6,7 +6,7 @@ use mud_client::events::{Actor, Event, RoomView, Status};
 use mud_client::lost::Fix;
 use mud_client::session::GameState;
 use mud_client::sheet::{Casting, HealChoice, HealState, Spellbook};
-use mud_client::tui::{InputEditor, assist_heal, render_status};
+use mud_client::tui::{InputEditor, assist_heal, help_text, render_status};
 use mud_client::world::{TickClock, ROUND};
 use mud_core::content::RoomId;
 use std::collections::BTreeMap;
@@ -278,33 +278,6 @@ fn the_bar_never_contains_a_control_character() {
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use mud_client::tui::{KeyOutcome, handle_key};
 
-async fn capture_board() -> (
-    std::net::SocketAddr,
-    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let log = std::sync::Arc::clone(&received);
-    tokio::spawn(async move {
-        use tokio::io::AsyncReadExt;
-        let (mut sock, _) = listener.accept().await.unwrap();
-        let mut pending = String::new();
-        let mut buf = [0u8; 512];
-        while let Ok(n) = sock.read(&mut buf).await {
-            if n == 0 {
-                break;
-            }
-            pending.push_str(&String::from_utf8_lossy(&buf[..n]));
-            while let Some(nl) = pending.find('\n') {
-                let line: String = pending.drain(..=nl).collect();
-                log.lock().unwrap().push(line.trim().to_string());
-            }
-        }
-    });
-    (addr, received)
-}
-
 async fn session_to(addr: std::net::SocketAddr) -> mud_client::session::Session {
     let profile = mud_client::profile::Profile {
         target: mud_client::dialect::Target::MbbsEmu,
@@ -331,47 +304,113 @@ fn ctrl(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
 }
 
-#[tokio::test]
-async fn typing_reaches_the_board_during_a_farm_run() {
-    let (addr, received) = capture_board().await;
-    let session = session_to(addr).await;
+#[test]
+fn a_typed_line_comes_back_as_send_even_during_a_farm_run() {
     let mut editor = InputEditor::new();
     let mut passthrough = false;
-
     for c in "gossip hello".chars() {
-        handle_key(&key(KeyCode::Char(c)), &mut editor, &session, &mut passthrough, true);
+        assert_eq!(
+            handle_key(&key(KeyCode::Char(c)), &mut editor, &mut passthrough, true),
+            KeyOutcome::Continue
+        );
     }
     assert_eq!(editor.line(), "gossip hello", "keys must reach the editor while farming");
-    handle_key(&key(KeyCode::Enter), &mut editor, &session, &mut passthrough, true);
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        if received.lock().unwrap().iter().any(|l| l == "gossip hello") {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "typed line never reached the board: {:?}",
-            received.lock().unwrap()
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
+    assert_eq!(
+        handle_key(&key(KeyCode::Enter), &mut editor, &mut passthrough, true),
+        KeyOutcome::Send("gossip hello".into())
+    );
+    assert_eq!(editor.line(), "");
 }
 
-#[tokio::test]
-async fn ctrl_f_takes_the_keyboard_back_from_any_job() {
-    let (addr, _) = capture_board().await;
-    let session = session_to(addr).await;
+#[test]
+fn ctrl_f_takes_the_keyboard_back_from_any_job() {
     let mut editor = InputEditor::new();
     let mut passthrough = false;
-    assert!(matches!(
-        handle_key(&ctrl('f'), &mut editor, &session, &mut passthrough, true),
-        KeyOutcome::TakeOver
-    ));
-    assert!(matches!(
-        handle_key(&ctrl('q'), &mut editor, &session, &mut passthrough, true),
-        KeyOutcome::Quit
-    ));
+    assert_eq!(handle_key(&ctrl('f'), &mut editor, &mut passthrough, true), KeyOutcome::TakeOver);
+    assert_eq!(handle_key(&ctrl('q'), &mut editor, &mut passthrough, true), KeyOutcome::QuitNow);
+}
+
+#[test]
+fn slash_commands_are_claimed_and_everything_else_is_sent() {
+    let mut editor = InputEditor::new();
+    let mut passthrough = false;
+    let mut submit = |line: &str| {
+        for c in line.chars() {
+            handle_key(&key(KeyCode::Char(c)), &mut editor, &mut passthrough, false);
+        }
+        handle_key(&key(KeyCode::Enter), &mut editor, &mut passthrough, false)
+    };
+    for line in ["/bot", "/go Grungy Shop", "/go", "/farm", "/set", "/save"] {
+        assert!(!matches!(submit(line), KeyOutcome::Send(_)), "{line} must not go to the board");
+    }
+    assert_eq!(submit("gossip hi"), KeyOutcome::Send("gossip hi".into()));
+}
+
+#[test]
+fn passthrough_keys_come_back_as_raw_bytes() {
+    let mut editor = InputEditor::new();
+    let mut passthrough = false;
+    assert_eq!(handle_key(&ctrl('p'), &mut editor, &mut passthrough, false), KeyOutcome::Continue);
+    assert!(passthrough);
+    assert_eq!(
+        handle_key(&key(KeyCode::Up), &mut editor, &mut passthrough, false),
+        KeyOutcome::Raw(b"\x1b[A".to_vec())
+    );
+    assert_eq!(handle_key(&ctrl('q'), &mut editor, &mut passthrough, false), KeyOutcome::QuitNow);
+}
+
+#[test]
+fn tab_completes_and_lists() {
+    let mut editor = InputEditor::new();
+    let mut passthrough = false;
+    // "bot.ign" alone is ambiguous (`bot.ignore` and `bot.ignore_coins`
+    // both match); one more character is unique, same as
+    // `a_unique_key_completes_after_set` in tests/settings.rs.
+    for c in "/set bot.ignore_c".chars() {
+        handle_key(&key(KeyCode::Char(c)), &mut editor, &mut passthrough, false);
+    }
+    assert_eq!(handle_key(&key(KeyCode::Tab), &mut editor, &mut passthrough, false), KeyOutcome::Continue);
+    assert_eq!(editor.line(), "/set bot.ignore_coins ");
+    let mut editor = InputEditor::new();
+    for c in "/set bot.rest_".chars() {
+        handle_key(&key(KeyCode::Char(c)), &mut editor, &mut passthrough, false);
+    }
+    match handle_key(&key(KeyCode::Tab), &mut editor, &mut passthrough, false) {
+        KeyOutcome::Note(text) => {
+            assert!(text.contains("bot.rest_at_percent"));
+            assert!(text.contains("bot.rest_until_percent"));
+        }
+        other => panic!("expected the candidates, got {other:?}"),
+    }
+    assert_eq!(editor.line(), "/set bot.rest_");
+}
+
+#[test]
+fn the_settings_verbs_parse() {
+    assert_eq!(slash("/set"), Some(KeyOutcome::SetList { pattern: String::new() }));
+    assert_eq!(slash("/set bot.rest*"), Some(KeyOutcome::SetList { pattern: "bot.rest*".into() }));
+    assert_eq!(
+        slash("/set bot.rest_command sit down"),
+        Some(KeyOutcome::Set { key: "bot.rest_command".into(), value: "sit down".into() })
+    );
+    assert!(matches!(slash("/set bot.* 5"), Some(KeyOutcome::Refuse(_))));
+    assert_eq!(slash("/unset bank.at"), Some(KeyOutcome::Unset { key: "bank.at".into() }));
+    assert!(matches!(slash("/unset"), Some(KeyOutcome::Refuse(_))));
+    assert_eq!(slash("/save"), Some(KeyOutcome::Save { file: None }));
+    assert_eq!(slash("/save chars/dan.toml"), Some(KeyOutcome::Save { file: Some("chars/dan.toml".into()) }));
+    assert_eq!(slash("/load chars/dan.toml"), Some(KeyOutcome::Load { file: "chars/dan.toml".into() }));
+    assert!(matches!(slash("/load"), Some(KeyOutcome::Refuse(_))));
+    assert_eq!(slash("/connect"), Some(KeyOutcome::Connect { target: None }));
+    assert_eq!(slash("/connect bbs.example.com:2327"), Some(KeyOutcome::Connect { target: Some("bbs.example.com:2327".into()) }));
+    assert_eq!(slash("/disconnect"), Some(KeyOutcome::Disconnect));
+}
+
+#[test]
+fn every_verb_in_the_completion_list_is_claimed_and_in_help() {
+    for verb in mud_client::tui::VERBS {
+        assert!(slash(verb).is_some() || slash(&format!("{verb} x")).is_some(), "{verb} is not claimed");
+        assert!(help_text().contains(verb), "{verb} is not in /help");
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -689,40 +728,6 @@ fn an_unknown_slash_command_still_reaches_the_board() {
     assert_eq!(slash("/gossip hi"), None);
     assert_eq!(slash("north"), None);
     assert_eq!(slash(""), None);
-}
-
-/// The absence assertion that matters, with a positive control: a bare
-/// "the board heard nothing" would pass just as well against a broken
-/// socket.
-#[tokio::test]
-async fn slash_commands_are_intercepted_not_sent_to_the_board() {
-    let (addr, received) = capture_board().await;
-    let session = session_to(addr).await;
-    let mut editor = InputEditor::new();
-    let mut passthrough = false;
-
-    for line in ["/bot", "/go Grungy Shop", "/go", "/farm"] {
-        for c in line.chars() {
-            handle_key(&key(KeyCode::Char(c)), &mut editor, &session, &mut passthrough, false);
-        }
-        handle_key(&key(KeyCode::Enter), &mut editor, &session, &mut passthrough, false);
-    }
-    // The positive control: one line the client does NOT claim.
-    for c in "gossip hi".chars() {
-        handle_key(&key(KeyCode::Char(c)), &mut editor, &session, &mut passthrough, false);
-    }
-    handle_key(&key(KeyCode::Enter), &mut editor, &session, &mut passthrough, false);
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        if received.lock().unwrap().iter().any(|l| l == "gossip hi") {
-            break;
-        }
-        assert!(std::time::Instant::now() < deadline, "board never heard the control line");
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    let log = received.lock().unwrap().clone();
-    assert_eq!(log, vec!["gossip hi"], "only the unclaimed line goes out");
 }
 
 /// `/go` reuses the farm's phase channel and therefore its status bar;
