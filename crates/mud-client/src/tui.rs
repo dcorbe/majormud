@@ -233,7 +233,11 @@ pub fn lobby_step(
         | KeyOutcome::Bank
         | KeyOutcome::Where
         | KeyOutcome::Room { .. }
-        | KeyOutcome::Map { .. } => (
+        | KeyOutcome::Map { .. }
+        | KeyOutcome::NewWindow { .. }
+        | KeyOutcome::CloseWindow
+        | KeyOutcome::Windows
+        | KeyOutcome::Switch(_) => (
             LobbyStep::Stay,
             Some("-- not connected: /connect host[:port] --".into()),
         ),
@@ -1113,6 +1117,9 @@ async fn play(
                                     }
                                 }
                             }
+                            KeyOutcome::NewWindow { .. } | KeyOutcome::CloseWindow | KeyOutcome::Windows | KeyOutcome::Switch(_) => {
+                                // The front end handles these and never sends them here.
+                            }
                             KeyOutcome::Continue => {}
                         }
                         if passthrough != was {
@@ -1196,7 +1203,7 @@ pub fn key_bytes(key: &KeyEvent) -> Option<Vec<u8>> {
 /// `every_verb_in_the_completion_list_is_claimed_and_in_help`.
 pub const VERBS: &[&str] = &[
     "/quit", "/farm", "/loop", "/bot", "/go", "/bank", "/where", "/room", "/map", "/help",
-    "/set", "/unset", "/save", "/load", "/connect", "/disconnect",
+    "/set", "/unset", "/save", "/load", "/connect", "/disconnect", "/new", "/close", "/windows",
 ];
 
 /// What a keystroke asked the client to do. Returned rather than acted
@@ -1279,6 +1286,17 @@ pub enum KeyOutcome {
     Refuse(String),
     /// List the client's own slash commands and keybindings.
     Help,
+    /// Open a window on a copy of the lobby's settings, or on that file.
+    NewWindow {
+        file: Option<String>,
+    },
+    /// Close the current window. The front end refuses for the lobby and
+    /// for a connected window.
+    CloseWindow,
+    /// List the windows.
+    Windows,
+    /// Switch to window `n`, 1-based.
+    Switch(usize),
 }
 
 /// What a submitted line asks the CLIENT to do, or `None` when it is the
@@ -1358,6 +1376,14 @@ pub fn slash(line: &str) -> Option<KeyOutcome> {
             target: (!rest.is_empty()).then(|| rest.to_string()),
         }),
         "/disconnect" => Some(KeyOutcome::Disconnect),
+        "/new" => Some(KeyOutcome::NewWindow {
+            file: (!rest.is_empty()).then(|| rest.to_string()),
+        }),
+        "/close" => Some(KeyOutcome::CloseWindow),
+        "/windows" => Some(KeyOutcome::Windows),
+        _ if verb.len() == 2 && verb.as_bytes()[1].is_ascii_digit() && verb != "/0" => {
+            Some(KeyOutcome::Switch((verb.as_bytes()[1] - b'0') as usize))
+        }
         _ => None,
     }
 }
@@ -1383,6 +1409,10 @@ pub fn help_text() -> &'static str {
 /load <file>         read settings from a file
 /connect [host[:port]]  connect, setting host and port when given
 /disconnect          close the line and return to the lobby
+/new [file]          open a window on the lobby's settings, or on a profile file
+/close               close this window, once it is disconnected
+/windows             list the windows
+/1 .. /9             switch to a window, the lobby is /1
 Tab                  complete a slash verb or a setting key
 
 Ctrl-F  take the keyboard back from a running farm/go/where/roam

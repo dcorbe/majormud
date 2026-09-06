@@ -1401,3 +1401,20 @@ async fn every_job_start_refuses_without_a_username() {
     }
 }
 
+#[test]
+fn the_window_verbs_parse() {
+    assert_eq!(slash("/new"), Some(KeyOutcome::NewWindow { file: None }));
+    assert_eq!(slash("/new chars/ann.toml"), Some(KeyOutcome::NewWindow { file: Some("chars/ann.toml".into()) }));
+    assert_eq!(slash("/close"), Some(KeyOutcome::CloseWindow));
+    assert_eq!(slash("/windows"), Some(KeyOutcome::Windows));
+    assert_eq!(slash("/1"), Some(KeyOutcome::Switch(1)));
+    assert_eq!(slash("/9"), Some(KeyOutcome::Switch(9)));
+    assert_eq!(slash("/0"), None, "there is no window 0, so the board gets it");
+    assert_eq!(slash("/10"), None, "only one digit switches");
+    for verb in ["/new", "/close", "/windows"] {
+        assert!(help_text().contains(verb), "{verb} is not in /help");
+        assert!(mud_client::tui::VERBS.contains(&verb), "{verb} is not offered by Tab");
+    }
+    assert!(help_text().contains("/1"), "the switch is in /help");
+}
+
