@@ -82,6 +82,21 @@ pub enum NavErrorKind {
         /// was not allowed to try anything" are distinguishable.
         tried: String,
     },
+    /// The exit is opened by a button or lever and the walk could not
+    /// open it: the plan was performed and the way stayed shut, the
+    /// phrase was said aloud instead of acted on, or the pack changed
+    /// under the walk and there is no plan left.
+    ///
+    /// Its own variant for the same reason `DoorLocked` is: the walk
+    /// knows exactly where it stands and what it tried, and a desync
+    /// would send the caller off re-localizing a position that is not
+    /// in doubt.
+    Puzzle {
+        /// The direction of the exit, as the walk words it.
+        dir: String,
+        /// What was tried, so the operator can act on it.
+        tried: String,
+    },
     /// A [`TravelGuard`] decided that walking had become the wrong thing
     /// to be doing.
     Interrupted(Interrupt),
@@ -157,6 +172,9 @@ impl std::fmt::Display for NavError {
             NavErrorKind::Expect(e) => write!(f, "{e}"),
             NavErrorKind::DoorLocked { dir, tried } => {
                 write!(f, "the door {dir} is locked ({tried})")
+            }
+            NavErrorKind::Puzzle { dir, tried } => {
+                write!(f, "the lever for {dir} did not open it: {tried}")
             }
             NavErrorKind::Interrupted(i) => write!(f, "travel interrupted: {i:?}"),
         }
@@ -522,6 +540,17 @@ enum SneakSeen {
 /// handful. Bounded for the same reason [`BASH_RETRIES`] is: a walk that
 /// cannot get through should say so, not rummage forever.
 const SEARCH_ROLLS: u32 = 100;
+
+/// Whole plans performed for one puzzle step before the walk gives up
+/// on it. Two, because the board re-hides a revealed passage 300
+/// seconds after the last lever, and a long detour to a far lever can
+/// lose that race once.
+const PUZZLE_TRIES: u32 = 2;
+
+/// The board saying a phrase out loud instead of acting on it, lowercased.
+/// An unknown command is never an error on the live board, it is speech,
+/// so this is the only sign a button phrase did nothing here.
+const SAID_ALOUD: &str = "you say \"";
 
 /// The direction an "Obvious exits" token points.
 ///
@@ -898,14 +927,12 @@ impl Navigator {
                     .room(current)
                     .and_then(|r| r.exits[step as usize].as_ref());
                 let exit_type = edge.map(|e| e.exit_type).unwrap_or(0);
-                // A type 6 exit concealed by a puzzle word answers
-                // SEARCH exactly as a searchable one does and can never
-                // be revealed by it, so the graph has to say which this
-                // is. Searching a puzzle exit is unbounded: the roll can
-                // never succeed.
-                let searchable_hidden = edge
-                    .map(|e| matches!(e.requirement, crate::graph::ExitRequirement::Hidden))
-                    .unwrap_or(false);
+                // What the exit needs of the walk, cloned off the graph
+                // so the step can hold it across its own awaits. A
+                // puzzle's plan is a handful of actions, cheap to copy.
+                let requirement = edge
+                    .map(|e| e.requirement.clone())
+                    .unwrap_or_default();
                 // A command exit is not walked, it is spoken: the
                 // direction word does nothing at all at the Newhaven
                 // ferry, and the leg simply stalls there until the
@@ -1036,10 +1063,11 @@ impl Navigator {
                     .walk_step(
                         step,
                         exit_type,
-                        searchable_hidden,
+                        &requirement,
                         sent,
                         &expected_name,
                         &here_name,
+                        &mut current,
                         session,
                         &mut events,
                         guard,
@@ -1341,15 +1369,21 @@ impl Navigator {
     /// board's "the door is closed" alone would mean sending `open` at
     /// exits that have no door — a wasted command against flood control
     /// on every step of every walk.
+    ///
+    /// `current` is the walk's position. A puzzle step walks to lever
+    /// rooms and back with inner walks, and every one of them writes
+    /// where it ended, so an error raised from a lever room names that
+    /// room.
     #[allow(clippy::too_many_arguments)]
     async fn walk_step(
         &self,
         step: Direction,
         exit_type: i64,
-        searchable_hidden: bool,
+        requirement: &crate::graph::ExitRequirement,
         sent: crate::correlate::CmdId,
         expected: &str,
         here: &str,
+        current: &mut RoomId,
         session: &Session,
         events: &mut tokio::sync::broadcast::Receiver<crate::correlate::Correlated>,
         guard: &mut impl TravelGuard,
@@ -1386,14 +1420,25 @@ impl Navigator {
             StepEvent::DoorUnlocked => {}
             // "There is no exit in that direction!" is what a HIDDEN exit
             // says too, and it is the only thing it says. The graph is
-            // the only witness that this wall is a door, so it decides:
-            // search here, re-localize everywhere else.
-            StepEvent::NoSuchExit if self.search_hidden && searchable_hidden => {
-                return self
-                    .find_hidden(step, expected, here, session, events, guard, armed, sneak_seen)
-                    .await;
-            }
+            // the only witness that this wall is a passage, so it
+            // decides: pull the lever for a puzzle, search a hidden
+            // exit, re-localize everywhere else.
             StepEvent::NoSuchExit => {
+                if let crate::graph::ExitRequirement::Puzzle(puzzle) = requirement {
+                    return self
+                        .open_puzzle(
+                            step, puzzle, expected, here, current, session, events, guard, armed,
+                            sneak_seen,
+                        )
+                        .await;
+                }
+                if self.search_hidden
+                    && matches!(requirement, crate::graph::ExitRequirement::Hidden)
+                {
+                    return self
+                        .find_hidden(step, expected, here, session, events, guard, armed, sneak_seen)
+                        .await;
+                }
                 let ask = session.send("look");
                 return self
                     .arrival(here, expected, BlindContext::AfterLook, events, guard, armed, ask, sneak_seen)
@@ -1708,6 +1753,211 @@ impl Navigator {
             needle: "hidden exit revealed by search".into(),
             tail: format!("{SEARCH_ROLLS} searches did not reveal the exit {dir}"),
         }))
+    }
+
+    /// Open a puzzle exit the board has just denied, then walk it.
+    ///
+    /// Reactive for the same reason [`Navigator::find_hidden`] is: a
+    /// passage somebody opened minutes ago simply walks, and the
+    /// refusal is the one signal that it has not been. Each attempt
+    /// performs the whole plan, comes back, and sends the direction
+    /// again. A second refusal after a complete plan is tried once
+    /// more, because the 300 second re-hide can beat a long detour,
+    /// and then reported as a puzzle failure rather than a desync: the
+    /// walk knows exactly where it stands.
+    #[allow(clippy::too_many_arguments)]
+    async fn open_puzzle(
+        &self,
+        step: Direction,
+        puzzle: &crate::puzzle::Puzzle,
+        expected: &str,
+        here: &str,
+        current: &mut RoomId,
+        session: &Session,
+        events: &mut tokio::sync::broadcast::Receiver<crate::correlate::Correlated>,
+        guard: &mut impl TravelGuard,
+        armed: &mut Option<Interrupt>,
+        sneak_seen: &mut SneakSeen,
+    ) -> Result<StepOutcome, NavErrorKind> {
+        let dir = dir_word(step);
+        for _ in 0..PUZZLE_TRIES {
+            self.solve_puzzle(session, current, dir, puzzle, guard, armed)
+                .await?;
+            // Everything the inner walks produced is still queued on
+            // this receiver, already shown to the guard by those walks.
+            // Drop it so the resent step is answered by its own lines.
+            crate::session::drain(events, |_| {});
+            let again = session.send(dir);
+            match self.wait_room(events, guard, armed, again, sneak_seen).await? {
+                StepEvent::Arrived(room) => {
+                    return Ok(StepOutcome::Arrived(Sighting::Block(room)));
+                }
+                StepEvent::Blind => {
+                    return Ok(StepOutcome::Arrived(Sighting::Dark(
+                        Navigator::blind_position(BlindContext::AfterMove, expected, here)
+                            .to_string(),
+                    )));
+                }
+                StepEvent::CombatBlocked => {
+                    return Err(NavErrorKind::Interrupted(Interrupt::Attacked {
+                        by: "combat".into(),
+                    }));
+                }
+                // Still shut, or a wording a plain step has no business
+                // producing: spend an attempt on it.
+                _ => {}
+            }
+        }
+        Err(NavErrorKind::Puzzle {
+            dir: dir.to_string(),
+            tried: format!("performed the plan {PUZZLE_TRIES} times and the way stayed shut"),
+        })
+    }
+
+    /// Perform the plan for one puzzle exit, starting from the room the
+    /// exit is in, and come back to it.
+    ///
+    /// `current` is the walk's position and this moves it: every inner
+    /// walk writes where it ended, on success and on failure alike, so
+    /// an interrupt in a lever room three rooms away reports that room
+    /// and not the one the step set out from. A caller that resumes
+    /// from `NavError::at` is then resuming from somewhere true.
+    ///
+    /// The guard is heard after every phrase, the way it is between
+    /// bash rolls: a plan can be a long way round, and a character
+    /// pulling levers is a character standing still while something
+    /// swings at it.
+    ///
+    /// The inner walks start with no sneak belief and this never reads
+    /// what they learned. The resent step's own lines settle the belief
+    /// the moment it lands, the same correction every step gets.
+    async fn solve_puzzle(
+        &self,
+        session: &Session,
+        current: &mut RoomId,
+        dir: &str,
+        puzzle: &crate::puzzle::Puzzle,
+        guard: &mut impl TravelGuard,
+        armed: &mut Option<Interrupt>,
+    ) -> Result<(), NavErrorKind> {
+        let Some(plan) = puzzle.plan(&self.capabilities) else {
+            // Routing refuses an edge with no plan, so reaching one
+            // means the pack changed under the walk. Say so rather than
+            // re-localize: the position is not in doubt.
+            return Err(NavErrorKind::Puzzle {
+                dir: dir.to_string(),
+                tried: "no plan: an action needs an item the pack lacks".into(),
+            });
+        };
+        let home = *current;
+        for action in plan {
+            self.walk_to(session, current, action.room, guard).await?;
+            self.speak(session, action, dir, guard, armed).await?;
+            if let Some(interrupt) = armed.take() {
+                return Err(NavErrorKind::Interrupted(interrupt));
+            }
+        }
+        self.walk_to(session, current, home, guard).await
+    }
+
+    /// An inner walk on behalf of a puzzle step. Boxed because it is
+    /// `goto` calling itself: the lever room may sit behind a puzzle of
+    /// its own.
+    async fn walk_to(
+        &self,
+        session: &Session,
+        current: &mut RoomId,
+        to: RoomId,
+        guard: &mut impl TravelGuard,
+    ) -> Result<(), NavErrorKind> {
+        if *current == to {
+            return Ok(());
+        }
+        match Box::pin(self.goto(session, *current, to, guard, false)).await {
+            Ok(arrival) => {
+                *current = arrival.at;
+                Ok(())
+            }
+            Err(err) => {
+                *current = err.at;
+                Err(err.kind)
+            }
+        }
+    }
+
+    /// Speak one action's phrase in the room it belongs to and read the
+    /// answer.
+    ///
+    /// A fresh receiver, subscribed before the send, so nothing an inner
+    /// walk left behind can be mistaken for the reply. The reply body is
+    /// unattributed, `kind_of` files a phrase as `Opaque`, so the read
+    /// is [`Navigator::arm_sneak`]'s: skip the echo, then classify what
+    /// arrives before the next prompt. The slot's own reply line ends
+    /// the read early. The board saying the phrase out loud means it
+    /// was not a command here, and no retry can change that.
+    async fn speak(
+        &self,
+        session: &Session,
+        action: &crate::puzzle::PuzzleAction,
+        dir: &str,
+        guard: &mut impl TravelGuard,
+        armed: &mut Option<Interrupt>,
+    ) -> Result<(), NavErrorKind> {
+        let phrase = action.phrases.first().ok_or_else(|| NavErrorKind::Puzzle {
+            dir: dir.to_string(),
+            tried: "the slot has no phrase".into(),
+        })?;
+        let mut events = session.events();
+        let id = session.send(phrase);
+        let spoken = phrase.to_lowercase();
+        let reply = action.reply.as_deref().map(str::to_lowercase);
+        let mut echoed = false;
+        let deadline = tokio::time::Instant::now() + self.step_timeout;
+        loop {
+            let ev = tokio::time::timeout_at(deadline, events.recv()).await;
+            if let Ok(Ok(ev)) = &ev {
+                match guard.on_event(&ev.event) {
+                    Some(Interrupt::Died) => {
+                        return Err(NavErrorKind::Interrupted(Interrupt::Died));
+                    }
+                    Some(hurt) => *armed = armed.take().or(Some(hurt)),
+                    None => {}
+                }
+            }
+            let cor = match ev {
+                Err(_) => {
+                    return Err(NavErrorKind::Expect(ExpectError::Timeout {
+                        needle: format!("reply to {phrase}"),
+                        tail: String::new(),
+                    }));
+                }
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(_)) => {
+                    return Err(NavErrorKind::Expect(ExpectError::Closed { tail: String::new() }));
+                }
+                Ok(Ok(cor)) => cor,
+            };
+            match &cor.event {
+                crate::events::Event::Line(line) => {
+                    if cor.answers == Some(id) {
+                        echoed = true;
+                        continue;
+                    }
+                    let line = line.to_lowercase();
+                    if line.starts_with(SAID_ALOUD) && line.contains(&spoken) {
+                        return Err(NavErrorKind::Puzzle {
+                            dir: dir.to_string(),
+                            tried: format!("{phrase:?} was said aloud, not acted on"),
+                        });
+                    }
+                    if reply.as_deref().is_some_and(|r| line.contains(r)) {
+                        return Ok(());
+                    }
+                }
+                crate::events::Event::Prompt { .. } if echoed => return Ok(()),
+                _ => {}
+            }
+        }
     }
 
     /// Wait specifically for a room block, treating door chatter as noise.
