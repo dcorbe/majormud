@@ -123,7 +123,7 @@ impl Settings {
         let doc: DocumentMut = text
             .parse()
             .map_err(|e: toml_edit::TomlError| e.to_string())?;
-        let profile = profile_of(&doc)?;
+        let profile = profile_of(&doc).map_err(ParseFailure::whole)?;
         Ok(Settings {
             doc,
             profile,
@@ -206,7 +206,7 @@ impl Settings {
         let table = table_at(&mut self.doc, &path)?;
         table.insert(leaf, Item::Value(value));
         drop_aliases(table, leaf);
-        self.reparse(before)
+        self.reparse(key, before)
     }
 
     /// Remove one key so its default applies again. Removing a key that
@@ -221,10 +221,13 @@ impl Settings {
             table.remove(leaf);
             drop_aliases(table, leaf);
         }
-        self.reparse(before)
+        self.reparse(key, before)
     }
 
-    fn reparse(&mut self, before: DocumentMut) -> Result<(), String> {
+    /// The document is a profile again, or it goes back to what it was.
+    /// `key` names the edit, for a refusal that has to say what it was
+    /// refusing without a span.
+    fn reparse(&mut self, key: &str, before: DocumentMut) -> Result<(), String> {
         match profile_of(&self.doc) {
             Ok(profile) => {
                 self.profile = profile;
@@ -239,7 +242,7 @@ impl Settings {
             }
             Err(e) => {
                 self.doc = before;
-                Err(e)
+                Err(e.one_line(key))
             }
         }
     }
@@ -282,16 +285,45 @@ fn temp_path(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
+/// Why a document is not a profile. The two are told apart because they
+/// are read in different places: toml's error carries a span, which is
+/// worth printing against a file the operator can open and is noise
+/// against a `/set` they just typed.
+enum ParseFailure {
+    Toml(toml::de::Error),
+    Invalid(String),
+}
+
+impl ParseFailure {
+    /// For a file. The span names the line and column to go and look at.
+    fn whole(self) -> String {
+        match self {
+            ParseFailure::Toml(e) => e.to_string(),
+            ParseFailure::Invalid(s) => s,
+        }
+    }
+
+    /// For one edit. Toml's rendering is five lines with a caret ruler
+    /// through a document the operator never sees, so the key it was
+    /// typed against stands in for the span.
+    fn one_line(self, key: &str) -> String {
+        match self {
+            ParseFailure::Toml(e) => format!("{key}: {}", e.message()),
+            ParseFailure::Invalid(s) => s,
+        }
+    }
+}
+
 /// The one parse and the one validation, shared by every edit and every
 /// load. `Profile::load` used to hold this.
-fn profile_of(doc: &DocumentMut) -> Result<Profile, String> {
+fn profile_of(doc: &DocumentMut) -> Result<Profile, ParseFailure> {
     let mut profile: Profile =
-        toml::from_str(&doc.to_string()).map_err(|e| e.to_string())?;
+        toml::from_str(&doc.to_string()).map_err(ParseFailure::Toml)?;
     if let Some(bot) = &mut profile.bot {
         bot.normalise();
-        bot.validate()?;
+        bot.validate().map_err(ParseFailure::Invalid)?;
     }
-    profile.bank.validate()?;
+    profile.bank.validate().map_err(ParseFailure::Invalid)?;
     Ok(profile)
 }
 

@@ -62,15 +62,24 @@ fn a_nested_table_key_is_reachable() {
     assert!(s.text().contains("[farm.nav]"));
 }
 
+/// One line, naming the key. Toml's own rendering is a span with a
+/// caret ruler through a document the operator never typed and cannot
+/// open.
 #[test]
 fn a_wrong_type_is_refused_and_nothing_changes() {
     let mut s = Settings::parse(COMMENTED).unwrap();
     let before = s.text();
     let err = s.set("bot.rest_at_percent", "soon").unwrap_err();
-    assert!(err.contains("rest_at_percent"), "{err}");
+    assert_eq!(err.lines().count(), 1, "{err}");
+    assert!(err.contains("bot.rest_at_percent"), "{err}");
+    assert!(err.contains("expected u32"), "{err}");
     assert_eq!(s.text(), before);
     assert_eq!(s.profile().bot.as_ref().unwrap().rest_at_percent, 60);
     assert!(!s.dirty());
+    // A password of digits parses as an integer and lands here too.
+    let err = s.set("password", "1234").unwrap_err();
+    assert_eq!(err.lines().count(), 1, "{err}");
+    assert!(err.starts_with("password: "), "{err}");
 }
 
 /// Dirty means unsaved work, so a write that changed no text is not
@@ -84,6 +93,18 @@ fn a_write_that_changes_nothing_leaves_the_settings_clean() {
     assert!(!s.dirty(), "the key was never there");
     s.set("bot.rest_at_percent", "45").unwrap();
     assert!(s.dirty(), "this one is a change");
+}
+
+/// A file keeps the span. The operator can open the file and go to the
+/// line and column it names, which is exactly what a /set has none of.
+#[test]
+fn a_bad_profile_file_reports_the_line_and_column() {
+    let err = match Settings::parse("port = \"twenty three\"\n") {
+        Err(e) => e,
+        Ok(_) => panic!("a port that is a phrase is not a port"),
+    };
+    assert!(err.contains("line 1"), "{err}");
+    assert!(err.lines().count() > 1, "{err}");
 }
 
 #[test]
