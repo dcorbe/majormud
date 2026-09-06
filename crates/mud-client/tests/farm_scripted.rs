@@ -218,6 +218,7 @@ async fn session_with_bank(
         bot: None,
         farm: None,
         bank,
+        ..Default::default()
     };
     Session::connect(&profile, None).await.unwrap()
 }

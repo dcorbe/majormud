@@ -107,6 +107,7 @@ fn rust_profile(addr: std::net::SocketAddr) -> Profile {
         bot: None,
         farm: None,
         bank: Default::default(),
+        ..Default::default()
     }
 }
 

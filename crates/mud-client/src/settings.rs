@@ -25,6 +25,7 @@ pub const KEYS: &[&str] = &[
     "password",
     "pace_ms",
     "disable_evil_warnings",
+    "scrollback_lines",
     "bot.auto_combat",
     "bot.auto_heal",
     "bot.auto_get",

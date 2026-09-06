@@ -115,6 +115,7 @@ async fn session_for(addr: std::net::SocketAddr) -> Session {
         bot: None,
         farm: None,
         bank: Default::default(),
+        ..Default::default()
     };
     Session::connect(&profile, None).await.unwrap()
 }

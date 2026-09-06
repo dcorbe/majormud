@@ -31,6 +31,7 @@ pub mod progress;
 pub mod purse;
 pub mod puzzle;
 pub mod roam;
+pub mod screen;
 pub mod script;
 pub mod session;
 pub mod settings;

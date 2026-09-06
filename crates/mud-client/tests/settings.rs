@@ -187,6 +187,7 @@ fn every_key_the_profile_serialises_is_in_keys() {
             at: Some("1/1".into()),
             ..Default::default()
         },
+        ..Default::default()
     };
     let text = toml::to_string(&full).unwrap();
     let table: toml::Table = text.parse().unwrap();

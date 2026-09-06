@@ -21,6 +21,7 @@ fn profile_for(addr: std::net::SocketAddr, target: Target) -> Profile {
         bot: None,
         farm: None,
         bank: Default::default(),
+        ..Default::default()
     }
 }
 

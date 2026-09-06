@@ -379,6 +379,7 @@ async fn logged_in_with(
         bot: None,
         farm: None,
         bank: Default::default(),
+        ..Default::default()
     };
     let session = Arc::new(Session::connect(&profile, None).await.unwrap());
     dialect::login(&session, &profile).await.unwrap();

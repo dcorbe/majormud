@@ -34,6 +34,13 @@ pub struct Profile {
     /// declared after them would serialise INTO one.
     #[serde(default)]
     pub disable_evil_warnings: bool,
+    /// Lines a window keeps above its screen for PageUp. A window's
+    /// terminal is sized when the window opens, so a change applies to
+    /// the next `/new`.
+    ///
+    /// Before the tables for the same reason as the field above.
+    #[serde(default = "default_scrollback")]
+    pub scrollback_lines: u32,
     /// Bot policy toggles. Absent means every toggle off — a patrol that
     /// walks its circuit and fights nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -49,6 +56,10 @@ pub struct Profile {
     pub bank: crate::bank::BankConfig,
 }
 
+fn default_scrollback() -> u32 {
+    2000
+}
+
 impl Default for Profile {
     /// What the lobby starts from: a telnet port and nothing else. The
     /// host is empty on purpose, so nothing dials until `/connect` or
@@ -62,6 +73,7 @@ impl Default for Profile {
             password: String::new(),
             pace_ms: None,
             disable_evil_warnings: false,
+            scrollback_lines: default_scrollback(),
             bot: None,
             farm: None,
             bank: crate::bank::BankConfig::default(),

@@ -139,6 +139,7 @@ async fn session_for(addr: std::net::SocketAddr, keep_gold: u32) -> Session {
             keep_gold,
             ..Default::default()
         },
+        ..Default::default()
     };
     Session::connect(&profile, None).await.unwrap()
 }

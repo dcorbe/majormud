@@ -411,3 +411,12 @@ fn a_profile_without_a_host_is_refused_by_require_host() {
     assert!(named.require_host().is_ok());
 }
 
+
+#[test]
+fn scrollback_lines_defaults_to_two_thousand() {
+    let p: Profile = toml::from_str("").unwrap();
+    assert_eq!(p.scrollback_lines, 2000);
+    let p: Profile = toml::from_str("scrollback_lines = 50").unwrap();
+    assert_eq!(p.scrollback_lines, 50);
+}
+
