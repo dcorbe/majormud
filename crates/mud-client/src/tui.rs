@@ -75,6 +75,15 @@ impl InputEditor {
         self.cursor = self.chars.len();
     }
 
+    /// Replace the characters `start..end` with `text` and park the
+    /// cursor after it. Completion's one edit.
+    pub fn replace(&mut self, start: usize, end: usize, text: &str) {
+        let end = end.min(self.chars.len());
+        let start = start.min(end);
+        self.chars.splice(start..end, text.chars());
+        self.cursor = start + text.chars().count();
+    }
+
     /// Submit: returns the line, pushes it to history, clears the
     /// buffer and history cursor.
     pub fn take_line(&mut self) -> String {

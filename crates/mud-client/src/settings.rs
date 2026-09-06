@@ -364,3 +364,90 @@ fn lookup<'a>(table: &'a toml::Table, key: &str) -> Option<&'a toml::Value> {
     }
     Some(value)
 }
+
+/// What Tab does to the word under the cursor. `start..end` are
+/// character offsets of that word. `text` replaces it. `list` is empty
+/// unless the word could not grow, in which case it is the candidates
+/// to print.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Completion {
+    pub start: usize,
+    pub end: usize,
+    pub text: String,
+    pub list: Vec<String>,
+}
+
+/// Complete the word under the cursor. The first word of a slash line
+/// completes against `verbs`. The second word after `/set` or `/unset`
+/// completes against [`KEYS`]. Anything else is `None`.
+pub fn complete(line: &str, cursor: usize, verbs: &[&str]) -> Option<Completion> {
+    let chars: Vec<char> = line.chars().collect();
+    let cursor = cursor.min(chars.len());
+    let start = chars[..cursor]
+        .iter()
+        .rposition(|c| c.is_whitespace())
+        .map_or(0, |i| i + 1);
+    let end = chars[cursor..]
+        .iter()
+        .position(|c| c.is_whitespace())
+        .map_or(chars.len(), |i| cursor + i);
+    let word: String = chars[start..end].iter().collect();
+    let before: String = chars[..start].iter().collect();
+    let index = before.split_whitespace().count();
+    let verb = before.split_whitespace().next().unwrap_or_default();
+    let candidates: Vec<String> = if index == 0 && word.starts_with('/') {
+        verbs
+            .iter()
+            .filter(|v| v.starts_with(&word))
+            .map(|v| v.to_string())
+            .collect()
+    } else if index == 1 && matches!(verb, "/set" | "/unset") {
+        KEYS.iter()
+            .filter(|k| k.starts_with(&word))
+            .map(|k| k.to_string())
+            .collect()
+    } else {
+        return None;
+    };
+    match candidates.as_slice() {
+        [] => None,
+        [one] => Some(Completion {
+            start,
+            end,
+            text: format!("{one} "),
+            list: Vec::new(),
+        }),
+        many => {
+            let prefix = common_prefix(many);
+            let list = if prefix.chars().count() > word.chars().count() {
+                Vec::new()
+            } else {
+                many.to_vec()
+            };
+            Some(Completion {
+                start,
+                end,
+                text: prefix,
+                list,
+            })
+        }
+    }
+}
+
+/// The longest prefix every word shares. Empty for no words.
+pub fn common_prefix(words: &[String]) -> String {
+    let Some(first) = words.first() else {
+        return String::new();
+    };
+    first
+        .chars()
+        .enumerate()
+        .take_while(|(i, c)| {
+            words
+                .iter()
+                .all(|w| w.chars().nth(*i) == Some(*c))
+        })
+        .map(|(_, c)| c)
+        .collect()
+}
+

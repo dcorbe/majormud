@@ -1057,3 +1057,14 @@ fn bank_is_its_own_outcome() {
     assert_eq!(slash("/bank"), Some(KeyOutcome::Bank));
     assert_eq!(slash("  /bank  "), Some(KeyOutcome::Bank));
 }
+
+#[test]
+fn editor_replace_swaps_a_word_and_parks_the_cursor_after_it() {
+    let mut e = InputEditor::new();
+    for c in "/set bot.ign 5".chars() {
+        e.insert(c);
+    }
+    e.replace(5, 12, "bot.ignore_coins ");
+    assert_eq!(e.line(), "/set bot.ignore_coins  5");
+    assert_eq!(e.cursor(), 22);
+}

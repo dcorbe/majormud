@@ -245,6 +245,7 @@ fn a_glob_matches_by_prefix_with_a_trailing_star_implied() {
     assert!(glob_match("", "host"));
     assert!(!glob_match("bot", "bank.at"));
     assert!(!glob_match("*heal*", "bank.at"));
+    assert!(!glob_match("bot", "my.bot.thing"));
 }
 
 #[test]
@@ -280,4 +281,58 @@ fn the_password_is_masked() {
     assert_eq!(s.value("password").as_deref(), Some("\"****\""));
     let empty = Settings::default();
     assert_eq!(empty.value("password").as_deref(), Some("\"\""));
+}
+
+use mud_client::settings::complete;
+
+const VERBS: &[&str] = &["/set", "/save", "/quit", "/unset"];
+
+#[test]
+fn a_unique_verb_completes_with_a_space() {
+    let c = complete("/sa", 3, VERBS).unwrap();
+    assert_eq!((c.start, c.end, c.text.as_str()), (0, 3, "/save "));
+    assert!(c.list.is_empty());
+}
+
+#[test]
+fn a_unique_key_completes_after_set() {
+    let c = complete("/set bot.ignore_c", 17, VERBS).unwrap();
+    assert_eq!((c.start, c.end, c.text.as_str()), (5, 17, "bot.ignore_coins "));
+    assert!(c.list.is_empty());
+    let c = complete("/unset bank.at", 14, VERBS).unwrap();
+    assert_eq!(c.text, "bank.at ");
+}
+
+#[test]
+fn several_candidates_grow_to_the_common_prefix_and_then_list() {
+    let c = complete("/set bot.rest_", 14, VERBS).unwrap();
+    assert_eq!(c.text, "bot.rest_");
+    assert_eq!(
+        c.list,
+        vec![
+            "bot.rest_at_percent".to_string(),
+            "bot.rest_until_percent".to_string(),
+            "bot.rest_command".to_string()
+        ]
+    );
+    let c = complete("/set bot.min", 12, VERBS).unwrap();
+    assert_eq!(c.text, "bot.minor_heal_", "the word grew, so nothing is listed");
+    assert!(c.list.is_empty());
+}
+
+#[test]
+fn completion_works_mid_line_and_only_on_slash_lines() {
+    let c = complete("/set bot.ign 5", 12, VERBS).unwrap();
+    assert_eq!((c.start, c.end), (5, 12));
+    assert!(complete("set bot.ign", 11, VERBS).is_none());
+    assert!(complete("/go bot.ign", 11, VERBS).is_none());
+    assert!(complete("/set bot.rest_at_percent 6", 26, VERBS).is_none());
+    assert!(complete("/zz", 3, VERBS).is_none());
+}
+
+#[test]
+fn common_prefix_of_nothing_is_empty() {
+    use mud_client::settings::common_prefix;
+    assert_eq!(common_prefix(&[]), "");
+    assert_eq!(common_prefix(&["abc".into(), "abd".into()]), "ab");
 }
