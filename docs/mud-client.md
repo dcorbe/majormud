@@ -52,6 +52,7 @@ auto_heal = true
 auto_flee = true
 auto_get = true            # coins only; floor items are never announced
 take_keys = true           # keys the ring lacks; independent of auto_get
+ignore_coins = ["copper"]  # denominations the sweep leaves on the floor
 minor_heal_at_percent = 70 # cast the minor heal below this; 0 = never
 major_heal_at_percent = 40 # cast the major heal below this; 0 = never
 rest_at_percent = 60       # rest below this
@@ -78,6 +79,13 @@ max_seconds = 3600         # 0 = unlimited
 [farm.nav]
 step_timeout_ms = 15000
 bash_doors = true
+
+[bank]
+auto_deposit = true              # detour to a bank during a farm when a gate trips
+deposit_at_coins = 1000          # raw coin count, every denomination counts one; 0 = off
+deposit_on_weight_class = true   # a pickup lifted None->Light, Light->Medium, Medium->Heavy
+keep_gold = 0                    # left in the purse, in gold crowns
+# at = "1/297"                   # a fixed bank; unset = the nearest
 ```
 
 ### `pace_ms`
@@ -466,6 +474,13 @@ Errors are reported and the connection is kept: being told "no `[farm]`
 table" while still logged in beats being thrown out. A run that stops
 badly shows why in the bar (`stopped: ...`) rather than a bare "done".
 
+### `/bank` — deposit now
+
+`/bank` walks the character to the nearest bank, or the one `[bank].at`
+names, deposits everything above `keep_gold`, and stops there. It takes
+the same job slot as `/go`, and Ctrl-F takes the keyboard back. It does
+not consult the deposit gates: you asked.
+
 ### Roaming — fence an area instead of listing a circuit
 
 A loop says where to go, in order. A **roam** says where *not* to go, and
@@ -684,6 +699,58 @@ plain step. Without the item it is a wall.
 
 The bot picks up any key it sees on the floor that the ring lacks,
 `[bot].take_keys`, on by default.
+
+## Banking
+
+A farm picks up every pile it kills over. Coins weigh a third of a unit
+each, so a long run drifts the character up a weight class, and a death
+loses the lot. So the run judges a deposit gate after any stop where the
+board confirmed a coin pickup, on one fresh `i`, and detours when it
+trips.
+
+Two gates, either one enough:
+
+- **`deposit_at_coins`** (1000): the raw coin count is over the mark and
+  the purse is above the keep floor, so a deposit can lower it.
+- **`deposit_on_weight_class`** (true): the coins picked up since the
+  last reading lifted the class a step, None to Light, Light to Medium,
+  Medium to Heavy. The boundaries are the board's own, 33, 66 and 100
+  percent. A class already raised by earlier coins does not fire again.
+
+The errand walks to the bank with the same leg a circuit uses, so
+fights on the way, interrupts and desync recovery are the leg's. At the
+bank it reads the purse again, deposits everything above
+**`keep_gold`** (0), and reads once more so routing sees the money that
+is left. The next leg starts from the bank. There is no walk back.
+
+An errand that deposits nothing, whether the bank is unreachable, the
+walk fails, or the board refuses, prints one line saying so and
+switches deposits off for the rest of the run.
+
+**The nearest bank** is the one the fewest hops away along a route the
+character can take. The world has five bank rooms: 1/297 Bank of
+Godfrey, 6/1334 Bank of Khazarad, 2/2568 Bank of Rhudaur, 16/320 Bank
+in the Lost City, 17/2435 Bank of Arlysia. Godfrey and Khazarad share
+one account. The other three are separate accounts, so a run that uses
+the nearest bank can spread its money over four. `[bank].at` names one
+bank for every deposit instead. The Bank of Rhudaur sits behind a 5
+gold toll on the way in and its exit is free. A toll the purse cannot
+pay is a wall to routing, so a bank behind one is simply not a
+candidate.
+
+**Tolls after a deposit.** Routing prices a toll against the purse and
+treats one the character cannot pay as a wall. A circuit that crosses a
+toll needs `keep_gold` set to it, or the leg home goes round.
+
+**`[bot].ignore_coins`** lists denominations the sweep leaves on the
+floor, as `get` names them: `copper`, `silver`, `gold`, `platinum`,
+`runic`. Every sweep site honours it, and an ignored pile never holds a
+stop open.
+
+Three wordings are from the stock oracle and unverified on the live
+board: the deposit reply *"You deposit 10 silver nobles."*, the
+inventory reply's *"You are carrying"* line, and the pickup line *"You
+picked up 11 silver nobles"*. The first live `/bank` settles them.
 
 ## Buttons and levers
 
