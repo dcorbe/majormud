@@ -999,7 +999,7 @@ pub fn slash(line: &str) -> Option<KeyOutcome> {
         "/help" | "/?" => Some(KeyOutcome::Help),
         "/set" => match rest.split_once(char::is_whitespace) {
             Some((key, _)) if key.contains('*') => Some(KeyOutcome::Refuse(format!(
-                "set: {key} is a pattern, which lists; give one key a value"
+                "set: {key} is a pattern and lists. To change one key, name it without a star"
             ))),
             Some((key, value)) => Some(KeyOutcome::Set {
                 key: key.to_string(),
@@ -1046,10 +1046,10 @@ pub fn help_text() -> &'static str {
 /room [target]       what the world database knows about a room (default: here)
 /map [target]        draw the plane around a room (default: here)
 /help, /?            this list
-/set [pattern]       list settings, all or those the glob matches (bot, bot.rest*, *heal*)
-/set <key> <value>   change a setting now; the value is TOML, a bare word is a string
+/set [pattern]       list settings, all or those the glob matches: bot, bot.rest*, *heal*
+/set <key> <value>   change a setting now, as TOML, where a bare word is a string
 /unset <key>         remove a setting so its default applies
-/save [file]         write the settings; the file is remembered
+/save [file]         write the settings and remember the file
 /load <file>         read settings from a file
 /connect [host[:port]]  connect, setting host and port when given
 /disconnect          close the line and return to the lobby
@@ -1088,6 +1088,10 @@ pub fn handle_key(
             _ => KeyOutcome::Continue,
         };
     }
+    // Ctrl-P swaps between typing commands and driving a full-screen
+    // board screen. Both are needed: the line editor wants the arrows for
+    // its cursor and history, an FSD room wants them as cursor keys, and
+    // nothing can satisfy both at once.
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('p') {
         *passthrough = !*passthrough;
         return KeyOutcome::Continue;

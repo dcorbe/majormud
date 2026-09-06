@@ -363,9 +363,9 @@ fn passthrough_keys_come_back_as_raw_bytes() {
 fn tab_completes_and_lists() {
     let mut editor = InputEditor::new();
     let mut passthrough = false;
-    // "bot.ign" alone is ambiguous (`bot.ignore` and `bot.ignore_coins`
-    // both match); one more character is unique, same as
-    // `a_unique_key_completes_after_set` in tests/settings.rs.
+    // "bot.ign" alone is ambiguous: both `bot.ignore` and
+    // `bot.ignore_coins` match it. One more character is unique, same
+    // as `a_unique_key_completes_after_set` in tests/settings.rs.
     for c in "/set bot.ignore_c".chars() {
         handle_key(&key(KeyCode::Char(c)), &mut editor, &mut passthrough, false);
     }
