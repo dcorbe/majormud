@@ -242,17 +242,7 @@ pub async fn run_go(
     // The table goes to the session before the capabilities are read,
     // so the walk routes with the pack. Best effort, as before: a
     // session handed the table earlier keeps it when this load fails.
-    let content = match RoomGraph::load_content(&cfg.content) {
-        Ok(content) => {
-            let content = Arc::new(content);
-            session.set_content(Arc::clone(&content));
-            Some(content)
-        }
-        Err(e) => {
-            eprintln!("item identity unavailable ({e}); backstab opener disabled");
-            None
-        }
-    };
+    let content = crate::farm::content_for(session, cfg);
     let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone())
         .with_capabilities(session.capabilities());
     let nav = match content {

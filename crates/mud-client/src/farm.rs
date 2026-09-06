@@ -1761,34 +1761,14 @@ async fn farm_loop(
 ) -> Result<(FarmEnd, FarmStats), FarmError> {
     let started = Instant::now();
     let mut stats = FarmStats::default();
+    // Item identity for the pack and the backstab opener. Held out
+    // here rather than inside the navigator's block because the bank
+    // errand reads the same table to find a bank.
+    let content = content_for(session, cfg);
     // A roam's fence binds the WALK, not just the destinations. Without
     // this the rotation would only ever pick rooms inside the region
     // while the legs between them cut straight through a wall whenever
     // that was cheaper — a fence you can walk through is not a fence.
-    // Item identity for the pack and the backstab opener. The table
-    // goes to the session first, so the capabilities read below
-    // already carry the pack. Best effort, same "reload the path
-    // again" pattern as the threat table just below: a session that
-    // was handed the table earlier keeps it when this load fails.
-    // Held out here rather than inside the navigator's block because
-    // the bank errand reads the same table to find a bank.
-    let content = match RoomGraph::load_content(&cfg.content) {
-        Ok(content) => {
-            let content = std::sync::Arc::new(content);
-            session.set_content(std::sync::Arc::clone(&content));
-            Some(content)
-        }
-        Err(e) => {
-            // Whatever the session already holds, when something handed
-            // it a table before the run. Only a run with no table at all
-            // loses the backstab opener and the bank.
-            let kept = session.pack_handle().map(|h| h.content().clone());
-            if kept.is_none() {
-                eprintln!("item identity unavailable ({e}); backstab opener disabled");
-            }
-            kept
-        }
-    };
     let nav = {
         let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone())
             .with_capabilities(session.capabilities());
@@ -2388,6 +2368,34 @@ pub(crate) fn sheet_from(
             casting,
         ),
         buffs: crate::sheet::buffs(&book, &bot.buffs, durations, casting),
+    }
+}
+
+/// The item table a walk identifies items with: the pack, the backstab
+/// opener and the bank list all read it.
+///
+/// One rule for every walker. The table goes to the session first, so
+/// the capabilities read afterwards already carry the pack. A load that
+/// fails falls back to whatever the session already holds, because
+/// something may have handed it a table earlier, and only a walk with
+/// no table at all loses the opener and the bank.
+pub(crate) fn content_for(
+    session: &crate::session::Session,
+    cfg: &FarmConfig,
+) -> Option<std::sync::Arc<mud_core::content::Content>> {
+    match RoomGraph::load_content(&cfg.content) {
+        Ok(content) => {
+            let content = std::sync::Arc::new(content);
+            session.set_content(std::sync::Arc::clone(&content));
+            Some(content)
+        }
+        Err(e) => {
+            let kept = session.pack_handle().map(|h| std::sync::Arc::clone(h.content()));
+            if kept.is_none() {
+                eprintln!("item identity unavailable ({e}); backstab opener disabled");
+            }
+            kept
+        }
     }
 }
 

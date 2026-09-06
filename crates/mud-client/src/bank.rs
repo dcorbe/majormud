@@ -439,15 +439,7 @@ pub async fn run_bank(
     if let Err(e) = crate::deaths::init(&cfg.content) {
         eprintln!("death wordings unavailable ({e}); shared-room kills will be missed");
     }
-    let content = match RoomGraph::load_content(&cfg.content) {
-        Ok(content) => {
-            let content = std::sync::Arc::new(content);
-            session.set_content(std::sync::Arc::clone(&content));
-            Some(content)
-        }
-        Err(_) => session.pack_handle().map(|h| std::sync::Arc::clone(h.content())),
-    };
-    let Some(content) = content else {
+    let Some(content) = crate::farm::content_for(session, cfg) else {
         return Ok(ErrandEnd::Nothing(format!(
             "no room database at {}",
             cfg.content.display()
