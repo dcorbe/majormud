@@ -575,7 +575,7 @@ Tab completes a slash verb or, after `/set` and `/unset`, a key:
 `/set bot.ignore_c<Tab>` gives `/set bot.ignore_coins`. When several keys
 match, Tab grows the word to what they share, and a second Tab lists
 them: `/set bot.ign<Tab>` becomes `/set bot.ignore` and the next Tab
-prints `bot.ignore` and `bot.ignore_coins`.
+prints `bot.ignore_coins` and `bot.ignore`.
 
 When a change takes effect:
 

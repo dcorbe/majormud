@@ -421,6 +421,10 @@ async fn play(
     let mut raw_rx = session.raw();
     let mut events = session.events();
     let mut state_rx = session.state();
+    // Bound once because it is a connection-time fact: this session was
+    // opened against that board and goes on speaking its dialect. A
+    // `/set target` mid-session applies at the next `/connect`, and the
+    // bar goes on naming the board actually on the other end.
     let target = match session.profile().target {
         crate::dialect::Target::MbbsEmu => "mbbs",
         crate::dialect::Target::RustServer => "rust",
@@ -1492,7 +1496,9 @@ pub fn needs_username(profile: &crate::profile::Profile) -> Result<(), String> {
     Ok(())
 }
 
-/// `host` or `host:port`. The port defaults to telnet's 23.
+/// `host` or `host:port`. The port defaults to telnet's 23. An IPv6
+/// literal is out of scope and is not parsed: a hostname or an IPv4
+/// address is what this expects.
 pub fn connect_target(arg: &str) -> Result<(String, u16), String> {
     let (host, port) = match arg.rsplit_once(':') {
         Some((host, port)) => {
@@ -1796,7 +1802,6 @@ fn paint_bottom(
     out.flush()
 }
 
-/// One status line, exactly `width` characters (padded/truncated).
 /// One status line for both commands, exactly `width` characters.
 ///
 /// `play` and `farm` used to build their own, so the same session looked

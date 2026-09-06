@@ -762,8 +762,9 @@ async fn realm_entry_board() -> std::net::SocketAddr {
         let (mut sock, _) = listener.accept().await.unwrap();
         // `exp` and `i` go out back to back with no pacing in this test
         // profile, and can arrive in ONE read -- buffer and split on
-        // newlines, same as `capture_board`/`scripted_board` do, rather
-        // than treating a whole read as one line.
+        // newlines, the same as the `scripted_board` helpers in the
+        // other test files do, rather than treating a whole read as one
+        // line.
         let mut pending = String::new();
         let mut buf = [0u8; 512];
         while let Ok(n) = sock.read(&mut buf).await {

@@ -163,6 +163,9 @@ fn every_key_the_profile_serialises_is_in_keys() {
     use mud_client::farm::FarmConfig;
     use mud_client::profile::Profile;
 
+    // Every new optional field has to be filled in here. An `Option`
+    // left at `None` serialises as nothing, so it never reaches `found`
+    // and its missing `KEYS` entry escapes this test.
     let full = Profile {
         target: Target::MbbsEmu,
         host: "h".into(),
@@ -391,6 +394,12 @@ fn several_candidates_grow_to_the_common_prefix_and_then_list() {
             "bot.rest_until_percent".to_string(),
             "bot.rest_command".to_string()
         ]
+    );
+    // The order is KEYS order, which the docs quote.
+    let c = complete("/set bot.ignore", 15, VERBS).unwrap();
+    assert_eq!(
+        c.list,
+        vec!["bot.ignore_coins".to_string(), "bot.ignore".to_string()]
     );
     let c = complete("/set bot.min", 12, VERBS).unwrap();
     assert_eq!(c.text, "bot.minor_heal_", "the word grew, so nothing is listed");
