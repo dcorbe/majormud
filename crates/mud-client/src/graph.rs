@@ -883,20 +883,13 @@ impl RoomGraph {
     /// and it counts the steps of the route [`RoomGraph::route`] would
     /// actually pick — the two run the same search, so they cannot drift.
     pub fn distances(&self, from: RoomId) -> BTreeMap<RoomId, usize> {
-        self.distances_within(from, &|_, _| true)
+        self.distances_within_for(from, &|_, _| true, &Capabilities::unrestricted())
     }
 
-    /// As [`RoomGraph::distances`], over the edges `allow` accepts.
-    pub fn distances_within(
-        &self,
-        from: RoomId,
-        allow: &dyn Fn(Direction, &ExitEdge) -> bool,
-    ) -> BTreeMap<RoomId, usize> {
-        self.distances_within_for(from, allow, &Capabilities::unrestricted())
-    }
-
-    /// As [`RoomGraph::distances_within`], for a walker with these
-    /// capabilities. An edge the walker cannot open is not counted, so
+    /// As [`RoomGraph::distances`], over the edges `allow` accepts, for
+    /// a walker with these capabilities.
+    ///
+    /// An edge the walker cannot open is not counted, so
     /// a room behind it is absent unless another way reaches it. A roam
     /// floods its region with this, since a region containing a room
     /// the walk then cannot reach would send the character at a wall.
