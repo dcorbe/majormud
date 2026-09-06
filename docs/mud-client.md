@@ -732,9 +732,10 @@ is almost never in there. The walk to the bank ignores the fence for
 the same reason: a run that cannot leave its region cannot put its coin
 down.
 
-An errand that deposits nothing, whether the bank is unreachable, the
-walk fails, or the board refuses, prints one line saying so and
-switches deposits off for the rest of the run.
+An errand that deposits nothing switches deposits off for the rest of
+the run and prints one line saying so. That covers a bank no route
+reaches, a walk that fails, a deposit the board refuses, and a purse
+with nothing above the keep floor.
 
 **The nearest bank** is the one the fewest hops away along a route the
 character can take. The world has five bank rooms: 1/297 Bank of
