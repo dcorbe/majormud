@@ -529,21 +529,15 @@ impl RoomGraph {
                 },
                 light: i64::from(room.light),
             };
-            for exit in room.exits.iter().flatten() {
-                let exit_type = i64::from(exit.exit_type);
-                if exit_type != REMOTE_ACTION_EXIT {
-                    continue;
-                }
-                // A button or lever. Not an edge: it is recorded against
-                // the exit it opens and the slot itself vanishes.
-                if let Some((key, action)) = Self::slot(content, *id, exit) {
-                    remote_actions.entry(key).or_default().push(action);
-                }
-            }
             for (d, exit) in room.exits.iter().enumerate() {
                 let Some(exit) = exit else { continue };
                 let exit_type = i64::from(exit.exit_type);
+                // A button or lever. Not an edge: it is recorded against
+                // the exit it opens and the slot itself vanishes.
                 if exit_type == REMOTE_ACTION_EXIT {
+                    if let Some((key, action)) = Self::slot(content, *id, exit) {
+                        remote_actions.entry(key).or_default().push(action);
+                    }
                     continue;
                 }
                 let param = i64::from(exit.param);
