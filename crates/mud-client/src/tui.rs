@@ -155,6 +155,23 @@ pub enum LobbyStep {
     Quit,
 }
 
+/// The unsaved-settings refusal, in one place because the lobby and
+/// play both ask it and a reworded copy would drift. The note comes
+/// back the first time `/quit` is typed with settings unsaved, and arms
+/// `armed` so that the next `/quit` goes through. `None` means the quit
+/// may proceed. Disarming on any other command stays with the callers,
+/// which are the only things that see the other commands.
+pub fn quit_refusal(
+    settings: &crate::settings::Settings,
+    armed: &mut bool,
+) -> Option<&'static str> {
+    if settings.dirty() && !*armed {
+        *armed = true;
+        return Some("-- unsaved settings: /save, or /quit again --");
+    }
+    None
+}
+
 /// One outcome against the lobby: settings commands, `/connect`, `/help`
 /// and `/quit`. Everything that needs a board says so. `quit_armed` is
 /// the unsaved-settings refusal: set by a refused `/quit`, cleared by
@@ -173,14 +190,10 @@ pub fn lobby_step(
     match outcome {
         KeyOutcome::Continue => (LobbyStep::Stay, None),
         KeyOutcome::QuitNow => (LobbyStep::Quit, None),
-        KeyOutcome::Quit => {
-            if settings.dirty() && !*quit_armed {
-                *quit_armed = true;
-                (LobbyStep::Stay, Some("-- unsaved settings: /save, or /quit again --".into()))
-            } else {
-                (LobbyStep::Quit, None)
-            }
-        }
+        KeyOutcome::Quit => match quit_refusal(settings, quit_armed) {
+            Some(why) => (LobbyStep::Stay, Some(why.to_string())),
+            None => (LobbyStep::Quit, None),
+        },
         KeyOutcome::Connect { target } => {
             if let Some(target) = target {
                 let (host, port) = match connect_target(&target) {
@@ -708,14 +721,10 @@ async fn play(
                             }
                         }
                         match outcome {
-                            KeyOutcome::Quit => {
-                                if settings.dirty() && !quit_armed {
-                                    quit_armed = true;
-                                    note(&mut out, "-- unsaved settings: /save, or /quit again --")?;
-                                } else {
-                                    break Ok(PlayEnd::Quit);
-                                }
-                            }
+                            KeyOutcome::Quit => match quit_refusal(settings, &mut quit_armed) {
+                                Some(why) => note(&mut out, why)?,
+                                None => break Ok(PlayEnd::Quit),
+                            },
                             KeyOutcome::QuitNow => break Ok(PlayEnd::Quit),
                             KeyOutcome::Send(line) => {
                                 session.send(&line);

@@ -1259,6 +1259,30 @@ fn quit_in_the_lobby_asks_once_while_unsaved() {
     assert!(matches!(step, LobbyStep::Quit), "nothing unsaved, nothing to ask");
 }
 
+/// The refusal itself, which the lobby and play both go through. Play's
+/// key arm cannot be driven from a test, so this is where its rule is
+/// pinned.
+#[test]
+fn the_quit_refusal_asks_once_while_unsaved() {
+    use mud_client::tui::quit_refusal;
+
+    let mut settings = Settings::default();
+    let mut armed = false;
+    assert!(
+        quit_refusal(&settings, &mut armed).is_none(),
+        "nothing unsaved, nothing to ask"
+    );
+    assert!(!armed, "a quit that proceeds arms nothing");
+    settings.set("host", "\"h\"").unwrap();
+    let why = quit_refusal(&settings, &mut armed).expect("unsaved settings ask once");
+    assert!(why.contains("unsaved settings"), "{why}");
+    assert!(armed, "the refusal arms the next quit");
+    assert!(
+        quit_refusal(&settings, &mut armed).is_none(),
+        "armed and still dirty, so the second quit goes through"
+    );
+}
+
 #[test]
 fn a_command_between_two_quits_disarms_the_second() {
     let mut settings = Settings::default();
