@@ -693,7 +693,10 @@ impl Navigator {
             search_hidden: cfg.search_hidden,
             fence: None,
             plane: None,
-            capabilities: crate::graph::Capabilities::unrestricted(),
+            capabilities: crate::graph::Capabilities {
+                bash_doors: cfg.bash_doors,
+                ..crate::graph::Capabilities::unrestricted()
+            },
             backstab: None,
         }
     }
@@ -710,7 +713,12 @@ impl Navigator {
     /// `Capabilities` (typically sharing one `Arc<TollLog>` across every
     /// navigator that walks the same character).
     pub fn with_capabilities(mut self, caps: crate::graph::Capabilities) -> Self {
-        self.capabilities = caps;
+        // Routing must price a lock the way this walk will treat it,
+        // so the bashing switch is this navigator's, not the caller's.
+        self.capabilities = crate::graph::Capabilities {
+            bash_doors: self.bash_doors,
+            ..caps
+        };
         self
     }
 
@@ -755,6 +763,7 @@ impl Navigator {
         // and the failure mode is measured in the character's health.
         // If a door is somehow reached, stop honestly instead.
         self.bash_doors = false;
+        self.capabilities.bash_doors = false;
         // Picking is free where bashing is not, but the reasoning here
         // is the region's rather than the character's: `roam::passable`
         // holds that what is behind a door is not part of the area at

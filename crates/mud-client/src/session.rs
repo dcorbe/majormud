@@ -803,7 +803,8 @@ impl Session {
     /// board's own `stat` sheet, not a setting an operator manages.
     /// `stealth` follows the identical pattern for the Stealth skill.
     /// The pack is the shared handle from `set_content`, or `None` until
-    /// then.
+    /// then. `bash_doors` is off, the navigator that walks for this
+    /// session sets it from its own config.
     pub fn capabilities(&self) -> Capabilities {
         Capabilities {
             purse: self.purse.lock().expect("purse lock").meter.current(),
@@ -811,6 +812,7 @@ impl Session {
             picklocks: self.stats().picklocks.unwrap_or(0),
             stealth: self.stats().stealth.unwrap_or(0),
             pack: self.pack_handle(),
+            bash_doors: false,
         }
     }
 

@@ -221,6 +221,38 @@ pub fn exit_cost(exit_type: i64) -> u32 {
     }
 }
 
+/// Can this character ever pick a lock with this modifier?
+///
+/// `theft.md` sections 8.2 and 8.3, mirrored in mud-core's
+/// `picklock_command`: the skill must be at least 1 and the roll is
+/// `genrdn(0,100) < modifier + skill`. Below zero the roll never
+/// passes, so the pick fails every time and no budget of retries
+/// changes that. Shipped key doors carry -60, -99, -100, -160, -290
+/// and -999, and the plain doors mostly 0, -20, -70 and -999. The one
+/// place this line is drawn: routing asks it to price a lock and the
+/// walk asks it before spending a roll.
+pub fn pickable(modifier: i32, picklocks: u32) -> bool {
+    picklocks >= 1 && i64::from(modifier) + i64::from(picklocks) > 0
+}
+
+/// How many `picklock` commands a lock is expected to take from a
+/// character [`pickable`] says can open it. The roll passes with
+/// chance `modifier + skill` in 100, so the expectation is the inverse,
+/// rounded up. Never below one: a certain pick is still a command.
+pub fn pick_rolls(modifier: i32, picklocks: u32) -> u32 {
+    let chance = (i64::from(modifier) + i64::from(picklocks)).clamp(1, 100);
+    u32::try_from((100 + chance - 1) / chance).unwrap_or(u32::MAX)
+}
+
+/// The price of a lock a pickable character will pick: the door, then
+/// the expected rolls, never above a searchable hidden exit. The cap
+/// keeps a 1 in 100 lock routable at all, and the walk's own retry
+/// budget is what decides whether it gives.
+fn picked_cost(modifier: i32, picklocks: u32) -> Cost {
+    let door = exit_cost(7);
+    Cost::Steps((door + pick_rolls(modifier, picklocks)).min(exit_cost(6)))
+}
+
 /// What the walker can currently bring to bear on an exit.
 ///
 /// A snapshot, passed to routing rather than read from a global: two
@@ -235,11 +267,10 @@ pub struct Capabilities {
     /// by whichever walk is currently crossing the edge; a plain field
     /// would give each `Capabilities` clone its own amnesia.
     pub tolls_known_free: Arc<TollLog>,
-    /// The character's own `stat`-sheet `Picklocks` skill. Not consulted
-    /// by routing (a locked door's cost does not depend on who is
-    /// walking it) — [`crate::nav::Navigator`] reads it to decide
-    /// whether picking a lock, at the moment it meets one, is worth
-    /// attempting at all. Zero by default: an operator who never asked
+    /// The character's own `stat`-sheet `Picklocks` skill. Routing
+    /// prices a lock by it through [`pickable`] and [`pick_rolls`],
+    /// and [`crate::nav::Navigator`] asks the same formula before
+    /// spending a roll. Zero by default: an operator who never asked
     /// [`crate::session::Session::stats`] gets a character who cannot
     /// pick, the same safe direction an empty purse already takes for
     /// tolls.
@@ -268,6 +299,13 @@ pub struct Capabilities {
     /// item table hands one over, see [`crate::session::Session::set_content`],
     /// and a walker with no pack holds nothing.
     pub pack: Option<crate::pack::PackHandle>,
+    /// Whether the walk may bash a door it can neither open nor pick.
+    /// A navigator sets this from its own `bash_doors` config, the one
+    /// switch there is, so routing and the walk agree on which locked
+    /// doors are a wall. The session leaves it off: it has no config,
+    /// and a roam, the one thing that routes with the session's own
+    /// capabilities, never crosses a door at all.
+    pub bash_doors: bool,
 }
 
 impl Capabilities {
@@ -292,6 +330,8 @@ impl Capabilities {
             // and the cost of that mistake is a character stranded at
             // one. A missing item is the safe answer.
             pack: None,
+            // Every already existing cost is affordable, and bashing is a cost.
+            bash_doors: true,
         }
     }
 
@@ -368,7 +408,9 @@ pub enum Cost {
 /// truth — the argument in `exit_cost`'s own comment stands: refusing a
 /// type answers "no route" to rooms that are genuinely reachable.
 /// `Impassable` is reserved for edges no amount of walking opens: a toll
-/// beyond the purse, and a lever exit this walker has no plan for.
+/// beyond the purse, a lever exit this walker has no plan for, a lock
+/// it cannot pick and may not bash, a key door without the key or the
+/// skill, and an item gate without the item.
 ///
 /// `room` and `dir` name the exact edge being costed — needed only to
 /// consult [`Capabilities::is_known_free`], since a per-edge learned
@@ -403,6 +445,38 @@ pub fn exit_cost_for(
                 1
             };
             puzzle.cost(base, caps)
+        }
+        // An unlocked door only wants an open.
+        ExitRequirement::Door { locked: false, .. } => Cost::Steps(exit_cost(exit_type)),
+        // A lock: picked when the formula allows, else bashed when
+        // bashing is on, since force is a separate roll, else a wall.
+        ExitRequirement::Door { locked: true, pick } => {
+            if pickable(*pick, caps.picklocks) {
+                picked_cost(*pick, caps.picklocks)
+            } else if caps.bash_doors {
+                Cost::Steps(exit_cost(exit_type))
+            } else {
+                Cost::Impassable
+            }
+        }
+        // The key makes it an ordinary door. Without it the lock is
+        // all there is, and a key door nobody can pick is a wall
+        // whether or not bashing is on.
+        ExitRequirement::KeyDoor { key, pick } => {
+            if caps.has_item(*key) {
+                Cost::Steps(exit_cost(exit_type))
+            } else if pickable(*pick, caps.picklocks) {
+                picked_cost(*pick, caps.picklocks)
+            } else {
+                Cost::Impassable
+            }
+        }
+        ExitRequirement::ItemGate { item } => {
+            if caps.has_item(*item) {
+                Cost::Steps(1)
+            } else {
+                Cost::Impassable
+            }
         }
         // Everything else is priced exactly as before, by type.
         _ => Cost::Steps(exit_cost(exit_type)),
