@@ -27,3 +27,4 @@ path = "src/bin/mmc.rs"
 
 [lints]
 workspace = true
+

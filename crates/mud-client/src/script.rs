@@ -176,3 +176,4 @@ fn build_mud_api(
 
     lua.globals().set("mud", mud)
 }
+
