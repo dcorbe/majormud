@@ -151,6 +151,12 @@ enum Kind {
     Light,
     Get,
     BuyHealing,
+    /// `deposit <farthings>` and its `dep` short form. Three wordings
+    /// close it, all VERIFIED in `oracle_bank3.raw`: the deposit itself,
+    /// the not-in-a-bank refusal, and the unreasonable-amount refusal.
+    /// `withdraw` and `balance` are not modelled: the client never
+    /// sends them.
+    Deposit,
     Search,
     Picklock,
     /// `sneak` (theft.md §11.1). Like `Stat`, its body has no fixed
@@ -264,6 +270,9 @@ fn kind_of(cmd: &str) -> Kind {
     }
     if cmd == "buy healing" {
         return Kind::BuyHealing;
+    }
+    if cmd.starts_with("deposit ") || cmd.starts_with("dep ") {
+        return Kind::Deposit;
     }
     if cmd == "sneak" {
         return Kind::Sneak;
@@ -430,6 +439,11 @@ fn completes(kind: Kind, ev: &Event) -> bool {
         // board's uncaptured item wording, kept alongside it.
         Kind::Get => has("you picked up") || (has("you took ") && !has("damage")),
         Kind::BuyHealing => has("wounds are healed"),
+        Kind::Deposit => {
+            has("you deposit ")
+                || has("cannot deposit if you are not in a bank")
+                || has("more reasonable amount")
+        }
         // No line completes it — see the `Event::Prompt` arm above.
         Kind::Stat => false,
         // Same reasoning as `Kind::Stat` — see its doc and this match's

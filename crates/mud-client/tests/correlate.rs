@@ -1174,3 +1174,24 @@ fn a_status_split_from_its_pool_prompt_still_lets_the_echo_match() {
     }
     assert_eq!(answered, Some(CmdId(1)));
 }
+
+/// `deposit` answers with one of three lines, all from
+/// `oracle_bank3.raw`: the deposit, the not-in-a-bank refusal, and the
+/// unreasonable-amount refusal. Each completes the command, so a
+/// caller waiting on the reply is not left to burn its deadline.
+#[test]
+fn a_deposit_is_completed_by_its_three_replies() {
+    let t = Instant::now();
+    for (cmd, reply) in [
+        ("deposit 100", "You deposit 10 silver nobles."),
+        ("deposit 100", "You cannot DEPOSIT if you are not in a bank!"),
+        ("deposit all", "Please specify a more reasonable amount."),
+        ("dep 100", "You deposit 10 silver nobles."),
+    ] {
+        let mut c = Correlator::new(TTL);
+        c.sent(CmdId(1), cmd, t);
+        ans(&mut c, line(cmd), t);
+        assert_eq!(ans(&mut c, line(reply), t), Some(CmdId(1)), "{cmd:?} <- {reply:?}");
+        assert_eq!(ans(&mut c, room("Bank of Godfrey"), t), None, "{cmd:?} not retired");
+    }
+}
