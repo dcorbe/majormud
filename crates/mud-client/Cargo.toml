@@ -16,6 +16,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time", "signal"] }
 toml = "0.8"
+toml_edit = "0.22"
 
 [dev-dependencies]
 mud-server = { path = "../mud-server" }

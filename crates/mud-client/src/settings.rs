@@ -1,0 +1,261 @@
+//! Live settings: the profile as an editable TOML document.
+//!
+//! The document is the source of truth. `/set` writes into it, then the
+//! whole document is re-parsed into a [`Profile`] and validated, so there
+//! is one parser, one validator and no per-key setter. A `/save` writes
+//! the document text, which is why the file's comments and key order
+//! survive.
+
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+
+use toml_edit::{DocumentMut, Item, Table};
+
+use crate::profile::Profile;
+
+/// Every key `/set` accepts, in file order. The listing walks it in this
+/// order and completion offers it. Hand-written because Rust has no way
+/// to enumerate struct fields, and pinned to the structs by the test
+/// `every_key_the_profile_serialises_is_in_keys`.
+pub const KEYS: &[&str] = &[
+    "target",
+    "host",
+    "port",
+    "username",
+    "password",
+    "pace_ms",
+    "disable_evil_warnings",
+    "bot.auto_combat",
+    "bot.auto_heal",
+    "bot.auto_get",
+    "bot.take_keys",
+    "bot.ignore_coins",
+    "bot.auto_flee",
+    "bot.minor_heal_at_percent",
+    "bot.major_heal_at_percent",
+    "bot.rest_at_percent",
+    "bot.mana_rest_at_percent",
+    "bot.rest_until_percent",
+    "bot.meditate",
+    "bot.flee_at_percent",
+    "bot.rest_command",
+    "bot.minor_heal_spell",
+    "bot.major_heal_spell",
+    "bot.hp_regen_spell",
+    "bot.heal_spells",
+    "bot.buffs",
+    "bot.ignore",
+    "bot.max_hp",
+    "bot.max_mana",
+    "bot.combat_idle_prompts",
+    "bot.assist_play",
+    "farm.content",
+    "farm.start",
+    "farm.circuit",
+    "farm.finish_at",
+    "farm.loops",
+    "farm.max_seconds",
+    "farm.stop_seconds",
+    "farm.dwell_empty_seconds",
+    "farm.depart_at_percent",
+    "farm.slowdown_backoff_ms",
+    "farm.idle_poke_ms",
+    "farm.heal_retry_prompts",
+    "farm.heal_refused",
+    "farm.fight_while_travelling",
+    "farm.interrupt_at_percent",
+    "farm.travel_interrupts",
+    "farm.max_rest_seconds",
+    "farm.defend_seconds",
+    "farm.nav.step_timeout_ms",
+    "farm.nav.bash_doors",
+    "farm.nav.search_hidden",
+    "bank.auto_deposit",
+    "bank.deposit_at_coins",
+    "bank.deposit_on_weight_class",
+    "bank.keep_gold",
+    "bank.at",
+];
+
+/// Keys that were renamed, and what they are called now. Deserialisation
+/// accepts both, so this exists to SAY SO: a profile that keeps working
+/// while its vocabulary has moved on is a profile whose owner never finds
+/// out about the new knob next to it. A warning, never a refusal.
+///
+/// Unused here: `Profile::load` still owns printing this notice. Task 3
+/// moves that call here and deletes `profile.rs`'s copy of this table,
+/// which is why it stays duplicated for one commit.
+#[allow(dead_code)]
+const RENAMED_KEYS: [(&str, &str); 4] = [
+    ("heal_at_percent", "rest_at_percent"),
+    ("heal_command", "rest_command"),
+    ("spell_at_percent", "minor_heal_at_percent"),
+    ("heal_spells", "minor_heal_spell and major_heal_spell"),
+];
+
+/// The serde aliases: old spelling, current spelling. Setting the current
+/// spelling removes the old one from the same table, because serde
+/// rejects a table that carries both as a duplicate field.
+const ALIASES: [(&str, &str); 3] = [
+    ("heal_at_percent", "rest_at_percent"),
+    ("heal_command", "rest_command"),
+    ("spell_at_percent", "minor_heal_at_percent"),
+];
+
+pub struct Settings {
+    doc: DocumentMut,
+    profile: Profile,
+    /// Where the text came from, or where it was last saved.
+    path: Option<PathBuf>,
+    /// Edited since the last load or save.
+    dirty: bool,
+}
+
+impl Default for Settings {
+    /// An empty document, which is the default profile.
+    fn default() -> Self {
+        Settings {
+            doc: DocumentMut::new(),
+            profile: Profile::default(),
+            path: None,
+            dirty: false,
+        }
+    }
+}
+
+impl Settings {
+    pub fn parse(text: &str) -> Result<Settings, String> {
+        let doc: DocumentMut = text
+            .parse()
+            .map_err(|e: toml_edit::TomlError| e.to_string())?;
+        let profile = profile_of(&doc)?;
+        Ok(Settings {
+            doc,
+            profile,
+            path: None,
+            dirty: false,
+        })
+    }
+
+    pub fn profile(&self) -> &Profile {
+        &self.profile
+    }
+
+    pub fn dirty(&self) -> bool {
+        self.dirty
+    }
+
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    /// The document as it would be saved.
+    pub fn text(&self) -> String {
+        self.doc.to_string()
+    }
+
+    /// Write one key. `text` is parsed as a TOML value. When that fails
+    /// the whole of it is a string, so `rest` and `sit down` both work
+    /// without quotes. Any failure, a bad type or a validator refusal,
+    /// leaves the document as it was.
+    pub fn set(&mut self, key: &str, text: &str) -> Result<(), String> {
+        if !KEYS.contains(&key) {
+            return Err(format!("unknown key {key}"));
+        }
+        let value: toml_edit::Value = match toml_edit::Value::from_str(text) {
+            Ok(v) => v,
+            Err(_) => toml_edit::Value::from(text),
+        };
+        let before = self.doc.clone();
+        let (path, leaf) = split_key(key);
+        let table = table_at(&mut self.doc, &path)?;
+        table.insert(leaf, Item::Value(value));
+        drop_aliases(table, leaf);
+        self.reparse(before)
+    }
+
+    /// Remove one key so its default applies again. Removing a key that
+    /// is not there is fine.
+    pub fn unset(&mut self, key: &str) -> Result<(), String> {
+        if !KEYS.contains(&key) {
+            return Err(format!("unknown key {key}"));
+        }
+        let before = self.doc.clone();
+        let (path, leaf) = split_key(key);
+        if let Some(table) = existing_table(&mut self.doc, &path) {
+            table.remove(leaf);
+            drop_aliases(table, leaf);
+        }
+        self.reparse(before)
+    }
+
+    fn reparse(&mut self, before: DocumentMut) -> Result<(), String> {
+        match profile_of(&self.doc) {
+            Ok(profile) => {
+                self.profile = profile;
+                self.dirty = true;
+                Ok(())
+            }
+            Err(e) => {
+                self.doc = before;
+                Err(e)
+            }
+        }
+    }
+}
+
+/// The one parse and the one validation, shared by every edit and every
+/// load. `Profile::load` used to hold this.
+fn profile_of(doc: &DocumentMut) -> Result<Profile, String> {
+    let mut profile: Profile =
+        toml::from_str(&doc.to_string()).map_err(|e| e.to_string())?;
+    if let Some(bot) = &mut profile.bot {
+        bot.normalise();
+        bot.validate()?;
+    }
+    profile.bank.validate()?;
+    Ok(profile)
+}
+
+/// `bot.rest_at_percent` is the table path `["bot"]` and the leaf
+/// `rest_at_percent`. A bare key has an empty path.
+fn split_key(key: &str) -> (Vec<&str>, &str) {
+    let mut parts: Vec<&str> = key.split('.').collect();
+    let leaf = parts.pop().unwrap_or(key);
+    (parts, leaf)
+}
+
+/// The table at `path`, created on the way down. A created table is
+/// implicit, so `[farm]` gets no header of its own when only
+/// `[farm.nav]` has keys.
+fn table_at<'a>(doc: &'a mut DocumentMut, path: &[&str]) -> Result<&'a mut Table, String> {
+    let mut table = doc.as_table_mut();
+    for seg in path {
+        if table.get(seg).is_none() {
+            let mut t = Table::new();
+            t.set_implicit(true);
+            table.insert(seg, Item::Table(t));
+        }
+        table = table
+            .get_mut(seg)
+            .and_then(Item::as_table_mut)
+            .ok_or_else(|| format!("{seg} is not a table in this profile"))?;
+    }
+    Ok(table)
+}
+
+fn existing_table<'a>(doc: &'a mut DocumentMut, path: &[&str]) -> Option<&'a mut Table> {
+    let mut table = doc.as_table_mut();
+    for seg in path {
+        table = table.get_mut(seg)?.as_table_mut()?;
+    }
+    Some(table)
+}
+
+fn drop_aliases(table: &mut Table, leaf: &str) {
+    for (old, new) in ALIASES {
+        if new == leaf {
+            table.remove(old);
+        }
+    }
+}

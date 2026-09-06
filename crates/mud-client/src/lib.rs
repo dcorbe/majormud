@@ -33,6 +33,7 @@ pub mod puzzle;
 pub mod roam;
 pub mod script;
 pub mod session;
+pub mod settings;
 pub mod sheet;
 pub mod spawn;
 pub mod stats;
