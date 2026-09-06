@@ -540,6 +540,12 @@ fn farm_command(
                     stats.interrupts,
                     stats.sightings
                 );
+                if stats.deposits > 0 {
+                    println!(
+                        "{} deposits, {} copper farthings banked",
+                        stats.deposits, stats.deposited_farthings
+                    );
+                }
                 // The room model runs in shadow: it decides nothing, and
                 // this is the evidence that says whether it could. A
                 // clean run prints nothing at all.

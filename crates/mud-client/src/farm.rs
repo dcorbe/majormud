@@ -394,6 +394,10 @@ pub enum Phase {
         to: RoomId,
     },
     WalkingHome,
+    /// Walking to a bank, depositing, and walking on.
+    Banking {
+        at: RoomId,
+    },
     /// The run ended on its own terms — and says WHICH terms. A bare
     /// "done" hid a TooHurt ending from the operator watching a healthy
     /// character stand idle (cwgaming, 2026-08-01); the reason rides in
@@ -436,6 +440,7 @@ impl Phase {
             Phase::Resting { .. } => "resting".into(),
             Phase::Recovering { to } => format!("recovering to {}/{}", to.map, to.room),
             Phase::WalkingHome => "walking home".into(),
+            Phase::Banking { at } => format!("banking at {}/{}", at.map, at.room),
             Phase::Done { why, .. } => format!("done: {why}"),
             // First line only. A NavError's Display carries a multi-line
             // `tail:` of raw board output, and the bar is one row.
@@ -467,7 +472,7 @@ impl Phase {
 /// Where the runner publishes its [`Phase`]. `None` discards.
 pub type PhaseSink<'a> = Option<&'a tokio::sync::watch::Sender<Phase>>;
 
-fn set_phase(sink: PhaseSink<'_>, phase: Phase) {
+pub(crate) fn set_phase(sink: PhaseSink<'_>, phase: Phase) {
     if let Some(tx) = sink {
         // A dropped receiver is not an error: nobody is watching.
         let _ = tx.send(phase);
@@ -1337,6 +1342,13 @@ pub struct FarmStats {
     /// actionable half: on a foreign board an unexplained name here IS a
     /// wording the parser cannot read.
     pub divergent_names: Vec<String>,
+    /// Coin pickups the board confirmed, "You picked up N <coins>".
+    /// The bank gate is judged only after a stop that raised this.
+    pub coin_pickups: u32,
+    /// Deposits made by the bank errand.
+    pub deposits: u32,
+    /// Copper farthings deposited over the run.
+    pub deposited_farthings: u64,
 }
 
 /// Enough to name the offenders without letting an hour-long run on a
@@ -1753,29 +1765,39 @@ async fn farm_loop(
     // this the rotation would only ever pick rooms inside the region
     // while the legs between them cut straight through a wall whenever
     // that was cheaper — a fence you can walk through is not a fence.
-    let nav = {
-        // Item identity for the pack and the backstab opener. The table
-        // goes to the session first, so the capabilities read below
-        // already carry the pack. Best effort, same "reload the path
-        // again" pattern as the threat table just below: a session that
-        // was handed the table earlier keeps it when this load fails.
-        let content = match RoomGraph::load_content(&cfg.content) {
-            Ok(content) => {
-                let content = std::sync::Arc::new(content);
-                session.set_content(std::sync::Arc::clone(&content));
-                Some(content)
-            }
-            Err(e) => {
+    // Item identity for the pack and the backstab opener. The table
+    // goes to the session first, so the capabilities read below
+    // already carry the pack. Best effort, same "reload the path
+    // again" pattern as the threat table just below: a session that
+    // was handed the table earlier keeps it when this load fails.
+    // Held out here rather than inside the navigator's block because
+    // the bank errand reads the same table to find a bank.
+    let content = match RoomGraph::load_content(&cfg.content) {
+        Ok(content) => {
+            let content = std::sync::Arc::new(content);
+            session.set_content(std::sync::Arc::clone(&content));
+            Some(content)
+        }
+        Err(e) => {
+            // Whatever the session already holds, when something handed
+            // it a table before the run. Only a run with no table at all
+            // loses the backstab opener and the bank.
+            let kept = session.pack_handle().map(|h| h.content().clone());
+            if kept.is_none() {
                 eprintln!("item identity unavailable ({e}); backstab opener disabled");
-                None
             }
-        };
+            kept
+        }
+    };
+    let nav = {
         let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone())
             .with_capabilities(session.capabilities());
-        let nav = match content {
-            Some(content) => {
-                nav.with_backstab(content, session.wielded(), session.contents().items)
-            }
+        let nav = match &content {
+            Some(content) => nav.with_backstab(
+                std::sync::Arc::clone(content),
+                session.wielded(),
+                session.contents().items,
+            ),
             None => nav,
         };
         match &plan.roam {
@@ -1837,6 +1859,18 @@ async fn farm_loop(
     // scoped to one walk had the client typing `sneak` before every
     // step (live 2026-09-04).
     let mut sneaking = false;
+
+    // The deposit policy and its gate. Seeded from the realm-entry
+    // reading so the first crossing is measured from what the character
+    // carried when the run began. Judged only after a stop that
+    // confirmed a coin pickup, see `coin_pickups`.
+    let bank_cfg = session.profile().bank.clone();
+    let mut gate = crate::bank::BankGate::new();
+    if let Some(reading) = crate::bank::Reading::of(&session.contents()) {
+        gate.seed(reading);
+    }
+    let mut judged_pickups = 0u32;
+    let mut bank_warned = false;
 
     loop {
         // What to work next. A circuit hands over its whole lap in
@@ -1955,6 +1989,58 @@ async fn farm_loop(
                 StopEnd::Dwelt { sneaking: kept } => sneaking = kept,
                 StopEnd::Died => return Ok((FarmEnd::Died, stats)),
                 StopEnd::TimeUp => return Ok((FarmEnd::TimeUp, stats)),
+            }
+            if bank_cfg.auto_deposit
+                && stats.coin_pickups > judged_pickups
+                && let Some(content) = &content
+            {
+                judged_pickups = stats.coin_pickups;
+                let inv = crate::bank::read_inventory(session).await;
+                if let Some(reading) = crate::bank::Reading::of(&inv)
+                    && gate.judge(&bank_cfg, reading) == crate::bank::Judgement::Deposit
+                {
+                    let out = crate::bank::errand(
+                        session,
+                        &nav,
+                        &graph,
+                        content,
+                        &bank_cfg,
+                        cfg,
+                        &bot_config,
+                        &threat,
+                        &refusals,
+                        casts,
+                        clock,
+                        started,
+                        &mut stats,
+                        phase,
+                        &mut current,
+                    )
+                    .await?;
+                    // The errand walked and sent, and neither survives
+                    // a sneak.
+                    sneaking = false;
+                    match out {
+                        crate::bank::ErrandEnd::Died => return Ok((FarmEnd::Died, stats)),
+                        crate::bank::ErrandEnd::TimeUp => return Ok((FarmEnd::TimeUp, stats)),
+                        crate::bank::ErrandEnd::TooHurt => return Ok((FarmEnd::TooHurt, stats)),
+                        crate::bank::ErrandEnd::Deposited { farthings, at, bank } => {
+                            eprintln!(
+                                "deposited {farthings} copper farthings at {bank} ({}/{})",
+                                at.map, at.room
+                            );
+                            if let Some(after) = crate::bank::Reading::of(&session.contents()) {
+                                gate.seed(after);
+                            }
+                        }
+                        crate::bank::ErrandEnd::Nothing(why) => {
+                            if !bank_warned {
+                                eprintln!("bank: {why}");
+                                bank_warned = true;
+                            }
+                        }
+                    }
+                }
             }
             if let Some((_, _, rotation)) = &mut roam {
                 rotation.visited(stop, Instant::now());
@@ -2304,7 +2390,7 @@ pub(crate) fn sheet_from(
 /// correlator attributes no line of it — filtering would return nothing.
 /// Transcript-style collection bounded by `until` and the deadline is
 /// the honest tool here.
-async fn ask(session: &crate::session::Session, cmd: &str, until: &str) -> String {
+pub(crate) async fn ask(session: &crate::session::Session, cmd: &str, until: &str) -> String {
     ask_for(session, cmd, until, Duration::from_secs(10)).await
 }
 
@@ -3311,6 +3397,12 @@ async fn farm_stop(
             // supposed to mean.
             if crate::progress::is_exp_award(line) {
                 stats.kills += 1;
+            }
+            // The board's confirmation of a coin pickup, the same line
+            // that retires the `get`. Counted here and not in the bot:
+            // a flee recovery rebuilds the bot mid-stop.
+            if crate::bot::picked_up(line).is_some() {
+                stats.coin_pickups += 1;
             }
         }
         if let Event::Prompt { hp, .. } = ev

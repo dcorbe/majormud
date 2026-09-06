@@ -1561,7 +1561,7 @@ fn spawn_run(
         let end = match crate::farm::run_farm(&session, graph, &plan, &bot, &cfg, Some(&tx)).await {
             Ok((end, stats)) => crate::farm::Phase::Done {
                 why: format!(
-                    "{} ({} kills, {}{})",
+                    "{} ({} kills, {}{}{})",
                     match end {
                         crate::farm::FarmEnd::LoopsDone => "loops walked",
                         crate::farm::FarmEnd::TimeUp => "time up",
@@ -1584,6 +1584,13 @@ fn spawn_run(
                         .divergence_summary()
                         .map(|d| format!("; room model: {d}"))
                         .unwrap_or_default(),
+                    // Silent on a run that never went to a bank, the
+                    // same rule the room model fragment follows.
+                    if stats.deposits > 0 {
+                        format!("; {} deposits", stats.deposits)
+                    } else {
+                        String::new()
+                    },
                 ),
                 // `FarmEnd` carries no room; the shadow model's belief is
                 // not confirmed enough to hand a caller as an arrival.

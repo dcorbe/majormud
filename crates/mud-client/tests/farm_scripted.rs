@@ -1863,3 +1863,212 @@ async fn a_key_at_a_stop_is_picked_up_and_the_pack_reread() {
         "the re-read did not reach the pack"
     );
 }
+
+const BANK: RoomId = RoomId { map: 1, room: 4 };
+
+/// The corridor with a bank east of Inner Ward.
+fn corridor_with_bank() -> Arc<RoomGraph> {
+    let mut start = GraphRoom {
+        name: "Guard Post".into(),
+        exits: Default::default(),
+        light: 0,
+        ..Default::default()
+    };
+    start.exits[Direction::North as usize] = Some(ExitEdge {
+        dest: MIDWAY,
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::None,
+    });
+    let mut midway = GraphRoom {
+        name: "Inner Ward".into(),
+        exits: Default::default(),
+        light: 0,
+        ..Default::default()
+    };
+    midway.exits[Direction::North as usize] = Some(ExitEdge {
+        dest: STOP,
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::None,
+    });
+    midway.exits[Direction::South as usize] = Some(ExitEdge {
+        dest: START,
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::None,
+    });
+    midway.exits[Direction::East as usize] = Some(ExitEdge {
+        dest: BANK,
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::None,
+    });
+    let mut stop = GraphRoom {
+        name: "Keep".into(),
+        exits: Default::default(),
+        light: 0,
+        ..Default::default()
+    };
+    stop.exits[Direction::South as usize] = Some(ExitEdge {
+        dest: MIDWAY,
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::None,
+    });
+    let mut bank = GraphRoom {
+        name: "Bank of Godfrey".into(),
+        exits: Default::default(),
+        light: 0,
+        shop: 8,
+        ..Default::default()
+    };
+    bank.exits[Direction::West as usize] = Some(ExitEdge {
+        dest: MIDWAY,
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::None,
+    });
+    Arc::new(RoomGraph::from_rooms(vec![
+        (START, start),
+        (MIDWAY, midway),
+        (STOP, stop),
+        (BANK, bank),
+    ]))
+}
+
+/// The world the bank search reads: the bank room is shop-active and
+/// its shop is type 7.
+fn content_with_bank() -> mud_core::content::Content {
+    use mud_core::content::{Content, Room, Shop, ShopId, ShopStock};
+    let mut c = Content::default();
+    c.add_shop(Shop {
+        id: ShopId(8),
+        name: "Bank of Godfrey".into(),
+        shop_type: 7,
+        min_level: 0,
+        max_level: 0,
+        markup: 0,
+        class_limit: 0,
+        stock: [ShopStock::default(); 20],
+    });
+    c.add_room(Room {
+        id: BANK,
+        name: "Bank of Godfrey".into(),
+        room_type: 1,
+        shop: Some(ShopId(8)),
+        ..Default::default()
+    });
+    c
+}
+
+/// A pile over the coin mark at the stop: the stop sweeps it, the
+/// runner reads the purse, the gate trips, and the run walks to the
+/// bank, reads the purse again, deposits, and reads it once more. The
+/// lap ends from the bank.
+#[tokio::test]
+async fn a_pile_over_the_mark_sends_the_run_to_the_bank() {
+    let carrying_1200 = "\r\ni\r\nYou are carrying 1200 copper farthings\r\nYou have no keys.\r\nWealth: 1200 copper farthings\r\nEncumbrance: 400/2400 - None [16%]\r\n[HP=30/MA=0]:";
+    let (addr, received) = scripted_board(vec![
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nYou have no keys.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        ("look", format!("\r\nlook{}", room_block("Guard Post", None, "north"))),
+        ("n", format!("\r\nn{}", room_block("Inner Ward", None, "north south east"))),
+        (
+            "n",
+            format!(
+                "\r\nn{}",
+                room_block_items("Keep", &["1200 copper farthings"], "south")
+            ),
+        ),
+        (
+            "get copper",
+            "\r\nget copper\r\nYou picked up 1200 copper farthings\r\n[HP=30/MA=0]:".into(),
+        ),
+        // No re-look scripted: the arrival block already proved the
+        // stop holds no work, so the pump ends on the sweep. The board
+        // answers strictly in order, so an entry nothing asks for would
+        // wall off everything after it.
+        // The stop is over. The runner reads the purse and the gate
+        // trips on 1200 coins.
+        ("i", carrying_1200.into()),
+        ("s", format!("\r\ns{}", room_block("Inner Ward", None, "north south east"))),
+        ("e", format!("\r\ne{}", room_block("Bank of Godfrey", None, "west"))),
+        // At the bank: read, deposit, read again.
+        ("i", carrying_1200.into()),
+        (
+            "deposit 1200",
+            "\r\ndeposit 1200\r\nYou deposit 1200 copper farthings.\r\n[HP=30/MA=0]:".into(),
+        ),
+        (
+            "i",
+            "\r\ni\r\nYou are carrying nothing.\r\nYou have no keys.\r\nWealth: 0 copper farthings\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+    ])
+    .await;
+    let session = session_for(addr).await;
+    mud_client::farm::probe_sheet(&session, None).await;
+    session.set_content(Arc::new(content_with_bank()));
+
+    let graph = corridor_with_bank();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/3".into()],
+        loops: 1,
+        idle_poke_ms: 500,
+        depart_at_percent: Some(0),
+        travel_interrupts: 0,
+        ..FarmConfig::default()
+    };
+    let bot = BotConfig {
+        auto_get: true,
+        max_hp: 30,
+        ..BotConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let (end, stats) = match tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, &bot, &cfg, None),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    {
+        Ok(out) => out,
+        Err(e) => panic!(
+            "the run must survive the errand: {e:?}\nboard received: {:?}",
+            received.lock().unwrap()
+        ),
+    };
+    assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
+    assert_eq!(stats.coin_pickups, 1, "{stats:?}");
+    assert_eq!(stats.deposits, 1, "{stats:?}");
+    assert_eq!(stats.deposited_farthings, 1200, "{stats:?}");
+
+    let log = received.lock().unwrap().clone();
+    let get = log.iter().position(|l| l == "get copper").expect("the pile was swept");
+    let deposit = log
+        .iter()
+        .position(|l| l == "deposit 1200")
+        .unwrap_or_else(|| panic!("no deposit went out: {log:?}"));
+    assert!(get < deposit, "{log:?}");
+    let reads: Vec<usize> = log
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| *l == "i")
+        .map(|(i, _)| i)
+        .collect();
+    assert!(
+        reads.iter().any(|&r| get < r && r < deposit),
+        "the purse must be read between the pickup and the deposit: {log:?}"
+    );
+    assert!(
+        reads.iter().any(|&r| r > deposit),
+        "the purse must be re-read after the deposit: {log:?}"
+    );
+    let east = log.iter().position(|l| l == "e").expect("the walk to the bank");
+    assert!(east < deposit, "deposited before arriving: {log:?}");
+}

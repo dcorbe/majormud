@@ -6,12 +6,16 @@
 //! decides when a run should go and deposit, finds the bank, and does
 //! the errand. The design is `docs/superpowers/specs/2026-09-06-banking-design.md`.
 
+use std::time::Instant;
+
 use serde::{Deserialize, Serialize};
 
 use mud_core::content::{Content, RoomId};
 
+use crate::farm::{Casts, FarmConfig, FarmError, FarmStats, LegEnd, Phase, PhaseSink};
 use crate::graph::{Capabilities, RoomGraph};
 use crate::purse::{Coins, Purse};
+use crate::session::Session;
 use crate::sheet::Inventory;
 
 /// The `[bank]` table of a profile. Absent means these defaults.
@@ -262,4 +266,141 @@ pub fn deposit_reply(line: &str) -> Option<DepositReply> {
         return Some(DepositReply::Unreasonable);
     }
     None
+}
+
+/// How the errand ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ErrandEnd {
+    Deposited {
+        farthings: u64,
+        at: RoomId,
+        bank: String,
+    },
+    /// Nothing was deposited, and why. The run carries on.
+    Nothing(String),
+    Died,
+    TimeUp,
+    TooHurt,
+}
+
+/// Send `i` and parse the reply. The session's own contents tracker
+/// reads the same reply, so `session.contents()` agrees afterwards.
+/// Bounded by `farm::ask`'s deadline: a lost reply parses as an empty
+/// inventory with no encumbrance line, which `Reading::of` refuses.
+pub(crate) async fn read_inventory(session: &Session) -> Inventory {
+    Inventory::parse(&crate::farm::ask(session, "i", "Encumbrance:").await)
+}
+
+/// Send the deposit and wait for one of its three replies. `None` when
+/// the deadline passed with no reply the grammar knows.
+async fn send_deposit(session: &Session, farthings: u64) -> Option<DepositReply> {
+    use crate::correlate::Correlated;
+    use crate::events::Event;
+    let mut events = session.events();
+    crate::session::drain(&mut events, |_| {});
+    session.send(&format!("deposit {farthings}"));
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match tokio::time::timeout_at(deadline, events.recv()).await {
+            Ok(Ok(Correlated { event: Event::Line(line), .. })) => {
+                if let Some(reply) = deposit_reply(&line) {
+                    return Some(reply);
+                }
+            }
+            Ok(Ok(_)) => continue,
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+            Ok(Err(_)) | Err(_) => return None,
+        }
+    }
+}
+
+/// Walk to the bank, deposit the purse above the keep floor, and leave
+/// `current` at the bank. The next leg walks on from there.
+///
+/// The walk is `farm::travel`, so fights on the way, interrupts, the
+/// time budget and desync recovery are the leg's. The deposit is
+/// computed from a fresh reading at the bank, never from the one the
+/// gate judged: a toll on the way changed the purse and nothing
+/// observes tolls. After the deposit the purse is read again so the
+/// purse meter and the pack reflect it before any route is planned.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn errand(
+    session: &Session,
+    nav: &crate::nav::Navigator,
+    graph: &RoomGraph,
+    content: &Content,
+    bank: &BankConfig,
+    cfg: &FarmConfig,
+    bot_config: &crate::bot::BotConfig,
+    threat: &std::sync::Arc<crate::bot::ThreatTable>,
+    refusals: &crate::bot::Refusals,
+    casts: &mut Casts,
+    clock: &mut crate::world::RoundClock,
+    started: Instant,
+    stats: &mut FarmStats,
+    phase: PhaseSink<'_>,
+    current: &mut RoomId,
+) -> Result<ErrandEnd, FarmError> {
+    let to = match choose_bank(bank, graph, content, *current, &session.capabilities()) {
+        Ok(Some(to)) => to,
+        Ok(None) => {
+            return Ok(ErrandEnd::Nothing(format!(
+                "no bank reachable from {}/{}",
+                current.map, current.room
+            )));
+        }
+        Err(why) => return Ok(ErrandEnd::Nothing(why)),
+    };
+    let name = bank_rooms(content)
+        .into_iter()
+        .find(|(room, _)| *room == to)
+        .map(|(_, name)| name)
+        .unwrap_or_default();
+    crate::farm::set_phase(phase, Phase::Banking { at: to });
+    if *current != to {
+        let leg = crate::farm::travel(
+            session, nav, graph, current, to, cfg, bot_config, threat, refusals, casts, clock,
+            started, stats, phase, false,
+        )
+        .await?;
+        match leg {
+            LegEnd::Arrived { .. } => {}
+            LegEnd::Died => return Ok(ErrandEnd::Died),
+            LegEnd::TimeUp => return Ok(ErrandEnd::TimeUp),
+            LegEnd::TooHurt => return Ok(ErrandEnd::TooHurt),
+        }
+    }
+    let purse = read_inventory(session).await.coins().purse();
+    let farthings = purse.farthings().saturating_sub(bank.keep().farthings());
+    if farthings == 0 {
+        return Ok(ErrandEnd::Nothing(format!(
+            "nothing above the keep floor at {name}"
+        )));
+    }
+    let reply = send_deposit(session, farthings).await;
+    // Read again whatever the reply was, so the purse the router sees
+    // is the board's, not a guess.
+    let _ = read_inventory(session).await;
+    match reply {
+        Some(DepositReply::Deposited(_)) => {
+            stats.deposits += 1;
+            stats.deposited_farthings += farthings;
+            Ok(ErrandEnd::Deposited {
+                farthings,
+                at: to,
+                bank: name,
+            })
+        }
+        Some(DepositReply::NotABank) => {
+            stats.relocalizations += 1;
+            Ok(ErrandEnd::Nothing(format!(
+                "the board says {}/{} is not a bank: the walk did not land where the graph says",
+                to.map, to.room
+            )))
+        }
+        Some(DepositReply::Unreasonable) => Ok(ErrandEnd::Nothing(format!(
+            "the board refused a deposit of {farthings}"
+        ))),
+        None => Ok(ErrandEnd::Nothing("no reply to the deposit".into())),
+    }
 }
