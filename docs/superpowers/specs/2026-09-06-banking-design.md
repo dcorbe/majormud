@@ -186,8 +186,11 @@ character ended up and what happened.
    the deposit before any route is planned from the bank.
 
 The lap then continues with `current` set to the bank. The next leg walks
-from the bank to the next stop. There is no walk back to where the errand
-began.
+from the bank to the next stop. A circuit has no walk back to where the
+errand began. A roam walks back to the room it left, with an unfenced
+navigator both ways: the bank search ignores the fence on purpose, since
+a roam's area almost never holds a bank, and the roam picks its next room
+from inside the fence.
 
 A refusal at the bank ends the errand without a deposit. The two known
 refusals are "You cannot DEPOSIT if you are not in a bank!" and "Please
@@ -252,5 +255,5 @@ the next leg starting from the bank.
 
 ## Out of scope
 
-Withdrawals, a balance query, stash rooms, and a return walk to where the
-errand began. None of them is needed for the run to keep its coin safe.
+Withdrawals, a balance query, stash rooms, and a return walk for a
+circuit. None of them is needed for the run to keep its coin safe.
