@@ -1278,3 +1278,4 @@ fn a_missing_world_database_is_none_and_asked_again_next_time() {
     assert!(cache.world(nowhere).is_none());
     assert!(cache.world(nowhere).is_none());
 }
+

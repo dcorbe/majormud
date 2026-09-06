@@ -225,61 +225,42 @@ pub fn lobby_step(
     }
 }
 
+/// How the lobby ended. `LobbyStep::Stay` has no place here: the lobby
+/// only returns when it is done, so the caller has two cases and no
+/// unreachable third.
+enum LobbyEnd {
+    Connect,
+    Quit,
+}
+
+impl LobbyEnd {
+    /// `None` while the lobby stays open.
+    fn of(step: LobbyStep) -> Option<LobbyEnd> {
+        match step {
+            LobbyStep::Stay => None,
+            LobbyStep::Connect => Some(LobbyEnd::Connect),
+            LobbyStep::Quit => Some(LobbyEnd::Quit),
+        }
+    }
+}
+
 /// Run the client until the operator quits. A loop of two states: the
 /// lobby, which has no session, and `play`, which has one. A profile
 /// with a host connects at once. A line that closes lands in the lobby
-/// with the settings intact. The terminal is set up once, here, and put
-/// back once, here.
+/// with the settings intact.
+///
+/// The terminal is set up once, here, and put back once, here. Nothing
+/// between those two points may return early, which is why the whole of
+/// it lives in [`run_inner`]: an `?` there still comes back through this
+/// function, and a client that exits on a write error must not leave the
+/// terminal in raw mode with a scroll region set.
 pub async fn run(
-    mut settings: crate::settings::Settings,
-    mut capture: Option<crate::session::Capture>,
+    settings: crate::settings::Settings,
+    capture: Option<crate::session::Capture>,
 ) -> std::io::Result<()> {
     crossterm::terminal::enable_raw_mode()?;
-    let (key_tx, mut key_rx) = tokio::sync::mpsc::unbounded_channel();
-    std::thread::spawn(move || {
-        while let Ok(ev) = crossterm::event::read() {
-            if key_tx.send(ev).is_err() {
-                break;
-            }
-        }
-    });
     let mut out = std::io::stdout();
-    let (_, rows) = crossterm::terminal::size()?;
-    setup_region(&mut out, rows)?;
-    for warning in settings.warnings() {
-        note(&mut out, &format!("-- {warning} --"))?;
-    }
-    let mut cache = ContentCache::default();
-    let mut connect_now = !settings.profile().host.is_empty();
-    let result = loop {
-        if !connect_now {
-            match lobby(&mut out, &mut key_rx, &mut settings).await {
-                Ok(LobbyStep::Connect) => {}
-                Ok(_) => break Ok(()),
-                Err(e) => break Err(e),
-            }
-        }
-        connect_now = false;
-        let profile = settings.profile().clone();
-        // A capture names two files and creating them truncates, so it
-        // records the first connection only.
-        let session = match Session::connect(&profile, capture.take()).await {
-            Ok(s) => Arc::new(s),
-            Err(e) => {
-                note(&mut out, &format!("-- connect {}:{}: {e} --", profile.host, profile.port))?;
-                continue;
-            }
-        };
-        // Interactive play is not paced. `pace_ms` is flood control,
-        // which is for automation. The session keeps the real profile,
-        // so `/farm` can put its pace back.
-        session.set_pace(std::time::Duration::ZERO);
-        match play(session, &mut settings, &mut cache, &mut key_rx, &mut out).await {
-            Ok(PlayEnd::Quit) => break Ok(()),
-            Ok(PlayEnd::Closed) => note(&mut out, "-- disconnected. /connect to go back --")?,
-            Err(e) => break Err(e),
-        }
-    };
+    let result = run_inner(&mut out, settings, capture).await;
     let (_, rows) = crossterm::terminal::size().unwrap_or((80, 24));
     let _ = out.write_all(b"\x1b[r");
     let _ = out.write_all(format!("\x1b[{rows};1H\r\n").as_bytes());
@@ -288,13 +269,69 @@ pub async fn run(
     result
 }
 
+/// The lobby-and-play loop itself. Every fallible call in here returns
+/// through [`run`], which restores the terminal whatever the answer was.
+async fn run_inner(
+    out: &mut std::io::Stdout,
+    mut settings: crate::settings::Settings,
+    mut capture: Option<crate::session::Capture>,
+) -> std::io::Result<()> {
+    let (key_tx, mut key_rx) = tokio::sync::mpsc::unbounded_channel();
+    std::thread::spawn(move || {
+        while let Ok(ev) = crossterm::event::read() {
+            if key_tx.send(ev).is_err() {
+                break;
+            }
+        }
+    });
+    let (_, rows) = crossterm::terminal::size()?;
+    setup_region(out, rows)?;
+    for warning in settings.warnings() {
+        note(out, &format!("-- {warning} --"))?;
+    }
+    let mut cache = ContentCache::default();
+    let mut connect_now = !settings.profile().host.is_empty();
+    loop {
+        if !connect_now {
+            match lobby(out, &mut key_rx, &mut settings).await? {
+                LobbyEnd::Connect => {}
+                LobbyEnd::Quit => return Ok(()),
+            }
+        }
+        connect_now = false;
+        let profile = settings.profile().clone();
+        // A capture names two files and creating them truncates, so it
+        // records the first connection only. Cloned rather than taken:
+        // a connect that fails opened nothing, so the next attempt still
+        // has somewhere to record.
+        let session = match Session::connect(&profile, capture.clone()).await {
+            Ok(s) => {
+                capture = None;
+                Arc::new(s)
+            }
+            Err(e) => {
+                note(out, &format!("-- connect {}:{}: {e} --", profile.host, profile.port))?;
+                continue;
+            }
+        };
+        // Interactive play is not paced. `pace_ms` is flood control,
+        // which is for automation. The session keeps the real profile,
+        // so `/farm` can put its pace back.
+        session.set_pace(std::time::Duration::ZERO);
+        match play(session, &mut settings, &mut cache, &mut key_rx, out).await? {
+            PlayEnd::Quit => return Ok(()),
+            PlayEnd::Closed => note(out, "-- disconnected. /connect to go back --")?,
+        }
+    }
+}
+
 /// The client with no session: an input line that takes the settings
 /// commands, `/connect`, `/help` and `/quit`.
 async fn lobby(
     out: &mut std::io::Stdout,
     key_rx: &mut tokio::sync::mpsc::UnboundedReceiver<TermEvent>,
     settings: &mut crate::settings::Settings,
-) -> std::io::Result<LobbyStep> {
+) -> std::io::Result<LobbyEnd> {
     let (mut cols, mut rows) = crossterm::terminal::size()?;
     setup_region(out, rows)?;
     let mut editor = InputEditor::new();
@@ -303,7 +340,7 @@ async fn lobby(
     lobby_paint(out, settings, &editor, cols, rows)?;
     loop {
         let Some(ev) = key_rx.recv().await else {
-            return Ok(LobbyStep::Quit);
+            return Ok(LobbyEnd::Quit);
         };
         match ev {
             TermEvent::Resize(w, h) => {
@@ -319,8 +356,8 @@ async fn lobby(
                 if let Some(text) = text {
                     note(out, &text)?;
                 }
-                if step != LobbyStep::Stay {
-                    return Ok(step);
+                if let Some(end) = LobbyEnd::of(step) {
+                    return Ok(end);
                 }
             }
             _ => {}
@@ -343,21 +380,7 @@ fn lobby_paint(
     if settings.dirty() {
         status.push_str("  unsaved");
     }
-    let width = cols as usize;
-    let status: String = status.chars().take(width).collect();
-    let status = format!("{status:width$}");
-    let status_row = rows.saturating_sub(1).max(1);
-    let input_row = rows.max(1);
-    let line = editor.line();
-    let cursor_col = 3 + editor.cursor() as u16;
-    out.write_all(
-        format!(
-            "\x1b[{status_row};1H\x1b[2K\x1b[7m{status}\x1b[0m\
-             \x1b[{input_row};1H\x1b[2K> {line}\x1b[{input_row};{cursor_col}H"
-        )
-        .as_bytes(),
-    )?;
-    out.flush()
+    paint_bottom(out, &fit(&status, cols as usize), editor, rows)
 }
 
 /// One connected session, until it closes or the operator quits.
@@ -410,8 +433,11 @@ async fn play(
     // probe's class/magictype skip (Task 5 of `one-path-to-content`).
     // Loaded ahead of the assist below, so its first build reads the
     // sheet's heal marks the same as every rebuild after it.
-    let (graph, nav, spawns, content) =
-        finish_locator(cache.world(&content_path(&session.profile())), &session);
+    // Bound once, beside the load it answers for: `/load` can replace the
+    // profile mid-session, and a refusal has to name the path that was
+    // actually looked at, not the one the settings name now.
+    let world_path = content_path(&session.profile());
+    let (graph, nav, spawns, content) = finish_locator(cache.world(&world_path), &session);
     let durations = content.as_ref().map(|c| crate::views::spell_durations(c)).unwrap_or_default();
     // The assist: a bot that fights and loots, rests, heals and hides
     // BESIDE the operator while no farm runs. `/bot` toggles it; the
@@ -427,10 +453,19 @@ async fn play(
     // A length no book can have, so the first tick always reads the sheet
     // and prints its refusals, even for an empty book.
     let mut assist_book_seen = usize::MAX;
+    // Refused, not started, when the character has no name: an assist
+    // that cannot recognise its own death line is worse than none. The
+    // refusal is printed once the region is set up, below.
+    let mut assist_refused = None;
     if assist_config.assist_play {
-        let (bot, heal) = new_assist(&session, &assist_config);
-        assist = Some(bot);
-        assist_heal_state = Some(heal);
+        match needs_username(&session.profile()) {
+            Ok(()) => {
+                let (bot, heal) = new_assist(&session, &assist_config);
+                assist = Some(bot);
+                assist_heal_state = Some(heal);
+            }
+            Err(why) => assist_refused = Some(why),
+        }
     }
     // The maintained room model, running in SHADOW: it decides nothing
     // here, it only records where it and the board disagree. The farm
@@ -469,9 +504,12 @@ async fn play(
     let mut exp_since = std::time::Instant::now();
 
     setup_region(&mut out, rows)?;
+    if let Some(why) = &assist_refused {
+        note(&mut out, &format!("-- bot assist not started: {why} --"))?;
+    }
     repaint(&mut out, &state_rx, target, job.as_ref(), here, exp.per_hour(exp_since.elapsed()), level, assist.is_some(), &editor, cols, rows)?;
 
-    loop {
+    let end = loop {
         tokio::select! {
             bytes = raw_rx.recv() => match bytes {
                 Ok(bytes) => {
@@ -684,16 +722,10 @@ async fn play(
                             }
                             KeyOutcome::Raw(bytes) => session.send_raw(&bytes),
                             KeyOutcome::Note(text) => note(&mut out, &text)?,
-                            KeyOutcome::Disconnect => {
-                                // Nothing else to tidy: the loop ends
-                                // here and `run` drops the session with
-                                // its phase channel.
-                                if let Some(j) = job.take() {
-                                    j.handle.abort();
-                                }
-                                session.close();
-                                break Ok(PlayEnd::Closed);
-                            }
+                            // The shutdown itself is after the loop:
+                            // the board can close the line too, and all
+                            // three ways it ends need the same tidying.
+                            KeyOutcome::Disconnect => break Ok(PlayEnd::Closed),
                             KeyOutcome::Connect { .. } => {
                                 note(&mut out, "-- already connected: /disconnect first --")?;
                             }
@@ -709,7 +741,7 @@ async fn play(
                                 note(&mut out, &match graph.as_ref() {
                                     None => vec![format!(
                                         "-- loop: no room database at {} --",
-                                        content_path(&session.profile()).display()
+                                        world_path.display()
                                     )],
                                     Some(g) => import_loop(g, std::path::Path::new(&file)),
                                 }.join("\n"))?;
@@ -758,7 +790,7 @@ async fn play(
                                         // operator hunting the wrong bug.
                                         None => note(&mut out, &format!(
                                             "-- go: no room database at {} --",
-                                            content_path(&session.profile()).display()
+                                            world_path.display()
                                         ))?,
                                         Some(g) => match crate::go::resolve(g, here.confirmed(), &target) {
                                             Err(refusal) => note(&mut out, &refusal.lines().join("\n"))?,
@@ -803,7 +835,7 @@ async fn play(
                                     match graph.as_ref() {
                                         None => note(&mut out, &format!(
                                             "-- bank: no room database at {} --",
-                                            content_path(&session.profile()).display()
+                                            world_path.display()
                                         ))?,
                                         Some(g) => {
                                             let started = start_bank(
@@ -825,16 +857,20 @@ async fn play(
                                 }
                             }
                             KeyOutcome::Where => {
-                                match graph.as_ref() {
-                                    None => note(&mut out, &format!(
-                                        "-- where: no room database at {} --",
-                                        content_path(&session.profile()).display()
-                                    ))?,
-                                    Some(g) => {
-                                        let started = start_where(session.clone(), g.clone(), here.confirmed());
-                                        note(&mut out, "-- working out where you are (Ctrl-F to take over) --")?;
-                                        phase_rx = Some(started.phase.clone());
-                                        job = Some(started);
+                                if let Err(why) = needs_username(&session.profile()) {
+                                    note(&mut out, &format!("-- {why} --"))?;
+                                } else {
+                                    match graph.as_ref() {
+                                        None => note(&mut out, &format!(
+                                            "-- where: no room database at {} --",
+                                            world_path.display()
+                                        ))?,
+                                        Some(g) => {
+                                            let started = start_where(session.clone(), g.clone(), here.confirmed());
+                                            note(&mut out, "-- working out where you are (Ctrl-F to take over) --")?;
+                                            phase_rx = Some(started.phase.clone());
+                                            job = Some(started);
+                                        }
                                     }
                                 }
                             }
@@ -849,7 +885,7 @@ async fn play(
                                     },
                                     _ => note(&mut out, &format!(
                                         "-- room: no room database at {} --",
-                                        content_path(&session.profile()).display()
+                                        world_path.display()
                                     ))?,
                                 }
                             }
@@ -996,7 +1032,7 @@ async fn play(
                                     },
                                     _ => note(&mut out, &format!(
                                         "-- map: no room database at {} --",
-                                        content_path(&session.profile()).display()
+                                        world_path.display()
                                     ))?,
                                 }
                             }
@@ -1073,7 +1109,19 @@ async fn play(
                 }
             }
         }
+    };
+
+    // A closed line is closed whoever closed it: `/disconnect`, the
+    // board hanging up, or the state watch going away. Dropping a `Job`
+    // only DETACHES its task, so a runner would otherwise go on sending
+    // into a dead socket after the operator was back in the lobby.
+    if matches!(end, Ok(PlayEnd::Closed)) {
+        if let Some(j) = job.take() {
+            j.handle.abort();
+        }
+        session.close();
     }
+    end
 }
 
 /// Returns true when the user asked to quit.
@@ -1700,9 +1748,24 @@ fn redraw_bottom(
     cols: u16,
     rows: u16,
 ) -> std::io::Result<()> {
+    let status = render_status(state, now, target, phase, room_id, exp_per_hour, level, assist, cols as usize);
+    paint_bottom(out, &status, editor, rows)
+}
+
+/// The two reserved rows: the status bar in reverse video, then the
+/// input line with the cursor parked in it. One copy of the escape
+/// sequence, so the lobby and a session lay out the same.
+///
+/// `status` is painted as given and must already be the terminal's
+/// width. See [`fit`].
+fn paint_bottom(
+    out: &mut impl std::io::Write,
+    status: &str,
+    editor: &InputEditor,
+    rows: u16,
+) -> std::io::Result<()> {
     let status_row = rows.saturating_sub(1).max(1);
     let input_row = rows.max(1);
-    let status = render_status(state, now, target, phase, room_id, exp_per_hour, level, assist, cols as usize);
     let line = editor.line();
     let cursor_col = 3 + editor.cursor() as u16;
     out.write_all(
@@ -1783,9 +1846,16 @@ pub fn render_status(
         ));
     }
     s.push_str(&format!(" | {target}"));
-    // Defence in depth: nothing painted into a fixed row may contain a
-    // control character, whatever built the string. A newline here
-    // scrolls the terminal and the whole display appears to flash.
+    fit(&s, width)
+}
+
+/// A string cut and padded to exactly `width` characters, with every
+/// control character replaced by a space.
+///
+/// Defence in depth: nothing painted into a fixed row may contain a
+/// control character, whatever built the string. A newline there scrolls
+/// the terminal and the whole display appears to flash.
+fn fit(s: &str, width: usize) -> String {
     let mut out: Vec<char> = s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
     out.truncate(width);
     while out.len() < width {
