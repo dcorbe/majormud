@@ -1878,8 +1878,8 @@ impl Navigator {
     /// swings at it.
     ///
     /// The inner walks start with no sneak belief and this never reads
-    /// what they learned. The resent step's own lines settle the belief
-    /// the moment it lands, the same correction every step gets.
+    /// what they learned. A sneak broken during the plan is learned on
+    /// the next step, the same way [`Navigator::find_hidden`]'s is.
     async fn solve_puzzle(
         &self,
         session: &Session,
@@ -1900,23 +1900,32 @@ impl Navigator {
         };
         let home = *current;
         for action in plan {
-            self.walk_to(session, current, action.room, guard).await?;
+            self.walk_to(session, current, action.room, dir, guard).await?;
             self.speak(session, action, dir, guard, armed).await?;
             if let Some(interrupt) = armed.take() {
                 return Err(NavErrorKind::Interrupted(interrupt));
             }
         }
-        self.walk_to(session, current, home, guard).await
+        self.walk_to(session, current, home, dir, guard).await
     }
 
     /// An inner walk on behalf of a puzzle step. Boxed because it is
     /// `goto` calling itself: the lever room may sit behind a puzzle of
     /// its own.
+    ///
+    /// `NoRoute` becomes a puzzle failure, and only that kind is
+    /// rewritten. The exit was priced with hops counted over the whole
+    /// graph, so a fence the caller put on this walk can leave the
+    /// lever room unreachable while the exit it opens still has a
+    /// finite price. That is this exit being unopenable by this walk,
+    /// not the destination being unreachable, and a caller that reads
+    /// `NoRoute` as "the route was wrong" would end its run over it.
     async fn walk_to(
         &self,
         session: &Session,
         current: &mut RoomId,
         to: RoomId,
+        dir: &str,
         guard: &mut impl TravelGuard,
     ) -> Result<(), NavErrorKind> {
         if *current == to {
@@ -1929,7 +1938,13 @@ impl Navigator {
             }
             Err(err) => {
                 *current = err.at;
-                Err(err.kind)
+                match err.kind {
+                    NavErrorKind::NoRoute => Err(NavErrorKind::Puzzle {
+                        dir: dir.to_string(),
+                        tried: format!("no route to the lever room {}/{}", to.map, to.room),
+                    }),
+                    kind => Err(kind),
+                }
             }
         }
     }

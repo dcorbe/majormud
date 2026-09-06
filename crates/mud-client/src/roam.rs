@@ -100,8 +100,9 @@ fn on_plane(plane: u16, dir: Direction, edge: &ExitEdge) -> bool {
 /// not refused: the region floods with the character's own
 /// capabilities, so a passage this character can open is in and one
 /// that wants an item the pack lacks is out. A lever room outside the
-/// fence is the one case the flood cannot see, the walk then fails the
-/// leg with a puzzle error and the rotation moves on.
+/// fence is the one case the flood cannot see. The walk then fails the
+/// leg with a puzzle error, the room leaves the roam for the rest of
+/// the run, and the rotation moves on.
 ///
 /// Revisit when there is something better than force to offer a lock.
 pub fn passable(plane: u16, walls: &Walls) -> impl Fn(Direction, &ExitEdge) -> bool + '_ {

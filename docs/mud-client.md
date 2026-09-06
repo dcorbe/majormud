@@ -516,7 +516,8 @@ character's own capabilities, so a passage this character can open is
 part of the area and one whose button wants an item the pack lacks is
 not. A lever room outside your walls is the one thing the flood cannot
 see: the walk to it fails as `no route`, the leg ends with a puzzle
-error, and the rotation moves on.
+error, the room leaves the roam for the rest of the run, and the
+rotation moves on.
 
 Order is **least-recently-visited, nearest on ties**: a fresh roam sweeps
 outward rather than settling, and after that each room gets the longest

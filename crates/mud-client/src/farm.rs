@@ -1869,7 +1869,7 @@ async fn farm_loop(
             let mut arrival = None;
             let mut arm = (sneaking, None);
             if current != stop {
-                match travel(
+                let leg = travel(
                     session,
                     &nav,
                     &graph,
@@ -1886,8 +1886,35 @@ async fn farm_loop(
                     phase,
                     sneaking,
                 )
-                .await?
-                {
+                .await;
+                // A room the roam cannot open leaves the roam, here and
+                // not inside `travel`, which walks one leg and knows
+                // nothing about regions. The region was flooded with
+                // hop counts taken over the whole graph, so a lever
+                // room outside the fence prices its exit finitely and
+                // puts the room behind it in the region anyway. There
+                // is always another room to work, so dropping this one
+                // costs the run nothing and ending the run over it
+                // costs everything. A circuit is the other bargain:
+                // its stops were named by the operator, so a puzzle
+                // error ends the run there as any nav error does.
+                let leg = match leg {
+                    Err(FarmError::Nav(crate::nav::NavError {
+                        kind: crate::nav::NavErrorKind::Puzzle { dir, tried },
+                        ..
+                    })) if roam.is_some() => {
+                        eprintln!(
+                            "{}/{} left the roam: {dir} needs a puzzle this run cannot do, {tried}",
+                            stop.map, stop.room
+                        );
+                        if let Some((_, region, _)) = &mut roam {
+                            region.remove(&stop);
+                        }
+                        continue;
+                    }
+                    other => other?,
+                };
+                match leg {
                     LegEnd::Arrived { seen, sneaking: believed, restore_weapon } => {
                         arrival = seen;
                         arm = (believed, restore_weapon);

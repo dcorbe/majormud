@@ -1248,6 +1248,141 @@ async fn a_roam_never_steps_into_a_walled_room() {
     assert!(stats.roamed >= 1, "rooms worked should be counted: {stats:?}");
 }
 
+/// A roam whose region reaches a room behind a puzzle whose lever room
+/// the roam itself walled off. The exit is priced with hops counted
+/// over the whole graph, so the flood puts the vault in the region;
+/// the fenced walk then cannot reach the lever at all. The room has to
+/// leave the roam, not end the run.
+#[tokio::test]
+async fn a_roam_drops_a_room_whose_lever_it_cannot_reach() {
+    use mud_client::puzzle::{Puzzle, PuzzleAction};
+    use mud_client::roam::Walls;
+
+    // A(1/1) --north--> the vault B(1/2), a type 6 exit opened by the
+    // lever in the alcove C(1/3), one step east of A. C is walled.
+    let graph = {
+        let mut a = GraphRoom {
+            name: "Guard Post".into(),
+            exits: Default::default(),
+            light: 0,
+            ..Default::default()
+        };
+        a.exits[Direction::North as usize] = Some(ExitEdge {
+            dest: MIDWAY,
+            exit_type: 6,
+            command: None,
+            requirement: ExitRequirement::Puzzle(Puzzle {
+                word: 16,
+                actions: vec![PuzzleAction {
+                    room: STOP,
+                    number: 1,
+                    phrases: vec!["pull lever".into()],
+                    item: None,
+                    reply: Some("You pull the lever.".into()),
+                    hops: Some(1),
+                }],
+            }),
+        });
+        a.exits[Direction::East as usize] = Some(ExitEdge {
+            dest: STOP,
+            exit_type: 0,
+            command: None,
+            requirement: ExitRequirement::None,
+        });
+        let mut b = GraphRoom {
+            name: "Vault".into(),
+            exits: Default::default(),
+            light: 0,
+            ..Default::default()
+        };
+        b.exits[Direction::South as usize] = Some(ExitEdge {
+            dest: START,
+            exit_type: 0,
+            command: None,
+            requirement: ExitRequirement::None,
+        });
+        let mut c = GraphRoom {
+            name: "Lever Alcove".into(),
+            exits: Default::default(),
+            light: 0,
+            ..Default::default()
+        };
+        c.exits[Direction::West as usize] = Some(ExitEdge {
+            dest: START,
+            exit_type: 0,
+            command: None,
+            requirement: ExitRequirement::None,
+        });
+        Arc::new(RoomGraph::from_rooms(vec![
+            (START, a),
+            (MIDWAY, b),
+            (STOP, c),
+        ]))
+    };
+
+    let (addr, received) = scripted_board(vec![
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        (
+            "look",
+            format!("\r\nlook{}", room_block("Guard Post", None, "east")),
+        ),
+        // The vault's wall, refused the way a concealed exit is. The
+        // board never opens it, because the lever is never pulled.
+        (
+            "n",
+            "\r\nn\r\nThere is no exit in that direction!\r\n[HP=30/MA=0]:".into(),
+        ),
+    ])
+    .await;
+    let session = session_for(addr).await;
+    mud_client::farm::probe_sheet(&session, None).await;
+
+    let cfg = FarmConfig {
+        loops: 0,
+        max_seconds: 8,
+        idle_poke_ms: 500,
+        depart_at_percent: Some(0),
+        stop_seconds: 2,
+        ..FarmConfig::default()
+    };
+    let plan = FarmPlan::roaming(START, Walls::new([STOP]), &graph).expect("a roam of A and B");
+
+    let bot = BotConfig {
+        max_hp: 30,
+        ..BotConfig::default()
+    };
+    let finished = tokio::time::timeout(
+        Duration::from_secs(40),
+        run_farm(&session, graph.clone(), &plan, &bot, &cfg, None),
+    )
+    .await;
+    let Ok(result) = finished else {
+        panic!("run_farm hung; board received: {:?}", received.lock().unwrap());
+    };
+    let (end, _stats) = result.unwrap_or_else(|e| {
+        panic!(
+            "an unopenable room must not end the run: {e:?}\nboard received: {:?}",
+            received.lock().unwrap()
+        )
+    });
+
+    assert_eq!(end, FarmEnd::TimeUp, "the roam ends on the clock");
+    let log = received.lock().unwrap();
+    assert_eq!(
+        log.iter().filter(|l| l.as_str() == "n").count(),
+        1,
+        "the vault leaves the roam after one refusal: {log:?}"
+    );
+    assert!(
+        !log.iter().any(|l| l == "e"),
+        "the walled alcove was entered: {log:?}"
+    );
+}
+
 /// The step that lands on the stop already carried the stop's block out
 /// with it, so the stop must not ask for it again.
 ///
