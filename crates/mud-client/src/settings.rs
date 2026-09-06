@@ -227,6 +227,35 @@ impl Settings {
             }
         }
     }
+
+    /// Every key the pattern matches, with its value rendered as TOML,
+    /// in `KEYS` order. Absent tables show their defaults, because that
+    /// is what the character gets. The password shows as stars.
+    pub fn list(&self, pattern: &str) -> Vec<(String, String)> {
+        let table = self.effective_table();
+        KEYS.iter()
+            .filter(|key| glob_match(pattern, key))
+            .map(|key| (key.to_string(), render(&table, key)))
+            .collect()
+    }
+
+    /// One key's rendered value, or `None` for a key `/set` does not know.
+    pub fn value(&self, key: &str) -> Option<String> {
+        if !KEYS.contains(&key) {
+            return None;
+        }
+        Some(render(&self.effective_table(), key))
+    }
+
+    /// The profile with its optional tables filled in, as a TOML table,
+    /// so the listing reads what the character will actually get.
+    fn effective_table(&self) -> toml::Table {
+        let mut profile = self.profile.clone();
+        profile.bot.get_or_insert_with(Default::default);
+        profile.farm.get_or_insert_with(Default::default);
+        let text = toml::to_string(&profile).expect("a profile serialises");
+        text.parse().expect("a serialised profile parses")
+    }
 }
 
 /// The one parse and the one validation, shared by every edit and every
@@ -295,3 +324,43 @@ fn collect_renamed(table: &Table, out: &mut Vec<String>) {
     }
 }
 
+/// irssi's `/set` pattern: `*` matches anything and a trailing `*` is
+/// implied, so `bot` lists the bot table and `*heal*` finds every heal
+/// key in every table.
+pub fn glob_match(pattern: &str, key: &str) -> bool {
+    let mut rest = key;
+    for (i, part) in pattern.split('*').enumerate() {
+        if i == 0 {
+            match rest.strip_prefix(part) {
+                Some(r) => rest = r,
+                None => return false,
+            }
+        } else {
+            match rest.find(part) {
+                Some(at) => rest = &rest[at + part.len()..],
+                None => return false,
+            }
+        }
+    }
+    true
+}
+
+fn render(table: &toml::Table, key: &str) -> String {
+    match lookup(table, key) {
+        Some(value) if key == "password" => match value.as_str() {
+            Some("") => "\"\"".to_string(),
+            _ => "\"****\"".to_string(),
+        },
+        Some(value) => value.to_string(),
+        None => "unset".to_string(),
+    }
+}
+
+fn lookup<'a>(table: &'a toml::Table, key: &str) -> Option<&'a toml::Value> {
+    let mut parts = key.split('.');
+    let mut value = table.get(parts.next()?)?;
+    for part in parts {
+        value = value.as_table()?.get(part)?;
+    }
+    Some(value)
+}

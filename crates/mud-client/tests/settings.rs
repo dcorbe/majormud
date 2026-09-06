@@ -1,6 +1,6 @@
 //! Live settings: the profile as an editable document.
 
-use mud_client::settings::{KEYS, Settings};
+use mud_client::settings::{glob_match, KEYS, Settings};
 
 const COMMENTED: &str = r#"# my character
 target = "mbbs"
@@ -234,3 +234,50 @@ fn a_missing_file_is_an_error_not_a_default() {
     assert!(Settings::load(&scratch("nowhere.toml")).is_err());
 }
 
+#[test]
+fn a_glob_matches_by_prefix_with_a_trailing_star_implied() {
+    assert!(glob_match("bot", "bot.rest_at_percent"));
+    assert!(glob_match("bot.*", "bot.rest_at_percent"));
+    assert!(glob_match("bot.rest", "bot.rest_at_percent"));
+    assert!(glob_match("bot.rest*", "bot.rest_until_percent"));
+    assert!(glob_match("*heal*", "bot.minor_heal_at_percent"));
+    assert!(glob_match("*heal*", "farm.heal_refused"));
+    assert!(glob_match("", "host"));
+    assert!(!glob_match("bot", "bank.at"));
+    assert!(!glob_match("*heal*", "bank.at"));
+}
+
+#[test]
+fn the_listing_walks_keys_in_file_order_and_renders_toml() {
+    let s = Settings::parse(COMMENTED).unwrap();
+    let rows = s.list("bot.rest");
+    assert_eq!(
+        rows,
+        vec![
+            ("bot.rest_at_percent".to_string(), "60".to_string()),
+            ("bot.rest_until_percent".to_string(), "95".to_string()),
+            ("bot.rest_command".to_string(), "\"rest\"".to_string()),
+        ],
+        "a prefix pattern takes every key it starts, rest_command included"
+    );
+    let all = s.list("");
+    assert_eq!(all.len(), KEYS.len());
+    assert_eq!(all[0].0, "target");
+    assert_eq!(all[0].1, "\"mbbs\"");
+}
+
+#[test]
+fn an_absent_table_lists_its_defaults() {
+    let s = Settings::default();
+    assert_eq!(s.value("bot.rest_at_percent").as_deref(), Some("60"));
+    assert_eq!(s.value("bank.at").as_deref(), Some("unset"));
+    assert_eq!(s.value("farm.circuit").as_deref(), Some("[]"));
+}
+
+#[test]
+fn the_password_is_masked() {
+    let s = Settings::parse(COMMENTED).unwrap();
+    assert_eq!(s.value("password").as_deref(), Some("\"****\""));
+    let empty = Settings::default();
+    assert_eq!(empty.value("password").as_deref(), Some("\"\""));
+}
