@@ -1765,26 +1765,33 @@ async fn farm_loop(
     // here rather than inside the navigator's block because the bank
     // errand reads the same table to find a bank.
     let content = content_for(session, cfg);
-    // A roam's fence binds the WALK, not just the destinations. Without
-    // this the rotation would only ever pick rooms inside the region
-    // while the legs between them cut straight through a wall whenever
-    // that was cheaper — a fence you can walk through is not a fence.
-    let nav = {
+    let walker = || {
         let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone())
             .with_capabilities(session.capabilities());
-        let nav = match &content {
+        match &content {
             Some(content) => nav.with_backstab(
                 std::sync::Arc::clone(content),
                 session.wielded(),
                 session.contents().items,
             ),
             None => nav,
-        };
-        match &plan.roam {
-            Some(walls) => nav.fenced(walls.clone(), plan.start.map),
-            None => nav,
         }
     };
+    // A roam's fence binds the WALK, not just the destinations. Without
+    // this the rotation would only ever pick rooms inside the region
+    // while the legs between them cut straight through a wall whenever
+    // that was cheaper — a fence you can walk through is not a fence.
+    let nav = match &plan.roam {
+        Some(walls) => walker().fenced(walls.clone(), plan.start.map),
+        None => walker(),
+    };
+    // The banks sit where the shops are, and a fenced region almost
+    // never holds one. A roam that could not cross its own fence to
+    // deposit would carry the coin until it died with it, so the errand
+    // walks with an unfenced copy of the same navigator and walks back
+    // into the region afterwards. For a circuit the two are the same
+    // walker and nothing changes.
+    let bank_nav = walker();
     // Danger ranking from the shipped data. A missing or unreadable
     // database is not fatal: an empty table simply means "no opinion",
     // and the bot falls back to the board's own listing order.
@@ -1994,7 +2001,7 @@ async fn farm_loop(
                 {
                     let out = crate::bank::errand(
                         session,
-                        &nav,
+                        &bank_nav,
                         &graph,
                         content,
                         &bank_cfg,
@@ -2008,6 +2015,12 @@ async fn farm_loop(
                         &mut stats,
                         phase,
                         &mut current,
+                        // A circuit walks on from the bank: its next
+                        // stop is named and the route to it is the
+                        // errand's to plan. A roam picks its next room
+                        // from inside the fence, so it has to be back
+                        // inside the fence to pick one.
+                        roam.is_some().then_some(stop),
                     )
                     .await?;
                     // The errand walked and sent, and neither survives

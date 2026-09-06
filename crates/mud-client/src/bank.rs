@@ -314,8 +314,7 @@ async fn send_deposit(session: &Session, farthings: u64) -> Option<DepositReply>
     }
 }
 
-/// Walk to the bank, deposit the purse above the keep floor, and leave
-/// `current` at the bank. The next leg walks on from there.
+/// Walk to the bank and deposit the purse above the keep floor.
 ///
 /// The walk is `farm::travel`, so fights on the way, interrupts, the
 /// time budget and desync recovery are the leg's. The deposit is
@@ -323,6 +322,13 @@ async fn send_deposit(session: &Session, farthings: u64) -> Option<DepositReply>
 /// gate judged: a toll on the way changed the purse and nothing
 /// observes tolls. After the deposit the purse is read again so the
 /// purse meter and the pack reflect it before any route is planned.
+///
+/// `return_to` says where `current` ends up. `None` leaves it at the
+/// bank, which is what a circuit wants: the next leg walks on from
+/// there and a walk back would be a lap of nothing. A roam passes the
+/// room it left, because a roam chooses its next room from inside its
+/// fence and the bank is outside it. A walk back that fails is printed
+/// and the errand still reports the deposit it made.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn errand(
     session: &Session,
@@ -340,6 +346,7 @@ pub(crate) async fn errand(
     stats: &mut FarmStats,
     phase: PhaseSink<'_>,
     current: &mut RoomId,
+    return_to: Option<RoomId>,
 ) -> Result<ErrandEnd, FarmError> {
     let to = match choose_bank(bank, graph, content, *current, &session.capabilities()) {
         Ok(Some(to)) => to,
@@ -392,37 +399,62 @@ pub(crate) async fn errand(
     }
     let purse = read_inventory(session).await.coins().purse();
     let farthings = purse.farthings().saturating_sub(bank.keep().farthings());
-    if farthings == 0 {
-        return Ok(ErrandEnd::Nothing(format!(
-            "nothing above the keep floor at {name}"
-        )));
-    }
-    let reply = send_deposit(session, farthings).await;
-    // Read again whatever the reply was, so the purse the router sees
-    // is the board's, not a guess.
-    let _ = read_inventory(session).await;
-    match reply {
-        Some(DepositReply::Deposited(_)) => {
-            stats.deposits += 1;
-            stats.deposited_farthings += farthings;
-            Ok(ErrandEnd::Deposited {
-                farthings,
-                at: to,
-                bank: name,
-            })
+    let end = if farthings == 0 {
+        ErrandEnd::Nothing(format!("nothing above the keep floor at {name}"))
+    } else {
+        let reply = send_deposit(session, farthings).await;
+        // Read again whatever the reply was, so the purse the router
+        // sees is the board's, not a guess.
+        let _ = read_inventory(session).await;
+        match reply {
+            Some(DepositReply::Deposited(_)) => {
+                stats.deposits += 1;
+                stats.deposited_farthings += farthings;
+                ErrandEnd::Deposited {
+                    farthings,
+                    at: to,
+                    bank: name.clone(),
+                }
+            }
+            Some(DepositReply::NotABank) => {
+                stats.relocalizations += 1;
+                ErrandEnd::Nothing(format!(
+                    "the board says {}/{} is not a bank: the walk did not land where the graph says",
+                    to.map, to.room
+                ))
+            }
+            Some(DepositReply::Unreasonable) => {
+                ErrandEnd::Nothing(format!("the board refused a deposit of {farthings}"))
+            }
+            None => ErrandEnd::Nothing("no reply to the deposit".into()),
         }
-        Some(DepositReply::NotABank) => {
-            stats.relocalizations += 1;
-            Ok(ErrandEnd::Nothing(format!(
-                "the board says {}/{} is not a bank: the walk did not land where the graph says",
-                to.map, to.room
-            )))
+    };
+    if let Some(back) = return_to.filter(|back| *back != *current) {
+        let leg = crate::farm::travel(
+            session, nav, graph, current, back, cfg, bot_config, threat, refusals, casts, clock,
+            started, stats, phase, false,
+        )
+        .await;
+        // The same bargain as the walk out, with one difference: the
+        // deposit already happened, so a walk back that cannot be
+        // routed is said out loud and the errand still reports it.
+        // `travel` wrote `current`, so the next leg starts from
+        // wherever the walk stopped.
+        match leg {
+            Ok(LegEnd::Arrived { .. }) => {}
+            Ok(LegEnd::Died) => return Ok(ErrandEnd::Died),
+            Ok(LegEnd::TimeUp) => return Ok(ErrandEnd::TimeUp),
+            Ok(LegEnd::TooHurt) => return Ok(ErrandEnd::TooHurt),
+            Err(FarmError::Nav(e)) => {
+                eprintln!(
+                    "bank: no way back to {}/{} from {name}: {e}",
+                    back.map, back.room
+                );
+            }
+            Err(e) => return Err(e),
         }
-        Some(DepositReply::Unreasonable) => Ok(ErrandEnd::Nothing(format!(
-            "the board refused a deposit of {farthings}"
-        ))),
-        None => Ok(ErrandEnd::Nothing("no reply to the deposit".into())),
     }
+    Ok(end)
 }
 
 /// `/bank`: from wherever the character stands, walk to the bank and
@@ -498,6 +530,7 @@ pub async fn run_bank(
         &mut stats,
         phase,
         &mut current,
+        None,
     )
     .await?;
     if !matches!(end, ErrandEnd::Died)

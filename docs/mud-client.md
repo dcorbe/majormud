@@ -725,8 +725,12 @@ The errand walks to the bank with the same leg a circuit uses, so
 fights on the way, interrupts and desync recovery are the leg's. At the
 bank it reads the purse again, deposits everything above
 **`keep_gold`**, which is 0 by default, and reads once more so routing
-sees the money that is left. The next leg starts from the bank. There
-is no walk back.
+sees the money that is left. A circuit's next leg starts from the bank,
+so there is no walk back. A roam walks back to the room it left,
+because a roam picks its next room from inside its fence and the bank
+is almost never in there. The walk to the bank ignores the fence for
+the same reason: a run that cannot leave its region cannot put its coin
+down.
 
 An errand that deposits nothing, whether the bank is unreachable, the
 walk fails, or the board refuses, prints one line saying so and

@@ -2224,3 +2224,122 @@ async fn a_refused_deposit_switches_deposits_off_for_the_run() {
         "the errand ran a second time: {log:?}"
     );
 }
+
+/// A roam whose fence walls the bank off. The character still has to
+/// put its coin down, so the errand crosses the fence, and it walks
+/// back into the region afterwards, because the roam picks its next
+/// room from inside the fence.
+#[tokio::test]
+async fn a_roam_leaves_its_fence_to_bank_and_walks_back() {
+    use mud_client::roam::Walls;
+
+    let carrying_1200 = "\r\ni\r\nYou are carrying 1200 copper farthings\r\nYou have no keys.\r\nWealth: 1200 copper farthings\r\nEncumbrance: 400/2400 - None [16%]\r\n[HP=30/MA=0]:";
+    let (addr, received) = scripted_board(vec![
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nYou have no keys.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        ("look", format!("\r\nlook{}", room_block("Guard Post", None, "north"))),
+        (
+            "i",
+            "\r\ni\r\nYou are carrying nothing.\r\nYou have no keys.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        // The roam works Inner Ward first and finds the pile there.
+        (
+            "n",
+            format!(
+                "\r\nn{}",
+                room_block_items("Inner Ward", &["1200 copper farthings"], "north south east")
+            ),
+        ),
+        (
+            "get copper",
+            "\r\nget copper\r\nYou picked up 1200 copper farthings\r\n[HP=30/MA=0]:".into(),
+        ),
+        ("i", carrying_1200.into()),
+        // East is walled off, so only an unfenced walk gets here.
+        ("e", format!("\r\ne{}", room_block("Bank of Godfrey", None, "west"))),
+        ("i", carrying_1200.into()),
+        (
+            "deposit 1200",
+            "\r\ndeposit 1200\r\nYou deposit 1200 copper farthings.\r\n[HP=30/MA=0]:".into(),
+        ),
+        (
+            "i",
+            "\r\ni\r\nYou are carrying nothing.\r\nYou have no keys.\r\nWealth: 0 copper farthings\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        // Back inside the fence, to the room the errand left.
+        ("w", format!("\r\nw{}", room_block("Inner Ward", None, "north south east"))),
+        // And on with the roam: Guard Post is the next region room.
+        ("s", format!("\r\ns{}", room_block("Guard Post", None, "north"))),
+    ])
+    .await;
+    let session = session_for(addr).await;
+    mud_client::farm::probe_sheet(&session, None).await;
+    session.set_content(Arc::new(content_with_bank()));
+
+    let graph = corridor_with_bank();
+    let cfg = FarmConfig {
+        loops: 0,
+        max_seconds: 8,
+        idle_poke_ms: 500,
+        depart_at_percent: Some(0),
+        travel_interrupts: 0,
+        stop_seconds: 2,
+        content: std::path::PathBuf::from("no-such-content.sqlite"),
+        ..FarmConfig::default()
+    };
+    let bot = BotConfig {
+        auto_get: true,
+        max_hp: 30,
+        ..BotConfig::default()
+    };
+    // Keep is walled off too, so the region is Guard Post and Inner
+    // Ward and the roam simply alternates between them once the errand
+    // is done.
+    let plan = FarmPlan::roaming(START, Walls::new([BANK, STOP]), &graph)
+        .expect("a roam of two rooms");
+    let (end, stats) = match tokio::time::timeout(
+        Duration::from_secs(40),
+        run_farm(&session, graph.clone(), &plan, &bot, &cfg, None),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    {
+        Ok(out) => out,
+        Err(e) => panic!(
+            "the roam must survive the errand: {e:?}\nboard received: {:?}",
+            received.lock().unwrap()
+        ),
+    };
+    assert_eq!(end, FarmEnd::TimeUp, "a roam ends on the clock: {stats:?}");
+    assert_eq!(stats.deposits, 1, "{stats:?}");
+    assert_eq!(stats.deposited_farthings, 1200, "{stats:?}");
+
+    let log = received.lock().unwrap().clone();
+    let east = log
+        .iter()
+        .position(|l| l == "e")
+        .unwrap_or_else(|| panic!("the errand never left the fence: {log:?}"));
+    let deposit = log
+        .iter()
+        .position(|l| l == "deposit 1200")
+        .unwrap_or_else(|| panic!("no deposit went out: {log:?}"));
+    let back = log
+        .iter()
+        .position(|l| l == "w")
+        .unwrap_or_else(|| panic!("the roam stayed at the bank: {log:?}"));
+    assert!(east < deposit && deposit < back, "{log:?}");
+    assert!(
+        !log[back..].iter().any(|l| l == "e"),
+        "the roam went back out of the fence: {log:?}"
+    );
+    assert_eq!(
+        log[back + 1..].iter().find(|l| l == &"n" || l == &"s"),
+        Some(&"s".to_string()),
+        "the room after the walk back must be a region room: {log:?}"
+    );
+}
