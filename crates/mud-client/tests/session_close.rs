@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use mud_client::profile::Profile;
-use mud_client::session::Session;
+use mud_client::session::{ExpectError, Session};
 
 async fn silent_board() -> (std::net::SocketAddr, tokio::sync::oneshot::Receiver<usize>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -19,14 +19,14 @@ async fn silent_board() -> (std::net::SocketAddr, tokio::sync::oneshot::Receiver
     (addr, rx)
 }
 
-#[allow(clippy::field_reassign_with_default)]
 fn profile_for(addr: std::net::SocketAddr) -> Profile {
-    let mut p = Profile::default();
-    p.host = addr.ip().to_string();
-    p.port = addr.port();
-    p.username = "dan".into();
-    p.pace_ms = Some(0);
-    p
+    Profile {
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        username: "dan".into(),
+        pace_ms: Some(0),
+        ..Default::default()
+    }
 }
 
 #[tokio::test]
@@ -51,7 +51,10 @@ async fn close_ends_the_streams_and_the_board_sees_the_line_drop() {
         "the raw stream must end"
     );
     assert!(
-        session.expect("anything", Duration::from_secs(2)).await.is_err(),
+        matches!(
+            session.expect("anything", Duration::from_secs(2)).await,
+            Err(ExpectError::Closed { .. })
+        ),
         "a pending expect must fail at once, not wait out its timeout"
     );
     assert_eq!(saw_close.await.unwrap(), 0, "the board reads end of file");

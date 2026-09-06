@@ -335,18 +335,20 @@ pub struct Session {
     shared: Arc<Shared>,
     /// `None` once `close` has dropped it. Held behind a lock rather
     /// than as a bare `Sender` because a broadcast channel only reports
-    /// `Closed` to its receivers once every sender clone is gone — the
-    /// reader task's own clone dies with it on abort, but this one, kept
+    /// `Closed` to its receivers once every sender clone is gone. The
+    /// reader task's own clone dies with it on abort. This one is kept
     /// so `events` can mint fresh subscribers for the whole life of the
-    /// session, would otherwise outlive `close` and keep the stream open.
+    /// session, and would otherwise outlive `close` and keep the stream
+    /// open.
     events_tx: Mutex<Option<broadcast::Sender<Correlated>>>,
     /// Same reasoning as `events_tx`.
     raw_tx: Mutex<Option<broadcast::Sender<Vec<u8>>>>,
     state_rx: watch::Receiver<GameState>,
     profile: std::sync::RwLock<Profile>,
-    /// The reader task, so `close` can stop it. Dropping the read half
-    /// is what closes the socket for good once the writer has shut its
-    /// side.
+    /// The reader task, so `close` can stop it. `TcpStream::into_split`
+    /// gives each half its own handle to the same socket. The fd is only
+    /// actually released once both halves have dropped, so the reader
+    /// must stop and drop its read half too, not just the writer.
     reader: tokio::task::AbortHandle,
     next_id: AtomicU64,
     /// Current send-pacing interval in ms, shared with the writer task.
@@ -640,9 +642,13 @@ impl Session {
     /// wakes with the closed error. Idempotent.
     ///
     /// Also drops this session's own `events_tx`/`raw_tx` clones, not
-    /// just the reader task's: a broadcast channel only reports `Closed`
+    /// just the reader task's. A broadcast channel only reports `Closed`
     /// to its subscribers once every sender is gone, and these two
-    /// outlive the reader by design (see their doc on [`Session`]).
+    /// outlive the reader by design. See their doc on [`Session`] for why.
+    ///
+    /// Returns before the reader task has actually stopped: the abort is
+    /// only requested here, not waited on. A caller sees the streams end
+    /// on its next await rather than immediately after this call returns.
     pub fn close(&self) {
         let _ = self.cmd_tx.send(Cmd::Close);
         self.reader.abort();
