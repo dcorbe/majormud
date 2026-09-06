@@ -2674,11 +2674,7 @@ fn load_world(db: &std::path::Path) -> Option<World> {
 /// — it is the MOST-used path, not a side one, which is why it gets the
 /// same treatment as every other `Navigator::new` site.
 pub fn finish_locator(
-    found: Option<(
-        Arc<crate::graph::RoomGraph>,
-        Arc<crate::spawn::SpawnTable>,
-        Arc<mud_core::content::Content>,
-    )>,
+    found: Option<World>,
     session: &Session,
 ) -> (
     Option<Arc<crate::graph::RoomGraph>>,
