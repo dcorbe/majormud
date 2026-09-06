@@ -524,3 +524,94 @@ async fn an_interrupt_in_the_lever_room_reports_the_lever_room() {
     assert_eq!(err.at, LEVER_B, "the walk stands in the west alcove");
     assert_eq!(log.lines(), vec!["n", "w", "pull lever"]);
 }
+
+const GATE_ROOM: RoomId = RoomId { map: 1, room: 20 };
+const COURTYARD: RoomId = RoomId { map: 1, room: 21 };
+
+/// A lever on a gate toggles its lock, so the walk pulls it after `open`
+/// says locked and before any pick or bash is spent, then opens and
+/// walks. The board here is locked until the lever is pulled once.
+#[tokio::test]
+async fn a_lever_on_a_gate_unlocks_it_before_any_pick_or_bash() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let log = Arc::new(BoardLog::default());
+    let seen = Arc::clone(&log);
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let block = |name: &str, exits: &str| {
+            format!("\r\n\x1b[1;36m{name}\r\nObvious exits: {exits}{PROMPT}")
+        };
+        sock.write_all(block("Gate Room", "closed gate north").as_bytes())
+            .await
+            .unwrap();
+        let mut open = false;
+        let mut pending = String::new();
+        let mut buf = [0u8; 512];
+        while let Ok(n) = sock.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            pending.push_str(&String::from_utf8_lossy(&buf[..n]));
+            while let Some(nl) = pending.find('\n') {
+                let line: String = pending.drain(..=nl).collect();
+                let line = line.trim().to_lowercase();
+                seen.lines.lock().unwrap().push(line.clone());
+                let unlocked = seen.pulls.load(Ordering::SeqCst) >= 1;
+                let reply = match line.as_str() {
+                    "n" if open => block("Courtyard", "south"),
+                    "n" => format!("\r\nThe gate is closed!{PROMPT}"),
+                    "open n" | "open north" if unlocked => {
+                        open = true;
+                        format!("\r\nThe gate is now open.{PROMPT}")
+                    }
+                    "open n" | "open north" => format!("\r\nThe gate is locked.{PROMPT}"),
+                    "pull lever" => {
+                        seen.pulls.fetch_add(1, Ordering::SeqCst);
+                        format!("\r\n{CLICK}{PROMPT}")
+                    }
+                    "look" => block("Gate Room", "closed gate north"),
+                    other => format!("\r\nYou say \"{other}\"{PROMPT}"),
+                };
+                sock.write_all(format!("\r\n{line}{reply}").as_bytes())
+                    .await
+                    .unwrap();
+            }
+        }
+    });
+
+    let mut gate_room = room("Gate Room", &[]);
+    gate_room.exits[Direction::North as usize] = Some(ExitEdge {
+        dest: COURTYARD,
+        exit_type: 0xb,
+        command: None,
+        requirement: ExitRequirement::Puzzle(Puzzle {
+            word: 0,
+            actions: vec![PuzzleAction {
+                room: GATE_ROOM,
+                number: 0,
+                phrases: vec!["pull lever".into()],
+                item: None,
+                reply: Some(CLICK.into()),
+                hops: Some(0),
+            }],
+        }),
+    });
+    let graph = Arc::new(RoomGraph::from_rooms(vec![
+        (GATE_ROOM, gate_room),
+        (COURTYARD, room("Courtyard", &[(Direction::South, GATE_ROOM)])),
+    ]));
+    let session = session_for(addr).await;
+    let n = nav(graph);
+
+    let at = tokio::time::timeout(
+        Duration::from_secs(20),
+        n.goto(&session, GATE_ROOM, COURTYARD, &mut NoGuard, false),
+    )
+    .await
+    .expect("goto should not hang")
+    .expect("the lever unlocks the gate");
+
+    assert_eq!(at.at, COURTYARD);
+    assert_eq!(log.lines(), vec!["n", "open n", "pull lever", "open n", "n"]);
+}

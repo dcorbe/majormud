@@ -1515,6 +1515,35 @@ impl Navigator {
             StepEvent::DoorBlocked => {}
         }
 
+        // A lever on a gate toggles its lock, mud-core's
+        // `remote_gate_toggle`, so a locked gate the graph calls a
+        // puzzle gets its lever pulled before any pick or bash is spent
+        // on it. The gate is still shut afterwards and wants the same
+        // `open` a picked lock does.
+        if let crate::graph::ExitRequirement::Puzzle(puzzle) = requirement {
+            self.solve_puzzle(session, current, dir, puzzle, guard, armed)
+                .await?;
+            crate::session::drain(events, |_| {});
+            let opened = session.send(&format!("open {dir}"));
+            match self.wait_room(events, guard, armed, opened, sneak_seen).await? {
+                StepEvent::DoorYielded => {
+                    let again = session.send(dir);
+                    return self
+                        .arrival(here, expected, BlindContext::AfterMove, events, guard, armed, again, sneak_seen)
+                        .await
+                        .map(StepOutcome::Arrived);
+                }
+                StepEvent::CombatBlocked => {
+                    return Err(NavErrorKind::Interrupted(Interrupt::Attacked {
+                        by: "combat".into(),
+                    }));
+                }
+                // Still locked after the lever: the lock is the story
+                // again, and picking and bashing below get their turn.
+                _ => {}
+            }
+        }
+
         // Picking first: it is a roll like bashing, but it costs a
         // command and no health, so where the character has the skill it
         // is strictly the cheaper way through. The 88-bash incident
