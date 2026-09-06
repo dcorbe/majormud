@@ -231,14 +231,13 @@ fn split_key(key: &str) -> (Vec<&str>, &str) {
 fn table_at<'a>(doc: &'a mut DocumentMut, path: &[&str]) -> Result<&'a mut Table, String> {
     let mut table = doc.as_table_mut();
     for seg in path {
-        if table.get(seg).is_none() {
+        let item = table.entry(seg).or_insert_with(|| {
             let mut t = Table::new();
             t.set_implicit(true);
-            table.insert(seg, Item::Table(t));
-        }
-        table = table
-            .get_mut(seg)
-            .and_then(Item::as_table_mut)
+            Item::Table(t)
+        });
+        table = item
+            .as_table_mut()
             .ok_or_else(|| format!("{seg} is not a table in this profile"))?;
     }
     Ok(table)
