@@ -16,7 +16,7 @@
 - Every file ends with a blank line.
 - No em dashes, parentheses or semicolons in prose you write: doc comments, commit messages, the doc. Code punctuation is code.
 - Commit messages carry a tag with the crate in brackets as the repo does: `feat(client): ...`, `refactor(client): ...`, `test(client): ...`, `doc(client): ...`. No attribution lines. Do not mention the plan or the spec in commit messages.
-- No test may read `re/`. Fixtures are hand-built. Tests that need a file write it under `target/` with `std::env::temp_dir()` never used. Use `tempfile`-free code: a path under `env!("CARGO_TARGET_TMPDIR")`, which cargo sets for integration tests.
+- No test may read `re/`. Fixtures are hand-built. A test that needs a file puts it under `env!("CARGO_TARGET_TMPDIR")`, which cargo sets for integration tests. Never `/tmp`.
 - Each task's test must fail before the implementation and pass after. Each task also runs the named mutation check: change the rule, watch the test fail, revert.
 - Run the crate's tests with `cargo test -p mud-client` from the repo root. Build with `cargo build -p mud-client`. Pass `--test <file>` while iterating and run the whole crate once before each commit. `cargo clippy -p mud-client --all-targets` must add no warnings.
 - Working directory for every command below is the repo root `/home/daniel/majormud/majormud`.
@@ -864,7 +864,6 @@ fn a_glob_matches_by_prefix_with_a_trailing_star_implied() {
     assert!(glob_match("", "host"));
     assert!(!glob_match("bot", "bank.at"));
     assert!(!glob_match("*heal*", "bank.at"));
-    assert!(!glob_match("*.rest", "bot.rest_at_percent") || glob_match("*.rest", "bot.rest_at_percent"));
 }
 
 #[test]
@@ -900,8 +899,6 @@ fn the_password_is_masked() {
     assert_eq!(empty.value("password").as_deref(), Some("\"\""));
 }
 ```
-
-Remove the last `assert!` line in the glob test, the one with `||`. It was a placeholder in the draft and asserts nothing.
 
 - [ ] **Step 2: Run them to see them fail**
 
@@ -1028,7 +1025,7 @@ git commit -m "feat(client): list settings by glob, defaults shown for absent ta
 Append to `crates/mud-client/tests/settings.rs`:
 
 ```rust
-use mud_client::settings::{Completion, complete};
+use mud_client::settings::complete;
 
 const VERBS: &[&str] = &["/set", "/save", "/quit", "/unset"];
 
@@ -1079,7 +1076,6 @@ fn common_prefix_of_nothing_is_empty() {
     use mud_client::settings::common_prefix;
     assert_eq!(common_prefix(&[]), "");
     assert_eq!(common_prefix(&["abc".into(), "abd".into()]), "ab");
-    let _: Option<Completion> = None;
 }
 ```
 
@@ -1780,8 +1776,7 @@ fn a_bank_key_does_not_touch_the_assist() {
 
 #[test]
 fn a_listing_is_one_row_per_key() {
-    let s = Settings::default();
-    let mut s = s;
+    let mut s = Settings::default();
     let applied = apply_settings(&KeyOutcome::SetList { pattern: "bot.rest".into() }, &mut s).unwrap();
     assert_eq!(applied.note.lines().count(), 2, "{}", applied.note);
     assert!(applied.note.lines().all(|l| l.contains(" = ")));
@@ -2057,8 +2052,6 @@ async fn the_lobby_sets_host_and_port_then_connects_and_sees_the_banner() {
     let addr = banner_board().await;
     let mut settings = Settings::default();
     let mut armed = false;
-    let (step, _) = lobby_step(slash("look").unwrap_or(KeyOutcome::Send("look".into())), &mut settings, &mut armed);
-    assert!(matches!(step, LobbyStep::Stay));
     let (step, note) = lobby_step(KeyOutcome::Send("look".into()), &mut settings, &mut armed);
     assert!(matches!(step, LobbyStep::Stay));
     assert!(note.unwrap().contains("not connected"));
