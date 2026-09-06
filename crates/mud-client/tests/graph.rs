@@ -88,7 +88,7 @@ fn state_free_requirements_keep_their_old_prices() {
     let caps = Capabilities::unrestricted();
     let edge = RoomId { map: 1, room: 1 };
     for exit_type in [0, 2, 7, 0xb, 9, 0x18, 0x10, 0x14, 0x16, 0x17, 10, 0x13, 3, 5] {
-        let req = ExitRequirement::from_exit_type(exit_type, 0);
+        let req = ExitRequirement::from_exit_type(exit_type, 0, 0, 0);
         let want = mud_client::graph::exit_cost(exit_type);
         assert_eq!(
             exit_cost_for(&req, exit_type, edge, Direction::North, &caps),

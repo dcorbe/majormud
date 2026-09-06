@@ -42,8 +42,22 @@ pub const DIRECTIONS: [Direction; 10] = [
 pub enum ExitRequirement {
     /// Nothing. Walk it.
     None,
-    /// A door or gate: `open`, then possibly a bash chain. Types 2, 7, 0xb.
-    Door,
+    /// A door or gate, types 7 and 0xb. `locked` is the shipped lock
+    /// state, `para1 == 2`, the word mud-core's `exit_lock_state`
+    /// reads. `pick` is the pick modifier, `para2`, negative on hard
+    /// locks. The state is the boot state: a lock with a positive
+    /// modifier never re-locks once picked, so a door the data calls
+    /// locked can stand unlocked all day. The walk tries `open` first
+    /// either way, this only prices the route.
+    Door { locked: bool, pick: i32 },
+    /// A key door, type 2. Always locked. `key` is the item that opens
+    /// it, `para1`, and `pick` the modifier, `para3`. The walk says
+    /// `use <key> <direction>` with the key on the ring and picks
+    /// without it.
+    KeyDoor { key: ItemId, pick: i32 },
+    /// Passable only while carrying `item`, `para1`. Type 3, 173 of
+    /// them. Walked as a plain step, routing does the checking.
+    ItemGate { item: ItemId },
     /// Concealed, and a search can reveal it. Type 6, unless a button
     /// or lever targets it, in which case it is
     /// [`ExitRequirement::Puzzle`] and no search roll ever clears it.
@@ -89,16 +103,35 @@ impl ExitRequirement {
     /// The requirement an exit type implies on its own, before the
     /// cmdtext pass gets a say.
     ///
+    /// `para1`, `para2` and `para3` are the raw slot fields. Which one
+    /// means what depends on the type, see the lock variants' docs,
+    /// and a fixture that cares about none of them passes zeros.
+    ///
     /// Shared with the navigator's test fixtures deliberately. Those
     /// fixtures build exits by type and care about the WALKER's
     /// behaviour, so they must classify exactly as `load` does or they
     /// test a world that cannot exist. The tests that pin the
     /// classification itself do NOT call this — they assert
-    /// hand-written expectations against the shipped database, so they
-    /// can still fail when this is wrong.
-    pub fn from_exit_type(exit_type: i64, para1: i64) -> ExitRequirement {
+    /// hand-written expectations against fixture rooms, so they can
+    /// still fail when this is wrong.
+    pub fn from_exit_type(exit_type: i64, para1: i64, para2: i64, para3: i64) -> ExitRequirement {
+        let item = |id: i64| u16::try_from(id).ok().filter(|id| *id != 0).map(ItemId);
+        let modifier = |m: i64| i32::try_from(m).unwrap_or(0);
         match exit_type {
-            2 | 7 | 0xb => ExitRequirement::Door,
+            2 => match item(para1) {
+                Some(key) => ExitRequirement::KeyDoor { key, pick: modifier(para3) },
+                // No key exists for it, so the lock is all there is.
+                None => ExitRequirement::Door { locked: true, pick: modifier(para3) },
+            },
+            // 7 shipped gates want item 0, which is no item at all.
+            3 => match item(para1) {
+                Some(item) => ExitRequirement::ItemGate { item },
+                None => ExitRequirement::None,
+            },
+            7 | 0xb => ExitRequirement::Door {
+                locked: para1 == 2,
+                pick: modifier(para2),
+            },
             // Searchable until a slot or a script targets it.
             6 => ExitRequirement::Hidden,
             9 | 0x18 => ExitRequirement::Trap,
@@ -547,7 +580,12 @@ impl RoomGraph {
                     command: (exit_type == COMMAND_EXIT)
                         .then(|| Self::exit_command(content, exit.trigger_msg))
                         .flatten(),
-                    requirement: ExitRequirement::from_exit_type(exit_type, param),
+                    requirement: ExitRequirement::from_exit_type(
+                        exit_type,
+                        param,
+                        i64::from(exit.param2),
+                        i64::from(exit.param3),
+                    ),
                 });
             }
             rooms.insert(*id, graph_room);

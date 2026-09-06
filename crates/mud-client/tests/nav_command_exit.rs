@@ -44,7 +44,7 @@ fn ferry(command: Option<&str>) -> Arc<RoomGraph> {
         dest: PIER,
         exit_type: COMMAND_EXIT,
         command: command.map(str::to_string),
-        requirement: ExitRequirement::from_exit_type(COMMAND_EXIT, 0),
+        requirement: ExitRequirement::from_exit_type(COMMAND_EXIT, 0, 0, 0),
     });
     let pier = GraphRoom {
         name: "Small Pier".into(),

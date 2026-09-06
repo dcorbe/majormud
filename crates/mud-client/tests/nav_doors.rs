@@ -124,7 +124,7 @@ fn graph_with_exit(exit_type: i64) -> Arc<RoomGraph> {
         dest: THERE,
         exit_type,
         command: None,
-        requirement: ExitRequirement::from_exit_type(exit_type, 0),
+        requirement: ExitRequirement::from_exit_type(exit_type, 0, 0, 0),
     });
     let mut there = GraphRoom {
         name: "Inner Ward".into(),
@@ -136,7 +136,7 @@ fn graph_with_exit(exit_type: i64) -> Arc<RoomGraph> {
         dest: HERE,
         exit_type,
         command: None,
-        requirement: ExitRequirement::from_exit_type(exit_type, 0),
+        requirement: ExitRequirement::from_exit_type(exit_type, 0, 0, 0),
     });
     Arc::new(RoomGraph::from_rooms(vec![(HERE, here), (THERE, there)]))
 }

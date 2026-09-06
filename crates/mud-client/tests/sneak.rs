@@ -125,7 +125,7 @@ fn graph_two_hop() -> Arc<RoomGraph> {
         dest: THERE,
         exit_type: 0,
         command: None,
-        requirement: ExitRequirement::from_exit_type(0, 0),
+        requirement: ExitRequirement::from_exit_type(0, 0, 0, 0),
     });
     let mut mid = GraphRoom {
         name: "Inner Ward".into(),
@@ -137,13 +137,13 @@ fn graph_two_hop() -> Arc<RoomGraph> {
         dest: HERE,
         exit_type: 0,
         command: None,
-        requirement: ExitRequirement::from_exit_type(0, 0),
+        requirement: ExitRequirement::from_exit_type(0, 0, 0, 0),
     });
     mid.exits[Direction::North as usize] = Some(ExitEdge {
         dest: FAR,
         exit_type: 0,
         command: None,
-        requirement: ExitRequirement::from_exit_type(0, 0),
+        requirement: ExitRequirement::from_exit_type(0, 0, 0, 0),
     });
     let mut far = GraphRoom {
         name: "Keep".into(),
@@ -155,7 +155,7 @@ fn graph_two_hop() -> Arc<RoomGraph> {
         dest: THERE,
         exit_type: 0,
         command: None,
-        requirement: ExitRequirement::from_exit_type(0, 0),
+        requirement: ExitRequirement::from_exit_type(0, 0, 0, 0),
     });
     Arc::new(RoomGraph::from_rooms(vec![(HERE, here), (THERE, mid), (FAR, far)]))
 }
@@ -171,7 +171,7 @@ fn graph_one_hop() -> Arc<RoomGraph> {
         dest: THERE,
         exit_type: 0,
         command: None,
-        requirement: ExitRequirement::from_exit_type(0, 0),
+        requirement: ExitRequirement::from_exit_type(0, 0, 0, 0),
     });
     let mut there = GraphRoom {
         name: "Inner Ward".into(),
@@ -183,7 +183,7 @@ fn graph_one_hop() -> Arc<RoomGraph> {
         dest: HERE,
         exit_type: 0,
         command: None,
-        requirement: ExitRequirement::from_exit_type(0, 0),
+        requirement: ExitRequirement::from_exit_type(0, 0, 0, 0),
     });
     Arc::new(RoomGraph::from_rooms(vec![(HERE, here), (THERE, there)]))
 }

@@ -5,7 +5,7 @@
 
 use mud_client::graph::{ExitRequirement, RoomGraph};
 use mud_core::content::{
-    Content, Direction, Exit, Message, MessageId, Room, RoomId, TextBlock, TextBlockId,
+    Content, Direction, Exit, ItemId, Message, MessageId, Room, RoomId, TextBlock, TextBlockId,
 };
 
 const HERE: RoomId = RoomId { map: 1, room: 1 };
@@ -536,4 +536,80 @@ fn a_remoteaction_script_records_the_actor_line_and_the_number() {
     assert_eq!(puzzle.actions[0].number, 2);
     assert_eq!(puzzle.actions[0].reply.as_deref(), Some("You pull the lever."));
     assert_eq!(puzzle.actions[0].hops, Some(1));
+}
+
+/// The lock fields the room record already carries become
+/// requirements. The Black House door on Slum Street, 1/1224 east, is
+/// the captured key door: type 2, key item 172, pick modifier -99. The
+/// 88-bash door at 1/1119 north is a locked type 7 with modifier -30.
+/// A type 3 exit wants an item carried, and one whose item id is 0
+/// wants nothing.
+#[test]
+fn lock_fields_become_door_key_door_and_item_gate_requirements() {
+    let mut content = Content::default();
+    let mut room = Room {
+        id: HERE,
+        name: "Slum Street".into(),
+        ..Default::default()
+    };
+    room.exits[Direction::East as usize] = Some(Exit {
+        dest: THERE,
+        exit_type: 2,
+        param: 172,
+        param2: 2,
+        param3: -99,
+        ..Default::default()
+    });
+    room.exits[Direction::North as usize] = Some(Exit {
+        dest: THERE,
+        exit_type: 3,
+        param: 1054,
+        ..Default::default()
+    });
+    room.exits[Direction::South as usize] = Some(Exit {
+        dest: THERE,
+        exit_type: 3,
+        param: 0,
+        ..Default::default()
+    });
+    room.exits[Direction::West as usize] = Some(Exit {
+        dest: THERE,
+        exit_type: 7,
+        param: 2,
+        param2: -30,
+        ..Default::default()
+    });
+    room.exits[Direction::Up as usize] = Some(Exit {
+        dest: THERE,
+        exit_type: 7,
+        param: 0,
+        param2: 30,
+        ..Default::default()
+    });
+    room.exits[Direction::Down as usize] = Some(Exit {
+        dest: THERE,
+        exit_type: 0xb,
+        param: 2,
+        param2: -999,
+        ..Default::default()
+    });
+    content.add_room(room);
+    content.add_room(Room {
+        id: THERE,
+        name: "Black House".into(),
+        ..Default::default()
+    });
+
+    let graph = RoomGraph::from_content(&content);
+    let exits = &graph.room(HERE).unwrap().exits;
+    let req = |d: Direction| exits[d as usize].as_ref().unwrap().requirement.clone();
+    assert_eq!(
+        req(Direction::East),
+        ExitRequirement::KeyDoor { key: ItemId(172), pick: -99 }
+    );
+    assert_eq!(req(Direction::North), ExitRequirement::ItemGate { item: ItemId(1054) });
+    assert_eq!(req(Direction::South), ExitRequirement::None, "item 0 wants nothing");
+    assert_eq!(req(Direction::West), ExitRequirement::Door { locked: true, pick: -30 });
+    assert_eq!(req(Direction::Up), ExitRequirement::Door { locked: false, pick: 30 });
+    assert_eq!(req(Direction::Down), ExitRequirement::Door { locked: true, pick: -999 });
 }
