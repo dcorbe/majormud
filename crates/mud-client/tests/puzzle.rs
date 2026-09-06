@@ -83,15 +83,6 @@ fn the_word_names_the_actions_it_needs() {
     );
 }
 
-/// Each action clears one bit. Action 0 clears every puzzle bit.
-#[test]
-fn an_action_knows_the_bit_it_clears() {
-    assert_eq!(action(LEVER_A, 1, None, None).bit(), 0x10);
-    assert_eq!(action(LEVER_A, 2, None, None).bit(), 0x20);
-    assert_eq!(action(LEVER_A, 10, None, None).bit(), 0x2000);
-    assert_eq!(action(LEVER_A, 0, None, None).bit(), 0x3ff0);
-}
-
 /// The Crypt pair: 1/1044 is action 1 and 1/1038 is action 2 on a word
 /// of 48. The plan pulls the higher number first, which the ordered
 /// rule requires and the unordered rule allows.

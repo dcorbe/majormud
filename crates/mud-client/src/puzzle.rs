@@ -54,15 +54,16 @@ pub struct PuzzleAction {
     pub hops: Option<u32>,
 }
 
-impl PuzzleAction {
-    /// The word bits this action clears.
-    pub fn bit(&self) -> u32 {
-        match self.number {
-            0 => PUZZLE_BITS,
-            n => 0x10 << (n - 1),
-        }
+/// The word bits an action of this number clears. Action 0 clears them
+/// all.
+fn bit_of(number: u8) -> u32 {
+    match number {
+        0 => PUZZLE_BITS,
+        n => 0x10 << (n - 1),
     }
+}
 
+impl PuzzleAction {
     /// Can this walker perform the action: no item needed, or the item
     /// in the pack.
     pub fn available(&self, caps: &Capabilities) -> bool {
@@ -84,7 +85,7 @@ impl Puzzle {
     /// The action numbers the word calls for, ascending.
     pub fn needed(&self) -> Vec<u8> {
         (1..=MAX_ACTION)
-            .filter(|n| self.word & (0x10 << (n - 1)) != 0)
+            .filter(|n| self.word & bit_of(*n) != 0)
             .collect()
     }
 
