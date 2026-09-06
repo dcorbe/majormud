@@ -1259,6 +1259,38 @@ fn quit_in_the_lobby_asks_once_while_unsaved() {
     assert!(matches!(step, LobbyStep::Quit), "nothing unsaved, nothing to ask");
 }
 
+/// The host is written into the document as TOML. Rust's `Debug` spells
+/// an escape its own way, and a control character escaped that way is
+/// not a string the TOML parser will take back.
+#[test]
+fn the_lobby_writes_the_host_as_toml() {
+    let mut settings = Settings::default();
+    let mut armed = false;
+    let (step, note) = lobby_step(
+        KeyOutcome::Connect {
+            target: Some("a\u{7}b:2327".into()),
+        },
+        &mut settings,
+        &mut armed,
+    );
+    assert!(matches!(step, LobbyStep::Connect), "{note:?}");
+    assert_eq!(settings.profile().host, "a\u{7}b");
+    assert_eq!(settings.profile().port, 2327);
+}
+
+/// A refusal is dashed on both sides of a connection, so the same
+/// mistake reads the same in the lobby as in play.
+#[test]
+fn the_lobby_dashes_a_refusal_the_way_play_does() {
+    let mut settings = Settings::default();
+    let mut armed = false;
+    let (step, note) = lobby_step(slash("/unset").unwrap(), &mut settings, &mut armed);
+    assert!(matches!(step, LobbyStep::Stay));
+    let note = note.unwrap();
+    assert!(note.starts_with("-- ") && note.ends_with(" --"), "{note}");
+    assert!(note.contains("/unset"), "{note}");
+}
+
 /// The refusal itself, which the lobby and play both go through. Play's
 /// key arm cannot be driven from a test, so this is where its rule is
 /// pinned.

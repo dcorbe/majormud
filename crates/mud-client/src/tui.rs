@@ -200,8 +200,12 @@ pub fn lobby_step(
                     Ok(t) => t,
                     Err(e) => return (LobbyStep::Stay, Some(format!("-- {e} --"))),
                 };
+                // Written as TOML, not with Rust's `Debug`: the two
+                // spell an escape differently, and only one of them is
+                // a string the parser will take back.
+                let host = toml_edit::Value::from(host.as_str()).to_string();
                 if let Err(e) = settings
-                    .set("host", &format!("{host:?}"))
+                    .set("host", &host)
                     .and_then(|()| settings.set("port", &port.to_string()))
                 {
                     return (LobbyStep::Stay, Some(format!("-- connect: {e} --")));
@@ -213,7 +217,10 @@ pub fn lobby_step(
             (LobbyStep::Connect, None)
         }
         KeyOutcome::Help => (LobbyStep::Stay, Some(help_text().to_string())),
-        KeyOutcome::Note(text) | KeyOutcome::Refuse(text) => (LobbyStep::Stay, Some(text)),
+        KeyOutcome::Note(text) => (LobbyStep::Stay, Some(text)),
+        // Dashed the way play dashes it, so the same refusal reads the
+        // same on both sides of a connection.
+        KeyOutcome::Refuse(text) => (LobbyStep::Stay, Some(format!("-- {text} --"))),
         KeyOutcome::Send(_)
         | KeyOutcome::Raw(_)
         | KeyOutcome::Disconnect
