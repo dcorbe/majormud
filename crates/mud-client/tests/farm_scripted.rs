@@ -186,8 +186,19 @@ async fn scripted_board(
     (addr, received)
 }
 
+/// The shared session, with deposits off. A run with deposits on
+/// reads the purse once before its first leg, and a script that does
+/// not answer that `i` costs the run the whole ask deadline. Only the
+/// tests that bank turn deposits on, and they answer it.
 async fn session_for(addr: std::net::SocketAddr) -> Session {
-    session_with_bank(addr, Default::default()).await
+    session_with_bank(
+        addr,
+        mud_client::bank::BankConfig {
+            auto_deposit: false,
+            ..Default::default()
+        },
+    )
+    .await
 }
 
 /// A session whose profile carries a chosen `[bank]` table, for the
@@ -341,14 +352,6 @@ async fn a_rest_contested_by_an_arrival_defends_instead_of_dozing() {
         (
             "look",
             format!("\r\nlook{}", room_block_hp("Guard Post", None, "north", 20)),
-        ),
-        // The gate seeds itself from a fresh `i` before the first
-        // leg. The startup probe sends `inventory`, which the contents
-        // tracker never sees, so the run reads the purse itself.
-        (
-            "i",
-            "\r\ni\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=20/MA=0]:"
-                .into(),
         ),
         (
             "rest",
@@ -1207,14 +1210,6 @@ async fn a_roam_never_steps_into_a_walled_room() {
             "look",
             format!("\r\nlook{}", room_block("Guard Post", None, "north east")),
         ),
-        // The gate seeds itself from a fresh `i` before the first
-        // leg. The startup probe sends `inventory`, which the contents
-        // tracker never sees, so the run reads the purse itself.
-        (
-            "i",
-            "\r\ni\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
-                .into(),
-        ),
         // No `look` per stop: the step that lands on a room is answered
         // with that room's block, and the stop opens from it. A roam
         // spends one command per room worked, which is the whole point
@@ -1355,14 +1350,6 @@ async fn a_roam_drops_a_room_whose_lever_it_cannot_reach() {
         (
             "look",
             format!("\r\nlook{}", room_block("Guard Post", None, "east")),
-        ),
-        // The gate seeds itself from a fresh `i` before the first
-        // leg. The startup probe sends `inventory`, which the contents
-        // tracker never sees, so the run reads the purse itself.
-        (
-            "i",
-            "\r\ni\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
-                .into(),
         ),
         // The vault's wall, refused the way a concealed exit is. The
         // board never opens it, because the lever is never pulled.
@@ -2194,7 +2181,7 @@ async fn a_refused_deposit_switches_deposits_off_for_the_run() {
         ("i", carrying_1200.into()),
     ])
     .await;
-    let session = session_for(addr).await;
+    let session = session_with_bank(addr, mud_client::bank::BankConfig::default()).await;
     mud_client::farm::probe_sheet(&session, None).await;
     session.set_content(Arc::new(content_with_bank()));
 
@@ -2544,7 +2531,7 @@ async fn a_roam_leaves_its_fence_to_bank_and_walks_back() {
         ("s", format!("\r\ns{}", room_block("Guard Post", None, "north"))),
     ])
     .await;
-    let session = session_for(addr).await;
+    let session = session_with_bank(addr, mud_client::bank::BankConfig::default()).await;
     mud_client::farm::probe_sheet(&session, None).await;
     session.set_content(Arc::new(content_with_bank()));
 
