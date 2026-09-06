@@ -385,6 +385,10 @@ pub(crate) async fn errand(
             LegEnd::TimeUp => return Ok(ErrandEnd::TimeUp),
             LegEnd::TooHurt => return Ok(ErrandEnd::TooHurt),
         }
+        // `travel` published its own phase for the walk. The errand is
+        // still banking, and the reads and the deposit below are the
+        // part an operator most wants named.
+        crate::farm::set_phase(phase, Phase::Banking { at: to });
     }
     let purse = read_inventory(session).await.coins().purse();
     let farthings = purse.farthings().saturating_sub(bank.keep().farthings());
