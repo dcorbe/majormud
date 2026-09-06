@@ -437,8 +437,11 @@ One deliberate difference from `/farm`, because this answers a
 keystroke rather than running unattended:
 
 - **No door bashing.** `open` is still tried and still free, so ordinary
-  closed doors are no obstacle; a *locked* one fails loudly instead of
-  grinding sixty failed bashes. Type `bash <dir>` yourself.
+  closed doors are no obstacle. A lock the character can pick is picked.
+  A lock the character cannot pick is a wall for routing when bashing is
+  off, so `/go` goes around it and says `no route` when there is no way
+  around. That is the trade: the walk never grinds bashes, and a door it
+  cannot open is not named. Bash it by hand and `/go` again.
 
 The walk rests to the bot's mark before its first step, as a farm does.
 Set `rest_until_percent = 0` for the old instant start.
@@ -636,8 +639,8 @@ Both direction forms work (`open n` and `open north`, verified live).
 ### Locks
 
 Every door and gate carries a lock state and a pick modifier in the room
-record, and the graph reads both. 416 of the 449 shipped type 7 doors
-are locked in the data. The pick roll is `theft.md` §8.2: the skill
+record, and the graph reads both. Most shipped doors are locked in the
+data. The pick roll is `theft.md` §8.2: the skill
 must be at least 1 and `genrdn(0,100) < modifier + Picklocks`. So a lock
 is pickable at all only when `Picklocks >= 1` and `modifier + Picklocks
 > 0`. Below that line the pick fails every time, and the walk never
@@ -649,7 +652,8 @@ searchable hidden exit. A lock it cannot pick costs the door when
 `bash_doors` is on, since force is a separate roll, and is a wall when
 it is off. The lock state is the boot state: a lock with a positive
 modifier never re-locks once picked, so a door the data calls locked can
-stand open all day. The walk tries `open` first regardless.
+stand open all day. A lock with a positive modifier is priced as an
+ordinary door for that reason. The walk tries `open` first regardless.
 
 ## Keys and item gates
 
@@ -670,9 +674,9 @@ whether or not bashing is on. A key the board does not accept at a door
 is answered with some other line, and the walk then treats the lock as
 the story again.
 
-A type 3 exit is passable only while carrying an item. 173 ship, 7 of
-them wanting nothing. Routing checks the pack and the walk takes it as a
-plain step. Without the item it is a wall.
+A type 3 exit is passable only while carrying an item. A few of them
+want nothing. Routing checks the pack and the walk takes it as a plain
+step. Without the item it is a wall.
 
 The bot picks up any key it sees on the floor that the ring lacks,
 `[bot].take_keys`, on by default.

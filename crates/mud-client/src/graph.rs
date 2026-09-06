@@ -56,8 +56,8 @@ pub enum ExitRequirement {
     /// `use <key> <direction>` with the key on the ring and picks
     /// without it.
     KeyDoor { key: ItemId, pick: i32 },
-    /// Passable only while carrying `item`, `para1`. Type 3, 173 of
-    /// them. Walked as a plain step, routing does the checking.
+    /// Passable only while carrying `item`, `para1`. Type 3. Walked as
+    /// a plain step, routing does the checking.
     ItemGate { item: ItemId },
     /// Concealed, and a search can reveal it. Type 6, unless a button
     /// or lever targets it, in which case it is
@@ -124,7 +124,7 @@ impl ExitRequirement {
                 // No key exists for it, so the lock is all there is.
                 None => ExitRequirement::Door { locked: true, pick: modifier(para3) },
             },
-            // 7 shipped gates want item 0, which is no item at all.
+            // A few shipped gates want item 0, which is no item at all.
             3 => match item(para1) {
                 Some(item) => ExitRequirement::ItemGate { item },
                 None => ExitRequirement::None,

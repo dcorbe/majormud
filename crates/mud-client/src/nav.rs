@@ -798,13 +798,13 @@ impl Navigator {
     /// Is picking this lock worth attempting right now?
     ///
     /// Two independent vetoes, either one enough to refuse: the
-    /// formula may say the character cannot pick this modifier at all
-    /// (`capabilities.picklocks`, read off the `stat` sheet, see
+    /// formula may say the character cannot pick this modifier at all,
+    /// or a fence may forbid it regardless of skill. The formula weighs
+    /// `capabilities.picklocks`, read off the `stat` sheet, see
     /// [`crate::session::Session::stats`], against the lock's own
-    /// modifier), or a fence may forbid it regardless of skill (see
-    /// [`Navigator::fenced`]). A character the formula allows still
-    /// just fails the roll sometimes, that is the board's own dice, not
-    /// this gate.
+    /// modifier. The fence is [`Navigator::fenced`]. A character the
+    /// formula allows still just fails the roll sometimes, that is the
+    /// board's own dice, not this gate.
     fn can_pick(&self, modifier: i32) -> bool {
         crate::graph::pickable(modifier, self.capabilities.picklocks) && !self.picking_fenced_off
     }
