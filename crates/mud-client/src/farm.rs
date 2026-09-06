@@ -1816,9 +1816,11 @@ async fn farm_loop(
     // and may be a room away. Computed ONCE — the fence is what defines
     // the region, and re-deriving it from a moving position would let a
     // one-way exit quietly enlarge it mid-run. Flooded with the
-    // character's own capabilities, the same ones the fenced navigator
-    // routes with, so the region and the walk agree about which
-    // puzzles are open to it.
+    // character's own capabilities, read here as their own snapshot.
+    // The navigator froze its copy at construction and the rotation
+    // takes a fresh one each pass, so the three agree about the pack,
+    // which is shared and live, and can disagree about the purse,
+    // which is a value copied at the moment it was read.
     let mut roam = plan.roam.as_ref().map(|walls| {
         let region = crate::roam::region(&graph, current, walls, &session.capabilities());
         (walls, region, crate::roam::Rotation::new())
