@@ -1068,3 +1068,4 @@ fn editor_replace_swaps_a_word_and_parks_the_cursor_after_it() {
     assert_eq!(e.line(), "/set bot.ignore_coins  5");
     assert_eq!(e.cursor(), 22);
 }
+

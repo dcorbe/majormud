@@ -327,6 +327,7 @@ fn completion_works_mid_line_and_only_on_slash_lines() {
     assert!(complete("set bot.ign", 11, VERBS).is_none());
     assert!(complete("/go bot.ign", 11, VERBS).is_none());
     assert!(complete("/set bot.rest_at_percent 6", 26, VERBS).is_none());
+    assert!(complete("/set bot.rest_at_percent bot.re", 31, VERBS).is_none());
     assert!(complete("/zz", 3, VERBS).is_none());
 }
 
@@ -336,3 +337,4 @@ fn common_prefix_of_nothing_is_empty() {
     assert_eq!(common_prefix(&[]), "");
     assert_eq!(common_prefix(&["abc".into(), "abd".into()]), "ab");
 }
+
