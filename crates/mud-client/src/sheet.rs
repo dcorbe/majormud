@@ -207,6 +207,12 @@ impl Inventory {
         inv
     }
 
+    /// The coins on the carried list, by denomination. The bank gate
+    /// reads its count and weight off this and the encumbrance pair.
+    pub fn coins(&self) -> crate::purse::Coins {
+        crate::purse::Coins::from_entries(&self.items)
+    }
+
     /// EVERY carried thing that would light a dark room, in carry
     /// order. The single-Option shape was exactly why one burn-out went
     /// dead-for-the-run while a second torch sat in the pack.

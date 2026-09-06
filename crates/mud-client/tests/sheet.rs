@@ -846,3 +846,17 @@ fn an_empty_key_ring_reads_as_no_keys() {
     let inv = Inventory::parse("You are carrying nothing.\nYou have no keys.\n");
     assert!(inv.keys.is_empty());
 }
+
+/// The inventory reply is where the gate reads its counts from.
+#[test]
+fn inventory_reads_its_coins() {
+    let inv = Inventory::parse(
+        "You are carrying 11 silver nobles, 49 copper farthings, quarterstaff\n\
+         You have no keys.\n\
+         Wealth: 159 copper farthings\n\
+         Encumbrance: 119/2880 - None [4%]\n",
+    );
+    assert_eq!(inv.coins().counts, [49, 11, 0, 0, 0]);
+    let none = Inventory::parse("You are carrying nothing.\nYou have no keys.\n");
+    assert_eq!(none.coins().count(), 0);
+}

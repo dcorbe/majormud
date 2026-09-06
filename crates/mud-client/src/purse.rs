@@ -29,6 +29,65 @@ const DENOMINATIONS: [(&str, &str, u64); 5] = [
     ("runic coin", "runic coins", RUNIC),
 ];
 
+/// The words `get` and the pickup line use, low to high, in the order
+/// [`Coins::counts`] is indexed. `DENOMINATIONS` above carries the full
+/// names the carried list prints. Same order, on purpose: one index
+/// reads both tables.
+pub const DENOMINATION_WORDS: [&str; 5] = ["copper", "silver", "gold", "platinum", "runic"];
+
+/// Coin counts per denomination, indexed as [`DENOMINATION_WORDS`].
+///
+/// The purse is one number and stays one number for routing. The bank
+/// gate needs the counts underneath it: the weight of coins is a third
+/// of a unit each, divided per denomination, and the coin gate counts
+/// coins rather than value. Reading the counts once and deriving the
+/// purse from them keeps one parser for both.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Coins {
+    pub counts: [u32; 5],
+}
+
+impl Coins {
+    /// Every coin counts one.
+    pub fn count(&self) -> u32 {
+        self.counts.iter().sum()
+    }
+
+    /// Coin weight as `mud-core`'s `carried_weight` computes it: each
+    /// denomination's count divided by 3, integer division, summed.
+    /// Per denomination, not on the total. 11 silver and 49 copper
+    /// weigh 3 + 16 = 19, not 60 / 3 = 20.
+    pub fn weight(&self) -> i64 {
+        self.counts.iter().map(|&n| i64::from(n) / 3).sum()
+    }
+
+    /// The same coins as money.
+    pub fn purse(&self) -> Purse {
+        let total = self
+            .counts
+            .iter()
+            .zip(DENOMINATIONS.iter())
+            .map(|(&n, (_, _, value))| u64::from(n) * value)
+            .sum();
+        Purse(total)
+    }
+
+    /// Read the leading coin entries of a carried list, as
+    /// [`crate::sheet::Inventory::items`] holds it: coins first, one
+    /// entry per denomination, then the gear. Stops at the first entry
+    /// that is not a coin entry, for the reason `leading_coins` gives.
+    pub fn from_entries(entries: &[String]) -> Coins {
+        let mut coins = Coins::default();
+        for entry in entries {
+            let Some((index, count)) = parse_coin_segment(entry) else {
+                break;
+            };
+            coins.counts[index] = coins.counts[index].saturating_add(count);
+        }
+        coins
+    }
+}
+
 /// Money on hand, in copper farthings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct Purse(u64);
@@ -58,18 +117,23 @@ impl Purse {
 }
 
 /// Match one comma-separated segment ("2 gold crowns") against the
-/// denomination table. `None` means this segment is not a coin entry at
-/// all — the boundary [`leading_coins`] uses to know where a mixed
-/// "You are carrying ..." list stops being money and starts being gear.
-fn parse_coin_segment(segment: &str) -> Option<u64> {
+/// denomination table, giving the denomination's index and the count.
+/// `None` means this segment is not a coin entry at all. The boundary
+/// [`leading_coins`] uses to know where a mixed "You are carrying ..."
+/// list stops being money and starts being gear.
+///
+/// The count is a `u32`, and a segment whose count does not fit fails
+/// the parse rather than saturating, the same fail-closed policy the
+/// purse arithmetic always had.
+fn parse_coin_segment(segment: &str) -> Option<(usize, u32)> {
     let segment = segment.trim();
     let (count, rest) = segment.split_once(' ')?;
-    let count: u64 = count.parse().ok()?;
+    let count: u32 = count.parse().ok()?;
     let rest = rest.trim();
-    let (_, _, value) = DENOMINATIONS
+    let index = DENOMINATIONS
         .iter()
-        .find(|(one, many, _)| rest == *one || rest == *many)?;
-    count.checked_mul(*value)
+        .position(|(one, many, _)| rest == *one || rest == *many)?;
+    Some((index, count))
 }
 
 /// Read a coin listing into a purse, or `None` if the line is not one.
@@ -80,23 +144,23 @@ fn parse_coin_segment(segment: &str) -> Option<u64> {
 ///
 /// All-or-nothing: every comma-separated segment must be a coin entry, or
 /// the whole line is rejected. This is the segment-level primitive with
-/// its own tests and its own job — a standalone coin line, such as the
-/// wording `bot.rs` sweeps off the floor. It deliberately does NOT know
-/// about `show_inventory`'s "You are carrying " wrapper or about coins
-/// sharing a line with items; that is [`leading_coins`]'s job, for
+/// its own tests and its own job. It deliberately does NOT know about
+/// `show_inventory`'s "You are carrying " wrapper or about coins sharing
+/// a line with items. That is [`leading_coins`]'s job, for
 /// [`PurseMeter`] alone.
 pub fn parse_coin_line(line: &str) -> Option<Purse> {
-    let mut total: u64 = 0;
+    let mut coins = Coins::default();
     let mut matched = false;
     for part in line.split(',') {
         let part = part.trim();
         if part.is_empty() {
             continue;
         }
-        total = total.checked_add(parse_coin_segment(part)?)?;
+        let (index, count) = parse_coin_segment(part)?;
+        coins.counts[index] = coins.counts[index].checked_add(count)?;
         matched = true;
     }
-    matched.then_some(Purse(total))
+    matched.then(|| coins.purse())
 }
 
 /// The literal wrapper `mud-core`'s `show_inventory` puts around the
@@ -145,18 +209,18 @@ const CARRYING_PREFIX: &str = "You are carrying ";
 /// by two callers should not disagree about what "too much money" means,
 /// and failing closed is the smaller surprise given the primitive
 /// already does.
-fn leading_coins(body: &str) -> Option<Purse> {
-    let mut total: u64 = 0;
+fn leading_coins(body: &str) -> Option<Coins> {
+    let mut coins = Coins::default();
     let mut matched = false;
     for part in body.split(',') {
         let part = part.trim();
-        let Some(v) = parse_coin_segment(part) else {
+        let Some((index, count)) = parse_coin_segment(part) else {
             break;
         };
-        total = total.checked_add(v)?;
+        coins.counts[index] = coins.counts[index].checked_add(count)?;
         matched = true;
     }
-    matched.then_some(Purse(total))
+    matched.then_some(coins)
 }
 
 /// The carried balance, fed from the board's own inventory reply.
@@ -267,7 +331,7 @@ impl PurseMeter {
         }
         self.expecting = false;
         let body = line.strip_prefix(CARRYING_PREFIX).unwrap_or(line);
-        self.current = leading_coins(body).unwrap_or(Purse::ZERO);
+        self.current = leading_coins(body).map_or(Purse::ZERO, |c| c.purse());
         true
     }
 

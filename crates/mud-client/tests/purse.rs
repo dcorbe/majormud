@@ -227,3 +227,52 @@ fn an_interloper_between_the_echo_and_the_reply_is_not_consumed() {
     assert_eq!(m.current().farthings(), 208, "the real reply must still be read");
     assert!(m.settled());
 }
+
+use mud_client::purse::{Coins, DENOMINATION_WORDS};
+
+/// The words `get` takes, low to high, and the order `Coins::counts`
+/// is indexed in.
+#[test]
+fn the_denomination_words_are_the_get_vocabulary() {
+    assert_eq!(
+        DENOMINATION_WORDS,
+        ["copper", "silver", "gold", "platinum", "runic"]
+    );
+}
+
+/// The carried list starts with the coins, one entry per denomination,
+/// high to low, and the gear follows. Only the leading coin entries are
+/// money.
+#[test]
+fn coins_are_read_off_the_leading_entries() {
+    let entries = vec![
+        "11 silver nobles".to_string(),
+        "49 copper farthings".to_string(),
+        "quarterstaff".to_string(),
+        "1 gold crown".to_string(),
+    ];
+    let coins = Coins::from_entries(&entries);
+    assert_eq!(coins.counts, [49, 11, 0, 0, 0]);
+    assert_eq!(coins.count(), 60);
+    assert_eq!(coins.purse().farthings(), 159, "the oracle_bank Wealth line");
+}
+
+/// Coins weigh a third of a unit each, and the division is per
+/// denomination, as `mud-core`'s `carried_weight` does it: 11 silver
+/// and 49 copper weigh 3 + 16, not 60 / 3.
+#[test]
+fn coin_weight_divides_per_denomination() {
+    let coins = Coins {
+        counts: [49, 11, 0, 0, 0],
+    };
+    assert_eq!(coins.weight(), 19);
+    assert_eq!(Coins::default().weight(), 0);
+    assert_eq!(Coins::default().count(), 0);
+}
+
+#[test]
+fn an_items_only_carry_has_no_coins() {
+    let entries = vec!["quarterstaff".to_string(), "torch".to_string()];
+    assert_eq!(Coins::from_entries(&entries), Coins::default());
+    assert_eq!(Coins::from_entries(&[]), Coins::default());
+}
