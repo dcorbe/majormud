@@ -135,11 +135,11 @@ The caller sends. The handler is then a pure function of the keystroke and
 the editor, which is what lets the lobby and play share it.
 `KeyOutcome::Note(text)` is added for completion output. `Refuse` stays.
 
-The per-connection state in play, the assist, the job, the room fix, the
-experience meter and the locator, becomes one struct built on each
-`/connect`. None of it survives a disconnect. The room database and graph
-are loaded through a cache keyed by path, so a later window design can
-share one copy between sessions.
+The per-connection state in play stays local to `play`, which is entered
+once per connection, so it is rebuilt on every `/connect` as it stands.
+Turning it into a struct is the windows design's first task, where the
+window task needs it. The room database and graph are loaded through a
+cache keyed by path, so that design can share one copy between sessions.
 
 ## Tab completion
 
@@ -184,3 +184,4 @@ module. The editor gains one method to replace the current word.
 - Completion for file paths, loop names or values.
 - Trimming the session transcript, which grows for the life of a session.
   A bugfix of its own.
+

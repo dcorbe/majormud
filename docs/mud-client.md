@@ -4,7 +4,7 @@ The automated MajorMUD client. One engine, four uses:
 
 | Command | What it does |
 |---|---|
-| `mmc play --profile P` | Interactive terminal session with a status bar and bot toggles |
+| `mmc play [--profile P]` | Interactive terminal session. Without a profile, a lobby: `/connect host[:port]`, `/set`, then `/save <file>`. |
 | `mmc run SCRIPT --profile P` | Headless Lua-scripted run (oracle captures, acceptance tests) |
 | `mmc path FROM TO` | Print a route between two rooms, e.g. `mmc path 1/2146 1/2156` |
 | `mmc farm --profile P` | Walk a patrol circuit, farming each stop |
@@ -555,6 +555,64 @@ single room is allowed — that is a vigil.
 `mmc map` can mark walls but cannot roam: there is no connection to roam
 with, so it says so rather than discarding the marking silently.
 
+## Live settings
+
+Every profile key can be read and changed from inside the client, the way
+irssi does it. The profile file is the source of truth: `/set` edits the
+document, and `/save` writes it back with your comments and key order
+intact.
+
+| Command | Effect |
+| --- | --- |
+| `/set` | List every key with its value. The password shows as stars. |
+| `/set <pattern>` | List the keys a glob matches. `*` matches anything and a trailing `*` is implied: `/set bot`, `/set bot.rest*`, `/set *heal*`. |
+| `/set <key> <value>` | Change a key. The value is TOML: `60`, `true`, `["copper", "silver"]`. A bare word is a string, so `/set bot.rest_command rest` works. |
+| `/unset <key>` | Remove a key so its default applies. The way back to none for `bank.at`, `farm.finish_at`, `farm.depart_at_percent` and `pace_ms`. |
+| `/save [file]` | Write the settings. Started with `--profile`, no path is needed. Started bare, the first `/save` names the file and later ones remember it. |
+| `/load <file>` | Replace the settings from a file. The connection stays open. |
+
+Tab completes a slash verb or, after `/set` and `/unset`, a key:
+`/set bot.ignore_c<Tab>` gives `/set bot.ignore_coins`. When several keys
+match, Tab grows the word to what they share, and a second Tab lists
+them: `/set bot.ign<Tab>` becomes `/set bot.ignore` and the next Tab
+prints `bot.ignore` and `bot.ignore_coins`.
+
+When a change takes effect:
+
+- A `bot.*` key rebuilds the assist on the spot when it is on.
+- Everything a job reads, `[farm]`, `[bank]`, `pace_ms`, applies at the
+  next `/farm`, `/go` or `/bank`. A running job keeps what it started
+  with.
+- Connection keys apply at the next `/connect`.
+
+A refused value, a wrong type or a value the validator rejects, changes
+nothing and says why. `/quit` with unsaved settings refuses once and
+exits on the second `/quit`. Ctrl-Q exits without asking.
+
+A profile with no `[bot]` table gives the assist attack and loot on. The
+first `/set bot.anything` creates the table, and every other bot key then
+takes its struct default, which is off for both. `/set bot` shows the
+effective values either way.
+
+## The lobby
+
+`mmc play` with no `--profile` starts in the lobby: the input line with no
+connection. It takes the settings commands, `/connect`, `/help` and
+`/quit`. `/connect host[:port]` sets `host` and `port` and connects, port
+23 by default, so a `/save <file>` afterwards keeps them. Started with a
+profile whose host is set, the client connects at once.
+
+Whenever the line closes, by the board or by `/disconnect`, the client
+returns to the lobby with the settings intact. `/connect` with no
+argument dials the current host and port.
+
+Interactive play never logs in for you: you type the username and
+password at the board's prompt. The `username` key still matters, because
+the runner matches your own death line against it, so `/farm`, `/go`,
+`/bank`, `/where` and `/bot` refuse to start while it is empty and say
+which key to set. A profile whose `assist_play` is on gets the same
+refusal at connect, and the assist stays off.
+
 ## The status bar
 
 One renderer for both commands, so a session looks the same whichever
@@ -872,3 +930,4 @@ while the feature does nothing.
 The corpus goldens count files in `re/oracle/`, which the **server** track
 also writes into during oracle runs. They will fail spuriously while
 another session is mid-capture.
+
