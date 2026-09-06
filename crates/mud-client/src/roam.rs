@@ -3,10 +3,11 @@
 //!
 //! A [`Loop`](crate::loops::Loop) says where to go, in order. This says
 //! where NOT to go, and the region falls out of that: everything the
-//! character can reach from where it stands without crossing a wall. The
-//! difference matters for the shape of an area — a loop of an irregular
-//! region needs a stop per room and an order chosen by hand, while two
-//! wall markers can box off a corridor and cost nothing more.
+//! character can reach from where it stands without crossing a wall or
+//! meeting a puzzle exit this character's own capabilities cannot open.
+//! The difference matters for the shape of an area — a loop of an
+//! irregular region needs a stop per room and an order chosen by hand,
+//! while two wall markers can box off a corridor and cost nothing more.
 //!
 //! **Nothing here persists.** A roam is a once-off: the walls live in the
 //! map view, are handed to the runner when the roam starts, and die with

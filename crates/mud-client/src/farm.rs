@@ -245,15 +245,14 @@ pub struct FarmPlan {
 
 impl FarmPlan {
     /// A roam of the region reachable from `start` without crossing a
-    /// wall.
+    /// wall or a puzzle exit this character cannot open.
     ///
     /// Set-shaped where [`FarmPlan::build`] is pairwise: there is no leg
     /// list to check, so what is checked instead is that the character
-    /// is not standing on its own fence, and that the fence leaves it
-    /// somewhere to be. A region always contains its start room, so
-    /// there is no empty region to refuse. The region itself is
-    /// flooded by the run, from where the character actually stands
-    /// and with what it actually carries.
+    /// is not standing on its own fence. A region always contains its
+    /// start room, so there is no empty region to refuse. The region
+    /// itself is flooded by the run, from where the character actually
+    /// stands and with what it actually carries.
     pub fn roaming(start: RoomId, walls: crate::roam::Walls, graph: &RoomGraph) -> Result<FarmPlan, String> {
         if graph.room(start).is_none() {
             return Err(format!("{}/{} is not in the graph", start.map, start.room));
