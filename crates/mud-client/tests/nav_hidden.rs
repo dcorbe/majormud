@@ -124,14 +124,28 @@ fn graph_with_exit(exit_type: i64) -> Arc<RoomGraph> {
     Arc::new(RoomGraph::from_rooms(vec![(HERE, here), (THERE, there)]))
 }
 
-/// The alleyway fixture, but the hidden exit is concealed by a puzzle
-/// bit-word rather than by a search roll — 17/3042's north passage.
+/// The alleyway fixture, but the exit is concealed by a puzzle word
+/// whose one action needs an item this walker does not carry. Routing
+/// refuses the edge outright, so the walk never reaches the wall.
 fn graph_with_puzzle_exit() -> Arc<RoomGraph> {
+    use mud_client::puzzle::{Puzzle, PuzzleAction};
+    use mud_core::content::ItemId;
+
     let g = graph_with_exit(6);
     let mut rooms: Vec<(RoomId, GraphRoom)> = g.iter().map(|(id, r)| (id, r.clone())).collect();
-    for (_, room) in rooms.iter_mut() {
+    for (id, room) in rooms.iter_mut() {
         for edge in room.exits.iter_mut().flatten() {
-            edge.requirement = ExitRequirement::Hidden { searchable: false };
+            edge.requirement = ExitRequirement::Puzzle(Puzzle {
+                word: 16,
+                actions: vec![PuzzleAction {
+                    room: *id,
+                    number: 1,
+                    phrases: vec!["push button".into()],
+                    item: Some(ItemId(500)),
+                    reply: None,
+                    hops: Some(0),
+                }],
+            });
         }
     }
     Arc::new(RoomGraph::from_rooms(rooms))

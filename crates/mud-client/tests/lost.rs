@@ -278,7 +278,7 @@ fn a_revealed_hidden_exit_still_matches_its_room() {
         dest: elsewhere,
         exit_type: 6,
         command: None,
-        requirement: ExitRequirement::Hidden { searchable: false },
+        requirement: ExitRequirement::Hidden,
     });
     let g = RoomGraph::from_rooms(vec![
         (hall, r),

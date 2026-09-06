@@ -44,10 +44,10 @@ pub enum ExitRequirement {
     None,
     /// A door or gate: `open`, then possibly a bash chain. Types 2, 7, 0xb.
     Door,
-    /// Concealed. `searchable` is true for the ordinary SEARCH-revealed
-    /// exit and FALSE when the concealment is a puzzle bit-word that no
-    /// search roll can clear -- see [`ExitRequirement::Puzzle`]. Type 6.
-    Hidden { searchable: bool },
+    /// Concealed, and a search can reveal it. Type 6, unless a button
+    /// or lever targets it, in which case it is
+    /// [`ExitRequirement::Puzzle`] and no search roll ever clears it.
+    Hidden,
     /// A trap on the exit. The walk has no DISARM. Types 9, 0x18.
     Trap,
     /// Not walked but spoken: the phrase is on [`ExitEdge::command`].
@@ -70,23 +70,13 @@ pub enum ExitRequirement {
     Gate,
     /// Opens and shuts on a timer of its own. Type 0x10, 2 of them.
     Timed,
-    /// Concealed by a bit-word that one or more `remoteaction` scripts
-    /// clear, each recorded in `actions`. Computed by the load-time
-    /// cmdtext pass, which cross-references every room's `remoteaction`
-    /// directives against their target exits (see
-    /// `RoomGraph::remote_actions_from_content`).
-    ///
-    /// The pass overwrites whatever `from_exit_type` classified the
-    /// target exit as. On the shipped world that replaces `Door` on 10
-    /// exits (lever-opened gates) and downgrades `Hidden { searchable:
-    /// true }` to `Hidden { searchable: false }` on 15 more -- but
-    /// nothing about the target is lost: `ExitEdge::exit_type` still
-    /// holds the raw type alongside `requirement`. A caller that needs
-    /// to know a puzzle-gated exit is ALSO a door -- to route a walker
-    /// past the gate by picking or bashing it instead of solving the
-    /// puzzle -- recovers that with
-    /// `nav::is_door(edge.exit_type) && matches!(edge.requirement, Puzzle { .. })`.
-    Puzzle { actions: Vec<PuzzleAction> },
+    /// Opened by a button or a lever: a type 12 slot or a cmdtext
+    /// `remoteaction` line targets this exit. The slot itself is never
+    /// an edge. The exit is a hidden passage, type 6, or a gate, type 7
+    /// or 0xb, and [`ExitEdge::exit_type`] still says which, so the walk
+    /// knows a gate a lever unlocked still wants an `open`. The plan and
+    /// the price live in [`crate::puzzle::Puzzle`].
+    Puzzle(crate::puzzle::Puzzle),
 }
 
 impl Default for ExitRequirement {
@@ -109,8 +99,8 @@ impl ExitRequirement {
     pub fn from_exit_type(exit_type: i64, para1: i64) -> ExitRequirement {
         match exit_type {
             2 | 7 | 0xb => ExitRequirement::Door,
-            // Searchable until the cmdtext pass proves otherwise.
-            6 => ExitRequirement::Hidden { searchable: true },
+            // Searchable until a slot or a script targets it.
+            6 => ExitRequirement::Hidden,
             9 | 0x18 => ExitRequirement::Trap,
             COMMAND_EXIT => ExitRequirement::Command,
             4 => ExitRequirement::Toll {
@@ -121,16 +111,6 @@ impl ExitRequirement {
             _ => ExitRequirement::None,
         }
     }
-}
-
-/// One action that clears one bit of a puzzle exit's concealment word.
-/// Populated by the cmdtext pass in the next task.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PuzzleAction {
-    /// The room the phrase must be spoken in.
-    pub room: RoomId,
-    /// The phrases that satisfy this step; any one of them.
-    pub commands: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -349,9 +329,8 @@ pub enum Cost {
 /// Still a COST and not a prohibition wherever a cost can express the
 /// truth — the argument in `exit_cost`'s own comment stands: refusing a
 /// type answers "no route" to rooms that are genuinely reachable.
-/// `Impassable` is reserved for edges no amount of walking opens:
-/// a toll beyond the purse, and a passage concealed by a puzzle
-/// bit-word that SEARCH cannot clear.
+/// `Impassable` is reserved for edges no amount of walking opens: a toll
+/// beyond the purse, and a lever exit this walker has no plan for.
 ///
 /// `room` and `dir` name the exact edge being costed — needed only to
 /// consult [`Capabilities::is_known_free`], since a per-edge learned
@@ -373,10 +352,20 @@ pub fn exit_cost_for(
                 Cost::Impassable
             }
         }
-        // No search roll can clear a bit-word. Pricing this high rather
-        // than refusing it would still route through it whenever the
+        // A lever exit costs what its plan costs. No plan is a wall:
+        // pricing it high would still route through it whenever the
         // detour was longer, and then stall at the wall.
-        ExitRequirement::Hidden { searchable: false } => Cost::Impassable,
+        ExitRequirement::Puzzle(puzzle) => {
+            // The exit itself once open: a gate still wants an open, a
+            // revealed passage is a step. The search price never
+            // applies, no roll is spent.
+            let base = if crate::nav::is_door(exit_type) {
+                exit_cost(exit_type)
+            } else {
+                1
+            };
+            puzzle.cost(base, caps)
+        }
         // Everything else is priced exactly as before, by type.
         _ => Cost::Steps(exit_cost(exit_type)),
     }
@@ -550,19 +539,31 @@ impl RoomGraph {
             }
             rooms.insert(*id, graph_room);
         }
-        // Second pass, same reasoning as `load`'s: the target exit may be
-        // read before or after the actor room that opens it.
+        // Second pass, because the target exit may be read before or
+        // after the room that opens it.
         for ((target, exit), actions) in remote_actions {
-            let Some(room) = rooms.get_mut(&target) else {
+            let word = content
+                .rooms
+                .get(&target)
+                .and_then(|r| r.exits[exit].as_ref())
+                .map(|e| e.param)
+                .unwrap_or(0);
+            let Some(edge) = rooms
+                .get_mut(&target)
+                .and_then(|r| r.exits[exit].as_mut())
+            else {
                 continue;
             };
-            let Some(edge) = room.exits[exit].as_mut() else {
+            // Only a hidden exit or a gate answers a lever. mud-core's
+            // remote action dispatch does nothing for any other type,
+            // so a slot aimed at a plain exit changes nothing about it.
+            if !matches!(edge.exit_type, 6 | 7 | 0xb) {
                 continue;
-            };
-            edge.requirement = match &edge.requirement {
-                ExitRequirement::Hidden { .. } => ExitRequirement::Hidden { searchable: false },
-                _ => ExitRequirement::Puzzle { actions },
-            };
+            }
+            edge.requirement = ExitRequirement::Puzzle(crate::puzzle::Puzzle {
+                word: u32::try_from(word).unwrap_or(0),
+                actions,
+            });
         }
         RoomGraph { rooms }
     }
@@ -588,8 +589,8 @@ impl RoomGraph {
     /// `content.textblocks` instead of the `room JOIN textblock` query.
     fn remote_actions_from_content(
         content: &Content,
-    ) -> BTreeMap<(RoomId, usize), Vec<PuzzleAction>> {
-        let mut out: BTreeMap<(RoomId, usize), Vec<PuzzleAction>> = BTreeMap::new();
+    ) -> BTreeMap<(RoomId, usize), Vec<crate::puzzle::PuzzleAction>> {
+        let mut out: BTreeMap<(RoomId, usize), Vec<crate::puzzle::PuzzleAction>> = BTreeMap::new();
         for (&actor, room) in &content.rooms {
             let Some(block) = room.command_block else {
                 continue;
@@ -619,14 +620,15 @@ impl RoomGraph {
                     }
                     let nums: Vec<i64> = w.filter_map(|n| n.parse().ok()).collect();
                     // remoteaction <room> <msg> <action> <exit>
-                    let [target, _msg, _action, exit] = nums[..] else {
+                    let [target, _msg, action, exit] = nums[..] else {
                         continue;
                     };
-                    let (Ok(target), Ok(exit)) = (u16::try_from(target), usize::try_from(exit))
+                    let (Ok(target), Ok(exit), Ok(number)) =
+                        (u16::try_from(target), usize::try_from(exit), u8::try_from(action))
                     else {
                         continue;
                     };
-                    if exit > 9 {
+                    if exit > 9 || number > 10 {
                         continue;
                     }
                     let key = (
@@ -637,11 +639,18 @@ impl RoomGraph {
                         exit,
                     );
                     let entry = out.entry(key).or_default();
-                    match entry.iter_mut().find(|a| a.room == actor) {
-                        Some(a) => a.commands.push(phrase.to_string()),
-                        None => entry.push(PuzzleAction {
+                    match entry
+                        .iter_mut()
+                        .find(|a| a.room == actor && a.number == number)
+                    {
+                        Some(a) => a.phrases.push(phrase.to_string()),
+                        None => entry.push(crate::puzzle::PuzzleAction {
                             room: actor,
-                            commands: vec![phrase.to_string()],
+                            number,
+                            phrases: vec![phrase.to_string()],
+                            item: None,
+                            reply: None,
+                            hops: None,
                         }),
                     }
                 }

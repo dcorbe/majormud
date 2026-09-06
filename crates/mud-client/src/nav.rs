@@ -896,18 +896,13 @@ impl Navigator {
                     .room(current)
                     .and_then(|r| r.exits[step as usize].as_ref());
                 let exit_type = edge.map(|e| e.exit_type).unwrap_or(0);
-                // A type-6 exit concealed by a puzzle bit-word answers
+                // A type 6 exit concealed by a puzzle word answers
                 // SEARCH exactly as a searchable one does and can never
                 // be revealed by it, so the graph has to say which this
                 // is. Searching a puzzle exit is unbounded: the roll can
                 // never succeed.
                 let searchable_hidden = edge
-                    .map(|e| {
-                        matches!(
-                            e.requirement,
-                            crate::graph::ExitRequirement::Hidden { searchable: true }
-                        )
-                    })
+                    .map(|e| matches!(e.requirement, crate::graph::ExitRequirement::Hidden))
                     .unwrap_or(false);
                 // A command exit is not walked, it is spoken: the
                 // direction word does nothing at all at the Newhaven

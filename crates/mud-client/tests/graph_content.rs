@@ -90,11 +90,12 @@ fn a_remoteaction_script_conceals_the_named_exit() {
         name: "Vault".into(),
         ..Default::default()
     };
-    // A door exit (type 2) so the puzzle pass overwrites Door, not
-    // Hidden -- exercising the "still a door" branch.
+    // A gate exit, type 7, so the puzzle pass overwrites Door. A type 2
+    // key door would be left alone: mud-core's remote action dispatch
+    // only answers for types 6, 7 and 0xb.
     target.exits[Direction::North as usize] = Some(Exit {
         dest: THERE,
-        exit_type: 2,
+        exit_type: 7,
         ..Default::default()
     });
     content.add_room(target);
@@ -118,13 +119,13 @@ fn a_remoteaction_script_conceals_the_named_exit() {
     let edge = graph.room(HERE).unwrap().exits[Direction::North as usize]
         .as_ref()
         .unwrap();
-    assert!(matches!(edge.requirement, ExitRequirement::Puzzle { .. }));
-    let ExitRequirement::Puzzle { actions } = &edge.requirement else {
-        unreachable!()
+    let ExitRequirement::Puzzle(puzzle) = &edge.requirement else {
+        panic!("expected a puzzle, got {:?}", edge.requirement);
     };
-    assert_eq!(actions.len(), 1);
-    assert_eq!(actions[0].room, lever_room);
-    assert_eq!(actions[0].commands, vec!["pull lever".to_string()]);
+    assert_eq!(puzzle.actions.len(), 1);
+    assert_eq!(puzzle.actions[0].room, lever_room);
+    assert_eq!(puzzle.actions[0].number, 0);
+    assert_eq!(puzzle.actions[0].phrases, vec!["pull lever".to_string()]);
 }
 
 /// A `cmdtext` block whose body never mentions `remoteaction` (the
@@ -155,5 +156,5 @@ fn an_unrelated_cmdtext_block_leaves_exits_alone() {
     let edge = graph.room(HERE).unwrap().exits[Direction::North as usize]
         .as_ref()
         .unwrap();
-    assert_eq!(edge.requirement, ExitRequirement::Hidden { searchable: true });
+    assert_eq!(edge.requirement, ExitRequirement::Hidden);
 }

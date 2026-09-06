@@ -28,30 +28,52 @@ fn a_toll_costs_a_step_when_affordable_and_is_impassable_otherwise() {
     );
 }
 
-/// A puzzle-concealed exit is not merely expensive: no amount of walking
-/// opens it, so pricing it high would still route through it.
+/// A puzzle exit is priced by its plan: the exit itself, then a phrase
+/// and a round trip per lever. A searchable hidden exit keeps the
+/// search price. A puzzle this walker cannot solve is a wall, not a
+/// dear edge: pricing it high would still route through it whenever the
+/// detour was longer, and then stall at the wall.
 #[test]
-fn a_puzzle_concealed_exit_is_impassable_not_expensive() {
+fn a_puzzle_exit_is_priced_by_its_plan() {
+    use mud_client::puzzle::{Puzzle, PuzzleAction};
+    use mud_core::content::ItemId;
+
     let caps = Capabilities::unrestricted();
-    let edge = RoomId { map: 17, room: 3042 };
+    let edge = RoomId { map: 1, room: 506 };
+    let button = |item| Puzzle {
+        word: 16,
+        actions: vec![PuzzleAction {
+            room: edge,
+            number: 1,
+            phrases: vec!["push button".into()],
+            item,
+            reply: None,
+            hops: Some(0),
+        }],
+    };
     assert_eq!(
-        exit_cost_for(
-            &ExitRequirement::Hidden { searchable: false },
-            6,
-            edge,
-            Direction::North,
-            &caps
-        ),
-        Cost::Impassable
+        exit_cost_for(&ExitRequirement::Puzzle(button(None)), 6, edge, Direction::South, &caps),
+        Cost::Steps(2),
+        "a revealed passage is a step, plus the phrase"
+    );
+    assert_eq!(
+        exit_cost_for(&ExitRequirement::Puzzle(button(None)), 0xb, edge, Direction::South, &caps),
+        Cost::Steps(6),
+        "a lever on a gate keeps the door price underneath"
     );
     assert_eq!(
         exit_cost_for(
-            &ExitRequirement::Hidden { searchable: true },
+            &ExitRequirement::Puzzle(button(Some(ItemId(500)))),
             6,
             edge,
-            Direction::North,
+            Direction::South,
             &caps
         ),
+        Cost::Impassable,
+        "an action needing an item the pack lacks is a wall"
+    );
+    assert_eq!(
+        exit_cost_for(&ExitRequirement::Hidden, 6, edge, Direction::North, &caps),
         Cost::Steps(40),
         "a searchable hidden exit keeps its old price"
     );
