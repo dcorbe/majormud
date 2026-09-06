@@ -27,7 +27,7 @@ use std::time::Instant;
 
 use mud_core::content::{Direction, RoomId};
 
-use crate::graph::{ExitEdge, RoomGraph};
+use crate::graph::{Capabilities, ExitEdge, RoomGraph};
 
 /// Rooms the roam must never enter.
 ///
@@ -95,6 +95,13 @@ fn on_plane(plane: u16, dir: Direction, edge: &ExitEdge) -> bool {
 /// the way has to be opened, so `[farm.nav].bash_doors` still governs
 /// there and is untouched.
 ///
+/// **Buttons and levers are inside a roam.** A puzzle exit is costed,
+/// not refused: the region floods with the character's own
+/// capabilities, so a passage this character can open is in and one
+/// that wants an item the pack lacks is out. A lever room outside the
+/// fence is the one case the flood cannot see, the walk then fails the
+/// leg with a puzzle error and the rotation moves on.
+///
 /// Revisit when there is something better than force to offer a lock.
 pub fn passable(plane: u16, walls: &Walls) -> impl Fn(Direction, &ExitEdge) -> bool + '_ {
     move |dir, edge| {
@@ -104,19 +111,21 @@ pub fn passable(plane: u16, walls: &Walls) -> impl Fn(Direction, &ExitEdge) -> b
     }
 }
 
-/// Every room the character can reach from `from` without crossing a wall
-/// or leaving the plane.
+/// Every room the character can reach from `from` without crossing a
+/// wall, leaving the plane, or meeting an exit it cannot open.
 ///
-/// Always contains `from`, so an empty answer is impossible and callers
-/// need no special case for one. A region of exactly one room IS possible
-/// — walls on every side — and is a legitimate answer meaning "you fenced
-/// yourself in", not a failure.
-pub fn region(graph: &RoomGraph, from: RoomId, walls: &Walls) -> BTreeSet<RoomId> {
+/// `caps` is the character's own: a button that wants an item the pack
+/// lacks is a wall for this character and the room behind it is not in
+/// the region. Always contains `from`, so an empty answer is impossible
+/// and callers need no special case for one. A region of exactly one
+/// room IS possible, walls on every side, and is a legitimate answer
+/// meaning "you fenced yourself in", not a failure.
+pub fn region(graph: &RoomGraph, from: RoomId, walls: &Walls, caps: &Capabilities) -> BTreeSet<RoomId> {
     if graph.room(from).is_none() {
         return BTreeSet::new();
     }
     let allow = passable(from.map, walls);
-    graph.distances_within(from, &allow).into_keys().collect()
+    graph.distances_within_for(from, &allow, caps).into_keys().collect()
 }
 
 /// Which room to work next.
@@ -146,21 +155,25 @@ impl Rotation {
         self.seen.insert(id, now);
     }
 
-    /// Where to go next from `from`, within `region`.
+    /// Where to go next from `from`, within `region`, for a walker with
+    /// `caps`. Same capabilities as the flood that built the region, or
+    /// a room the flood counted could be one this walker cannot reach.
     ///
     /// `None` means there is nowhere else to be: the region is the one
     /// room the character already stands in. The caller should keep
-    /// working that room rather than treat it as an ending — a fenced-in
-    /// single room is a vigil, which is a coherent thing to ask for.
+    /// working that room rather than treat it as an ending, since a
+    /// fenced-in single room is a vigil, which is a coherent thing to
+    /// ask for.
     pub fn next(
         &self,
         graph: &RoomGraph,
         from: RoomId,
         region: &BTreeSet<RoomId>,
         walls: &Walls,
+        caps: &Capabilities,
     ) -> Option<RoomId> {
         let allow = passable(from.map, walls);
-        let hops = graph.distances_within(from, &allow);
+        let hops = graph.distances_within_for(from, &allow, caps);
         region
             .iter()
             .copied()

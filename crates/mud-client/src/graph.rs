@@ -898,7 +898,21 @@ impl RoomGraph {
         from: RoomId,
         allow: &dyn Fn(Direction, &ExitEdge) -> bool,
     ) -> BTreeMap<RoomId, usize> {
-        self.explore(from, None, allow, &Capabilities::unrestricted())
+        self.distances_within_for(from, allow, &Capabilities::unrestricted())
+    }
+
+    /// As [`RoomGraph::distances_within`], for a walker with these
+    /// capabilities. An edge the walker cannot open is not counted, so
+    /// a room behind it is absent unless another way reaches it. A roam
+    /// floods its region with this, since a region containing a room
+    /// the walk then cannot reach would send the character at a wall.
+    pub fn distances_within_for(
+        &self,
+        from: RoomId,
+        allow: &dyn Fn(Direction, &ExitEdge) -> bool,
+        caps: &Capabilities,
+    ) -> BTreeMap<RoomId, usize> {
+        self.explore(from, None, allow, caps)
             .into_iter()
             .map(|(id, reached)| (id, reached.hops))
             .collect()

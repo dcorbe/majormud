@@ -250,9 +250,10 @@ impl FarmPlan {
     /// Set-shaped where [`FarmPlan::build`] is pairwise: there is no leg
     /// list to check, so what is checked instead is that the character
     /// is not standing on its own fence, and that the fence leaves it
-    /// somewhere to be. A region of ONE room passes — that is a vigil,
-    /// which is a coherent thing to ask for — but an empty one cannot
-    /// happen, so it is a refusal rather than a silent no-op.
+    /// somewhere to be. A region always contains its start room, so
+    /// there is no empty region to refuse. The region itself is
+    /// flooded by the run, from where the character actually stands
+    /// and with what it actually carries.
     pub fn roaming(start: RoomId, walls: crate::roam::Walls, graph: &RoomGraph) -> Result<FarmPlan, String> {
         if graph.room(start).is_none() {
             return Err(format!("{}/{} is not in the graph", start.map, start.room));
@@ -262,10 +263,6 @@ impl FarmPlan {
                 "the character is standing in {}/{}, which is walled off:                  a roam cannot start on its own fence",
                 start.map, start.room
             ));
-        }
-        let region = crate::roam::region(graph, start, &walls);
-        if region.is_empty() {
-            return Err("the fence leaves nowhere to roam".into());
         }
         Ok(FarmPlan {
             start,
@@ -1819,9 +1816,12 @@ async fn farm_loop(
     // ACTUALLY is, not from `plan.start`, which is only a localizer hint
     // and may be a room away. Computed ONCE — the fence is what defines
     // the region, and re-deriving it from a moving position would let a
-    // one-way exit quietly enlarge it mid-run.
+    // one-way exit quietly enlarge it mid-run. Flooded with the
+    // character's own capabilities, the same ones the fenced navigator
+    // routes with, so the region and the walk agree about which
+    // puzzles are open to it.
     let mut roam = plan.roam.as_ref().map(|walls| {
-        let region = crate::roam::region(&graph, current, walls);
+        let region = crate::roam::region(&graph, current, walls, &session.capabilities());
         (walls, region, crate::roam::Rotation::new())
     });
     if let Some((_, region, _)) = &roam {
@@ -1848,7 +1848,11 @@ async fn farm_loop(
             Some((walls, region, rotation)) => {
                 // `None` is a region of one: keep working the room we are
                 // already in. That is a vigil, not an ending.
-                vec![rotation.next(&graph, current, region, walls).unwrap_or(current)]
+                vec![
+                    rotation
+                        .next(&graph, current, region, walls, &session.capabilities())
+                        .unwrap_or(current),
+                ]
             }
         };
         for &stop in &lap {
