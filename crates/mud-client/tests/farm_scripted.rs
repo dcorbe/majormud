@@ -1250,8 +1250,8 @@ async fn a_roam_never_steps_into_a_walled_room() {
 
 /// A roam whose region reaches a room behind a puzzle whose lever room
 /// the roam itself walled off. The exit is priced with hops counted
-/// over the whole graph, so the flood puts the vault in the region;
-/// the fenced walk then cannot reach the lever at all. The room has to
+/// over the whole graph, so the flood puts the vault in the region.
+/// The fenced walk then cannot reach the lever at all. The room has to
 /// leave the roam, not end the run.
 #[tokio::test]
 async fn a_roam_drops_a_room_whose_lever_it_cannot_reach() {

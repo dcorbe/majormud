@@ -1915,11 +1915,14 @@ impl Navigator {
     ///
     /// `NoRoute` becomes a puzzle failure, and only that kind is
     /// rewritten. The exit was priced with hops counted over the whole
-    /// graph, so a fence the caller put on this walk can leave the
-    /// lever room unreachable while the exit it opens still has a
-    /// finite price. That is this exit being unopenable by this walk,
-    /// not the destination being unreachable, and a caller that reads
-    /// `NoRoute` as "the route was wrong" would end its run over it.
+    /// graph, so a fence the caller put on this walk can leave a room
+    /// the plan has to reach unreachable while the exit it opens still
+    /// has a finite price. That is this exit being unopenable by this
+    /// walk, not the destination being unreachable, and a caller that
+    /// reads `NoRoute` as "the route was wrong" would end its run over
+    /// it. `to` is a lever room on the way out and the exit's own room
+    /// on the way back, so the message names the room rather than the
+    /// part it plays.
     async fn walk_to(
         &self,
         session: &Session,
@@ -1941,7 +1944,10 @@ impl Navigator {
                 match err.kind {
                     NavErrorKind::NoRoute => Err(NavErrorKind::Puzzle {
                         dir: dir.to_string(),
-                        tried: format!("no route to the lever room {}/{}", to.map, to.room),
+                        tried: format!(
+                            "no route to {}/{} on the way through the plan",
+                            to.map, to.room
+                        ),
                     }),
                     kind => Err(kind),
                 }
