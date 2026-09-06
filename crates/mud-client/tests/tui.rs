@@ -1165,8 +1165,10 @@ fn other_outcomes_are_not_settings_commands() {
 fn a_profile_without_a_bot_table_gets_the_attack_and_loot_assist() {
     let cfg = assist_config_for(&Profile::default());
     assert!(cfg.auto_combat && cfg.auto_get && !cfg.auto_heal);
-    let mut with = Profile::default();
-    with.bot = Some(BotConfig { auto_heal: true, ..Default::default() });
+    let with = Profile {
+        bot: Some(BotConfig { auto_heal: true, ..Default::default() }),
+        ..Default::default()
+    };
     let cfg = assist_config_for(&with);
     assert!(!cfg.auto_combat && cfg.auto_heal);
 }
@@ -1175,8 +1177,10 @@ fn a_profile_without_a_bot_table_gets_the_attack_and_loot_assist() {
 fn jobs_need_a_username() {
     let err = needs_username(&Profile::default()).unwrap_err();
     assert!(err.contains("/set username"), "{err}");
-    let mut named = Profile::default();
-    named.username = "dan".into();
+    let named = Profile {
+        username: "dan".into(),
+        ..Default::default()
+    };
     assert!(needs_username(&named).is_ok());
 }
 

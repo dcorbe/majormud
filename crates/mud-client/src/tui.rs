@@ -185,7 +185,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     // so its latches start clean.
     let mut assist: Option<crate::bot::Bot> = None;
     let mut assist_heal_state: Option<crate::sheet::HealState> = None;
-    let mut assist_config = assist_config_for(&session.profile());
+    let assist_config = assist_config_for(&session.profile());
     // Rests the assist sends and the spells its book was last read to
     // hold. Both live beside the bot and are reset with it, because both
     // describe the bot that is running now.
@@ -1091,7 +1091,7 @@ pub fn apply_settings(outcome: &KeyOutcome, settings: &mut crate::settings::Sett
         KeyOutcome::Set { key, value } => match settings.set(key, value) {
             Ok(()) => Some(Applied {
                 note: format!(
-                    "-- {key} = {} (unsaved: /save) --",
+                    "-- {key} = {}, unsaved until /save --",
                     settings.value(key).unwrap_or_default()
                 ),
                 profile_changed: true,
@@ -1102,7 +1102,7 @@ pub fn apply_settings(outcome: &KeyOutcome, settings: &mut crate::settings::Sett
         KeyOutcome::Unset { key } => match settings.unset(key) {
             Ok(()) => Some(Applied {
                 note: format!(
-                    "-- {key} = {} (unsaved: /save) --",
+                    "-- {key} = {}, unsaved until /save --",
                     settings.value(key).unwrap_or_default()
                 ),
                 profile_changed: true,
@@ -1153,7 +1153,7 @@ pub fn assist_config_for(profile: &crate::profile::Profile) -> crate::bot::BotCo
 pub fn needs_username(profile: &crate::profile::Profile) -> Result<(), String> {
     if profile.username.is_empty() {
         return Err(
-            "username is empty: /set username <name> (the runner needs it to see your own death)"
+            "username is empty. /set username <name> so the runner can see your own death line"
                 .into(),
         );
     }
