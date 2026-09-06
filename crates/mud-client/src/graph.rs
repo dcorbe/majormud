@@ -47,8 +47,9 @@ pub enum ExitRequirement {
     /// reads. `pick` is the pick modifier, `para2`, negative on hard
     /// locks. The state is the boot state: a lock with a positive
     /// modifier never re-locks once picked, so a door the data calls
-    /// locked can stand unlocked all day. The walk tries `open` first
-    /// either way, this only prices the route.
+    /// locked can stand unlocked all day. Routing treats a lock with a
+    /// positive modifier as an ordinary door for that reason. The walk
+    /// tries `open` first either way, this only prices the route.
     Door { locked: bool, pick: i32 },
     /// A key door, type 2. Always locked. `key` is the item that opens
     /// it, `para1`, and `pick` the modifier, `para3`. The walk says
@@ -451,7 +452,14 @@ pub fn exit_cost_for(
         // A lock: picked when the formula allows, else bashed when
         // bashing is on, since force is a separate roll, else a wall.
         ExitRequirement::Door { locked: true, pick } => {
-            if pickable(*pick, caps.picklocks) {
+            // A positive modifier never re-locks once picked,
+            // mud-core's picklock_command, so the shipped locked state
+            // is stale the moment anyone has opened it and the walk
+            // finds out with a free open. A wall here refused 108 doors
+            // that are probably standing open.
+            if *pick > 0 {
+                Cost::Steps(exit_cost(exit_type))
+            } else if pickable(*pick, caps.picklocks) {
                 picked_cost(*pick, caps.picklocks)
             } else if caps.bash_doors {
                 Cost::Steps(exit_cost(exit_type))

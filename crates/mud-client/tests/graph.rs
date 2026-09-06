@@ -275,6 +275,22 @@ fn a_locked_door_is_priced_by_the_lock() {
         Cost::Steps(5),
         "a gate is priced like a door"
     );
+    let easy = ExitRequirement::Door { locked: true, pick: 30 };
+    assert_eq!(
+        exit_cost_for(&easy, 7, edge, Direction::North, &neither),
+        Cost::Steps(5),
+        "a positive modifier lock never re-locks once picked, so it is a door"
+    );
+    assert_eq!(
+        exit_cost_for(&easy, 7, edge, Direction::North, &thief),
+        Cost::Steps(5),
+        "a positive modifier lock never re-locks once picked, so it is a door"
+    );
+    assert_eq!(
+        exit_cost_for(&locked, 7, edge, Direction::North, &Capabilities::unrestricted()),
+        Cost::Steps(6),
+        "a certain pick is still one command on top of the door"
+    );
 }
 
 /// An item gate is a step with the item and a wall without it.
