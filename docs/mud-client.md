@@ -511,6 +511,13 @@ to be opened — so `[farm.nav].bash_doors` still governs there and is
 untouched. This is a roam rule, and a stopgap: it goes away when there is
 something better than force to offer a lock.
 
+**Buttons and levers are inside a roam.** The area is flooded with the
+character's own capabilities, so a passage this character can open is
+part of the area and one whose button wants an item the pack lacks is
+not. A lever room outside your walls is the one thing the flood cannot
+see: the walk to it fails as `no route`, the leg ends with a puzzle
+error, and the rotation moves on.
+
 Order is **least-recently-visited, nearest on ties**: a fresh roam sweeps
 outward rather than settling, and after that each room gets the longest
 recovery the area's size allows. Respawns are silent in this game, so
@@ -623,6 +630,43 @@ alone would mean sending `open` at exits that have none, one wasted
 command per step against flood control.
 
 Both direction forms work (`open n` and `open north`, verified live).
+
+## Buttons and levers
+
+Some passages open on a phrase. A room's type 12 exit slot is not an
+exit but a remote action: `push button` in 1/506 clears the concealment
+bit on that room's own south wall, and `pull lever` in 1/1044 and 1/1038
+together open 1/1056 north. 287 slots ship. 200 act on their own room,
+the rest on another, and 86 want an item carried, 79 of them a titanium
+fork. No search ever reveals one of these exits, which is how a roam
+came to send `search s` two hundred times at 1/506 on 2026-09-04.
+
+The graph decodes every slot at load and attaches it to the exit it
+opens. The slot itself is never walked. Routing prices the exit by its
+plan: the exit, then a phrase and a round trip per lever. An exit whose
+plan needs an item the pack lacks, or a lever room no walk reaches, is
+not priced at all, it is refused, and the router finds another way or
+says `no route`.
+
+The walk sends the direction first. If the passage is already open it
+simply walks. On *"There is no exit in that direction!"* it performs the
+plan: walk to each lever room in turn, speak the phrase, wait for the
+reply or the next prompt, and walk back. Levers pull in descending
+number order, which is the order an ordered puzzle needs and any order
+is fine for the rest. Then the direction goes out again. A wall that
+stays shut after a whole plan is tried once more, because the board
+re-hides a passage 300 seconds after the last lever and a long detour
+can lose that race, and then reported as a puzzle failure. The board
+says an unknown phrase out loud, *"You say "push button""*, and the walk
+reads that as the phrase doing nothing here and stops at once.
+
+A lever on a gate toggles its lock instead. The walk finds that out the
+ordinary way: `open n` answers *"The gate is locked."*, the lever is
+pulled, and `open n` is sent again before any pick or bash.
+
+An interrupt while the character is off pulling a lever reports the
+lever room, not the room the step set out from. The farm resumes from
+where the character actually is.
 
 ## Fighting on the way
 
