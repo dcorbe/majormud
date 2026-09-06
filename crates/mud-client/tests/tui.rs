@@ -618,6 +618,9 @@ fn a_running_farm_outranks_the_assist_in_the_bar() {
 // claim must.
 
 use mud_client::tui::slash;
+use mud_client::settings::Settings;
+use mud_client::tui::{apply_settings, assist_config_for, connect_target, needs_username};
+use mud_client::profile::Profile;
 
 #[test]
 fn go_carries_its_target_verbatim() {
@@ -1072,5 +1075,116 @@ fn editor_replace_swaps_a_word_and_parks_the_cursor_after_it() {
     e.replace(5, 12, "bot.ignore_coins ");
     assert_eq!(e.line(), "/set bot.ignore_coins  5");
     assert_eq!(e.cursor(), 22);
+}
+
+#[test]
+fn set_changes_the_profile_and_says_so_unsaved() {
+    let mut s = Settings::default();
+    let applied = apply_settings(
+        &KeyOutcome::Set { key: "bot.rest_at_percent".into(), value: "45".into() },
+        &mut s,
+    )
+    .unwrap();
+    assert!(applied.profile_changed);
+    assert!(applied.bot_changed);
+    assert!(applied.note.contains("bot.rest_at_percent = 45"), "{}", applied.note);
+    assert!(applied.note.contains("unsaved"), "{}", applied.note);
+    assert_eq!(s.profile().bot.as_ref().unwrap().rest_at_percent, 45);
+}
+
+#[test]
+fn a_refused_set_changes_nothing_and_reports() {
+    let mut s = Settings::default();
+    let applied = apply_settings(
+        &KeyOutcome::Set { key: "bot.rest_at_percent".into(), value: "soon".into() },
+        &mut s,
+    )
+    .unwrap();
+    assert!(!applied.profile_changed);
+    assert!(applied.note.contains("set:"), "{}", applied.note);
+    assert!(s.profile().bot.is_none());
+}
+
+#[test]
+fn a_bank_key_does_not_touch_the_assist() {
+    let mut s = Settings::default();
+    let applied = apply_settings(&KeyOutcome::Set { key: "bank.keep_gold".into(), value: "5".into() }, &mut s).unwrap();
+    assert!(applied.profile_changed);
+    assert!(!applied.bot_changed);
+}
+
+#[test]
+fn a_listing_is_one_row_per_key() {
+    let mut s = Settings::default();
+    let applied = apply_settings(&KeyOutcome::SetList { pattern: "bot.rest".into() }, &mut s).unwrap();
+    assert_eq!(applied.note.lines().count(), 3, "{}", applied.note);
+    assert!(applied.note.lines().all(|l| l.contains(" = ")));
+    assert!(!applied.profile_changed);
+    let none = apply_settings(&KeyOutcome::SetList { pattern: "zebra".into() }, &mut s).unwrap();
+    assert!(none.note.contains("no setting matches"));
+}
+
+#[test]
+fn load_replaces_everything_and_rebuilds_the_assist() {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("tui");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("loaded.toml");
+    std::fs::write(&path, "username = \"ann\"\n[bot]\nauto_heal = true\n").unwrap();
+    let mut s = Settings::default();
+    let applied = apply_settings(&KeyOutcome::Load { file: path.display().to_string() }, &mut s).unwrap();
+    assert!(applied.profile_changed);
+    assert!(applied.bot_changed);
+    assert_eq!(s.profile().username, "ann");
+    assert_eq!(s.path(), Some(path.as_path()));
+    let missing = apply_settings(&KeyOutcome::Load { file: dir.join("none.toml").display().to_string() }, &mut s).unwrap();
+    assert!(missing.note.contains("load:"));
+    assert_eq!(s.profile().username, "ann", "a failed load keeps what was there");
+}
+
+#[test]
+fn save_reports_the_path_or_asks_for_one() {
+    let mut s = Settings::default();
+    let asked = apply_settings(&KeyOutcome::Save { file: None }, &mut s).unwrap();
+    assert!(asked.note.contains("/save <file>"), "{}", asked.note);
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("tui");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("saved.toml");
+    let saved = apply_settings(&KeyOutcome::Save { file: Some(path.display().to_string()) }, &mut s).unwrap();
+    assert!(saved.note.contains("saved"), "{}", saved.note);
+    assert!(path.exists());
+}
+
+#[test]
+fn other_outcomes_are_not_settings_commands() {
+    let mut s = Settings::default();
+    assert!(apply_settings(&KeyOutcome::Where, &mut s).is_none());
+    assert!(apply_settings(&KeyOutcome::Send("look".into()), &mut s).is_none());
+}
+
+#[test]
+fn a_profile_without_a_bot_table_gets_the_attack_and_loot_assist() {
+    let cfg = assist_config_for(&Profile::default());
+    assert!(cfg.auto_combat && cfg.auto_get && !cfg.auto_heal);
+    let mut with = Profile::default();
+    with.bot = Some(BotConfig { auto_heal: true, ..Default::default() });
+    let cfg = assist_config_for(&with);
+    assert!(!cfg.auto_combat && cfg.auto_heal);
+}
+
+#[test]
+fn jobs_need_a_username() {
+    let err = needs_username(&Profile::default()).unwrap_err();
+    assert!(err.contains("/set username"), "{err}");
+    let mut named = Profile::default();
+    named.username = "dan".into();
+    assert!(needs_username(&named).is_ok());
+}
+
+#[test]
+fn connect_target_defaults_the_port_to_telnet() {
+    assert_eq!(connect_target("bbs.example.com").unwrap(), ("bbs.example.com".into(), 23));
+    assert_eq!(connect_target("127.0.0.1:2327").unwrap(), ("127.0.0.1".into(), 2327));
+    assert!(connect_target("host:port").is_err());
+    assert!(connect_target("").is_err());
 }
 

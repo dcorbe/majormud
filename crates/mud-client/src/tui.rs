@@ -185,13 +185,7 @@ pub async fn play(session: Arc<Session>) -> std::io::Result<()> {
     // so its latches start clean.
     let mut assist: Option<crate::bot::Bot> = None;
     let mut assist_heal_state: Option<crate::sheet::HealState> = None;
-    let assist_config = session.profile().bot.unwrap_or(crate::bot::BotConfig {
-        // A profile without a [bot] table still gets a useful
-        // assist: attack and loot are the whole point of asking.
-        auto_combat: true,
-        auto_get: true,
-        ..Default::default()
-    });
+    let mut assist_config = assist_config_for(&session.profile());
     // Rests the assist sends and the spells its book was last read to
     // hold. Both live beside the bot and are reset with it, because both
     // describe the bot that is running now.
@@ -1058,6 +1052,129 @@ Tab                  complete a slash verb or a setting key
 Ctrl-F  take the keyboard back from a running farm/go/where/roam
 Ctrl-P  toggle passthrough, for full-screen board screens (train stats)
 Ctrl-Q  quit"
+}
+
+/// What a settings command did, for `play` and the lobby to act on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Applied {
+    pub note: String,
+    /// The session's copy needs replacing.
+    pub profile_changed: bool,
+    /// A `bot.*` key moved, or a whole file came in: rebuild the assist.
+    pub bot_changed: bool,
+}
+
+/// Run one settings command against the settings. `None` when the
+/// outcome is not one. The note is ready to print.
+pub fn apply_settings(outcome: &KeyOutcome, settings: &mut crate::settings::Settings) -> Option<Applied> {
+    let said = |note: String| {
+        Some(Applied {
+            note,
+            profile_changed: false,
+            bot_changed: false,
+        })
+    };
+    match outcome {
+        KeyOutcome::SetList { pattern } => {
+            let rows = settings.list(pattern);
+            if rows.is_empty() {
+                return said(format!("-- no setting matches {pattern} --"));
+            }
+            let width = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+            let text = rows
+                .iter()
+                .map(|(k, v)| format!("{k:width$} = {v}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            said(text)
+        }
+        KeyOutcome::Set { key, value } => match settings.set(key, value) {
+            Ok(()) => Some(Applied {
+                note: format!(
+                    "-- {key} = {} (unsaved: /save) --",
+                    settings.value(key).unwrap_or_default()
+                ),
+                profile_changed: true,
+                bot_changed: key.starts_with("bot."),
+            }),
+            Err(e) => said(format!("-- set: {e} --")),
+        },
+        KeyOutcome::Unset { key } => match settings.unset(key) {
+            Ok(()) => Some(Applied {
+                note: format!(
+                    "-- {key} = {} (unsaved: /save) --",
+                    settings.value(key).unwrap_or_default()
+                ),
+                profile_changed: true,
+                bot_changed: key.starts_with("bot."),
+            }),
+            Err(e) => said(format!("-- unset: {e} --")),
+        },
+        KeyOutcome::Save { file } => {
+            match settings.save(file.as_deref().map(std::path::Path::new)) {
+                Ok(path) => said(format!("-- saved {} --", path.display())),
+                Err(e) => said(format!("-- save: {e} --")),
+            }
+        }
+        KeyOutcome::Load { file } => {
+            match crate::settings::Settings::load(std::path::Path::new(file)) {
+                Ok(loaded) => {
+                    let mut note = format!("-- loaded {file}; connection keys apply at the next /connect --");
+                    for warning in loaded.warnings() {
+                        note.push_str(&format!("\n-- {warning} --"));
+                    }
+                    *settings = loaded;
+                    Some(Applied {
+                        note,
+                        profile_changed: true,
+                        bot_changed: true,
+                    })
+                }
+                Err(e) => said(format!("-- load: {e} --")),
+            }
+        }
+        _ => None,
+    }
+}
+
+/// The assist's config: the profile's bot table, or attack and loot for
+/// a profile without one, because attack and loot are the whole point of
+/// asking for an assist.
+pub fn assist_config_for(profile: &crate::profile::Profile) -> crate::bot::BotConfig {
+    profile.bot.clone().unwrap_or(crate::bot::BotConfig {
+        auto_combat: true,
+        auto_get: true,
+        ..Default::default()
+    })
+}
+
+/// A job or the assist matches the character's own death line against
+/// the username. Empty, they would never know the character died.
+pub fn needs_username(profile: &crate::profile::Profile) -> Result<(), String> {
+    if profile.username.is_empty() {
+        return Err(
+            "username is empty: /set username <name> (the runner needs it to see your own death)"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// `host` or `host:port`. The port defaults to telnet's 23.
+pub fn connect_target(arg: &str) -> Result<(String, u16), String> {
+    let (host, port) = match arg.rsplit_once(':') {
+        Some((host, port)) => {
+            let port = port
+                .parse::<u16>()
+                .map_err(|_| format!("connect: {port} is not a port"))?;
+            (host, port)
+        }
+        None => (arg, 23),
+    };
+    if host.is_empty() {
+        return Err("connect: no host: /connect host[:port]".into());
+    }
+    Ok((host.to_string(), port))
 }
 
 /// One keystroke against the editor. Pure: what to send comes back as
