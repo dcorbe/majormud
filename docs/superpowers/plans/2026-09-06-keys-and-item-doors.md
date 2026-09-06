@@ -905,12 +905,18 @@ async fn house_board(
     (addr, log)
 }
 
-fn house_graph() -> Arc<RoomGraph> {
+/// The street and the house, joined by a door with `requirement`. A
+/// key door is type 2, anything else here is a plain type 7 door.
+fn house_graph(requirement: ExitRequirement) -> Arc<RoomGraph> {
+    let exit_type = match requirement {
+        ExitRequirement::KeyDoor { .. } => 2,
+        _ => 7,
+    };
     let door = |dest| ExitEdge {
         dest,
-        exit_type: 2,
+        exit_type,
         command: None,
-        requirement: ExitRequirement::KeyDoor { key: KEY, pick: -99 },
+        requirement: requirement.clone(),
     };
     let mut street = GraphRoom {
         name: "Slum Street".into(),
@@ -964,9 +970,19 @@ fn ring(session: &Session, with_key: bool) -> PackHandle {
     pack
 }
 
-fn nav(session: &Session, with_key: bool, picklocks: u32, bash_doors: bool) -> Navigator {
+fn key_door() -> ExitRequirement {
+    ExitRequirement::KeyDoor { key: KEY, pick: -99 }
+}
+
+fn nav(
+    session: &Session,
+    requirement: ExitRequirement,
+    with_key: bool,
+    picklocks: u32,
+    bash_doors: bool,
+) -> Navigator {
     Navigator::new(
-        house_graph(),
+        house_graph(requirement),
         NavConfig {
             step_timeout_ms: 1500,
             bash_doors,
@@ -998,7 +1014,7 @@ async fn walk(n: &Navigator, session: &Session) -> Result<RoomId, NavErrorKind> 
 async fn a_key_door_is_unlocked_with_the_key_then_opened_and_walked() {
     let (addr, log) = house_board(true, "You have the following keys:  black star key.").await;
     let session = session_for(addr).await;
-    let n = nav(&session, true, 0, false);
+    let n = nav(&session, key_door(), true, 0, false);
 
     let at = walk(&n, &session).await.expect("the key opens it");
 
@@ -1016,7 +1032,7 @@ async fn a_key_door_is_unlocked_with_the_key_then_opened_and_walked() {
 async fn the_pack_is_re_read_after_the_key_is_used() {
     let (addr, log) = house_board(true, "You have no keys.").await;
     let session = session_for(addr).await;
-    let n = nav(&session, true, 0, false);
+    let n = nav(&session, key_door(), true, 0, false);
     let pack = session.pack_handle().unwrap();
     assert!(pack.has(KEY), "the walk starts with the key");
 
@@ -1034,19 +1050,22 @@ async fn the_pack_is_re_read_after_the_key_is_used() {
     panic!("the spent key is still on the ring");
 }
 
-/// Without the key, a lock the formula says cannot give is never
-/// picked. -99 against 10 Picklocks fails every roll, so the walk goes
-/// straight to force rather than spending its whole pick budget first.
+/// A lock the formula says cannot give is never picked. -99 against 10
+/// Picklocks fails every roll, so the walk goes straight to force
+/// rather than spending its whole pick budget first. A plain locked
+/// door, because routing refuses a key door nobody can pick even with
+/// bashing on, and the point here is the walk.
 #[tokio::test]
-async fn without_the_key_an_unpickable_lock_spends_no_pick() {
+async fn an_unpickable_lock_spends_no_pick() {
     let (addr, log) = house_board(true, "You have no keys.").await;
     let session = session_for(addr).await;
-    let n = nav(&session, false, 10, true);
+    let locked = ExitRequirement::Door { locked: true, pick: -99 };
+    let n = nav(&session, locked, false, 10, true);
 
     let at = walk(&n, &session).await.expect("bashing is on");
 
     assert_eq!(at, HOUSE);
-    assert_eq!(log.uses.load(Ordering::SeqCst), 0, "no key to use");
+    assert_eq!(log.uses.load(Ordering::SeqCst), 0, "no key door, nothing to use");
     assert_eq!(log.picks.load(Ordering::SeqCst), 0, "-99 + 10 never passes");
     assert!(log.bashes.load(Ordering::SeqCst) >= 1);
 }
@@ -1057,7 +1076,7 @@ async fn without_the_key_an_unpickable_lock_spends_no_pick() {
 async fn a_key_door_nobody_can_open_is_no_route() {
     let (addr, log) = house_board(true, "You have no keys.").await;
     let session = session_for(addr).await;
-    let n = nav(&session, false, 10, false);
+    let n = nav(&session, key_door(), false, 10, false);
 
     let err = walk(&n, &session).await.expect_err("nothing opens it");
 
@@ -1073,7 +1092,7 @@ async fn a_key_door_nobody_can_open_is_no_route() {
 async fn a_key_that_does_nothing_falls_through_to_the_lock() {
     let (addr, log) = house_board(false, "You have the following keys:  black star key.").await;
     let session = session_for(addr).await;
-    let n = nav(&session, true, 100, false);
+    let n = nav(&session, key_door(), true, 100, false);
 
     let at = walk(&n, &session).await.expect("the pick opens it");
 
@@ -1086,7 +1105,7 @@ async fn a_key_that_does_nothing_falls_through_to_the_lock() {
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `cargo test -p mud-client --test nav_keys 2>&1 | grep -E "^error|^test result|FAILED|panicked"`
-Expected: the tests compile and fail. `a_key_door_is_unlocked_with_the_key_then_opened_and_walked` fails because the walk never sends `use`, it picks or reports the door locked. `without_the_key_an_unpickable_lock_spends_no_pick` fails because the walk picks when `picklocks > 0`. `a_key_door_nobody_can_open_is_no_route` passes already, routing was finished in Task 2.
+Expected: the tests compile and fail. `a_key_door_is_unlocked_with_the_key_then_opened_and_walked` fails because the walk never sends `use`, it picks or reports the door locked. `an_unpickable_lock_spends_no_pick` fails because the walk picks when `picklocks > 0`. `a_key_door_nobody_can_open_is_no_route` passes already, routing was finished in Task 2.
 
 - [ ] **Step 3: Teach the walk the key**
 
