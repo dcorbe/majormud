@@ -154,3 +154,16 @@ fn a_region_grows_through_an_item_gate_only_with_the_item() {
         BTreeSet::from([POST])
     );
 }
+
+/// The map's own shape holds every item, so a route asked of the graph
+/// with no character crosses the gate. A patrol circuit is validated
+/// this way at config load, before the pack is known.
+#[test]
+fn a_map_query_routes_through_an_item_gate() {
+    let graph = gated_world();
+    assert!(graph.route(POST, VAULT).is_some(), "the map holds the fork");
+    assert!(
+        graph.route_for(POST, VAULT, &empty_handed()).is_none(),
+        "the empty handed walker does not"
+    );
+}
