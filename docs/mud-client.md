@@ -474,7 +474,7 @@ Errors are reported and the connection is kept: being told "no `[farm]`
 table" while still logged in beats being thrown out. A run that stops
 badly shows why in the bar (`stopped: ...`) rather than a bare "done".
 
-### `/bank` — deposit now
+### `/bank`, deposit now
 
 `/bank` walks the character to the nearest bank, or the one `[bank].at`
 names, deposits everything above `keep_gold`, and stops there. It takes
@@ -710,18 +710,21 @@ trips.
 
 Two gates, either one enough:
 
-- **`deposit_at_coins`** (1000): the raw coin count is over the mark and
-  the purse is above the keep floor, so a deposit can lower it.
-- **`deposit_on_weight_class`** (true): the coins picked up since the
-  last reading lifted the class a step, None to Light, Light to Medium,
-  Medium to Heavy. The boundaries are the board's own, 33, 66 and 100
-  percent. A class already raised by earlier coins does not fire again.
+- **`deposit_at_coins`**, 1000 by default: the raw coin count is over
+  the mark and the purse is above the keep floor, so a deposit can
+  lower it.
+- **`deposit_on_weight_class`**, on by default: the coins picked up
+  since the last reading lifted the class a step, None to Light, Light
+  to Medium, Medium to Heavy. The boundaries are the board's own, 33,
+  66 and 100 percent. A class already raised by earlier coins does not
+  fire again.
 
 The errand walks to the bank with the same leg a circuit uses, so
 fights on the way, interrupts and desync recovery are the leg's. At the
 bank it reads the purse again, deposits everything above
-**`keep_gold`** (0), and reads once more so routing sees the money that
-is left. The next leg starts from the bank. There is no walk back.
+**`keep_gold`**, which is 0 by default, and reads once more so routing
+sees the money that is left. The next leg starts from the bank. There
+is no walk back.
 
 An errand that deposits nothing, whether the bank is unreachable, the
 walk fails, or the board refuses, prints one line saying so and
