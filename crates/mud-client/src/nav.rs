@@ -1523,7 +1523,17 @@ impl Navigator {
         if let crate::graph::ExitRequirement::Puzzle(puzzle) = requirement {
             self.solve_puzzle(session, current, dir, puzzle, guard, armed)
                 .await?;
-            crate::session::drain(events, |_| {});
+            // Clear what the plan queued so the `open` below is
+            // answered by its own lines, and show every event to the
+            // guard on the way out. `speak` returns the instant it
+            // matches the reply, so a hit or a death printed after that
+            // reply has been seen by nobody yet.
+            crate::session::drain(events, |ev| {
+                *armed = armed.take().or_else(|| guard.on_event(&ev.event));
+            });
+            if let Some(interrupt) = armed.take() {
+                return Err(NavErrorKind::Interrupted(interrupt));
+            }
             let opened = session.send(&format!("open {dir}"));
             match self.wait_room(events, guard, armed, opened, sneak_seen).await? {
                 StepEvent::DoorYielded => {
@@ -1812,10 +1822,20 @@ impl Navigator {
         for _ in 0..PUZZLE_TRIES {
             self.solve_puzzle(session, current, dir, puzzle, guard, armed)
                 .await?;
-            // Everything the inner walks produced is still queued on
-            // this receiver, already shown to the guard by those walks.
-            // Drop it so the resent step is answered by its own lines.
-            crate::session::drain(events, |_| {});
+            // Everything the plan produced is still queued on this
+            // receiver. Clear it so the resent step is answered by its
+            // own lines, and show every event to the guard on the way
+            // out. `speak` returns the instant it matches the reply, so
+            // a hit or a death printed after that reply has been seen
+            // by nobody yet. Re-showing what an inner walk already
+            // showed is safe: a walk that returned `Ok` found nothing
+            // worth interrupting.
+            crate::session::drain(events, |ev| {
+                *armed = armed.take().or_else(|| guard.on_event(&ev.event));
+            });
+            if let Some(interrupt) = armed.take() {
+                return Err(NavErrorKind::Interrupted(interrupt));
+            }
             let again = session.send(dir);
             match self.wait_room(events, guard, armed, again, sneak_seen).await? {
                 StepEvent::Arrived(room) => {

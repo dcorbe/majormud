@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use mud_client::graph::{Capabilities, ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
+use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::nav::{Interrupt, NavConfig, NavErrorKind, Navigator, NoGuard, TravelGuard};
 use mud_client::profile::Profile;
 use mud_client::puzzle::{Puzzle, PuzzleAction};
@@ -53,6 +53,10 @@ struct BoardRoom {
     lever: bool,
     /// A line printed before the lever reply, for the guard tests.
     ambush: Option<&'static str>,
+    /// A line printed after the lever reply, for the guard tests. The
+    /// walk's `speak` has already returned by the time this lands, so
+    /// only the drain after the plan can see it.
+    ambush_after: Option<&'static str>,
 }
 
 struct World {
@@ -123,9 +127,15 @@ async fn world_board(world: World, start: &'static str) -> (std::net::SocketAddr
                 } else if line == "pull lever" || line == "push button" {
                     if room.lever {
                         seen.pulls.fetch_add(1, Ordering::SeqCst);
-                        match room.ambush {
-                            Some(hit) => format!("\r\n{hit}\r\n{}{PROMPT}", world.reply),
-                            None => format!("\r\n{}{PROMPT}", world.reply),
+                        let before = match room.ambush {
+                            Some(hit) => format!("\r\n{hit}"),
+                            None => String::new(),
+                        };
+                        match room.ambush_after {
+                            Some(hit) => {
+                                format!("{before}\r\n{}\r\n{hit}{PROMPT}", world.reply)
+                            }
+                            None => format!("{before}\r\n{}{PROMPT}", world.reply),
                         }
                     } else {
                         format!("\r\nYou say \"{line}\"{PROMPT}")
@@ -217,6 +227,16 @@ fn passage_graph(item: Option<ItemId>) -> Arc<RoomGraph> {
 }
 
 fn passage_world(pulls_needed: usize, lever: bool) -> World {
+    passage_world_with(pulls_needed, lever, None)
+}
+
+/// As above, with a line the Secret Passage prints AFTER the button's
+/// reply.
+fn passage_world_with(
+    pulls_needed: usize,
+    lever: bool,
+    ambush_after: Option<&'static str>,
+) -> World {
     let mut rooms = BTreeMap::new();
     rooms.insert(
         "Secret Passage",
@@ -226,6 +246,7 @@ fn passage_world(pulls_needed: usize, lever: bool) -> World {
             concealed: Some(("s", "south", "Wooden Hallway")),
             lever,
             ambush: None,
+            ambush_after,
         },
     );
     rooms.insert(
@@ -236,6 +257,7 @@ fn passage_world(pulls_needed: usize, lever: bool) -> World {
             concealed: None,
             lever: false,
             ambush: None,
+            ambush_after: None,
         },
     );
     World {
@@ -285,6 +307,7 @@ fn crypt_world(ambush_in_west: Option<&'static str>) -> World {
             concealed: Some(("n", "dark passageway north", "Crypt, Dark Passage")),
             lever: false,
             ambush: None,
+            ambush_after: None,
         },
     );
     rooms.insert(
@@ -295,6 +318,7 @@ fn crypt_world(ambush_in_west: Option<&'static str>) -> World {
             concealed: None,
             lever: true,
             ambush: None,
+            ambush_after: None,
         },
     );
     rooms.insert(
@@ -305,6 +329,7 @@ fn crypt_world(ambush_in_west: Option<&'static str>) -> World {
             concealed: None,
             lever: true,
             ambush: ambush_in_west,
+            ambush_after: None,
         },
     );
     rooms.insert(
@@ -315,6 +340,7 @@ fn crypt_world(ambush_in_west: Option<&'static str>) -> World {
             concealed: None,
             lever: false,
             ambush: None,
+            ambush_after: None,
         },
     );
     World {
@@ -469,8 +495,7 @@ async fn a_phrase_said_aloud_ends_the_step_at_once() {
 async fn a_plan_the_pack_cannot_fill_is_no_route() {
     let (addr, log) = world_board(passage_world(1, true), "Secret Passage").await;
     let session = session_for(addr).await;
-    let n = nav(passage_graph(Some(ItemId(500))))
-        .with_capabilities(Capabilities::unrestricted());
+    let n = nav(passage_graph(Some(ItemId(500))));
 
     let err = tokio::time::timeout(
         Duration::from_secs(20),
@@ -523,6 +548,49 @@ async fn an_interrupt_in_the_lever_room_reports_the_lever_room() {
     );
     assert_eq!(err.at, LEVER_B, "the walk stands in the west alcove");
     assert_eq!(log.lines(), vec!["n", "w", "pull lever"]);
+}
+
+/// A hit that lands AFTER the button's reply is the one nobody has
+/// seen: `speak` returned the moment the reply matched, and the tail
+/// arrives on the outer receiver alone. The drain that clears the
+/// receiver before the step is resent has to show it to the guard
+/// rather than throw it away.
+#[tokio::test]
+async fn a_hit_after_the_reply_is_shown_to_the_guard() {
+    struct ArmOnHit;
+    impl TravelGuard for ArmOnHit {
+        fn on_event(&mut self, ev: &mud_client::events::Event) -> Option<Interrupt> {
+            match ev {
+                mud_client::events::Event::CombatHit { .. } => {
+                    Some(Interrupt::Attacked { by: "ghoul".into() })
+                }
+                _ => None,
+            }
+        }
+    }
+
+    let (addr, log) = world_board(
+        passage_world_with(1, true, Some("The crypt ghoul slashes you for 5 damage!")),
+        "Secret Passage",
+    )
+    .await;
+    let session = session_for(addr).await;
+    let n = nav(passage_graph(None));
+
+    let err = tokio::time::timeout(
+        Duration::from_secs(20),
+        n.goto(&session, PASSAGE, HALLWAY, &mut ArmOnHit, false),
+    )
+    .await
+    .expect("goto should not hang")
+    .expect_err("the guard takes the walk back");
+
+    assert!(
+        matches!(err.kind, NavErrorKind::Interrupted(Interrupt::Attacked { .. })),
+        "{err:?}"
+    );
+    assert_eq!(err.at, PASSAGE);
+    assert_eq!(log.lines(), vec!["s", "push button"]);
 }
 
 const GATE_ROOM: RoomId = RoomId { map: 1, room: 20 };
