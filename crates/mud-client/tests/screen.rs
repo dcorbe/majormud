@@ -35,8 +35,10 @@ fn the_scrollback_is_capped_and_pages() {
     s.page_up();
     assert!(s.scrolled());
     assert!(s.text().contains("line16"), "one page up shows the rows just above the screen: {:?}", s.text());
+    let after_one = s.text();
     s.page_up();
     s.page_up();
+    assert_ne!(s.text(), after_one, "page_up keeps moving up to the cap");
     assert!(!s.text().contains("line1\n"), "the cap of 4 rows keeps line1 out of reach: {:?}", s.text());
     s.to_bottom();
     assert!(!s.scrolled());
@@ -54,3 +56,4 @@ fn resize_keeps_the_content() {
     assert_eq!(s.size(), (6, 30));
     assert!(s.text().contains("keep me"));
 }
+
