@@ -18,7 +18,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use mud_client::bot::BotConfig;
-use mud_client::farm::{FarmConfig, FarmError, Live, probe_sheet};
+use mud_client::farm::{Derive, FarmConfig, FarmError, Live, probe_sheet};
 use mud_client::go::{GoEnd, go_config, run_go};
 use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::profile::Profile;
@@ -443,5 +443,45 @@ async fn a_walk_refuses_an_interrupt_mark_above_the_bots_mark_before_sending_any
         log.is_empty(),
         "the refusal must come before anything is sent: {log:?}"
     );
+}
+
+/// A go's target is an argument, not a setting. A profile change mid
+/// walk changes the walk's settings and nothing about where it goes.
+#[tokio::test]
+async fn a_profile_change_mid_walk_leaves_the_target_alone() {
+    let mut script = up_to_the_whiff();
+    script.push(("n", format!("\r\nn{}", room_block("Keep", None, "south"))));
+    let (addr, received) = scripted_board(script).await;
+    let session = session_for(addr).await;
+    let (tx, rx) = tokio::sync::watch::channel(Profile::default());
+    let derive: Derive = Arc::new(|p: &Profile| {
+        let base = p.farm.clone().unwrap_or_default();
+        (
+            BotConfig { auto_combat: false, ..p.bot.clone().unwrap_or_default() },
+            go_config(&base, false),
+        )
+    });
+    let live = Live::over(rx, "go", quiet(), bot(), cfg(false), derive);
+    let log_for_change = Arc::clone(&received);
+    tokio::spawn(async move {
+        loop {
+            if log_for_change.lock().unwrap().iter().any(|l| l == "n") {
+                let _ = tx.send(Profile {
+                    farm: Some(FarmConfig { start: "9/9".into(), finish_at: Some("9/9".into()), ..Default::default() }),
+                    ..Profile::default()
+                });
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+    let end = tokio::time::timeout(
+        Duration::from_secs(30),
+        run_go(&session, corridor(), Some(START), STOP, live, None, &quiet()),
+    )
+    .await
+    .expect("run_go should finish, not hang")
+    .unwrap();
+    assert_eq!(end, GoEnd::Arrived(STOP), "log: {:?}", received.lock().unwrap());
 }
 

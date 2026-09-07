@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use mud_client::bot::BotConfig;
-use mud_client::farm::{FarmConfig, FarmEnd, FarmError, FarmPlan, Live, run_farm};
+use mud_client::farm::{Derive, FarmConfig, FarmEnd, FarmError, FarmPlan, Live, run_farm};
 use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::profile::Profile;
 use mud_client::session::Session;
@@ -2756,5 +2756,209 @@ async fn a_roam_leaves_its_fence_to_bank_and_walks_back() {
         Some(&"s".to_string()),
         "the room after the walk back must be a region room: {log:?}"
     );
+}
+
+/// The farm's own derivation: the profile's two tables as they are.
+fn farm_derive() -> Derive {
+    Arc::new(|p: &Profile| {
+        (
+            p.bot.clone().unwrap_or_default(),
+            p.farm.clone().unwrap_or_default(),
+        )
+    })
+}
+
+/// Wait until the board has seen `line`, then hand it the new profile.
+/// The send lands while the run is between that line and the next.
+fn change_after(
+    received: Arc<Mutex<Vec<String>>>,
+    line: &'static str,
+    tx: tokio::sync::watch::Sender<Profile>,
+    profile: Profile,
+) {
+    tokio::spawn(async move {
+        loop {
+            if received.lock().unwrap().iter().any(|l| l == line) {
+                let _ = tx.send(profile);
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+}
+
+/// `/set bot.ignore_coins ["copper"]` between two stops. The first
+/// stop's pile is swept, the second stop's is left, and nothing was
+/// restarted.
+#[tokio::test]
+async fn a_coin_rule_changed_mid_run_holds_at_the_next_stop() {
+    let (addr, received) = scripted_board(vec![
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        ("look", format!("\r\nlook{}", room_block("Guard Post", None, "north"))),
+        (
+            "n",
+            format!("\r\nn{}", room_block_items("Inner Ward", &["49 copper farthings"], "north south")),
+        ),
+        (
+            "get copper",
+            "\r\nget copper\r\nYou picked up 49 copper farthings\r\n[HP=30/MA=0]:".into(),
+        ),
+        (
+            "n",
+            format!("\r\nn{}", room_block_items("Keep", &["12 copper farthings"], "south")),
+        ),
+    ])
+    .await;
+    let session = session_for(addr).await;
+    mud_client::farm::probe_sheet(&session, None).await;
+
+    let graph = corridor();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/2".into(), "1/3".into()],
+        loops: 1,
+        // The first stop has to still be running when the change
+        // lands, so it lingers a beat over the swept room instead of
+        // leaving the instant it sees one, and the recheck window is
+        // wider than the linger so the stop asks the board nothing the
+        // script does not answer.
+        idle_poke_ms: 2000,
+        dwell_empty_seconds: 1,
+        depart_at_percent: Some(0),
+        travel_interrupts: 0,
+        ..FarmConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig {
+        auto_combat: true,
+        auto_get: true,
+        max_hp: 30,
+        ..BotConfig::default()
+    };
+    let (tx, rx) = tokio::sync::watch::channel(Profile::default());
+    let (notices, said) = collected();
+    let live = Live::over(rx, "farm", notices, bot.clone(), cfg.clone(), farm_derive());
+    change_after(
+        Arc::clone(&received),
+        "get copper",
+        tx,
+        Profile {
+            bot: Some(BotConfig { ignore_coins: vec!["copper".into()], ..bot.clone() }),
+            farm: Some(cfg.clone()),
+            ..Profile::default()
+        },
+    );
+
+    let (end, stats) = match tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, live, None, &quiet()),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    {
+        Ok(out) => out,
+        Err(e) => panic!("the run must finish: {e:?}\nboard received: {:?}", received.lock().unwrap()),
+    };
+    assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
+
+    let log = received.lock().unwrap();
+    assert_eq!(
+        log.iter().filter(|l| *l == "get copper").count(),
+        1,
+        "the second pile is copper and copper is now ignored: {log:?}"
+    );
+    assert_eq!(
+        said.lock().unwrap().iter().filter(|l| l.as_str() == "-- farm: settings reloaded --").count(),
+        1,
+        "one change, one line: {:?}",
+        said.lock().unwrap()
+    );
+}
+
+/// `/set farm.fight_while_travelling false` after the first stop. The
+/// next leg walks past a whiff instead of turning to fight.
+#[tokio::test]
+async fn the_fight_switch_changed_mid_run_holds_at_the_next_leg() {
+    let (addr, received) = scripted_board(vec![
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        ("look", format!("\r\nlook{}", room_block("Guard Post", None, "north"))),
+        ("n", format!("\r\nn{}", room_block("Inner Ward", None, "north south"))),
+        (
+            "n",
+            format!(
+                "\r\nn\r\nThe giant rat swings at you but misses!\r\n{}",
+                room_block("Keep", Some("giant rat"), "south")
+            ),
+        ),
+    ])
+    .await;
+    let session = session_for(addr).await;
+    mud_client::farm::probe_sheet(&session, None).await;
+
+    let graph = corridor();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/2".into(), "1/3".into()],
+        loops: 1,
+        // The first stop has to still be running when the change
+        // lands, so it lingers a beat over the quiet room instead of
+        // leaving the instant it sees one, and the recheck window is
+        // wider than the linger so the stop asks the board nothing the
+        // script does not answer.
+        idle_poke_ms: 2000,
+        dwell_empty_seconds: 1,
+        depart_at_percent: Some(0),
+        stop_seconds: 1,
+        // A run that still fought on the way would defend at the whiff.
+        // Short, so the claim below fails in seconds rather than
+        // sitting out the default minute.
+        defend_seconds: 2,
+        travel_interrupts: 0,
+        ..FarmConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig {
+        auto_combat: false,
+        max_hp: 30,
+        ..BotConfig::default()
+    };
+    let (tx, rx) = tokio::sync::watch::channel(Profile::default());
+    let live = Live::over(rx, "farm", quiet(), bot.clone(), cfg.clone(), farm_derive());
+    change_after(
+        Arc::clone(&received),
+        "n",
+        tx,
+        Profile {
+            bot: Some(bot.clone()),
+            farm: Some(FarmConfig { fight_while_travelling: false, ..cfg.clone() }),
+            ..Profile::default()
+        },
+    );
+
+    let (end, _) = match tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, live, None, &quiet()),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    {
+        Ok(out) => out,
+        Err(e) => panic!("the run must finish: {e:?}\nboard received: {:?}", received.lock().unwrap()),
+    };
+    assert_eq!(end, FarmEnd::LoopsDone);
+    assert!(
+        !session.travel_fights().get(),
+        "the switch every leg reads follows the profile"
+    );
+    let log = received.lock().unwrap();
+    assert!(!log.iter().any(|l| l.starts_with("a ")), "nothing was fought: {log:?}");
 }
 

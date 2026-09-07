@@ -1971,7 +1971,7 @@ async fn farm_loop(
     notices: &Notices,
     casts: &mut Casts,
     clock: &mut crate::world::RoundClock,
-    _durations: &BTreeMap<String, u32>,
+    durations: &BTreeMap<String, u32>,
 ) -> Result<(FarmEnd, FarmStats), FarmError> {
     let started = Instant::now();
     let mut stats = FarmStats::default();
@@ -1995,7 +1995,7 @@ async fn farm_loop(
     // this the rotation would only ever pick rooms inside the region
     // while the legs between them cut straight through a wall whenever
     // that was cheaper — a fence you can walk through is not a fence.
-    let nav = match &plan.roam {
+    let mut nav = match &plan.roam {
         Some(walls) => walker(nav_config(&live.bot, &live.farm)).fenced(walls.clone(), plan.start.map),
         None => walker(nav_config(&live.bot, &live.farm)),
     };
@@ -2005,7 +2005,8 @@ async fn farm_loop(
     // walks with an unfenced copy of the same navigator and walks back
     // into the region afterwards. For a circuit the two are the same
     // walker and nothing changes.
-    let bank_nav = walker(nav_config(&live.bot, &live.farm));
+    let mut bank_nav = walker(nav_config(&live.bot, &live.farm));
+    let mut built_at = live.generation();
     // Danger ranking from the shipped data. A missing or unreadable
     // database is not fatal: an empty table simply means "no opinion",
     // and the bot falls back to the board's own listing order.
@@ -2073,7 +2074,7 @@ async fn farm_loop(
     // purse still over the mark judges the same way at the next stop
     // and would walk the character to the same bank for the same
     // nothing, every stop, forever.
-    let bank_cfg = session.profile().bank;
+    let mut bank_cfg = session.profile().bank;
     let mut gate = crate::bank::BankGate::new();
     if bank_cfg.auto_deposit
         && let Some(reading) = crate::bank::Reading::of(&crate::bank::read_inventory(session).await)
@@ -2102,6 +2103,23 @@ async fn farm_loop(
             }
         };
         for &stop in &lap {
+            // A change lands here, at the stop boundary: the navigator,
+            // the casts and the bank policy are rebuilt from the new
+            // tables, and the fight switch every leg reads follows the
+            // new value. Mid stop and mid leg have their own points.
+            if live.refresh() || built_at != live.generation() {
+                built_at = live.generation();
+                nav = match &plan.roam {
+                    Some(walls) => walker(nav_config(&live.bot, &live.farm)).fenced(walls.clone(), plan.start.map),
+                    None => walker(nav_config(&live.bot, &live.farm)),
+                };
+                bank_nav = walker(nav_config(&live.bot, &live.farm));
+                let sheet = sheet_from(session, &live.bot, durations);
+                casts.heal = crate::sheet::HealState::new(sheet.heals.0);
+                casts.buff = crate::sheet::BuffState::new(sheet.buffs.0);
+                bank_cfg = live.profile().bank;
+                session.travel_fights().set(live.farm.fight_while_travelling);
+            }
             if let Some(end) = time_up(started, &live.farm) {
                 return Ok((end, stats));
             }
@@ -2765,8 +2783,8 @@ pub(crate) async fn travel(
     use crate::nav::{Interrupt, NavErrorKind};
     set_phase(phase, Phase::WaitingToDepart);
     let mut sneaking = sneaking;
-    let bot_config = live.bot.clone();
-    let cfg = live.farm.clone();
+    let mut bot_config = live.bot.clone();
+    let mut cfg = live.farm.clone();
 
     // Whether the leg stops for fights at all is the session's live
     // switch (`/bot` flips it mid-walk), read at each sighting, entry
@@ -2775,16 +2793,28 @@ pub(crate) async fn travel(
     // LISTS, not only one that has already drawn blood. The bot is a
     // predicate — never fed events — and shares the run's refusals, so
     // a template the board refused stops tripping legs run-wide.
-    let mut guard = FarmGuard::new(
-        bot_config.max_hp,
-        cfg.interrupt_at_percent,
-        &session.character_name().unwrap_or_default(),
-    )
-    .sighting(
-        crate::bot::Bot::with_refusals(bot_config.clone(), threat.clone(), refusals.clone())
-            .with_pack(session.pack_handle()),
-    )
-    .follows(session.travel_fights().clone());
+    //
+    // Built through a closure because a settings change rebuilds both
+    // from the new tables at the top of the next pass.
+    let build = |bot_config: &crate::bot::BotConfig, cfg: &FarmConfig| {
+        let guard = FarmGuard::new(
+            bot_config.max_hp,
+            cfg.interrupt_at_percent,
+            &session.character_name().unwrap_or_default(),
+        )
+        .sighting(
+            crate::bot::Bot::with_refusals(bot_config.clone(), threat.clone(), refusals.clone())
+                .with_pack(session.pack_handle()),
+        )
+        .follows(session.travel_fights().clone());
+        // Predicate-only, like the guard's sighting bot: judges whether
+        // the departure gate is standing beside work (never fed events).
+        let sight = crate::bot::Bot::with_refusals(bot_config.clone(), threat.clone(), refusals.clone())
+            .with_pack(session.pack_handle());
+        (guard, sight)
+    };
+    let (mut guard, mut sight) = build(&bot_config, &cfg);
+    let mut built_at = live.generation();
     let mut budget = cfg.travel_interrupts;
     // Desync recoveries this leg may spend. Bounded because the recovery
     // WALKS: an unbounded one that keeps landing somewhere it cannot
@@ -2801,12 +2831,20 @@ pub(crate) async fn travel(
     // would loop, so the leg walks on from then on: `stop_sighting`
     // clears the predicate bot, which mutes entry arming too.
     let mut last_sighted: Option<RoomId> = None;
-    // Predicate-only, like the guard's sighting bot: judges whether the
-    // departure gate is standing beside work (never fed events).
-    let sight = crate::bot::Bot::with_refusals(bot_config.clone(), threat.clone(), refusals.clone())
-        .with_pack(session.pack_handle());
 
     loop {
+        // A change lands at the next pass: a fresh guard and sighting
+        // bot from the new tables. The walk in flight when it arrived
+        // finished on the old ones, which is the honest reading of
+        // "the next decision that reads them".
+        if live.refresh() || built_at != live.generation() {
+            built_at = live.generation();
+            bot_config = live.bot.clone();
+            cfg = live.farm.clone();
+            let (g, s) = build(&bot_config, &cfg);
+            guard = g;
+            sight = s;
+        }
         if time_up(started, &cfg).is_some() {
             return Ok(LegEnd::TimeUp);
         }
@@ -3304,8 +3342,8 @@ async fn farm_stop(
     stats: &mut FarmStats,
     phase: PhaseSink<'_>,
 ) -> Result<StopEnd, FarmError> {
-    let bot_config = live.bot.clone();
-    let cfg = live.farm.clone();
+    let mut bot_config = live.bot.clone();
+    let mut cfg = live.farm.clone();
     let stop_name = graph.room(stop).map(|r| r.name.clone()).unwrap_or_default();
     let mut resting = false;
     // The stop went blind at least once this visit: the room needs
@@ -3336,7 +3374,7 @@ async fn farm_stop(
     // whether a listed pile is worth STOPPING for, and clearing it
     // there would silently walk legs past money again. `Bot` also keeps
     // its own sweeping for the TUI assist, which has no `Here` at all.
-    let stop_config = crate::bot::BotConfig {
+    let mut stop_config = crate::bot::BotConfig {
         auto_get: false,
         ..bot_config.clone()
     };
@@ -3355,6 +3393,7 @@ async fn farm_stop(
     let mut still_sneaking = sneaking;
     let mut gate = Gate::new(backoff);
     let mut rest_watch = HealWatch::new(&bot_config, &cfg);
+    let mut built_at = live.generation();
     // Health, for the spell mark. Read from the session's published
     // state rather than accumulated here: the pump below folds prompts
     // into the bot, not into a local, and a second copy of the number
@@ -3398,6 +3437,20 @@ async fn farm_stop(
     }
 
     loop {
+        // A change lands at the next pass. The bot keeps its latches
+        // and takes the new policy, and the rest watch takes the new
+        // marks. The stop's dwell budgets were read at entry and stay.
+        if live.refresh() || built_at != live.generation() {
+            built_at = live.generation();
+            bot_config = live.bot.clone();
+            cfg = live.farm.clone();
+            stop_config = crate::bot::BotConfig {
+                auto_get: false,
+                ..bot_config.clone()
+            };
+            bot.reconfigure(stop_config.clone());
+            rest_watch = HealWatch::new(&bot_config, &cfg);
+        }
         if time_up(started, &cfg).is_some() {
             return Ok(StopEnd::TimeUp);
         }
@@ -3589,7 +3642,12 @@ async fn farm_stop(
         }
         let wake = tokio::time::Instant::from_std(wake);
 
-        let cor = match tokio::time::timeout_at(wake, events.recv()).await {
+        let waited = tokio::select! {
+            r = tokio::time::timeout_at(wake, events.recv()) => r,
+            // A change wakes the pump. The next pass reads it.
+            _ = live.changed() => continue,
+        };
+        let cor = match waited {
             Ok(Ok(cor)) => Some(cor),
             // Dropped events desync a stateful bot: it can miss the death
             // that ends a fight and sit latched on a corpse. Start over
