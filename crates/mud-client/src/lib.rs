@@ -10,6 +10,7 @@ pub mod bank;
 pub mod bot;
 pub mod cli;
 pub mod correlate;
+pub mod deathlog;
 pub mod deaths;
 pub mod dialect;
 pub mod equipment;
