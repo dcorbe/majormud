@@ -1238,6 +1238,13 @@ pub fn assist_config_for(profile: &crate::profile::Profile) -> crate::bot::BotCo
     })
 }
 
+/// The pace a settings change hands the writer. A running job is under
+/// the profile's pace and follows a change at once. With no job the
+/// operator's keystrokes stay unpaced, whatever the profile says.
+pub fn pace_on_change(job_running: bool, profile: &crate::profile::Profile) -> Option<std::time::Duration> {
+    job_running.then(|| profile.pace())
+}
+
 /// The name a job or the assist will watch for its own death line. The
 /// board gives it on the stat sheet, so the profile's `username` only
 /// has to carry it before the character is in the realm.

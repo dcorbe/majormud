@@ -17,8 +17,8 @@ use crate::settings::Settings;
 use crate::tui::{
     ContentCache, Job, KeyOutcome, LEVEL_POLL, LobbyStep, apply_settings, assist_config_for,
     assist_tick, content_path, describe_loops, finish_locator, handover_actions, help_text,
-    here_or, import_loop, lobby_step, needs_name, new_assist, on_realm_entry, render_status,
-    start_bank, start_farm, start_go, start_roam, start_where,
+    here_or, import_loop, lobby_step, needs_name, new_assist, on_realm_entry, pace_on_change,
+    render_status, start_bank, start_farm, start_go, start_roam, start_where,
 };
 
 /// A window's identity. Stable for its life, unlike its number, which
@@ -851,6 +851,9 @@ async fn play(
                             // window info is rebuilt.
                             if applied.profile_changed {
                                 session.set_profile(w.settings.profile().clone());
+                                if let Some(pace) = pace_on_change(job.is_some(), w.settings.profile()) {
+                                    session.set_pace(pace);
+                                }
                             }
                             w.sync_info(Some(&session));
                             if applied.bot_changed {

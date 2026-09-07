@@ -7,8 +7,8 @@ use mud_client::lost::Fix;
 use mud_client::session::GameState;
 use mud_client::sheet::{Casting, HealChoice, HealState, Spellbook};
 use mud_client::tui::{
-    InputEditor, act_suffix, assist_heal, bottom_bytes, help_text, quit_windows_refusal, render_status, screen_bytes,
-    window_bar, windows_listing,
+    InputEditor, act_suffix, assist_heal, bottom_bytes, help_text, pace_on_change, quit_windows_refusal, render_status,
+    screen_bytes, window_bar, windows_listing,
 };
 use mud_client::window::WindowInfo;
 use mud_client::world::{TickClock, ROUND};
@@ -1210,6 +1210,37 @@ async fn jobs_need_a_name() {
     };
     session.set_profile(named);
     assert_eq!(needs_name(&session).unwrap(), "dan");
+}
+
+/// A `/set` replaces the session's profile. That replacement is the
+/// event a running job listens for.
+#[tokio::test]
+async fn a_profile_change_wakes_a_subscriber() {
+    let addr = banner_board().await;
+    let profile = Profile {
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        ..Default::default()
+    };
+    let session = Session::connect(&profile, None).await.unwrap();
+    let mut changes = session.profile_changes();
+    assert!(!changes.has_changed().unwrap(), "nothing has changed yet");
+    session.set_profile(Profile { username: "dan".into(), ..session.profile() });
+    tokio::time::timeout(Duration::from_secs(2), changes.changed())
+        .await
+        .expect("the change wakes the subscriber")
+        .unwrap();
+    assert_eq!(changes.borrow_and_update().username, "dan");
+    assert_eq!(session.profile().username, "dan", "profile() reads the same value");
+}
+
+/// The writer reads the pace live. A change under a job follows at
+/// once. With no job the operator's keystrokes stay unpaced.
+#[test]
+fn a_pace_change_reaches_the_writer_only_under_a_job() {
+    let profile = Profile { pace_ms: Some(700), ..Default::default() };
+    assert_eq!(pace_on_change(true, &profile), Some(Duration::from_millis(700)));
+    assert_eq!(pace_on_change(false, &profile), None);
 }
 
 #[test]

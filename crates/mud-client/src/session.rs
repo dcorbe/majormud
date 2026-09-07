@@ -344,7 +344,9 @@ pub struct Session {
     /// Same reasoning as `events_tx`.
     raw_tx: Mutex<Option<broadcast::Sender<Vec<u8>>>>,
     state_rx: watch::Receiver<GameState>,
-    profile: std::sync::RwLock<Profile>,
+    /// The profile this session runs under. A watch channel, because a
+    /// `/set` replacing it is the event a running job reloads on.
+    profile: watch::Sender<Profile>,
     /// The reader task, so `close` can stop it. `TcpStream::into_split`
     /// gives each half its own handle to the same socket. The fd is only
     /// actually released once both halves have dropped, so the reader
@@ -610,7 +612,7 @@ impl Session {
             events_tx: Mutex::new(Some(events_tx)),
             raw_tx: Mutex::new(Some(raw_tx)),
             state_rx,
-            profile: std::sync::RwLock::new(profile.clone()),
+            profile: watch::Sender::new(profile.clone()),
             reader: reader.abort_handle(),
             next_id: AtomicU64::new(1),
             pace_ms,
@@ -626,15 +628,22 @@ impl Session {
     }
 
     /// The profile this session runs under. A clone: `/set` replaces it
-    /// with [`Session::set_profile`], and a job reads it when it starts.
+    /// with [`Session::set_profile`], and a job reads it when it starts
+    /// and again through [`Session::profile_changes`] while it runs.
     pub fn profile(&self) -> Profile {
-        self.profile.read().expect("profile lock").clone()
+        self.profile.borrow().clone()
     }
 
-    /// Replace the profile. The next job start reads the new one. Nothing
-    /// running re-reads it.
+    /// Replace the profile. Every job holding a receiver from
+    /// [`Session::profile_changes`] wakes.
     pub fn set_profile(&self, profile: Profile) {
-        *self.profile.write().expect("profile lock") = profile;
+        self.profile.send_replace(profile);
+    }
+
+    /// The event a job reloads its settings on. The receiver reports
+    /// the current profile on `borrow` and wakes on every replacement.
+    pub fn profile_changes(&self) -> watch::Receiver<Profile> {
+        self.profile.subscribe()
     }
 
     /// Close the line: the writer shuts the socket's write side, the
