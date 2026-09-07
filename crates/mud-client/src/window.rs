@@ -86,6 +86,16 @@ fn facts(settings: &Settings) -> (String, u16, String, bool) {
     )
 }
 
+/// The bar a window shows with no session: where it would connect, and
+/// whether its settings are unsaved. A window that has just been hung up
+/// on would otherwise keep the last bar its session painted, which reads
+/// as a live character on `HP 0`.
+fn idle_bar(settings: &Settings) -> String {
+    let profile = settings.profile();
+    let unsaved = if settings.dirty() { "  unsaved" } else { "" };
+    format!("not connected  {}:{}{unsaved}", profile.host, profile.port)
+}
+
 pub struct WindowHandle {
     pub id: WindowId,
     pub msgs: UnboundedSender<WindowMsg>,
@@ -134,6 +144,7 @@ pub fn spawn(
         port,
         username,
         dirty,
+        bar: idle_bar(&settings),
         ..WindowInfo::default()
     }));
     let window = Window {
@@ -229,6 +240,13 @@ impl Window {
         self.changed();
     }
 
+    /// The bar for a window with no session. Set on the way into the
+    /// disconnected state and after every settings command there, so the
+    /// host it would connect to is what the bar names.
+    fn set_idle_bar(&self) {
+        self.set_bar(idle_bar(&self.settings), false);
+    }
+
     /// The map view drives the real terminal, so the front end has to
     /// stand back while it does.
     fn takeover(&self, on: bool) {
@@ -304,6 +322,7 @@ async fn run(mut w: Window, first: Option<KeyOutcome>) {
 async fn disconnected(w: &mut Window, first: Option<KeyOutcome>) -> Idle {
     let mut quit_armed = false;
     let mut pending = first;
+    w.set_idle_bar();
     loop {
         let outcome = match pending.take() {
             Some(o) => o,
@@ -318,6 +337,7 @@ async fn disconnected(w: &mut Window, first: Option<KeyOutcome>) -> Idle {
         };
         let (step, text) = lobby_step(outcome, &mut w.settings, &mut quit_armed);
         w.sync_info(false);
+        w.set_idle_bar();
         if let Some(text) = text {
             w.note(&text);
         }

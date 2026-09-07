@@ -279,7 +279,7 @@ fn the_bar_never_contains_a_control_character() {
 // Ctrl-F, the take-over.
 // ---------------------------------------------------------------------
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyModifiers};
 use mud_client::tui::{KeyOutcome, handle_key};
 
 async fn session_to(addr: std::net::SocketAddr) -> mud_client::session::Session {
@@ -1449,7 +1449,8 @@ fn the_bar_is_painted_only_when_it_changes_and_never_cleared() {
     assert!(s.contains(&format!("{:40}", "HP 10")), "the bar is padded to the width: {s:?}");
     assert!(s.contains("\x1b[24;1H"), "the input row is addressed");
     assert!(s.contains("> look"), "{s:?}");
-    assert!(s.ends_with("\x1b[24;7H"), "the cursor parks after the typed text: {s:?}");
+    assert!(s.contains("\x1b[24;7H"), "the cursor parks after the typed text: {s:?}");
+    assert!(s.ends_with("\x1b[24;7H\x1b[?25h"), "the cursor is shown again last: {s:?}");
     assert!(!s.contains("\x1b[2K"), "nothing is cleared: {s:?}");
     let same = bottom_bytes("HP 10", Some("HP 10"), &editor, 24, 40);
     let s = String::from_utf8_lossy(&same).to_string();
@@ -1529,5 +1530,71 @@ fn the_lobby_log_line_names_the_window_the_character_and_the_event() {
         log_line(at, 2, Some(&nameless), &EventKind::AssistRefused("username is empty".into())),
         "01:01:01 window 2 h:23 assist not started: username is empty"
     );
+}
+
+/// Build a lobby-only front end at 24 by 80 with a key channel a test
+/// fills itself, and a `Vec<u8>` for the frames.
+fn front_rig() -> (
+    mud_client::tui::Front,
+    tokio::sync::mpsc::UnboundedSender<TermEvent>,
+    Vec<u8>,
+) {
+    let (key_tx, key_rx) = tokio::sync::mpsc::unbounded_channel();
+    let front = mud_client::tui::Front::new(
+        mud_client::settings::Settings::default(),
+        None,
+        80,
+        24,
+        key_rx,
+    );
+    (front, key_tx, Vec::new())
+}
+
+fn typed(line: &str, keys: &tokio::sync::mpsc::UnboundedSender<TermEvent>) {
+    for c in line.chars() {
+        keys.send(TermEvent::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))).unwrap();
+    }
+    keys.send(TermEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))).unwrap();
+}
+
+/// Step until nothing is left to step. `step` waits for an event, so the
+/// timeout is what says the queue is empty.
+async fn settle(front: &mut mud_client::tui::Front, out: &mut Vec<u8>) {
+    while tokio::time::timeout(Duration::from_millis(50), front.step(out)).await.is_ok() {}
+}
+
+#[tokio::test]
+async fn closing_a_window_renumbers_the_ones_above_it() {
+    let (mut front, keys, mut out) = front_rig();
+    for _ in 0..3 {
+        typed("/new", &keys);
+    }
+    settle(&mut front, &mut out).await;
+    assert_eq!(front.active(), 4, "the third /new is window 4");
+    typed("/3", &keys);
+    settle(&mut front, &mut out).await;
+    assert_eq!(front.active(), 3);
+    typed("/close", &keys);
+    settle(&mut front, &mut out).await;
+    assert_eq!(front.active(), 2, "the window below takes the screen");
+    out.clear();
+    typed("/windows", &keys);
+    settle(&mut front, &mut out).await;
+    let frame = String::from_utf8_lossy(&out).to_string();
+    assert!(frame.contains("1: lobby"), "{frame:?}");
+    assert!(frame.contains("3: "), "window 4 became window 3: {frame:?}");
+    assert!(!frame.contains("4: "), "nothing is numbered 4 any more: {frame:?}");
+}
+
+#[tokio::test]
+async fn a_full_repaint_draws_the_bar_again() {
+    let (mut front, keys, mut out) = front_rig();
+    front.paint(&mut out).unwrap();
+    assert!(String::from_utf8_lossy(&out).contains("1: lobby"), "the first frame has the bar");
+    out.clear();
+    keys.send(TermEvent::Key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE))).unwrap();
+    settle(&mut front, &mut out).await;
+    let frame = String::from_utf8_lossy(&out).to_string();
+    assert!(frame.contains("1: lobby"), "a scroll repaints the whole screen, bar included: {frame:?}");
 }
 

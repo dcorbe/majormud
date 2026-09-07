@@ -278,14 +278,22 @@ pub async fn run(
     settings: crate::settings::Settings,
     capture: Option<crate::session::Capture>,
 ) -> std::io::Result<()> {
+    let (cols, rows) = crossterm::terminal::size()?;
     crossterm::terminal::enable_raw_mode()?;
+    // The one blocking read, on its own thread. Kept out of `Front` so a
+    // test can hand it a channel it fills itself.
+    let (key_tx, key_rx) = tokio::sync::mpsc::unbounded_channel();
+    std::thread::spawn(move || {
+        while let Ok(ev) = crossterm::event::read() {
+            if key_tx.send(ev).is_err() {
+                break;
+            }
+        }
+    });
     let mut out = std::io::stdout();
-    let result = match Front::new(settings, capture) {
-        Ok(mut front) => front.run(&mut out).await,
-        Err(e) => Err(e),
-    };
-    let (_, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-    let _ = out.write_all(format!("\x1b[0m\x1b[{rows};1H\r\n").as_bytes());
+    let mut front = Front::new(settings, capture, cols, rows, key_rx);
+    let result = front.run(&mut out).await;
+    let _ = out.write_all(format!("\x1b[0m\x1b[{};1H\r\n", front.rows).as_bytes());
     let _ = out.flush();
     let _ = crossterm::terminal::disable_raw_mode();
     result
@@ -301,7 +309,17 @@ struct LastFrame {
 /// The lobby has this id. Windows get ids from 1 up.
 const LOBBY: crate::window::WindowId = 0;
 
-struct Front {
+/// How many window messages one loop turn takes before it repaints. A
+/// burst of board output is many small messages and painting each one
+/// costs more than the burst does, but an unbounded drain would let a
+/// loud board starve the keyboard.
+const DRAIN: usize = 256;
+
+/// The client's one front end. Public so a test can build one on a
+/// synthetic key channel and a `Vec<u8>` and step it by hand: the
+/// terminal size and the key reader thread are `run`'s business, not
+/// this type's.
+pub struct Front {
     rows: u16,
     cols: u16,
     editor: InputEditor,
@@ -320,7 +338,8 @@ struct Front {
     last_bar: Option<String>,
     next_id: crate::window::WindowId,
     quit_armed: bool,
-    lobby_quit_armed: bool,
+    /// Something on screen moved since the last paint.
+    repaint: bool,
     front_tx: tokio::sync::mpsc::UnboundedSender<crate::window::FrontMsg>,
     front_rx: tokio::sync::mpsc::UnboundedReceiver<crate::window::FrontMsg>,
     key_rx: tokio::sync::mpsc::UnboundedReceiver<TermEvent>,
@@ -333,19 +352,15 @@ enum Flow {
 }
 
 impl Front {
-    fn new(
+    /// The terminal size and the keystroke channel come from the caller,
+    /// which is `run` in play and a test otherwise.
+    pub fn new(
         settings: crate::settings::Settings,
         capture: Option<crate::session::Capture>,
-    ) -> std::io::Result<Front> {
-        let (cols, rows) = crossterm::terminal::size()?;
-        let (key_tx, key_rx) = tokio::sync::mpsc::unbounded_channel();
-        std::thread::spawn(move || {
-            while let Ok(ev) = crossterm::event::read() {
-                if key_tx.send(ev).is_err() {
-                    break;
-                }
-            }
-        });
+        cols: u16,
+        rows: u16,
+        key_rx: tokio::sync::mpsc::UnboundedReceiver<TermEvent>,
+    ) -> Front {
         let (front_tx, front_rx) = tokio::sync::mpsc::unbounded_channel();
         let scrollback = settings.profile().scrollback_lines as usize;
         let mut log = crate::screen::Screen::new(rows.saturating_sub(2), cols, scrollback);
@@ -367,7 +382,7 @@ impl Front {
             last_bar: None,
             next_id: 1,
             quit_armed: false,
-            lobby_quit_armed: false,
+            repaint: false,
             front_tx,
             front_rx,
             key_rx,
@@ -379,38 +394,52 @@ impl Front {
             let number = front.open(front.lobby.clone(), capture, None);
             front.switch(number);
         }
-        Ok(front)
+        front
     }
 
-    async fn run(&mut self, out: &mut std::io::Stdout) -> std::io::Result<()> {
+    /// The number of the window on screen, 1 for the lobby.
+    pub fn active(&self) -> usize {
+        self.active
+    }
+
+    pub async fn run(&mut self, out: &mut impl std::io::Write) -> std::io::Result<()> {
         self.paint(out)?;
-        loop {
-            tokio::select! {
-                ev = self.key_rx.recv() => {
-                    let Some(ev) = ev else { return Ok(()) };
-                    match ev {
-                        TermEvent::Resize(w, h) => self.resize(w, h),
-                        TermEvent::Key(key) if key.kind != KeyEventKind::Release => {
-                            if let Flow::Exit = self.on_key(key, TermEvent::Key(key)) {
-                                return Ok(());
-                            }
+        while self.step(out).await? {}
+        Ok(())
+    }
+
+    /// One event and one paint. `false` means the front end is done.
+    pub async fn step(&mut self, out: &mut impl std::io::Write) -> std::io::Result<bool> {
+        tokio::select! {
+            ev = self.key_rx.recv() => {
+                let Some(ev) = ev else { return Ok(false) };
+                match ev {
+                    TermEvent::Resize(w, h) => self.resize(w, h),
+                    TermEvent::Key(key) if key.kind != KeyEventKind::Release => {
+                        // The editor's line may have moved under any key,
+                        // so a key always earns its repaint.
+                        self.repaint = true;
+                        if let Flow::Exit = self.on_key(key, TermEvent::Key(key)) {
+                            return Ok(false);
                         }
-                        _ => {}
                     }
-                }
-                msg = self.front_rx.recv() => {
-                    if let Some(msg) = msg {
-                        self.on_front(msg);
-                    }
+                    _ => {}
                 }
             }
-            // A burst of board output is many small messages. Take them
-            // all before paying for one paint.
-            while let Ok(msg) = self.front_rx.try_recv() {
-                self.on_front(msg);
+            msg = self.front_rx.recv() => {
+                if let Some(msg) = msg {
+                    self.on_front(msg);
+                }
             }
+        }
+        for _ in 0..DRAIN {
+            let Ok(msg) = self.front_rx.try_recv() else { break };
+            self.on_front(msg);
+        }
+        if self.repaint {
             self.paint(out)?;
         }
+        Ok(true)
     }
 
     fn open(
@@ -480,6 +509,7 @@ impl Front {
         }
         self.last = None;
         self.last_bar = None;
+        self.repaint = true;
     }
 
     fn on_key(&mut self, key: KeyEvent, raw: TermEvent) -> Flow {
@@ -603,7 +633,12 @@ impl Front {
             }
             other => {
                 if self.active == 1 {
-                    let (step, text) = lobby_step(other, &mut self.lobby, &mut self.lobby_quit_armed);
+                    // `/quit` never reaches `lobby_step` from here: the
+                    // front end owns it and answers for every window at
+                    // once, so the arm's own arming flag has nothing to
+                    // remember between lines.
+                    let mut quit_armed = false;
+                    let (step, text) = lobby_step(other, &mut self.lobby, &mut quit_armed);
                     if let Some(text) = text {
                         self.log.note(&text);
                     }
@@ -687,6 +722,7 @@ impl Front {
         self.windows.remove(number - 2);
         self.unread.retain(|u| *u != id);
         self.log.note(&format!("-- closed window {number} --"));
+        self.repaint = true;
         if self.active >= number {
             let to = (self.active - 1).max(1);
             self.switch(to);
@@ -696,9 +732,17 @@ impl Front {
     fn on_front(&mut self, msg: crate::window::FrontMsg) {
         use crate::window::FrontMsg;
         match msg {
-            FrontMsg::Changed { .. } => {}
+            // Only the window on screen is worth a frame. Every other
+            // window is drawing into a picture nobody is looking at.
+            FrontMsg::Changed { window } => {
+                if self.id_of(self.active) == Some(window) {
+                    self.repaint = true;
+                }
+            }
             FrontMsg::Event { window, kind } => {
-                let number = self.number_of(window).unwrap_or(0);
+                // A window already removed has no number to log under.
+                // Its last events arrive after its handle is gone.
+                let Some(number) = self.number_of(window) else { return };
                 let info = self
                     .windows
                     .iter()
@@ -709,6 +753,7 @@ impl Front {
                 if self.id_of(self.active) != Some(window) && !self.unread.contains(&window) {
                     self.unread.push(window);
                 }
+                self.repaint = true;
             }
             FrontMsg::Takeover { window, on } => {
                 self.frozen = on.then_some(window);
@@ -716,12 +761,14 @@ impl Front {
                     self.last = None;
                     self.last_bar = None;
                 }
+                self.repaint = true;
             }
             FrontMsg::Ended { window } => self.remove(window),
         }
     }
 
-    fn paint(&mut self, out: &mut std::io::Stdout) -> std::io::Result<()> {
+    pub fn paint(&mut self, out: &mut impl std::io::Write) -> std::io::Result<()> {
+        self.repaint = false;
         if self.frozen.is_some() {
             return Ok(());
         }
@@ -736,8 +783,12 @@ impl Front {
         let unread: Vec<usize> = self.unread.iter().filter_map(|u| self.number_of(*u)).collect();
         let bar = window_bar(self.active, info.as_ref(), &unread, self.cols);
         let last = self.last.as_ref().filter(|l| l.window == id).map(|l| &l.screen);
+        // A full paint starts with an erase, which wipes the two reserved
+        // rows. The bar has to be redrawn with them, so the last bar only
+        // counts as painted while the last screen does.
+        let last_bar = last.and(self.last_bar.as_deref());
         let mut frame = screen_bytes(&snapshot, last);
-        frame.extend(bottom_bytes(&bar, self.last_bar.as_deref(), &self.editor, self.rows, self.cols));
+        frame.extend(bottom_bytes(&bar, last_bar, &self.editor, self.rows, self.cols));
         out.write_all(&frame)?;
         out.flush()?;
         self.last = Some(LastFrame { window: id, screen: snapshot });
@@ -1394,7 +1445,12 @@ pub fn bottom_bytes(bar: &str, last_bar: Option<&str>, editor: &InputEditor, row
     }
     let line = fit(&format!("> {}", editor.line()), width);
     let cursor_col = 3 + editor.cursor() as u16;
-    out.extend_from_slice(format!("\x1b[{input_row};1H{line}\x1b[{input_row};{cursor_col}H").as_bytes());
+    // Shown last, every frame. A full screen paint replays whatever the
+    // board sent, and a board that hid the cursor for its own full-screen
+    // screen leaves it hidden over the input line otherwise.
+    out.extend_from_slice(
+        format!("\x1b[{input_row};1H{line}\x1b[{input_row};{cursor_col}H\x1b[?25h").as_bytes(),
+    );
     out
 }
 

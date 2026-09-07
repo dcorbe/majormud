@@ -72,6 +72,19 @@ impl Rig {
     fn text(&self) -> String {
         self.handle.screen.lock().unwrap().text()
     }
+
+    /// Wait until the screen says `what`. One action can move the bar
+    /// and print a note, and the front end hears about both, so counting
+    /// `Changed` messages is not a contract a test may rely on.
+    async fn until_text(&mut self, what: &str) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !self.text().contains(what) {
+            tokio::time::timeout_at(deadline, self.front.recv())
+                .await
+                .unwrap_or_else(|_| panic!("timed out waiting for {what:?} in {}", self.text()))
+                .expect("the window task ended");
+        }
+    }
 }
 
 #[tokio::test]
@@ -81,15 +94,18 @@ async fn a_disconnected_window_takes_settings_commands_on_its_own_screen() {
         .msgs
         .send(WindowMsg::Outcome(KeyOutcome::SetList { pattern: "host".into() }))
         .unwrap();
-    r.until("the listing", |m| matches!(m, FrontMsg::Changed { window: 7 })).await;
-    assert!(r.text().contains("host = \"\""), "{}", r.text());
+    r.until_text("host = \"\"").await;
     assert!(!r.handle.info.lock().unwrap().connected);
     r.handle
         .msgs
         .send(WindowMsg::Outcome(KeyOutcome::Send("look".into())))
         .unwrap();
-    r.until("the refusal", |m| matches!(m, FrontMsg::Changed { window: 7 })).await;
-    assert!(r.text().contains("not connected"), "{}", r.text());
+    r.until_text("not connected").await;
+    assert_eq!(
+        r.handle.info.lock().unwrap().bar,
+        "not connected  :23",
+        "a window with no session names where it would connect"
+    );
 }
 
 #[tokio::test]
@@ -126,15 +142,18 @@ async fn a_board_hanging_up_reports_disconnected_and_stays_a_window() {
     let mut r = rig(settings_for(Some(addr)), None);
     r.until("connected", |m| matches!(m, FrontMsg::Event { kind: EventKind::Connected, .. })).await;
     r.until("disconnected", |m| matches!(m, FrontMsg::Event { kind: EventKind::Disconnected, .. })).await;
-    r.until("the note", |m| matches!(m, FrontMsg::Changed { .. })).await;
-    assert!(r.text().contains("disconnected"), "{}", r.text());
+    r.until_text("-- disconnected.").await;
     assert!(!r.handle.info.lock().unwrap().connected);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !r.handle.info.lock().unwrap().bar.starts_with("not connected") {
+        assert!(std::time::Instant::now() < deadline, "the bar kept its play text");
+        r.until("the idle bar", |m| matches!(m, FrontMsg::Changed { .. })).await;
+    }
     r.handle
         .msgs
         .send(WindowMsg::Outcome(KeyOutcome::SetList { pattern: "port".into() }))
         .unwrap();
-    r.until("still answering", |m| matches!(m, FrontMsg::Changed { .. })).await;
-    assert!(r.text().contains("port = "), "{}", r.text());
+    r.until_text("port = ").await;
 }
 
 #[tokio::test]
