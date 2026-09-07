@@ -1343,6 +1343,21 @@ impl HealWatch {
         }
     }
 
+    /// Take the new tables without losing the rest already in flight.
+    ///
+    /// `HealWatch::new` starts at "not watching", which is the state
+    /// that makes `on_event` answer nothing. A settings reload that
+    /// built a fresh watch over a rest under way would drop both the
+    /// refusal detection and the retry rearm for that rest, and the bot
+    /// would stay latched believing it rested. The three config fields
+    /// are all this needs to swap. `baseline` and `prompts` belong to
+    /// the rest, not to the settings.
+    pub fn reconfigure(&mut self, bot: &crate::bot::BotConfig, farm: &FarmConfig) {
+        self.rest_command = bot.rest_command.clone();
+        self.retry_prompts = farm.heal_retry_prompts;
+        self.refused = farm.heal_refused.clone();
+    }
+
     /// Called for every command the gate actually releases. A fresh heal
     /// restarts the watch: new baseline, new patience.
     ///
@@ -3489,7 +3504,7 @@ async fn farm_stop(
                 ..bot_config.clone()
             };
             bot.reconfigure(stop_config.clone());
-            rest_watch = HealWatch::new(&bot_config, &cfg);
+            rest_watch.reconfigure(&bot_config, &cfg);
         }
         if time_up(started, &cfg).is_some() {
             return Ok(StopEnd::TimeUp);

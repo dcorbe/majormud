@@ -2962,3 +2962,92 @@ async fn the_fight_switch_changed_mid_run_holds_at_the_next_leg() {
     assert!(!log.iter().any(|l| l.starts_with("a ")), "nothing was fought: {log:?}");
 }
 
+
+/// `/set bot.ignore_coins ["copper"]` while the run is standing IN the
+/// stop, not between two of them. The pile the recheck turns up is left
+/// where it is, which only happens if the stop's own bot took the new
+/// policy without the stop being restarted.
+#[tokio::test]
+async fn a_coin_rule_change_lands_mid_stop_without_leaving_the_stop() {
+    let (addr, received) = scripted_board(vec![
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        ("look", format!("\r\nlook{}", room_block("Guard Post", None, "north"))),
+        // The stop is quiet on arrival, so nothing is swept before the
+        // change can land.
+        ("n", format!("\r\nn{}", room_block("Inner Ward", None, "north south"))),
+        // The recheck the stop asks while it dwells. The pile is here,
+        // and by now the new rule is in.
+        (
+            "look",
+            format!("\r\nlook{}", room_block_items("Inner Ward", &["49 copper farthings"], "north south")),
+        ),
+        ("n", format!("\r\nn{}", room_block("Keep", None, "south"))),
+        ("look", format!("\r\nlook{}", room_block("Keep", None, "south"))),
+    ])
+    .await;
+    let session = session_for(addr).await;
+    mud_client::farm::probe_sheet(&session, None).await;
+
+    let graph = corridor();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/2".into(), "1/3".into()],
+        loops: 1,
+        // The recheck has to expire while the stop is still dwelling,
+        // so the pile is turned up during the stop rather than on the
+        // way in or on the way out.
+        idle_poke_ms: 400,
+        dwell_empty_seconds: 3,
+        depart_at_percent: Some(0),
+        travel_interrupts: 0,
+        ..FarmConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig {
+        auto_combat: true,
+        auto_get: true,
+        max_hp: 30,
+        ..BotConfig::default()
+    };
+    let (tx, rx) = tokio::sync::watch::channel(Profile::default());
+    let live = Live::over(rx, "farm", quiet(), bot.clone(), cfg.clone(), farm_derive());
+    // The first `n` is the leg into the stop, so the change lands just
+    // after the arrival and well before the recheck.
+    change_after(
+        Arc::clone(&received),
+        "n",
+        tx,
+        Profile {
+            bot: Some(BotConfig { ignore_coins: vec!["copper".into()], ..bot.clone() }),
+            farm: Some(cfg.clone()),
+            ..Profile::default()
+        },
+    );
+
+    let (end, stats) = match tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, live, None, &quiet()),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    {
+        Ok(out) => out,
+        Err(e) => panic!("the run must finish: {e:?}\nboard received: {:?}", received.lock().unwrap()),
+    };
+    assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
+
+    let log = received.lock().unwrap();
+    assert!(
+        log.iter().filter(|l| l.as_str() == "look").count() >= 2,
+        "the stop stayed put and rechecked, which is where the pile turns up: {log:?}"
+    );
+    assert!(
+        !log.iter().any(|l| l.starts_with("get ")),
+        "the pile turned up after the rule changed, so it is left alone: {log:?}"
+    );
+}
+

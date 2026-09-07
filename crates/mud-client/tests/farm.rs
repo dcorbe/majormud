@@ -586,6 +586,59 @@ fn a_refusal_line_is_ignored_when_no_heal_is_outstanding() {
     assert!(!w.on_event(&Event::Line("You can't rest here.".into())));
 }
 
+/// A settings reload must not lose the rest already under way. A fresh
+/// `HealWatch` starts at "not watching", which answers nothing, so the
+/// bot would sit latched believing it rested.
+#[test]
+fn a_reconfigured_watch_still_answers_the_rest_it_was_watching() {
+    let mut w = heal_watch(&[]);
+    w.on_sent("rest");
+    assert!(!w.on_event(&prompt(12)), "first prompt sets the baseline");
+
+    let bot = BotConfig {
+        rest_command: "sleep".into(),
+        ..BotConfig::default()
+    };
+    let farm = FarmConfig {
+        heal_retry_prompts: 3,
+        heal_refused: vec!["You can't rest".into()],
+        ..FarmConfig::default()
+    };
+    w.reconfigure(&bot, &farm);
+
+    assert!(!w.on_event(&prompt(12)), "the baseline survived the reload");
+    assert!(
+        w.on_event(&prompt(12)),
+        "three flat prompts still means the rest never landed"
+    );
+}
+
+/// The new tables take effect on the rest that is already running: the
+/// refusal list the reload brought is matched against the next line.
+#[test]
+fn a_reconfigured_watch_matches_the_new_refusal_list() {
+    let mut w = heal_watch(&[]);
+    w.on_sent("rest");
+    assert!(
+        !w.on_event(&Event::Line("You can't rest here.".into())),
+        "nothing was refused under the old list"
+    );
+
+    let farm = FarmConfig {
+        heal_retry_prompts: 3,
+        heal_refused: vec!["You can't rest".into()],
+        ..FarmConfig::default()
+    };
+    w.reconfigure(
+        &BotConfig {
+            rest_command: "rest".into(),
+            ..BotConfig::default()
+        },
+        &farm,
+    );
+    assert!(w.on_event(&Event::Line("You can't rest here.".into())));
+}
+
 /// A fresh heal restarts the watch: new baseline, new patience.
 #[test]
 fn resending_the_heal_restarts_the_watch() {
@@ -3047,7 +3100,6 @@ async fn a_refresh_after_a_changed_wake_sees_the_change() {
     assert!(live.refresh());
     assert!(!live.refresh(), "nothing changed since the last refresh");
 }
-
 
 /// A reload that did not touch the travel fight key says nothing about
 /// the switch, so a `/bot` toggle made by hand survives a `/set` of
