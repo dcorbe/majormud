@@ -410,6 +410,15 @@ pub const ROOM: char = '□';
 /// connector and colour has to do the work.
 const ROOM_SOLID: char = '\u{2588}';
 
+/// A stairwell: somewhere this plane does not show, and which way it
+/// lies. One `+` used to stand for all three, and the panel was the only
+/// place that said whether `<` or `>` would take it. Arrows rather than
+/// colour, because the palette's green already means "you are here" and
+/// its yellow "a stop on the loop".
+const STAIR_UP: char = '\u{2191}';
+const STAIR_DOWN: char = '\u{2193}';
+const STAIR_BOTH: char = '\u{2195}';
+
 /// Worth ramp, low to high. No red: see [`WARNING`].
 const WORTH: [(i64, &str); 4] = [
     (0, "0;32"),
@@ -435,9 +444,14 @@ pub fn styles(
         let Some(d) = Dossier::of(graph, spawns, id) else {
             continue;
         };
-        let glyph = if plane.links_from(id).next().is_some() {
-            // A stairwell: somewhere this plane does not show.
-            '+'
+        let up = plane.links_from(id).any(|l| l.dir == Direction::Up);
+        let down = plane.links_from(id).any(|l| l.dir == Direction::Down);
+        let glyph = if up && down {
+            STAIR_BOTH
+        } else if up {
+            STAIR_UP
+        } else if down {
+            STAIR_DOWN
         } else if d.shop > 0 {
             '$'
         } else {

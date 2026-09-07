@@ -193,3 +193,43 @@ fn up_and_down_still_leave_the_plane() {
         vec![(Direction::Up, above), (Direction::Down, below)]
     );
 }
+
+// --- a stairwell says which way it goes ---------------------------------
+
+use mud_client::map::{Paint, PaintCtx, styles};
+use mud_client::spawn::SpawnTable;
+
+fn glyph_of(exits: &[(Direction, RoomId)]) -> char {
+    let a = id(1, 1);
+    let mut rooms = vec![(a, room("Stairwell", exits))];
+    for (_, dest) in exits {
+        rooms.push((*dest, room("Elsewhere", &[])));
+    }
+    let graph = RoomGraph::from_rooms(rooms);
+    let plane = layout(&graph, a);
+    let styles = styles(
+        &plane,
+        &graph,
+        &SpawnTable::default(),
+        Paint::Terrain,
+        &PaintCtx::default(),
+    );
+    styles[&a].glyph
+}
+
+#[test]
+fn a_stairwell_glyph_points_the_way_the_stair_goes() {
+    let (above, below, beside) = (id(1, 2), id(1, 3), id(1, 4));
+    assert_eq!(glyph_of(&[(Direction::Up, above)]), '\u{2191}', "up");
+    assert_eq!(glyph_of(&[(Direction::Down, below)]), '\u{2193}', "down");
+    assert_eq!(
+        glyph_of(&[(Direction::Up, above), (Direction::Down, below)]),
+        '\u{2195}',
+        "both"
+    );
+    assert_eq!(
+        glyph_of(&[(Direction::East, beside)]),
+        mud_client::map::ROOM,
+        "a compass exit is not a stair"
+    );
+}
