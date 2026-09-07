@@ -92,7 +92,6 @@ fn a_missing_log_has_no_last_death() {
     assert_eq!(last_in(&path, "beef"), None);
 }
 
-
 use mud_client::deathlog::DeathWatch;
 use mud_client::events::Event;
 
