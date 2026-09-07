@@ -709,6 +709,42 @@ async fn a_fizzle_is_followed_by_the_sneak_anyway() {
     );
 }
 
+/// A wording the buff state does not know still ends the wait: the
+/// prompt behind it is the board's end of reply. Without that exit the
+/// cast burns the whole step timeout at every single arming, so the
+/// walk is given a five second step and one second to finish in.
+///
+/// Mutation target: take the prompt exit out of `cast_stealth` and this
+/// times out.
+#[tokio::test]
+async fn an_unknown_cast_reply_is_given_up_at_the_prompt() {
+    let (addr, log) = sneak_board(
+        "Attempting to sneak...",
+        Board {
+            arms: true,
+            cast_reply: Some("You feel a strange tingle."),
+            ..Board::default()
+        },
+    )
+    .await;
+    let session = session_for(addr).await;
+    let navigator = nav_with_timeout(graph_one_hop(), 56, 5000)
+        .with_stealth(camouflage(30), RoundClock::new());
+    let arrival = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        navigator.goto(&session, HERE, THERE, &mut NoGuard, false),
+    )
+    .await
+    .expect("the prompt ends the wait well inside the step timeout")
+    .unwrap();
+    assert_eq!(arrival.at, THERE);
+    assert_eq!(
+        sent(&log),
+        vec!["cast camo".to_string(), "sneak".to_string(), "n".to_string()],
+        "one attempt, then on with the sneak"
+    );
+}
+
 /// A cast the board never answers is given up at the step deadline and
 /// the sneak still goes out.
 #[tokio::test]

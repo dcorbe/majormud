@@ -89,8 +89,12 @@ as today.
    without sending anything. No spell is cast for a sneak that will not be armed.
 2. Ask the buff state for a lapsed, affordable stealth spell. If there is one, send its
    cast and wait for the outcome the way `farm_stop` waits for a buff: success marks it
-   cast, a fizzle or a refusal marks the attempt and moves on. Repeat until nothing is
-   wanted. A cast breaks a sneak, which is why every cast comes before the `sneak`.
+   cast, a fizzle or a refusal marks the attempt and moves on. The wait ends at the
+   board's own end of reply, so a wording the buff state does not know is given up on
+   at the next prompt rather than at the step deadline. One cast per arming, so a
+   character who knows a second stealth spell gets it at the next arming rather than
+   standing still here to buy it. A cast breaks a sneak, which is why the cast comes
+   before the `sneak`.
 3. Send `sneak` and resolve it as today.
 
 A cast that fails for mana, a fizzle or a refusal does not stop the walk. The sneak is

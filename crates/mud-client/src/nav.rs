@@ -2252,14 +2252,18 @@ impl Navigator {
         }
     }
 
-    /// Cast whatever stealth spell is lapsed and affordable, one attempt
-    /// each, and wait for the board's word on it. A cast breaks a sneak,
-    /// so this runs before `sneak` and never after it.
+    /// Cast the first stealth spell that is lapsed and affordable, and
+    /// wait for the board's word on it. A cast breaks a sneak, so this
+    /// runs before `sneak` and never after it.
     ///
-    /// One attempt per spell per arming. A fizzle, a refusal or an
-    /// unanswered cast leaves the spell lapsed, and the next arming
-    /// tries again. Looping on it here would spend rounds standing
-    /// still that the walk has better uses for.
+    /// One cast per arming. The board refuses a second spell inside the
+    /// same round, so a character who knows two stealth spells gets the
+    /// second at the next arming rather than standing still here to buy
+    /// it. A fizzle, a refusal or an unanswered cast leaves the spell
+    /// lapsed, and the next arming tries again.
+    ///
+    /// The wait for the outcome ends at the board's own end of reply:
+    /// the wording, or failing that the prompt behind it.
     async fn cast_stealth(
         &self,
         session: &Session,
@@ -2324,6 +2328,18 @@ impl Navigator {
                 let settled = {
                     let mut held = stealth.lock().expect("stealth lock");
                     held.buffs.on_event(&cor, std::time::Instant::now());
+                    // The prompt is the board's end of reply. A wording
+                    // the buff state does not know would otherwise hold
+                    // the walk for the whole step timeout at every
+                    // arming, and it is the arming a walk pays most
+                    // often. Give up on it the way a fizzle is given up
+                    // on: the budget stays lapsed, the next arming tries
+                    // again, and the sneak goes out now.
+                    if held.buffs.in_flight()
+                        && matches!(cor.event, crate::events::Event::Prompt { .. })
+                    {
+                        held.buffs.give_up();
+                    }
                     !held.buffs.in_flight()
                 };
                 if settled {

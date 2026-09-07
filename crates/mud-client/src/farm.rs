@@ -2003,9 +2003,13 @@ pub async fn run_farm(
     }
     let buff = crate::sheet::BuffState::new(kept);
     // Stealth, in the same voice: what the book carries that raises
-    // stealth, cast before every sneak by the navigator.
-    let (_, book, _) = session.raw_sheet();
-    for line in crate::sheet::stealth_lines(&book, &sheet.stealth.0, &sheet.stealth.1) {
+    // stealth, cast before every sneak by the navigator. One read of
+    // the sheet answers both halves, and the list is the one the walker
+    // itself gets, so the report and the walk cannot name different
+    // spells.
+    let (_, book, casting) = session.raw_sheet();
+    let (stealth, stealth_refused) = stealth_from(session, &book, casting);
+    for line in crate::sheet::stealth_lines(&book, &stealth, &stealth_refused) {
         notices(&line);
     }
     let mut casts = Casts { light, heal, buff };
@@ -2548,9 +2552,6 @@ pub(crate) struct Sheet {
     /// The `[bot].buffs` that survived being looked up, and one line for
     /// each that did not.
     pub buffs: (Vec<crate::sheet::Buff>, Vec<String>),
-    /// The stealth spells the book carries, and one line for each
-    /// that has no duration.
-    pub stealth: (Vec<crate::sheet::Buff>, Vec<String>),
 }
 
 /// The two spell machines, carried as one.
@@ -2689,12 +2690,25 @@ pub async fn probe_sheet(
 /// is what [`crate::nav::Navigator::with_stealth`] treats as "arm the
 /// sneak as before".
 pub(crate) fn stealth_buffs(session: &crate::session::Session) -> Vec<crate::sheet::Buff> {
-    let Some(content) = session.content() else {
-        return Vec::new();
-    };
     let (_, book, casting) = session.raw_sheet();
+    stealth_from(session, &book, casting).0
+}
+
+/// The same discovery from a book the caller has already read, with the
+/// refusals it produced. A caller that wants both the book and the
+/// buffs reads the sheet once and asks here, rather than reading it
+/// again through [`stealth_buffs`]. Durations come from the content in
+/// hand rather than a second decode of the database.
+pub(crate) fn stealth_from(
+    session: &crate::session::Session,
+    book: &crate::sheet::Spellbook,
+    casting: crate::sheet::Casting,
+) -> (Vec<crate::sheet::Buff>, Vec<String>) {
+    let Some(content) = session.content() else {
+        return (Vec::new(), Vec::new());
+    };
     let durations = crate::views::spell_durations(&content);
-    crate::sheet::stealth_spells(&book, &content.spells, &durations, casting).0
+    crate::sheet::stealth_spells(book, &content.spells, &durations, casting)
 }
 
 /// Build a [`Sheet`] from the session's cached inventory and spellbook
@@ -2732,7 +2746,6 @@ pub(crate) fn sheet_from(
             casting,
         ),
         buffs: crate::sheet::buffs(&book, &bot.buffs, durations, casting),
-        stealth: crate::sheet::stealth_spells(&book, spells, durations, casting),
     }
 }
 

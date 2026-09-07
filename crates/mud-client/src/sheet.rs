@@ -763,6 +763,14 @@ impl BuffState {
         }
     }
 
+    /// The board answered a cast with a wording this does not know, or
+    /// the caller stopped waiting for it. Counted as a failure, the way
+    /// a fizzle is: the budget stays lapsed, so the spell is tried again
+    /// at the next opportunity, and nothing is in flight any more.
+    pub fn give_up(&mut self) {
+        self.pending = None;
+    }
+
     /// The first buff that is lapsed (or never cast) and affordable.
     fn wanted(&self, now: std::time::Instant, clock: &crate::world::RoundClock) -> Option<usize> {
         let mana = self.mana?;
