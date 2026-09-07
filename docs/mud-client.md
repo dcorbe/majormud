@@ -216,6 +216,13 @@ not being kept up looks exactly like one that is.
 Buffs are never cast mid-fight. A buff bought during the fight it was meant
 to help is mana spent too late to matter.
 
+A stealth spell the character knows is cast before every sneak a walk
+arms, on the same budget a buff runs on. It is discovered from the spell
+table by its stealth ability, so camouflage, way of the cat and shadowform
+are found without being named. `bot.auto_sneak = false` turns the sneak and
+the cast off together. A farm start prints what it found as
+`stealth: camouflage (10 mana, 30 rounds)`, or `stealth: none known`.
+
 #### Renamed keys
 
 `heal_at_percent` and `heal_command` named the rest mark and the rest

@@ -247,7 +247,8 @@ pub async fn run_go(
     // session handed the table earlier keeps it when this load fails.
     let content = crate::farm::content_for(session, &live.farm, notices);
     let nav = crate::nav::Navigator::new(graph.clone(), crate::farm::nav_config(&live.bot, &live.farm))
-        .with_capabilities(session.capabilities());
+        .with_capabilities(session.capabilities())
+        .with_stealth(crate::farm::stealth_buffs(session), crate::world::RoundClock::new());
     let nav = match content {
         Some(content) => nav.with_backstab(content, session.wielded(), session.contents().items),
         None => nav,

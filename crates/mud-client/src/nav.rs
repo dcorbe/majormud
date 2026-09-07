@@ -677,6 +677,10 @@ pub struct Navigator {
     /// opener entirely: nothing that does not call it changes, same
     /// posture as `capabilities`.
     backstab: Option<BackstabPrep>,
+    /// The stealth spells to cast before a sneak, with the clock their
+    /// budget runs on. Behind a mutex because `goto` takes `&self` and
+    /// the state moves. Never held across an await.
+    stealth: Option<std::sync::Mutex<StealthCasts>>,
 }
 
 /// [`Navigator`]'s own snapshot of the character's weapon and pack, for
@@ -685,6 +689,13 @@ struct BackstabPrep {
     content: Arc<mud_core::content::Content>,
     wielded: Option<String>,
     carried: Vec<String>,
+}
+
+/// [`Navigator`]'s own stealth budget, cast before every sneak it arms.
+/// See [`Navigator::with_stealth`].
+struct StealthCasts {
+    buffs: crate::sheet::BuffState,
+    clock: crate::world::RoundClock,
 }
 
 /// The direction word the board understands for each step.
@@ -719,6 +730,7 @@ impl Navigator {
                 ..crate::graph::Capabilities::unrestricted()
             },
             backstab: None,
+            stealth: None,
         }
     }
 
@@ -768,6 +780,34 @@ impl Navigator {
     ) -> Self {
         self.backstab = Some(BackstabPrep { content, wielded, carried });
         self
+    }
+
+    /// Cast these before every sneak this navigator arms. An empty list
+    /// arms the sneak as before.
+    pub fn with_stealth(
+        mut self,
+        buffs: Vec<crate::sheet::Buff>,
+        clock: crate::world::RoundClock,
+    ) -> Self {
+        if !buffs.is_empty() {
+            self.stealth = Some(std::sync::Mutex::new(StealthCasts {
+                buffs: crate::sheet::BuffState::new(buffs),
+                clock,
+            }));
+        }
+        self
+    }
+
+    /// Let the stealth budget see an event: mana from a prompt, a wear
+    /// off line, the answer to a cast of its own.
+    fn note_event(&self, cor: &crate::correlate::Correlated) {
+        if let Some(stealth) = &self.stealth {
+            stealth
+                .lock()
+                .expect("stealth lock")
+                .buffs
+                .on_event(cor, std::time::Instant::now());
+        }
     }
 
     /// Refuse to route through these rooms, or off the plane they sit on.
@@ -964,6 +1004,7 @@ impl Navigator {
                 // and to keep the receiver from lagging. A trip here is
                 // honoured before the step goes out at all.
                 crate::session::drain(&mut events, |ev| {
+                    self.note_event(ev);
                     armed = armed.take().or_else(|| guard.on_event(&ev.event));
                 });
                 if let Some(interrupt) = armed.take() {
@@ -2211,6 +2252,87 @@ impl Navigator {
         }
     }
 
+    /// Cast whatever stealth spell is lapsed and affordable, one attempt
+    /// each, and wait for the board's word on it. A cast breaks a sneak,
+    /// so this runs before `sneak` and never after it.
+    ///
+    /// One attempt per spell per arming. A fizzle, a refusal or an
+    /// unanswered cast leaves the spell lapsed, and the next arming
+    /// tries again. Looping on it here would spend rounds standing
+    /// still that the walk has better uses for.
+    async fn cast_stealth(
+        &self,
+        session: &Session,
+        events: &mut tokio::sync::broadcast::Receiver<crate::correlate::Correlated>,
+        guard: &mut impl TravelGuard,
+        armed: &mut Option<Interrupt>,
+    ) -> Result<(), NavErrorKind> {
+        let Some(stealth) = &self.stealth else {
+            return Ok(());
+        };
+        // A state built after the last prompt passed knows no mana and
+        // would cast nothing. The session remembers the prompt.
+        if let Some(mana) = session.state().borrow().mana {
+            stealth.lock().expect("stealth lock").buffs.seed_mana(mana);
+        }
+        let deadline = tokio::time::Instant::now() + self.step_timeout;
+        loop {
+            let attempt = {
+                let mut held = stealth.lock().expect("stealth lock");
+                // A plain `&mut` so the two fields can be borrowed apart.
+                // Through the guard itself the borrow checker refuses.
+                let s = &mut *held;
+                let now = std::time::Instant::now();
+                s.buffs.attempt(now, &s.clock)
+            };
+            let cmd = match attempt {
+                crate::sheet::CastAttempt::Send(cmd) => cmd,
+                // A cast already went out this round, or nothing is
+                // wanted. Either way the sneak is next.
+                crate::sheet::CastAttempt::Hold(_) | crate::sheet::CastAttempt::Nothing => {
+                    return Ok(());
+                }
+            };
+            let id = session.send(&cmd);
+            stealth.lock().expect("stealth lock").buffs.on_sent(&cmd, id);
+            loop {
+                let ev = tokio::time::timeout_at(deadline, events.recv()).await;
+                if let Ok(Ok(ev)) = &ev {
+                    match guard.on_event(&ev.event) {
+                        Some(Interrupt::Died) => {
+                            return Err(NavErrorKind::Interrupted(Interrupt::Died));
+                        }
+                        Some(hurt) => *armed = armed.take().or(Some(hurt)),
+                        None => {}
+                    }
+                }
+                let cor = match ev {
+                    // Unanswered past the deadline: forget the cast and
+                    // go on to the sneak. The budget stays lapsed.
+                    Err(_) => {
+                        stealth.lock().expect("stealth lock").buffs.new_visit();
+                        return Ok(());
+                    }
+                    Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                    Ok(Err(_)) => {
+                        return Err(NavErrorKind::Expect(ExpectError::Closed {
+                            tail: String::new(),
+                        }));
+                    }
+                    Ok(Ok(cor)) => cor,
+                };
+                let settled = {
+                    let mut held = stealth.lock().expect("stealth lock");
+                    held.buffs.on_event(&cor, std::time::Instant::now());
+                    !held.buffs.in_flight()
+                };
+                if settled {
+                    break;
+                }
+            }
+        }
+    }
+
     /// Send `sneak` and read the reply honestly, per
     /// `2026-08-22-inventory-and-backstab-design.md`'s "Sneak replies"
     /// facts. Never sent at all when `capabilities.stealth == 0` — a
@@ -2259,6 +2381,7 @@ impl Navigator {
         if !self.sneak || self.capabilities.stealth == 0 {
             return Ok(false);
         }
+        self.cast_stealth(session, events, guard, armed).await?;
         const MAY_NOT_SNEAK: &str = "You may not sneak right now!";
         const DONT_THINK_SNEAKING: &str = "You don't think you're sneaking.";
         const ATTEMPTING_TO_SNEAK: &str = "Attempting to sneak...";
@@ -2428,6 +2551,7 @@ impl Navigator {
                 }
                 Ok(Ok(cor)) => cor,
             };
+            self.note_event(&cor);
             if cor.answers != Some(awaiting) {
                 continue;
             }

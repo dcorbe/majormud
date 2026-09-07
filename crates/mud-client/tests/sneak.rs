@@ -13,6 +13,8 @@ use mud_client::graph::{Capabilities, ExitEdge, ExitRequirement, GraphRoom, Room
 use mud_client::nav::{NavConfig, Navigator, NoGuard};
 use mud_client::profile::Profile;
 use mud_client::session::Session;
+use mud_client::sheet::Buff;
+use mud_client::world::RoundClock;
 use mud_core::content::{Direction, RoomId};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -23,10 +25,13 @@ const THERE: RoomId = RoomId { map: 1, room: 2 };
 struct SneakLog {
     sneaks: AtomicUsize,
     moves: AtomicUsize,
+    casts: AtomicUsize,
+    /// Every line the client sent, in order.
+    lines: std::sync::Mutex<Vec<String>>,
 }
 
 fn room_block(name: &str, exits: &str) -> String {
-    format!("\r\n\x1b[1;36m{name}\r\nObvious exits: {exits}\r\n[HP=30/MA=0]:")
+    format!("\r\n\x1b[1;36m{name}\r\nObvious exits: {exits}\r\n[HP=30/MA=20]:")
 }
 
 /// How the scripted board's own sneak state behaves. The board models
@@ -48,6 +53,9 @@ struct Board {
     /// The move (0-indexed: 0 is the first `n`) whose transit roll
     /// breaks the sneak.
     break_on_move: Option<usize>,
+    /// What a `cast camo` is answered with, the raw body between the
+    /// echo and the prompt. `None` answers it as an unknown command.
+    cast_reply: Option<&'static str>,
 }
 
 /// A two-hop north/north corridor (Guard Post -> Inner Ward -> Keep)
@@ -77,13 +85,14 @@ async fn sneak_board(
             }
             let line = String::from_utf8_lossy(&buf[..n]).trim().to_lowercase();
             let echo = format!("\r\n{line}");
+            counter.lines.lock().unwrap().push(line.clone());
             let reply = match line.as_str() {
                 "sneak" => {
                     let idx = arm_index;
                     arm_index += 1;
                     counter.sneaks.fetch_add(1, Ordering::SeqCst);
                     armed = board.arms && board.silent_fail_on_arm != Some(idx);
-                    format!("\r\n{sneak_reply}\r\n[HP=30/MA=0]:")
+                    format!("\r\n{sneak_reply}\r\n[HP=30/MA=20]:")
                 }
                 "n" | "north" => {
                     let idx = move_index;
@@ -104,7 +113,11 @@ async fn sneak_board(
                     }
                     out + &block
                 }
-                other => format!("\r\nYou say \"{other}\"\r\n[HP=30/MA=0]:"),
+                "cast camo" if board.cast_reply.is_some() => {
+                    counter.casts.fetch_add(1, Ordering::SeqCst);
+                    format!("\r\n{}\r\n[HP=30/MA=20]:", board.cast_reply.unwrap())
+                }
+                other => format!("\r\nYou say \"{other}\"\r\n[HP=30/MA=20]:"),
             };
             sock.write_all(format!("{echo}{reply}").as_bytes()).await.unwrap();
         }
@@ -202,7 +215,18 @@ async fn session_for(addr: std::net::SocketAddr) -> Session {
         bank: Default::default(),
         ..Default::default()
     };
-    Session::connect(&profile, None).await.unwrap()
+    let session = Session::connect(&profile, None).await.unwrap();
+    // The board's greeting is read by a task a `#[tokio::test]` only
+    // runs when the test awaits, so a walk started the instant
+    // `connect` returns walks against a session that has read nothing
+    // at all. No real caller does that: every one of them looks first,
+    // and the look's own prompt lands before the walk. Wait for that
+    // prompt here so the fixture starts where a real walk starts.
+    let mut state = session.state();
+    while state.borrow_and_update().mana.is_none() {
+        state.changed().await.unwrap();
+    }
+    session
 }
 
 fn nav(graph: Arc<RoomGraph>, stealth: u32) -> Navigator {
@@ -212,6 +236,32 @@ fn nav(graph: Arc<RoomGraph>, stealth: u32) -> Navigator {
 fn nav_with_timeout(graph: Arc<RoomGraph>, stealth: u32, step_timeout_ms: u64) -> Navigator {
     Navigator::new(graph, NavConfig { step_timeout_ms, ..NavConfig::default() })
         .with_capabilities(Capabilities { stealth, ..Capabilities::unrestricted() })
+}
+
+fn camouflage(rounds: u32) -> Vec<Buff> {
+    vec![Buff {
+        name: "camouflage".into(),
+        cmd: "cast camo".into(),
+        mana_cost: 10,
+        rounds,
+    }]
+}
+
+fn nav_with_stealth(graph: Arc<RoomGraph>, stealth: u32, clock: RoundClock, rounds: u32) -> Navigator {
+    nav(graph, stealth).with_stealth(camouflage(rounds), clock)
+}
+
+/// The lines this plan's tests reason about, in the order they were
+/// sent. Anything else the session sends on its own is left out so the
+/// order assertions read one thing.
+fn sent(log: &SneakLog) -> Vec<String> {
+    log.lines
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|l| *l == "sneak" || *l == "n" || l.starts_with("cast "))
+        .cloned()
+        .collect()
 }
 
 /// The ordinary case: a bare "Attempting to sneak..." with no failure
@@ -521,5 +571,179 @@ async fn sneak_off_never_sends_sneak() {
     assert!(!arrival.sneaking);
     assert_eq!(log.sneaks.load(Ordering::SeqCst), 0, "sneak off must not send sneak");
     assert_eq!(log.moves.load(Ordering::SeqCst), 1, "the walk still moves");
+}
+
+/// The buff comes first and the sneak second, because a cast breaks a
+/// sneak. Mutation target: send `sneak` before the cast and the order
+/// assertion fails.
+#[tokio::test]
+async fn a_stealth_spell_is_cast_before_the_sneak() {
+    let (addr, log) = sneak_board(
+        "Attempting to sneak...",
+        Board { arms: true, cast_reply: Some("You cast camouflage!"), ..Board::default() },
+    )
+    .await;
+    let session = session_for(addr).await;
+    let navigator = nav_with_stealth(graph_one_hop(), 56, RoundClock::new(), 30);
+    let arrival = navigator
+        .goto(&session, HERE, THERE, &mut NoGuard, false)
+        .await
+        .unwrap();
+    assert!(arrival.sneaking);
+    assert_eq!(
+        sent(&log),
+        vec!["cast camo".to_string(), "sneak".to_string(), "n".to_string()]
+    );
+}
+
+/// `bot.auto_sneak` off means no walk arms a sneak and nothing is cast for
+/// one.
+#[tokio::test]
+async fn sneak_off_casts_nothing_and_arms_nothing() {
+    let (addr, log) = sneak_board(
+        "Attempting to sneak...",
+        Board { arms: true, cast_reply: Some("You cast camouflage!"), ..Board::default() },
+    )
+    .await;
+    let session = session_for(addr).await;
+    let navigator = Navigator::new(
+        graph_one_hop(),
+        NavConfig { step_timeout_ms: 1500, sneak: false, ..NavConfig::default() },
+    )
+    .with_capabilities(Capabilities { stealth: 56, ..Capabilities::unrestricted() })
+    .with_stealth(camouflage(30), RoundClock::new());
+    let arrival = navigator
+        .goto(&session, HERE, THERE, &mut NoGuard, false)
+        .await
+        .unwrap();
+    assert!(!arrival.sneaking);
+    assert_eq!(sent(&log), vec!["n".to_string()]);
+}
+
+/// A break on the first step re-arms before the second. The spell has
+/// lapsed by then, on a one round budget against a one millisecond
+/// round, so it is recast first.
+#[tokio::test]
+async fn a_lapsed_spell_is_recast_before_the_rearm() {
+    let (addr, log) = sneak_board(
+        "Attempting to sneak...",
+        Board {
+            arms: true,
+            break_on_move: Some(0),
+            cast_reply: Some("You cast camouflage!"),
+            ..Board::default()
+        },
+    )
+    .await;
+    let session = session_for(addr).await;
+    let clock = RoundClock::with_period(std::time::Duration::from_millis(1));
+    let navigator = nav_with_stealth(graph_two_hop(), 56, clock, 1);
+    let arrival = navigator
+        .goto(&session, HERE, FAR, &mut NoGuard, false)
+        .await
+        .unwrap();
+    assert!(arrival.sneaking);
+    assert_eq!(
+        sent(&log),
+        vec![
+            "cast camo".to_string(),
+            "sneak".to_string(),
+            "n".to_string(),
+            "cast camo".to_string(),
+            "sneak".to_string(),
+            "n".to_string(),
+        ]
+    );
+}
+
+/// The same break with a spell still running: no recast, just the
+/// re-arm.
+#[tokio::test]
+async fn a_running_spell_is_not_recast_on_the_rearm() {
+    let (addr, log) = sneak_board(
+        "Attempting to sneak...",
+        Board {
+            arms: true,
+            break_on_move: Some(0),
+            cast_reply: Some("You cast camouflage!"),
+            ..Board::default()
+        },
+    )
+    .await;
+    let session = session_for(addr).await;
+    let navigator = nav_with_stealth(graph_two_hop(), 56, RoundClock::new(), 30);
+    let arrival = navigator
+        .goto(&session, HERE, FAR, &mut NoGuard, false)
+        .await
+        .unwrap();
+    assert!(arrival.sneaking);
+    assert_eq!(log.casts.load(Ordering::SeqCst), 1, "cast once, still running at the re-arm");
+    assert_eq!(log.sneaks.load(Ordering::SeqCst), 2);
+}
+
+/// A fizzle does not stop anything: the sneak goes out unbuffed and the
+/// walk arrives.
+#[tokio::test]
+async fn a_fizzle_is_followed_by_the_sneak_anyway() {
+    let (addr, log) = sneak_board(
+        "Attempting to sneak...",
+        Board {
+            arms: true,
+            cast_reply: Some("You attempt to cast camouflage, but fail."),
+            ..Board::default()
+        },
+    )
+    .await;
+    let session = session_for(addr).await;
+    let navigator = nav_with_stealth(graph_one_hop(), 56, RoundClock::new(), 30);
+    let arrival = navigator
+        .goto(&session, HERE, THERE, &mut NoGuard, false)
+        .await
+        .unwrap();
+    assert!(arrival.sneaking, "the sneak itself took");
+    assert_eq!(arrival.at, THERE);
+    assert_eq!(
+        sent(&log),
+        vec!["cast camo".to_string(), "sneak".to_string(), "n".to_string()],
+        "one attempt, then on with the sneak"
+    );
+}
+
+/// A cast the board never answers is given up at the step deadline and
+/// the sneak still goes out.
+#[tokio::test]
+async fn an_unanswered_cast_does_not_hang_the_walk() {
+    let (addr, log) = sneak_board(
+        "Attempting to sneak...",
+        Board { arms: true, cast_reply: Some(""), ..Board::default() },
+    )
+    .await;
+    let session = session_for(addr).await;
+    let navigator = nav_with_timeout(graph_one_hop(), 56, 400)
+        .with_stealth(camouflage(30), RoundClock::new());
+    let arrival = navigator
+        .goto(&session, HERE, THERE, &mut NoGuard, false)
+        .await
+        .unwrap();
+    assert_eq!(arrival.at, THERE);
+    assert_eq!(log.sneaks.load(Ordering::SeqCst), 1);
+}
+
+/// No stealth spell known: the walk is exactly what it was.
+#[tokio::test]
+async fn no_stealth_spell_means_sneak_and_nothing_else() {
+    let (addr, log) = sneak_board(
+        "Attempting to sneak...",
+        Board { arms: true, cast_reply: Some("You cast camouflage!"), ..Board::default() },
+    )
+    .await;
+    let session = session_for(addr).await;
+    let navigator = nav(graph_one_hop(), 56).with_stealth(Vec::new(), RoundClock::new());
+    let arrival = navigator
+        .goto(&session, HERE, THERE, &mut NoGuard, false)
+        .await
+        .unwrap();
+    assert!(arrival.sneaking);
+    assert_eq!(sent(&log), vec!["sneak".to_string(), "n".to_string()]);
 }
 

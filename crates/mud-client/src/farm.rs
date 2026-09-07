@@ -2046,7 +2046,8 @@ async fn farm_loop(
     let content = content_for(session, &live.farm, notices);
     let walker = |nav_cfg: crate::nav::NavConfig| {
         let nav = crate::nav::Navigator::new(graph.clone(), nav_cfg)
-            .with_capabilities(session.capabilities());
+            .with_capabilities(session.capabilities())
+            .with_stealth(stealth_buffs(session), crate::world::RoundClock::new());
         match &content {
             Some(content) => nav.with_backstab(
                 std::sync::Arc::clone(content),
@@ -2415,7 +2416,8 @@ pub async fn go_to_finish(
         return Ok(());
     };
     let nav = crate::nav::Navigator::new(graph.clone(), nav_config(bot, cfg))
-        .with_capabilities(session.capabilities());
+        .with_capabilities(session.capabilities())
+        .with_stealth(stealth_buffs(session), crate::world::RoundClock::new());
     let seen = look_around(session, "the finish walk's look").await?;
     if let Some(here) = graph.room(finish)
         && here.name == seen.name
@@ -2678,6 +2680,21 @@ pub async fn probe_sheet(
         crate::sheet::Spellbook::parse(&listing),
         casting,
     );
+}
+
+/// The stealth buffs a navigator casts before a sneak, read from the
+/// session's own book and content. Durations come from the content in
+/// hand rather than a second decode of the database. Empty before
+/// realm entry, and empty for a character with no stealth spell, which
+/// is what [`crate::nav::Navigator::with_stealth`] treats as "arm the
+/// sneak as before".
+pub(crate) fn stealth_buffs(session: &crate::session::Session) -> Vec<crate::sheet::Buff> {
+    let Some(content) = session.content() else {
+        return Vec::new();
+    };
+    let (_, book, casting) = session.raw_sheet();
+    let durations = crate::views::spell_durations(&content);
+    crate::sheet::stealth_spells(&book, &content.spells, &durations, casting).0
 }
 
 /// Build a [`Sheet`] from the session's cached inventory and spellbook

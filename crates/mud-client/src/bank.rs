@@ -486,6 +486,7 @@ pub async fn run_bank(
     };
     let nav = crate::nav::Navigator::new(graph.clone(), crate::farm::nav_config(&live.bot, &live.farm))
         .with_capabilities(session.capabilities())
+        .with_stealth(crate::farm::stealth_buffs(session), crate::world::RoundClock::new())
         .with_backstab(
             std::sync::Arc::clone(&content),
             session.wielded(),

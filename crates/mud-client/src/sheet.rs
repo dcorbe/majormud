@@ -744,6 +744,25 @@ impl BuffState {
         &self.buffs
     }
 
+    /// A cast has gone out and the board has not said how it went.
+    pub fn in_flight(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    pub fn mana(&self) -> Option<i32> {
+        self.mana
+    }
+
+    /// Mana from somewhere other than a prompt this state saw: the
+    /// session's last prompt, for a state built after it passed.
+    /// Only fills a blank, so a prompt already seen is never overwritten
+    /// by an older reading.
+    pub fn seed_mana(&mut self, mana: i32) {
+        if self.mana.is_none() {
+            self.mana = Some(mana);
+        }
+    }
+
     /// The first buff that is lapsed (or never cast) and affordable.
     fn wanted(&self, now: std::time::Instant, clock: &crate::world::RoundClock) -> Option<usize> {
         let mana = self.mana?;
