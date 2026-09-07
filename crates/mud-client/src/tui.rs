@@ -615,7 +615,7 @@ impl Front {
                     // name instead of writing this character over the
                     // one the lobby was loaded from.
                     None => Ok(self.lobby.detached()),
-                    Some(f) => crate::settings::Settings::load(std::path::Path::new(&f)),
+                    Some(f) => crate::settings::Settings::load(&crate::profile::resolve(&f)),
                 };
                 match settings {
                     Ok(s) => {
@@ -1144,8 +1144,20 @@ fn edit_note(settings: &crate::settings::Settings, key: &str) -> String {
 }
 
 /// Run one settings command against the settings. `None` when the
-/// outcome is not one. The note is ready to print.
+/// outcome is not one. The note is ready to print. Profile names
+/// resolve under the config directory.
 pub fn apply_settings(outcome: &KeyOutcome, settings: &mut crate::settings::Settings) -> Option<Applied> {
+    apply_settings_in(outcome, settings, &crate::profile::config_dir())
+}
+
+/// [`apply_settings`] against a directory the caller names, which is
+/// how a test says where the profiles are without touching the
+/// process environment.
+pub fn apply_settings_in(
+    outcome: &KeyOutcome,
+    settings: &mut crate::settings::Settings,
+    dir: &std::path::Path,
+) -> Option<Applied> {
     let said = |note: String| {
         Some(Applied {
             note,
@@ -1184,15 +1196,20 @@ pub fn apply_settings(outcome: &KeyOutcome, settings: &mut crate::settings::Sett
             Err(e) => said(format!("-- unset: {e} --")),
         },
         KeyOutcome::Save { file } => {
-            match settings.save(file.as_deref().map(std::path::Path::new)) {
+            let path = file.as_deref().map(|f| crate::profile::resolve_in(dir, f));
+            match settings.save(path.as_deref()) {
                 Ok(path) => said(format!("-- saved {} --", path.display())),
                 Err(e) => said(format!("-- save: {e} --")),
             }
         }
         KeyOutcome::Load { file } => {
-            match crate::settings::Settings::load(std::path::Path::new(file)) {
+            let path = crate::profile::resolve_in(dir, file);
+            match crate::settings::Settings::load(&path) {
                 Ok(loaded) => {
-                    let mut note = format!("-- loaded {file}; connection keys apply at the next /connect --");
+                    let mut note = format!(
+                        "-- loaded {}; connection keys apply at the next /connect --",
+                        path.display()
+                    );
                     for warning in loaded.warnings() {
                         note.push_str(&format!("\n-- {warning} --"));
                     }

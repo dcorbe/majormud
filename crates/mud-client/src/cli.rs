@@ -19,8 +19,9 @@ pub enum Command {
     /// Interactive session against a target board, or the lobby when no
     /// profile is given
     Play {
-        /// Character profile (TOML). Without one the client starts in
-        /// the lobby: `/connect host[:port]`, then `/save <file>`.
+        /// Character profile: a name under ~/.config/mmc, or a path.
+        /// Without one the client starts in the lobby: `/connect
+        /// host[:port]`, then `/save <name>`.
         #[arg(long)]
         profile: Option<PathBuf>,
         /// Capture basename: writes `<capture>.raw` and `<capture>_timing.log`
@@ -31,7 +32,7 @@ pub enum Command {
     Run {
         /// Lua script to execute
         script: PathBuf,
-        /// Character profile (TOML)
+        /// Character profile: a name under ~/.config/mmc, or a path
         #[arg(long)]
         profile: PathBuf,
         /// Capture basename: writes `<capture>.raw` and
@@ -71,7 +72,8 @@ pub enum Command {
     },
     /// Walk the profile's patrol circuit, farming each stop
     Farm {
-        /// Character profile (TOML); needs a `[farm]` table
+        /// Character profile: a name under ~/.config/mmc, or a path;
+        /// needs a `[farm]` table
         #[arg(long)]
         profile: PathBuf,
         /// Capture basename: writes `<capture>.raw` and `<capture>_timing.log`

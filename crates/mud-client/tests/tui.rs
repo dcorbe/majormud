@@ -1679,3 +1679,57 @@ async fn a_full_repaint_draws_the_bar_again() {
     assert!(frame.contains("1: lobby"), "a scroll repaints the whole screen, bar included: {frame:?}");
 }
 
+use mud_client::tui::apply_settings_in;
+
+fn profiles_dir(name: &str) -> std::path::PathBuf {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("profiles").join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// `/save beef` writes beef.toml beside the other profiles, and
+/// `/load beef` reads it back from there. The note names the file.
+#[test]
+fn a_bare_name_saves_and_loads_under_the_config_directory() {
+    let dir = profiles_dir("bare");
+    let mut s = Settings::default();
+    s.set("username", "\"beef\"").unwrap();
+    let saved = apply_settings_in(&KeyOutcome::Save { file: Some("beef".into()) }, &mut s, &dir).unwrap();
+    let expected = dir.join("beef.toml");
+    assert!(expected.exists(), "{}", saved.note);
+    assert!(saved.note.contains(&expected.display().to_string()), "{}", saved.note);
+
+    let mut other = Settings::default();
+    let loaded = apply_settings_in(&KeyOutcome::Load { file: "beef".into() }, &mut other, &dir).unwrap();
+    assert_eq!(other.profile().username, "beef");
+    assert!(loaded.note.contains(&expected.display().to_string()), "{}", loaded.note);
+}
+
+/// A path is a path. The resolver leaves it alone.
+#[test]
+fn a_path_given_to_save_is_used_as_given() {
+    let dir = profiles_dir("path");
+    let elsewhere = dir.join("elsewhere").join("dan.toml");
+    std::fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
+    let mut s = Settings::default();
+    s.set("username", "\"dan\"").unwrap();
+    apply_settings_in(&KeyOutcome::Save { file: Some(elsewhere.display().to_string()) }, &mut s, &dir).unwrap();
+    assert!(elsewhere.exists());
+    assert!(!dir.join("dan.toml").exists());
+}
+
+/// The overwrite guard reaches the keyboard with the `save:` prefix
+/// every other refusal carries.
+#[test]
+fn a_save_onto_another_characters_profile_is_refused_at_the_keyboard() {
+    let dir = profiles_dir("guard");
+    std::fs::write(dir.join("beef.toml"), "username = \"beef\"\n").unwrap();
+    let mut s = Settings::default();
+    s.set("username", "\"salad\"").unwrap();
+    let refused = apply_settings_in(&KeyOutcome::Save { file: Some("beef".into()) }, &mut s, &dir).unwrap();
+    assert!(refused.note.starts_with("-- save: "), "{}", refused.note);
+    assert!(refused.note.contains("/load it first"), "{}", refused.note);
+    assert_eq!(std::fs::read_to_string(dir.join("beef.toml")).unwrap(), "username = \"beef\"\n");
+}
+

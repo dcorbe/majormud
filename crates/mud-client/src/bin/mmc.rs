@@ -11,13 +11,18 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Play { profile, capture } => {
+            let profile = profile.map(|p| mud_client::profile::resolve(&p.to_string_lossy()));
             play_command(profile.as_deref(), capture.as_deref())
         }
         Command::Run {
             script,
             profile,
             capture,
-        } => run_command(&script, &profile, capture.as_deref()),
+        } => run_command(
+            &script,
+            &mud_client::profile::resolve(&profile.to_string_lossy()),
+            capture.as_deref(),
+        ),
         Command::Path { from, to, content } => path_command(&from, &to, &content),
         Command::Map { at, content } => map_command(&at, &content),
         Command::Import {
@@ -31,7 +36,13 @@ fn main() -> ExitCode {
             content,
             brief,
             quiet,
-        } => farm_command(&profile, capture.as_deref(), content.as_deref(), brief, quiet),
+        } => farm_command(
+            &mud_client::profile::resolve(&profile.to_string_lossy()),
+            capture.as_deref(),
+            content.as_deref(),
+            brief,
+            quiet,
+        ),
     }
 }
 

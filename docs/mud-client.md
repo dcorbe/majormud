@@ -568,8 +568,10 @@ intact.
 | `/set <pattern>` | List the keys a glob matches. `*` matches anything and a trailing `*` is implied: `/set bot`, `/set bot.rest*`, `/set *heal*`. |
 | `/set <key> <value>` | Change a key. The value is TOML: `60`, `true`, `["copper", "silver"]`. A bare word is a string, so `/set bot.rest_command rest` works. |
 | `/unset <key>` | Remove a key so its default applies. The way back to none for `bank.at`, `farm.finish_at`, `farm.depart_at_percent` and `pace_ms`. |
-| `/save [file]` | Write the settings. Started with `--profile`, no path is needed. Started bare, the first `/save` names the file and later ones remember it. |
-| `/load <file>` | Replace the settings from a file. The connection stays open. |
+| `/save [name]` | Write the settings. Started with `--profile`, no name is needed. A bare name is a profile under `~/.config/mmc`, so `/save beef` writes `~/.config/mmc/beef.toml`. Anything with a slash or a `.toml` suffix is a path. A file these settings were not loaded from is refused: `/load` it first, or pick another name. |
+| `/load <name>` | Replace the settings from a profile, named the same way. The connection stays open. |
+
+`--profile` on `mmc play`, `mmc run` and `mmc farm` takes the same names.
 
 Tab completes a slash verb or, after `/set` and `/unset`, a key:
 `/set bot.ignore_c<Tab>` gives `/set bot.ignore_coins`. When several keys
