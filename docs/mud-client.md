@@ -598,9 +598,10 @@ effective values either way.
 
 `mmc play` with no `--profile` starts in the lobby: the input line with no
 connection. It takes the settings commands, `/connect`, `/help` and
-`/quit`. `/connect host[:port]` sets `host` and `port` and connects, port
-23 by default, so a `/save <file>` afterwards keeps them. Started with a
-profile whose host is set, the client connects at once.
+`/quit`. `/connect host[:port]` opens a window and connects it, port 23
+by default. The host and port become that window's settings, so a
+`/save <file>` there keeps them. Started with a profile whose host is
+set, the client connects at once.
 
 Whenever the line closes, by the board or by `/disconnect`, the client
 returns to the lobby with the settings intact. `/connect` with no
@@ -623,11 +624,11 @@ loaded once per content path and shared by every window on it.
 
 | Command | Effect |
 | --- | --- |
-| `/new [file]` | Open a window on a copy of the lobby's settings, or on that profile file, and switch to it. A copy whose settings name a host connects at once. |
+| `/new [file]` | Open a window on a copy of the lobby's settings, or on that profile file, and switch to it. A copy whose settings name a host connects at once. The copy carries no file, so a `/save` there needs a name. |
 | `/1` to `/9` | Switch to that window. |
 | `/windows` | List each window: number, character and host, connected or not, unsaved or not. |
 | `/close` | Close the current window. Refused while it is connected and refused for the lobby. |
-| `/connect [host[:port]]` | In the lobby, open a window and connect it. In any other window, connect that window. |
+| `/connect [host[:port]]` | In the lobby, open a window and connect it. The host and port go into that window's settings, not the lobby's. In any other window, connect that window. |
 | `/quit` | Refuse once if any window is connected or has unsaved settings, naming them. The second `/quit` exits everything. Ctrl-Q exits at once. |
 
 `/set`, `/save`, `/load`, `/unset`, `/help`, Tab, Ctrl-F and Ctrl-P act on
