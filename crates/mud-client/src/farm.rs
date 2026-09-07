@@ -2002,6 +2002,12 @@ pub async fn run_farm(
         ));
     }
     let buff = crate::sheet::BuffState::new(kept);
+    // Stealth, in the same voice: what the book carries that raises
+    // stealth, cast before every sneak by the navigator.
+    let (_, book, _) = session.raw_sheet();
+    for line in crate::sheet::stealth_lines(&book, &sheet.stealth.0, &sheet.stealth.1) {
+        notices(&line);
+    }
     let mut casts = Casts { light, heal, buff };
     let mut clock = crate::world::RoundClock::new();
     let out = farm_loop(
@@ -2540,6 +2546,9 @@ pub(crate) struct Sheet {
     /// The `[bot].buffs` that survived being looked up, and one line for
     /// each that did not.
     pub buffs: (Vec<crate::sheet::Buff>, Vec<String>),
+    /// The stealth spells the book carries, and one line for each
+    /// that has no duration.
+    pub stealth: (Vec<crate::sheet::Buff>, Vec<String>),
 }
 
 /// The two spell machines, carried as one.
@@ -2706,6 +2715,7 @@ pub(crate) fn sheet_from(
             casting,
         ),
         buffs: crate::sheet::buffs(&book, &bot.buffs, durations, casting),
+        stealth: crate::sheet::stealth_spells(&book, spells, durations, casting),
     }
 }
 

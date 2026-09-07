@@ -972,3 +972,124 @@ fn inventory_reads_its_coins() {
     assert_eq!(none.coins().count(), 0);
 }
 
+// --- stealth spells ---------------------------------------------------
+
+fn ranger_book() -> Spellbook {
+    Spellbook::parse(
+        "You have the following spells:\n\
+         Level Mana Short Spell Name\n\
+         \x20 1   4    star  starlight                     \n\
+         \x20 3  10    camo  camouflage                    \n\
+         \x20 2   4    bles  bless                         \n",
+    )
+}
+
+fn stealth_durations() -> BTreeMap<String, u32> {
+    BTreeMap::from([
+        ("starlight".to_string(), 80),
+        ("camouflage".to_string(), 30),
+        ("bless".to_string(), 40),
+        ("shadowform".to_string(), 30),
+    ])
+}
+
+#[test]
+fn a_known_stealth_spell_is_a_buff_with_the_shipped_duration() {
+    let (found, refused) = mud_client::sheet::stealth_spells(
+        &ranger_book(),
+        &spells(),
+        &stealth_durations(),
+        Casting::Spells,
+    );
+    assert_eq!(
+        found,
+        vec![Buff {
+            name: "camouflage".into(),
+            cmd: "cast camo".into(),
+            mana_cost: 10,
+            rounds: 30,
+        }]
+    );
+    assert!(refused.is_empty(), "{refused:?}");
+}
+
+#[test]
+fn a_stealth_spell_the_book_lacks_is_absent_not_refused() {
+    let book = Spellbook::parse(
+        "You have the following spells:\n\
+         Level Mana Short Spell Name\n\
+         \x20 1   4    star  starlight                     \n",
+    );
+    let (found, refused) =
+        mud_client::sheet::stealth_spells(&book, &spells(), &stealth_durations(), Casting::Spells);
+    assert!(found.is_empty());
+    assert!(refused.is_empty(), "shadowform is in the table and not in the book: nothing to say");
+}
+
+#[test]
+fn a_stealth_spell_with_no_duration_is_refused_by_name() {
+    let mut durations = stealth_durations();
+    durations.insert("camouflage".to_string(), 0);
+    let (found, refused) = mud_client::sheet::stealth_spells(
+        &ranger_book(),
+        &spells(),
+        &durations,
+        Casting::Spells,
+    );
+    assert!(found.is_empty());
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert!(refused[0].contains("camouflage"), "{refused:?}");
+    assert!(refused[0].contains("no duration"), "{refused:?}");
+}
+
+#[test]
+fn a_mystic_invokes_its_stealth_power() {
+    let (found, _) = mud_client::sheet::stealth_spells(
+        &ranger_book(),
+        &spells(),
+        &stealth_durations(),
+        Casting::Powers,
+    );
+    assert_eq!(found[0].cmd, "invoke camo");
+}
+
+#[test]
+fn the_report_names_the_stealth_spell_and_its_cost() {
+    let book = ranger_book();
+    let (found, refused) =
+        mud_client::sheet::stealth_spells(&book, &spells(), &stealth_durations(), Casting::Spells);
+    assert_eq!(
+        mud_client::sheet::stealth_lines(&book, &found, &refused),
+        vec!["stealth: camouflage (10 mana, 30 rounds)".to_string()]
+    );
+}
+
+#[test]
+fn the_report_says_none_known_for_a_book_without_one() {
+    let book = Spellbook::parse(
+        "You have the following spells:\n\
+         Level Mana Short Spell Name\n\
+         \x20 1   4    star  starlight                     \n",
+    );
+    assert_eq!(
+        mud_client::sheet::stealth_lines(&book, &[], &[]),
+        vec!["stealth: none known".to_string()]
+    );
+}
+
+#[test]
+fn the_report_is_silent_for_a_character_with_no_spellbook() {
+    let book = Spellbook::parse("You have no spells.\n");
+    assert!(mud_client::sheet::stealth_lines(&book, &[], &[]).is_empty());
+}
+
+#[test]
+fn the_report_carries_a_refusal_as_its_own_line() {
+    let book = ranger_book();
+    let refused = vec!["`camouflage` raises stealth but has no duration in the spell table".to_string()];
+    assert_eq!(
+        mud_client::sheet::stealth_lines(&book, &[], &refused),
+        vec!["stealth: `camouflage` raises stealth but has no duration in the spell table".to_string()]
+    );
+}
+

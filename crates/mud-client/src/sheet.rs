@@ -885,6 +885,58 @@ pub fn buffs(
     (out, refused)
 }
 
+/// The stealth spells this character knows, as buffs to keep up on a
+/// sneak. Discovery, not configuration: the book says what is castable
+/// and the spell map says what raises stealth. A spell the map carries
+/// and the book does not is simply absent. One the book carries with no
+/// duration in the table is refused out loud, the same way a buff is,
+/// because a budget of zero rounds is always lapsed.
+pub fn stealth_spells(
+    spellbook: &Spellbook,
+    spells: &BTreeMap<SpellId, Spell>,
+    durations: &BTreeMap<String, u32>,
+    casting: Casting,
+) -> (Vec<Buff>, Vec<String>) {
+    let mut out = Vec::new();
+    let mut refused = Vec::new();
+    for (known, _) in spellbook.known_matching(spells, is_stealth_spell) {
+        match durations.get(&known.name.to_lowercase()) {
+            Some(&rounds) if rounds > 0 => out.push(Buff {
+                name: known.name.clone(),
+                cmd: casting.command(&known.short),
+                mana_cost: known.mana as i32,
+                rounds,
+            }),
+            _ => refused.push(format!(
+                "`{}` raises stealth but has no duration in the spell table",
+                known.name
+            )),
+        }
+    }
+    (out, refused)
+}
+
+/// What a job says about stealth at startup, beside its heal and light
+/// lines. One line per spell found, one per refusal, and "none known"
+/// for a book with no stealth spell in it. A character with no book at
+/// all gets nothing, because nothing was looked for.
+pub fn stealth_lines(spellbook: &Spellbook, found: &[Buff], refused: &[String]) -> Vec<String> {
+    if spellbook.spells.is_empty() {
+        return Vec::new();
+    }
+    let mut lines: Vec<String> = refused.iter().map(|r| format!("stealth: {r}")).collect();
+    for b in found {
+        lines.push(format!(
+            "stealth: {} ({} mana, {} rounds)",
+            b.name, b.mana_cost, b.rounds
+        ));
+    }
+    if lines.is_empty() {
+        lines.push("stealth: none known".to_string());
+    }
+    lines
+}
+
 /// One way the character can light a dark room. The KINDS matter
 /// because their failure modes differ completely: a spell fizzles
 /// (random cast roll — retry), fades ("Your starlight spell fades
