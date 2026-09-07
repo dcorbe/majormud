@@ -158,6 +158,12 @@ enum Kind {
     /// sends them.
     Deposit,
     Search,
+    /// A bare `search`, or its shortest live form `sea`. It re-lists the
+    /// room with the hidden items shown, so the reply is a room block,
+    /// or the nothing line when the floor is bare, or the refusal when
+    /// something is fighting the character. Its own kind rather than
+    /// `Search` because a block never answers the directed form.
+    SearchRoom,
     Picklock,
     /// `sneak` (theft.md §11.1). Like `Stat`, its body has no fixed
     /// terminal wording — success is genuinely silent (`mud-core`'s
@@ -249,10 +255,10 @@ fn kind_of(cmd: &str) -> Kind {
             return Kind::Picklock;
         }
     }
-    // Only the DIRECTED form. A bare `search` re-lists the room's items
-    // and answers with a wording this grammar does not model; the client
-    // never sends one, and classifying it here would leave an entry
-    // lingering to claim somebody else's line.
+    if cmd == "search" || cmd == "sea" {
+        return Kind::SearchRoom;
+    }
+    // The DIRECTED form. The bare form is `SearchRoom` above.
     if cmd.starts_with("search ") {
         return Kind::Search;
     }
@@ -298,7 +304,10 @@ fn completes(kind: Kind, ev: &Event) -> bool {
         Event::RoomSeen(_) => {
             // A block answers movement and looking — and a bash that
             // carried the character through the doorway.
-            return matches!(kind, Kind::Move | Kind::Look | Kind::LookDir | Kind::Bash);
+            return matches!(
+                kind,
+                Kind::Move | Kind::Look | Kind::LookDir | Kind::Bash | Kind::SearchRoom
+            );
         }
         // The ordinary game prompt is the ONLY thing that completes a
         // Stat reply — its body has no fixed terminal wording (see
@@ -433,11 +442,18 @@ fn completes(kind: Kind, ev: &Event) -> bool {
                 || has("may not search while attacking")
                 || has("why would you want to search that")
         }
+        Kind::SearchRoom => {
+            has("search revealed nothing") || has("may not search while attacking")
+        }
         // The stock wording, "you took ", is also the DLL's damage line
         // ("you took 12 damage.") -- excluded so a landed blow never
         // retires a pending get. "you picked up" is the reimplemented
-        // board's uncaptured item wording, kept alongside it.
-        Kind::Get => has("you picked up") || (has("you took ") && !has("damage")),
+        // board's uncaptured item wording, kept alongside it. "you don't
+        // see" is somebody else getting there first: without it the get
+        // lingered for its whole deadline and the next reply landed on it.
+        Kind::Get => {
+            has("you picked up") || (has("you took ") && !has("damage")) || has("you don't see")
+        }
         Kind::BuyHealing => has("wounds are healed"),
         Kind::Deposit => {
             has("you deposit ")
@@ -691,3 +707,4 @@ impl Correlator {
         self.queue.retain(|e| now <= e.deadline && now <= e.lifetime);
     }
 }
+

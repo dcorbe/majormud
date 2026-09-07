@@ -1195,3 +1195,53 @@ fn a_deposit_is_completed_by_its_three_replies() {
         assert_eq!(ans(&mut c, room("Bank of Godfrey"), t), None, "{cmd:?} not retired");
     }
 }
+
+// ------------------------------------------------------ the bare search
+
+/// A bare `search` re-lists the room, hidden items included, so the
+/// reply IS a room block. The directed form keeps its own kind, which
+/// a block never answers.
+#[test]
+fn a_bare_search_is_answered_by_the_room_it_re_lists() {
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "search", t);
+    assert_eq!(ans(&mut c, line("search"), t), Some(CmdId(1)), "the echo accepts");
+    assert_eq!(ans(&mut c, room("Darkwood Forest"), t), Some(CmdId(1)));
+}
+
+#[test]
+fn a_bare_search_that_found_nothing_answers_with_the_nothing_line() {
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "sea", t);
+    assert_eq!(ans(&mut c, line("sea"), t), Some(CmdId(1)));
+    assert_eq!(ans(&mut c, line("Your search revealed nothing."), t), Some(CmdId(1)));
+}
+
+#[test]
+fn a_bare_search_in_combat_answers_with_the_refusal() {
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "search", t);
+    assert_eq!(ans(&mut c, line("search"), t), Some(CmdId(1)));
+    assert_eq!(
+        ans(&mut c, line("You may not search while attacking!"), t),
+        Some(CmdId(1))
+    );
+}
+
+/// Somebody else got there first. Without this the `get` lingered for
+/// its whole deadline and the next reply landed on it.
+#[test]
+fn a_get_is_answered_by_dont_see() {
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "get rusty dagger", t);
+    assert_eq!(ans(&mut c, line("get rusty dagger"), t), Some(CmdId(1)));
+    assert_eq!(
+        ans(&mut c, line("You don't see a rusty dagger here."), t),
+        Some(CmdId(1))
+    );
+}
+
