@@ -18,7 +18,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use mud_client::bot::BotConfig;
-use mud_client::farm::{FarmConfig, FarmError, probe_sheet};
+use mud_client::farm::{FarmConfig, FarmError, Live, probe_sheet};
 use mud_client::go::{GoEnd, go_config, run_go};
 use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::profile::Profile;
@@ -190,7 +190,7 @@ async fn walk(walking: bool, script: Vec<(&'static str, String)>) -> (GoEnd, Vec
     let graph = corridor();
     let end = match tokio::time::timeout(
         Duration::from_secs(30),
-        run_go(&session, graph, Some(START), STOP, &bot(), &cfg(walking), None, &quiet()),
+        run_go(&session, graph, Some(START), STOP, Live::fixed(bot(), cfg(walking)), None, &quiet()),
     )
     .await
     .expect("run_go should finish, not hang")
@@ -373,7 +373,7 @@ async fn a_second_go_in_one_session_sends_no_spells() {
 
     let first = tokio::time::timeout(
         Duration::from_secs(10),
-        run_go(&session, graph.clone(), Some(START), STOP, &bot(), &cfg(false), None, &quiet()),
+        run_go(&session, graph.clone(), Some(START), STOP, Live::fixed(bot(), cfg(false)), None, &quiet()),
     )
     .await
     .expect("first /go should not hang")
@@ -382,7 +382,7 @@ async fn a_second_go_in_one_session_sends_no_spells() {
 
     let second = tokio::time::timeout(
         Duration::from_secs(10),
-        run_go(&session, graph, Some(STOP), START, &bot(), &cfg(false), None, &quiet()),
+        run_go(&session, graph, Some(STOP), START, Live::fixed(bot(), cfg(false)), None, &quiet()),
     )
     .await
     .expect("second /go should not hang")
@@ -426,7 +426,7 @@ async fn a_walk_refuses_an_interrupt_mark_above_the_bots_mark_before_sending_any
 
     let out = tokio::time::timeout(
         Duration::from_secs(10),
-        run_go(&session, graph, Some(START), STOP, &bot, &cfg, None, &quiet()),
+        run_go(&session, graph, Some(START), STOP, Live::fixed(bot, cfg), None, &quiet()),
     )
     .await
     .expect("run_go should refuse at once, not hang");

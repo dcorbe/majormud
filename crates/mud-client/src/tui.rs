@@ -1871,7 +1871,17 @@ pub fn start_farm(
     // session for the operator's keystrokes; the runner it is about to
     // hand the connection to cycled at loopback echo speed without this
     // (~40 look+attack commands in 400ms, run4 2026-08-01).
-    Ok(spawn_run(session, graph, plan, bot, cfg, "farm", notices))
+    let live = crate::farm::Live::new(
+        &session,
+        "farm",
+        notices.clone(),
+        bot,
+        cfg,
+        std::sync::Arc::new(|p: &crate::profile::Profile| {
+            (p.bot.clone().unwrap_or_default(), p.farm.clone().unwrap_or_default())
+        }),
+    );
+    Ok(spawn_run(session, graph, plan, live, "farm", notices))
 }
 
 /// Roam the region the operator fenced, on an already-connected session.
@@ -1907,7 +1917,17 @@ pub fn start_roam(
     )?;
     let plan = crate::farm::FarmPlan::roaming(start, walls, &graph)?;
     let bot = profile.bot.clone().unwrap_or_default();
-    Ok(spawn_run(session, graph, plan, bot, cfg, "roam", notices))
+    let live = crate::farm::Live::new(
+        &session,
+        "roam",
+        notices.clone(),
+        bot,
+        cfg,
+        std::sync::Arc::new(|p: &crate::profile::Profile| {
+            (p.bot.clone().unwrap_or_default(), p.farm.clone().unwrap_or_default())
+        }),
+    );
+    Ok(spawn_run(session, graph, plan, live, "roam", notices))
 }
 
 /// Hand the connection to the runner and report what it did.
@@ -1919,8 +1939,7 @@ fn spawn_run(
     session: Arc<Session>,
     graph: Arc<crate::graph::RoomGraph>,
     plan: crate::farm::FarmPlan,
-    bot: crate::bot::BotConfig,
-    cfg: crate::farm::FarmConfig,
+    live: crate::farm::Live,
     what: &'static str,
     notices: crate::farm::Notices,
 ) -> Job {
@@ -1936,8 +1955,7 @@ fn spawn_run(
             &session,
             graph,
             &plan,
-            &bot,
-            &cfg,
+            live,
             Some(&tx),
             &notices,
         )
@@ -2028,14 +2046,27 @@ pub fn start_go(
     // `play` unpaced this session for the operator's keystrokes.
     session.set_pace(profile.pace());
     let (tx, rx) = tokio::sync::watch::channel(crate::farm::Phase::default());
+    let live = crate::farm::Live::new(
+        &session,
+        "go",
+        notices.clone(),
+        bot,
+        cfg,
+        std::sync::Arc::new(move |p: &crate::profile::Profile| {
+            let base = p.farm.clone().unwrap_or_else(|| crate::farm::FarmConfig {
+                content: content_path(p),
+                ..Default::default()
+            });
+            (assist_config_for(p), crate::go::go_config(&base, walking))
+        }),
+    );
     let handle = tokio::spawn(async move {
         let end = match crate::go::run_go(
             &session,
             graph,
             hint,
             to,
-            &bot,
-            &cfg,
+            live,
             Some(&tx),
             &notices,
         )
@@ -2096,13 +2127,26 @@ pub fn start_bank(
     let cfg = crate::go::go_config(&base, walking);
     session.set_pace(profile.pace());
     let (tx, rx) = tokio::sync::watch::channel(crate::farm::Phase::default());
+    let live = crate::farm::Live::new(
+        &session,
+        "bank",
+        notices.clone(),
+        bot,
+        cfg,
+        std::sync::Arc::new(move |p: &crate::profile::Profile| {
+            let base = p.farm.clone().unwrap_or_else(|| crate::farm::FarmConfig {
+                content: content_path(p),
+                ..Default::default()
+            });
+            (assist_config_for(p), crate::go::go_config(&base, walking))
+        }),
+    );
     let handle = tokio::spawn(async move {
         let end = match crate::bank::run_bank(
             &session,
             graph,
             hint,
-            &bot,
-            &cfg,
+            live,
             Some(&tx),
             &notices,
         )

@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use mud_client::bot::BotConfig;
 use mud_client::dialect::{self, Target};
-use mud_client::farm::{FarmConfig, FarmEnd, FarmError, FarmPlan, FarmStats, run_farm};
+use mud_client::farm::{FarmConfig, FarmEnd, FarmError, FarmPlan, FarmStats, Live, run_farm};
 use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::profile::Profile;
 use mud_client::session::Session;
@@ -453,7 +453,7 @@ async fn farm(
     let plan = FarmPlan::build(&cfg, &graph).expect("plan");
     tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(session, graph.clone(), &plan, &bot, &cfg, None, &quiet()),
+        run_farm(session, graph.clone(), &plan, Live::fixed(bot, cfg), None, &quiet()),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -551,7 +551,7 @@ async fn refuses_to_run_from_a_room_it_cannot_place() {
     let plan = FarmPlan::build(&cfg, &graph).expect("plan");
     let err = tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, &BotConfig::default(), &cfg, None, &quiet()),
+        run_farm(&session, graph.clone(), &plan, Live::fixed(BotConfig::default(), cfg), None, &quiet()),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -970,7 +970,7 @@ async fn the_run_walks_home_when_it_finishes() {
     let plan = FarmPlan::build(&cfg, &graph).expect("plan");
     let (end, _stats) = tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, &bot, &cfg, None, &quiet()),
+        run_farm(&session, graph.clone(), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -1020,7 +1020,7 @@ async fn a_prose_death_line_does_not_wedge_the_stop() {
 
     let (end, stats) = tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, &bot, &cfg, None, &quiet()),
+        run_farm(&session, graph.clone(), &plan, Live::fixed(bot, cfg), None, &quiet()),
     )
     .await
     .expect("the stop wedged on a kill it did not recognise")
@@ -1068,8 +1068,7 @@ async fn it_does_not_walk_out_on_a_room_it_never_saw_empty() {
             &session,
             Arc::new(client_graph()),
             &FarmPlan::build(&farm_config(&["1/2"], 1), &Arc::new(client_graph())).expect("plan"),
-            &bot,
-            &farm_config(&["1/2"], 1),
+            Live::fixed(bot, farm_config(&["1/2"], 1)),
             None,
             &quiet(),
         ),

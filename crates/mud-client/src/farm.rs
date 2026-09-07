@@ -1864,19 +1864,19 @@ pub async fn run_farm(
     session: &crate::session::Session,
     graph: std::sync::Arc<RoomGraph>,
     plan: &FarmPlan,
-    bot_config: &crate::bot::BotConfig,
-    cfg: &FarmConfig,
+    live: Live,
     phase: PhaseSink<'_>,
     notices: &Notices,
 ) -> Result<(FarmEnd, FarmStats), FarmError> {
-    check_departure_mark(cfg, bot_config)?;
+    let mut live = live;
+    check_departure_mark(&live.farm, &live.bot)?;
     // The config says how the run STARTS; the session's switch is what
     // every leg reads, so `/bot` can move it while the run is going.
-    session.travel_fights().set(cfg.fight_while_travelling);
+    session.travel_fights().set(live.farm.fight_while_travelling);
     // The board's own per-monster death wordings, so the room model can
     // see a kill somebody ELSE landed. Best effort: without it the model
     // falls back to the award-and-one-phrase test it always had.
-    if let Err(e) = crate::deaths::init(&cfg.content) {
+    if let Err(e) = crate::deaths::init(&live.farm.content) {
         notices(&format!(
             "death wordings unavailable ({e}); shared-room kills will be missed"
         ));
@@ -1885,15 +1885,15 @@ pub async fn run_farm(
     // not fatal anywhere else here and is not fatal here either: an
     // empty table means every configured buff is refused with a reason,
     // which is louder than quietly recasting on a made-up timer.
-    let durations = crate::graph::RoomGraph::load_spell_durations(&cfg.content).unwrap_or_else(|e| {
-        if !bot_config.buffs.is_empty() {
+    let durations = crate::graph::RoomGraph::load_spell_durations(&live.farm.content).unwrap_or_else(|e| {
+        if !live.bot.buffs.is_empty() {
             notices(&format!(
                 "spell durations unavailable ({e}); buffs will not be kept up"
             ));
         }
         BTreeMap::new()
     });
-    let sheet = sheet_from(session, bot_config, &durations);
+    let sheet = sheet_from(session, &live.bot, &durations);
     let light = crate::sheet::LightState::new(sheet.light);
     if let Some(cmd) = light.first_command() {
         notices(&format!("dark rooms will be handled with `{cmd}`"));
@@ -1908,17 +1908,17 @@ pub async fn run_farm(
     }
     for h in &heals {
         let (kind, mark) = match h.kind {
-            crate::sheet::HealKind::Minor => ("minor", bot_config.minor_heal_at_percent),
-            crate::sheet::HealKind::Major => ("major", bot_config.major_heal_at_percent),
-            crate::sheet::HealKind::Regen { .. } => ("regen", bot_config.minor_heal_at_percent),
+            crate::sheet::HealKind::Minor => ("minor", live.bot.minor_heal_at_percent),
+            crate::sheet::HealKind::Major => ("major", live.bot.major_heal_at_percent),
+            crate::sheet::HealKind::Regen { .. } => ("regen", live.bot.minor_heal_at_percent),
         };
         notices(&format!(
             "{kind} heal below {mark}% with `{}` ({} mana)",
             h.cmd, h.mana_cost
         ));
     }
-    if (bot_config.minor_heal_at_percent > 0 || bot_config.major_heal_at_percent > 0) && heals.is_empty() {
-        let marks = match (bot_config.minor_heal_at_percent, bot_config.major_heal_at_percent) {
+    if (live.bot.minor_heal_at_percent > 0 || live.bot.major_heal_at_percent > 0) && heals.is_empty() {
+        let marks = match (live.bot.minor_heal_at_percent, live.bot.major_heal_at_percent) {
             (minor, 0) => format!("minor_heal_at_percent is {minor}"),
             (0, major) => format!("major_heal_at_percent is {major}"),
             (minor, major) => {
@@ -1946,7 +1946,7 @@ pub async fn run_farm(
     let mut casts = Casts { light, heal, buff };
     let mut clock = crate::world::RoundClock::new();
     let out = farm_loop(
-        session, graph, plan, bot_config, cfg, phase, notices, &mut casts, &mut clock,
+        session, graph, plan, &mut live, phase, notices, &mut casts, &mut clock, &durations,
     )
     .await;
     // A lit source burns one use per 3s medium tick whether anything
@@ -1966,21 +1966,21 @@ async fn farm_loop(
     session: &crate::session::Session,
     graph: std::sync::Arc<RoomGraph>,
     plan: &FarmPlan,
-    bot_config: &crate::bot::BotConfig,
-    cfg: &FarmConfig,
+    live: &mut Live,
     phase: PhaseSink<'_>,
     notices: &Notices,
     casts: &mut Casts,
     clock: &mut crate::world::RoundClock,
+    _durations: &BTreeMap<String, u32>,
 ) -> Result<(FarmEnd, FarmStats), FarmError> {
     let started = Instant::now();
     let mut stats = FarmStats::default();
     // Item identity for the pack and the backstab opener. Held out
     // here rather than inside the navigator's block because the bank
     // errand reads the same table to find a bank.
-    let content = content_for(session, cfg, notices);
-    let walker = || {
-        let nav = crate::nav::Navigator::new(graph.clone(), nav_config(bot_config, cfg))
+    let content = content_for(session, &live.farm, notices);
+    let walker = |nav_cfg: crate::nav::NavConfig| {
+        let nav = crate::nav::Navigator::new(graph.clone(), nav_cfg)
             .with_capabilities(session.capabilities());
         match &content {
             Some(content) => nav.with_backstab(
@@ -1996,8 +1996,8 @@ async fn farm_loop(
     // while the legs between them cut straight through a wall whenever
     // that was cheaper — a fence you can walk through is not a fence.
     let nav = match &plan.roam {
-        Some(walls) => walker().fenced(walls.clone(), plan.start.map),
-        None => walker(),
+        Some(walls) => walker(nav_config(&live.bot, &live.farm)).fenced(walls.clone(), plan.start.map),
+        None => walker(nav_config(&live.bot, &live.farm)),
     };
     // The banks sit where the shops are, and a fenced region almost
     // never holds one. A roam that could not cross its own fence to
@@ -2005,12 +2005,12 @@ async fn farm_loop(
     // walks with an unfenced copy of the same navigator and walks back
     // into the region afterwards. For a circuit the two are the same
     // walker and nothing changes.
-    let bank_nav = walker();
+    let bank_nav = walker(nav_config(&live.bot, &live.farm));
     // Danger ranking from the shipped data. A missing or unreadable
     // database is not fatal: an empty table simply means "no opinion",
     // and the bot falls back to the board's own listing order.
     let threat = std::sync::Arc::new(
-        RoomGraph::load_threat(&cfg.content).unwrap_or_else(|e| {
+        RoomGraph::load_threat(&live.farm.content).unwrap_or_else(|e| {
             notices(&format!("threat ranking unavailable ({e}); using board order"));
             crate::bot::ThreatTable::new()
         }),
@@ -2019,12 +2019,10 @@ async fn farm_loop(
     // Every percent policy divides by these, and a wrong value mis-scales
     // heal and flee silently. 0 max_hp means the profile did not say, so
     // ask, and the same answer carries max_mana.
-    let mut bot_config = bot_config.clone();
-    if bot_config.max_hp == 0
+    if live.bot.max_hp == 0
         && let Some(vitals) = discover_vitals(session).await
     {
-        bot_config.max_hp = vitals.max_hp;
-        bot_config.max_mana = vitals.max_mana;
+        live.learned_vitals(vitals.max_hp, vitals.max_mana);
     }
 
     // One refusal set for the whole run. Learning that the board will not
@@ -2104,7 +2102,7 @@ async fn farm_loop(
             }
         };
         for &stop in &lap {
-            if let Some(end) = time_up(started, cfg) {
+            if let Some(end) = time_up(started, &live.farm) {
                 return Ok((end, stats));
             }
             // The leg's final step may have carried the stop's own block
@@ -2124,8 +2122,7 @@ async fn farm_loop(
                     &graph,
                     &mut current,
                     stop,
-                    cfg,
-                    &bot_config,
+                    live,
                     &threat,
                     &refusals,
                     casts,
@@ -2175,19 +2172,18 @@ async fn farm_loop(
             }
             // A circuit stop normally runs on evidence alone; the cap is
             // for rooms that can never prove quiet — see stop_seconds.
-            let until = (cfg.stop_seconds != 0)
-                .then(|| Instant::now() + Duration::from_secs(cfg.stop_seconds));
+            let until = (live.farm.stop_seconds != 0)
+                .then(|| Instant::now() + Duration::from_secs(live.farm.stop_seconds));
             match farm_stop(
                 session,
                 &nav,
                 &graph,
                 stop,
-                &bot_config,
+                live,
                 &threat,
                 &refusals,
                 casts,
                 clock,
-                cfg,
                 started,
                 until,
                 false,
@@ -2219,8 +2215,7 @@ async fn farm_loop(
                         &graph,
                         content,
                         &bank_cfg,
-                        cfg,
-                        &bot_config,
+                        live,
                         &threat,
                         &refusals,
                         casts,
@@ -2275,7 +2270,7 @@ async fn farm_loop(
             continue;
         }
         stats.loops += 1;
-        if cfg.loops != 0 && stats.loops >= cfg.loops {
+        if live.farm.loops != 0 && stats.loops >= live.farm.loops {
             return Ok((FarmEnd::LoopsDone, stats));
         }
     }
@@ -2753,8 +2748,7 @@ pub(crate) async fn travel(
     graph: &RoomGraph,
     current: &mut RoomId,
     stop: RoomId,
-    cfg: &FarmConfig,
-    bot_config: &crate::bot::BotConfig,
+    live: &mut Live,
     threat: &std::sync::Arc<crate::bot::ThreatTable>,
     refusals: &crate::bot::Refusals,
     casts: &mut Casts,
@@ -2771,6 +2765,8 @@ pub(crate) async fn travel(
     use crate::nav::{Interrupt, NavErrorKind};
     set_phase(phase, Phase::WaitingToDepart);
     let mut sneaking = sneaking;
+    let bot_config = live.bot.clone();
+    let cfg = live.farm.clone();
 
     // Whether the leg stops for fights at all is the session's live
     // switch (`/bot` flips it mid-walk), read at each sighting, entry
@@ -2811,7 +2807,7 @@ pub(crate) async fn travel(
         .with_pack(session.pack_handle());
 
     loop {
-        if time_up(started, cfg).is_some() {
+        if time_up(started, &cfg).is_some() {
             return Ok(LegEnd::TimeUp);
         }
         // A rest interrupted by an arrival defends where it stands, with
@@ -2822,7 +2818,7 @@ pub(crate) async fn travel(
         // leg then departs wounded, which is what the travel guard is
         // for. A leg that walks past fights on purpose (the switch off)
         // departs wounded directly.
-        let departure = wait_for_departure_health(session, cfg, bot_config, &sight).await;
+        let departure = wait_for_departure_health(session, &cfg, &bot_config, &sight).await;
         if let DepartureWait::Fit { rested: true } = departure {
             sneaking = false;
         }
@@ -2834,7 +2830,7 @@ pub(crate) async fn travel(
             stats.sightings += 1;
             let until = Instant::now() + Duration::from_secs(cfg.defend_seconds);
             match farm_stop(
-                session, nav, graph, *current, bot_config, threat, refusals, casts, clock, cfg,
+                session, nav, graph, *current, live, threat, refusals, casts, clock,
                 started, Some(until), true, None, false, None, stats, phase,
             )
             .await?
@@ -2931,12 +2927,11 @@ pub(crate) async fn travel(
                     nav,
                     graph,
                     err.at,
-                    bot_config,
+                    live,
                     threat,
                     refusals,
                     casts,
                     clock,
-                    cfg,
                     started,
                     Some(until),
                     true,
@@ -2980,12 +2975,11 @@ pub(crate) async fn travel(
                     nav,
                     graph,
                     err.at,
-                    bot_config,
+                    live,
                     threat,
                     refusals,
                     casts,
                     clock,
-                    cfg,
                     started,
                     Some(until),
                     true,
@@ -3278,7 +3272,7 @@ async fn farm_stop(
     nav: &crate::nav::Navigator,
     graph: &RoomGraph,
     stop: RoomId,
-    bot_config: &crate::bot::BotConfig,
+    live: &mut Live,
     threat: &std::sync::Arc<crate::bot::ThreatTable>,
     // Kept by the RUN, not the stop: a bot is rebuilt per stop and on
     // every lag and recovery, and a forgotten refusal is a refused swing
@@ -3286,7 +3280,6 @@ async fn farm_stop(
     refusals: &crate::bot::Refusals,
     casts: &mut Casts,
     clock: &mut crate::world::RoundClock,
-    cfg: &FarmConfig,
     started: Instant,
     // Hard cap on this stop, or None to stay until it goes quiet.
     until: Option<Instant>,
@@ -3311,6 +3304,8 @@ async fn farm_stop(
     stats: &mut FarmStats,
     phase: PhaseSink<'_>,
 ) -> Result<StopEnd, FarmError> {
+    let bot_config = live.bot.clone();
+    let cfg = live.farm.clone();
     let stop_name = graph.room(stop).map(|r| r.name.clone()).unwrap_or_default();
     let mut resting = false;
     // The stop went blind at least once this visit: the room needs
@@ -3359,13 +3354,13 @@ async fn farm_stop(
     // point every send passes through.
     let mut still_sneaking = sneaking;
     let mut gate = Gate::new(backoff);
-    let mut rest_watch = HealWatch::new(bot_config, cfg);
+    let mut rest_watch = HealWatch::new(&bot_config, &cfg);
     // Health, for the spell mark. Read from the session's published
     // state rather than accumulated here: the pump below folds prompts
     // into the bot, not into a local, and a second copy of the number
     // would be one more thing that can go stale.
     let vitals = session.state();
-    let mut seen = StopState::new(stop_name.clone(), cfg);
+    let mut seen = StopState::new(stop_name.clone(), &cfg);
     // The maintained room state — fed the same stream, one fold. Its
     // first consumer is the recast coherence gate; StopState keeps its
     // own hard-won evidence rules untouched until Here earns collapse.
@@ -3403,7 +3398,7 @@ async fn farm_stop(
     }
 
     loop {
-        if time_up(started, cfg).is_some() {
+        if time_up(started, &cfg).is_some() {
             return Ok(StopEnd::TimeUp);
         }
         // Defending is capped: see FarmConfig::defend_seconds for why a
@@ -3514,7 +3509,7 @@ async fn farm_stop(
             && !leaving
             && gate.is_idle()
             && let Some(percent) = bot.hp_percent(hp_now)
-            && let Some(need) = crate::bot::heal_need(bot_config, percent)
+            && let Some(need) = crate::bot::heal_need(&bot_config, percent)
             && let crate::sheet::CastAttempt::Send(cmd) = casts.heal.attempt(now, clock, need)
         {
             gate.push(cmd);
@@ -3705,7 +3700,7 @@ async fn farm_stop(
                 crate::bot::Bot::with_refusals(bot_config.clone(), threat.clone(), refusals.clone())
                     .with_pack(session.pack_handle());
             if let DepartureWait::Contested =
-                wait_for_departure_health(session, cfg, bot_config, &flee_sight).await
+                wait_for_departure_health(session, &cfg, &bot_config, &flee_sight).await
             {
                 stats.contested_recoveries += 1;
             }
@@ -3718,8 +3713,8 @@ async fn farm_stop(
             bot = crate::bot::Bot::with_refusals(stop_config.clone(), threat.clone(), refusals.clone())
                 .with_pack(session.pack_handle());
             gate = Gate::new(backoff);
-            rest_watch = HealWatch::new(bot_config, cfg);
-            seen = StopState::new(stop_name.clone(), cfg);
+            rest_watch = HealWatch::new(&bot_config, &cfg);
+            seen = StopState::new(stop_name.clone(), &cfg);
             here.reset();
             here.room = Some(stop);
             continue;

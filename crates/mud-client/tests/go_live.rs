@@ -12,7 +12,7 @@
 use std::sync::Arc;
 
 use mud_client::dialect::{self, Target};
-use mud_client::farm::FarmConfig;
+use mud_client::farm::{FarmConfig, Live};
 use mud_client::go::{GoEnd, resolve, run_go};
 use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::profile::Profile;
@@ -194,8 +194,7 @@ async fn go_walks_to_a_named_room() {
         graph,
         Some(GATES),
         to,
-        &mud_client::bot::BotConfig::default(),
-        &cfg(),
+        Live::fixed(mud_client::bot::BotConfig::default(), cfg()),
         None,
         &quiet(),
     )
@@ -231,8 +230,7 @@ async fn go_finds_its_own_starting_room() {
         graph,
         None,
         MARKET,
-        &mud_client::bot::BotConfig::default(),
-        &cfg(),
+        Live::fixed(mud_client::bot::BotConfig::default(), cfg()),
         None,
         &quiet(),
     )
@@ -252,8 +250,7 @@ async fn going_where_you_already_stand_is_a_no_op() {
         client_graph(),
         Some(GATES),
         GATES,
-        &mud_client::bot::BotConfig::default(),
-        &cfg(),
+        Live::fixed(mud_client::bot::BotConfig::default(), cfg()),
         None,
         &quiet(),
     )

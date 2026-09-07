@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use mud_core::content::{Content, RoomId};
 
-use crate::farm::{Casts, FarmConfig, FarmError, FarmStats, LegEnd, Phase, PhaseSink};
+use crate::farm::{Casts, FarmError, FarmStats, LegEnd, Live, Phase, PhaseSink};
 use crate::graph::{Capabilities, RoomGraph};
 use crate::purse::{Coins, Purse};
 use crate::session::Session;
@@ -336,8 +336,7 @@ pub(crate) async fn errand(
     graph: &RoomGraph,
     content: &Content,
     bank: &BankConfig,
-    cfg: &FarmConfig,
-    bot_config: &crate::bot::BotConfig,
+    live: &mut Live,
     threat: &std::sync::Arc<crate::bot::ThreatTable>,
     refusals: &crate::bot::Refusals,
     casts: &mut Casts,
@@ -367,7 +366,7 @@ pub(crate) async fn errand(
     crate::farm::set_phase(phase, Phase::Banking { at: to });
     if *current != to {
         let leg = crate::farm::travel(
-            session, nav, graph, current, to, cfg, bot_config, threat, refusals, casts, clock,
+            session, nav, graph, current, to, live, threat, refusals, casts, clock,
             started, stats, phase, false,
         )
         .await;
@@ -432,7 +431,7 @@ pub(crate) async fn errand(
     };
     if let Some(back) = return_to.filter(|back| *back != *current) {
         let leg = crate::farm::travel(
-            session, nav, graph, current, back, cfg, bot_config, threat, refusals, casts, clock,
+            session, nav, graph, current, back, live, threat, refusals, casts, clock,
             started, stats, phase, false,
         )
         .await;
@@ -467,25 +466,25 @@ pub async fn run_bank(
     session: &Session,
     graph: std::sync::Arc<RoomGraph>,
     hint: Option<RoomId>,
-    bot_config: &crate::bot::BotConfig,
-    cfg: &FarmConfig,
+    live: Live,
     phase: PhaseSink<'_>,
     notices: &crate::farm::Notices,
 ) -> Result<ErrandEnd, FarmError> {
-    crate::farm::check_departure_mark(cfg, bot_config)?;
-    session.travel_fights().set(cfg.fight_while_travelling);
-    if let Err(e) = crate::deaths::init(&cfg.content) {
+    let mut live = live;
+    crate::farm::check_departure_mark(&live.farm, &live.bot)?;
+    session.travel_fights().set(live.farm.fight_while_travelling);
+    if let Err(e) = crate::deaths::init(&live.farm.content) {
         notices(&format!(
             "death wordings unavailable ({e}); shared-room kills will be missed"
         ));
     }
-    let Some(content) = crate::farm::content_for(session, cfg, notices) else {
+    let Some(content) = crate::farm::content_for(session, &live.farm, notices) else {
         return Ok(ErrandEnd::Nothing(format!(
             "no room database at {}",
-            cfg.content.display()
+            live.farm.content.display()
         )));
     };
-    let nav = crate::nav::Navigator::new(graph.clone(), crate::farm::nav_config(bot_config, cfg))
+    let nav = crate::nav::Navigator::new(graph.clone(), crate::farm::nav_config(&live.bot, &live.farm))
         .with_capabilities(session.capabilities())
         .with_backstab(
             std::sync::Arc::clone(&content),
@@ -498,18 +497,16 @@ pub async fn run_bank(
         .await
         .map_err(FarmError::Lost)?
         .at;
-    let mut bot_config = bot_config.clone();
-    if bot_config.max_hp == 0
+    if live.bot.max_hp == 0
         && let Some(vitals) = crate::farm::discover_vitals(session).await
     {
-        bot_config.max_hp = vitals.max_hp;
-        bot_config.max_mana = vitals.max_mana;
+        live.learned_vitals(vitals.max_hp, vitals.max_mana);
     }
     let threat = std::sync::Arc::new(
-        RoomGraph::load_threat(&cfg.content).unwrap_or_else(|_| crate::bot::ThreatTable::new()),
+        RoomGraph::load_threat(&live.farm.content).unwrap_or_else(|_| crate::bot::ThreatTable::new()),
     );
     let refusals = crate::bot::Refusals::default();
-    let sheet = crate::farm::sheet_from(session, &bot_config, &Default::default());
+    let sheet = crate::farm::sheet_from(session, &live.bot, &Default::default());
     let mut casts = Casts {
         light: crate::sheet::LightState::new(sheet.light),
         heal: crate::sheet::HealState::new(Vec::new()),
@@ -524,8 +521,7 @@ pub async fn run_bank(
         &graph,
         &content,
         &bank,
-        cfg,
-        &bot_config,
+        &mut live,
         &threat,
         &refusals,
         &mut casts,

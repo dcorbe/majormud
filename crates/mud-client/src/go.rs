@@ -25,7 +25,7 @@ use std::time::Instant;
 
 use mud_core::content::RoomId;
 
-use crate::farm::{FarmConfig, FarmError, FarmStats, LegEnd};
+use crate::farm::{FarmConfig, FarmError, FarmStats, LegEnd, Live};
 use crate::graph::RoomGraph;
 
 /// How many candidates an ambiguous name lists before giving up on
@@ -226,18 +226,18 @@ pub async fn run_go(
     graph: Arc<RoomGraph>,
     hint: Option<RoomId>,
     to: RoomId,
-    bot_config: &crate::bot::BotConfig,
-    cfg: &FarmConfig,
+    live: Live,
     phase: crate::farm::PhaseSink<'_>,
     notices: &crate::farm::Notices,
 ) -> Result<GoEnd, FarmError> {
-    crate::farm::check_departure_mark(cfg, bot_config)?;
+    let mut live = live;
+    crate::farm::check_departure_mark(&live.farm, &live.bot)?;
     // How the walk starts; `/bot` moves the switch from here on. See
     // `run_farm`.
-    session.travel_fights().set(cfg.fight_while_travelling);
+    session.travel_fights().set(live.farm.fight_while_travelling);
     // The board's own per-monster death wordings, so the room model can
     // see a kill somebody else landed. Best effort, as in `run_farm`.
-    if let Err(e) = crate::deaths::init(&cfg.content) {
+    if let Err(e) = crate::deaths::init(&live.farm.content) {
         notices(&format!(
             "death wordings unavailable ({e}); shared-room kills will be missed"
         ));
@@ -245,8 +245,8 @@ pub async fn run_go(
     // The table goes to the session before the capabilities are read,
     // so the walk routes with the pack. Best effort, as before: a
     // session handed the table earlier keeps it when this load fails.
-    let content = crate::farm::content_for(session, cfg, notices);
-    let nav = crate::nav::Navigator::new(graph.clone(), crate::farm::nav_config(bot_config, cfg))
+    let content = crate::farm::content_for(session, &live.farm, notices);
+    let nav = crate::nav::Navigator::new(graph.clone(), crate::farm::nav_config(&live.bot, &live.farm))
         .with_capabilities(session.capabilities());
     let nav = match content {
         Some(content) => nav.with_backstab(content, session.wielded(), session.contents().items),
@@ -268,15 +268,13 @@ pub async fn run_go(
     // Every percent policy divides by these, and a wrong value mis-scales
     // the travel guard silently. 0 max_hp means the profile did not say,
     // so ask, and the same answer carries max_mana.
-    let mut bot_config = bot_config.clone();
-    if bot_config.max_hp == 0
+    if live.bot.max_hp == 0
         && let Some(vitals) = crate::farm::discover_vitals(session).await
     {
-        bot_config.max_hp = vitals.max_hp;
-        bot_config.max_mana = vitals.max_mana;
+        live.learned_vitals(vitals.max_hp, vitals.max_mana);
     }
     let threat = Arc::new(
-        RoomGraph::load_threat(&cfg.content).unwrap_or_else(|_| crate::bot::ThreatTable::new()),
+        RoomGraph::load_threat(&live.farm.content).unwrap_or_else(|_| crate::bot::ThreatTable::new()),
     );
     let refusals = crate::bot::Refusals::default();
     // `sheet_from` reads the session's own cached inventory/spellbook
@@ -288,7 +286,7 @@ pub async fn run_go(
     // The walk rests to the bot's mark like a farm does. Healing is
     // left empty on purpose: casting recovery on a walk belongs to the
     // person who typed it.
-    let sheet = crate::farm::sheet_from(session, &bot_config, &Default::default());
+    let sheet = crate::farm::sheet_from(session, &live.bot, &Default::default());
     let mut casts = crate::farm::Casts {
         light: crate::sheet::LightState::new(sheet.light),
         heal: crate::sheet::HealState::new(Vec::new()),
@@ -304,8 +302,7 @@ pub async fn run_go(
         &graph,
         &mut current,
         to,
-        cfg,
-        &bot_config,
+        &mut live,
         &threat,
         &refusals,
         &mut casts,
