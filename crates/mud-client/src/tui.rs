@@ -325,7 +325,6 @@ pub struct Front {
     editor: InputEditor,
     /// The template every `/new` copies, and what `/set` in the lobby edits.
     lobby: crate::settings::Settings,
-    lobby_passthrough: bool,
     log: crate::screen::Screen,
     /// Windows 2 and up, in number order. Number is index plus two.
     windows: Vec<crate::window::WindowHandle>,
@@ -376,7 +375,6 @@ impl Front {
             cols,
             editor: InputEditor::new(),
             lobby: settings,
-            lobby_passthrough: false,
             log,
             windows: Vec::new(),
             active: 1,
@@ -555,8 +553,10 @@ impl Front {
             }
             _ => self.unscroll(),
         }
+        // The lobby has no board to pass keys to, so it is never in
+        // passthrough and `handle_key` is told so every time.
         let (mut passthrough, farming) = match self.active_window() {
-            None => (self.lobby_passthrough, false),
+            None => (false, false),
             Some(w) => {
                 let info = w.info.lock().expect("info lock");
                 (info.passthrough, info.farming)
@@ -564,19 +564,16 @@ impl Front {
         };
         let was = passthrough;
         let outcome = handle_key(&key, &mut self.editor, &mut passthrough, farming);
-        if passthrough != was {
-            match self.active_window() {
-                None => self.lobby_passthrough = false,
-                Some(w) => {
-                    w.info.lock().expect("info lock").passthrough = passthrough;
-                    let text = if passthrough {
-                        "-- keys passed through to the board, Ctrl-P to return --"
-                    } else {
-                        "-- back to the line editor --"
-                    };
-                    w.screen.lock().expect("screen lock").note(text);
-                }
-            }
+        if passthrough != was
+            && let Some(w) = self.active_window()
+        {
+            w.info.lock().expect("info lock").passthrough = passthrough;
+            let text = if passthrough {
+                "-- keys passed through to the board, Ctrl-P to return --"
+            } else {
+                "-- back to the line editor --"
+            };
+            w.screen.lock().expect("screen lock").note(text);
         }
         if !matches!(outcome, KeyOutcome::Quit | KeyOutcome::Continue) {
             self.quit_armed = false;
