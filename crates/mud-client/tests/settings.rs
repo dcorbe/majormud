@@ -244,9 +244,10 @@ fn a_save_replaces_the_file_and_leaves_no_temporary() {
     let path = scratch("replaced.toml");
     let temp = scratch("replaced.toml.tmp");
     std::fs::write(&path, "host = \"old\"\n").unwrap();
-    let mut s = Settings::parse(COMMENTED).unwrap();
-    s.save(Some(&path)).unwrap();
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), COMMENTED);
+    let mut s = Settings::load(&path).unwrap();
+    s.set("host", "\"new\"").unwrap();
+    s.save(None).unwrap();
+    assert!(std::fs::read_to_string(&path).unwrap().contains("host = \"new\""));
     assert!(!temp.exists(), "the temporary is renamed away, not left behind");
 }
 
@@ -287,9 +288,9 @@ fn a_failed_write_reports_the_profile_and_drops_the_temporary() {
     if std::fs::write(&temp, "x").is_ok() {
         return;
     }
-    let mut s = Settings::parse(COMMENTED).unwrap();
+    let mut s = Settings::load(&path).unwrap();
     s.set("port", "2400").unwrap();
-    let err = s.save(Some(&path)).unwrap_err();
+    let err = s.save(None).unwrap_err();
     assert!(
         err.starts_with(&format!("{}: ", path.display())),
         "the error names the profile, not the sibling: {err}"
@@ -315,9 +316,9 @@ fn a_failed_save_leaves_the_old_file_whole() {
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
     // Root ignores the mode bits, and then the test can say nothing.
     let enforced = std::fs::write(dir.join("probe"), "x").is_err();
-    let mut s = Settings::parse(COMMENTED).unwrap();
+    let mut s = Settings::load(&path).unwrap();
     s.set("port", "2400").unwrap();
-    let result = s.save(Some(&path));
+    let result = s.save(None);
     let after = std::fs::read_to_string(&path).unwrap();
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     if !enforced {
@@ -339,6 +340,7 @@ fn save_without_a_path_needs_one_once() {
     let err = s.save(None).unwrap_err();
     assert!(err.contains("/save <file>"), "{err}");
     let path = scratch("fresh.toml");
+    let _ = std::fs::remove_file(&path);
     s.save(Some(&path)).unwrap();
     assert_eq!(s.path(), Some(path.as_path()));
     s.set("port", "2327").unwrap();
@@ -354,6 +356,7 @@ fn a_detached_copy_keeps_the_settings_and_drops_the_file() {
     let mut s = Settings::default();
     s.set("host", "\"127.0.0.1\"").unwrap();
     let path = scratch("template.toml");
+    let _ = std::fs::remove_file(&path);
     s.save(Some(&path)).unwrap();
     s.set("username", "\"dan\"").unwrap();
     let copy = s.detached();
@@ -497,5 +500,49 @@ fn common_prefix_of_nothing_is_empty() {
     use mud_client::settings::common_prefix;
     assert_eq!(common_prefix(&[]), "");
     assert_eq!(common_prefix(&["abc".into(), "abd".into()]), "ab");
+}
+
+/// The stray `beef` in the repo root was a bare lobby with three keys.
+/// Under the resolver alone that save would have replaced the real
+/// profile, password and all. A file the settings did not come from is
+/// somebody's, and a save onto it is refused.
+#[test]
+fn a_save_onto_a_file_the_settings_did_not_come_from_is_refused() {
+    let path = scratch("theirs.toml");
+    std::fs::write(&path, COMMENTED).unwrap();
+    let mut s = Settings::default();
+    s.set("host", "\"127.0.0.1\"").unwrap();
+    let err = s.save(Some(&path)).unwrap_err();
+    assert!(
+        err.starts_with(&format!("{} exists and these settings were not loaded from it.", path.display())),
+        "{err}"
+    );
+    assert!(err.contains("/load it first, or pick another name."), "{err}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), COMMENTED, "untouched");
+    assert!(s.dirty(), "nothing was saved");
+}
+
+/// The remembered path is the file these settings came from, so a save
+/// onto it by name is the same as a bare save.
+#[test]
+fn a_save_onto_the_remembered_path_by_name_writes() {
+    let path = scratch("mine.toml");
+    std::fs::write(&path, COMMENTED).unwrap();
+    let mut s = Settings::load(&path).unwrap();
+    s.set("port", "2400").unwrap();
+    s.save(Some(&path)).unwrap();
+    assert!(std::fs::read_to_string(&path).unwrap().contains("port = 2400"));
+}
+
+/// A name nobody has used is free, and the save remembers it.
+#[test]
+fn a_save_onto_a_fresh_name_writes_and_remembers() {
+    let path = scratch("fresh-name.toml");
+    let _ = std::fs::remove_file(&path);
+    let mut s = Settings::default();
+    s.set("host", "\"127.0.0.1\"").unwrap();
+    s.save(Some(&path)).unwrap();
+    assert_eq!(s.path(), Some(path.as_path()));
+    assert!(!s.dirty());
 }
 

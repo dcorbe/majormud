@@ -180,12 +180,23 @@ impl Settings {
 
     /// Write the document. `None` means the remembered path, and with
     /// none remembered the caller has to name one. A path given here is
-    /// remembered.
+    /// remembered. A path that exists and is not the remembered one is
+    /// refused: it is another character's file until it is loaded.
     pub fn save(&mut self, path: Option<&Path>) -> Result<PathBuf, String> {
         let path = match path.map(Path::to_path_buf).or_else(|| self.path.clone()) {
             Some(p) => p,
             None => return Err("no file to save to: /save <file>".into()),
         };
+        // A file these settings did not come from is somebody's. The
+        // resolver in `profile` turns a bare name into a path beside
+        // every other profile, which is exactly where an unrelated
+        // character's file already sits.
+        if path.exists() && self.path.as_deref() != Some(path.as_path()) {
+            return Err(format!(
+                "{} exists and these settings were not loaded from it. /load it first, or pick another name.",
+                path.display()
+            ));
+        }
         // Written to a sibling and renamed on, never onto the target
         // itself. A plain write truncates first, so a failure partway
         // through leaves the profile empty and the only copy of a

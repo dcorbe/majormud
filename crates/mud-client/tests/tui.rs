@@ -1165,6 +1165,7 @@ fn save_reports_the_path_or_asks_for_one() {
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("tui");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("saved.toml");
+    let _ = std::fs::remove_file(&path);
     let saved = apply_settings(&KeyOutcome::Save { file: Some(path.display().to_string()) }, &mut s).unwrap();
     assert!(saved.note.contains("saved"), "{}", saved.note);
     assert!(path.exists());
