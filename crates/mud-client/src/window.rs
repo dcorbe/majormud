@@ -862,7 +862,12 @@ async fn play(
                                     let (bot, heal) = new_assist(&session, &assist_config);
                                     assist = Some(bot);
                                     assist_heal_state = Some(heal);
-                                    assist_watch = crate::farm::HealWatch::new(&assist_config, &crate::farm::FarmConfig::default());
+                                    // Reconfigured, not rebuilt: a fresh
+                                    // watch starts at "not watching" and
+                                    // would drop the rest in flight, and
+                                    // with it the retry that ends a rest
+                                    // the board refused.
+                                    assist_watch.reconfigure(&assist_config, &crate::farm::FarmConfig::default());
                                     assist_book_seen = usize::MAX;
                                     w.note("-- bot assist rebuilt with the new settings --");
                                 }

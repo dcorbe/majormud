@@ -1,9 +1,11 @@
 //! Character profile (TOML) tests — the analog of MegaMud Chars/*.Ini.
 
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use mud_client::dialect::Target;
-use mud_client::profile::Profile;
+use mud_client::profile::{Profile, config_dir_from, resolve_in};
 
 #[test]
 fn minimal_profile_parses_with_target_defaults() {
@@ -154,10 +156,12 @@ fn nav_limits_default_and_override_independently() {
         "#,
     )
     .unwrap();
-    assert_eq!(
-        tuned.farm.expect("[farm] table").nav.step_timeout_ms,
-        30000
-    );
+    let nav = tuned.farm.expect("[farm] table").nav;
+    assert_eq!(nav.step_timeout_ms, 30000);
+    // `sneak` is `#[serde(skip)]` inside a `#[serde(default)]`
+    // container, so a table that names any other key still has to give
+    // it the struct default rather than the field type's `false`.
+    assert!(nav.sneak, "the table did not zero the skipped field");
 }
 
 #[test]
@@ -430,11 +434,6 @@ fn reconnect_defaults_to_off_with_a_ten_second_wait() {
     assert!(p.reconnect);
     assert_eq!(p.reconnect_delay_seconds, 45);
 }
-
-use std::ffi::OsString;
-use std::path::{Path, PathBuf};
-
-use mud_client::profile::{config_dir_from, resolve_in};
 
 /// The loop library and the profiles share one base, and it is the one
 /// the loop library already used: XDG first, then the home directory,

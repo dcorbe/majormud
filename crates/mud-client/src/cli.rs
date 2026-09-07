@@ -72,8 +72,8 @@ pub enum Command {
     },
     /// Walk the profile's patrol circuit, farming each stop
     Farm {
-        /// Character profile: a name under ~/.config/mmc, or a path;
-        /// needs a `[farm]` table
+        /// Character profile: a name under ~/.config/mmc, or a path.
+        /// Needs a `[farm]` table
         #[arg(long)]
         profile: PathBuf,
         /// Capture basename: writes `<capture>.raw` and `<capture>_timing.log`

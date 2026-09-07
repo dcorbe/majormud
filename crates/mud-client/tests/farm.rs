@@ -3011,6 +3011,28 @@ fn refresh_is_false_until_the_profile_changes_and_true_once_after() {
     assert_eq!(live.generation(), 1);
 }
 
+/// The three refresh points share one generation. Whichever of them
+/// runs the rebuild, the other two must still notice their own build is
+/// behind and redo it.
+#[test]
+fn took_fires_once_for_the_caller_that_refreshed_and_once_for_the_one_that_lagged() {
+    let (tx, rx) = tokio::sync::watch::channel(Profile::default());
+    let mut live = Live::over(rx, "farm", quiet(), BotConfig::default(), FarmConfig::default(), derive_like_a_go());
+    let mut built_at = live.generation();
+    assert!(!live.took(&mut built_at), "nothing was sent");
+    tx.send(Profile { bot: Some(BotConfig { ignore_coins: vec!["copper".into()], ..Default::default() }), ..Default::default() }).unwrap();
+    assert!(live.took(&mut built_at));
+    assert!(!live.took(&mut built_at), "one change, one rebuild");
+    assert_eq!(built_at, live.generation());
+
+    // The other caller: its own build predates the refresh above, and
+    // `refresh` has nothing left to report.
+    let mut lagging = 0;
+    assert!(live.took(&mut lagging), "a build behind the generation rebuilds");
+    assert_eq!(lagging, live.generation());
+    assert!(!live.took(&mut lagging));
+}
+
 #[test]
 fn a_rebuild_applies_the_jobs_forced_fields() {
     let (tx, rx) = tokio::sync::watch::channel(Profile::default());

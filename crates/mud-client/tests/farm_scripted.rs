@@ -2962,7 +2962,6 @@ async fn the_fight_switch_changed_mid_run_holds_at_the_next_leg() {
     assert!(!log.iter().any(|l| l.starts_with("a ")), "nothing was fought: {log:?}");
 }
 
-
 /// `/set bot.ignore_coins ["copper"]` while the run is standing IN the
 /// stop, not between two of them. The pile the recheck turns up is left
 /// where it is, which only happens if the stop's own bot took the new

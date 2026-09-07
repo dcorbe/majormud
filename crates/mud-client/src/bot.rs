@@ -206,7 +206,6 @@ pub struct BotConfig {
     pub take_keys: bool,
     /// Arm a sneak before walking, when the character has any stealth.
     /// Off means no walk sneaks and no stealth spell is cast for one.
-    /// The recovery job refuses to start without it.
     pub auto_sneak: bool,
     /// Denominations the sweep leaves on the floor, named as `get`
     /// takes them: copper, silver, gold, platinum, runic. At higher

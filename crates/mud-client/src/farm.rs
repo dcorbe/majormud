@@ -628,13 +628,15 @@ impl Live {
     /// whatever it last set.
     pub fn refresh(&mut self) -> bool {
         let now = self.rx.borrow_and_update();
-        let changed = self.pending || now.has_changed();
+        // The early return leaves `pending` alone on purpose: it can
+        // only be false here, since a true one would have made this
+        // changed. Nothing to clear, and nothing to clone either.
+        if !(self.pending || now.has_changed()) {
+            return false;
+        }
         let profile = now.clone();
         drop(now);
         self.pending = false;
-        if !changed {
-            return false;
-        }
         let (bot, farm) = (self.derive)(&profile);
         self.bot = bot;
         self.farm = farm;
@@ -646,6 +648,20 @@ impl Live {
         }
         self.generation += 1;
         (self.notices)(&format!("-- {}: settings reloaded --", self.what));
+        true
+    }
+
+    /// [`Live::refresh`], plus the caller's own build generation. True
+    /// when this call rebuilt the configs, and true when `built_at`
+    /// lags because some other refresh point rebuilt them first. Stores
+    /// the current generation whenever it returns true, so the caller
+    /// asks again without tracking any of that itself.
+    pub fn took(&mut self, built_at: &mut u64) -> bool {
+        let rebuilt = self.refresh();
+        if !rebuilt && *built_at == self.generation {
+            return false;
+        }
+        *built_at = self.generation;
         true
     }
 
@@ -2037,9 +2053,10 @@ async fn farm_loop(
     // this the rotation would only ever pick rooms inside the region
     // while the legs between them cut straight through a wall whenever
     // that was cheaper — a fence you can walk through is not a fence.
+    let nav_cfg = nav_config(&live.bot, &live.farm);
     let mut nav = match &plan.roam {
-        Some(walls) => walker(nav_config(&live.bot, &live.farm)).fenced(walls.clone(), plan.start.map),
-        None => walker(nav_config(&live.bot, &live.farm)),
+        Some(walls) => walker(nav_cfg.clone()).fenced(walls.clone(), plan.start.map),
+        None => walker(nav_cfg.clone()),
     };
     // The banks sit where the shops are, and a fenced region almost
     // never holds one. A roam that could not cross its own fence to
@@ -2047,7 +2064,7 @@ async fn farm_loop(
     // walks with an unfenced copy of the same navigator and walks back
     // into the region afterwards. For a circuit the two are the same
     // walker and nothing changes.
-    let mut bank_nav = walker(nav_config(&live.bot, &live.farm));
+    let mut bank_nav = walker(nav_cfg);
     let mut built_at = live.generation();
     // The tables the block above and the incoming casts were built
     // from. A reload compares against these to tell a key it owns from
@@ -2156,15 +2173,25 @@ async fn farm_loop(
             // so they move only when their own keys did: the fight
             // switch, which `/bot` also owns, and the cast timers.
             // Mid stop and mid leg have their own points.
-            if live.refresh() || built_at != live.generation() {
-                built_at = live.generation();
+            if live.took(&mut built_at) {
+                let nav_cfg = nav_config(&live.bot, &live.farm);
                 nav = match &plan.roam {
-                    Some(walls) => walker(nav_config(&live.bot, &live.farm)).fenced(walls.clone(), plan.start.map),
-                    None => walker(nav_config(&live.bot, &live.farm)),
+                    Some(walls) => walker(nav_cfg.clone()).fenced(walls.clone(), plan.start.map),
+                    None => walker(nav_cfg.clone()),
                 };
-                bank_nav = walker(nav_config(&live.bot, &live.farm));
+                bank_nav = walker(nav_cfg);
                 if casts_need_rebuild(&built_bot, &live.bot) {
                     let sheet = sheet_from(session, &live.bot, durations);
+                    // Why a named spell was dropped, the same as the
+                    // run says at startup. A `/set bot.buffs` naming
+                    // something the character cannot cast would
+                    // otherwise go quiet mid run.
+                    for reason in &sheet.heals.1 {
+                        notices(&format!("heal {reason}"));
+                    }
+                    for reason in &sheet.buffs.1 {
+                        notices(&format!("buff {reason}"));
+                    }
                     casts.heal = crate::sheet::HealState::new(sheet.heals.0);
                     casts.buff = crate::sheet::BuffState::new(sheet.buffs.0);
                 }
@@ -2892,8 +2919,7 @@ pub(crate) async fn travel(
         // bot from the new tables. The walk in flight when it arrived
         // finished on the old ones, which is the honest reading of
         // "the next decision that reads them".
-        if live.refresh() || built_at != live.generation() {
-            built_at = live.generation();
+        if live.took(&mut built_at) {
             bot_config = live.bot.clone();
             cfg = live.farm.clone();
             let (g, s) = build(&bot_config, &cfg);
@@ -3495,8 +3521,7 @@ async fn farm_stop(
         // A change lands at the next pass. The bot keeps its latches
         // and takes the new policy, and the rest watch takes the new
         // marks. The stop's dwell budgets were read at entry and stay.
-        if live.refresh() || built_at != live.generation() {
-            built_at = live.generation();
+        if live.took(&mut built_at) {
             bot_config = live.bot.clone();
             cfg = live.farm.clone();
             stop_config = crate::bot::BotConfig {
