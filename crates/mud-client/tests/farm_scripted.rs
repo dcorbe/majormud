@@ -1836,6 +1836,50 @@ async fn a_lap_with_sneak_off_never_arms() {
     assert!(!log.iter().any(|l| l == "sneak"), "sneak off never arms: {log:?}");
 }
 
+/// `go_to_finish` builds its own navigator, separately from
+/// `run_farm`'s. `bot.sneak = false` must reach that walk too, not
+/// only the laps a run makes on its circuit.
+#[tokio::test]
+async fn the_walk_to_the_finish_room_with_sneak_off_never_arms() {
+    let (addr, received) = scripted_board(vec![
+        ("stat", NINJA_SHEET.into()),
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        ("look", format!("\r\nlook{}", room_block("Guard Post", None, "north"))),
+        ("n", format!("\r\nn{}", room_block("Inner Ward", None, "north south"))),
+        ("n", format!("\r\nn{}", room_block("Keep", None, "south"))),
+    ])
+    .await;
+    let session = session_for(addr).await;
+    mud_client::farm::probe_sheet(&session, None).await;
+    assert_eq!(session.capabilities().stealth, 56, "the sheet must have been read");
+
+    let graph = corridor();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/2".into()],
+        finish_at: Some("1/3".into()),
+        ..FarmConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig { sneak: false, ..BotConfig::default() };
+
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        mud_client::farm::go_to_finish(&session, graph.clone(), &plan, &bot, &cfg),
+    )
+    .await
+    .expect("the finish walk should finish, not hang")
+    .expect("should have walked home");
+
+    let log = received.lock().unwrap();
+    assert_eq!(log.iter().filter(|l| *l == "n").count(), 2, "both legs walked: {log:?}");
+    assert!(!log.iter().any(|l| l == "sneak"), "sneak off never arms on the finish walk: {log:?}");
+}
+
 /// The other half of carrying the belief: a stop that swings has
 /// spent it. The character sneaks into the first stop, opens with a
 /// backstab off that belief, and the leg out must arm again -- the

@@ -2138,12 +2138,13 @@ pub async fn go_to_finish(
     session: &crate::session::Session,
     graph: std::sync::Arc<RoomGraph>,
     plan: &FarmPlan,
+    bot: &crate::bot::BotConfig,
     cfg: &FarmConfig,
 ) -> Result<(), FarmError> {
     let Some(finish) = plan.finish else {
         return Ok(());
     };
-    let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone())
+    let nav = crate::nav::Navigator::new(graph.clone(), nav_config(bot, cfg))
         .with_capabilities(session.capabilities());
     let seen = look_around(session, "the finish walk's look").await?;
     if let Some(here) = graph.room(finish)

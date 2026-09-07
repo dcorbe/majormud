@@ -522,3 +522,4 @@ async fn sneak_off_never_sends_sneak() {
     assert_eq!(log.sneaks.load(Ordering::SeqCst), 0, "sneak off must not send sneak");
     assert_eq!(log.moves.load(Ordering::SeqCst), 1, "the walk still moves");
 }
+
