@@ -615,9 +615,12 @@ that stopped at the username prompt would look connected and be useless.
 A failed dial or a failed login is written on the window's screen and the
 next try follows after the same wait. `/disconnect` while the wait runs
 cancels it and leaves the window where it is, so `/connect` is then the
-only thing that dials. Every attempt goes into the lobby's log as
-`reconnecting, attempt N`, and the count starts over once a session is
-playing.
+only thing that dials. A `/disconnect` typed while connected is the same
+answer, and the window stays down rather than dialling back into a board
+you just left. Every attempt goes into the lobby's log as `reconnecting,
+attempt N`, and the count starts over once a session is playing or the
+operator dials. `/set reconnect false` is read when the next line
+closes, so it does not cancel a wait that is already running.
 
 Interactive play never logs in for you: you type the username and
 password at the board's prompt. The automation needs the character's

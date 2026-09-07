@@ -278,8 +278,13 @@ impl Window {
 
 /// Why the play loop returned.
 enum PlayEnd {
-    /// The line closed, by the board or by `/disconnect`.
+    /// The board closed the line, or the connection failed under the
+    /// loop. Nobody asked for it, so this is what a redial answers.
     Closed,
+    /// The operator typed `/disconnect`. The line is just as closed and
+    /// the tidying is the same, but a window is not dialled back into a
+    /// board its operator just left.
+    Left,
     /// The front end dropped the handle. The task ends.
     Ended,
 }
@@ -294,13 +299,14 @@ enum Idle {
     Ended,
 }
 
-/// How long to wait before redialling a line that just closed, or
-/// `None` when this window is staying put.
+/// How long to wait before redialling, or `None` when this window is
+/// staying put. Says on the window's screen why it is staying, when the
+/// profile asked for a redial it cannot make.
 ///
 /// A profile that asks for a reconnect without both credentials cannot
 /// log back in, and a redial that stopped at the username prompt would
 /// look connected while being useless. So it says so and stays.
-fn redial_delay(w: &Window) -> Option<std::time::Duration> {
+fn arm_redial(w: &Window) -> Option<std::time::Duration> {
     let profile = w.settings.profile();
     if !profile.reconnect {
         return None;
@@ -327,8 +333,12 @@ async fn run(mut w: Window, first: Option<KeyOutcome>) {
     let mut attempt = 1u32;
     loop {
         let relogin = match disconnected(&mut w, first.take(), redial).await {
+            // The operator dialled, so this stretch's wait is spent and
+            // the count starts over. A dial that fails arms a fresh one
+            // below, when the profile asks for it.
             Idle::Connect => {
                 redial = None;
+                attempt = 1;
                 false
             }
             Idle::Redial => true,
@@ -349,18 +359,27 @@ async fn run(mut w: Window, first: Option<KeyOutcome>) {
             }
             Err(e) => {
                 w.note(&format!("-- connect {}:{}: {e} --", profile.host, profile.port));
-                // Only a redial counts its tries. A `/connect` that
-                // failed is the operator's, and they saw it fail.
+                // Only a redial counts its tries. A `/connect` the
+                // operator typed is the first of a new stretch, and one
+                // that failed still leaves the profile asking for a
+                // reconnect, so the schedule picks it up from here.
                 if relogin {
                     attempt += 1;
+                } else {
+                    redial = arm_redial(&w);
+                    if let Some(wait) = redial {
+                        w.note(&format!(
+                            "-- connect failed, redialling in {} seconds --",
+                            wait.as_secs()
+                        ));
+                    }
                 }
                 continue;
             }
         };
-        // Subscribed here rather than inside `play`, because the login
-        // below is served on this same stream and a subscription made
-        // after it would miss the room the board just drew. The channel
-        // holds 8192 messages, so nothing is dropped while login runs.
+        // Subscribed before the login, so the bytes the login is served
+        // reach the screen. A subscription made inside `play` would
+        // start after them and the window would come back blank.
         let raw_rx = session.raw();
         // The redial types the credentials interactive play leaves to
         // the operator. Still at the profile's pace, because the board's
@@ -368,6 +387,12 @@ async fn run(mut w: Window, first: Option<KeyOutcome>) {
         if relogin
             && let Err(e) = crate::dialect::login(&session, &profile).await
         {
+            // `play` is the only other place a session is closed and it
+            // is not entered on this path. `Session` has no `Drop`, and
+            // its reader task holds a `cmd_tx` clone, so letting the
+            // last handle go frees nothing. The socket and both tasks
+            // would live until the board hung up, once per attempt.
+            session.close();
             w.note(&format!("-- reconnect login: {e} --"));
             attempt += 1;
             continue;
@@ -385,7 +410,11 @@ async fn run(mut w: Window, first: Option<KeyOutcome>) {
         redial = match end {
             PlayEnd::Closed => {
                 w.note("-- disconnected. /connect to go back --");
-                redial_delay(&w)
+                arm_redial(&w)
+            }
+            PlayEnd::Left => {
+                w.note("-- disconnected. /connect to go back --");
+                None
             }
             PlayEnd::Ended => break,
         };
@@ -809,7 +838,7 @@ async fn play(
                             // The shutdown itself is after the loop:
                             // the board can close the line too, and all
                             // three ways it ends need the same tidying.
-                            KeyOutcome::Disconnect => break PlayEnd::Closed,
+                            KeyOutcome::Disconnect => break PlayEnd::Left,
                             KeyOutcome::Connect { .. } => {
                                 w.note("-- already connected: /disconnect first --");
                             }

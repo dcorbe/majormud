@@ -92,6 +92,35 @@ async fn read_until(sock: &mut tokio::net::TcpStream, needle: &str) {
     }
 }
 
+/// A board that greets the first caller and drops the line, then
+/// accepts every later caller and says nothing at all. A login against
+/// it runs its full timeout with the socket still open, which is the
+/// case a leaked session hides in. Each of those connections reports
+/// when the client closed it.
+async fn stalling_board(closes: tokio::sync::mpsc::UnboundedSender<()>) -> std::net::SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut sock, _) = listener.accept().await.unwrap();
+        sock.write_all(b"Welcome\r\n").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        drop(sock);
+        loop {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let closes = closes.clone();
+            tokio::spawn(async move {
+                let mut buf = [0u8; 256];
+                // The board never writes, so this read ends only when
+                // the client closes its side.
+                while sock.read(&mut buf).await.unwrap_or(0) > 0 {}
+                let _ = closes.send(());
+            });
+        }
+    });
+    addr
+}
+
 fn settings_for(addr: Option<std::net::SocketAddr>) -> Settings {
     let mut s = Settings::default();
     if let Some(addr) = addr {
@@ -353,5 +382,89 @@ async fn disconnect_pauses_the_wait() {
             "the paused window dialled anyway"
         );
     }
+}
+
+/// A login that fails has to hand the socket back. `Session` has no
+/// `Drop`, `play` is the only other place that closes one, and this
+/// path never reaches `play`. The reader task holds a `cmd_tx` clone,
+/// so nothing else ends the writer either, and a board that accepts and
+/// stalls would cost a live socket and two tasks every redial.
+///
+/// Slow on purpose. `dialect::login` waits thirty seconds per prompt
+/// and takes no argument for it, so that wait is the price of watching
+/// a login fail with the line still open.
+#[tokio::test]
+async fn a_failed_login_closes_its_session() {
+    let (closes_tx, mut closes) = tokio::sync::mpsc::unbounded_channel();
+    let addr = stalling_board(closes_tx).await;
+    let mut s = settings_for(Some(addr));
+    s.set("username", "\"dan\"").unwrap();
+    s.set("password", "\"secret\"").unwrap();
+    s.set("pace_ms", "0").unwrap();
+    s.set("reconnect", "true").unwrap();
+    s.set("reconnect_delay_seconds", "1").unwrap();
+    let mut r = rig(s, None);
+    r.until("the first connect", |m| matches!(m, FrontMsg::Event { kind: EventKind::Connected, .. })).await;
+    r.until("the drop", |m| matches!(m, FrontMsg::Event { kind: EventKind::Disconnected, .. })).await;
+    r.until_within("the first redial", Duration::from_secs(10), |m| {
+        matches!(m, FrontMsg::Event { kind: EventKind::Reconnecting { attempt: 1 }, .. })
+    })
+    .await;
+    r.until_within("the second redial", Duration::from_secs(45), |m| {
+        matches!(m, FrontMsg::Event { kind: EventKind::Reconnecting { attempt: 2 }, .. })
+    })
+    .await;
+    // The first redial's socket is shut, so the board's reader saw EOF
+    // rather than a connection an abandoned task still holds open.
+    tokio::time::timeout(Duration::from_secs(5), closes.recv())
+        .await
+        .expect("the failed login left its socket open")
+        .expect("the board stopped reporting");
+}
+
+/// `/disconnect` is the operator saying stop. It must not be answered
+/// with a redial, which is what a board hanging up gets.
+#[tokio::test]
+async fn a_typed_disconnect_does_not_redial() {
+    let addr = banner_board().await;
+    let mut s = settings_for(Some(addr));
+    s.set("username", "\"dan\"").unwrap();
+    s.set("password", "\"secret\"").unwrap();
+    s.set("reconnect", "true").unwrap();
+    s.set("reconnect_delay_seconds", "1").unwrap();
+    let mut r = rig(s, None);
+    r.until("the connect", |m| matches!(m, FrontMsg::Event { kind: EventKind::Connected, .. })).await;
+    r.handle.msgs.send(WindowMsg::Outcome(KeyOutcome::Disconnect)).unwrap();
+    r.until_text("-- disconnected.").await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while let Ok(Some(msg)) = tokio::time::timeout_at(deadline, r.front.recv()).await {
+        assert!(
+            !matches!(msg, FrontMsg::Event { kind: EventKind::Reconnecting { .. }, .. }),
+            "the operator said stop and the window dialled anyway"
+        );
+    }
+}
+
+/// A `/connect` that fails is not a reason to stop redialling. The
+/// schedule stays armed and the next attempt comes after the delay.
+#[tokio::test]
+async fn a_failed_connect_keeps_redialling() {
+    // Bound and dropped, so nothing is listening on a port that was
+    // free a moment ago.
+    let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = closed.local_addr().unwrap();
+    drop(closed);
+    let mut s = settings_for(None);
+    s.set("username", "\"dan\"").unwrap();
+    s.set("password", "\"secret\"").unwrap();
+    s.set("reconnect", "true").unwrap();
+    s.set("reconnect_delay_seconds", "1").unwrap();
+    let target = format!("{}:{}", addr.ip(), addr.port());
+    let mut r = rig(s, Some(KeyOutcome::Connect { target: Some(target) }));
+    r.until_text("-- connect failed, redialling in 1 seconds --").await;
+    r.until_within("the redial", Duration::from_secs(10), |m| {
+        matches!(m, FrontMsg::Event { kind: EventKind::Reconnecting { attempt: 1 }, .. })
+    })
+    .await;
 }
 
