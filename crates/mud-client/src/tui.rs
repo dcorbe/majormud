@@ -407,6 +407,12 @@ impl Front {
         self.active
     }
 
+    /// Whether the lobby's template holds unsaved edits. This is what
+    /// `/quit` asks about for window 1.
+    pub fn lobby_dirty(&self) -> bool {
+        self.lobby.dirty()
+    }
+
     pub async fn run(&mut self, out: &mut impl std::io::Write) -> std::io::Result<()> {
         self.paint(out)?;
         while self.step(out).await? {}
@@ -657,6 +663,21 @@ impl Front {
             }
             other => {
                 if self.active == 1 {
+                    // A `/connect host:port` opens a window on the
+                    // target and lets that window write the host into
+                    // its own settings. Answered by the lobby it would
+                    // write them into the template every later `/new`
+                    // copies, and every later `/quit` would refuse over
+                    // an edit the operator never made. A bare `/connect`
+                    // carries no host to write, so it goes the ordinary
+                    // way and keeps its refusal when the template names
+                    // nowhere to dial.
+                    if let KeyOutcome::Connect { target: Some(target) } = other {
+                        let first = KeyOutcome::Connect { target: Some(target) };
+                        let number = self.open(self.lobby.detached(), None, Some(first));
+                        self.switch(number);
+                        return Flow::Continue;
+                    }
                     // `/quit` never reaches `lobby_step` from here: the
                     // front end owns it and answers for every window at
                     // once, so the arm's own arming flag has nothing to

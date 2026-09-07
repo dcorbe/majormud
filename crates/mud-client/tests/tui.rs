@@ -1603,6 +1603,31 @@ async fn closing_a_window_renumbers_the_ones_above_it() {
     assert!(!frame.contains("4: "), "nothing is numbered 4 any more: {frame:?}");
 }
 
+/// The lobby is a template, not a character. A `/connect host:port`
+/// there opens a window on the target and lets that window keep the
+/// host, so the template every later `/new` copies is not edited and
+/// `/quit` has nothing to ask about.
+#[tokio::test]
+async fn connecting_from_the_lobby_leaves_the_template_alone() {
+    let (mut front, keys, mut out) = front_rig();
+    typed("/connect 127.0.0.1:1", &keys);
+    settle(&mut front, &mut out).await;
+    assert_eq!(front.active(), 2, "the connect opened a window and switched to it");
+    assert!(!front.lobby_dirty(), "the host went into the window's settings, not the template");
+}
+
+/// A bare `/connect` with nowhere to dial is still the lobby's own
+/// refusal, printed into its log.
+#[tokio::test]
+async fn a_bare_connect_with_no_host_refuses_in_the_lobby() {
+    let (mut front, keys, mut out) = front_rig();
+    typed("/connect", &keys);
+    settle(&mut front, &mut out).await;
+    assert_eq!(front.active(), 1, "nothing was opened");
+    let frame = String::from_utf8_lossy(&out).to_string();
+    assert!(frame.contains("connect: no host"), "{frame:?}");
+}
+
 /// The snapshot is the expensive half of a frame. A frame where no row
 /// moved sends the input line and nothing else, which is what says the
 /// screen was never snapshotted or diffed.
