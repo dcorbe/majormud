@@ -98,6 +98,10 @@ const ALIASES: [(&str, &str); 3] = [
     ("spell_at_percent", "minor_heal_at_percent"),
 ];
 
+/// Cloneable because `/new` opens a window on a copy of the lobby's
+/// settings. The copy carries the dirty flag and the path with it, so a
+/// window opened from unsaved edits knows it holds unsaved edits.
+#[derive(Clone)]
 pub struct Settings {
     doc: DocumentMut,
     profile: Profile,

@@ -2,9 +2,10 @@
 //! scroll region, with a status bar and a local-editing input line on
 //! the two reserved bottom rows.
 
+use std::io::Write;
 use std::sync::Arc;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::session::{GameState, Session};
 
@@ -136,16 +137,6 @@ impl Default for InputEditor {
     }
 }
 
-/// Why `play` returned.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlayEnd {
-    /// The operator quit. The program ends.
-    Quit,
-    /// The line closed, by the board or by `/disconnect`. Back to the
-    /// lobby with the settings intact.
-    Closed,
-}
-
 /// The lobby's answer to one submitted line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LobbyStep {
@@ -248,17 +239,511 @@ pub fn lobby_step(
     }
 }
 
-/// Run the client until the operator quits.
-///
-/// The front end is being rebuilt around the window task in
-/// [`crate::window`]. Until it lands, `mmc play` says so rather than
-/// starting a client that has no loop.
+/// One line in the lobby's log. The clock is UTC, hours minutes seconds,
+/// because the client has no timezone table and a wrong local time is
+/// worse than an honest UTC one.
+pub fn log_line(
+    now: std::time::SystemTime,
+    number: usize,
+    info: Option<&crate::window::WindowInfo>,
+    kind: &crate::window::EventKind,
+) -> String {
+    use crate::window::EventKind;
+    let secs = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+        % 86_400;
+    let stamp = format!("{:02}:{:02}:{:02}", secs / 3600, secs % 3600 / 60, secs % 60);
+    let who = match info {
+        Some(i) if !i.username.is_empty() => format!("{}@{}:{}", i.username, i.host, i.port),
+        Some(i) => format!("{}:{}", i.host, i.port),
+        None => "lobby".to_string(),
+    };
+    let what = match kind {
+        EventKind::Connected => "connected".to_string(),
+        EventKind::Disconnected => "disconnected".to_string(),
+        EventKind::Died => "died".to_string(),
+        EventKind::JobEnded(label) => label.clone(),
+        EventKind::AssistRefused(why) => format!("assist not started: {why}"),
+    };
+    format!("{stamp} window {number} {who} {what}")
+}
+
+/// Run the client until the operator quits. One front end owns the
+/// terminal, the editor and the windows. Window 1 is the lobby, held
+/// here rather than as a task: its settings are the template `/new`
+/// copies and its screen is the log of every window's major events.
 pub async fn run(
     settings: crate::settings::Settings,
     capture: Option<crate::session::Capture>,
 ) -> std::io::Result<()> {
-    let _ = (settings, capture);
-    Err(std::io::Error::other("the front end is rebuilt in the next task"))
+    crossterm::terminal::enable_raw_mode()?;
+    let mut out = std::io::stdout();
+    let result = match Front::new(settings, capture) {
+        Ok(mut front) => front.run(&mut out).await,
+        Err(e) => Err(e),
+    };
+    let (_, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    let _ = out.write_all(format!("\x1b[0m\x1b[{rows};1H\r\n").as_bytes());
+    let _ = out.flush();
+    let _ = crossterm::terminal::disable_raw_mode();
+    result
+}
+
+/// The screen the painter last drew, keyed by window so a switch forces
+/// a full paint.
+struct LastFrame {
+    window: crate::window::WindowId,
+    screen: vt100::Screen,
+}
+
+/// The lobby has this id. Windows get ids from 1 up.
+const LOBBY: crate::window::WindowId = 0;
+
+struct Front {
+    rows: u16,
+    cols: u16,
+    editor: InputEditor,
+    /// The template every `/new` copies, and what `/set` in the lobby edits.
+    lobby: crate::settings::Settings,
+    lobby_passthrough: bool,
+    log: crate::screen::Screen,
+    /// Windows 2 and up, in number order. Number is index plus two.
+    windows: Vec<crate::window::WindowHandle>,
+    /// The number of the window on screen, 1 for the lobby.
+    active: usize,
+    unread: Vec<crate::window::WindowId>,
+    /// A window whose map view has the terminal.
+    frozen: Option<crate::window::WindowId>,
+    last: Option<LastFrame>,
+    last_bar: Option<String>,
+    next_id: crate::window::WindowId,
+    quit_armed: bool,
+    lobby_quit_armed: bool,
+    front_tx: tokio::sync::mpsc::UnboundedSender<crate::window::FrontMsg>,
+    front_rx: tokio::sync::mpsc::UnboundedReceiver<crate::window::FrontMsg>,
+    key_rx: tokio::sync::mpsc::UnboundedReceiver<TermEvent>,
+    cache: Arc<std::sync::Mutex<ContentCache>>,
+}
+
+enum Flow {
+    Continue,
+    Exit,
+}
+
+impl Front {
+    fn new(
+        settings: crate::settings::Settings,
+        capture: Option<crate::session::Capture>,
+    ) -> std::io::Result<Front> {
+        let (cols, rows) = crossterm::terminal::size()?;
+        let (key_tx, key_rx) = tokio::sync::mpsc::unbounded_channel();
+        std::thread::spawn(move || {
+            while let Ok(ev) = crossterm::event::read() {
+                if key_tx.send(ev).is_err() {
+                    break;
+                }
+            }
+        });
+        let (front_tx, front_rx) = tokio::sync::mpsc::unbounded_channel();
+        let scrollback = settings.profile().scrollback_lines as usize;
+        let mut log = crate::screen::Screen::new(rows.saturating_sub(2), cols, scrollback);
+        for warning in settings.warnings() {
+            log.note(&format!("-- {warning} --"));
+        }
+        let mut front = Front {
+            rows,
+            cols,
+            editor: InputEditor::new(),
+            lobby: settings,
+            lobby_passthrough: false,
+            log,
+            windows: Vec::new(),
+            active: 1,
+            unread: Vec::new(),
+            frozen: None,
+            last: None,
+            last_bar: None,
+            next_id: 1,
+            quit_armed: false,
+            lobby_quit_armed: false,
+            front_tx,
+            front_rx,
+            key_rx,
+            cache: Arc::new(std::sync::Mutex::new(ContentCache::default())),
+        };
+        // Started with a profile that names a host: window 2, connected,
+        // and the capture goes with it.
+        if !front.lobby.profile().host.is_empty() {
+            let number = front.open(front.lobby.clone(), capture, None);
+            front.switch(number);
+        }
+        Ok(front)
+    }
+
+    async fn run(&mut self, out: &mut std::io::Stdout) -> std::io::Result<()> {
+        self.paint(out)?;
+        loop {
+            tokio::select! {
+                ev = self.key_rx.recv() => {
+                    let Some(ev) = ev else { return Ok(()) };
+                    match ev {
+                        TermEvent::Resize(w, h) => self.resize(w, h),
+                        TermEvent::Key(key) if key.kind != KeyEventKind::Release => {
+                            if let Flow::Exit = self.on_key(key, TermEvent::Key(key)) {
+                                return Ok(());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                msg = self.front_rx.recv() => {
+                    if let Some(msg) = msg {
+                        self.on_front(msg);
+                    }
+                }
+            }
+            // A burst of board output is many small messages. Take them
+            // all before paying for one paint.
+            while let Ok(msg) = self.front_rx.try_recv() {
+                self.on_front(msg);
+            }
+            self.paint(out)?;
+        }
+    }
+
+    fn open(
+        &mut self,
+        settings: crate::settings::Settings,
+        capture: Option<crate::session::Capture>,
+        first: Option<KeyOutcome>,
+    ) -> usize {
+        let id = self.next_id;
+        self.next_id += 1;
+        let handle = crate::window::spawn(
+            id,
+            settings,
+            self.rows,
+            self.cols,
+            self.cache.clone(),
+            self.front_tx.clone(),
+            capture,
+            first,
+        );
+        self.windows.push(handle);
+        let number = self.windows.len() + 1;
+        self.log.note(&format!("-- opened window {number} --"));
+        number
+    }
+
+    fn switch(&mut self, number: usize) {
+        self.active = number;
+        if let Some(id) = self.id_of(number) {
+            self.unread.retain(|u| *u != id);
+        }
+        self.last = None;
+    }
+
+    fn id_of(&self, number: usize) -> Option<crate::window::WindowId> {
+        match number {
+            1 => Some(LOBBY),
+            n => self.windows.get(n.checked_sub(2)?).map(|w| w.id),
+        }
+    }
+
+    fn number_of(&self, id: crate::window::WindowId) -> Option<usize> {
+        if id == LOBBY {
+            return Some(1);
+        }
+        self.windows.iter().position(|w| w.id == id).map(|i| i + 2)
+    }
+
+    fn active_window(&self) -> Option<&crate::window::WindowHandle> {
+        self.windows.get(self.active.checked_sub(2)?)
+    }
+
+    /// A note into whatever is on screen.
+    fn note(&mut self, text: &str) {
+        match self.active_window() {
+            None => self.log.note(text),
+            Some(w) => w.screen.lock().expect("screen lock").note(text),
+        }
+    }
+
+    fn resize(&mut self, cols: u16, rows: u16) {
+        self.cols = cols;
+        self.rows = rows;
+        self.log.resize(rows.saturating_sub(2), cols);
+        for w in &self.windows {
+            let _ = w.msgs.send(crate::window::WindowMsg::Resize { rows, cols });
+        }
+        self.last = None;
+        self.last_bar = None;
+    }
+
+    fn on_key(&mut self, key: KeyEvent, raw: TermEvent) -> Flow {
+        if let Some(id) = self.frozen {
+            if let Some(w) = self.windows.iter().find(|w| w.id == id) {
+                let _ = w.keys.send(raw);
+            }
+            return Flow::Continue;
+        }
+        match key.code {
+            KeyCode::PageUp => {
+                self.scroll(true);
+                return Flow::Continue;
+            }
+            KeyCode::PageDown => {
+                self.scroll(false);
+                return Flow::Continue;
+            }
+            _ => self.unscroll(),
+        }
+        let (mut passthrough, farming) = match self.active_window() {
+            None => (self.lobby_passthrough, false),
+            Some(w) => {
+                let info = w.info.lock().expect("info lock");
+                (info.passthrough, info.farming)
+            }
+        };
+        let was = passthrough;
+        let outcome = handle_key(&key, &mut self.editor, &mut passthrough, farming);
+        if passthrough != was {
+            match self.active_window() {
+                None => self.lobby_passthrough = false,
+                Some(w) => {
+                    w.info.lock().expect("info lock").passthrough = passthrough;
+                    let text = if passthrough {
+                        "-- keys passed through to the board, Ctrl-P to return --"
+                    } else {
+                        "-- back to the line editor --"
+                    };
+                    w.screen.lock().expect("screen lock").note(text);
+                }
+            }
+        }
+        if !matches!(outcome, KeyOutcome::Quit | KeyOutcome::Continue) {
+            self.quit_armed = false;
+        }
+        match outcome {
+            KeyOutcome::Continue => Flow::Continue,
+            KeyOutcome::QuitNow => Flow::Exit,
+            KeyOutcome::Quit => {
+                let connected: Vec<usize> = self
+                    .windows
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, w)| w.info.lock().expect("info lock").connected)
+                    .map(|(i, _)| i + 2)
+                    .collect();
+                let mut dirty: Vec<usize> = self
+                    .windows
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, w)| w.info.lock().expect("info lock").dirty)
+                    .map(|(i, _)| i + 2)
+                    .collect();
+                if self.lobby.dirty() {
+                    dirty.insert(0, 1);
+                }
+                match quit_windows_refusal(&connected, &dirty, &mut self.quit_armed) {
+                    Some(text) => {
+                        self.note(&text);
+                        Flow::Continue
+                    }
+                    None => Flow::Exit,
+                }
+            }
+            KeyOutcome::NewWindow { file } => {
+                let settings = match file {
+                    None => Ok(self.lobby.clone()),
+                    Some(f) => crate::settings::Settings::load(std::path::Path::new(&f)),
+                };
+                match settings {
+                    Ok(s) => {
+                        let number = self.open(s, None, None);
+                        self.switch(number);
+                    }
+                    Err(e) => self.note(&format!("-- new: {e} --")),
+                }
+                Flow::Continue
+            }
+            KeyOutcome::CloseWindow => {
+                self.close_active();
+                Flow::Continue
+            }
+            KeyOutcome::Windows => {
+                let infos: Vec<(usize, Option<crate::window::WindowInfo>)> = std::iter::once((1, None))
+                    .chain(self.windows.iter().enumerate().map(|(i, w)| {
+                        (i + 2, Some(w.info.lock().expect("info lock").clone()))
+                    }))
+                    .collect();
+                let text = windows_listing(&infos);
+                self.note(&text);
+                Flow::Continue
+            }
+            KeyOutcome::Switch(n) => {
+                if self.frozen.is_some() {
+                    self.note("-- the map has the screen, leave it first --");
+                } else if self.id_of(n).is_some() {
+                    self.switch(n);
+                } else {
+                    self.note(&format!("-- no window {n} --"));
+                }
+                Flow::Continue
+            }
+            KeyOutcome::Refuse(why) => {
+                self.note(&format!("-- {why} --"));
+                Flow::Continue
+            }
+            KeyOutcome::Note(text) => {
+                self.note(&text);
+                Flow::Continue
+            }
+            other => {
+                if self.active == 1 {
+                    let (step, text) = lobby_step(other, &mut self.lobby, &mut self.lobby_quit_armed);
+                    if let Some(text) = text {
+                        self.log.note(&text);
+                    }
+                    if let LobbyStep::Connect = step {
+                        let number = self.open(self.lobby.clone(), None, None);
+                        self.switch(number);
+                    }
+                } else if let Some(w) = self.active_window()
+                    && w.msgs.send(crate::window::WindowMsg::Outcome(other)).is_err()
+                {
+                    let id = w.id;
+                    self.remove(id);
+                }
+                Flow::Continue
+            }
+        }
+    }
+
+    fn scroll(&mut self, up: bool) {
+        match self.active_window() {
+            None => {
+                if up {
+                    self.log.page_up()
+                } else {
+                    self.log.page_down()
+                }
+            }
+            Some(w) => {
+                let mut s = w.screen.lock().expect("screen lock");
+                if up {
+                    s.page_up()
+                } else {
+                    s.page_down()
+                }
+            }
+        }
+        self.last = None;
+    }
+
+    /// Any key but a page key puts the view back on the live rows.
+    fn unscroll(&mut self) {
+        let scrolled = match self.active_window() {
+            None => {
+                let was = self.log.scrolled();
+                self.log.to_bottom();
+                was
+            }
+            Some(w) => {
+                let mut s = w.screen.lock().expect("screen lock");
+                let was = s.scrolled();
+                s.to_bottom();
+                was
+            }
+        };
+        if scrolled {
+            self.last = None;
+        }
+    }
+
+    fn close_active(&mut self) {
+        if self.active == 1 {
+            self.note("-- the lobby stays open --");
+            return;
+        }
+        let Some((id, connected)) = self
+            .active_window()
+            .map(|w| (w.id, w.info.lock().expect("info lock").connected))
+        else {
+            return;
+        };
+        if connected {
+            self.note("-- still connected: /disconnect first --");
+            return;
+        }
+        self.remove(id);
+    }
+
+    /// Drop a window's handle, which ends its task, and renumber.
+    fn remove(&mut self, id: crate::window::WindowId) {
+        let Some(number) = self.number_of(id) else { return };
+        self.windows.remove(number - 2);
+        self.unread.retain(|u| *u != id);
+        self.log.note(&format!("-- closed window {number} --"));
+        if self.active >= number {
+            let to = (self.active - 1).max(1);
+            self.switch(to);
+        }
+    }
+
+    fn on_front(&mut self, msg: crate::window::FrontMsg) {
+        use crate::window::FrontMsg;
+        match msg {
+            FrontMsg::Changed { .. } => {}
+            FrontMsg::Event { window, kind } => {
+                let number = self.number_of(window).unwrap_or(0);
+                let info = self
+                    .windows
+                    .iter()
+                    .find(|w| w.id == window)
+                    .map(|w| w.info.lock().expect("info lock").clone());
+                let line = log_line(std::time::SystemTime::now(), number, info.as_ref(), &kind);
+                self.log.note(&line);
+                if self.id_of(self.active) != Some(window) && !self.unread.contains(&window) {
+                    self.unread.push(window);
+                }
+            }
+            FrontMsg::Takeover { window, on } => {
+                self.frozen = on.then_some(window);
+                if !on {
+                    self.last = None;
+                    self.last_bar = None;
+                }
+            }
+            FrontMsg::Ended { window } => self.remove(window),
+        }
+    }
+
+    fn paint(&mut self, out: &mut std::io::Stdout) -> std::io::Result<()> {
+        if self.frozen.is_some() {
+            return Ok(());
+        }
+        let id = self.id_of(self.active).unwrap_or(LOBBY);
+        let (snapshot, info) = match self.active_window() {
+            None => (self.log.snapshot(), None),
+            Some(w) => (
+                w.screen.lock().expect("screen lock").snapshot(),
+                Some(w.info.lock().expect("info lock").clone()),
+            ),
+        };
+        let unread: Vec<usize> = self.unread.iter().filter_map(|u| self.number_of(*u)).collect();
+        let bar = window_bar(self.active, info.as_ref(), &unread, self.cols);
+        let last = self.last.as_ref().filter(|l| l.window == id).map(|l| &l.screen);
+        let mut frame = screen_bytes(&snapshot, last);
+        frame.extend(bottom_bytes(&bar, self.last_bar.as_deref(), &self.editor, self.rows, self.cols));
+        out.write_all(&frame)?;
+        out.flush()?;
+        self.last = Some(LastFrame { window: id, screen: snapshot });
+        self.last_bar = Some(bar);
+        Ok(())
+    }
 }
 
 /// Returns true when the user asked to quit.
@@ -1140,7 +1625,6 @@ impl StatusBar {
     }
 
     fn write(&mut self, s: &str) {
-        use std::io::Write;
         let _ = self.out.write_all(s.as_bytes());
         let _ = self.out.flush();
     }

@@ -1511,3 +1511,23 @@ fn quit_refuses_once_naming_the_windows_that_matter() {
     assert!(quit_windows_refusal(&[], &[], &mut armed).is_none(), "nothing to lose, nothing to ask");
 }
 
+#[test]
+fn the_lobby_log_line_names_the_window_the_character_and_the_event() {
+    use mud_client::tui::log_line;
+    use mud_client::window::EventKind;
+    let info = WindowInfo { username: "dan".into(), host: "h".into(), port: 23, ..Default::default() };
+    let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(3661);
+    assert_eq!(log_line(at, 2, Some(&info), &EventKind::Connected), "01:01:01 window 2 dan@h:23 connected");
+    assert_eq!(log_line(at, 2, Some(&info), &EventKind::Died), "01:01:01 window 2 dan@h:23 died");
+    assert_eq!(
+        log_line(at, 3, Some(&info), &EventKind::JobEnded("farm ended: loops done".into())),
+        "01:01:01 window 3 dan@h:23 farm ended: loops done"
+    );
+    let nameless = WindowInfo { host: "h".into(), port: 23, ..Default::default() };
+    assert_eq!(log_line(at, 2, Some(&nameless), &EventKind::Disconnected), "01:01:01 window 2 h:23 disconnected");
+    assert_eq!(
+        log_line(at, 2, Some(&nameless), &EventKind::AssistRefused("username is empty".into())),
+        "01:01:01 window 2 h:23 assist not started: username is empty"
+    );
+}
+

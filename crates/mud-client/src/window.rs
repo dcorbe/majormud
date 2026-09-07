@@ -73,6 +73,19 @@ pub struct WindowInfo {
     pub passthrough: bool,
 }
 
+/// The connection facts a settings document names, in one place
+/// because `spawn` primes a window's info with them and `sync_info`
+/// keeps them current.
+fn facts(settings: &Settings) -> (String, u16, String, bool) {
+    let profile = settings.profile();
+    (
+        profile.host.clone(),
+        profile.port,
+        profile.username.clone(),
+        settings.dirty(),
+    )
+}
+
 pub struct WindowHandle {
     pub id: WindowId,
     pub msgs: UnboundedSender<WindowMsg>,
@@ -113,7 +126,16 @@ pub fn spawn(
     let (keys_tx, keys_rx) = tokio::sync::mpsc::unbounded_channel();
     let scrollback = settings.profile().scrollback_lines as usize;
     let screen = Arc::new(Mutex::new(Screen::new(rows.saturating_sub(2), cols, scrollback)));
-    let info = Arc::new(Mutex::new(WindowInfo::default()));
+    // Primed from the settings rather than left blank and synced,
+    // because opening a window is not a change to report.
+    let (host, port, username, dirty) = facts(&settings);
+    let info = Arc::new(Mutex::new(WindowInfo {
+        host,
+        port,
+        username,
+        dirty,
+        ..WindowInfo::default()
+    }));
     let window = Window {
         id,
         msgs: msgs_rx,
@@ -127,7 +149,6 @@ pub fn spawn(
         rows,
         cols,
     };
-    window.sync_info(false);
     tokio::spawn(run(window, first));
     WindowHandle {
         id,
@@ -175,14 +196,27 @@ impl Window {
     }
 
     /// Connection facts from the settings, for `/windows` and the bar.
+    /// Signals when one of them moved, the way `set_bar` does, so a new
+    /// host or a dirty flag reaches the front end without waiting for a
+    /// note to follow it. Silent when nothing moved, so a command that
+    /// changed no connection fact costs no repaint.
     fn sync_info(&self, connected: bool) {
-        let profile = self.settings.profile();
+        let (host, port, username, dirty) = facts(&self.settings);
         let mut info = self.info.lock().expect("info lock");
-        info.host = profile.host.clone();
-        info.port = profile.port;
-        info.username = profile.username.clone();
+        let moved = info.host != host
+            || info.port != port
+            || info.username != username
+            || info.connected != connected
+            || info.dirty != dirty;
+        info.host = host;
+        info.port = port;
+        info.username = username;
         info.connected = connected;
-        info.dirty = self.settings.dirty();
+        info.dirty = dirty;
+        drop(info);
+        if moved {
+            self.changed();
+        }
     }
 
     fn resize(&mut self, rows: u16, cols: u16) {
@@ -986,6 +1020,7 @@ async fn play(w: &mut Window, session: Arc<Session>) -> PlayEnd {
                                     && let Err(why) = needs_username(&session.profile())
                                 {
                                     w.note(&format!("-- {why} --"));
+                                    w.event(EventKind::AssistRefused(why));
                                 } else {
                                     let on = assist.take().is_none();
                                     if on {
