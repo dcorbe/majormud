@@ -895,30 +895,97 @@ pub fn handover_actions(ended: &crate::farm::Phase, assist: bool) -> Vec<String>
     }
 }
 
-/// The two reserved rows: the status bar in reverse video, then the
-/// input line with the cursor parked in it. One copy of the escape
-/// sequence, so the lobby and a session lay out the same.
-///
-/// `status` is painted as given and must already be the terminal's
-/// width. See [`fit`].
-pub(crate) fn paint_bottom(
-    out: &mut impl std::io::Write,
-    status: &str,
-    editor: &InputEditor,
-    rows: u16,
-) -> std::io::Result<()> {
+/// The two reserved rows. The bar is written only when its text changed,
+/// and always by overwriting the row with text padded to the width. A
+/// clear-line before the rewrite is what made the bar flash over SSH.
+pub fn bottom_bytes(bar: &str, last_bar: Option<&str>, editor: &InputEditor, rows: u16, cols: u16) -> Vec<u8> {
     let status_row = rows.saturating_sub(1).max(1);
     let input_row = rows.max(1);
-    let line = editor.line();
+    let width = cols as usize;
+    let mut out = Vec::new();
+    if last_bar != Some(bar) {
+        let padded = fit(bar, width);
+        out.extend_from_slice(format!("\x1b[{status_row};1H\x1b[7m{padded}\x1b[0m").as_bytes());
+    }
+    let line = fit(&format!("> {}", editor.line()), width);
     let cursor_col = 3 + editor.cursor() as u16;
-    out.write_all(
-        format!(
-            "\x1b[{status_row};1H\x1b[2K\x1b[7m{status}\x1b[0m\
-             \x1b[{input_row};1H\x1b[2K> {line}\x1b[{input_row};{cursor_col}H"
-        )
-        .as_bytes(),
-    )?;
-    out.flush()
+    out.extend_from_slice(format!("\x1b[{input_row};1H{line}\x1b[{input_row};{cursor_col}H").as_bytes());
+    out
+}
+
+/// The active window's screen. A full paint the first time a window is
+/// shown, a diff after that. The diff assumes the terminal cursor is
+/// where the last frame's screen left it, so it is parked there first.
+pub fn screen_bytes(cur: &vt100::Screen, last: Option<&vt100::Screen>) -> Vec<u8> {
+    match last {
+        None => cur.contents_formatted(),
+        Some(last) => {
+            let (row, col) = last.cursor_position();
+            let mut out = format!("\x1b[{};{}H", row + 1, col + 1).into_bytes();
+            out.extend(cur.contents_diff(last));
+            out
+        }
+    }
+}
+
+/// irssi's activity list: the numbers of windows with an unread major
+/// event, or nothing.
+pub fn act_suffix(unread: &[usize]) -> String {
+    if unread.is_empty() {
+        return String::new();
+    }
+    let list: Vec<String> = unread.iter().map(|n| n.to_string()).collect();
+    format!("  Act: {}", list.join(","))
+}
+
+/// The bar for the window on screen. `None` is the lobby.
+pub fn window_bar(number: usize, info: Option<&crate::window::WindowInfo>, unread: &[usize], cols: u16) -> String {
+    let own = match info {
+        None => "lobby".to_string(),
+        Some(info) => info.bar.clone(),
+    };
+    fit(&format!("{number}: {own}{}", act_suffix(unread)), cols as usize)
+}
+
+/// `/windows`: one line per window.
+pub fn windows_listing(infos: &[(usize, Option<crate::window::WindowInfo>)]) -> String {
+    infos
+        .iter()
+        .map(|(n, info)| match info {
+            None => format!("{n}: lobby"),
+            Some(i) => {
+                let who = if i.username.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}@", i.username)
+                };
+                let state = if i.connected { "connected" } else { "not connected" };
+                let unsaved = if i.dirty { ", unsaved" } else { "" };
+                format!("{n}: {who}{}:{} {state}{unsaved}", i.host, i.port)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `/quit` with windows open: refuse once, naming what would be lost.
+/// The second `/quit` in a row goes through. Any other command disarms.
+pub fn quit_windows_refusal(connected: &[usize], dirty: &[usize], armed: &mut bool) -> Option<String> {
+    if connected.is_empty() && dirty.is_empty() {
+        return None;
+    }
+    if *armed {
+        return None;
+    }
+    *armed = true;
+    let mut parts = Vec::new();
+    for n in connected {
+        parts.push(format!("window {n} is connected"));
+    }
+    for n in dirty {
+        parts.push(format!("window {n} is unsaved"));
+    }
+    Some(format!("-- {}. /quit again to exit anyway --", parts.join(", ")))
 }
 
 /// One status line for both commands, exactly `width` characters.

@@ -358,7 +358,7 @@ async fn play(w: &mut Window, session: Arc<Session>) -> PlayEnd {
     // status bar and the handle needed to call it off.
     let mut job: Option<Job> = None;
     // A clone of the job's phase channel, kept separate so the select
-    // can await it without borrowing `job` (which the bar needs).
+    // can await it without borrowing job, which the bar needs.
     let mut phase_rx: Option<tokio::sync::watch::Receiver<crate::farm::Phase>> = None;
     // Where the client believes the character is, and how much that
     // belief is worth. A room block is a room block: it says as much when

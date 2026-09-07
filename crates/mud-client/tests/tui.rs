@@ -6,7 +6,11 @@ use mud_client::events::{Actor, Event, RoomView, Status};
 use mud_client::lost::Fix;
 use mud_client::session::GameState;
 use mud_client::sheet::{Casting, HealChoice, HealState, Spellbook};
-use mud_client::tui::{InputEditor, assist_heal, help_text, render_status};
+use mud_client::tui::{
+    InputEditor, act_suffix, assist_heal, bottom_bytes, help_text, quit_windows_refusal, render_status, screen_bytes,
+    window_bar, windows_listing,
+};
+use mud_client::window::WindowInfo;
 use mud_client::world::{TickClock, ROUND};
 use mud_core::content::RoomId;
 use std::collections::BTreeMap;
@@ -1431,5 +1435,79 @@ fn the_lobby_ignores_the_window_verbs() {
         lobby_step(KeyOutcome::Switch(2), &mut settings, &mut armed),
         (LobbyStep::Stay, None)
     );
+}
+
+#[test]
+fn the_bar_is_painted_only_when_it_changes_and_never_cleared() {
+    let mut editor = InputEditor::new();
+    for c in "look".chars() {
+        editor.insert(c);
+    }
+    let first = bottom_bytes("HP 10", None, &editor, 24, 40);
+    let s = String::from_utf8_lossy(&first).to_string();
+    assert!(s.contains("\x1b[23;1H"), "the bar row is addressed: {s:?}");
+    assert!(s.contains(&format!("{:40}", "HP 10")), "the bar is padded to the width: {s:?}");
+    assert!(s.contains("\x1b[24;1H"), "the input row is addressed");
+    assert!(s.contains("> look"), "{s:?}");
+    assert!(s.ends_with("\x1b[24;7H"), "the cursor parks after the typed text: {s:?}");
+    assert!(!s.contains("\x1b[2K"), "nothing is cleared: {s:?}");
+    let same = bottom_bytes("HP 10", Some("HP 10"), &editor, 24, 40);
+    let s = String::from_utf8_lossy(&same).to_string();
+    assert!(!s.contains("\x1b[23;1H"), "an unchanged bar is not repainted: {s:?}");
+    assert!(s.contains("\x1b[24;1H"), "the input row always is");
+    assert!(!s.contains("\x1b[2K"));
+}
+
+#[test]
+fn a_first_screen_is_a_full_paint_and_a_second_is_a_diff() {
+    let mut a = mud_client::screen::Screen::new(3, 10, 0);
+    a.feed(b"one\r\n");
+    let first = screen_bytes(&a.snapshot(), None);
+    assert!(String::from_utf8_lossy(&first).contains("one"));
+    let before = a.snapshot();
+    a.feed(b"two\r\n");
+    let diff = screen_bytes(&a.snapshot(), Some(&before));
+    let s = String::from_utf8_lossy(&diff).to_string();
+    assert!(s.contains("two"), "{s:?}");
+    assert!(!s.contains("one"), "an unchanged row is not resent: {s:?}");
+    assert!(s.starts_with("\x1b[2;1H"), "the cursor is parked where the last frame left it first: {s:?}");
+}
+
+#[test]
+fn the_activity_suffix_lists_unread_windows() {
+    assert_eq!(act_suffix(&[]), "");
+    assert_eq!(act_suffix(&[3]), "  Act: 3");
+    assert_eq!(act_suffix(&[2, 3]), "  Act: 2,3");
+}
+
+#[test]
+fn the_window_bar_carries_the_number_and_the_activity() {
+    assert_eq!(window_bar(1, None, &[], 20).trim_end(), "1: lobby");
+    let info = WindowInfo { bar: "HP 5".into(), ..Default::default() };
+    assert_eq!(window_bar(2, Some(&info), &[3], 30).trim_end(), "2: HP 5  Act: 3");
+    assert_eq!(window_bar(2, Some(&info), &[], 5).chars().count(), 5, "fitted to the width");
+}
+
+#[test]
+fn the_windows_listing_names_each_window() {
+    let connected = WindowInfo { host: "h".into(), port: 23, username: "dan".into(), connected: true, ..Default::default() };
+    let idle = WindowInfo { host: "h2".into(), port: 2327, dirty: true, ..Default::default() };
+    let text = windows_listing(&[(1, None), (2, Some(connected)), (3, Some(idle))]);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], "1: lobby");
+    assert_eq!(lines[1], "2: dan@h:23 connected");
+    assert_eq!(lines[2], "3: h2:2327 not connected, unsaved");
+}
+
+#[test]
+fn quit_refuses_once_naming_the_windows_that_matter() {
+    let mut armed = false;
+    let note = quit_windows_refusal(&[2], &[3], &mut armed).unwrap();
+    assert!(note.contains("2 is connected"), "{note}");
+    assert!(note.contains("3 is unsaved"), "{note}");
+    assert!(note.contains("/quit again"), "{note}");
+    assert!(quit_windows_refusal(&[2], &[3], &mut armed).is_none(), "the second quit goes through");
+    let mut armed = false;
+    assert!(quit_windows_refusal(&[], &[], &mut armed).is_none(), "nothing to lose, nothing to ask");
 }
 

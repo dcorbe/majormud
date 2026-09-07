@@ -171,6 +171,8 @@ fn a_death_is_its_own_event() {
     use mud_client::window::event_for;
     let died = Phase::Done { why: DIED.to_string(), at: None };
     assert_eq!(event_for(&died), EventKind::Died);
+    let farm_died = Phase::Done { why: format!("{DIED} (3 kills, 2 loops)"), at: None };
+    assert_eq!(event_for(&farm_died), EventKind::Died);
     let done = Phase::Done { why: "loops done".into(), at: None };
     assert_eq!(event_for(&done), EventKind::JobEnded(done.label()));
 }
