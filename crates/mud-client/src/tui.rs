@@ -1025,7 +1025,7 @@ pub fn slash(line: &str) -> Option<KeyOutcome> {
         }),
         "/close" => Some(KeyOutcome::CloseWindow),
         "/windows" => Some(KeyOutcome::Windows),
-        _ if verb.len() == 2 && verb.as_bytes()[1].is_ascii_digit() && verb != "/0" => {
+        _ if verb.starts_with('/') && verb.len() == 2 && verb.as_bytes()[1].is_ascii_digit() && verb != "/0" => {
             Some(KeyOutcome::Switch((verb.as_bytes()[1] - b'0') as usize))
         }
         _ => None,

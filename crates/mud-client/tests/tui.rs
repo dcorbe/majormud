@@ -1415,6 +1415,7 @@ fn the_window_verbs_parse() {
     assert_eq!(slash("/9"), Some(KeyOutcome::Switch(9)));
     assert_eq!(slash("/0"), None, "there is no window 0, so the board gets it");
     assert_eq!(slash("/10"), None, "only one digit switches");
+    assert_eq!(slash("a1"), None, "a line the board should get is not a switch");
     for verb in ["/new", "/close", "/windows"] {
         assert!(help_text().contains(verb), "{verb} is not in /help");
         assert!(mud_client::tui::VERBS.contains(&verb), "{verb} is not offered by Tab");
