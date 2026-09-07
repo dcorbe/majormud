@@ -237,6 +237,21 @@ impl DeathWatch {
     }
 }
 
+/// Build a death and write it, in one call, because every caller wants
+/// both and none wants one without the other. The recorded death comes
+/// back so the caller can say what it wrote in its own voice: a window
+/// notes it on its screen, the headless watcher prints it.
+pub(crate) fn log_death(
+    character: &str,
+    fix: Fix,
+    name_of: impl FnOnce(RoomId) -> String,
+    path: &Path,
+) -> std::io::Result<Death> {
+    let death = death_of(character, fix, name_of, SystemTime::now());
+    record_in(path, &death)?;
+    Ok(death)
+}
+
 /// Log deaths on a session no window is watching, which is `mmc farm`.
 ///
 /// The room is the last block the board rendered, resolved by its name
@@ -252,8 +267,22 @@ pub fn watch_headless(
     session: std::sync::Arc<crate::session::Session>,
     graph: std::sync::Arc<crate::graph::RoomGraph>,
 ) -> tokio::task::JoinHandle<()> {
+    watch_headless_in(session, graph, path())
+}
+
+/// [`watch_headless`] against a log file the caller names, which is how
+/// a test watches a scripted board without an environment to point at a
+/// scratch directory.
+pub fn watch_headless_in(
+    session: std::sync::Arc<crate::session::Session>,
+    graph: std::sync::Arc<crate::graph::RoomGraph>,
+    path: PathBuf,
+) -> tokio::task::JoinHandle<()> {
+    // Subscribed here, not inside the task. A spawned task is not polled
+    // until the runtime gets to it, and a board that dies in that window
+    // would have its death logged by nobody.
+    let mut events = session.events();
     tokio::spawn(async move {
-        let mut events = session.events();
         let mut watch = DeathWatch::default();
         let mut fix = Fix::Unknown;
         loop {
@@ -275,14 +304,9 @@ pub fn watch_headless(
                 continue;
             };
             if watch.on_event(&cor.event, &name) {
-                let death = death_of(
-                    &name,
-                    fix,
-                    |id| graph.room(id).map(|r| r.name.clone()).unwrap_or_default(),
-                    SystemTime::now(),
-                );
-                match record(&death) {
-                    Ok(()) => eprintln!("death logged: {}", death.line()),
+                let namer = |id| graph.room(id).map(|r| r.name.clone()).unwrap_or_default();
+                match log_death(&name, fix, namer, &path) {
+                    Ok(death) => eprintln!("death logged: {}", death.line()),
                     Err(e) => eprintln!("death not logged: {e}"),
                 }
             }

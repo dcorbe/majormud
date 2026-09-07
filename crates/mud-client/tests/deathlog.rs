@@ -4,8 +4,11 @@
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use mud_client::deathlog::{Death, FixWord, death_of, last_in, record_in, stamp};
+use mud_client::deathlog::{Death, FixWord, death_of, last_in, record_in, stamp, watch_headless_in};
+use mud_client::graph::{GraphRoom, RoomGraph};
 use mud_client::lost::Fix;
+use mud_client::profile::Profile;
+use mud_client::session::Session;
 use mud_core::content::RoomId;
 
 fn log_in(test: &str) -> PathBuf {
@@ -151,5 +154,98 @@ fn a_death_marked_from_outside_is_not_fired_again() {
     assert!(!w.on_event(&prompt(0), "Beef"));
     assert!(!w.on_event(&prompt(22), "Beef"));
     assert!(w.on_event(&prompt(0), "Beef"));
+}
+
+
+/// A board that prints one room block and then a prompt at zero, which
+/// is a character killed where it stood, and holds the line open.
+///
+/// It waits before it says anything so the watcher is subscribed first.
+/// Live there is nothing to subscribe after: the log exists for the
+/// death that already happened.
+async fn dying_board() -> std::net::SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut sock, _) = listener.accept().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        sock.write_all(b"\r\n\x1b[1;36mDark Cave\r\nObvious exits: west\r\n[HP=30/MA=0]:")
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        sock.write_all(b"\r\n[HP=0/MA=0]:").await.unwrap();
+        let mut hold = [0u8; 256];
+        while sock.read(&mut hold).await.unwrap_or(0) > 0 {}
+    });
+    addr
+}
+
+/// One room, named the way the board prints it, which is all the
+/// headless watcher asks of a graph.
+fn one_room_graph(id: RoomId, name: &str) -> RoomGraph {
+    RoomGraph::from_rooms(vec![(
+        id,
+        GraphRoom {
+            name: name.to_string(),
+            ..Default::default()
+        },
+    )])
+}
+
+async fn session_for(addr: std::net::SocketAddr) -> Session {
+    let profile = Profile {
+        target: mud_client::dialect::Target::MbbsEmu,
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        username: "beef".into(),
+        password: "secret".into(),
+        pace_ms: Some(0),
+        ..Default::default()
+    };
+    Session::connect(&profile, None).await.unwrap()
+}
+
+/// Wait for the log to hold a line, or say what it held instead.
+async fn one_logged_line(path: &std::path::Path) -> String {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        let lines: Vec<&str> = text.lines().collect();
+        if let [only] = lines.as_slice() {
+            return only.to_string();
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "one death, one line, and the log held {lines:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// The headless watcher has no locator, so the room it logs is the last
+/// block the board printed, resolved by name.
+#[tokio::test]
+async fn the_headless_watcher_logs_the_room_the_board_last_printed() {
+    let path = log_in("headless");
+    let id = RoomId { map: 1, room: 2810 };
+    let graph = std::sync::Arc::new(one_room_graph(id, "Dark Cave"));
+    let addr = dying_board().await;
+    let session = std::sync::Arc::new(session_for(addr).await);
+    let watching = watch_headless_in(session.clone(), graph, path.clone());
+
+    let line = one_logged_line(&path).await;
+    let death = Death::parse(&line).expect("a line the log can read back");
+    assert_eq!(death.character, "beef");
+    assert_eq!(death.room, Some(id), "{line}");
+    assert_eq!(death.name, "Dark Cave", "{line}");
+    assert_eq!(death.fix, FixWord::Confirmed, "{line}");
+
+    // The watcher ends with the session rather than outliving it.
+    session.close();
+    tokio::time::timeout(Duration::from_secs(5), watching)
+        .await
+        .expect("the watcher outlived the session")
+        .expect("the watcher panicked");
 }
 

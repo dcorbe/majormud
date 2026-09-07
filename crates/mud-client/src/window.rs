@@ -592,11 +592,18 @@ async fn play(
     // the graph cannot name says nothing at all, and that used to be
     // indistinguishable from agreement.
     let mut here = crate::lost::Fix::Unknown;
-    // One death, one line in the log. Fed every event the session
-    // produces, in hand play and under a job alike, so the room is the
-    // one `here` held when the killing prompt arrived rather than the
-    // recall room the board renders a moment later.
+    // One death, one line in the log.
     let mut deaths = crate::deathlog::DeathWatch::default();
+    // The fix the death log writes, and the reason it is not `here`.
+    // `here` is moved by the state arm of this same select, off the
+    // session's watch. The session folds an event into that watch as it
+    // emits it, so a death and the recall block that follows it can both
+    // be ready before this task is polled at all, and an unbiased select
+    // is free to run the state arm first. `here` would then already name
+    // the room the character woke up in. This one moves only in the
+    // events arm, from the blocks it has itself seen, so a death is
+    // logged against the last room this arm read BEFORE the death.
+    let mut death_fix = crate::lost::Fix::Unknown;
     // Experience rate, counted from the board's award lines. Runs for the
     // whole session, not just while a farm is attached: a hand-played
     // stretch is worth measuring too.
@@ -694,6 +701,16 @@ async fn play(
                 // The display comes from raw passthrough, so nothing is
                 // rendered here — only the counters and the assist.
                 if let Ok(cor) = &ev {
+                    // The death log's own position, folded here from the
+                    // blocks this arm sees. Same rule as the state arm's
+                    // `here`, and a peek at the next room is skipped for
+                    // the same reason: it describes the room next door.
+                    if let crate::events::Event::RoomSeen(room) = &cor.event
+                        && !cor.elsewhere
+                        && let Some(nav) = nav.as_ref()
+                    {
+                        death_fix = crate::lost::refix(nav, death_fix, room);
+                    }
                     // The sheet's name, or the profile's username until
                     // a sheet is read, which is what `character_name`
                     // answers. A nameless character is not watched at
@@ -702,22 +719,24 @@ async fn play(
                     if let Some(name) = session.character_name()
                         && deaths.on_event(&cor.event, &name)
                     {
-                        let death = crate::deathlog::death_of(
-                            &name,
-                            here,
-                            |id| {
-                                graph
-                                    .as_ref()
-                                    .and_then(|g| g.room(id))
-                                    .map(|r| r.name.clone())
-                                    .unwrap_or_default()
+                        let namer = |id| {
+                            graph
+                                .as_ref()
+                                .and_then(|g| g.room(id))
+                                .map(|r| r.name.clone())
+                                .unwrap_or_default()
+                        };
+                        w.note(
+                            &match crate::deathlog::log_death(
+                                &name,
+                                death_fix,
+                                namer,
+                                &crate::deathlog::path(),
+                            ) {
+                                Ok(death) => format!("-- death logged: {} --", death.line()),
+                                Err(e) => format!("-- death not logged: {e} --"),
                             },
-                            std::time::SystemTime::now(),
                         );
-                        w.note(&match crate::deathlog::record(&death) {
-                            Ok(()) => format!("-- death logged: {} --", death.line()),
-                            Err(e) => format!("-- death not logged: {e} --"),
-                        });
                     }
                     if let Some(present) = crate::dialect::realm_presence(&cor.event) {
                         // Entering is worth asking about straight away;
@@ -1177,6 +1196,10 @@ async fn play(
                                                     // every step taken with the map
                                                     // open.
                                                     here = exit.here;
+                                                    // The view folded the blocks it saw
+                                                    // into that fix as they arrived, which
+                                                    // is what the death log wants too.
+                                                    death_fix = exit.here;
                                                     if let Some(why) = &exit.interrupted {
                                                         w.note(&format!("-- {why} --"));
                                                     }
@@ -1189,14 +1212,16 @@ async fn play(
                                                     if exit.interrupted.as_deref() == Some("you died; the map is closed") {
                                                         deaths.mark_dead();
                                                         if let Some(name) = session.character_name() {
-                                                            let death = crate::deathlog::death_of(
+                                                            let namer = |id| {
+                                                                g.room(id).map(|r| r.name.clone()).unwrap_or_default()
+                                                            };
+                                                            w.note(&match crate::deathlog::log_death(
                                                                 &name,
-                                                                here,
-                                                                |id| g.room(id).map(|r| r.name.clone()).unwrap_or_default(),
-                                                                std::time::SystemTime::now(),
-                                                            );
-                                                            w.note(&match crate::deathlog::record(&death) {
-                                                                Ok(()) => format!("-- death logged: {} --", death.line()),
+                                                                death_fix,
+                                                                namer,
+                                                                &crate::deathlog::path(),
+                                                            ) {
+                                                                Ok(death) => format!("-- death logged: {} --", death.line()),
                                                                 Err(e) => format!("-- death not logged: {e} --"),
                                                             });
                                                         }

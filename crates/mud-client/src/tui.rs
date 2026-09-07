@@ -2433,6 +2433,14 @@ pub struct ContentCache {
 }
 
 impl ContentCache {
+    /// Answer for `db` with a world the caller already has, instead of
+    /// loading one. The seam a test uses to give a window a hand-built
+    /// graph, since the loader below reads a database file and the only
+    /// real one is out of bounds for tests.
+    pub fn insert(&mut self, db: std::path::PathBuf, world: World) {
+        self.worlds.insert(db, world);
+    }
+
     pub fn world(&mut self, db: &std::path::Path) -> Option<World> {
         if let Some(world) = self.worlds.get(db) {
             return Some(world.clone());
