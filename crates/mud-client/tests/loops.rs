@@ -151,3 +151,4 @@ fn the_loop_library_sits_under_the_config_directory() {
     );
     assert!(mud_client::loops::dir().ends_with("mmc/loops"));
 }
+

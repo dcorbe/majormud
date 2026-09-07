@@ -279,3 +279,4 @@ pub fn route_rooms(graph: &RoomGraph, stops: &[RoomId]) -> BTreeSet<RoomId> {
     }
     out
 }
+
