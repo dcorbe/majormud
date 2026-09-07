@@ -618,8 +618,9 @@ impl Live {
 
     /// Rebuild the configs if the profile has changed since the last
     /// look, or a `changed` wait landed one since then. True when it
-    /// did. Clears the pending flag either way, so a wait that already
-    /// forced this rebuild does not force a second one right after.
+    /// did. The pending flag is false on the way out whichever path
+    /// ran, so a wait that already forced this rebuild does not force a
+    /// second one right after.
     ///
     /// Reads `Ref::has_changed` off the borrow rather than
     /// `Receiver::has_changed`, which reports the channel closed the
