@@ -845,6 +845,21 @@ impl BuffState {
     }
 }
 
+/// Build a buff for a known spell from its shipped duration, if it has
+/// one worth keeping. The one lookup both `buffs` and `stealth_spells`
+/// need: find the duration by name, and refuse a zero, because a budget
+/// of 0 rounds is always expired. `None` covers both a missing entry and
+/// a zero one, so the caller words its own refusal either way.
+fn buff_for(known: &KnownSpell, durations: &BTreeMap<String, u32>, casting: Casting) -> Option<Buff> {
+    let &rounds = durations.get(&known.name.to_lowercase())?;
+    (rounds > 0).then(|| Buff {
+        name: known.name.clone(),
+        cmd: casting.command(&known.short),
+        mana_cost: known.mana as i32,
+        rounds,
+    })
+}
+
 /// Pick the buffs `wanted` names out of the spellbook, with the board's
 /// own mana cost and the shipped duration.
 ///
@@ -870,14 +885,9 @@ pub fn buffs(
             refused.push(format!("`{name}` is not in this character's book"));
             continue;
         };
-        match durations.get(&lower) {
-            Some(&rounds) if rounds > 0 => out.push(Buff {
-                name: known.name.clone(),
-                cmd: casting.command(&known.short),
-                mana_cost: known.mana as i32,
-                rounds,
-            }),
-            _ => refused.push(format!(
+        match buff_for(known, durations, casting) {
+            Some(buff) => out.push(buff),
+            None => refused.push(format!(
                 "`{name}` has no duration, so it is not something to keep up"
             )),
         }
@@ -900,14 +910,9 @@ pub fn stealth_spells(
     let mut out = Vec::new();
     let mut refused = Vec::new();
     for (known, _) in spellbook.known_matching(spells, is_stealth_spell) {
-        match durations.get(&known.name.to_lowercase()) {
-            Some(&rounds) if rounds > 0 => out.push(Buff {
-                name: known.name.clone(),
-                cmd: casting.command(&known.short),
-                mana_cost: known.mana as i32,
-                rounds,
-            }),
-            _ => refused.push(format!(
+        match buff_for(known, durations, casting) {
+            Some(buff) => out.push(buff),
+            None => refused.push(format!(
                 "`{}` raises stealth but has no duration in the spell table",
                 known.name
             )),

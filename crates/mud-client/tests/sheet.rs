@@ -1043,6 +1043,22 @@ fn a_stealth_spell_with_no_duration_is_refused_by_name() {
 }
 
 #[test]
+fn a_stealth_spell_missing_from_durations_is_refused_by_name() {
+    let mut durations = stealth_durations();
+    durations.remove("camouflage");
+    let (found, refused) = mud_client::sheet::stealth_spells(
+        &ranger_book(),
+        &spells(),
+        &durations,
+        Casting::Spells,
+    );
+    assert!(found.is_empty());
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert!(refused[0].contains("camouflage"), "{refused:?}");
+    assert!(refused[0].contains("no duration"), "{refused:?}");
+}
+
+#[test]
 fn a_mystic_invokes_its_stealth_power() {
     let (found, _) = mud_client::sheet::stealth_spells(
         &ranger_book(),
