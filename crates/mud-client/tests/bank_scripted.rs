@@ -18,6 +18,12 @@ use mud_client::profile::Profile;
 use mud_client::session::Session;
 use mud_core::content::{Content, Direction, Room, RoomId, Shop, ShopId, ShopStock};
 
+/// A notices sink that keeps nothing. What a runner says at startup is
+/// not what these tests are about.
+fn quiet() -> mud_client::farm::Notices {
+    std::sync::Arc::new(|_: &str| {})
+}
+
 const HOME: RoomId = RoomId { map: 1, room: 1 };
 const BANK: RoomId = RoomId { map: 1, room: 2 };
 
@@ -185,7 +191,7 @@ async fn bank_walks_to_the_nearest_bank_and_deposits_above_the_floor() {
     };
     let end = tokio::time::timeout(
         Duration::from_secs(20),
-        run_bank(&session, graph(), Some(HOME), &bot, &cfg, None),
+        run_bank(&session, graph(), Some(HOME), &bot, &cfg, None, &quiet()),
     )
     .await
     .expect("run_bank should finish, not hang")
@@ -210,3 +216,4 @@ async fn bank_walks_to_the_nearest_bank_and_deposits_above_the_floor() {
         "the re-read after the deposit reached the purse meter"
     );
 }
+

@@ -175,6 +175,24 @@ pub fn spawn(
     }
 }
 
+/// The notices sink a window gives the jobs it starts.
+///
+/// A job runs in its own task, so it cannot borrow the window. It gets
+/// clones of the three things a note needs instead: the screen to write
+/// on, the front end to tell, and which window it is. Built here rather
+/// than at each start call so the window's own `note` and a job's
+/// notice cannot drift apart.
+pub fn notices(
+    id: WindowId,
+    screen: Arc<Mutex<Screen>>,
+    front: UnboundedSender<FrontMsg>,
+) -> crate::farm::Notices {
+    Arc::new(move |text: &str| {
+        screen.lock().expect("screen lock").note(text);
+        let _ = front.send(FrontMsg::Changed { window: id, screen: true });
+    })
+}
+
 impl Window {
     /// Something the front end paints moved. `screen` says whether the
     /// rows moved or only the bar did.
@@ -548,6 +566,10 @@ async fn play(
 ) -> PlayEnd {
     let mut events = session.events();
     let mut state_rx = session.state();
+    // One sink for every job this connection starts, so a runner's
+    // startup notices land on this window's screen rather than on the
+    // terminal the front end is painting.
+    let notices = notices(w.id, w.screen.clone(), w.front.clone());
     // Bound once because it is a connection-time fact: this session was
     // opened against that board and goes on speaking its dialect. A
     // `/set target` mid-session applies at the next `/connect`, and the
@@ -879,7 +901,7 @@ async fn play(
                                     // works while farming: one job only.
                                     w.note(&format!("-- {} already running (Ctrl-F to take over) --", j.what));
                                 } else {
-                                    match start_farm(session.clone(), loop_name.as_deref()) {
+                                    match start_farm(session.clone(), loop_name.as_deref(), notices.clone()) {
                                         Ok(started) => {
                                             // Fresh figures for a fresh
                                             // job: the total and the
@@ -932,6 +954,7 @@ async fn play(
                                                     to,
                                                     assist_config.clone(),
                                                     assist.is_some(),
+                                                    notices.clone(),
                                                 ) {
                                                     Err(e) => w.note(&format!("-- {e} --")),
                                                     Ok(started) => {
@@ -968,6 +991,7 @@ async fn play(
                                             here.confirmed(),
                                             assist_config.clone(),
                                             assist.is_some(),
+                                            notices.clone(),
                                         ) {
                                             Err(e) => w.note(&format!("-- {e} --")),
                                             Ok(started) => {
@@ -1030,6 +1054,13 @@ async fn play(
                                                 },
                                                 (cols as usize, rows as usize),
                                             );
+                                            // What the assist refused while the
+                                            // map had the terminal. Collected
+                                            // rather than printed. The screen
+                                            // is the map's until it returns, and
+                                            // a note written over it would be
+                                            // painted on rows the map owns.
+                                            let mut refused_under_map: Vec<String> = Vec::new();
                                             // Scoped so the borrows the map
                                             // needs are gone before the exit
                                             // is acted on.
@@ -1066,11 +1097,7 @@ async fn play(
                                                             cor,
                                                             std::time::Instant::now(),
                                                         );
-                                                        // The map owns the screen, so there
-                                                        // is no `note` to print through.
-                                                        for why in refusals {
-                                                            eprintln!("-- {why} --");
-                                                        }
+                                                        refused_under_map.extend(refusals);
                                                     }
                                                 };
                                                 // The map draws on the real terminal, so
@@ -1095,6 +1122,10 @@ async fn play(
                                             // keystroke the next time the map opens.
                                             while w.keys.try_recv().is_ok() {}
                                             w.takeover(false);
+                                            // The screen is the window's again.
+                                            for why in refused_under_map {
+                                                w.note(&format!("-- {why} --"));
+                                            }
                                             match ran {
                                                 Err(e) => w.note(&format!("-- map: {e} --")),
                                                 Ok(exit) => {
@@ -1133,7 +1164,7 @@ async fn play(
                                                         }
                                                         crate::mapview::ViewAction::Roam(walls) => {
                                                             let fenced = walls.len();
-                                                            match start_roam(session.clone(), walls, here) {
+                                                            match start_roam(session.clone(), walls, here, notices.clone()) {
                                                                 Ok(started) => {
                                                                     w.note(&format!(
                                                                         "-- roaming, fenced out of {fenced} rooms (Ctrl-F to take over) --"
@@ -1157,6 +1188,7 @@ async fn play(
                                                                 to,
                                                                 assist_config.clone(),
                                                                 assist.is_some(),
+                                                                notices.clone(),
                                                             ) {
                                                                 Err(e) => w.note(&format!("-- {e} --")),
                                                                 Ok(started) => {

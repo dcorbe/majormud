@@ -133,13 +133,17 @@ fn settings_for(addr: Option<std::net::SocketAddr>) -> Settings {
 struct Rig {
     handle: WindowHandle,
     front: tokio::sync::mpsc::UnboundedReceiver<FrontMsg>,
+    /// The sender the window itself was given. Kept so a test can build
+    /// the same notices sink the window builds and watch it arrive on
+    /// the same channel.
+    front_tx: tokio::sync::mpsc::UnboundedSender<FrontMsg>,
 }
 
 fn rig(settings: Settings, first: Option<KeyOutcome>) -> Rig {
     let (tx, front) = tokio::sync::mpsc::unbounded_channel();
     let cache = Arc::new(Mutex::new(ContentCache::default()));
-    let handle = spawn(7, settings, 24, 80, cache, tx, None, first);
-    Rig { handle, front }
+    let handle = spawn(7, settings, 24, 80, cache, tx.clone(), None, first);
+    Rig { handle, front, front_tx: tx }
 }
 
 impl Rig {
@@ -466,5 +470,37 @@ async fn a_failed_connect_keeps_redialling() {
         matches!(m, FrontMsg::Event { kind: EventKind::Reconnecting { attempt: 1 }, .. })
     })
     .await;
+}
+
+
+/// A job's notices land on the window's screen, not on stderr.
+///
+/// Under the TUI stderr is the raw terminal. A runner's startup notices
+/// printed there sit on rows the front end believes it owns. The window
+/// hands every job it starts the sink built here, which writes the note
+/// where the board's own output goes and tells the front end the screen
+/// moved.
+///
+/// Driven through the sink directly rather than through a real `/farm`.
+/// A runner reaches its first notice only with a room database and a
+/// board to walk on, and no test may read `re/`.
+#[tokio::test]
+async fn a_jobs_notices_land_on_the_windows_screen() {
+    let mut r = rig(settings_for(None), None);
+    let notices = mud_client::window::notices(
+        r.handle.id,
+        r.handle.screen.clone(),
+        r.front_tx.clone(),
+    );
+    notices("roaming 12 rooms");
+    r.until("the notice", |m| {
+        matches!(m, FrontMsg::Changed { window: 7, screen: true })
+    })
+    .await;
+    assert!(
+        r.text().contains("roaming 12 rooms"),
+        "the notice belongs on the window's screen: {}",
+        r.text()
+    );
 }
 

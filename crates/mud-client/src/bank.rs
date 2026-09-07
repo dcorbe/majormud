@@ -345,6 +345,7 @@ pub(crate) async fn errand(
     started: Instant,
     stats: &mut FarmStats,
     phase: PhaseSink<'_>,
+    notices: &crate::farm::Notices,
     current: &mut RoomId,
     return_to: Option<RoomId>,
 ) -> Result<ErrandEnd, FarmError> {
@@ -446,10 +447,10 @@ pub(crate) async fn errand(
             Ok(LegEnd::TimeUp) => return Ok(ErrandEnd::TimeUp),
             Ok(LegEnd::TooHurt) => return Ok(ErrandEnd::TooHurt),
             Err(FarmError::Nav(e)) => {
-                eprintln!(
+                notices(&format!(
                     "bank: no way back to {}/{} from {name}: {e}",
                     back.map, back.room
-                );
+                ));
             }
             Err(e) => return Err(e),
         }
@@ -469,13 +470,16 @@ pub async fn run_bank(
     bot_config: &crate::bot::BotConfig,
     cfg: &FarmConfig,
     phase: PhaseSink<'_>,
+    notices: &crate::farm::Notices,
 ) -> Result<ErrandEnd, FarmError> {
     crate::farm::check_departure_mark(cfg, bot_config)?;
     session.travel_fights().set(cfg.fight_while_travelling);
     if let Err(e) = crate::deaths::init(&cfg.content) {
-        eprintln!("death wordings unavailable ({e}); shared-room kills will be missed");
+        notices(&format!(
+            "death wordings unavailable ({e}); shared-room kills will be missed"
+        ));
     }
-    let Some(content) = crate::farm::content_for(session, cfg) else {
+    let Some(content) = crate::farm::content_for(session, cfg, notices) else {
         return Ok(ErrandEnd::Nothing(format!(
             "no room database at {}",
             cfg.content.display()
@@ -529,6 +533,7 @@ pub async fn run_bank(
         Instant::now(),
         &mut stats,
         phase,
+        notices,
         &mut current,
         None,
     )

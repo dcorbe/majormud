@@ -229,6 +229,7 @@ pub async fn run_go(
     bot_config: &crate::bot::BotConfig,
     cfg: &FarmConfig,
     phase: crate::farm::PhaseSink<'_>,
+    notices: &crate::farm::Notices,
 ) -> Result<GoEnd, FarmError> {
     crate::farm::check_departure_mark(cfg, bot_config)?;
     // How the walk starts; `/bot` moves the switch from here on. See
@@ -237,12 +238,14 @@ pub async fn run_go(
     // The board's own per-monster death wordings, so the room model can
     // see a kill somebody else landed. Best effort, as in `run_farm`.
     if let Err(e) = crate::deaths::init(&cfg.content) {
-        eprintln!("death wordings unavailable ({e}); shared-room kills will be missed");
+        notices(&format!(
+            "death wordings unavailable ({e}); shared-room kills will be missed"
+        ));
     }
     // The table goes to the session before the capabilities are read,
     // so the walk routes with the pack. Best effort, as before: a
     // session handed the table earlier keeps it when this load fails.
-    let content = crate::farm::content_for(session, cfg);
+    let content = crate::farm::content_for(session, cfg, notices);
     let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone())
         .with_capabilities(session.capabilities());
     let nav = match content {
@@ -333,3 +336,4 @@ pub async fn run_go(
     }
     Ok(end)
 }
+

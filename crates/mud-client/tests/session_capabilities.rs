@@ -34,6 +34,12 @@ use mud_client::purse::Purse;
 use mud_client::session::Session;
 use mud_core::content::{Direction, RoomId};
 
+/// A notices sink that keeps nothing. What a runner says at startup is
+/// not what these tests are about.
+fn quiet() -> mud_client::farm::Notices {
+    std::sync::Arc::new(|_: &str| {})
+}
+
 const GATE: RoomId = RoomId { map: 1, room: 1381 };
 const BEYOND: RoomId = RoomId { map: 1, room: 1382 };
 
@@ -185,7 +191,7 @@ async fn a_toll_learned_by_run_go_is_known_to_the_next_navigator() {
     let graph = gate_graph();
     let end = tokio::time::timeout(
         Duration::from_secs(20),
-        run_go(&session, Arc::clone(&graph), Some(GATE), BEYOND, &bot(), &cfg(true), None),
+        run_go(&session, Arc::clone(&graph), Some(GATE), BEYOND, &bot(), &cfg(true), None, &quiet()),
     )
     .await
     .expect("run_go should not hang")
@@ -224,3 +230,4 @@ async fn a_toll_learned_by_run_go_is_known_to_the_next_navigator() {
         "one priming ask, plus one before and one after the crossing"
     );
 }
+

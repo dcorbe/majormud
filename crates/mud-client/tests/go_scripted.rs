@@ -25,6 +25,12 @@ use mud_client::profile::Profile;
 use mud_client::session::Session;
 use mud_core::content::{Direction, RoomId};
 
+/// A notices sink that keeps nothing. What a runner says at startup is
+/// not what these tests are about.
+fn quiet() -> mud_client::farm::Notices {
+    std::sync::Arc::new(|_: &str| {})
+}
+
 const START: RoomId = RoomId { map: 1, room: 1 };
 const MIDWAY: RoomId = RoomId { map: 1, room: 2 };
 const STOP: RoomId = RoomId { map: 1, room: 3 };
@@ -184,7 +190,7 @@ async fn walk(walking: bool, script: Vec<(&'static str, String)>) -> (GoEnd, Vec
     let graph = corridor();
     let end = match tokio::time::timeout(
         Duration::from_secs(30),
-        run_go(&session, graph, Some(START), STOP, &bot(), &cfg(walking), None),
+        run_go(&session, graph, Some(START), STOP, &bot(), &cfg(walking), None, &quiet()),
     )
     .await
     .expect("run_go should finish, not hang")
@@ -367,7 +373,7 @@ async fn a_second_go_in_one_session_sends_no_spells() {
 
     let first = tokio::time::timeout(
         Duration::from_secs(10),
-        run_go(&session, graph.clone(), Some(START), STOP, &bot(), &cfg(false), None),
+        run_go(&session, graph.clone(), Some(START), STOP, &bot(), &cfg(false), None, &quiet()),
     )
     .await
     .expect("first /go should not hang")
@@ -376,7 +382,7 @@ async fn a_second_go_in_one_session_sends_no_spells() {
 
     let second = tokio::time::timeout(
         Duration::from_secs(10),
-        run_go(&session, graph, Some(STOP), START, &bot(), &cfg(false), None),
+        run_go(&session, graph, Some(STOP), START, &bot(), &cfg(false), None, &quiet()),
     )
     .await
     .expect("second /go should not hang")
@@ -420,7 +426,7 @@ async fn a_walk_refuses_an_interrupt_mark_above_the_bots_mark_before_sending_any
 
     let out = tokio::time::timeout(
         Duration::from_secs(10),
-        run_go(&session, graph, Some(START), STOP, &bot, &cfg, None),
+        run_go(&session, graph, Some(START), STOP, &bot, &cfg, None, &quiet()),
     )
     .await
     .expect("run_go should refuse at once, not hang");
@@ -438,3 +444,4 @@ async fn a_walk_refuses_an_interrupt_mark_above_the_bots_mark_before_sending_any
         "the refusal must come before anything is sent: {log:?}"
     );
 }
+

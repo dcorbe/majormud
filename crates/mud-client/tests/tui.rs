@@ -1222,6 +1222,12 @@ fn connect_target_defaults_the_port_to_telnet() {
 use mud_client::session::Session;
 use mud_client::tui::{ContentCache, LobbyStep, lobby_step};
 
+/// A notices sink that keeps nothing. These tests never get as far as a
+/// runner saying anything.
+fn quiet() -> mud_client::farm::Notices {
+    std::sync::Arc::new(|_: &str| {})
+}
+
 async fn banner_board() -> std::net::SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1391,11 +1397,12 @@ async fn every_job_start_refuses_without_a_name() {
     )]));
     let bot = mud_client::bot::BotConfig::default();
     let refusals = vec![
-        start_farm(session.clone(), None).err(),
+        start_farm(session.clone(), None, quiet()).err(),
         start_roam(
             session.clone(),
             mud_client::roam::Walls::new([]),
             mud_client::lost::Fix::Confirmed(here),
+            quiet(),
         )
         .err(),
         start_go(
@@ -1405,9 +1412,10 @@ async fn every_job_start_refuses_without_a_name() {
             here,
             bot.clone(),
             false,
+            quiet(),
         )
         .err(),
-        start_bank(session.clone(), graph.clone(), Some(here), bot, false).err(),
+        start_bank(session.clone(), graph.clone(), Some(here), bot, false, quiet()).err(),
         start_where(session.clone(), graph.clone(), Some(here)).err(),
     ];
     for refusal in refusals {

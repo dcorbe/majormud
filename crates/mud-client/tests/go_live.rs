@@ -23,6 +23,12 @@ use mud_core::content::{
 use mud_core::game::CoreConfig;
 use mud_server::{server::Server, state_db::StateDb};
 
+/// A notices sink that keeps nothing. What a runner says at startup is
+/// not what these tests are about.
+fn quiet() -> mud_client::farm::Notices {
+    std::sync::Arc::new(|_: &str| {})
+}
+
 const GATES: RoomId = RoomId { map: 1, room: 1 };
 const SQUARE: RoomId = RoomId { map: 1, room: 2 };
 const MARKET: RoomId = RoomId { map: 1, room: 3 };
@@ -191,6 +197,7 @@ async fn go_walks_to_a_named_room() {
         &mud_client::bot::BotConfig::default(),
         &cfg(),
         None,
+        &quiet(),
     )
     .await
     .expect("walk gates -> market");
@@ -227,6 +234,7 @@ async fn go_finds_its_own_starting_room() {
         &mud_client::bot::BotConfig::default(),
         &cfg(),
         None,
+        &quiet(),
     )
     .await
     .expect("walk square -> market with no hint");
@@ -247,9 +255,11 @@ async fn going_where_you_already_stand_is_a_no_op() {
         &mud_client::bot::BotConfig::default(),
         &cfg(),
         None,
+        &quiet(),
     )
     .await
     .expect("already there");
 
     assert_eq!(end, GoEnd::Arrived(GATES));
 }
+

@@ -519,12 +519,24 @@ fn farm_command(
         let content = mud_core::content_db::load(db).ok();
         mud_client::farm::probe_sheet(&session, content.as_ref()).await;
 
+        // No window owns this terminal, so the runner's notices go where
+        // every other headless message goes.
+        let notices: mud_client::farm::Notices = std::sync::Arc::new(|s: &str| eprintln!("{s}"));
+
         // Ctrl-C stops the patrol. There is no session close API, and
         // sending "x" would mean waiting out exit meditation while the
         // operator has already asked to stop — but the character is not
         // simply abandoned where it stands any more; see below.
         let outcome = tokio::select! {
-            r = run_farm(&session, graph.clone(), &plan, &bot_config, &farm_config, Some(&phase_tx)) => Some(r),
+            r = run_farm(
+                &session,
+                graph.clone(),
+                &plan,
+                &bot_config,
+                &farm_config,
+                Some(&phase_tx),
+                &notices,
+            ) => Some(r),
             _ = stop_signal() => None,
         };
 

@@ -472,6 +472,14 @@ impl Phase {
 /// Where the runner publishes its [`Phase`]. `None` discards.
 pub type PhaseSink<'a> = Option<&'a tokio::sync::watch::Sender<Phase>>;
 
+/// Where a runner's notices go. The window puts them on its screen, the
+/// headless commands print them to stderr. The runner never decides.
+///
+/// Under the TUI stderr is the raw terminal, so a bare `eprintln!` from
+/// a job lands on rows the painter believes it owns and stays there
+/// until the board's own output rewrites them.
+pub type Notices = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
+
 pub(crate) fn set_phase(sink: PhaseSink<'_>, phase: Phase) {
     if let Some(tx) = sink {
         // A dropped receiver is not an error: nobody is watching.
@@ -1668,6 +1676,7 @@ pub async fn run_farm(
     bot_config: &crate::bot::BotConfig,
     cfg: &FarmConfig,
     phase: PhaseSink<'_>,
+    notices: &Notices,
 ) -> Result<(FarmEnd, FarmStats), FarmError> {
     check_departure_mark(cfg, bot_config)?;
     // The config says how the run STARTS; the session's switch is what
@@ -1677,7 +1686,9 @@ pub async fn run_farm(
     // see a kill somebody ELSE landed. Best effort: without it the model
     // falls back to the award-and-one-phrase test it always had.
     if let Err(e) = crate::deaths::init(&cfg.content) {
-        eprintln!("death wordings unavailable ({e}); shared-room kills will be missed");
+        notices(&format!(
+            "death wordings unavailable ({e}); shared-room kills will be missed"
+        ));
     }
     // Buff durations, for the upkeep budget. An unreadable database is
     // not fatal anywhere else here and is not fatal here either: an
@@ -1685,14 +1696,16 @@ pub async fn run_farm(
     // which is louder than quietly recasting on a made-up timer.
     let durations = crate::graph::RoomGraph::load_spell_durations(&cfg.content).unwrap_or_else(|e| {
         if !bot_config.buffs.is_empty() {
-            eprintln!("spell durations unavailable ({e}); buffs will not be kept up");
+            notices(&format!(
+                "spell durations unavailable ({e}); buffs will not be kept up"
+            ));
         }
         BTreeMap::new()
     });
     let sheet = sheet_from(session, bot_config, &durations);
     let light = crate::sheet::LightState::new(sheet.light);
     if let Some(cmd) = light.first_command() {
-        eprintln!("dark rooms will be handled with `{cmd}`");
+        notices(&format!("dark rooms will be handled with `{cmd}`"));
     }
     // Say what the character can and cannot do about being hurt, at
     // startup rather than at 20% health. A spell mark set on a character
@@ -1700,7 +1713,7 @@ pub async fn run_farm(
     // would leave the operator believing it was armed.
     let (heals, heal_refused) = sheet.heals;
     for reason in &heal_refused {
-        eprintln!("heal {reason}");
+        notices(&format!("heal {reason}"));
     }
     for h in &heals {
         let (kind, mark) = match h.kind {
@@ -1708,10 +1721,10 @@ pub async fn run_farm(
             crate::sheet::HealKind::Major => ("major", bot_config.major_heal_at_percent),
             crate::sheet::HealKind::Regen { .. } => ("regen", bot_config.minor_heal_at_percent),
         };
-        eprintln!(
+        notices(&format!(
             "{kind} heal below {mark}% with `{}` ({} mana)",
             h.cmd, h.mana_cost
-        );
+        ));
     }
     if (bot_config.minor_heal_at_percent > 0 || bot_config.major_heal_at_percent > 0) && heals.is_empty() {
         let marks = match (bot_config.minor_heal_at_percent, bot_config.major_heal_at_percent) {
@@ -1721,26 +1734,28 @@ pub async fn run_farm(
                 format!("minor_heal_at_percent is {minor} and major_heal_at_percent is {major}")
             }
         };
-        eprintln!("{marks} but this character knows no healing spell. It will rest and flee only");
+        notices(&format!(
+            "{marks} but this character knows no healing spell. It will rest and flee only"
+        ));
     }
     let heal = crate::sheet::HealState::new(heals);
     // Same bargain for buffs: say what is being kept up, and say out
     // loud what was asked for and could not be.
     let (kept, refused) = sheet.buffs;
     for reason in refused {
-        eprintln!("buff {reason}");
+        notices(&format!("buff {reason}"));
     }
     for b in &kept {
-        eprintln!(
+        notices(&format!(
             "keeping `{}` up: {} rounds, {} mana",
             b.name, b.rounds, b.mana_cost
-        );
+        ));
     }
     let buff = crate::sheet::BuffState::new(kept);
     let mut casts = Casts { light, heal, buff };
     let mut clock = crate::world::RoundClock::new();
     let out = farm_loop(
-        session, graph, plan, bot_config, cfg, phase, &mut casts, &mut clock,
+        session, graph, plan, bot_config, cfg, phase, notices, &mut casts, &mut clock,
     )
     .await;
     // A lit source burns one use per 3s medium tick whether anything
@@ -1763,6 +1778,7 @@ async fn farm_loop(
     bot_config: &crate::bot::BotConfig,
     cfg: &FarmConfig,
     phase: PhaseSink<'_>,
+    notices: &Notices,
     casts: &mut Casts,
     clock: &mut crate::world::RoundClock,
 ) -> Result<(FarmEnd, FarmStats), FarmError> {
@@ -1771,7 +1787,7 @@ async fn farm_loop(
     // Item identity for the pack and the backstab opener. Held out
     // here rather than inside the navigator's block because the bank
     // errand reads the same table to find a bank.
-    let content = content_for(session, cfg);
+    let content = content_for(session, cfg, notices);
     let walker = || {
         let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone())
             .with_capabilities(session.capabilities());
@@ -1804,7 +1820,7 @@ async fn farm_loop(
     // and the bot falls back to the board's own listing order.
     let threat = std::sync::Arc::new(
         RoomGraph::load_threat(&cfg.content).unwrap_or_else(|e| {
-            eprintln!("threat ranking unavailable ({e}); using board order");
+            notices(&format!("threat ranking unavailable ({e}); using board order"));
             crate::bot::ThreatTable::new()
         }),
     );
@@ -1842,7 +1858,7 @@ async fn farm_loop(
         (walls, region, crate::roam::Rotation::new())
     });
     if let Some((_, region, _)) = &roam {
-        eprintln!("roaming {} rooms", region.len());
+        notices(&format!("roaming {} rooms", region.len()));
     }
 
     // The run's belief about the character's sneak, carried from each
@@ -1945,10 +1961,10 @@ async fn farm_loop(
                         kind: crate::nav::NavErrorKind::Puzzle { dir, tried },
                         ..
                     })) if roam.is_some() => {
-                        eprintln!(
+                        notices(&format!(
                             "{}/{} left the roam: {dir} needs a puzzle this run cannot do, {tried}",
                             stop.map, stop.room
-                        );
+                        ));
                         if let Some((_, region, _)) = &mut roam {
                             region.remove(&stop);
                         }
@@ -2021,6 +2037,7 @@ async fn farm_loop(
                         started,
                         &mut stats,
                         phase,
+                        notices,
                         &mut current,
                         // A circuit walks on from the bank: its next
                         // stop is named and the route to it is the
@@ -2038,18 +2055,18 @@ async fn farm_loop(
                         crate::bank::ErrandEnd::TimeUp => return Ok((FarmEnd::TimeUp, stats)),
                         crate::bank::ErrandEnd::TooHurt => return Ok((FarmEnd::TooHurt, stats)),
                         crate::bank::ErrandEnd::Deposited { farthings, at, bank } => {
-                            eprintln!(
+                            notices(&format!(
                                 "deposited {farthings} copper farthings at {bank} ({}/{})",
                                 at.map, at.room
-                            );
+                            ));
                             if let Some(after) = crate::bank::Reading::of(&session.contents()) {
                                 gate.seed(after);
                             }
                         }
                         crate::bank::ErrandEnd::Nothing(why) => {
-                            eprintln!(
+                            notices(&format!(
                                 "bank: {why}. Deposits are off for the rest of this run"
-                            );
+                            ));
                             bank_off = true;
                         }
                     }
@@ -2408,6 +2425,7 @@ pub(crate) fn sheet_from(
 pub(crate) fn content_for(
     session: &crate::session::Session,
     cfg: &FarmConfig,
+    notices: &Notices,
 ) -> Option<std::sync::Arc<mud_core::content::Content>> {
     match RoomGraph::load_content(&cfg.content) {
         Ok(content) => {
@@ -2418,7 +2436,7 @@ pub(crate) fn content_for(
         Err(e) => {
             let kept = session.pack_handle().map(|h| std::sync::Arc::clone(h.content()));
             if kept.is_none() {
-                eprintln!("item identity unavailable ({e}); backstab opener disabled");
+                notices(&format!("item identity unavailable ({e}); backstab opener disabled"));
             }
             kept
         }

@@ -1812,7 +1812,11 @@ pub struct Job {
 /// character is in the realm, and the profile's `username` before that.
 /// The check lives here rather than at the call sites so that a new
 /// caller cannot forget it. Public for the test that pins the refusal.
-pub fn start_farm(session: Arc<Session>, loop_name: Option<&str>) -> Result<Job, String> {
+pub fn start_farm(
+    session: Arc<Session>,
+    loop_name: Option<&str>,
+    notices: crate::farm::Notices,
+) -> Result<Job, String> {
     let profile = session.profile();
     needs_name(&session)?;
     // A named loop replaces the circuit, not the policy: every knob in
@@ -1829,7 +1833,7 @@ pub fn start_farm(session: Arc<Session>, loop_name: Option<&str>) -> Result<Job,
         Some(name) => {
             let l = crate::loops::load(&crate::loops::dir(), name)?;
             for warning in l.check_names(&graph) {
-                eprintln!("loop {name}: {warning}");
+                notices(&format!("loop {name}: {warning}"));
             }
             l.to_farm(&base, &graph)?
         }
@@ -1840,7 +1844,7 @@ pub fn start_farm(session: Arc<Session>, loop_name: Option<&str>) -> Result<Job,
     // session for the operator's keystrokes; the runner it is about to
     // hand the connection to cycled at loopback echo speed without this
     // (~40 look+attack commands in 400ms, run4 2026-08-01).
-    Ok(spawn_run(session, graph, plan, bot, cfg, "farm"))
+    Ok(spawn_run(session, graph, plan, bot, cfg, "farm", notices))
 }
 
 /// Roam the region the operator fenced, on an already-connected session.
@@ -1861,6 +1865,7 @@ pub fn start_roam(
     session: Arc<Session>,
     walls: crate::roam::Walls,
     here: crate::lost::Fix,
+    notices: crate::farm::Notices,
 ) -> Result<Job, String> {
     let profile = session.profile();
     needs_name(&session)?;
@@ -1875,7 +1880,7 @@ pub fn start_roam(
     )?;
     let plan = crate::farm::FarmPlan::roaming(start, walls, &graph)?;
     let bot = profile.bot.clone().unwrap_or_default();
-    Ok(spawn_run(session, graph, plan, bot, cfg, "roam"))
+    Ok(spawn_run(session, graph, plan, bot, cfg, "roam", notices))
 }
 
 /// Hand the connection to the runner and report what it did.
@@ -1883,6 +1888,7 @@ pub fn start_roam(
 /// Shared by `/farm` and the map's roam so the two cannot describe the
 /// same ending differently — the only thing that varies is whether laps
 /// or rooms are the number that means anything.
+#[allow(clippy::too_many_arguments)]
 fn spawn_run(
     session: Arc<Session>,
     graph: Arc<crate::graph::RoomGraph>,
@@ -1890,6 +1896,7 @@ fn spawn_run(
     bot: crate::bot::BotConfig,
     cfg: crate::farm::FarmConfig,
     what: &'static str,
+    notices: crate::farm::Notices,
 ) -> Job {
     // Automation goes back under flood control. `play` unpaced this
     // session for the operator's keystrokes; the runner it is about to
@@ -1899,7 +1906,17 @@ fn spawn_run(
     let roaming = plan.roam.is_some();
     let (tx, rx) = tokio::sync::watch::channel(crate::farm::Phase::default());
     let handle = tokio::spawn(async move {
-        let end = match crate::farm::run_farm(&session, graph, &plan, &bot, &cfg, Some(&tx)).await {
+        let end = match crate::farm::run_farm(
+            &session,
+            graph,
+            &plan,
+            &bot,
+            &cfg,
+            Some(&tx),
+            &notices,
+        )
+        .await
+        {
             Ok((end, stats)) => crate::farm::Phase::Done {
                 why: format!(
                     "{} ({} kills, {}{}{})",
@@ -1969,6 +1986,7 @@ pub fn start_go(
     to: mud_core::content::RoomId,
     bot: crate::bot::BotConfig,
     walking: bool,
+    notices: crate::farm::Notices,
 ) -> Result<Job, String> {
     let profile = session.profile();
     needs_name(&session)?;
@@ -1985,7 +2003,18 @@ pub fn start_go(
     session.set_pace(profile.pace());
     let (tx, rx) = tokio::sync::watch::channel(crate::farm::Phase::default());
     let handle = tokio::spawn(async move {
-        let end = match crate::go::run_go(&session, graph, hint, to, &bot, &cfg, Some(&tx)).await {
+        let end = match crate::go::run_go(
+            &session,
+            graph,
+            hint,
+            to,
+            &bot,
+            &cfg,
+            Some(&tx),
+            &notices,
+        )
+        .await
+        {
             Ok(crate::go::GoEnd::Arrived(at)) => crate::farm::Phase::Done {
                 why: format!("arrived at {}/{}", at.map, at.room),
                 at: Some(at),
@@ -2030,6 +2059,7 @@ pub fn start_bank(
     hint: Option<mud_core::content::RoomId>,
     bot: crate::bot::BotConfig,
     walking: bool,
+    notices: crate::farm::Notices,
 ) -> Result<Job, String> {
     let profile = session.profile();
     needs_name(&session)?;
@@ -2041,7 +2071,17 @@ pub fn start_bank(
     session.set_pace(profile.pace());
     let (tx, rx) = tokio::sync::watch::channel(crate::farm::Phase::default());
     let handle = tokio::spawn(async move {
-        let end = match crate::bank::run_bank(&session, graph, hint, &bot, &cfg, Some(&tx)).await {
+        let end = match crate::bank::run_bank(
+            &session,
+            graph,
+            hint,
+            &bot,
+            &cfg,
+            Some(&tx),
+            &notices,
+        )
+        .await
+        {
             Ok(crate::bank::ErrandEnd::Deposited { farthings, at, bank }) => {
                 crate::farm::Phase::Done {
                     why: format!("deposited {farthings} copper farthings at {bank}"),
