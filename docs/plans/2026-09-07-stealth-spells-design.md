@@ -27,10 +27,12 @@ decodes each spell's ability list.
 The ability value is level scaled in the table and reads as zero on every self buff.
 Presence decides, not amount. A negative value is a penalty.
 
-`mud_core::content::TargetMode` names mode 1 `Offensive1` and mode 3 `Benign`. Those
-names are placeholders from the first decode and do not match the data. Starlight and
-camouflage are self casts with mode 1. This spec does not rename the enum. The rule
-below matches on the raw mode and says so where it does.
+The target mode in the table above is the sqlite `target` column. The decoder puts that
+column into `Spell::match_type`, whose variant for 1 is named `MatchType::Single1`. The
+field named `Spell::target_mode` holds the `spelltype` column instead, which is 3 on
+every spell. Both variant names are placeholders from the first decode. This spec does
+not rename them. The rule below matches `match_type == MatchType::Single1` and says
+"target mode 1" for it.
 
 ## 1. The discovery rule
 
