@@ -3188,3 +3188,122 @@ async fn an_ignore_rule_changed_mid_leg_holds_at_the_second_sighting() {
     );
 }
 
+// --- the spell map on the session ------------------------------------
+
+/// One shipped `starlight` record, with only the fields discovery reads
+/// set to anything: the ability list, the `target` column decoded as
+/// `match_type`, and the mana cost. Everything else is zero. The same
+/// shape `tests/sheet.rs` builds, duplicated here because test crates
+/// do not share modules.
+fn starlight() -> mud_core::content::Spell {
+    use mud_core::ability::Ability;
+    use mud_core::content::{Element, MatchType, SaveClass, ScalePair, Spell, SpellId, TargetMode};
+    Spell {
+        id: SpellId(26),
+        name: "starlight".into(),
+        short_name: "star".into(),
+        cast_msg_a: None,
+        cast_msg_b: None,
+        abilities: vec![(Ability::RoomIllu, 0)],
+        level_cap: 0,
+        round_cost: 0,
+        required_power: 0,
+        min_base: 0,
+        max_base: 0,
+        target_mode: TargetMode::Benign,
+        save_class: SaveClass::None,
+        base_chance: 0,
+        duration_per_level: 0,
+        match_type: MatchType::Single1,
+        duration: 80,
+        element: Element::Magic,
+        class_gate_group: 0,
+        mana_cost: 4,
+        max_increase: ScalePair::NONE,
+        required_class_level: 0,
+        min_increase: ScalePair::NONE,
+        duration_increase: ScalePair::NONE,
+        msg_style: 0,
+    }
+}
+
+/// A lap by a character whose book holds starlight, run with and
+/// without the spell map on the session, keeping what the runner said
+/// at startup.
+async fn lap_with_starlight(with_content: bool) -> Vec<String> {
+    let (addr, _received) = scripted_board(vec![
+        ("stat", NINJA_SHEET.into()),
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        (
+            "spells",
+            "\r\nspells\r\nYou have the following spells:\r\nLevel Mana Short Spell Name\r\n\x20 1   4    star  starlight                     \r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        ("look", format!("\r\nlook{}", room_block("Guard Post", None, "north"))),
+        ("n", format!("\r\nn{}", room_block("Inner Ward", None, "north south"))),
+        ("n", format!("\r\nn{}", room_block("Keep", None, "south"))),
+    ])
+    .await;
+    let session = session_for(addr).await;
+    mud_client::farm::probe_sheet(&session, None).await;
+    if with_content {
+        let mut content = mud_core::content::Content::default();
+        content.add_spell(starlight());
+        session.set_content(Arc::new(content));
+    }
+
+    let graph = corridor();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/2".into(), "1/3".into()],
+        loops: 1,
+        idle_poke_ms: 500,
+        depart_at_percent: Some(0),
+        ..FarmConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig {
+        auto_combat: true,
+        auto_sneak: false,
+        max_hp: 30,
+        ..BotConfig::default()
+    };
+    let (notices, said) = collected();
+    let (end, stats) = tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, Live::fixed(bot, cfg), None, &notices),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    .expect("the lap should finish");
+    assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
+    let said = said.lock().unwrap();
+    said.clone()
+}
+
+/// The light spell is discovered from the content's spell map, and the
+/// map reaches the sheet through the session. `mmc farm` hands it over
+/// right after login, the way `tui::on_realm_entry` does for the
+/// interactive client; without that the whole run finds no light at all
+/// however plainly the book says starlight.
+///
+/// Mutation target: drop the `set_content` from the headless startup and
+/// the second half of this passes while the first stops.
+#[tokio::test]
+async fn the_light_spell_needs_the_spell_map_on_the_session() {
+    let with = lap_with_starlight(true).await;
+    assert!(
+        with.iter().any(|l| l.contains("dark rooms will be handled with `cast star`")),
+        "starlight in the book plus the spell map is a light source: {with:?}"
+    );
+    let without = lap_with_starlight(false).await;
+    assert!(
+        !without.iter().any(|l| l.contains("dark rooms will be handled")),
+        "no spell map, no light source: {without:?}"
+    );
+}
+

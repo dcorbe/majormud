@@ -532,8 +532,16 @@ fn farm_command(
         // file for its own purposes): `RoomGraph::load` does not hand
         // back the `Content` it builds from, so this is a second read of
         // one already-open file, not a second decoder.
-        let content = mud_core::content_db::load(db).ok();
-        mud_client::farm::probe_sheet(&session, content.as_ref()).await;
+        //
+        // The table goes ON the session, not just into the probe: the
+        // spell map is where the light spell and the stealth spells are
+        // discovered, and a session without it finds neither for the
+        // whole run.
+        let content = mud_core::content_db::load(db).ok().map(std::sync::Arc::new);
+        if let Some(content) = &content {
+            session.set_content(std::sync::Arc::clone(content));
+        }
+        mud_client::farm::probe_sheet(&session, content.as_deref()).await;
 
         // No window owns this terminal, so the runner's notices go where
         // every other headless message goes.
