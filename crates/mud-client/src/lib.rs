@@ -40,6 +40,7 @@ pub mod spawn;
 pub mod stats;
 pub mod tui;
 pub mod views;
+pub mod window;
 pub mod wire;
 pub mod world;
 

@@ -756,7 +756,7 @@ pub async fn run(
     raw: &mut tokio::sync::broadcast::Receiver<Vec<u8>>,
     events: &mut tokio::sync::broadcast::Receiver<crate::correlate::Correlated>,
     nav: Option<&crate::nav::Navigator>,
-    on_event: &mut dyn FnMut(&crate::correlate::Correlated),
+    on_event: &mut (dyn FnMut(&crate::correlate::Correlated) + Send),
 ) -> std::io::Result<ViewExit> {
     use crossterm::event::{Event as TermEvent, KeyEventKind};
 

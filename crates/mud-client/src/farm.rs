@@ -1280,6 +1280,13 @@ pub async fn discover_vitals(session: &crate::session::Session) -> Option<Vitals
     }
 }
 
+/// The `why` a run ends with when the character died. Every job that
+/// can die spells it the same way, and a farm's ending puts its kill and
+/// lap counts after it, so this is the fixed head of that string rather
+/// than the whole of it. The window turns this one ending into its own
+/// event.
+pub const DIED: &str = "died";
+
 /// Why the run stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FarmEnd {
