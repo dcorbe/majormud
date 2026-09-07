@@ -1475,6 +1475,22 @@ fn a_first_screen_is_a_full_paint_and_a_second_is_a_diff() {
     assert!(s.starts_with("\x1b[2;1H"), "the cursor is parked where the last frame left it first: {s:?}");
 }
 
+/// The bar resets the pen between frames, so a diff that leans on the
+/// last frame's drawing attributes has to restate them. Without this a
+/// coloured board's new rows paint in the default colour.
+#[test]
+fn a_diff_restates_the_colour_the_last_frame_was_drawing_with() {
+    let mut a = mud_client::screen::Screen::new(3, 10, 0);
+    a.feed(b"\x1b[31mone\r\n");
+    let before = a.snapshot();
+    a.feed(b"two\r\n");
+    let diff = screen_bytes(&a.snapshot(), Some(&before));
+    let s = String::from_utf8_lossy(&diff).to_string();
+    let red = s.find("31m").unwrap_or_else(|| panic!("no red in the diff: {s:?}"));
+    let text = s.find("two").unwrap_or_else(|| panic!("no new text in the diff: {s:?}"));
+    assert!(red < text, "the colour comes before the text it paints: {s:?}");
+}
+
 #[test]
 fn the_activity_suffix_lists_unread_windows() {
     assert_eq!(act_suffix(&[]), "");

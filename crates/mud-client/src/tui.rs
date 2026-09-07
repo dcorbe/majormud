@@ -1468,13 +1468,17 @@ pub fn bottom_bytes(bar: &str, last_bar: Option<&str>, editor: &InputEditor, row
 
 /// The active window's screen. A full paint the first time a window is
 /// shown, a diff after that. The diff assumes the terminal cursor is
-/// where the last frame's screen left it, so it is parked there first.
+/// where the last frame's screen left it and the pen set to what the
+/// last frame was drawing with, so both are restored first. The bar
+/// resets the pen between frames, so without this a coloured board's
+/// diff paints in the default colour.
 pub fn screen_bytes(cur: &vt100::Screen, last: Option<&vt100::Screen>) -> Vec<u8> {
     match last {
         None => cur.contents_formatted(),
         Some(last) => {
             let (row, col) = last.cursor_position();
             let mut out = format!("\x1b[{};{}H", row + 1, col + 1).into_bytes();
+            out.extend(last.attributes_formatted());
             out.extend(cur.contents_diff(last));
             out
         }
