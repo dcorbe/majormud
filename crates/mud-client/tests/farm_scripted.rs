@@ -30,6 +30,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 const START: RoomId = RoomId { map: 1, room: 1 };
 const MIDWAY: RoomId = RoomId { map: 1, room: 2 };
 const STOP: RoomId = RoomId { map: 1, room: 3 };
+/// One room past the corridor's usual end, for the leg that has to be
+/// long enough to meet two sightings.
+const FAR: RoomId = RoomId { map: 1, room: 4 };
 
 /// A notices sink that keeps nothing, for the runs whose notices are
 /// not what is under test.
@@ -140,6 +143,41 @@ fn corridor() -> Arc<RoomGraph> {
         (MIDWAY, midway),
         (STOP, stop),
     ]))
+}
+
+/// The same corridor with a fourth room on the end. A leg from the
+/// start to `FAR` walks through two rooms it does not stop in, which is
+/// what it takes for one leg to meet two sightings.
+fn long_corridor() -> Arc<RoomGraph> {
+    let names = ["Guard Post", "Inner Ward", "Keep", "Tower"];
+    let ids = [START, MIDWAY, STOP, FAR];
+    let mut rooms = Vec::new();
+    for (i, name) in names.iter().enumerate() {
+        let mut room = GraphRoom {
+            name: (*name).into(),
+            exits: Default::default(),
+            light: 0,
+            ..Default::default()
+        };
+        if let Some(&north) = ids.get(i + 1) {
+            room.exits[Direction::North as usize] = Some(ExitEdge {
+                dest: north,
+                exit_type: 0,
+                command: None,
+                requirement: ExitRequirement::None,
+            });
+        }
+        if i > 0 {
+            room.exits[Direction::South as usize] = Some(ExitEdge {
+                dest: ids[i - 1],
+                exit_type: 0,
+                command: None,
+                requirement: ExitRequirement::None,
+            });
+        }
+        rooms.push((ids[i], room));
+    }
+    Arc::new(RoomGraph::from_rooms(rooms))
 }
 
 /// A board driven by a per-line script: `(matcher, reply)`, each entry
@@ -3047,6 +3085,106 @@ async fn a_coin_rule_change_lands_mid_stop_without_leaving_the_stop() {
     assert!(
         !log.iter().any(|l| l.starts_with("get ")),
         "the pile turned up after the rule changed, so it is left alone: {log:?}"
+    );
+}
+
+/// One leg, two sightings, and a `/set bot.ignore` between them. This
+/// is the only test that can fail if `travel` stops re-reading the
+/// settings: the guard and the sighting bot it walks under are built
+/// nowhere else, so a leg that does not refresh judges its second
+/// sighting by the tables the leg began with.
+#[tokio::test]
+async fn an_ignore_rule_changed_mid_leg_holds_at_the_second_sighting() {
+    let (addr, received) = scripted_board(vec![
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        ("look", format!("\r\nlook{}", room_block("Guard Post", None, "north"))),
+        // The first sighting, mid leg. The block is attributed to our
+        // own step, so the defence swings off it without an opening
+        // look.
+        (
+            "n",
+            format!("\r\nn{}", room_block("Inner Ward", Some("giant rat"), "north south")),
+        ),
+        (
+            "a rat",
+            "\r\na rat\r\nYou smack giant rat for 12 damage!\r\nThe giant rat falls to the ground with a tortured squeak.\r\nYou gain 25 experience.\r\n*Combat Off*\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        // The second sighting, one room further on and on the same leg.
+        // Under the new rule the walk reads straight past it.
+        (
+            "n",
+            format!("\r\nn{}", room_block("Keep", Some("giant rat"), "north south")),
+        ),
+        ("n", format!("\r\nn{}", room_block("Tower", None, "south"))),
+        // The stop's own recheck, if it asks for one.
+        ("look", format!("\r\nlook{}", room_block("Tower", None, "south"))),
+    ])
+    .await;
+    let session = session_for(addr).await;
+    mud_client::farm::probe_sheet(&session, None).await;
+
+    let graph = long_corridor();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/4".into()],
+        loops: 1,
+        // The defence lingers a beat over the room it cleared, so the
+        // change has landed by the time the leg takes its next pass,
+        // and the recheck window is wider than the linger so nothing
+        // asks the board what the script does not answer.
+        idle_poke_ms: 2000,
+        dwell_empty_seconds: 1,
+        depart_at_percent: Some(0),
+        travel_interrupts: 0,
+        ..FarmConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 30,
+        ..BotConfig::default()
+    };
+    let (tx, rx) = tokio::sync::watch::channel(Profile::default());
+    let live = Live::over(rx, "farm", quiet(), bot.clone(), cfg.clone(), farm_derive());
+    // After the first swing, so the rat the leg already turned for is
+    // still fair game and only the next one is covered by the rule.
+    change_after(
+        Arc::clone(&received),
+        "a rat",
+        tx,
+        Profile {
+            bot: Some(BotConfig { ignore: vec!["rat".into()], ..bot.clone() }),
+            farm: Some(cfg.clone()),
+            ..Profile::default()
+        },
+    );
+
+    let (end, stats) = match tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, live, None, &quiet()),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    {
+        Ok(out) => out,
+        Err(e) => panic!("the run must finish: {e:?}\nboard received: {:?}", received.lock().unwrap()),
+    };
+    assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
+    assert_eq!(
+        stats.sightings, 1,
+        "the second rat is ignored under the new rule: {stats:?}"
+    );
+
+    let log = received.lock().unwrap();
+    assert_eq!(
+        log.iter().filter(|l| l.as_str() == "a rat").count(),
+        1,
+        "only the rat sighted before the change was fought: {log:?}"
     );
 }
 
