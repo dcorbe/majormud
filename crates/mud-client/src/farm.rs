@@ -1823,6 +1823,33 @@ pub fn nav_config(bot: &crate::bot::BotConfig, farm: &FarmConfig) -> crate::nav:
     }
 }
 
+/// Whether a settings reload should re-assert the travel fight switch,
+/// and to what.
+///
+/// The switch is the session's own live state and `/bot` flips it mid
+/// run, so re-asserting it on every reload would let a `/set` of an
+/// unrelated key silently undo a toggle the player made by hand. Only a
+/// reload that actually moved `fight_while_travelling` speaks for it.
+pub fn fight_switch_after_refresh(before: &FarmConfig, after: &FarmConfig) -> Option<bool> {
+    (before.fight_while_travelling != after.fight_while_travelling)
+        .then_some(after.fight_while_travelling)
+}
+
+/// Whether a settings reload has to build fresh heal and buff states.
+///
+/// Rebuilding drops every cast time, every dead source and every
+/// outstanding attempt, so a reload that did not touch the spell
+/// choices would recast a buff cast a minute ago and retry a source the
+/// board already refused. Only a change to the spells themselves makes
+/// the old timings meaningless.
+pub fn casts_need_rebuild(before: &crate::bot::BotConfig, after: &crate::bot::BotConfig) -> bool {
+    before.minor_heal_spell != after.minor_heal_spell
+        || before.major_heal_spell != after.major_heal_spell
+        || before.hp_regen_spell != after.hp_regen_spell
+        || before.heal_spells != after.heal_spells
+        || before.buffs != after.buffs
+}
+
 /// The interrupt mark must sit under the mark the gate rests to. The
 /// plan cannot check this when the farm leaves the mark to the bot,
 /// since it never sees the bot's config, so both runners check here.
@@ -2007,6 +2034,11 @@ async fn farm_loop(
     // walker and nothing changes.
     let mut bank_nav = walker(nav_config(&live.bot, &live.farm));
     let mut built_at = live.generation();
+    // The tables the block above and the incoming casts were built
+    // from. A reload compares against these to tell a key it owns from
+    // a key it does not, so it leaves alone what did not move.
+    let mut built_farm = live.farm.clone();
+    let mut built_bot = live.bot.clone();
     // Danger ranking from the shipped data. A missing or unreadable
     // database is not fatal: an empty table simply means "no opinion",
     // and the bot falls back to the board's own listing order.
@@ -2103,10 +2135,12 @@ async fn farm_loop(
             }
         };
         for &stop in &lap {
-            // A change lands here, at the stop boundary: the navigator,
-            // the casts and the bank policy are rebuilt from the new
-            // tables, and the fight switch every leg reads follows the
-            // new value. Mid stop and mid leg have their own points.
+            // A change lands here, at the stop boundary: the navigator
+            // and the bank policy are rebuilt from the new tables. Two
+            // things carry live state a blind rebuild would throw away,
+            // so they move only when their own keys did: the fight
+            // switch, which `/bot` also owns, and the cast timers.
+            // Mid stop and mid leg have their own points.
             if live.refresh() || built_at != live.generation() {
                 built_at = live.generation();
                 nav = match &plan.roam {
@@ -2114,11 +2148,17 @@ async fn farm_loop(
                     None => walker(nav_config(&live.bot, &live.farm)),
                 };
                 bank_nav = walker(nav_config(&live.bot, &live.farm));
-                let sheet = sheet_from(session, &live.bot, durations);
-                casts.heal = crate::sheet::HealState::new(sheet.heals.0);
-                casts.buff = crate::sheet::BuffState::new(sheet.buffs.0);
+                if casts_need_rebuild(&built_bot, &live.bot) {
+                    let sheet = sheet_from(session, &live.bot, durations);
+                    casts.heal = crate::sheet::HealState::new(sheet.heals.0);
+                    casts.buff = crate::sheet::BuffState::new(sheet.buffs.0);
+                }
                 bank_cfg = live.profile().bank;
-                session.travel_fights().set(live.farm.fight_while_travelling);
+                if let Some(fights) = fight_switch_after_refresh(&built_farm, &live.farm) {
+                    session.travel_fights().set(fights);
+                }
+                built_farm = live.farm.clone();
+                built_bot = live.bot.clone();
             }
             if let Some(end) = time_up(started, &live.farm) {
                 return Ok((end, stats));

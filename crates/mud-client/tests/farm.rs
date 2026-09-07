@@ -10,8 +10,8 @@ use mud_client::correlate::{CmdId, Correlated};
 use mud_client::events::{Actor, Event, RoomView};
 use mud_client::farm::{
     ACK_TIMEOUT, FarmConfig, FarmError, FarmGuard, FarmPlan, FarmStats, Gate, HealWatch,
-    LOOT_TRIES, StopState, Verdict, check_departure_mark, is_player_death, parse_health,
-    parse_mana, parse_room_id,
+    LOOT_TRIES, StopState, Verdict, casts_need_rebuild, check_departure_mark,
+    fight_switch_after_refresh, is_player_death, parse_health, parse_mana, parse_room_id,
 };
 use mud_client::nav::{Interrupt, TravelGuard};
 use mud_client::session::Switch;
@@ -3046,5 +3046,103 @@ async fn a_refresh_after_a_changed_wake_sees_the_change() {
         .expect("a send wakes changed");
     assert!(live.refresh());
     assert!(!live.refresh(), "nothing changed since the last refresh");
+}
+
+
+/// A reload that did not touch the travel fight key says nothing about
+/// the switch, so a `/bot` toggle made by hand survives a `/set` of
+/// anything else.
+#[test]
+fn an_unchanged_fight_key_leaves_the_travel_switch_alone() {
+    let before = FarmConfig {
+        fight_while_travelling: true,
+        stop_seconds: 10,
+        ..FarmConfig::default()
+    };
+    let after = FarmConfig {
+        stop_seconds: 99,
+        ..before.clone()
+    };
+    assert_eq!(fight_switch_after_refresh(&before, &after), None);
+    assert_eq!(fight_switch_after_refresh(&before, &before), None);
+}
+
+/// A reload that moved the key speaks for the switch, in both
+/// directions.
+#[test]
+fn a_flipped_fight_key_re_asserts_the_travel_switch() {
+    let on = FarmConfig {
+        fight_while_travelling: true,
+        ..FarmConfig::default()
+    };
+    let off = FarmConfig {
+        fight_while_travelling: false,
+        ..FarmConfig::default()
+    };
+    assert_eq!(fight_switch_after_refresh(&on, &off), Some(false));
+    assert_eq!(fight_switch_after_refresh(&off, &on), Some(true));
+}
+
+/// The cast timers are live state. A reload that left the spell choices
+/// alone must not throw away what was cast when and what is dead.
+#[test]
+fn a_reload_that_touches_no_spell_keeps_the_cast_timers() {
+    let before = BotConfig {
+        minor_heal_spell: "mend".into(),
+        buffs: vec!["bless".into()],
+        ..BotConfig::default()
+    };
+    let after = BotConfig {
+        ignore_coins: vec!["copper".into()],
+        ..before.clone()
+    };
+    assert!(!casts_need_rebuild(&before, &after));
+    assert!(!casts_need_rebuild(&before, &before));
+}
+
+/// A different buff list or a different heal spell makes the old
+/// timings meaningless, so those reloads do rebuild.
+#[test]
+fn a_reload_that_moves_a_spell_key_rebuilds_the_casts() {
+    let before = BotConfig {
+        minor_heal_spell: "mend".into(),
+        buffs: vec!["bless".into()],
+        ..BotConfig::default()
+    };
+    assert!(casts_need_rebuild(
+        &before,
+        &BotConfig {
+            buffs: vec!["bless".into(), "shield".into()],
+            ..before.clone()
+        }
+    ));
+    assert!(casts_need_rebuild(
+        &before,
+        &BotConfig {
+            minor_heal_spell: "heal".into(),
+            ..before.clone()
+        }
+    ));
+    assert!(casts_need_rebuild(
+        &before,
+        &BotConfig {
+            major_heal_spell: "greater heal".into(),
+            ..before.clone()
+        }
+    ));
+    assert!(casts_need_rebuild(
+        &before,
+        &BotConfig {
+            hp_regen_spell: "regenerate".into(),
+            ..before.clone()
+        }
+    ));
+    assert!(casts_need_rebuild(
+        &before,
+        &BotConfig {
+            heal_spells: vec!["mend".into()],
+            ..before.clone()
+        }
+    ));
 }
 
