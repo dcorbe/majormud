@@ -1959,3 +1959,21 @@ fn a_floor_of_ignored_coins_is_not_worth_stopping_for() {
     );
     assert!(!ignoring_with_auto_get_off.ignores_coin("silver"));
 }
+
+/// A settings change mid stop must not forget the fight. The policy
+/// moves, the latch stays.
+#[test]
+fn reconfigure_keeps_the_engaged_latch_and_changes_the_policy() {
+    let mut bot = combat_bot();
+    bot.on_event(&room(&["kobold thief"]));
+    assert_eq!(bot.engaged(), Some("kobold thief"));
+    assert!(!bot.ignores_coin("copper"));
+    bot.reconfigure(BotConfig {
+        auto_combat: true,
+        ignore_coins: vec!["copper".into()],
+        ..BotConfig::default()
+    });
+    assert_eq!(bot.engaged(), Some("kobold thief"), "the fight is still on");
+    assert!(bot.ignores_coin("copper"), "the new policy applies");
+}
+

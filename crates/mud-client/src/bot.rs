@@ -681,6 +681,14 @@ impl Bot {
         }
     }
 
+    /// Swap the policy and keep the memory. A settings change mid stop
+    /// must not forget the fight in progress: a fresh bot reads an
+    /// empty latch as an idle room, and the stop walks out on a monster
+    /// still standing in it.
+    pub fn reconfigure(&mut self, config: BotConfig) {
+        self.config = config;
+    }
+
     /// Tell this bot what the walk that produced the CURRENT room
     /// believed about its own backstab opener — see
     /// `crate::nav::Arrival::sneaking` / `crate::nav::Arrival::
@@ -1344,3 +1352,4 @@ fn actor_name(a: &crate::events::Actor) -> String {
         crate::events::Actor::Other(name) => name.clone(),
     }
 }
+

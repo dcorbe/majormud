@@ -501,6 +501,163 @@ pub(crate) fn set_phase(sink: PhaseSink<'_>, phase: Phase) {
     }
 }
 
+/// What a job derives from a profile: its bot table and its farm table
+/// with the job's own forced fields applied. A go keeps combat off and
+/// its walk mode, a bank keeps looting off, whatever the profile says.
+pub type Derive = std::sync::Arc<
+    dyn Fn(&crate::profile::Profile) -> (crate::bot::BotConfig, FarmConfig) + Send + Sync,
+>;
+
+/// A job's settings, kept current while it runs.
+///
+/// The window replaces the session's profile on every `/set`, `/unset`
+/// and `/load`. This holds the receiver, the configs the job runs
+/// under, and the rule that derives one from the other. A job asks
+/// [`Live::refresh`] at every decision that reads a config and selects
+/// on [`Live::changed`] where it waits on the board, so a change lands
+/// at the next step, pass or pickup and never part way through one.
+///
+/// The generation counter is for the guards, bots and watches a job
+/// builds from the configs: each remembers the generation it was built
+/// at and rebuilds when the counter moves, whichever caller did the
+/// refresh.
+pub struct Live {
+    rx: tokio::sync::watch::Receiver<crate::profile::Profile>,
+    derive: Derive,
+    pub bot: crate::bot::BotConfig,
+    pub farm: FarmConfig,
+    /// What `discover_vitals` found, reapplied to every rebuild whose
+    /// profile does not say.
+    vitals: Option<(i32, i32)>,
+    generation: u64,
+    what: &'static str,
+    notices: Notices,
+    /// `fixed` keeps its own sender so the receiver never reports a
+    /// closed channel.
+    _pinned: Option<tokio::sync::watch::Sender<crate::profile::Profile>>,
+}
+
+impl Live {
+    /// The live settings for a job on this session. `bot` and `farm`
+    /// are what the job starts with, which for a named loop is not what
+    /// `derive` would make of the profile.
+    pub fn new(
+        session: &crate::session::Session,
+        what: &'static str,
+        notices: Notices,
+        bot: crate::bot::BotConfig,
+        farm: FarmConfig,
+        derive: Derive,
+    ) -> Live {
+        Live::over(session.profile_changes(), what, notices, bot, farm, derive)
+    }
+
+    /// As [`Live::new`], over a receiver the caller holds the sender
+    /// of. What a test uses to change the settings under a job.
+    pub fn over(
+        rx: tokio::sync::watch::Receiver<crate::profile::Profile>,
+        what: &'static str,
+        notices: Notices,
+        bot: crate::bot::BotConfig,
+        farm: FarmConfig,
+        derive: Derive,
+    ) -> Live {
+        Live {
+            rx,
+            derive,
+            bot,
+            farm,
+            vitals: None,
+            generation: 0,
+            what,
+            notices,
+            _pinned: None,
+        }
+    }
+
+    /// Settings that never change: the headless commands, and every
+    /// test that is not about reloading.
+    pub fn fixed(bot: crate::bot::BotConfig, farm: FarmConfig) -> Live {
+        let (tx, rx) = tokio::sync::watch::channel(crate::profile::Profile::default());
+        let (b, f) = (bot.clone(), farm.clone());
+        let mut live = Live::over(
+            rx,
+            "job",
+            std::sync::Arc::new(|_: &str| {}),
+            bot,
+            farm,
+            std::sync::Arc::new(move |_: &crate::profile::Profile| (b.clone(), f.clone())),
+        );
+        live._pinned = Some(tx);
+        live
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// The profile as it stands, for the tables `derive` does not
+    /// cover, like `[bank]`.
+    pub fn profile(&self) -> crate::profile::Profile {
+        self.rx.borrow().clone()
+    }
+
+    /// What the board said the pools are. Applied now and to every
+    /// rebuild whose profile leaves `max_hp` at zero.
+    pub fn learned_vitals(&mut self, max_hp: i32, max_mana: i32) {
+        self.vitals = Some((max_hp, max_mana));
+        self.bot.max_hp = max_hp;
+        self.bot.max_mana = max_mana;
+    }
+
+    /// Rebuild the configs if the profile has changed since the last
+    /// look. True when it did. One load when it did not.
+    ///
+    /// Reads `Ref::has_changed` off the borrow rather than
+    /// `Receiver::has_changed`, which reports the channel closed the
+    /// moment the last sender drops, even with an unread change still
+    /// sitting in it. A run whose window closes must still pick up
+    /// whatever it last set.
+    pub fn refresh(&mut self) -> bool {
+        let profile = {
+            let now = self.rx.borrow_and_update();
+            if !now.has_changed() {
+                return false;
+            }
+            now.clone()
+        };
+        let (bot, farm) = (self.derive)(&profile);
+        self.bot = bot;
+        self.farm = farm;
+        if let Some((hp, mana)) = self.vitals
+            && self.bot.max_hp == 0
+        {
+            self.bot.max_hp = hp;
+            self.bot.max_mana = mana;
+        }
+        self.generation += 1;
+        (self.notices)(&format!("-- {}: settings reloaded --", self.what));
+        true
+    }
+
+    /// Resolves when the profile changes. Never, once the sender is
+    /// gone: a select arm that fired forever would spin the pump.
+    ///
+    /// `watch::Receiver::changed` marks the value it woke for as seen,
+    /// which would starve the very `refresh` a caller runs right after
+    /// it. `mark_changed` puts the pending change back so `refresh`
+    /// still finds it, and a second `changed` before that `refresh`
+    /// resolves at once instead of waiting on a send that already
+    /// happened.
+    pub async fn changed(&mut self) {
+        if self.rx.changed().await.is_ok() {
+            self.rx.mark_changed();
+        } else {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
 /// The runner's only outbound path.
 ///
 /// [`crate::session::Session::send`] is an unbounded, unacknowledged

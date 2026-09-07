@@ -2908,3 +2908,98 @@ fn nav_config_copies_the_sneak_switch_from_the_bot_table() {
     assert!(on.sneak);
 }
 
+use mud_client::farm::Live;
+use mud_client::profile::Profile;
+
+fn quiet() -> mud_client::farm::Notices {
+    std::sync::Arc::new(|_: &str| {})
+}
+
+fn collected() -> (mud_client::farm::Notices, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    let said = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let into = std::sync::Arc::clone(&said);
+    (
+        std::sync::Arc::new(move |line: &str| into.lock().unwrap().push(line.to_string())),
+        said,
+    )
+}
+
+/// A go keeps combat off whatever the profile says. The derivation is
+/// the job's, applied to every profile that arrives.
+fn derive_like_a_go() -> mud_client::farm::Derive {
+    std::sync::Arc::new(|p: &Profile| {
+        let bot = BotConfig {
+            auto_combat: false,
+            ..p.bot.clone().unwrap_or_default()
+        };
+        (bot, p.farm.clone().unwrap_or_default())
+    })
+}
+
+#[test]
+fn refresh_is_false_until_the_profile_changes_and_true_once_after() {
+    let (tx, rx) = tokio::sync::watch::channel(Profile::default());
+    let mut live = Live::over(rx, "farm", quiet(), BotConfig::default(), FarmConfig::default(), derive_like_a_go());
+    assert!(!live.refresh());
+    assert_eq!(live.generation(), 0);
+    tx.send(Profile { bot: Some(BotConfig { ignore_coins: vec!["copper".into()], ..Default::default() }), ..Default::default() }).unwrap();
+    assert!(live.refresh());
+    assert_eq!(live.generation(), 1);
+    assert_eq!(live.bot.ignore_coins, vec!["copper".to_string()]);
+    assert!(!live.refresh(), "one change, one rebuild");
+    assert_eq!(live.generation(), 1);
+}
+
+#[test]
+fn a_rebuild_applies_the_jobs_forced_fields() {
+    let (tx, rx) = tokio::sync::watch::channel(Profile::default());
+    let mut live = Live::over(rx, "go", quiet(), BotConfig::default(), FarmConfig::default(), derive_like_a_go());
+    tx.send(Profile { bot: Some(BotConfig { auto_combat: true, ..Default::default() }), ..Default::default() }).unwrap();
+    assert!(live.refresh());
+    assert!(!live.bot.auto_combat, "a go never fights, whatever the profile says");
+}
+
+#[test]
+fn a_rebuild_keeps_discovered_vitals_when_the_profile_does_not_say() {
+    let (tx, rx) = tokio::sync::watch::channel(Profile::default());
+    let mut live = Live::over(rx, "farm", quiet(), BotConfig::default(), FarmConfig::default(), derive_like_a_go());
+    live.learned_vitals(120, 40);
+    assert_eq!((live.bot.max_hp, live.bot.max_mana), (120, 40));
+    tx.send(Profile { bot: Some(BotConfig::default()), ..Default::default() }).unwrap();
+    assert!(live.refresh());
+    assert_eq!((live.bot.max_hp, live.bot.max_mana), (120, 40), "the board's answer outlives a rebuild");
+    tx.send(Profile { bot: Some(BotConfig { max_hp: 200, max_mana: 50, ..Default::default() }), ..Default::default() }).unwrap();
+    assert!(live.refresh());
+    assert_eq!((live.bot.max_hp, live.bot.max_mana), (200, 50), "a profile that says wins");
+}
+
+#[test]
+fn the_reloaded_line_prints_once_per_change() {
+    let (tx, rx) = tokio::sync::watch::channel(Profile::default());
+    let (notices, said) = collected();
+    let mut live = Live::over(rx, "farm", notices, BotConfig::default(), FarmConfig::default(), derive_like_a_go());
+    tx.send(Profile::default()).unwrap();
+    live.refresh();
+    live.refresh();
+    assert_eq!(said.lock().unwrap().as_slice(), ["-- farm: settings reloaded --"]);
+}
+
+#[tokio::test]
+async fn changed_resolves_after_a_send_and_a_fixed_live_never_fires() {
+    let (tx, rx) = tokio::sync::watch::channel(Profile::default());
+    let mut live = Live::over(rx, "farm", quiet(), BotConfig::default(), FarmConfig::default(), derive_like_a_go());
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        tx.send(Profile::default()).unwrap();
+    });
+    tokio::time::timeout(Duration::from_secs(2), live.changed()).await.expect("a send wakes changed");
+    assert!(live.refresh());
+
+    let mut fixed = Live::fixed(BotConfig::default(), FarmConfig::default());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), fixed.changed()).await.is_err(),
+        "a fixed live never wakes"
+    );
+    assert!(!fixed.refresh());
+}
+
