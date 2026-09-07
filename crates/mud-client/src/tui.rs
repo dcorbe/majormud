@@ -340,6 +340,10 @@ pub struct Front {
     quit_armed: bool,
     /// Something on screen moved since the last paint.
     repaint: bool,
+    /// The active window's rows moved since the last paint, as opposed
+    /// to the bar or the input line. Snapshotting copies the whole
+    /// scrollback, so a frame that only reprints the bar skips it.
+    screen_moved: bool,
     front_tx: tokio::sync::mpsc::UnboundedSender<crate::window::FrontMsg>,
     front_rx: tokio::sync::mpsc::UnboundedReceiver<crate::window::FrontMsg>,
     key_rx: tokio::sync::mpsc::UnboundedReceiver<TermEvent>,
@@ -383,6 +387,7 @@ impl Front {
             next_id: 1,
             quit_armed: false,
             repaint: false,
+            screen_moved: true,
             front_tx,
             front_rx,
             key_rx,
@@ -428,8 +433,11 @@ impl Front {
                     }
                     TermEvent::Key(key) if key.kind != KeyEventKind::Release => {
                         // The editor's line may have moved under any key,
-                        // so a key always earns its repaint.
+                        // so a key always earns its repaint. A key can
+                        // also note into the screen or the log, by many
+                        // paths, so it earns a fresh snapshot too.
                         self.repaint = true;
+                        self.screen_moved = true;
                         if let Flow::Exit = self.on_key(key, TermEvent::Key(key)) {
                             return Ok(false);
                         }
@@ -735,6 +743,7 @@ impl Front {
         self.unread.retain(|u| *u != id);
         self.log.note(&format!("-- closed window {number} --"));
         self.repaint = true;
+        self.screen_moved = true;
         if self.active >= number {
             let to = (self.active - 1).max(1);
             self.switch(to);
@@ -746,9 +755,10 @@ impl Front {
         match msg {
             // Only the window on screen is worth a frame. Every other
             // window is drawing into a picture nobody is looking at.
-            FrontMsg::Changed { window } => {
+            FrontMsg::Changed { window, screen } => {
                 if self.id_of(self.active) == Some(window) {
                     self.repaint = true;
+                    self.screen_moved |= screen;
                 }
             }
             FrontMsg::Event { window, kind } => {
@@ -766,6 +776,7 @@ impl Front {
                     self.unread.push(window);
                 }
                 self.repaint = true;
+                self.screen_moved = true;
             }
             FrontMsg::Takeover { window, on } => {
                 self.frozen = on.then_some(window);
@@ -774,6 +785,7 @@ impl Front {
                     self.last_bar = None;
                 }
                 self.repaint = true;
+                self.screen_moved = true;
             }
             FrontMsg::Ended { window } => self.remove(window),
         }
@@ -785,25 +797,34 @@ impl Front {
             return Ok(());
         }
         let id = self.id_of(self.active).unwrap_or(LOBBY);
-        let (snapshot, info) = match self.active_window() {
-            None => (self.log.snapshot(), None),
-            Some(w) => (
-                w.screen.lock().expect("screen lock").snapshot(),
-                Some(w.info.lock().expect("info lock").clone()),
-            ),
-        };
+        let info = self
+            .active_window()
+            .map(|w| w.info.lock().expect("info lock").clone());
         let unread: Vec<usize> = self.unread.iter().filter_map(|u| self.number_of(*u)).collect();
         let bar = window_bar(self.active, info.as_ref(), &unread, self.cols);
-        let last = self.last.as_ref().filter(|l| l.window == id).map(|l| &l.screen);
+        let had_last = self.last.as_ref().is_some_and(|l| l.window == id);
+        // A snapshot deep-copies the scrollback, thousands of rows of it.
+        // A bar that ticked moved none of them, so the snapshot already
+        // held describes the screen and the diff against it is empty.
+        let moved = self.screen_moved || !had_last;
+        self.screen_moved = false;
+        let mut frame = Vec::new();
+        if moved {
+            let snapshot = match self.active_window() {
+                None => self.log.snapshot(),
+                Some(w) => w.screen.lock().expect("screen lock").snapshot(),
+            };
+            let last = self.last.as_ref().filter(|l| l.window == id).map(|l| &l.screen);
+            frame = screen_bytes(&snapshot, last);
+            self.last = Some(LastFrame { window: id, screen: snapshot });
+        }
         // A full paint starts with an erase, which wipes the two reserved
         // rows. The bar has to be redrawn with them, so the last bar only
         // counts as painted while the last screen does.
-        let last_bar = last.and(self.last_bar.as_deref());
-        let mut frame = screen_bytes(&snapshot, last);
+        let last_bar = if had_last { self.last_bar.as_deref() } else { None };
         frame.extend(bottom_bytes(&bar, last_bar, &self.editor, self.rows, self.cols));
         out.write_all(&frame)?;
         out.flush()?;
-        self.last = Some(LastFrame { window: id, screen: snapshot });
         self.last_bar = Some(bar);
         Ok(())
     }

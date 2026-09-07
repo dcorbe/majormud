@@ -75,7 +75,9 @@ impl Rig {
 
     /// Wait until the screen says `what`. One action can move the bar
     /// and print a note, and the front end hears about both, so counting
-    /// `Changed` messages is not a contract a test may rely on.
+    /// `Changed` messages is not a contract a test may rely on. Which of
+    /// the two moved is one: a bar that ticked says `screen: false`, and
+    /// that is what saves the front end a snapshot.
     async fn until_text(&mut self, what: &str) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         while !self.text().contains(what) {
@@ -113,7 +115,7 @@ async fn a_window_with_a_host_connects_at_once_and_shows_the_banner() {
     let addr = banner_board().await;
     let mut r = rig(settings_for(Some(addr)), None);
     r.until("connected", |m| matches!(m, FrontMsg::Event { kind: EventKind::Connected, .. })).await;
-    r.until("the banner", |m| matches!(m, FrontMsg::Changed { .. })).await;
+    r.until("the banner", |m| matches!(m, FrontMsg::Changed { screen: true, .. })).await;
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while !r.text().contains("Welcome to the Test Board") {
         assert!(std::time::Instant::now() < deadline, "banner never painted: {}", r.text());
@@ -144,11 +146,24 @@ async fn a_board_hanging_up_reports_disconnected_and_stays_a_window() {
     r.until("disconnected", |m| matches!(m, FrontMsg::Event { kind: EventKind::Disconnected, .. })).await;
     r.until_text("-- disconnected.").await;
     assert!(!r.handle.info.lock().unwrap().connected);
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while !r.handle.info.lock().unwrap().bar.starts_with("not connected") {
-        assert!(std::time::Instant::now() < deadline, "the bar kept its play text");
-        r.until("the idle bar", |m| matches!(m, FrontMsg::Changed { .. })).await;
+    // The last thing a window does on its way to idle is set the bar,
+    // so the last message it sends is the one that carries it. A bar
+    // that moved is not a screen that moved, and that is what lets the
+    // front end keep the snapshot it already has.
+    let mut last = None;
+    while let Ok(Some(msg)) = tokio::time::timeout(Duration::from_millis(500), r.front.recv()).await {
+        if matches!(msg, FrontMsg::Changed { .. }) {
+            last = Some(msg);
+        }
     }
+    assert!(
+        r.handle.info.lock().unwrap().bar.starts_with("not connected"),
+        "the bar kept its play text"
+    );
+    assert!(
+        matches!(last, Some(FrontMsg::Changed { screen: false, .. })),
+        "the idle bar moved no rows: {last:?}"
+    );
     r.handle
         .msgs
         .send(WindowMsg::Outcome(KeyOutcome::SetList { pattern: "port".into() }))

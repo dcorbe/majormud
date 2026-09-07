@@ -1603,6 +1603,21 @@ async fn closing_a_window_renumbers_the_ones_above_it() {
     assert!(!frame.contains("4: "), "nothing is numbered 4 any more: {frame:?}");
 }
 
+/// The snapshot is the expensive half of a frame. A frame where no row
+/// moved sends the input line and nothing else, which is what says the
+/// screen was never snapshotted or diffed.
+#[tokio::test]
+async fn a_frame_that_moved_no_rows_sends_only_the_input_line() {
+    let (mut front, keys, mut out) = front_rig();
+    typed("/windows", &keys);
+    settle(&mut front, &mut out).await;
+    out.clear();
+    front.paint(&mut out).unwrap();
+    let frame = String::from_utf8_lossy(&out).to_string();
+    assert!(frame.starts_with("\x1b[24;1H"), "the frame opens on the input row: {frame:?}");
+    assert!(!frame.contains("1: lobby"), "an unchanged bar is not repainted either: {frame:?}");
+}
+
 #[tokio::test]
 async fn a_full_repaint_draws_the_bar_again() {
     let (mut front, keys, mut out) = front_rig();

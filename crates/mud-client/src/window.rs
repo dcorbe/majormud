@@ -46,8 +46,10 @@ pub enum EventKind {
 /// What a window sends the front end.
 #[derive(Debug)]
 pub enum FrontMsg {
-    /// The screen or the bar changed. Repaint when this is the active window.
-    Changed { window: WindowId },
+    /// The screen or the bar changed. Repaint when this is the active
+    /// window. `screen` is false when only the bar moved, which lets the
+    /// front end keep the snapshot it already has.
+    Changed { window: WindowId, screen: bool },
     Event { window: WindowId, kind: EventKind },
     /// The map view is driving the terminal itself. While `on`, the front
     /// end stops painting and forwards raw keys.
@@ -171,18 +173,23 @@ pub fn spawn(
 }
 
 impl Window {
-    fn changed(&self) {
-        let _ = self.front.send(FrontMsg::Changed { window: self.id });
+    /// Something the front end paints moved. `screen` says whether the
+    /// rows moved or only the bar did.
+    fn changed(&self, screen: bool) {
+        let _ = self.front.send(FrontMsg::Changed {
+            window: self.id,
+            screen,
+        });
     }
 
     fn note(&self, text: &str) {
         self.screen.lock().expect("screen lock").note(text);
-        self.changed();
+        self.changed(true);
     }
 
     fn feed(&self, bytes: &[u8]) {
         self.screen.lock().expect("screen lock").feed(bytes);
-        self.changed();
+        self.changed(true);
     }
 
     fn event(&self, kind: EventKind) {
@@ -202,7 +209,7 @@ impl Window {
         info.farming = farming;
         drop(info);
         if moved {
-            self.changed();
+            self.changed(false);
         }
     }
 
@@ -226,7 +233,7 @@ impl Window {
         info.dirty = dirty;
         drop(info);
         if moved {
-            self.changed();
+            self.changed(false);
         }
     }
 
@@ -237,7 +244,7 @@ impl Window {
             .lock()
             .expect("screen lock")
             .resize(rows.saturating_sub(2), cols);
-        self.changed();
+        self.changed(true);
     }
 
     /// The bar for a window with no session. Set on the way into the
