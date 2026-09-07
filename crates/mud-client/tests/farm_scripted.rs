@@ -3288,7 +3288,7 @@ async fn lap_with_starlight(with_content: bool) -> Vec<String> {
 /// The light spell is discovered from the content's spell map, and the
 /// map reaches the sheet through the session. `mmc farm` hands it over
 /// right after login, the way `tui::on_realm_entry` does for the
-/// interactive client; without that the whole run finds no light at all
+/// interactive client. Without that the whole run finds no light at all,
 /// however plainly the book says starlight.
 ///
 /// Mutation target: drop the `set_content` from the headless startup and

@@ -2684,11 +2684,10 @@ pub async fn probe_sheet(
 }
 
 /// The stealth buffs a navigator casts before a sneak, read from the
-/// session's own book and content. Durations come from the content in
-/// hand rather than a second decode of the database. Empty before
-/// realm entry, and empty for a character with no stealth spell, which
-/// is what [`crate::nav::Navigator::with_stealth`] treats as "arm the
-/// sneak as before".
+/// session's own book and content. Empty before realm entry, and empty
+/// for a character with no stealth spell, which is what
+/// [`crate::nav::Navigator::with_stealth`] treats as "arm the sneak as
+/// before".
 pub(crate) fn stealth_buffs(session: &crate::session::Session) -> Vec<crate::sheet::Buff> {
     let (_, book, casting) = session.raw_sheet();
     stealth_from(session, &book, casting).0
