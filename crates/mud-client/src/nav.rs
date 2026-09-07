@@ -212,6 +212,11 @@ pub struct NavConfig {
     /// `bash_doors` is one — SEARCH costs a command per roll and breaks
     /// hide and sneak (`theft.md` §9).
     pub search_hidden: bool,
+    /// Arm a sneak before a step. Copied from `bot.sneak` by
+    /// [`crate::farm::nav_config`] and not a profile key of its own:
+    /// one switch, in the bot table, that every walker reads.
+    #[serde(skip)]
+    pub sneak: bool,
 }
 
 impl Default for NavConfig {
@@ -220,6 +225,7 @@ impl Default for NavConfig {
             step_timeout_ms: 15_000,
             bash_doors: true,
             search_hidden: true,
+            sneak: true,
         }
     }
 }
@@ -646,6 +652,9 @@ pub struct Navigator {
     /// ([`crate::graph::Capabilities::picklocks`]), not a setting.
     picking_fenced_off: bool,
     search_hidden: bool,
+    /// `NavConfig::sneak`. Off is the operator's word, and it outranks
+    /// the sheet's stealth.
+    sneak: bool,
     /// The plane a fenced walk is confined to, alongside `fence`.
     plane: Option<u16>,
     /// Rooms every route must avoid ([`crate::roam::Walls`]).
@@ -702,6 +711,7 @@ impl Navigator {
             bash_doors: cfg.bash_doors,
             picking_fenced_off: false,
             search_hidden: cfg.search_hidden,
+            sneak: cfg.sneak,
             fence: None,
             plane: None,
             capabilities: crate::graph::Capabilities {
@@ -2246,7 +2256,7 @@ impl Navigator {
         guard: &mut impl TravelGuard,
         armed: &mut Option<Interrupt>,
     ) -> Result<bool, NavErrorKind> {
-        if self.capabilities.stealth == 0 {
+        if !self.sneak || self.capabilities.stealth == 0 {
             return Ok(false);
         }
         const MAY_NOT_SNEAK: &str = "You may not sneak right now!";

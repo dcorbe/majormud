@@ -2892,3 +2892,19 @@ fn a_stop_ends_over_ignored_coins() {
     );
 }
 
+/// The walk limits come from `[farm].nav` and the sneak switch from
+/// `[bot]`. One function joins them, so no job can forget the switch.
+#[test]
+fn nav_config_copies_the_sneak_switch_from_the_bot_table() {
+    let bot = BotConfig { sneak: false, ..BotConfig::default() };
+    let farm = FarmConfig {
+        nav: mud_client::nav::NavConfig { bash_doors: false, ..Default::default() },
+        ..FarmConfig::default()
+    };
+    let nav = mud_client::farm::nav_config(&bot, &farm);
+    assert!(!nav.sneak);
+    assert!(!nav.bash_doors, "the farm's own nav limits still apply");
+    let on = mud_client::farm::nav_config(&BotConfig::default(), &farm);
+    assert!(on.sneak);
+}
+

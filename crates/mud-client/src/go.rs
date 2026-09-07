@@ -246,7 +246,7 @@ pub async fn run_go(
     // so the walk routes with the pack. Best effort, as before: a
     // session handed the table earlier keeps it when this load fails.
     let content = crate::farm::content_for(session, cfg, notices);
-    let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone())
+    let nav = crate::nav::Navigator::new(graph.clone(), crate::farm::nav_config(bot_config, cfg))
         .with_capabilities(session.capabilities());
     let nav = match content {
         Some(content) => nav.with_backstab(content, session.wielded(), session.contents().items),

@@ -503,3 +503,22 @@ async fn a_carried_belief_the_board_contradicts_is_corrected_by_the_first_move()
     assert_eq!(log.sneaks.load(Ordering::SeqCst), 1, "no arm on the first step, one on the second");
     assert_eq!(log.moves.load(Ordering::SeqCst), 2);
 }
+
+/// `bot.sneak = false`. A stealthy character walks and never arms.
+#[tokio::test]
+async fn sneak_off_never_sends_sneak() {
+    let (addr, log) = sneak_board("Attempting to sneak...", Board { arms: true, ..Board::default() }).await;
+    let session = session_for(addr).await;
+    let navigator = Navigator::new(
+        graph_one_hop(),
+        NavConfig { step_timeout_ms: 1500, sneak: false, ..NavConfig::default() },
+    )
+    .with_capabilities(Capabilities { stealth: 56, ..Capabilities::unrestricted() });
+    let arrival = navigator
+        .goto(&session, HERE, THERE, &mut NoGuard, false)
+        .await
+        .unwrap();
+    assert!(!arrival.sneaking);
+    assert_eq!(log.sneaks.load(Ordering::SeqCst), 0, "sneak off must not send sneak");
+    assert_eq!(log.moves.load(Ordering::SeqCst), 1, "the walk still moves");
+}

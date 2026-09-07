@@ -198,6 +198,10 @@ pub struct BotConfig {
     /// for. Needs the pack, so it does nothing until the session has
     /// the item table.
     pub take_keys: bool,
+    /// Arm a sneak before walking, when the character has any stealth.
+    /// Off means no walk sneaks and no stealth spell is cast for one.
+    /// The recovery job refuses to start without it.
+    pub sneak: bool,
     /// Denominations the sweep leaves on the floor, named as `get`
     /// takes them: copper, silver, gold, platinum, runic. At higher
     /// levels a copper pile is not worth the send. Applies to every
@@ -394,6 +398,7 @@ impl Default for BotConfig {
             auto_heal: false,
             auto_get: false,
             take_keys: true,
+            sneak: true,
             ignore_coins: Vec::new(),
             auto_flee: false,
             minor_heal_at_percent: 70,

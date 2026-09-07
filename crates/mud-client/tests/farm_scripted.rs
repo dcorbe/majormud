@@ -1778,6 +1778,64 @@ async fn a_lap_of_quiet_stops_sneaks_once() {
     );
 }
 
+/// The same lap with `bot.sneak` off. The sheet says stealth 56 and the
+/// run still never arms, because the switch reaches the walker through
+/// the farm's nav config.
+#[tokio::test]
+async fn a_lap_with_sneak_off_never_arms() {
+    let (addr, received) = scripted_board(vec![
+        ("stat", NINJA_SHEET.into()),
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        ("look", format!("\r\nlook{}", room_block("Guard Post", None, "north"))),
+        ("n", format!("\r\nn{}", room_block("Inner Ward", None, "north south"))),
+        ("n", format!("\r\nn{}", room_block("Keep", None, "south"))),
+    ])
+    .await;
+    let session = session_for(addr).await;
+    mud_client::farm::probe_sheet(&session, None).await;
+    assert_eq!(session.capabilities().stealth, 56, "the sheet must have been read");
+
+    let graph = corridor();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/2".into(), "1/3".into()],
+        loops: 1,
+        idle_poke_ms: 500,
+        depart_at_percent: Some(0),
+        ..FarmConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 30,
+        sneak: false,
+        ..BotConfig::default()
+    };
+
+    let (end, stats) = match tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, &bot, &cfg, None, &quiet()),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    {
+        Ok(out) => out,
+        Err(e) => panic!(
+            "the lap must finish: {e:?}\nboard received: {:?}",
+            received.lock().unwrap()
+        ),
+    };
+    assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
+
+    let log = received.lock().unwrap();
+    assert_eq!(log.iter().filter(|l| *l == "n").count(), 2, "both legs walked: {log:?}");
+    assert!(!log.iter().any(|l| l == "sneak"), "sneak off never arms: {log:?}");
+}
+
 /// The other half of carrying the belief: a stop that swings has
 /// spent it. The character sneaks into the first stop, opens with a
 /// backstab off that belief, and the leg out must arm again -- the

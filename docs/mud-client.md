@@ -52,6 +52,7 @@ auto_heal = true
 auto_flee = true
 auto_get = true            # coins only; floor items are never announced
 take_keys = true           # keys the ring lacks; independent of auto_get
+sneak = true               # arm a sneak before walking; false never sneaks
 ignore_coins = ["copper"]  # denominations the sweep leaves on the floor
 minor_heal_at_percent = 70 # cast the minor heal below this; 0 = never
 major_heal_at_percent = 40 # cast the major heal below this; 0 = never

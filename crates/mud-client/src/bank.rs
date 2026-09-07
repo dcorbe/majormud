@@ -485,7 +485,7 @@ pub async fn run_bank(
             cfg.content.display()
         )));
     };
-    let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone())
+    let nav = crate::nav::Navigator::new(graph.clone(), crate::farm::nav_config(bot_config, cfg))
         .with_capabilities(session.capabilities())
         .with_backstab(
             std::sync::Arc::clone(&content),

@@ -1646,6 +1646,15 @@ impl crate::nav::TravelGuard for FarmGuard {
     }
 }
 
+/// The navigator's config for a job, from the two tables that own it:
+/// the walk limits from `[farm].nav`, the sneak switch from `[bot]`.
+pub fn nav_config(bot: &crate::bot::BotConfig, farm: &FarmConfig) -> crate::nav::NavConfig {
+    crate::nav::NavConfig {
+        sneak: bot.sneak,
+        ..farm.nav.clone()
+    }
+}
+
 /// The interrupt mark must sit under the mark the gate rests to. The
 /// plan cannot check this when the farm leaves the mark to the bot,
 /// since it never sees the bot's config, so both runners check here.
@@ -1803,7 +1812,7 @@ async fn farm_loop(
     // errand reads the same table to find a bank.
     let content = content_for(session, cfg, notices);
     let walker = || {
-        let nav = crate::nav::Navigator::new(graph.clone(), cfg.nav.clone())
+        let nav = crate::nav::Navigator::new(graph.clone(), nav_config(bot_config, cfg))
             .with_capabilities(session.capabilities());
         match &content {
             Some(content) => nav.with_backstab(
