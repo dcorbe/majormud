@@ -414,7 +414,18 @@ impl Front {
             ev = self.key_rx.recv() => {
                 let Some(ev) = ev else { return Ok(false) };
                 match ev {
-                    TermEvent::Resize(w, h) => self.resize(w, h),
+                    TermEvent::Resize(w, h) => {
+                        // A map view draws the real terminal itself, so
+                        // it needs the new size as much as the front end
+                        // does. `on_key` never sees a resize, so this is
+                        // the only place it can be handed over.
+                        if let Some(id) = self.frozen
+                            && let Some(win) = self.windows.iter().find(|win| win.id == id)
+                        {
+                            let _ = win.keys.send(ev);
+                        }
+                        self.resize(w, h);
+                    }
                     TermEvent::Key(key) if key.kind != KeyEventKind::Release => {
                         // The editor's line may have moved under any key,
                         // so a key always earns its repaint.
@@ -613,10 +624,11 @@ impl Front {
                 self.note(&text);
                 Flow::Continue
             }
+            // A `/N` cannot arrive while a map view is up: `on_key`
+            // hands every key to the frozen window and returns before a
+            // line is ever parsed.
             KeyOutcome::Switch(n) => {
-                if self.frozen.is_some() {
-                    self.note("-- the map has the screen, leave it first --");
-                } else if self.id_of(n).is_some() {
+                if self.id_of(n).is_some() {
                     self.switch(n);
                 } else {
                     self.note(&format!("-- no window {n} --"));

@@ -934,6 +934,12 @@ async fn play(w: &mut Window, session: Arc<Session>) -> PlayEnd {
                                                 )
                                                 .await
                                             };
+                                            // A key typed between here and the front
+                                            // end reading the takeover below lands in
+                                            // the raw channel with nothing to read it.
+                                            // Dropped now, or it replays as a map
+                                            // keystroke the next time the map opens.
+                                            while w.keys.try_recv().is_ok() {}
                                             w.takeover(false);
                                             match ran {
                                                 Err(e) => w.note(&format!("-- map: {e} --")),
