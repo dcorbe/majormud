@@ -384,8 +384,22 @@ async fn run(mut w: Window, first: Option<KeyOutcome>) {
         // The redial types the credentials interactive play leaves to
         // the operator. Still at the profile's pace, because the board's
         // flood control watches the login too.
+        //
+        // A prompt that has not come in three redial delays is a stalled
+        // board, and the next redial is the retry, so this gives up
+        // rather than holding a dead line for the dialect's default
+        // thirty seconds. Floored at three seconds so a short delay
+        // still allows for a slow board, and capped at the default so a
+        // long one never waits longer than a headless login would.
         if relogin
-            && let Err(e) = crate::dialect::login(&session, &profile).await
+            && let Err(e) = crate::dialect::login_with_timeout(
+                &session,
+                &profile,
+                std::time::Duration::from_secs(
+                    profile.reconnect_delay_seconds.saturating_mul(3).clamp(3, 30),
+                ),
+            )
+            .await
         {
             // `play` is the only other place a session is closed and it
             // is not entered on this path. `Session` has no `Drop`, and

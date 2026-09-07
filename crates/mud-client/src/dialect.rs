@@ -129,45 +129,55 @@ pub fn module_key(menu: &str) -> &'static str {
         .unwrap_or("A")
 }
 
+/// Log in, waiting thirty seconds for each prompt. What every caller
+/// that has no better number wants.
 pub async fn login(session: &Session, profile: &Profile) -> Result<LoginOutcome, ExpectError> {
-    use std::time::Duration;
-    let t = Duration::from_secs(30);
+    login_with_timeout(session, profile, std::time::Duration::from_secs(30)).await
+}
+
+/// [`login`] with the per-prompt wait named. A caller that will try
+/// again anyway can give up sooner than the default thirty seconds.
+pub async fn login_with_timeout(
+    session: &Session,
+    profile: &Profile,
+    prompt: std::time::Duration,
+) -> Result<LoginOutcome, ExpectError> {
     match profile.target {
         Target::MbbsEmu => {
-            session.expect("Username:", t).await?;
+            session.expect("Username:", prompt).await?;
             session.send(&profile.username);
-            session.expect("Password:", t).await?;
+            session.expect("Password:", prompt).await?;
             session.send(&profile.password);
             let menu = session.mark();
-            session.expect("Make your selection", t).await?;
+            session.expect("Make your selection", prompt).await?;
             session.send(module_key(&session.since(menu)));
-            session.expect("[MAJORMUD]:", t).await?;
+            session.expect("[MAJORMUD]:", prompt).await?;
             // `[MAJORMUD]:` is the module's MENU, not a game prompt. The
             // realm is behind "[E] . Enter the Realm", and a caller left
             // at the menu would have every game command it sent parsed
             // as a menu key instead.
             session.send("E");
-            session.expect("[HP=", t).await?;
+            session.expect("[HP=", prompt).await?;
             apply_evil_preference(session, profile).await?;
             Ok(LoginOutcome::InGame)
         }
         Target::RustServer => {
-            session.expect("Account: ", t).await?;
+            session.expect("Account: ", prompt).await?;
             session.send(&profile.username);
             let branch = session
-                .expect_any(&["Create new account? (y/n)", "Password: "], t)
+                .expect_any(&["Create new account? (y/n)", "Password: "], prompt)
                 .await?;
             if branch == 0 {
                 session.send("y");
-                session.expect("Password: ", t).await?;
+                session.expect("Password: ", prompt).await?;
                 session.send(&profile.password);
-                session.expect("Gender (M/F):", t).await?;
+                session.expect("Gender (M/F):", prompt).await?;
                 session.send("M");
-                session.expect("Please choose a race", t).await?;
+                session.expect("Please choose a race", prompt).await?;
                 Ok(LoginOutcome::CharacterCreation)
             } else {
                 session.send(&profile.password);
-                session.expect("[HP=", t).await?;
+                session.expect("[HP=", prompt).await?;
                 apply_evil_preference(session, profile).await?;
                 Ok(LoginOutcome::InGame)
             }

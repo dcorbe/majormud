@@ -390,9 +390,9 @@ async fn disconnect_pauses_the_wait() {
 /// so nothing else ends the writer either, and a board that accepts and
 /// stalls would cost a live socket and two tasks every redial.
 ///
-/// Slow on purpose. `dialect::login` waits thirty seconds per prompt
-/// and takes no argument for it, so that wait is the price of watching
-/// a login fail with the line still open.
+/// The redial gives its login three delays per prompt, so a one second
+/// delay puts the second attempt about five seconds out rather than the
+/// half minute a headless login would wait.
 #[tokio::test]
 async fn a_failed_login_closes_its_session() {
     let (closes_tx, mut closes) = tokio::sync::mpsc::unbounded_channel();
@@ -410,7 +410,7 @@ async fn a_failed_login_closes_its_session() {
         matches!(m, FrontMsg::Event { kind: EventKind::Reconnecting { attempt: 1 }, .. })
     })
     .await;
-    r.until_within("the second redial", Duration::from_secs(45), |m| {
+    r.until_within("the second redial", Duration::from_secs(15), |m| {
         matches!(m, FrontMsg::Event { kind: EventKind::Reconnecting { attempt: 2 }, .. })
     })
     .await;
