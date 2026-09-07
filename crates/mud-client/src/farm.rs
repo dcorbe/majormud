@@ -2687,8 +2687,15 @@ pub(crate) fn sheet_from(
     durations: &BTreeMap<String, u32>,
 ) -> Sheet {
     let (inventory, book, casting) = session.raw_sheet();
+    // The spell map comes from the content the session already holds.
+    // Before realm entry there is none, and then there is no light
+    // spell either, which matches the empty book that comes back with
+    // it.
+    let content = session.content();
+    let empty = BTreeMap::new();
+    let spells = content.as_ref().map(|c| &c.spells).unwrap_or(&empty);
     Sheet {
-        light: crate::sheet::light_sources(&inventory, &book, casting),
+        light: crate::sheet::light_sources(&inventory, &book, spells, casting),
         heals: book.heal_spells(
             crate::sheet::HealChoice {
                 minor: &bot.minor_heal_spell,

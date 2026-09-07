@@ -10,7 +10,108 @@
 //!   level right-aligned in 3, mana in 4, four spaces, short name in 6,
 //!   spell name in 30.
 
+use std::collections::BTreeMap;
+
+use mud_core::ability::Ability;
+use mud_core::content::{
+    Element, MatchType, SaveClass, ScalePair, Spell, SpellId, TargetMode,
+};
+
 use mud_client::sheet::{Casting, Inventory, LightSource, Spellbook};
+
+/// One spell record with only the fields discovery reads set to
+/// something: the ability list and the `target` column, decoded as
+/// `match_type`. Everything else is zero.
+fn spell(
+    number: u16,
+    name: &str,
+    short: &str,
+    mana: i16,
+    duration: i16,
+    target: MatchType,
+    abilities: Vec<(Ability, i16)>,
+) -> Spell {
+    Spell {
+        id: SpellId(number),
+        name: name.into(),
+        short_name: short.into(),
+        cast_msg_a: None,
+        cast_msg_b: None,
+        abilities,
+        level_cap: 0,
+        round_cost: 0,
+        required_power: 0,
+        min_base: 0,
+        max_base: 0,
+        target_mode: TargetMode::Benign,
+        save_class: SaveClass::None,
+        base_chance: 0,
+        duration_per_level: 0,
+        match_type: target,
+        duration,
+        element: Element::Magic,
+        class_gate_group: 0,
+        mana_cost: mana,
+        max_increase: ScalePair::NONE,
+        required_class_level: 0,
+        min_increase: ScalePair::NONE,
+        duration_increase: ScalePair::NONE,
+        msg_style: 0,
+    }
+}
+
+/// The shipped records this plan was measured against, by decoded
+/// ability and `target` column. Values are the table's: the self buffs
+/// carry 0 because the amount is level scaled.
+fn spells() -> BTreeMap<SpellId, Spell> {
+    let list = vec![
+        spell(26, "starlight", "star", 4, 80, MatchType::Single1, vec![(Ability::RoomIllu, 0)]),
+        spell(14, "bless", "bles", 4, 40, MatchType::Single2, vec![(Ability::Accuracy, 0)]),
+        spell(39, "way of the cat", "cat", 3, 60, MatchType::Single1, vec![(Ability::Stealth, 0)]),
+        spell(130, "shadowform", "shad", 8, 30, MatchType::Single1, vec![(Ability::Stealth, 0)]),
+        spell(147, "glitterdust", "glit", 6, 30, MatchType::Single0, vec![(Ability::Stealth, 0)]),
+        spell(448, "cross of vengeance", "cross", 15, 600, MatchType::Single1, vec![(Ability::RoomIllu, 200), (Ability::Stealth, -15)]),
+        spell(1314, "camouflage", "camo", 10, 30, MatchType::Single1, vec![(Ability::Stealth, 0)]),
+        spell(893, "stealth trap", "", 0, 1, MatchType::AreaB, vec![(Ability::RoomIllu, 0), (Ability::Stealth, -200)]),
+        spell(2, "lightning bolt", "lb", 4, 0, MatchType::Single0, vec![(Ability::Damage, 10)]),
+    ];
+    list.into_iter().map(|s| (s.id, s)).collect()
+}
+
+#[test]
+fn a_light_spell_carries_room_illumination_and_targets_self() {
+    let spells = spells();
+    assert!(mud_client::sheet::is_light_spell(&spells[&SpellId(26)]), "starlight");
+    assert!(
+        !mud_client::sheet::is_light_spell(&spells[&SpellId(893)]),
+        "the stealth trap lights a room but is not a cast"
+    );
+    assert!(!mud_client::sheet::is_light_spell(&spells[&SpellId(2)]), "lightning bolt");
+}
+
+#[test]
+fn a_stealth_spell_raises_stealth_and_targets_self() {
+    let spells = spells();
+    for id in [39, 130, 1314] {
+        assert!(
+            mud_client::sheet::is_stealth_spell(&spells[&SpellId(id)]),
+            "{}",
+            spells[&SpellId(id)].name
+        );
+    }
+    assert!(
+        !mud_client::sheet::is_stealth_spell(&spells[&SpellId(147)]),
+        "glitterdust targets a monster"
+    );
+    assert!(
+        !mud_client::sheet::is_stealth_spell(&spells[&SpellId(448)]),
+        "cross of vengeance lowers stealth"
+    );
+    assert!(
+        !mud_client::sheet::is_stealth_spell(&spells[&SpellId(14)]),
+        "bless carries no stealth ability"
+    );
+}
 
 #[test]
 fn inventory_reads_the_carried_list() {
@@ -64,7 +165,7 @@ fn an_empty_pack_is_not_an_error() {
 fn inventory_finds_a_light_source() {
     let empty_book = Spellbook::parse("You have no spells.\n");
     let first = |text: &str| {
-        mud_client::sheet::light_sources(&Inventory::parse(text), &empty_book, Casting::Spells)
+        mud_client::sheet::light_sources(&Inventory::parse(text), &empty_book, &spells(), Casting::Spells)
             .into_iter()
             .next()
     };
@@ -123,7 +224,7 @@ fn spellbook_finds_a_light_spell() {
          \x20 1   2    star  starlight                     \n",
     );
     assert_eq!(
-        mud_client::sheet::light_sources(&no_items, &book, Casting::Spells),
+        mud_client::sheet::light_sources(&no_items, &book, &spells(), Casting::Spells),
         vec![LightSource::Spell {
             cmd: "cast star".into(),
             mana_cost: 2,
@@ -136,8 +237,18 @@ fn spellbook_finds_a_light_spell() {
          \x20 1   4    lb    lightning bolt                \n",
     );
     assert!(
-        mud_client::sheet::light_sources(&no_items, &dark, Casting::Spells).is_empty(),
+        mud_client::sheet::light_sources(&no_items, &dark, &spells(), Casting::Spells).is_empty(),
         "lightning bolt is not a light spell"
+    );
+
+    let unknown = Spellbook::parse(
+        "You have the following spells:\n\
+         Level Mana Short Spell Name\n\
+         \x20 1   4    cl    continual light               \n",
+    );
+    assert!(
+        mud_client::sheet::light_sources(&no_items, &unknown, &spells(), Casting::Spells).is_empty(),
+        "a name the spell table does not carry is not a light spell"
     );
 }
 
@@ -184,7 +295,7 @@ fn the_real_inventory_parses() {
     // No torch and no lantern: the item route to solving darkness is not
     // available to this character, which is the answer the caller needs.
     assert!(
-        mud_client::sheet::light_sources(&inv, &Spellbook::default(), Casting::Spells)
+        mud_client::sheet::light_sources(&inv, &Spellbook::default(), &spells(), Casting::Spells)
             .is_empty()
     );
 }
@@ -198,7 +309,7 @@ fn the_real_spellbook_parses_and_offers_a_light() {
     assert_eq!(book.spells[1].name, "vine strike");
     // The whole point: this character can light a dark room.
     assert_eq!(
-        mud_client::sheet::light_sources(&Inventory::default(), &book, Casting::Spells),
+        mud_client::sheet::light_sources(&Inventory::default(), &book, &spells(), Casting::Spells),
         vec![LightSource::Spell {
             cmd: "cast star".into(),
             mana_cost: 4,
@@ -222,7 +333,7 @@ fn a_carried_light_is_preferred_over_a_spell() {
         "You have the following spells:\nLevel Mana Short Spell Name\n  1   4    star  starlight\n",
     );
     assert_eq!(
-        mud_client::sheet::light_sources(&inv, &book, Casting::Spells),
+        mud_client::sheet::light_sources(&inv, &book, &spells(), Casting::Spells),
         vec![
             LightSource::Item {
                 light_cmd: "light torch".into(),
@@ -243,7 +354,7 @@ fn a_carried_light_is_preferred_over_a_spell() {
 fn every_carried_light_item_is_a_source() {
     let inv = Inventory::parse("You are carrying a battered torch, brass lantern, torch\n");
     let book = Spellbook::parse("You have no spells.\n");
-    let sources = mud_client::sheet::light_sources(&inv, &book, Casting::Spells);
+    let sources = mud_client::sheet::light_sources(&inv, &book, &spells(), Casting::Spells);
     assert_eq!(sources.len(), 3, "{sources:?}");
     assert!(matches!(&sources[0], LightSource::Item { light_cmd, .. } if light_cmd == "light torch"));
     assert!(
@@ -258,7 +369,7 @@ fn a_caster_with_no_torch_casts() {
         "You have the following spells:\nLevel Mana Short Spell Name\n  1   4    star  starlight\n",
     );
     assert_eq!(
-        mud_client::sheet::light_sources(&inv, &book, Casting::Spells),
+        mud_client::sheet::light_sources(&inv, &book, &spells(), Casting::Spells),
         vec![LightSource::Spell {
             cmd: "cast star".into(),
             mana_cost: 4,
@@ -271,7 +382,7 @@ fn a_caster_with_no_torch_casts() {
 fn with_neither_there_are_no_sources() {
     let inv = Inventory::parse("You are carrying quarterstaff\n");
     let book = Spellbook::parse("You have no spells.\n");
-    assert!(mud_client::sheet::light_sources(&inv, &book, Casting::Spells).is_empty());
+    assert!(mud_client::sheet::light_sources(&inv, &book, &spells(), Casting::Spells).is_empty());
 }
 
 /// Salad's real kit: no torch, but starlight in the book — one Spell
@@ -283,6 +394,7 @@ fn the_real_character_derives_a_single_spell_source() {
         mud_client::sheet::light_sources(
             &Inventory::parse(REAL_INVENTORY),
             &Spellbook::parse(REAL_SPELLBOOK),
+            &spells(),
             Casting::Spells,
         ),
         vec![LightSource::Spell {
@@ -298,7 +410,6 @@ use mud_client::correlate::{CmdId, Correlated};
 use mud_client::events::Event;
 use mud_client::sheet::{CastAttempt, HealChoice, HealKind, HealNeed, HealSource, HealState};
 use mud_client::world::{RoundClock, ROUND};
-use std::collections::BTreeMap;
 
 /// A book with three heals at different prices, plus one spell that is
 /// not a heal at all.
@@ -860,3 +971,4 @@ fn inventory_reads_its_coins() {
     let none = Inventory::parse("You are carrying nothing.\nYou have no keys.\n");
     assert_eq!(none.coins().count(), 0);
 }
+

@@ -951,6 +951,17 @@ impl Session {
         self.pack.lock().expect("pack lock").clone()
     }
 
+    /// The content database the realm entry probe stored, if it did.
+    /// The pack holds it because the pack was its first reader. Spell
+    /// discovery is its second.
+    pub fn content(&self) -> Option<Arc<mud_core::content::Content>> {
+        self.pack
+            .lock()
+            .expect("pack lock")
+            .as_ref()
+            .map(|h| Arc::clone(h.content()))
+    }
+
     /// The session's own wielded-weapon model, as this session has
     /// confirmed (`"You are now holding <new>."`) or seeded it (the
     /// first `i`/`inventory` listing read) -- see [`Equipment`]. `None`

@@ -21,10 +21,40 @@
 /// the bot's targeting uses, and for the same reason.
 const LIGHT_ITEMS: [&str; 4] = ["torch", "lantern", "lamp", "moon-lamp"];
 
-/// Spells that light a room. `starlight` (spell 26) is the one the
-/// shipped book actually offers; the others are named for when a caster
-/// turns up with them.
-const LIGHT_SPELLS: [&str; 3] = ["starlight", "light", "continual light"];
+use std::collections::BTreeMap;
+
+use mud_core::ability::Ability;
+use mud_core::content::{MatchType, Spell, SpellId};
+
+/// The `target` column of the spell table, decoded as
+/// [`MatchType`]. Value 1 is a cast on oneself: starlight, camouflage
+/// and every other self buff carry it, bless carries 2 for another
+/// player, glitterdust 0 for a monster. The variant name is the
+/// decoder's placeholder from the first pass over the table, and the
+/// field called `target_mode` is a different column. This is the one
+/// discovery reads.
+const SELF_CAST: MatchType = MatchType::Single1;
+
+/// Does casting this on oneself light the room? Room illumination, on a
+/// self cast. The old three-name list found one of the same spells and
+/// named two that the shipped table does not carry.
+pub fn is_light_spell(spell: &Spell) -> bool {
+    spell.match_type == SELF_CAST
+        && spell.abilities.iter().any(|(a, _)| *a == Ability::RoomIllu)
+}
+
+/// Does casting this on oneself raise stealth? The stealth ability with
+/// a value that is not negative, on a self cast. The value reads as zero
+/// on every shipped self buff because the amount is level scaled, so
+/// presence decides. A negative value is a penalty, which keeps cross of
+/// vengeance and the stealth trap out.
+pub fn is_stealth_spell(spell: &Spell) -> bool {
+    spell.match_type == SELF_CAST
+        && spell
+            .abilities
+            .iter()
+            .any(|(a, v)| *a == Ability::Stealth && *v >= 0)
+}
 
 /// Spells that restore health, by exact name from the shipped `spell`
 /// table. Exact, not substring: `blessed vision` and `rapid healing` both
@@ -367,14 +397,27 @@ impl Spellbook {
         (out, refused)
     }
 
-    /// The spell that would light a dark room, with the book's mana
-    /// cost — the caster's mana floor comes from here, not from
-    /// configuration.
-    fn light_spell_with_cost(&self) -> Option<(String, i16)> {
+    /// The spells this character knows that `keep` accepts, matched
+    /// against the content's spell map by name, in the book's order.
+    /// A known spell the map does not carry is skipped: the board's
+    /// listing is the truth about what is castable, the map is the
+    /// truth about what a cast does, and discovery needs both.
+    pub fn known_matching<'a>(
+        &'a self,
+        spells: &'a BTreeMap<SpellId, Spell>,
+        keep: fn(&Spell) -> bool,
+    ) -> Vec<(&'a KnownSpell, &'a Spell)> {
         self.spells
             .iter()
-            .find(|s| LIGHT_SPELLS.contains(&s.name.to_lowercase().as_str()))
-            .map(|s| (s.short.clone(), s.mana))
+            .filter_map(|known| {
+                let lower = known.name.to_lowercase();
+                spells
+                    .values()
+                    .find(|s| s.name.to_lowercase() == lower)
+                    .filter(|s| keep(s))
+                    .map(|s| (known, s))
+            })
+            .collect()
     }
 }
 
@@ -876,6 +919,7 @@ impl LightSource {
 pub fn light_sources(
     inventory: &Inventory,
     spellbook: &Spellbook,
+    spells: &BTreeMap<SpellId, Spell>,
     casting: Casting,
 ) -> Vec<LightSource> {
     let mut sources: Vec<LightSource> = inventory
@@ -886,10 +930,10 @@ pub fn light_sources(
             remove_cmd: format!("remove {item}"),
         })
         .collect();
-    if let Some((short, mana)) = spellbook.light_spell_with_cost() {
+    if let Some((known, _)) = spellbook.known_matching(spells, is_light_spell).first() {
         sources.push(LightSource::Spell {
-            cmd: casting.command(&short),
-            mana_cost: mana as i32,
+            cmd: casting.command(&known.short),
+            mana_cost: known.mana as i32,
         });
     }
     sources
@@ -1144,3 +1188,4 @@ impl LightState {
         }
     }
 }
+
