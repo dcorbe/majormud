@@ -140,3 +140,14 @@ fn listing_an_absent_directory_is_empty_not_an_error() {
     let dir = scratch("gone").join("not-created");
     assert!(mud_client::loops::list(&dir).is_empty());
 }
+
+/// The library moved onto the shared config base. Same place as before,
+/// one function fewer that knows where that is.
+#[test]
+fn the_loop_library_sits_under_the_config_directory() {
+    assert_eq!(
+        mud_client::loops::dir(),
+        mud_client::profile::config_dir().join("loops")
+    );
+    assert!(mud_client::loops::dir().ends_with("mmc/loops"));
+}

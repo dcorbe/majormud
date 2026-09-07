@@ -192,16 +192,10 @@ impl Loop {
     }
 }
 
-/// Where the library lives.
-///
-/// `$XDG_CONFIG_HOME/mmc/loops`, or `~/.config/mmc/loops` — beside the
-/// character profiles, never inside one.
+/// Where the library lives: `loops` under the client's config
+/// directory, beside the character profiles and never inside one.
 pub fn dir() -> PathBuf {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("mmc").join("loops")
+    crate::profile::config_dir().join("loops")
 }
 
 /// A loop name is a file name.

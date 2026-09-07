@@ -1,5 +1,7 @@
 //! Per-character TOML profiles — the analog of MegaMud `Chars/*.Ini`.
 
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -129,6 +131,42 @@ impl Profile {
             return Err("no host set".into());
         }
         Ok(())
+    }
+}
+
+/// Where the client keeps what is not any one profile's business: the
+/// profiles themselves, the loop library, and the death log. This is
+/// `$XDG_CONFIG_HOME/mmc`, or `~/.config/mmc`.
+pub fn config_dir() -> PathBuf {
+    config_dir_from(std::env::var_os("XDG_CONFIG_HOME"), std::env::var_os("HOME"))
+}
+
+/// The rule behind [`config_dir`], with the environment passed in so a
+/// test can say what it is without touching the process.
+pub fn config_dir_from(xdg: Option<OsString>, home: Option<OsString>) -> PathBuf {
+    let base = xdg
+        .map(PathBuf::from)
+        .or_else(|| home.map(|h| PathBuf::from(h).join(".config")))
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join("mmc")
+}
+
+/// A profile argument as a path. A bare name is a profile in the config
+/// directory, so `beef` is `~/.config/mmc/beef.toml`. Anything with a
+/// separator or the suffix is a path and is used as given.
+pub fn resolve(arg: &str) -> PathBuf {
+    resolve_in(&config_dir(), arg)
+}
+
+/// The rule behind [`resolve`], against a directory the caller names.
+pub fn resolve_in(dir: &Path, arg: &str) -> PathBuf {
+    let is_path = arg.contains('/')
+        || arg.contains(std::path::MAIN_SEPARATOR)
+        || arg.ends_with(".toml");
+    if is_path {
+        PathBuf::from(arg)
+    } else {
+        dir.join(format!("{arg}.toml"))
     }
 }
 

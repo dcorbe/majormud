@@ -431,3 +431,44 @@ fn reconnect_defaults_to_off_with_a_ten_second_wait() {
     assert_eq!(p.reconnect_delay_seconds, 45);
 }
 
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+
+use mud_client::profile::{config_dir_from, resolve_in};
+
+/// The loop library and the profiles share one base, and it is the one
+/// the loop library already used: XDG first, then the home directory,
+/// then the current directory when the machine says nothing.
+#[test]
+fn the_config_directory_prefers_xdg_then_home() {
+    assert_eq!(
+        config_dir_from(Some(OsString::from("/xdg")), Some(OsString::from("/home/x"))),
+        PathBuf::from("/xdg/mmc")
+    );
+    assert_eq!(
+        config_dir_from(None, Some(OsString::from("/home/x"))),
+        PathBuf::from("/home/x/.config/mmc")
+    );
+    assert_eq!(config_dir_from(None, None), PathBuf::from("./mmc"));
+}
+
+/// `/save beef` means the profile called beef, which lives beside the
+/// other profiles.
+#[test]
+fn a_bare_name_is_a_profile_in_the_config_directory() {
+    let dir = Path::new("/cfg/mmc");
+    assert_eq!(resolve_in(dir, "beef"), PathBuf::from("/cfg/mmc/beef.toml"));
+    assert_eq!(resolve_in(dir, "salad-healtest"), PathBuf::from("/cfg/mmc/salad-healtest.toml"));
+}
+
+/// Anything that looks like a path is one. A separator anywhere, or the
+/// suffix, and the argument is used exactly as typed.
+#[test]
+fn a_path_or_a_toml_suffix_is_used_as_given() {
+    let dir = Path::new("/cfg/mmc");
+    assert_eq!(resolve_in(dir, "chars/dan.toml"), PathBuf::from("chars/dan.toml"));
+    assert_eq!(resolve_in(dir, "./beef"), PathBuf::from("./beef"));
+    assert_eq!(resolve_in(dir, "beef.toml"), PathBuf::from("beef.toml"));
+    assert_eq!(resolve_in(dir, "/abs/beef"), PathBuf::from("/abs/beef"));
+}
+
