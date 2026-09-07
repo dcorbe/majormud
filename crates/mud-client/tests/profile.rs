@@ -419,3 +419,15 @@ fn scrollback_lines_defaults_to_two_thousand() {
     assert_eq!(p.scrollback_lines, 50);
 }
 
+/// Redialling is opt-in, and the wait between tries has a default so a
+/// profile that only says `reconnect = true` does not hammer the board.
+#[test]
+fn reconnect_defaults_to_off_with_a_ten_second_wait() {
+    let p: Profile = toml::from_str("").unwrap();
+    assert!(!p.reconnect);
+    assert_eq!(p.reconnect_delay_seconds, 10);
+    let p: Profile = toml::from_str("reconnect = true\nreconnect_delay_seconds = 45\n").unwrap();
+    assert!(p.reconnect);
+    assert_eq!(p.reconnect_delay_seconds, 45);
+}
+

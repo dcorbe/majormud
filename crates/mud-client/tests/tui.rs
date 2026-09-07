@@ -1558,6 +1558,10 @@ fn the_lobby_log_line_names_the_window_the_character_and_the_event() {
         log_line(at, 2, Some(&nameless), &EventKind::AssistRefused("no character name yet".into())),
         "01:01:01 window 2 h:23 assist not started: no character name yet"
     );
+    assert_eq!(
+        log_line(at, 2, Some(&nameless), &EventKind::Reconnecting { attempt: 2 }),
+        "01:01:01 window 2 h:23 reconnecting, attempt 2"
+    );
 }
 
 /// Build a lobby-only front end at 24 by 80 with a key channel a test

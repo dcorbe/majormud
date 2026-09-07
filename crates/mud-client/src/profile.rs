@@ -41,6 +41,17 @@ pub struct Profile {
     /// Before the tables for the same reason as the field above.
     #[serde(default = "default_scrollback")]
     pub scrollback_lines: u32,
+    /// Dial the board again and log back in when the line closes on its
+    /// own. Off by default, and it needs both `username` and `password`,
+    /// because interactive play never types them for you.
+    ///
+    /// Before the tables for the same reason as the fields above.
+    #[serde(default)]
+    pub reconnect: bool,
+    /// Seconds to wait before each redial. Ten by default, which is
+    /// enough for a board that is restarting to finish.
+    #[serde(default = "default_reconnect_delay")]
+    pub reconnect_delay_seconds: u64,
     /// Bot policy toggles. Absent means every toggle off — a patrol that
     /// walks its circuit and fights nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -60,6 +71,10 @@ fn default_scrollback() -> u32 {
     2000
 }
 
+fn default_reconnect_delay() -> u64 {
+    10
+}
+
 impl Default for Profile {
     /// What the lobby starts from: a telnet port and nothing else. The
     /// host is empty on purpose, so nothing dials until `/connect` or
@@ -74,6 +89,8 @@ impl Default for Profile {
             pace_ms: None,
             disable_evil_warnings: false,
             scrollback_lines: default_scrollback(),
+            reconnect: false,
+            reconnect_delay_seconds: default_reconnect_delay(),
             bot: None,
             farm: None,
             bank: crate::bank::BankConfig::default(),

@@ -607,6 +607,18 @@ Whenever the line closes, by the board or by `/disconnect`, the client
 returns to the lobby with the settings intact. `/connect` with no
 argument dials the current host and port.
 
+A profile with `reconnect = true` dials again by itself when the line
+closes, waits `reconnect_delay_seconds` first, ten by default, and logs
+in with the profile's `username` and `password`. Both have to be set.
+With either one empty the window says so and stays put, because a redial
+that stopped at the username prompt would look connected and be useless.
+A failed dial or a failed login is written on the window's screen and the
+next try follows after the same wait. `/disconnect` while the wait runs
+cancels it and leaves the window where it is, so `/connect` is then the
+only thing that dials. Every attempt goes into the lobby's log as
+`reconnecting, attempt N`, and the count starts over once a session is
+playing.
+
 Interactive play never logs in for you: you type the username and
 password at the board's prompt. The automation needs the character's
 name, because it matches your own death line against it. It reads that

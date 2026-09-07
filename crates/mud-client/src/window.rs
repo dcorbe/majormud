@@ -41,6 +41,9 @@ pub enum EventKind {
     Died,
     JobEnded(String),
     AssistRefused(String),
+    /// A profile with `reconnect` on is dialling the board again.
+    /// `attempt` counts from one and resets once a session plays.
+    Reconnecting { attempt: u32 },
 }
 
 /// What a window sends the front end.
@@ -283,8 +286,30 @@ enum PlayEnd {
 
 /// What the disconnected state returned.
 enum Idle {
+    /// The operator asked for a connection.
     Connect,
+    /// The redial timer came due. This one logs in as well, which is
+    /// why it is not the same answer as `Connect`.
+    Redial,
     Ended,
+}
+
+/// How long to wait before redialling a line that just closed, or
+/// `None` when this window is staying put.
+///
+/// A profile that asks for a reconnect without both credentials cannot
+/// log back in, and a redial that stopped at the username prompt would
+/// look connected while being useless. So it says so and stays.
+fn redial_delay(w: &Window) -> Option<std::time::Duration> {
+    let profile = w.settings.profile();
+    if !profile.reconnect {
+        return None;
+    }
+    if profile.username.is_empty() || profile.password.is_empty() {
+        w.note("-- reconnect is on but username or password is empty, staying here --");
+        return None;
+    }
+    Some(std::time::Duration::from_secs(profile.reconnect_delay_seconds))
 }
 
 async fn run(mut w: Window, first: Option<KeyOutcome>) {
@@ -295,12 +320,24 @@ async fn run(mut w: Window, first: Option<KeyOutcome>) {
     let mut first = first.or_else(|| {
         (!w.settings.profile().host.is_empty()).then_some(KeyOutcome::Connect { target: None })
     });
+    // How long to wait before redialling, and which try this is. Armed
+    // only by a line that closed on its own, so a `/connect` the
+    // operator typed disarms it until the next drop.
+    let mut redial: Option<std::time::Duration> = None;
+    let mut attempt = 1u32;
     loop {
-        match disconnected(&mut w, first.take()).await {
-            Idle::Connect => {}
+        let relogin = match disconnected(&mut w, first.take(), redial).await {
+            Idle::Connect => {
+                redial = None;
+                false
+            }
+            Idle::Redial => true,
             Idle::Ended => break,
-        }
+        };
         let profile = w.settings.profile().clone();
+        if relogin {
+            w.event(EventKind::Reconnecting { attempt });
+        }
         // A capture names two files and creating them truncates, so it
         // records the first connection only. Cloned rather than taken:
         // a connect that fails opened nothing, so the next attempt still
@@ -312,22 +349,46 @@ async fn run(mut w: Window, first: Option<KeyOutcome>) {
             }
             Err(e) => {
                 w.note(&format!("-- connect {}:{}: {e} --", profile.host, profile.port));
+                // Only a redial counts its tries. A `/connect` that
+                // failed is the operator's, and they saw it fail.
+                if relogin {
+                    attempt += 1;
+                }
                 continue;
             }
         };
+        // Subscribed here rather than inside `play`, because the login
+        // below is served on this same stream and a subscription made
+        // after it would miss the room the board just drew. The channel
+        // holds 8192 messages, so nothing is dropped while login runs.
+        let raw_rx = session.raw();
+        // The redial types the credentials interactive play leaves to
+        // the operator. Still at the profile's pace, because the board's
+        // flood control watches the login too.
+        if relogin
+            && let Err(e) = crate::dialect::login(&session, &profile).await
+        {
+            w.note(&format!("-- reconnect login: {e} --"));
+            attempt += 1;
+            continue;
+        }
         // Interactive play is not paced. `pace_ms` is flood control,
         // which is for automation. The session keeps the real profile,
         // so `/farm` can put its pace back.
         session.set_pace(std::time::Duration::ZERO);
         w.sync_info(Some(&session));
         w.event(EventKind::Connected);
-        let end = play(&mut w, session).await;
+        let end = play(&mut w, session, raw_rx).await;
         w.sync_info(None);
         w.event(EventKind::Disconnected);
-        match end {
-            PlayEnd::Closed => w.note("-- disconnected. /connect to go back --"),
+        attempt = 1;
+        redial = match end {
+            PlayEnd::Closed => {
+                w.note("-- disconnected. /connect to go back --");
+                redial_delay(&w)
+            }
             PlayEnd::Ended => break,
-        }
+        };
     }
     let _ = w.front.send(FrontMsg::Ended { window: w.id });
 }
@@ -335,22 +396,49 @@ async fn run(mut w: Window, first: Option<KeyOutcome>) {
 /// The window with no session: settings commands, `/connect`, `/help`.
 /// `quit_armed` exists for `lobby_step`'s signature. `/quit` never
 /// reaches a window, the front end owns it.
-async fn disconnected(w: &mut Window, first: Option<KeyOutcome>) -> Idle {
+///
+/// `redial_after` is how long a profile with `reconnect` on waits before
+/// it dials by itself. The wait is a deadline rather than a sleep the
+/// loop restarts, so everything the operator types while it runs is
+/// handled and the redial still comes due when it was always going to.
+async fn disconnected(
+    w: &mut Window,
+    first: Option<KeyOutcome>,
+    redial_after: Option<std::time::Duration>,
+) -> Idle {
     let mut quit_armed = false;
     let mut pending = first;
+    let mut due = redial_after.map(|wait| tokio::time::Instant::now() + wait);
     w.set_idle_bar();
     loop {
         let outcome = match pending.take() {
             Some(o) => o,
-            None => match w.msgs.recv().await {
-                None => return Idle::Ended,
-                Some(WindowMsg::Resize { rows, cols }) => {
-                    w.resize(rows, cols);
-                    continue;
+            None => {
+                let msg = match due {
+                    Some(at) => tokio::select! {
+                        () = tokio::time::sleep_until(at) => return Idle::Redial,
+                        msg = w.msgs.recv() => msg,
+                    },
+                    None => w.msgs.recv().await,
+                };
+                match msg {
+                    None => return Idle::Ended,
+                    Some(WindowMsg::Resize { rows, cols }) => {
+                        w.resize(rows, cols);
+                        continue;
+                    }
+                    Some(WindowMsg::Outcome(o)) => o,
                 }
-                Some(WindowMsg::Outcome(o)) => o,
-            },
+            }
         };
+        // `/disconnect` with nothing to disconnect from means stop
+        // redialling. The lobby's own answer to it says "not connected",
+        // which is true and no use here.
+        if due.is_some() && matches!(outcome, KeyOutcome::Disconnect) {
+            due = None;
+            w.note("-- reconnect paused, /connect to dial --");
+            continue;
+        }
         let (step, text) = lobby_step(outcome, &mut w.settings, &mut quit_armed);
         w.sync_info(None);
         w.set_idle_bar();
@@ -410,8 +498,11 @@ fn bar_text(
 /// The board's bytes go into the window's screen verbatim. The two
 /// reserved rows are the front end's business now, so this loop only
 /// keeps [`WindowInfo::bar`] current and says when something changed.
-async fn play(w: &mut Window, session: Arc<Session>) -> PlayEnd {
-    let mut raw_rx = session.raw();
+async fn play(
+    w: &mut Window,
+    session: Arc<Session>,
+    mut raw_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
+) -> PlayEnd {
     let mut events = session.events();
     let mut state_rx = session.state();
     // Bound once because it is a connection-time fact: this session was

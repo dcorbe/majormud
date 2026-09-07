@@ -266,6 +266,7 @@ pub fn log_line(
         EventKind::Died => "died".to_string(),
         EventKind::JobEnded(label) => label.clone(),
         EventKind::AssistRefused(why) => format!("assist not started: {why}"),
+        EventKind::Reconnecting { attempt } => format!("reconnecting, attempt {attempt}"),
     };
     format!("{stamp} window {number} {who} {what}")
 }
