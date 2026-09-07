@@ -223,9 +223,13 @@ async fn session_for(addr: std::net::SocketAddr) -> Session {
     // and the look's own prompt lands before the walk. Wait for that
     // prompt here so the fixture starts where a real walk starts.
     let mut state = session.state();
-    while state.borrow_and_update().mana.is_none() {
-        state.changed().await.unwrap();
-    }
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while state.borrow_and_update().mana.is_none() {
+            state.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("the scripted board's opening prompt");
     session
 }
 
@@ -745,8 +749,9 @@ async fn an_unknown_cast_reply_is_given_up_at_the_prompt() {
     );
 }
 
-/// A cast the board never answers is given up at the step deadline and
-/// the sneak still goes out.
+/// A cast the board answers with nothing but a prompt is given up and
+/// the sneak still goes out. The step timeout is set low so a walk that
+/// waited it out would show up as a slow test rather than a hang.
 #[tokio::test]
 async fn an_unanswered_cast_does_not_hang_the_walk() {
     let (addr, log) = sneak_board(
@@ -763,6 +768,11 @@ async fn an_unanswered_cast_does_not_hang_the_walk() {
         .unwrap();
     assert_eq!(arrival.at, THERE);
     assert_eq!(log.sneaks.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        sent(&log),
+        vec!["cast camo".to_string(), "sneak".to_string(), "n".to_string()],
+        "one attempt, then on with the sneak"
+    );
 }
 
 /// No stealth spell known: the walk is exactly what it was.

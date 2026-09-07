@@ -485,3 +485,135 @@ async fn a_profile_change_mid_walk_leaves_the_target_alone() {
     assert_eq!(end, GoEnd::Arrived(STOP), "log: {:?}", received.lock().unwrap());
 }
 
+// --- stealth on the go walk -------------------------------------------
+
+/// The same block with a mana reading on the prompt. The corridor's
+/// ordinary block says MA=0, and a character with no mana casts
+/// nothing at all.
+fn room_block_mana(name: &str, exits: &str, mana: i32) -> String {
+    format!("\r\n\x1b[1;36m{name}\r\nObvious exits: {exits}\r\n[HP=30/MA={mana}]:")
+}
+
+/// The sheet a sneaking walk opens with. Stealth is what lets the
+/// walker sneak at all, through `Session::capabilities`.
+const NINJA_SHEET: &str = "\r\nstat\r\n\
+Name: Beef                             Lives/CP:    9/100\r\n\
+Race: Dark-Elf    Exp: 0               Perception:     43\r\n\
+Class: Ninja      Level: 1             Stealth:        56\r\n\
+Hits:    30/30    Armour Class:   0/0  Thievery:        0\r\n\
+                                       Traps:          29\r\n\
+                                       Picklocks:      31\r\n\
+Strength:  40     Agility: 50          Tracking:       26\r\n\
+Intellect: 50     Health:  30          Martial Arts:   51\r\n\
+Willpower: 30     Charm:   40          MagicRes:       35\r\n\
+[HP=30/MA=20]:";
+
+/// One shipped `camouflage` record, with only the fields discovery
+/// reads set to anything. The same shape `tests/sheet.rs` builds,
+/// duplicated here because test crates do not share modules.
+fn camouflage() -> mud_core::content::Spell {
+    use mud_core::ability::Ability;
+    use mud_core::content::{Element, MatchType, SaveClass, ScalePair, Spell, SpellId, TargetMode};
+    Spell {
+        id: SpellId(1314),
+        name: "camouflage".into(),
+        short_name: "camo".into(),
+        cast_msg_a: None,
+        cast_msg_b: None,
+        abilities: vec![(Ability::Stealth, 0)],
+        level_cap: 0,
+        round_cost: 0,
+        required_power: 0,
+        min_base: 0,
+        max_base: 0,
+        target_mode: TargetMode::Benign,
+        save_class: SaveClass::None,
+        base_chance: 0,
+        duration_per_level: 0,
+        match_type: MatchType::Single1,
+        duration: 30,
+        element: Element::Magic,
+        class_gate_group: 0,
+        mana_cost: 10,
+        max_increase: ScalePair::NONE,
+        required_class_level: 0,
+        min_increase: ScalePair::NONE,
+        duration_increase: ScalePair::NONE,
+        msg_style: 0,
+    }
+}
+
+/// The wiring, end to end: `run_go` builds its navigator with the
+/// stealth spells the session's own book and spell map say the
+/// character knows, and the walk casts one before it sneaks.
+///
+/// Nothing else in the suite would notice `.with_stealth(...)` being
+/// dropped from `run_go`, because every other stealth test hands the
+/// navigator its buffs directly.
+///
+/// Mutation target: drop `.with_stealth(...)` from `run_go` and no
+/// `cast camo` goes out.
+#[tokio::test]
+async fn a_go_walk_casts_the_stealth_spell_it_discovered() {
+    let (addr, received) = scripted_board(vec![
+        ("stat", NINJA_SHEET.into()),
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=20]:"
+                .into(),
+        ),
+        (
+            "spells",
+            "\r\nspells\r\nYou have the following spells:\r\nLevel Mana Short Spell Name\r\n\x20 8  10    camo  camouflage                    \r\n[HP=30/MA=20]:"
+                .into(),
+        ),
+        ("look", format!("\r\nlook{}", room_block_mana("Guard Post", "north", 20))),
+        (
+            "cast camo",
+            "\r\ncast camo\r\nYou cast camouflage!\r\n[HP=30/MA=10]:".into(),
+        ),
+        ("sneak", "\r\nsneak\r\nAttempting to sneak...\r\n[HP=30/MA=10]:".into()),
+        (
+            "n",
+            format!("\r\nn\r\nSneaking...{}", room_block_mana("Inner Ward", "north south", 10)),
+        ),
+        (
+            "n",
+            format!("\r\nn\r\nSneaking...{}", room_block_mana("Keep", "south", 10)),
+        ),
+    ])
+    .await;
+    let session = session_for(addr).await;
+    probe_sheet(&session, None).await;
+    assert_eq!(session.capabilities().stealth, 56, "the sheet must have been read");
+    let mut content = mud_core::content::Content::default();
+    content.add_spell(camouflage());
+    session.set_content(Arc::new(content));
+
+    let graph = corridor();
+    // The board is scripted strictly in order, so a walk that skipped
+    // the cast would desync and stall rather than arrive. Say what it
+    // did send, so that failure names the missing line.
+    let walk = tokio::time::timeout(
+        Duration::from_secs(20),
+        run_go(&session, graph, Some(START), STOP, Live::fixed(bot(), cfg(false)), None, &quiet()),
+    )
+    .await;
+    let end = match walk {
+        Ok(r) => r.unwrap_or_else(|e| panic!("{e:?}\nboard received: {:?}", received.lock().unwrap())),
+        Err(_) => panic!("the walk stalled\nboard received: {:?}", received.lock().unwrap()),
+    };
+    assert_eq!(end, GoEnd::Arrived(STOP));
+
+    let log = received.lock().unwrap();
+    let walked: Vec<&String> = log
+        .iter()
+        .filter(|l| *l == "sneak" || *l == "n" || l.starts_with("cast "))
+        .collect();
+    assert_eq!(
+        walked,
+        vec!["cast camo", "sneak", "n", "n"],
+        "the discovered spell is cast before the sneak: {log:?}"
+    );
+}
+

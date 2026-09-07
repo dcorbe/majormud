@@ -252,6 +252,32 @@ fn spellbook_finds_a_light_spell() {
     );
 }
 
+/// Two spells in the book light a room and the cheaper one wins. Cross
+/// of vengeance carries room illumination on a self cast, so it is a
+/// light spell by the table, but it costs 15 mana against starlight's
+/// 4 and it is listed FIRST here, so book order would take the wrong
+/// one.
+///
+/// Mutation target: take the first match in book order and this picks
+/// `cast cross` at 15 mana.
+#[test]
+fn the_cheapest_light_spell_is_the_light_source() {
+    let no_items = Inventory::parse("You are carrying nothing.\n");
+    let book = Spellbook::parse(
+        "You have the following spells:\n\
+         Level Mana Short Spell Name\n\
+         \x20 8  15    cross cross of vengeance            \n\
+         \x20 1   4    star  starlight                     \n",
+    );
+    assert_eq!(
+        mud_client::sheet::light_sources(&no_items, &book, &spells(), Casting::Spells),
+        vec![LightSource::Spell {
+            cmd: "cast star".into(),
+            mana_cost: 4,
+        }]
+    );
+}
+
 // --- against real board output ----------------------------------------
 //
 // Captured from Salad on 2026-07-30. The command is `inventory`; `inv`

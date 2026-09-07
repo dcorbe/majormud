@@ -749,18 +749,17 @@ impl BuffState {
         self.pending.is_some()
     }
 
-    pub fn mana(&self) -> Option<i32> {
-        self.mana
-    }
-
     /// Mana from somewhere other than a prompt this state saw: the
     /// session's last prompt, for a state built after it passed.
-    /// Only fills a blank, so a prompt already seen is never overwritten
-    /// by an older reading.
+    ///
+    /// Unconditional, because the session's reading is never the older
+    /// one: it is fed by the same prompt stream this state folds, and a
+    /// caller seeds from it at the moment it is about to decide. A seed
+    /// that only filled a blank left a state carrying whatever mana the
+    /// first prompt it happened to see said, for as long as no prompt
+    /// reached it directly.
     pub fn seed_mana(&mut self, mana: i32) {
-        if self.mana.is_none() {
-            self.mana = Some(mana);
-        }
+        self.mana = Some(mana);
     }
 
     /// The board answered a cast with a wording this does not know, or
@@ -1000,6 +999,12 @@ impl LightSource {
 /// items first (no mana, keep burning), the spell last (survives any
 /// number of burn-outs). Empty is a real answer — an unrecognised
 /// command is SAID OUT LOUD by the board, so nothing is invented.
+///
+/// A book may hold more than one spell that lights a room, and the
+/// cheapest of them is the one taken: cross of vengeance lights a room
+/// too, at 15 mana against starlight's 4, and it is a combat spell that
+/// happens to glow. Book order would have picked whichever the board
+/// happened to list first. Ties keep book order.
 pub fn light_sources(
     inventory: &Inventory,
     spellbook: &Spellbook,
@@ -1014,7 +1019,11 @@ pub fn light_sources(
             remove_cmd: format!("remove {item}"),
         })
         .collect();
-    if let Some((known, _)) = spellbook.known_matching(spells, is_light_spell).first() {
+    if let Some((known, _)) = spellbook
+        .known_matching(spells, is_light_spell)
+        .into_iter()
+        .min_by_key(|(known, _)| known.mana)
+    {
         sources.push(LightSource::Spell {
             cmd: casting.command(&known.short),
             mana_cost: known.mana as i32,
