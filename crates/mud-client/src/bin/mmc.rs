@@ -415,6 +415,9 @@ fn farm_command(
                 return ExitCode::FAILURE;
             }
         };
+        // Nobody is watching this session, so the death log is written
+        // from here. The handle is dropped with the runtime.
+        let _deaths = mud_client::deathlog::watch_headless(session.clone(), graph.clone());
         // Started before the login dance, so a run that stalls on the
         // way in is visible too rather than looking like a silent hang.
         let (phase_tx, phase_rx) = tokio::sync::watch::channel(FarmPhase::default());

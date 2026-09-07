@@ -237,3 +237,56 @@ impl DeathWatch {
     }
 }
 
+/// Log deaths on a session no window is watching, which is `mmc farm`.
+///
+/// The room is the last block the board rendered, resolved by its name
+/// when the graph has exactly one room by that name, and unknown
+/// otherwise. That is the same rule the headless status bar uses, and
+/// it is coarser than the window's locator on purpose: a headless run
+/// has no locator, and a death is not the moment to build one.
+///
+/// A session with no character name at all is watched but never logged.
+/// An empty name matches no death line, and it would write a record
+/// with an empty field that reads back as a different line.
+pub fn watch_headless(
+    session: std::sync::Arc<crate::session::Session>,
+    graph: std::sync::Arc<crate::graph::RoomGraph>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut events = session.events();
+        let mut watch = DeathWatch::default();
+        let mut fix = Fix::Unknown;
+        loop {
+            let cor = match events.recv().await {
+                Ok(cor) => cor,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => return,
+            };
+            if let crate::events::Event::RoomSeen(room) = &cor.event
+                && !cor.elsewhere
+            {
+                let named = graph.rooms_named(&room.name);
+                fix = match named.as_slice() {
+                    [one] => Fix::Confirmed(*one),
+                    _ => fix.demote(),
+                };
+            }
+            let Some(name) = session.character_name() else {
+                continue;
+            };
+            if watch.on_event(&cor.event, &name) {
+                let death = death_of(
+                    &name,
+                    fix,
+                    |id| graph.room(id).map(|r| r.name.clone()).unwrap_or_default(),
+                    SystemTime::now(),
+                );
+                match record(&death) {
+                    Ok(()) => eprintln!("death logged: {}", death.line()),
+                    Err(e) => eprintln!("death not logged: {e}"),
+                }
+            }
+        }
+    })
+}
+

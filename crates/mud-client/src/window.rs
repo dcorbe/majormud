@@ -592,6 +592,11 @@ async fn play(
     // the graph cannot name says nothing at all, and that used to be
     // indistinguishable from agreement.
     let mut here = crate::lost::Fix::Unknown;
+    // One death, one line in the log. Fed every event the session
+    // produces, in hand play and under a job alike, so the room is the
+    // one `here` held when the killing prompt arrived rather than the
+    // recall room the board renders a moment later.
+    let mut deaths = crate::deathlog::DeathWatch::default();
     // Experience rate, counted from the board's award lines. Runs for the
     // whole session, not just while a farm is attached: a hand-played
     // stretch is worth measuring too.
@@ -689,6 +694,31 @@ async fn play(
                 // The display comes from raw passthrough, so nothing is
                 // rendered here — only the counters and the assist.
                 if let Ok(cor) = &ev {
+                    // The sheet's name, or the profile's username until
+                    // a sheet is read, which is what `character_name`
+                    // answers. A nameless character is not watched at
+                    // all: an empty name matches no death line and
+                    // would write a record with an empty field.
+                    if let Some(name) = session.character_name()
+                        && deaths.on_event(&cor.event, &name)
+                    {
+                        let death = crate::deathlog::death_of(
+                            &name,
+                            here,
+                            |id| {
+                                graph
+                                    .as_ref()
+                                    .and_then(|g| g.room(id))
+                                    .map(|r| r.name.clone())
+                                    .unwrap_or_default()
+                            },
+                            std::time::SystemTime::now(),
+                        );
+                        w.note(&match crate::deathlog::record(&death) {
+                            Ok(()) => format!("-- death logged: {} --", death.line()),
+                            Err(e) => format!("-- death not logged: {e} --"),
+                        });
+                    }
                     if let Some(present) = crate::dialect::realm_presence(&cor.event) {
                         // Entering is worth asking about straight away;
                         // waiting out the full period would leave the bar
@@ -1149,6 +1179,27 @@ async fn play(
                                                     here = exit.here;
                                                     if let Some(why) = &exit.interrupted {
                                                         w.note(&format!("-- {why} --"));
+                                                    }
+                                                    // The map consumed the events while
+                                                    // it owned the screen, so a death it
+                                                    // closed on is logged here from the
+                                                    // fix it handed back, and the watch is
+                                                    // told so the prompt that follows does
+                                                    // not log it twice.
+                                                    if exit.interrupted.as_deref() == Some("you died; the map is closed") {
+                                                        deaths.mark_dead();
+                                                        if let Some(name) = session.character_name() {
+                                                            let death = crate::deathlog::death_of(
+                                                                &name,
+                                                                here,
+                                                                |id| g.room(id).map(|r| r.name.clone()).unwrap_or_default(),
+                                                                std::time::SystemTime::now(),
+                                                            );
+                                                            w.note(&match crate::deathlog::record(&death) {
+                                                                Ok(()) => format!("-- death logged: {} --", death.line()),
+                                                                Err(e) => format!("-- death not logged: {e} --"),
+                                                            });
+                                                        }
                                                     }
                                                     match exit.action {
                                                         // The map's quit ends the program,
