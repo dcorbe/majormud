@@ -534,6 +534,21 @@ fn a_save_onto_the_remembered_path_by_name_writes() {
     assert!(std::fs::read_to_string(&path).unwrap().contains("port = 2400"));
 }
 
+/// `dan.toml` and `./dan.toml` name the same file. A save through a
+/// different spelling of the remembered path is still a save onto the
+/// file these settings came from, not onto somebody else's.
+#[test]
+fn a_save_onto_a_different_spelling_of_the_remembered_path_writes() {
+    let path = scratch("spelled.toml");
+    let _ = std::fs::remove_file(&path);
+    std::fs::write(&path, COMMENTED).unwrap();
+    let mut s = Settings::load(&path).unwrap();
+    s.set("port", "2400").unwrap();
+    let alt = path.parent().unwrap().join("..").join("settings").join("spelled.toml");
+    s.save(Some(&alt)).unwrap();
+    assert!(std::fs::read_to_string(&path).unwrap().contains("port = 2400"));
+}
+
 /// A name nobody has used is free, and the save remembers it.
 #[test]
 fn a_save_onto_a_fresh_name_writes_and_remembers() {
