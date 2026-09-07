@@ -532,6 +532,11 @@ pub struct Live {
     generation: u64,
     what: &'static str,
     notices: Notices,
+    /// Set by `changed` when a wait resolves, cleared by `refresh` once
+    /// it has rebuilt for it. Tracked here instead of by rewinding the
+    /// channel's own version, so a wait's wake can never be mistaken
+    /// for a second send.
+    pending: bool,
     /// `fixed` keeps its own sender so the receiver never reports a
     /// closed channel.
     _pinned: Option<tokio::sync::watch::Sender<crate::profile::Profile>>,
@@ -571,6 +576,7 @@ impl Live {
             generation: 0,
             what,
             notices,
+            pending: false,
             _pinned: None,
         }
     }
@@ -611,7 +617,9 @@ impl Live {
     }
 
     /// Rebuild the configs if the profile has changed since the last
-    /// look. True when it did. One load when it did not.
+    /// look, or a `changed` wait landed one since then. True when it
+    /// did. Clears the pending flag either way, so a wait that already
+    /// forced this rebuild does not force a second one right after.
     ///
     /// Reads `Ref::has_changed` off the borrow rather than
     /// `Receiver::has_changed`, which reports the channel closed the
@@ -619,13 +627,14 @@ impl Live {
     /// sitting in it. A run whose window closes must still pick up
     /// whatever it last set.
     pub fn refresh(&mut self) -> bool {
-        let profile = {
-            let now = self.rx.borrow_and_update();
-            if !now.has_changed() {
-                return false;
-            }
-            now.clone()
-        };
+        let now = self.rx.borrow_and_update();
+        let changed = self.pending || now.has_changed();
+        let profile = now.clone();
+        drop(now);
+        self.pending = false;
+        if !changed {
+            return false;
+        }
         let (bot, farm) = (self.derive)(&profile);
         self.bot = bot;
         self.farm = farm;
@@ -641,17 +650,19 @@ impl Live {
     }
 
     /// Resolves when the profile changes. Never, once the sender is
-    /// gone: a select arm that fired forever would spin the pump.
+    /// gone. A select arm that fired forever would spin the pump.
     ///
-    /// `watch::Receiver::changed` marks the value it woke for as seen,
-    /// which would starve the very `refresh` a caller runs right after
-    /// it. `mark_changed` puts the pending change back so `refresh`
-    /// still finds it, and a second `changed` before that `refresh`
-    /// resolves at once instead of waiting on a send that already
-    /// happened.
+    /// Marks the wake pending on `Live` itself rather than asking
+    /// `watch::Receiver::mark_changed` to fake one. That call rewinds
+    /// the receiver's own version, so a second wait with no
+    /// intervening `refresh` would see its own rewind as a fresh
+    /// change and resolve at once with nothing sent, a silent zero
+    /// backoff spin. The flag holds the fact a change arrived until
+    /// `refresh` consumes it, so a second wait genuinely waits for a
+    /// second send.
     pub async fn changed(&mut self) {
         if self.rx.changed().await.is_ok() {
-            self.rx.mark_changed();
+            self.pending = true;
         } else {
             std::future::pending::<()>().await;
         }

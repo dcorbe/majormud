@@ -3003,3 +3003,40 @@ async fn changed_resolves_after_a_send_and_a_fixed_live_never_fires() {
     assert!(!fixed.refresh());
 }
 
+/// A wait that already woke must not spend a second wake on its own
+/// leftovers. Only a genuine second send may resolve it again.
+#[tokio::test]
+async fn a_second_changed_without_a_refresh_waits_for_a_second_send() {
+    let (tx, rx) = tokio::sync::watch::channel(Profile::default());
+    let mut live = Live::over(rx, "farm", quiet(), BotConfig::default(), FarmConfig::default(), derive_like_a_go());
+    tx.send(Profile::default()).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), live.changed())
+        .await
+        .expect("the first send wakes changed");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), live.changed())
+            .await
+            .is_err(),
+        "no second send means no second wake"
+    );
+    tx.send(Profile::default()).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), live.changed())
+        .await
+        .expect("the second send wakes changed");
+    assert!(live.refresh(), "the change landed even though two sends went by");
+}
+
+/// The wake from `changed` is not itself the rebuild. `refresh` is
+/// still the one thing that consumes it.
+#[tokio::test]
+async fn a_refresh_after_a_changed_wake_sees_the_change() {
+    let (tx, rx) = tokio::sync::watch::channel(Profile::default());
+    let mut live = Live::over(rx, "farm", quiet(), BotConfig::default(), FarmConfig::default(), derive_like_a_go());
+    tx.send(Profile::default()).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), live.changed())
+        .await
+        .expect("a send wakes changed");
+    assert!(live.refresh());
+    assert!(!live.refresh(), "nothing changed since the last refresh");
+}
+
