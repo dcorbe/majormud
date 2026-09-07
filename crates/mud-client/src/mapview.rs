@@ -309,12 +309,16 @@ impl MapView {
             KeyCode::Home => {
                 match self.here.last_known() {
                     Some(here) => {
-                        // Re-anchor rather than just moving the cursor: the
-                        // character may be on another plane entirely.
-                        if self.plane.cell_of(here).is_none() {
-                            self.hop_to(here, true);
-                        } else {
-                            self.cursor = self.plane.cell_of(here).unwrap_or(self.cursor);
+                        // Re-anchor rather than just moving the cursor
+                        // when the character is on another plane, or
+                        // has walked into another map: the map the
+                        // anchor is on is the one drawn whole, and that
+                        // should be the map the character stands in.
+                        match self.plane.cell_of(here) {
+                            Some(cell) if here.map == self.plane.anchor().map => {
+                                self.cursor = cell;
+                            }
+                            _ => self.hop_to(here, true),
                         }
                         self.centre();
                     }
@@ -414,10 +418,6 @@ impl MapView {
     }
 
     /// Follow the up or down exit out of the room under the cursor.
-    ///
-    /// Falls through to any remaining plane link when the room has no
-    /// vertical one, so a lone cross-map portal is still reachable
-    /// without a key of its own.
     fn climb(&mut self, want: Direction) {
         let Some(room) = self.cursor_room() else {
             self.message = Some("no room under the cursor".into());
@@ -427,11 +427,6 @@ impl MapView {
             .plane
             .links_from(room)
             .find(|l| l.dir == want)
-            .or_else(|| {
-                self.plane
-                    .links_from(room)
-                    .find(|l| !matches!(l.dir, Direction::Up | Direction::Down))
-            })
             .map(|l| l.dest);
         match dest {
             Some(dest) => self.hop_to(dest, true),
@@ -591,14 +586,10 @@ impl MapView {
         };
         // Say where the exits off this plane GO, and which key takes
         // them. "exits: n e w d" told you a `d` existed and nothing else
-        // — not that it left the map, not where to, not how to follow it.
+        // — not that it left the plane, not where to, not how to follow it.
         if let Some(room) = self.cursor_room() {
             for link in self.plane.links_from(room) {
-                let key = match link.dir {
-                    Direction::Up => "<",
-                    Direction::Down => ">",
-                    _ => "that way",
-                };
+                let key = if link.dir == Direction::Up { "<" } else { ">" };
                 lines.push(format!(
                     "{} [{key}] {}/{} {}",
                     spoken(link.dir),
@@ -615,8 +606,9 @@ impl MapView {
         let e = self.plane.extent();
         lines.push(String::new());
         lines.push(format!(
-            "plane {} rooms, {}x{}",
+            "plane {} rooms in {} maps, {}x{}",
             self.plane.len(),
+            self.plane.maps(),
             e.width(),
             e.height()
         ));

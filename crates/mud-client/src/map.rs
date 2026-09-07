@@ -5,21 +5,25 @@
 //! direction, and the game's own geometry falls out — `re/slum_map.py`
 //! proved it by closing 160 slum rooms with zero coordinate conflicts.
 //!
-//! **A plane is the unit of drawing.** Up, down and map-change portals do
-//! not move the cursor in the plane; they leave it. Splitting the world
-//! that way puts the median plane at 8 rooms and the largest at 2,420, in
-//! a 65 x 118 cell extent; no plane anywhere is wider than 160 cells or
-//! taller than 157. That is small enough to lay out whole and scroll a
-//! viewport over, which is why [`layout`] takes no radius: a radius would
-//! put a wall in the middle of the thing the operator is trying to scroll
-//! around.
+//! **A plane is the unit of drawing.** Up and down do not move the cursor
+//! in the plane; they leave it. A compass exit stays in the plane even
+//! when it crosses into another of the game's maps: the Western Road
+//! runs out of Newhaven's map into the Dragon's Teeth Hills' without a
+//! seam, and the map used to stop at the boundary and offer a hop where
+//! the operator wanted to keep scrolling. Splitting the world at
+//! vertical exits alone puts the median plane at 9 rooms and the largest
+//! at 4,490 over ten maps, in a 166 x 152 cell extent; no plane anywhere
+//! is wider than 179 cells or taller than 162. That is small enough to
+//! lay out whole and scroll a viewport over, which is why [`layout`]
+//! takes no radius: a radius would put a wall in the middle of the thing
+//! the operator is trying to scroll around.
 //!
 //! **A cell holds one room or none.** When the walk wants to put a second
 //! room in an occupied cell the room is left unplaced and the clash is
 //! recorded, because a map that silently overlapped would be a map that
-//! lies. This is not a rare edge: the largest plane clashes on 145 of its
-//! 2,420 rooms, about 6%. A grid drawing of a world that was never built
-//! on a grid cannot do better, so the honest move is to say so.
+//! lies. This is not a rare edge: about 2% of the exits on the largest
+//! plane clash. A grid drawing of a world that was never built on a grid
+//! cannot do better, so the honest move is to say so.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -87,7 +91,7 @@ pub struct Conflict {
     pub cell: Cell,
 }
 
-/// An exit that leaves the plane: up, down, or a map-change portal.
+/// An exit that leaves the plane: up or down.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Link {
     pub from: RoomId,
@@ -118,6 +122,8 @@ pub struct Plane {
     /// Up and down are absent by construction: they never take a cell in
     /// the plane, so they land in `links` instead.
     edges: BTreeSet<(RoomId, Direction)>,
+    /// How many of the game's maps the placed rooms span.
+    maps: usize,
 }
 
 impl Plane {
@@ -139,6 +145,10 @@ impl Plane {
 
     pub fn conflicts(&self) -> &[Conflict] {
         &self.conflicts
+    }
+
+    pub fn maps(&self) -> usize {
+        self.maps
     }
 
     /// Exits off this plane, in the order the walk met them. The
@@ -179,6 +189,16 @@ impl Plane {
 /// Breadth-first so that the shortest walk to a room decides its cell:
 /// with conflicts possible, the nearest placement is the one least likely
 /// to have accumulated distortion.
+///
+/// Two passes. The first walks the anchor's own map and nothing else,
+/// so that map is drawn exactly as it would be alone. The second walks
+/// on across every compass exit into other maps, placing their rooms
+/// where they fit. A neighbouring map that wants a cell the home map
+/// already holds loses it and is reported as a [`Conflict`], never the
+/// other way round. One pass over the whole graph would let a stub room
+/// one step over a boundary take the cell that a home-map room two steps
+/// away needs, and everything behind that room would go undrawn: the
+/// map 16 caves lose 174 of 177 rooms that way.
 pub fn layout(graph: &RoomGraph, anchor: RoomId) -> Plane {
     let mut plane = Plane {
         anchor,
@@ -188,6 +208,7 @@ pub fn layout(graph: &RoomGraph, anchor: RoomId) -> Plane {
         conflicts: Vec::new(),
         links: Vec::new(),
         edges: BTreeSet::new(),
+        maps: 0,
     };
     if graph.room(anchor).is_none() {
         return plane;
@@ -195,59 +216,41 @@ pub fn layout(graph: &RoomGraph, anchor: RoomId) -> Plane {
     plane.cells.insert((0, 0), anchor);
     plane.at.insert(anchor, (0, 0));
 
+    // Compass exits out of the home map, held back for the second pass
+    // in the order the first met them.
+    let mut crossings: Vec<(RoomId, Direction, RoomId)> = Vec::new();
     let mut queue = VecDeque::from([anchor]);
-    while let Some(from) = queue.pop_front() {
-        let cell = plane.at[&from];
-        let Some(room) = graph.room(from) else {
-            continue;
-        };
-        for (i, dir) in ALL.into_iter().enumerate() {
-            let Some(edge) = room.exits[i].as_ref() else {
-                continue;
-            };
-            if graph.room(edge.dest).is_none() {
-                continue; // an edge into nothing; never drawn, as `route` never walks it
+    for pass in [Pass::Home, Pass::Beyond] {
+        if pass == Pass::Beyond {
+            for (from, dir, dest) in std::mem::take(&mut crossings) {
+                plane.place(from, dir, dest, &mut queue);
             }
-            // Up, down and anything crossing to another map leave the
-            // plane rather than taking a cell in it.
-            let Some(step) = step_of(dir).filter(|_| edge.dest.map == from.map) else {
-                plane.links.push(Link {
-                    from,
-                    dir,
-                    dest: edge.dest,
-                });
+        }
+        while let Some(from) = queue.pop_front() {
+            let Some(room) = graph.room(from) else {
                 continue;
             };
-            let want = (cell.0 + step.0, cell.1 + step.1);
-            match plane.at.get(&edge.dest) {
-                // Already placed. Agreeing is the common case; disagreeing
-                // is the world not being flat, and is worth reporting once.
-                Some(&there) => {
-                    if there != want {
-                        plane.conflicts.push(Conflict {
-                            from,
-                            dir,
-                            dest: edge.dest,
-                            cell: want,
-                        });
-                    } else {
-                        plane.edges.insert((from, dir));
-                    }
+            for (i, dir) in ALL.into_iter().enumerate() {
+                let Some(edge) = room.exits[i].as_ref() else {
+                    continue;
+                };
+                if graph.room(edge.dest).is_none() {
+                    continue; // an edge into nothing; never drawn, as `route` never walks it
                 }
-                None if plane.cells.contains_key(&want) => {
-                    plane.conflicts.push(Conflict {
+                // Up and down leave the plane rather than taking a cell in it.
+                let Some(_) = step_of(dir) else {
+                    plane.links.push(Link {
                         from,
                         dir,
                         dest: edge.dest,
-                        cell: want,
                     });
+                    continue;
+                };
+                if pass == Pass::Home && edge.dest.map != anchor.map {
+                    crossings.push((from, dir, edge.dest));
+                    continue;
                 }
-                None => {
-                    plane.cells.insert(want, edge.dest);
-                    plane.at.insert(edge.dest, want);
-                    plane.edges.insert((from, dir));
-                    queue.push_back(edge.dest);
-                }
+                plane.place(from, dir, edge.dest, &mut queue);
             }
         }
     }
@@ -263,7 +266,53 @@ pub fn layout(graph: &RoomGraph, anchor: RoomId) -> Plane {
             ys.iter().copied().max().unwrap_or(0),
         ),
     };
+    plane.maps = plane.at.keys().map(|r| r.map).collect::<BTreeSet<_>>().len();
     plane
+}
+
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum Pass {
+    Home,
+    Beyond,
+}
+
+impl Plane {
+    /// Seat `dest` one step in `dir` from `from`, or record why not.
+    fn place(&mut self, from: RoomId, dir: Direction, dest: RoomId, queue: &mut VecDeque<RoomId>) {
+        let cell = self.at[&from];
+        let step = step_of(dir).expect("only compass exits are placed");
+        let want = (cell.0 + step.0, cell.1 + step.1);
+        match self.at.get(&dest) {
+            // Already placed. Agreeing is the common case; disagreeing
+            // is the world not being flat, and is worth reporting once.
+            Some(&there) => {
+                if there != want {
+                    self.conflicts.push(Conflict {
+                        from,
+                        dir,
+                        dest,
+                        cell: want,
+                    });
+                } else {
+                    self.edges.insert((from, dir));
+                }
+            }
+            None if self.cells.contains_key(&want) => {
+                self.conflicts.push(Conflict {
+                    from,
+                    dir,
+                    dest,
+                    cell: want,
+                });
+            }
+            None => {
+                self.cells.insert(want, dest);
+                self.at.insert(dest, want);
+                self.edges.insert((from, dir));
+                queue.push_back(dest);
+            }
+        }
+    }
 }
 
 // --- paint -----------------------------------------------------------
@@ -387,7 +436,7 @@ pub fn styles(
             continue;
         };
         let glyph = if plane.links_from(id).next().is_some() {
-            // A stairwell: somewhere this map does not show.
+            // A stairwell: somewhere this plane does not show.
             '+'
         } else if d.shop > 0 {
             '$'
@@ -462,8 +511,8 @@ pub enum Zoom {
     /// east-west — which is what this zoom did until somebody opened it
     /// on a real map and said so (2026-08-02).
     Normal,
-    /// 1 x 1: one glyph per room. Fits the widest plane (166 cells) on
-    /// any wide terminal.
+    /// 1 x 1: one glyph per room. Fits the widest plane (179 cells) on
+    /// a wide terminal.
     Overview,
 }
 

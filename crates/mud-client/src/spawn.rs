@@ -161,6 +161,9 @@ impl Template {
 }
 
 /// Every monster template, indexed the way the spawner reads them.
+///
+/// `Default` is the empty table, for a view built over a hand-made graph.
+#[derive(Default)]
 pub struct SpawnTable {
     /// region -> templates, in level order.
     by_region: BTreeMap<i64, Vec<Template>>,
