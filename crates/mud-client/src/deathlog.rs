@@ -190,3 +190,50 @@ pub fn last(character: &str) -> Option<Death> {
     last_in(&path(), character)
 }
 
+/// Sees a death exactly once.
+///
+/// The board says it three ways: the prompt drops to zero hitpoints,
+/// `You have been killed.` is printed to the dying player, and
+/// `<name> is dead.` is printed to the room. All three usually arrive
+/// for one death, so the first fires and the rest are held until a
+/// prompt shows the character alive again.
+#[derive(Debug, Default)]
+pub struct DeathWatch {
+    dead: bool,
+}
+
+impl DeathWatch {
+    /// True exactly once per death.
+    pub fn on_event(&mut self, ev: &crate::events::Event, character: &str) -> bool {
+        use crate::events::Event;
+        match ev {
+            Event::Prompt { hp, .. } if *hp > 0 => {
+                self.dead = false;
+                false
+            }
+            Event::Prompt { .. } => self.fire(),
+            Event::Line(line)
+                if line.trim() == "You have been killed."
+                    || crate::farm::is_player_death(line, character) =>
+            {
+                self.fire()
+            }
+            _ => false,
+        }
+    }
+
+    /// A death seen by somebody else, the map closing on the death
+    /// line, so the wordings still to arrive do not fire a second time.
+    pub fn mark_dead(&mut self) {
+        self.dead = true;
+    }
+
+    fn fire(&mut self) -> bool {
+        if self.dead {
+            return false;
+        }
+        self.dead = true;
+        true
+    }
+}
+

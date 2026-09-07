@@ -92,3 +92,65 @@ fn a_missing_log_has_no_last_death() {
     assert_eq!(last_in(&path, "beef"), None);
 }
 
+
+use mud_client::deathlog::DeathWatch;
+use mud_client::events::Event;
+
+fn prompt(hp: i32) -> Event {
+    Event::Prompt {
+        hp,
+        mana: None,
+        status: None,
+    }
+}
+
+fn line(text: &str) -> Event {
+    Event::Line(text.to_string())
+}
+
+/// The board says a death three ways, and all three usually arrive for
+/// one death. The first fires, the rest are held until the character
+/// is alive again.
+#[test]
+fn the_first_of_the_three_wordings_fires_and_the_rest_are_held() {
+    let mut w = DeathWatch::default();
+    assert!(w.on_event(&line("You have been killed."), "Beef"));
+    assert!(!w.on_event(&line("Beef is dead."), "Beef"));
+    assert!(!w.on_event(&prompt(0), "Beef"));
+    assert!(!w.on_event(&prompt(-3), "Beef"));
+}
+
+#[test]
+fn each_wording_fires_on_its_own() {
+    for ev in [line("You have been killed."), line("Beef is dead."), prompt(0)] {
+        let mut w = DeathWatch::default();
+        assert!(w.on_event(&ev, "Beef"), "{ev:?}");
+    }
+}
+
+#[test]
+fn a_prompt_above_zero_re_arms_the_watch() {
+    let mut w = DeathWatch::default();
+    assert!(w.on_event(&prompt(0), "Beef"));
+    assert!(!w.on_event(&prompt(0), "Beef"));
+    assert!(!w.on_event(&prompt(22), "Beef"), "alive again is not a death");
+    assert!(w.on_event(&prompt(0), "Beef"), "the next death counts");
+}
+
+#[test]
+fn somebody_elses_death_is_not_ours() {
+    let mut w = DeathWatch::default();
+    assert!(!w.on_event(&line("Salad is dead."), "Beef"));
+    assert!(!w.on_event(&line("The giant rat is dead."), "Beef"));
+    assert!(!w.on_event(&prompt(22), "Beef"));
+}
+
+#[test]
+fn a_death_marked_from_outside_is_not_fired_again() {
+    let mut w = DeathWatch::default();
+    w.mark_dead();
+    assert!(!w.on_event(&prompt(0), "Beef"));
+    assert!(!w.on_event(&prompt(22), "Beef"));
+    assert!(w.on_event(&prompt(0), "Beef"));
+}
+
