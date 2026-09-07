@@ -220,7 +220,7 @@ impl Default for FarmConfig {
             interrupt_at_percent: 50,
             travel_interrupts: 3,
             defend_seconds: 60,
-            max_rest_seconds: 120,
+            max_rest_seconds: 180,
             nav: crate::nav::NavConfig::default(),
         }
     }
@@ -1818,7 +1818,7 @@ impl crate::nav::TravelGuard for FarmGuard {
 /// the walk limits from `[farm].nav`, the sneak switch from `[bot]`.
 pub fn nav_config(bot: &crate::bot::BotConfig, farm: &FarmConfig) -> crate::nav::NavConfig {
     crate::nav::NavConfig {
-        sneak: bot.sneak,
+        sneak: bot.auto_sneak,
         ..farm.nav.clone()
     }
 }

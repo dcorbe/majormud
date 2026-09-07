@@ -652,9 +652,8 @@ async fn an_interrupted_leg_is_defended_and_resumed() {
         interrupt_at_percent: 101,
         ..farm_config(&["1/3"], 1)
     };
-    let (end, stats) = farm(&session, BotConfig::default(), cfg)
-        .await
-        .expect("farm run");
+    let bot = BotConfig { auto_combat: false, ..BotConfig::default() };
+    let (end, stats) = farm(&session, bot, cfg).await.expect("farm run");
 
     assert_eq!(end, FarmEnd::LoopsDone);
     assert!(
@@ -687,9 +686,8 @@ async fn the_interrupt_budget_ends_the_run() {
         travel_interrupts: 0,
         ..farm_config(&["1/3"], 1)
     };
-    let (end, stats) = farm(&session, BotConfig::default(), cfg)
-        .await
-        .expect("farm run");
+    let bot = BotConfig { auto_combat: false, ..BotConfig::default() };
+    let (end, stats) = farm(&session, bot, cfg).await.expect("farm run");
 
     assert_eq!(end, FarmEnd::TooHurt);
     assert_eq!(stats.interrupts, 1);

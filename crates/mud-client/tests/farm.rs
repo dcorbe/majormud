@@ -1725,7 +1725,7 @@ fn a_seeded_stop_needs_no_opening_look() {
 #[test]
 fn a_seed_naming_somewhere_else_is_not_believed() {
     let t0 = Instant::now();
-    let mut w = Stop::new(Bot::new(BotConfig::default()), 0);
+    let mut w = Stop::new(Bot::new(BotConfig { auto_combat: false, ..BotConfig::default() }), 0);
     w.seed(view_named("Somewhere Else", &["giant rat"]), t0);
     assert_eq!(
         w.verdict(t0),
@@ -2640,6 +2640,7 @@ fn a_coin_pile_on_the_way_trips_a_sighting_guard() {
     // auto_get off: the pile is not this policy's business.
     let mut no_loot = guard(100, 50).sighting(Bot::new(BotConfig {
         auto_combat: true,
+        auto_get: false,
         ..BotConfig::default()
     }));
     assert_eq!(no_loot.on_room(&pile), None);
@@ -2896,7 +2897,7 @@ fn a_stop_ends_over_ignored_coins() {
 /// `[bot]`. One function joins them, so no job can forget the switch.
 #[test]
 fn nav_config_copies_the_sneak_switch_from_the_bot_table() {
-    let bot = BotConfig { sneak: false, ..BotConfig::default() };
+    let bot = BotConfig { auto_sneak: false, ..BotConfig::default() };
     let farm = FarmConfig {
         nav: mud_client::nav::NavConfig { bash_doors: false, ..Default::default() },
         ..FarmConfig::default()
@@ -2906,6 +2907,13 @@ fn nav_config_copies_the_sneak_switch_from_the_bot_table() {
     assert!(!nav.bash_doors, "the farm's own nav limits still apply");
     let on = mud_client::farm::nav_config(&BotConfig::default(), &farm);
     assert!(on.sneak);
+}
+
+/// The departure gate's cap, raised from 120 so a character with a slow
+/// heal is not cut off from resting before it recovers.
+#[test]
+fn farm_config_defaults_max_rest_seconds_to_180() {
+    assert_eq!(FarmConfig::default().max_rest_seconds, 180);
 }
 
 use mud_client::farm::Live;

@@ -62,18 +62,18 @@ There is no force flag. Deleting the file by hand is the override.
 - The `/save`, `/load`, `/new` arms in `slash` hand the argument to the resolver. One
   test per verb, asserting the path the outcome carries.
 
-## 2. `bot.sneak`
+## 2. `bot.auto_sneak`
 
 ### Rule
 
-One new profile key, `bot.sneak`, a boolean, default true. False means no walk arms a
+One new profile key, `bot.auto_sneak`, a boolean, default true. False means no walk arms a
 sneak and, once the stealth spec lands, no stealth spell is cast for one.
 
 ### Where it applies
 
 `BotConfig` gains `sneak: bool` with a serde default of true. `NavConfig` gains
 `sneak: bool`. Wherever a `Navigator` is built from the profile, `nav.sneak` is set from
-`bot.sneak`. `Navigator::arm_sneak` returns `Ok(false)` when `sneak` is off, the same
+`bot.auto_sneak`. `Navigator::arm_sneak` returns `Ok(false)` when `sneak` is off, the same
 early return it already takes when the sheet's stealth is zero.
 
 The key joins `settings::KEYS` so `/set bot.sne<Tab>` completes it. It is a `bot.*` key,
@@ -82,7 +82,7 @@ job picks it up through section 3.
 
 ### Tests
 
-- `bot.sneak` is in `KEYS` and a profile without it parses with `sneak: true`.
+- `bot.auto_sneak` is in `KEYS` and a profile without it parses with `sneak: true`.
 - A navigator with `sneak: false` and a stealthy character walks a two room corridor
   and the board log holds no `sneak`.
 - The same walk with `sneak: true` sends one `sneak` before the first move.
@@ -175,7 +175,7 @@ never fires. They take the receiver like any job and nothing else is different.
 
 ## Out of scope
 
-- A `/sneak` toggle command. `/set bot.sneak false` is the one way.
+- A `/sneak` toggle command. `/set bot.auto_sneak false` is the one way.
 - A force flag on `/save`.
 - Applying structural keys to a running job.
 

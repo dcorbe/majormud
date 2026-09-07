@@ -1778,7 +1778,7 @@ async fn a_lap_of_quiet_stops_sneaks_once() {
     );
 }
 
-/// The same lap with `bot.sneak` off. The sheet says stealth 56 and the
+/// The same lap with `bot.auto_sneak` off. The sheet says stealth 56 and the
 /// run still never arms, because the switch reaches the walker through
 /// the farm's nav config.
 #[tokio::test]
@@ -1812,7 +1812,7 @@ async fn a_lap_with_sneak_off_never_arms() {
     let bot = BotConfig {
         auto_combat: true,
         max_hp: 30,
-        sneak: false,
+        auto_sneak: false,
         ..BotConfig::default()
     };
 
@@ -1837,7 +1837,7 @@ async fn a_lap_with_sneak_off_never_arms() {
 }
 
 /// `go_to_finish` builds its own navigator, separately from
-/// `run_farm`'s. `bot.sneak = false` must reach that walk too, not
+/// `run_farm`'s. `bot.auto_sneak = false` must reach that walk too, not
 /// only the laps a run makes on its circuit.
 #[tokio::test]
 async fn the_walk_to_the_finish_room_with_sneak_off_never_arms() {
@@ -1865,7 +1865,7 @@ async fn the_walk_to_the_finish_room_with_sneak_off_never_arms() {
         ..FarmConfig::default()
     };
     let plan = FarmPlan::build(&cfg, &graph).expect("plan");
-    let bot = BotConfig { sneak: false, ..BotConfig::default() };
+    let bot = BotConfig { auto_sneak: false, ..BotConfig::default() };
 
     tokio::time::timeout(
         Duration::from_secs(10),

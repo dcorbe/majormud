@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A bare profile name resolves under `~/.config/mmc` and a save never overwrites a file the settings did not come from, `bot.sneak` turns sneaking off, and a running job picks up a `/set` without a restart.
+**Goal:** A bare profile name resolves under `~/.config/mmc` and a save never overwrites a file the settings did not come from, `bot.auto_sneak` turns sneaking off, and a running job picks up a `/set` without a restart.
 
 **Architecture:** One resolver in `profile.rs` turns a typed name into a path, and every site that takes a profile name calls it. The session's profile becomes a `tokio::sync::watch` channel, so a change is an event. A new `farm::Live` owns the configs a job runs under together with the receiver and the job's own derivation rule. The jobs' deep functions take `&mut Live` where they took `&BotConfig` and `&FarmConfig`, ask it to refresh at the top of every leg, pass and stop, and select on it where they wait on the board.
 
@@ -21,7 +21,7 @@
 - Run the crate's tests with `cargo test -p mud-client` from the repo root. Build with `cargo build -p mud-client`. Pass `--test <file>` while iterating and run the whole crate once before each commit. `cargo clippy -p mud-client --all-targets` must add no warnings. The count today is 13.
 - Working directory for every command below is the repo root `/home/daniel/majormud/majormud`.
 - Tests that set process environment do not exist in this plan. Every rule that reads the environment has a pure twin that takes the values as arguments, and the tests use the twin.
-- Names later plans depend on, verbatim: `Session::profile_changes(&self) -> tokio::sync::watch::Receiver<Profile>`, `BotConfig::sneak: bool`, `NavConfig::sneak: bool`, `profile::resolve(arg: &str) -> PathBuf`, `profile::config_dir() -> PathBuf`, `farm::Live`, `farm::nav_config`.
+- Names later plans depend on, verbatim: `Session::profile_changes(&self) -> tokio::sync::watch::Receiver<Profile>`, `BotConfig::auto_sneak: bool`, `NavConfig::sneak: bool`, `profile::resolve(arg: &str) -> PathBuf`, `profile::config_dir() -> PathBuf`, `farm::Live`, `farm::nav_config`.
 
 ---
 
@@ -29,18 +29,18 @@
 
 - `crates/mud-client/src/profile.rs` (modify): `config_dir`, `config_dir_from`, `resolve`, `resolve_in`.
 - `crates/mud-client/src/loops.rs` (modify): `dir` becomes `config_dir().join("loops")`.
-- `crates/mud-client/src/settings.rs` (modify): the overwrite guard in `Settings::save`, `"bot.sneak"` in `KEYS`.
+- `crates/mud-client/src/settings.rs` (modify): the overwrite guard in `Settings::save`, `"bot.auto_sneak"` in `KEYS`.
 - `crates/mud-client/src/tui.rs` (modify): `apply_settings_in` with `apply_settings` calling it under `config_dir()`, the `/new` arm resolves its name, `pace_on_change`, the four starters build a `Live`, `spawn_run` takes one.
 - `crates/mud-client/src/cli.rs` (modify): doc comments on the three `--profile` arguments.
 - `crates/mud-client/src/bin/mmc.rs` (modify): `main` resolves every `--profile`, `farm_command` builds `Live::fixed`.
 - `crates/mud-client/src/window.rs` (modify): a profile change re-paces a running job.
-- `crates/mud-client/src/bot.rs` (modify): `BotConfig::sneak`, `Bot::reconfigure`.
+- `crates/mud-client/src/bot.rs` (modify): `BotConfig::auto_sneak`, `Bot::reconfigure`.
 - `crates/mud-client/src/nav.rs` (modify): `NavConfig::sneak`, the `Navigator` field, the early return in `arm_sneak`.
 - `crates/mud-client/src/session.rs` (modify): the profile as a `watch::Sender`, `profile_changes`.
 - `crates/mud-client/src/farm.rs` (modify): `nav_config`, `Derive`, `Live`, and `run_farm`, `farm_loop`, `travel`, `farm_stop` on `Live`. The stop pump's wait becomes a `select!` with a `changed` arm.
 - `crates/mud-client/src/go.rs` (modify): `run_go` on `Live`.
 - `crates/mud-client/src/bank.rs` (modify): `errand` and `run_bank` on `Live`.
-- `docs/mud-client.md` (modify): the `/save` row, the "When a change takes effect" lists, `bot.sneak`.
+- `docs/mud-client.md` (modify): the `/save` row, the "When a change takes effect" lists, `bot.auto_sneak`.
 - Tests: `tests/profile.rs`, `tests/loops.rs`, `tests/settings.rs`, `tests/tui.rs`, `tests/sneak.rs`, `tests/farm.rs`, `tests/bot.rs`, `tests/farm_scripted.rs`, `tests/go_scripted.rs`, `tests/bank_scripted.rs`, `tests/farm_live.rs`, `tests/go_live.rs`, `tests/session_capabilities.rs`.
 
 ### The live reload structure
@@ -596,7 +596,7 @@ git commit -m "feat(client): /save, /load, /new and --profile take a profile nam
 
 ---
 
-### Task 4: `bot.sneak`
+### Task 4: `bot.auto_sneak`
 
 **Files:**
 - Modify: `crates/mud-client/src/bot.rs:185-200` (the field), `bot.rs:390-416` (the default)
@@ -609,7 +609,7 @@ git commit -m "feat(client): /save, /load, /new and --profile take a profile nam
 **Interfaces:**
 - Consumes: nothing new.
 - Produces:
-  - `BotConfig::sneak: bool`, default true, serialised, key `bot.sneak`.
+  - `BotConfig::auto_sneak: bool`, default true, serialised, key `bot.auto_sneak`.
   - `NavConfig::sneak: bool`, default true, `#[serde(skip)]`, so it is not a profile key.
   - `pub fn farm::nav_config(bot: &BotConfig, farm: &FarmConfig) -> NavConfig`.
   - `Navigator::arm_sneak` returns `Ok(false)` when `sneak` is off.
@@ -623,11 +623,11 @@ Append to `crates/mud-client/tests/settings.rs`:
 /// under `/set bot.` and rebuilds the assist like the rest.
 #[test]
 fn bot_sneak_is_a_key_that_defaults_on() {
-    assert!(KEYS.contains(&"bot.sneak"));
+    assert!(KEYS.contains(&"bot.auto_sneak"));
     let s = Settings::default();
-    assert_eq!(s.value("bot.sneak").as_deref(), Some("true"));
+    assert_eq!(s.value("bot.auto_sneak").as_deref(), Some("true"));
     let mut s = Settings::parse(COMMENTED).unwrap();
-    s.set("bot.sneak", "false").unwrap();
+    s.set("bot.auto_sneak", "false").unwrap();
     assert!(!s.profile().bot.as_ref().unwrap().sneak);
 }
 ```
@@ -635,7 +635,7 @@ fn bot_sneak_is_a_key_that_defaults_on() {
 Append to `crates/mud-client/tests/sneak.rs`:
 
 ```rust
-/// `bot.sneak = false`. A stealthy character walks and never arms.
+/// `bot.auto_sneak = false`. A stealthy character walks and never arms.
 #[tokio::test]
 async fn sneak_off_never_sends_sneak() {
     let (addr, log) = sneak_board("Attempting to sneak...", Board { arms: true, ..Board::default() }).await;
@@ -678,7 +678,7 @@ fn nav_config_copies_the_sneak_switch_from_the_bot_table() {
 Append to `crates/mud-client/tests/farm_scripted.rs`, after `a_lap_of_quiet_stops_sneaks_once`:
 
 ```rust
-/// The same lap with `bot.sneak` off. The sheet says stealth 56 and the
+/// The same lap with `bot.auto_sneak` off. The sheet says stealth 56 and the
 /// run still never arms, because the switch reaches the walker through
 /// the farm's nav config.
 #[tokio::test]
@@ -740,7 +740,7 @@ async fn a_lap_with_sneak_off_never_arms() {
 - [ ] **Step 2: Run them to see them fail**
 
 Run: `cargo test -p mud-client --test settings bot_sneak`
-Expected: FAIL, `KEYS` does not contain `bot.sneak`. The other three fail to compile.
+Expected: FAIL, `KEYS` does not contain `bot.auto_sneak`. The other three fail to compile.
 
 - [ ] **Step 3: Implement**
 
@@ -755,12 +755,12 @@ In `crates/mud-client/src/bot.rs`, after the `take_keys` field of `BotConfig`:
 
 and in `impl Default for BotConfig`, after `take_keys: true,`: `sneak: true,`.
 
-In `crates/mud-client/src/settings.rs`, in `KEYS`, after `"bot.take_keys",` add `"bot.sneak",`.
+In `crates/mud-client/src/settings.rs`, in `KEYS`, after `"bot.take_keys",` add `"bot.auto_sneak",`.
 
 In `crates/mud-client/src/nav.rs`, add to `NavConfig` after `search_hidden`:
 
 ```rust
-    /// Arm a sneak before a step. Copied from `bot.sneak` by
+    /// Arm a sneak before a step. Copied from `bot.auto_sneak` by
     /// [`crate::farm::nav_config`] and not a profile key of its own:
     /// one switch, in the bot table, that every walker reads.
     #[serde(skip)]
@@ -798,7 +798,7 @@ In `crates/mud-client/src/farm.rs`, next to `check_departure_mark`, add:
 /// the walk limits from `[farm].nav`, the sneak switch from `[bot]`.
 pub fn nav_config(bot: &crate::bot::BotConfig, farm: &FarmConfig) -> crate::nav::NavConfig {
     crate::nav::NavConfig {
-        sneak: bot.sneak,
+        sneak: bot.auto_sneak,
         ..farm.nav.clone()
     }
 }
@@ -817,15 +817,15 @@ sneak = true               # arm a sneak before walking; false never sneaks
 - [ ] **Step 4: Run the tests**
 
 Run: `cargo test -p mud-client --test settings --test sneak --test farm --test farm_scripted --test profile`
-Expected: all pass. `every_key_the_profile_serialises_is_in_keys` passes because `NavConfig::sneak` is skipped and `bot.sneak` is in `KEYS`.
+Expected: all pass. `every_key_the_profile_serialises_is_in_keys` passes because `NavConfig::sneak` is skipped and `bot.auto_sneak` is in `KEYS`.
 
-Mutation check: in `farm::nav_config` write `sneak: true` instead of `bot.sneak`. `nav_config_copies_the_sneak_switch_from_the_bot_table` and `a_lap_with_sneak_off_never_arms` fail. Revert.
+Mutation check: in `farm::nav_config` write `sneak: true` instead of `bot.auto_sneak`. `nav_config_copies_the_sneak_switch_from_the_bot_table` and `a_lap_with_sneak_off_never_arms` fail. Revert.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add crates/mud-client/src/bot.rs crates/mud-client/src/settings.rs crates/mud-client/src/nav.rs crates/mud-client/src/farm.rs crates/mud-client/src/go.rs crates/mud-client/src/bank.rs crates/mud-client/tests/settings.rs crates/mud-client/tests/sneak.rs crates/mud-client/tests/farm.rs crates/mud-client/tests/farm_scripted.rs docs/mud-client.md
-git commit -m "feat(client): bot.sneak turns sneaking off for every walk"
+git commit -m "feat(client): bot.auto_sneak turns sneaking off for every walk"
 ```
 
 ---
@@ -1880,8 +1880,8 @@ Expected: `0a0a` or `0a`, with the file's last character a newline.
 **Spec coverage.**
 
 - §1 resolver and base: Task 1. Every site: Task 3 covers `/save`, `/load`, `/new`, `--profile` on play, run and farm. Overwrite guard and message: Task 2. Tests listed in the spec: Tasks 1 to 3.
-- §2 `bot.sneak`: Task 4 covers the field, `KEYS`, `NavConfig.sneak`, `arm_sneak`, `nav_config` at every navigator built from the profile, and the three tests. `start_where` builds `NavConfig::default()` and does not sneak today, so it is unchanged.
-- §3 the event: Task 5. The receiver in a job, the forced fields, the navigator rebuilt: Tasks 6 to 8. The wake points: `farm_stop` selects on `changed`, `travel` and `farm_loop` refresh at the top of a pass and a stop. The bank errand refreshes through the `travel` it calls. Live keys: the bot marks and spells through `reconfigure` and the casts rebuild, the ignore lists through `reconfigure`, `bot.sneak` through the navigator rebuild, `farm.*` through the config clones, `bank.*` through `bank_cfg`, `pace_ms` through Task 5. Fixed keys: never read from `Live`. The notice: `Live::refresh`. Headless: `Live::fixed`. Tests: Task 8 and Task 5.
+- §2 `bot.auto_sneak`: Task 4 covers the field, `KEYS`, `NavConfig.sneak`, `arm_sneak`, `nav_config` at every navigator built from the profile, and the three tests. `start_where` builds `NavConfig::default()` and does not sneak today, so it is unchanged.
+- §3 the event: Task 5. The receiver in a job, the forced fields, the navigator rebuilt: Tasks 6 to 8. The wake points: `farm_stop` selects on `changed`, `travel` and `farm_loop` refresh at the top of a pass and a stop. The bank errand refreshes through the `travel` it calls. Live keys: the bot marks and spells through `reconfigure` and the casts rebuild, the ignore lists through `reconfigure`, `bot.auto_sneak` through the navigator rebuild, `farm.*` through the config clones, `bank.*` through `bank_cfg`, `pace_ms` through Task 5. Fixed keys: never read from `Live`. The notice: `Live::refresh`. Headless: `Live::fixed`. Tests: Task 8 and Task 5.
 
 **Deviations from the spec, stated.** The spec asks for a `changed` arm at the walk's step wait. That wait lives inside `Navigator::goto`, which cannot rebuild the job's configs, so a change during one `goto` lands when it returns. The spec's go test that changes `farm.fight_while_travelling` mid walk is written against a farm instead, because a go's fight mode is the `/bot` toggle by design and its derivation forces it. The spec's go test that changes the target is written as a profile change that leaves the target alone, because the target is not a setting.
 

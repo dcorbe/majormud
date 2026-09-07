@@ -1179,11 +1179,11 @@ fn other_outcomes_are_not_settings_commands() {
 }
 
 #[test]
-fn a_profile_without_a_bot_table_gets_the_attack_and_loot_assist() {
+fn a_profile_without_a_bot_table_gets_the_default_assist() {
     let cfg = assist_config_for(&Profile::default());
-    assert!(cfg.auto_combat && cfg.auto_get && !cfg.auto_heal);
+    assert_eq!(cfg, BotConfig::default());
     let with = Profile {
-        bot: Some(BotConfig { auto_heal: true, ..Default::default() }),
+        bot: Some(BotConfig { auto_combat: false, auto_heal: true, ..Default::default() }),
         ..Default::default()
     };
     let cfg = assist_config_for(&with);

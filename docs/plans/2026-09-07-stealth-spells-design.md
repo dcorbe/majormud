@@ -109,9 +109,9 @@ The buff state reads mana from the prompt, as it does for a farm's buffs. The
 navigator feeds it every prompt it sees while waiting on a step, so the affordability
 check is current.
 
-## 3. `bot.sneak` off
+## 3. `bot.auto_sneak` off
 
-With `bot.sneak` false the navigator arms nothing and casts nothing. This is the first
+With `bot.auto_sneak` false the navigator arms nothing and casts nothing. This is the first
 step of arming and needs no other gate.
 
 ## Tests
@@ -129,7 +129,7 @@ Navigator, on the scripted sneak board in `tests/sneak.rs`:
 
 - A stealthy character with camouflage sends `cast camo` and then `sneak` before the
   first move, in that order.
-- The same walk with `bot.sneak` off sends neither.
+- The same walk with `bot.auto_sneak` off sends neither.
 - A walk that breaks on the second step and whose spell has lapsed recasts before
   re-arming.
 - A walk whose spell has not lapsed does not recast on re-arm.

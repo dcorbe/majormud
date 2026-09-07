@@ -1227,15 +1227,12 @@ pub fn apply_settings_in(
     }
 }
 
-/// The assist's config: the profile's bot table, or attack and loot for
-/// a profile without one, because attack and loot are the whole point of
-/// asking for an assist.
+/// The assist's config: the profile's bot table, or the defaults for a
+/// profile without one. Attack and loot are on by default now, which is
+/// the whole point of asking for an assist, so there is no longer a
+/// special case to make that true.
 pub fn assist_config_for(profile: &crate::profile::Profile) -> crate::bot::BotConfig {
-    profile.bot.clone().unwrap_or(crate::bot::BotConfig {
-        auto_combat: true,
-        auto_get: true,
-        ..Default::default()
-    })
+    profile.bot.clone().unwrap_or_default()
 }
 
 /// The pace a settings change hands the writer. A running job is under

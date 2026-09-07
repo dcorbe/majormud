@@ -20,7 +20,7 @@
 - Each task's test must fail before the implementation and pass after. Each task also runs the named mutation check: change the rule, watch the test fail, revert.
 - Run the crate's tests with `cargo test -p mud-client` from the repo root. Build with `cargo build -p mud-client`. Pass `--test <file>` while iterating and run the whole crate once before each commit. `cargo clippy -p mud-client --all-targets` must add no warnings.
 - Working directory for every command below is the repo root `/home/daniel/majormud/majormud`.
-- This plan runs after the settings plan and the stealth plan. It consumes these names verbatim and never re-implements them: `BotConfig::sneak: bool`, `NavConfig::sneak: bool`, `Session::profile_changes(&self) -> tokio::sync::watch::Receiver<Profile>`, `profile::config_dir() -> PathBuf`, `Navigator::with_stealth(buffs: Vec<Buff>, clock: RoundClock)`, `sheet::stealth_spells(spellbook, spells, durations, casting) -> (Vec<Buff>, Vec<String>)`.
+- This plan runs after the settings plan and the stealth plan. It consumes these names verbatim and never re-implements them: `BotConfig::auto_sneak: bool`, `NavConfig::sneak: bool`, `Session::profile_changes(&self) -> tokio::sync::watch::Receiver<Profile>`, `profile::config_dir() -> PathBuf`, `Navigator::with_stealth(buffs: Vec<Buff>, clock: RoundClock)`, `sheet::stealth_spells(spellbook, spells, durations, casting) -> (Vec<Buff>, Vec<String>)`.
 - The job never sends an attack. Both switches are set: `session.travel_fights()` is false for the job's life, and the job's `BotConfig` has `auto_combat`, `auto_flee` and `auto_get` false.
 
 ---
@@ -1460,7 +1460,7 @@ git commit -m "feat(client): phases for a recovery, and the light and buff state
 - Test: `crates/mud-client/tests/recover_scripted.rs`
 
 **Interfaces:**
-- Consumes: `Navigator::new`, `with_capabilities`, `with_stealth`, `goto` at `src/nav.rs:698`, `726`, `883`. `Arrival { at, sneaking, .. }` at `src/nav.rs:285`. `NavError { at, kind, .. }`, `NavErrorKind::Interrupted`, `Interrupt::{Died, Attacked}` at `src/nav.rs:40`, `62`, `107`. `FarmGuard::death_only(username: &str)` at `src/farm.rs:1568`. `farm::look_around`, `farm::next_room_view`, `farm::discover_vitals`, `farm::sheet_from`, `farm::content_for`, `farm::ensure_lit`, `farm::leg_needs_light`, `farm::set_phase`, `farm::is_player_death`, `farm::LOOT_TRIES`. `go::go_config` at `src/go.rs:172`. `lost::place` at `src/lost.rs:325`. `session::drain` at `src/session.rs:1169`. `tui::content_path` at `src/tui.rs:2174`. `Session::profile_changes`, `BotConfig::sneak`, `NavConfig::sneak`, `sheet::stealth_spells` from the earlier plans. `sheet::CastAttempt`, `LightState`, `BuffState`.
+- Consumes: `Navigator::new`, `with_capabilities`, `with_stealth`, `goto` at `src/nav.rs:698`, `726`, `883`. `Arrival { at, sneaking, .. }` at `src/nav.rs:285`. `NavError { at, kind, .. }`, `NavErrorKind::Interrupted`, `Interrupt::{Died, Attacked}` at `src/nav.rs:40`, `62`, `107`. `FarmGuard::death_only(username: &str)` at `src/farm.rs:1568`. `farm::look_around`, `farm::next_room_view`, `farm::discover_vitals`, `farm::sheet_from`, `farm::content_for`, `farm::ensure_lit`, `farm::leg_needs_light`, `farm::set_phase`, `farm::is_player_death`, `farm::LOOT_TRIES`. `go::go_config` at `src/go.rs:172`. `lost::place` at `src/lost.rs:325`. `session::drain` at `src/session.rs:1169`. `tui::content_path` at `src/tui.rs:2174`. `Session::profile_changes`, `BotConfig::auto_sneak`, `NavConfig::sneak`, `sheet::stealth_spells` from the earlier plans. `sheet::CastAttempt`, `LightState`, `BuffState`.
 - Produces: `recover::refusal(session: &Session, graph: &RoomGraph, here: Option<RoomId>, target: RoomId) -> Result<RoomId, String>`, `recover::run_recover(session: &Session, graph: Arc<RoomGraph>, from: RoomId, target: RoomId, live: watch::Receiver<Profile>, phase: PhaseSink<'_>, notices: &Notices) -> Result<RecoverEnd, FarmError>`. The private `Configs`, `reload`, `cast_buffs`, `sweep` returning `SweepEnd`, `go_home`, `wait_a_prompt`, `room_name`, `vitals_end`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1839,7 +1839,7 @@ pub fn refusal(
     }
     let sneaks = session.profile().bot.as_ref().is_none_or(|b| b.sneak);
     if !sneaks {
-        return Err("bot.sneak is off, and a recovery is a sneak: /set bot.sneak true".into());
+        return Err("bot.auto_sneak is off, and a recovery is a sneak: /set bot.auto_sneak true".into());
     }
     if graph.room(target).is_none() {
         return Err(format!("no such room {}/{}", target.map, target.room));
@@ -1892,7 +1892,7 @@ impl Configs {
         });
         let mut cfg = crate::go::go_config(&base, false);
         cfg.interrupt_at_percent = 0;
-        cfg.nav.sneak = bot.sneak;
+        cfg.nav.sneak = bot.auto_sneak;
         let caps = session.capabilities();
         let mut nav = Navigator::new(graph.clone(), cfg.nav.clone()).with_capabilities(caps.clone());
         if let Some(content) = content {
@@ -2742,7 +2742,7 @@ After `start_go` and before `start_bank`, add:
 ///
 /// Refused outright when the character has no name, for the reason
 /// `start_go` gives, and when the job's own `refusal` finds a reason:
-/// no confirmed position, no stealth, `bot.sneak` off, or no route. The
+/// no confirmed position, no stealth, `bot.auto_sneak` off, or no route. The
 /// refusal is read here, synchronously, so the operator sees it on the
 /// spot rather than as a failed phase a moment later.
 pub fn start_recover(
@@ -3027,7 +3027,7 @@ attacks. On the map, `R` with the cursor on a room does the same.
 
 The job refuses to start, and says why, when another job is running, when
 the character's position is not confirmed, when there is no route, when the
-stat sheet says Stealth is 0, or when `bot.sneak` is off.
+stat sheet says Stealth is 0, or when `bot.auto_sneak` is off.
 
 Before the sneak it lights up if the route or the death room is dark, and
 casts the buffs in `bot.buffs`. Both break a sneak, so both come first. The

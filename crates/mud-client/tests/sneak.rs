@@ -504,7 +504,7 @@ async fn a_carried_belief_the_board_contradicts_is_corrected_by_the_first_move()
     assert_eq!(log.moves.load(Ordering::SeqCst), 2);
 }
 
-/// `bot.sneak = false`. A stealthy character walks and never arms.
+/// `bot.auto_sneak = false`. A stealthy character walks and never arms.
 #[tokio::test]
 async fn sneak_off_never_sends_sneak() {
     let (addr, log) = sneak_board("Attempting to sneak...", Board { arms: true, ..Board::default() }).await;

@@ -114,7 +114,7 @@ The job refuses to start, with one line saying why, when:
 - There is no target: `/recover` alone with no logged death that has a room.
 - There is no route from here to the target.
 - The stat sheet says stealth is zero.
-- `bot.sneak` is off. The job is defined by the sneak in, so the switch refuses it
+- `bot.auto_sneak` is off. The job is defined by the sneak in, so the switch refuses it
   rather than silently walking in visible.
 
 ## 3. The job

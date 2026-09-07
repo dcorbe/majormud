@@ -52,7 +52,8 @@ auto_heal = true
 auto_flee = true
 auto_get = true            # coins only; floor items are never announced
 take_keys = true           # keys the ring lacks; independent of auto_get
-sneak = true               # arm a sneak before walking; false never sneaks
+auto_rest = true           # rest or meditate at the marks below; false never rests
+auto_sneak = true          # arm a sneak before walking; false never sneaks
 ignore_coins = ["copper"]  # denominations the sweep leaves on the floor
 minor_heal_at_percent = 70 # cast the minor heal below this; 0 = never
 major_heal_at_percent = 40 # cast the major heal below this; 0 = never
@@ -251,7 +252,7 @@ first entry the minor and its last the major.
   `depart_at_percent` has the pair rejected when the plan is built. A farm
   that does not is refused at run start instead, where the bot's mark is
   finally in hand.
-  **`max_rest_seconds`**, 120 by default, caps how long the departure gate
+  **`max_rest_seconds`**, 180 by default, caps how long the departure gate
   may spend recovering. A caster resting both pools to 95 usually reaches
   this cap first, since mana climbs by one tick every 15 or 30 seconds.
 - **`idle_poke_ms`** (5000) — an idle board sends *nothing*, not even a
@@ -592,10 +593,11 @@ A refused value, a wrong type or a value the validator rejects, changes
 nothing and says why. `/quit` with unsaved settings refuses once and
 exits on the second `/quit`. Ctrl-Q exits without asking.
 
-A profile with no `[bot]` table gives the assist attack and loot on. The
-first `/set bot.anything` creates the table, and every other bot key then
-takes its struct default, which is off for both. `/set bot` shows the
-effective values either way.
+A profile with no `[bot]` table gives the assist every switch on, since
+that is the struct default now. `take_keys` was already on and stays so.
+The first `/set bot.anything` creates the table, and every other bot key
+then takes its struct default. `/set bot` shows the effective values
+either way.
 
 ## The lobby
 

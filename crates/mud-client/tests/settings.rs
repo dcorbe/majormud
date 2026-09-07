@@ -561,15 +561,18 @@ fn a_save_onto_a_fresh_name_writes_and_remembers() {
     assert!(!s.dirty());
 }
 
-/// The one way to walk without sneaking. A bot key, so it completes
-/// under `/set bot.` and rebuilds the assist like the rest.
+/// The one way to walk without sneaking, and the one way to stop resting.
+/// Both are bot keys, so both complete under `/set bot.` and rebuild the
+/// assist like the rest, and both default on.
 #[test]
-fn bot_sneak_is_a_key_that_defaults_on() {
-    assert!(KEYS.contains(&"bot.sneak"));
+fn bot_auto_sneak_and_auto_rest_are_keys_that_default_on() {
+    assert!(KEYS.contains(&"bot.auto_sneak"));
+    assert!(KEYS.contains(&"bot.auto_rest"));
     let s = Settings::default();
-    assert_eq!(s.value("bot.sneak").as_deref(), Some("true"));
+    assert_eq!(s.value("bot.auto_sneak").as_deref(), Some("true"));
+    assert_eq!(s.value("bot.auto_rest").as_deref(), Some("true"));
     let mut s = Settings::parse(COMMENTED).unwrap();
-    s.set("bot.sneak", "false").unwrap();
-    assert!(!s.profile().bot.as_ref().unwrap().sneak);
+    s.set("bot.auto_sneak", "false").unwrap();
+    assert!(!s.profile().bot.as_ref().unwrap().auto_sneak);
 }
 

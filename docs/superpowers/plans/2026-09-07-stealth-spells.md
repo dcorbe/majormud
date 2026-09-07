@@ -20,7 +20,7 @@
 - Each task's test must fail before the implementation and pass after. Each task also runs the named mutation check: change the rule, watch the test fail, revert.
 - Run the crate's tests with `cargo test -p mud-client` from the repo root. Build with `cargo build -p mud-client`. Pass `--test <file>` while iterating and run the whole crate once before each commit. `cargo clippy -p mud-client --all-targets` must add no warnings.
 - Working directory for every command below is the repo root `/home/daniel/majormud/majormud`.
-- This plan runs after the settings plan. `NavConfig::sneak: bool` and `BotConfig::sneak: bool` exist. Do not add them again.
+- This plan runs after the settings plan. `NavConfig::sneak: bool` and `BotConfig::auto_sneak: bool` exist. Do not add them again.
 - The spec says "target mode 1". In `mud_core::content::Spell` the sqlite `target` column is decoded into `match_type: MatchType`, and the field named `target_mode` is the `spelltype` column, which is 3 on every spell in the table. The rule below reads `match_type == MatchType::Single1`. The variant name is the decoder's placeholder. Do not rename it in this plan.
 
 ---
@@ -755,7 +755,7 @@ async fn a_stealth_spell_is_cast_before_the_sneak() {
     );
 }
 
-/// `bot.sneak` off means no walk arms a sneak and nothing is cast for
+/// `bot.auto_sneak` off means no walk arms a sneak and nothing is cast for
 /// one.
 #[tokio::test]
 async fn sneak_off_casts_nothing_and_arms_nothing() {
@@ -1180,7 +1180,7 @@ In `docs/mud-client.md`, in the `[bot]` section near the `buffs` line, add a par
 A stealth spell the character knows is cast before every sneak a walk
 arms, on the same budget a buff runs on. It is discovered from the spell
 table by its stealth ability, so camouflage, way of the cat and shadowform
-are found without being named. `bot.sneak = false` turns the sneak and
+are found without being named. `bot.auto_sneak = false` turns the sneak and
 the cast off together. A farm start prints what it found as
 `stealth: camouflage (10 mana, 30 rounds)`, or `stealth: none known`.
 ```
@@ -1221,7 +1221,7 @@ Spec coverage:
 - Arming order gate, cast, sneak, with the cast outcome handling and the one attempt rule: Task 3.
 - Re-arm after a break recasts a lapsed spell and not a running one: Task 3 tests.
 - Mana fed from prompts inside the navigator, plus the seed from the session: Task 3.
-- `bot.sneak` off casts nothing and arms nothing: Task 3 test.
+- `bot.auto_sneak` off casts nothing and arms nothing: Task 3 test.
 - Every scripted board test the spec lists: Task 3.
 
 Type consistency: `stealth_spells` returns `(Vec<Buff>, Vec<String>)` in Task 2 and `stealth_buffs` reads `.0` of it in Task 3. `with_stealth` takes `Vec<Buff>` and `RoundClock` in both the builder and every call site. `known_matching` takes a `fn(&Spell) -> bool` and both predicates are plain functions.

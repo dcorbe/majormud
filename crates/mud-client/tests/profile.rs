@@ -102,7 +102,7 @@ fn bot_and_farm_tables_parse_and_round_trip() {
     assert!(bot.auto_combat);
     assert_eq!(bot.max_hp, 35);
     // Unlisted toggles keep BotConfig's defaults rather than erroring.
-    assert!(!bot.auto_get);
+    assert!(bot.auto_get);
 
     let farm = p.farm.clone().expect("[farm] table");
     assert_eq!(farm.start, "1/1");

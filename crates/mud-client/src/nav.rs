@@ -212,7 +212,7 @@ pub struct NavConfig {
     /// `bash_doors` is one — SEARCH costs a command per roll and breaks
     /// hide and sneak (`theft.md` §9).
     pub search_hidden: bool,
-    /// Arm a sneak before a step. Copied from `bot.sneak` by
+    /// Arm a sneak before a step. Copied from `bot.auto_sneak` by
     /// [`crate::farm::nav_config`] and not a profile key of its own:
     /// one switch, in the bot table, that every walker reads.
     #[serde(skip)]
@@ -2512,3 +2512,4 @@ impl Navigator {
         }
     }
 }
+

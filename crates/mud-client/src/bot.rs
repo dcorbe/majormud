@@ -186,6 +186,12 @@ const ATTACK_REFUSALS: [&str; 3] = [
 pub struct BotConfig {
     pub auto_combat: bool,
     pub auto_heal: bool,
+    /// Rest or meditate when the marks call for it. Off leaves the
+    /// character standing at low hp or mana, whatever `auto_heal` does
+    /// with the spells. `rest_at_percent`, `mana_rest_at_percent` and
+    /// `rest_until_percent` are unchanged by this switch, only whether
+    /// they ever fire.
+    pub auto_rest: bool,
     /// Pick up coins: piles announced by a kill's drop line, and piles
     /// the room render's "You notice ... here." line lists. Floor
     /// *items* are never taken — the board drops carried loot silently,
@@ -201,7 +207,7 @@ pub struct BotConfig {
     /// Arm a sneak before walking, when the character has any stealth.
     /// Off means no walk sneaks and no stealth spell is cast for one.
     /// The recovery job refuses to start without it.
-    pub sneak: bool,
+    pub auto_sneak: bool,
     /// Denominations the sweep leaves on the floor, named as `get`
     /// takes them: copper, silver, gold, platinum, runic. At higher
     /// levels a copper pile is not worth the send. Applies to every
@@ -394,13 +400,14 @@ impl BotConfig {
 impl Default for BotConfig {
     fn default() -> Self {
         BotConfig {
-            auto_combat: false,
-            auto_heal: false,
-            auto_get: false,
+            auto_combat: true,
+            auto_heal: true,
+            auto_rest: true,
+            auto_get: true,
             take_keys: true,
-            sneak: true,
+            auto_sneak: true,
             ignore_coins: Vec::new(),
-            auto_flee: false,
+            auto_flee: true,
             minor_heal_at_percent: 70,
             major_heal_at_percent: 40,
             rest_at_percent: 60,
@@ -1214,7 +1221,7 @@ impl Bot {
         // next block re-engages and breaks the rest. That was the live
         // death spiral of 2026-08-01. Fight or flee are the occupied
         // room choices, and flee is checked above.
-        if !self.config.auto_heal || self.healing || self.engaged.is_some() || self.room_has_work {
+        if !self.config.auto_rest || self.healing || self.engaged.is_some() || self.room_has_work {
             return Vec::new();
         }
         self.healing = true;

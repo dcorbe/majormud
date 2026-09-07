@@ -47,9 +47,55 @@ fn does_not_attack_ignored_names() {
 
 #[test]
 fn does_not_attack_when_toggle_off() {
-    let mut bot = Bot::new(BotConfig::default());
+    let mut bot = Bot::new(BotConfig { auto_combat: false, ..BotConfig::default() });
     let actions = bot.on_event(&room(&["kobold thief"]));
     assert!(actions.is_empty());
+}
+
+/// Every switch a fresh profile carries is on: attack, heal, loot, flee,
+/// rest and sneak. `take_keys` was already on and stays so.
+#[test]
+fn the_bot_switches_default_on() {
+    let cfg = BotConfig::default();
+    assert!(cfg.auto_combat, "auto_combat");
+    assert!(cfg.auto_heal, "auto_heal");
+    assert!(cfg.auto_get, "auto_get");
+    assert!(cfg.auto_flee, "auto_flee");
+    assert!(cfg.auto_rest, "auto_rest");
+    assert!(cfg.auto_sneak, "auto_sneak");
+}
+
+/// `auto_rest` alone gates the rest and meditate sends. With it off the
+/// character stands hurt forever, whatever `auto_heal` says about the
+/// spells. Those are a different knob answering a different question.
+#[test]
+fn auto_rest_off_never_rests_while_auto_heal_stays_on() {
+    let mut bot = Bot::new(BotConfig {
+        auto_rest: false,
+        auto_heal: true,
+        rest_at_percent: 60,
+        max_hp: 40,
+        ..BotConfig::default()
+    });
+    bot.on_event(&room(&[]));
+    let actions = bot.on_event(&Event::Prompt { hp: 12, mana: None, status: None });
+    assert!(actions.is_empty(), "auto_rest off must send neither rest nor meditate");
+}
+
+/// The other side: `auto_heal` off does not touch resting at all.
+#[test]
+fn auto_heal_off_still_rests() {
+    let mut bot = Bot::new(BotConfig {
+        auto_heal: false,
+        auto_rest: true,
+        rest_at_percent: 60,
+        rest_command: "rest".into(),
+        max_hp: 40,
+        ..BotConfig::default()
+    });
+    bot.on_event(&room(&[]));
+    let actions = bot.on_event(&Event::Prompt { hp: 12, mana: None, status: None });
+    assert_eq!(actions, vec![BotAction::Send("rest".into())]);
 }
 
 #[test]
@@ -455,7 +501,7 @@ fn does_not_mistake_a_collapsing_actor_for_coins() {
 
 #[test]
 fn ignores_coin_drops_when_toggle_off() {
-    let mut bot = Bot::new(BotConfig::default());
+    let mut bot = Bot::new(BotConfig { auto_get: false, ..BotConfig::default() });
     assert!(
         bot.on_event(&Event::Line("12 silver drop to the ground.".into()))
             .is_empty()
@@ -542,6 +588,7 @@ fn flees_once_per_room_not_once_per_prompt() {
     let mut bot = Bot::new(BotConfig {
         auto_flee: true,
         flee_at_percent: 25,
+        auto_rest: false,
         max_hp: 40,
         ..BotConfig::default()
     });
@@ -920,7 +967,8 @@ fn has_target_is_false_for_names_we_would_never_attack() {
         "players are not targets"
     );
     assert!(
-        !Bot::new(BotConfig::default()).has_target(&view(&["kobold thief"])),
+        !Bot::new(BotConfig { auto_combat: false, ..BotConfig::default() })
+            .has_target(&view(&["kobold thief"])),
         "auto_combat off"
     );
 }
@@ -1258,7 +1306,12 @@ fn an_ongoing_fight_is_not_interrupted_to_loot() {
 
 #[test]
 fn auto_get_off_leaves_the_floor_alone() {
-    let mut bot = combat_bot(); // auto_get defaults off
+    let mut bot = Bot::new(BotConfig {
+        auto_combat: true,
+        auto_get: false,
+        ignore: vec!["town guard".into()],
+        ..BotConfig::default()
+    });
     let actions = bot.on_event(&Event::RoomSeen(view_with_items(
         &[],
         &["2000 gold crowns"],
@@ -1946,10 +1999,11 @@ fn a_floor_of_ignored_coins_is_not_worth_stopping_for() {
     assert!(bot.wants_coin("silver"));
     assert!(!bot.wants_coin("copper"));
     assert!(
-        !Bot::new(BotConfig::default()).wants_coin("silver"),
+        !Bot::new(BotConfig { auto_get: false, ..BotConfig::default() }).wants_coin("silver"),
         "with auto_get off nothing is wanted"
     );
     let ignoring_with_auto_get_off = Bot::new(BotConfig {
+        auto_get: false,
         ignore_coins: vec!["copper".into()],
         ..BotConfig::default()
     });
