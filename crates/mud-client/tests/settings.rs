@@ -346,6 +346,28 @@ fn save_without_a_path_needs_one_once() {
     assert!(std::fs::read_to_string(&path).unwrap().contains("port = 2327"));
 }
 
+/// `/new` opens a window on a detached copy: the settings without the
+/// file. A bare `/save` there asks for a name rather than writing the
+/// second character over the first character's profile.
+#[test]
+fn a_detached_copy_keeps_the_settings_and_drops_the_file() {
+    let mut s = Settings::default();
+    s.set("host", "\"127.0.0.1\"").unwrap();
+    let path = scratch("template.toml");
+    s.save(Some(&path)).unwrap();
+    s.set("username", "\"dan\"").unwrap();
+    let copy = s.detached();
+    assert_eq!(copy.path(), None, "the copy has no file to save over");
+    assert!(copy.dirty(), "the copy holds the unsaved edit it was made from");
+    assert_eq!(copy.profile().host, "127.0.0.1");
+    assert_eq!(copy.profile().username, "dan");
+    assert_eq!(copy.text(), s.text());
+    assert_eq!(s.path(), Some(path.as_path()), "the template keeps its own file");
+    let mut copy = copy;
+    let err = copy.save(None).unwrap_err();
+    assert!(err.contains("/save <file>"), "{err}");
+}
+
 #[test]
 fn load_reports_renamed_keys_and_still_parses() {
     let s = Settings::parse(

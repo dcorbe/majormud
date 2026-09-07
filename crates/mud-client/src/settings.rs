@@ -99,8 +99,8 @@ const ALIASES: [(&str, &str); 3] = [
 ];
 
 /// Cloneable because `/new` opens a window on a copy of the lobby's
-/// settings. The copy carries the dirty flag and the path with it, so a
-/// window opened from unsaved edits knows it holds unsaved edits.
+/// settings. `detached` is the copy it takes: the same document and the
+/// same dirty flag, with no file behind it.
 #[derive(Clone)]
 pub struct Settings {
     doc: DocumentMut,
@@ -147,6 +147,20 @@ impl Settings {
 
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+
+    /// A copy with no file behind it. What `/new` opens a window on: the
+    /// settings come from the lobby, but the file they came from is one
+    /// character's profile, and a bare `/save` in the new window would
+    /// write the new character over it. Without a path that `/save`
+    /// refuses and asks for a name. Everything else is kept, the dirty
+    /// flag included, so a window opened from unsaved edits knows it
+    /// holds unsaved edits.
+    pub fn detached(&self) -> Settings {
+        Settings {
+            path: None,
+            ..self.clone()
+        }
     }
 
     /// The document as it would be saved.

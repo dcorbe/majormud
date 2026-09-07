@@ -606,7 +606,11 @@ impl Front {
             }
             KeyOutcome::NewWindow { file } => {
                 let settings = match file {
-                    None => Ok(self.lobby.clone()),
+                    // Detached: the copy carries the lobby's settings but
+                    // not its file, so a bare `/save` here asks for a
+                    // name instead of writing this character over the
+                    // one the lobby was loaded from.
+                    None => Ok(self.lobby.detached()),
                     Some(f) => crate::settings::Settings::load(std::path::Path::new(&f)),
                 };
                 match settings {
@@ -663,7 +667,7 @@ impl Front {
                         self.log.note(&text);
                     }
                     if let LobbyStep::Connect = step {
-                        let number = self.open(self.lobby.clone(), None, None);
+                        let number = self.open(self.lobby.detached(), None, None);
                         self.switch(number);
                     }
                 } else if let Some(w) = self.active_window()
