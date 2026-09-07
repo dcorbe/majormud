@@ -4,7 +4,7 @@ The automated MajorMUD client. One engine, four uses:
 
 | Command | What it does |
 |---|---|
-| `mmc play [--profile P]` | Interactive terminal session. Without a profile, a lobby: `/connect host[:port]`, `/set`, then `/save <file>`. |
+| `mmc play [--profile P]` | Interactive terminal session. Opens the lobby, and with a profile a second window connected to it. |
 | `mmc run SCRIPT --profile P` | Headless Lua-scripted run (oracle captures, acceptance tests) |
 | `mmc path FROM TO` | Print a route between two rooms, e.g. `mmc path 1/2146 1/2156` |
 | `mmc farm --profile P` | Walk a patrol circuit, farming each stop |
@@ -613,7 +613,56 @@ the runner matches your own death line against it, so `/farm`, `/go`,
 start while it is empty and say which key to set. A profile whose `assist_play` is on gets the same
 refusal at connect, and the assist stays off.
 
+## Windows
+
+Several characters run in one process, each in a numbered window with its
+own settings, session and screen. Window 1 is the lobby: it never
+connects, its `/set` edits the template every new window copies, and its
+screen is a log of every window's major events. The room database is
+loaded once per content path and shared by every window on it.
+
+| Command | Effect |
+| --- | --- |
+| `/new [file]` | Open a window on a copy of the lobby's settings, or on that profile file, and switch to it. A copy whose settings name a host connects at once. |
+| `/1` to `/9` | Switch to that window. |
+| `/windows` | List each window: number, character and host, connected or not, unsaved or not. |
+| `/close` | Close the current window. Refused while it is connected and refused for the lobby. |
+| `/connect [host[:port]]` | In the lobby, open a window and connect it. In any other window, connect that window. |
+| `/quit` | Refuse once if any window is connected or has unsaved settings, naming them. The second `/quit` exits everything. Ctrl-Q exits at once. |
+
+`/set`, `/save`, `/load`, `/unset`, `/help`, Tab, Ctrl-F and Ctrl-P act on
+the current window. Passthrough is per window. PageUp and PageDown scroll
+the current window through its scrollback, and any other key returns it
+to the bottom. The scrollback keeps `scrollback_lines` rows, 2000 by
+default, read when the window opens.
+
+A hidden window keeps running: its farm, its assist and its output all
+carry on. Its screen is kept in memory, so switching to it shows exactly
+what it would have shown, colours included. A window that has
+disconnected shows `not connected` and its host in the bar, and takes
+`/connect` to go back.
+
+### The activity list
+
+The bar shows the active window's number, then what it showed before,
+then `Act: 2,3` when other windows have an event you have not looked at.
+Only major events count: a connect, a disconnect, a death, a job ending,
+the assist refusing to start. Ordinary output never lights it. Switching
+to the window clears it. The same events are written to the lobby's log
+with a UTC time, the window number and the character.
+
+The bar is painted only when its text changes, and never by clearing the
+row first, so it no longer flashes over a slow link.
+
+Started as `mmc play` with no profile, the client opens the lobby alone.
+Started with `--profile`, it opens the lobby and window 2 connected to
+that profile, and shows window 2. A capture, when given, records window
+2's first connection.
+
 ## The status bar
+
+In play the bar is prefixed with the window's number, and carries the
+activity list described under Windows.
 
 One renderer for both commands, so a session looks the same whichever
 started it. `mmc farm` reserves the bottom terminal row and scrolls the
