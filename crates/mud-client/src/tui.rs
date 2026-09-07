@@ -1220,16 +1220,13 @@ pub fn assist_config_for(profile: &crate::profile::Profile) -> crate::bot::BotCo
     })
 }
 
-/// A job or the assist matches the character's own death line against
-/// the username. Empty, they would never know the character died.
-pub fn needs_username(profile: &crate::profile::Profile) -> Result<(), String> {
-    if profile.username.is_empty() {
-        return Err(
-            "username is empty. /set username <name> so the runner can see your own death line"
-                .into(),
-        );
-    }
-    Ok(())
+/// The name a job or the assist will watch for its own death line. The
+/// board gives it on the stat sheet, so the profile's `username` only
+/// has to carry it before the character is in the realm.
+pub fn needs_name(session: &Session) -> Result<String, String> {
+    session
+        .character_name()
+        .ok_or_else(|| "no character name yet. Enter the realm first, or /set username <name>".into())
 }
 
 /// `host` or `host:port`. The port defaults to telnet's 23. An IPv6
@@ -1808,14 +1805,15 @@ pub struct Job {
 /// not a reason to drop the connection — being told "no [farm] table" and
 /// staying logged in is strictly better than being thrown out.
 ///
-/// Refused outright when the profile has no username, because a runner
+/// Refused outright when the character has no name, because a runner
 /// that cannot recognise the character's own death line drives a corpse
-/// around the board. The check lives here rather than at the call sites
-/// so that a new caller cannot forget it. Public for the test that pins
-/// the refusal.
+/// around the board. The name is the one off the stat sheet once the
+/// character is in the realm, and the profile's `username` before that.
+/// The check lives here rather than at the call sites so that a new
+/// caller cannot forget it. Public for the test that pins the refusal.
 pub fn start_farm(session: Arc<Session>, loop_name: Option<&str>) -> Result<Job, String> {
     let profile = session.profile();
-    needs_username(&profile)?;
+    needs_name(&session)?;
     // A named loop replaces the circuit, not the policy: every knob in
     // the profile's [farm] table -- the hp gates, the dwell budgets, the
     // nav limits -- still applies to it. The library holds routes, not
@@ -1852,18 +1850,19 @@ pub fn start_farm(session: Arc<Session>, loop_name: Option<&str>) -> Result<Job,
 /// limits — still comes from the profile's `[farm]` table, exactly as a
 /// named loop does. The library holds routes; the profile holds policy.
 ///
-/// Refused outright when the profile has no username, because a runner
+/// Refused outright when the character has no name, because a runner
 /// that cannot recognise the character's own death line drives a corpse
-/// around the board. The check lives here rather than at the call sites
-/// so that a new caller cannot forget it. Public for the test that pins
-/// the refusal.
+/// around the board. The name is the one off the stat sheet once the
+/// character is in the realm, and the profile's `username` before that.
+/// The check lives here rather than at the call sites so that a new
+/// caller cannot forget it. Public for the test that pins the refusal.
 pub fn start_roam(
     session: Arc<Session>,
     walls: crate::roam::Walls,
     here: crate::lost::Fix,
 ) -> Result<Job, String> {
     let profile = session.profile();
-    needs_username(&profile)?;
+    needs_name(&session)?;
     let cfg = profile.farm.clone().unwrap_or_default();
     let graph = Arc::new(crate::graph::RoomGraph::load(&cfg.content)?);
     // Where the character stands is what the region is measured from, so
@@ -1956,11 +1955,12 @@ fn spawn_run(
 /// and a walk that changed its mind halfway would be very hard to
 /// reason about from the keyboard.
 ///
-/// Refused outright when the profile has no username, because a runner
+/// Refused outright when the character has no name, because a runner
 /// that cannot recognise the character's own death line drives a corpse
-/// around the board. The check lives here rather than at the call sites
-/// so that a new caller cannot forget it. Public for the test that pins
-/// the refusal.
+/// around the board. The name is the one off the stat sheet once the
+/// character is in the realm, and the profile's `username` before that.
+/// The check lives here rather than at the call sites so that a new
+/// caller cannot forget it. Public for the test that pins the refusal.
 pub fn start_go(
     session: Arc<Session>,
     graph: Arc<crate::graph::RoomGraph>,
@@ -1970,7 +1970,7 @@ pub fn start_go(
     walking: bool,
 ) -> Result<Job, String> {
     let profile = session.profile();
-    needs_username(&profile)?;
+    needs_name(&session)?;
     let base = profile.farm.clone().unwrap_or_else(|| crate::farm::FarmConfig {
         // A profile with no [farm] table still gets a working `/go`; it
         // just needs to be told where the rooms live, and that is the
@@ -2017,11 +2017,12 @@ pub fn start_go(
 /// `/bank`. The same job shape as `start_go`, ending in a `Phase::Done`
 /// that says what was deposited and where, or why nothing was.
 ///
-/// Refused outright when the profile has no username, because a runner
+/// Refused outright when the character has no name, because a runner
 /// that cannot recognise the character's own death line drives a corpse
-/// around the board. The check lives here rather than at the call sites
-/// so that a new caller cannot forget it. Public for the test that pins
-/// the refusal.
+/// around the board. The name is the one off the stat sheet once the
+/// character is in the realm, and the profile's `username` before that.
+/// The check lives here rather than at the call sites so that a new
+/// caller cannot forget it. Public for the test that pins the refusal.
 pub fn start_bank(
     session: Arc<Session>,
     graph: Arc<crate::graph::RoomGraph>,
@@ -2030,7 +2031,7 @@ pub fn start_bank(
     walking: bool,
 ) -> Result<Job, String> {
     let profile = session.profile();
-    needs_username(&profile)?;
+    needs_name(&session)?;
     let base = profile.farm.clone().unwrap_or_else(|| crate::farm::FarmConfig {
         content: content_path(&profile),
         ..Default::default()
@@ -2082,17 +2083,18 @@ pub fn start_bank(
 /// connection goes through the one job slot, so that the runner and the
 /// operator can never both be driving.
 ///
-/// Refused outright when the profile has no username, because a runner
+/// Refused outright when the character has no name, because a runner
 /// that cannot recognise the character's own death line drives a corpse
-/// around the board. The check lives here rather than at the call sites
-/// so that a new caller cannot forget it. Public for the test that pins
-/// the refusal.
+/// around the board. The name is the one off the stat sheet once the
+/// character is in the realm, and the profile's `username` before that.
+/// The check lives here rather than at the call sites so that a new
+/// caller cannot forget it. Public for the test that pins the refusal.
 pub fn start_where(
     session: Arc<Session>,
     graph: Arc<crate::graph::RoomGraph>,
     hint: Option<mud_core::content::RoomId>,
 ) -> Result<Job, String> {
-    needs_username(&session.profile())?;
+    needs_name(&session)?;
     session.set_pace(session.profile().pace());
     let (tx, rx) = tokio::sync::watch::channel(crate::farm::Phase::default());
     let handle = tokio::spawn(async move {

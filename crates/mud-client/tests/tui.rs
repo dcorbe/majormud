@@ -624,7 +624,7 @@ fn a_running_farm_outranks_the_assist_in_the_bar() {
 
 use mud_client::tui::slash;
 use mud_client::settings::Settings;
-use mud_client::tui::{apply_settings, assist_config_for, connect_target, needs_username};
+use mud_client::tui::{apply_settings, assist_config_for, connect_target, needs_name};
 use mud_client::profile::Profile;
 
 #[test]
@@ -1189,15 +1189,26 @@ fn a_profile_without_a_bot_table_gets_the_attack_and_loot_assist() {
     assert!(!cfg.auto_combat && cfg.auto_heal);
 }
 
-#[test]
-fn jobs_need_a_username() {
-    let err = needs_username(&Profile::default()).unwrap_err();
+/// A session that has read no sheet and has no username has no name to
+/// watch for, and the refusal says which key to set. Give the profile a
+/// username and the name is that.
+#[tokio::test]
+async fn jobs_need_a_name() {
+    let addr = banner_board().await;
+    let profile = Profile {
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        ..Default::default()
+    };
+    let session = Session::connect(&profile, None).await.unwrap();
+    let err = needs_name(&session).unwrap_err();
     assert!(err.contains("/set username"), "{err}");
     let named = Profile {
         username: "dan".into(),
-        ..Default::default()
+        ..session.profile()
     };
-    assert!(needs_username(&named).is_ok());
+    session.set_profile(named);
+    assert_eq!(needs_name(&session).unwrap(), "dan");
 }
 
 #[test]
@@ -1357,7 +1368,7 @@ fn a_missing_world_database_is_none_and_asked_again_next_time() {
 /// start functions rather than at their call sites, which is what makes
 /// the map's roam and go refuse too.
 #[tokio::test]
-async fn every_job_start_refuses_without_a_username() {
+async fn every_job_start_refuses_without_a_name() {
     use mud_client::graph::{GraphRoom, RoomGraph};
     use mud_client::tui::{start_bank, start_farm, start_go, start_roam, start_where};
     use std::sync::Arc;
@@ -1400,8 +1411,8 @@ async fn every_job_start_refuses_without_a_username() {
         start_where(session.clone(), graph.clone(), Some(here)).err(),
     ];
     for refusal in refusals {
-        let why = refusal.expect("a job started without a username");
-        assert!(why.contains("username is empty"), "{why}");
+        let why = refusal.expect("a job started without a name");
+        assert!(why.contains("no character name yet"), "{why}");
     }
 }
 
@@ -1544,8 +1555,8 @@ fn the_lobby_log_line_names_the_window_the_character_and_the_event() {
     let nameless = WindowInfo { host: "h".into(), port: 23, ..Default::default() };
     assert_eq!(log_line(at, 2, Some(&nameless), &EventKind::Disconnected), "01:01:01 window 2 h:23 disconnected");
     assert_eq!(
-        log_line(at, 2, Some(&nameless), &EventKind::AssistRefused("username is empty".into())),
-        "01:01:01 window 2 h:23 assist not started: username is empty"
+        log_line(at, 2, Some(&nameless), &EventKind::AssistRefused("no character name yet".into())),
+        "01:01:01 window 2 h:23 assist not started: no character name yet"
     );
 }
 

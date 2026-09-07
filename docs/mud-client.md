@@ -608,11 +608,15 @@ returns to the lobby with the settings intact. `/connect` with no
 argument dials the current host and port.
 
 Interactive play never logs in for you: you type the username and
-password at the board's prompt. The `username` key still matters, because
-the runner matches your own death line against it, so `/farm`, `/go`,
-`/bank`, `/where`, `/bot` and the map view's own roam and go refuse to
-start while it is empty and say which key to set. A profile whose `assist_play` is on gets the same
-refusal at connect, and the assist stays off.
+password at the board's prompt. The automation needs the character's
+name, because it matches your own death line against it. It reads that
+name off the stat sheet, so once you are in the realm it has one whatever
+the profile says. The `username` key only matters before that, and for
+the headless `mmc farm` and `mmc run`, which log in for you. With no name
+from either place, `/farm`, `/go`, `/bank`, `/where`, `/bot` and the map
+view's own roam and go refuse to start and say so. A profile whose
+`assist_play` is on gets the same refusal at connect, and the assist
+stays off.
 
 ## Windows
 

@@ -889,6 +889,24 @@ impl Session {
         self.stats.lock().expect("stats lock").current.clone()
     }
 
+    /// The character's name as the board printed it on the stat sheet, or
+    /// the profile's `username` before any sheet was read. `None` when
+    /// neither is known, which is the one state the automation cannot run
+    /// in. Nothing would recognise the character's own death line.
+    ///
+    /// The sheet wins. A board account and the character on it are
+    /// different names, and only the character dies.
+    pub fn character_name(&self) -> Option<String> {
+        if let Some(name) = self.stats().name.filter(|n| !n.is_empty()) {
+            return Some(name);
+        }
+        let username = self.profile().username;
+        if username.is_empty() {
+            return None;
+        }
+        Some(username)
+    }
+
     /// The session's own carried-contents reading, as of the most recent
     /// `i` reply this session (or any caller sharing it) has read off the
     /// board. [`Inventory::default`] -- an empty pack -- until the first

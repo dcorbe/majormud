@@ -17,7 +17,7 @@ use crate::settings::Settings;
 use crate::tui::{
     ContentCache, Job, KeyOutcome, LEVEL_POLL, LobbyStep, apply_settings, assist_config_for,
     assist_tick, content_path, describe_loops, finish_locator, handover_actions, help_text,
-    here_or, import_loop, lobby_step, needs_username, new_assist, on_realm_entry, render_status,
+    here_or, import_loop, lobby_step, needs_name, new_assist, on_realm_entry, render_status,
     start_bank, start_farm, start_go, start_roam, start_where,
 };
 
@@ -218,8 +218,17 @@ impl Window {
     /// host or a dirty flag reaches the front end without waiting for a
     /// note to follow it. Silent when nothing moved, so a command that
     /// changed no connection fact costs no repaint.
-    fn sync_info(&self, connected: bool) {
-        let (host, port, username, dirty) = facts(&self.settings);
+    ///
+    /// The session, when there is one, is what names the character. It
+    /// has the stat sheet the board printed, and the settings only have
+    /// the board account. Without one the settings are all there is.
+    fn sync_info(&self, session: Option<&Session>) {
+        let (host, port, settings_username, dirty) = facts(&self.settings);
+        let connected = session.is_some();
+        let username = match session {
+            Some(s) => s.character_name().unwrap_or_default(),
+            None => settings_username,
+        };
         let mut info = self.info.lock().expect("info lock");
         let moved = info.host != host
             || info.port != port
@@ -310,10 +319,10 @@ async fn run(mut w: Window, first: Option<KeyOutcome>) {
         // which is for automation. The session keeps the real profile,
         // so `/farm` can put its pace back.
         session.set_pace(std::time::Duration::ZERO);
-        w.sync_info(true);
+        w.sync_info(Some(&session));
         w.event(EventKind::Connected);
         let end = play(&mut w, session).await;
-        w.sync_info(false);
+        w.sync_info(None);
         w.event(EventKind::Disconnected);
         match end {
             PlayEnd::Closed => w.note("-- disconnected. /connect to go back --"),
@@ -343,7 +352,7 @@ async fn disconnected(w: &mut Window, first: Option<KeyOutcome>) -> Idle {
             },
         };
         let (step, text) = lobby_step(outcome, &mut w.settings, &mut quit_armed);
-        w.sync_info(false);
+        w.sync_info(None);
         w.set_idle_bar();
         if let Some(text) = text {
             w.note(&text);
@@ -462,8 +471,8 @@ async fn play(w: &mut Window, session: Arc<Session>) -> PlayEnd {
     // refusal is printed below, before the loop.
     let mut assist_refused = None;
     if assist_config.assist_play {
-        match needs_username(&session.profile()) {
-            Ok(()) => {
+        match needs_name(&session) {
+            Ok(_) => {
                 let (bot, heal) = new_assist(&session, &assist_config);
                 assist = Some(bot);
                 assist_heal_state = Some(heal);
@@ -680,10 +689,14 @@ async fn play(w: &mut Window, session: Arc<Session>) -> PlayEnd {
                     WindowMsg::Outcome(outcome) => {
                         if let Some(applied) = apply_settings(&outcome, &mut w.settings) {
                             w.note(&applied.note);
-                            w.sync_info(true);
+                            // The session first. It is what `sync_info`
+                            // reads the character's name from, so a
+                            // `/set username` has to reach it before the
+                            // window info is rebuilt.
                             if applied.profile_changed {
                                 session.set_profile(w.settings.profile().clone());
                             }
+                            w.sync_info(Some(&session));
                             if applied.bot_changed {
                                 assist_config = assist_config_for(w.settings.profile());
                                 if assist.is_some() {
@@ -1050,7 +1063,7 @@ async fn play(w: &mut Window, session: Arc<Session>) -> PlayEnd {
                                 // Only on the way ON: an assist already
                                 // running has to be allowed to stop.
                                 if assist.is_none()
-                                    && let Err(why) = needs_username(&session.profile())
+                                    && let Err(why) = needs_name(&session)
                                 {
                                     w.note(&format!("-- {why} --"));
                                     w.event(EventKind::AssistRefused(why));

@@ -2131,7 +2131,7 @@ pub async fn go_to_finish(
     // One retry, not a loop: the second placement is a walk of its own,
     // and a route that desyncs twice is telling you the graph and the
     // board disagree about this part of the world.
-    let mut guard = FarmGuard::new(0, 0, &session.profile().username);
+    let mut guard = FarmGuard::new(0, 0, &session.character_name().unwrap_or_default());
     // Unarmed: the run that just ended may have left the character
     // sneaking, but nothing carried that belief out of it, and one
     // round at the end of a run is cheaper than trusting a guess.
@@ -2572,7 +2572,7 @@ pub(crate) async fn travel(
     let mut guard = FarmGuard::new(
         bot_config.max_hp,
         cfg.interrupt_at_percent,
-        &session.profile().username,
+        &session.character_name().unwrap_or_default(),
     )
     .sighting(
         crate::bot::Bot::with_refusals(bot_config.clone(), threat.clone(), refusals.clone())
@@ -3108,7 +3108,7 @@ async fn farm_stop(
     // rooms the graph mislabels.
     let mut was_blind_this_visit = false;
     casts.new_visit();
-    let username = session.profile().username;
+    let username = session.character_name().unwrap_or_default();
     let backoff = Duration::from_millis(cfg.slowdown_backoff_ms);
     let poke_after = Duration::from_millis(cfg.idle_poke_ms);
 
@@ -3588,7 +3588,7 @@ async fn recover(
         .await
         .map_err(FarmError::Lost)?
         .at;
-    let mut guard = FarmGuard::death_only(&session.profile().username);
+    let mut guard = FarmGuard::death_only(&session.character_name().unwrap_or_default());
     // A flee is a move the board does not sneak: unarmed.
     match nav.goto(session, at, stop, &mut guard, false).await {
         Ok(_) => Ok(RecoverEnd::Back),
