@@ -584,9 +584,17 @@ prints `bot.ignore_coins` and `bot.ignore`.
 When a change takes effect:
 
 - A `bot.*` key rebuilds the assist on the spot when it is on.
-- Everything a job reads, `[farm]`, `[bank]`, `pace_ms`, applies at the
-  next `/farm`, `/go` or `/bank`. A running job keeps what it started
-  with.
+- A running job picks up a change at its next decision that reads the
+  key: the next step, the next pass of a stop, the next pickup. It says
+  so on the screen: `-- farm: settings reloaded --`. Live keys are
+  `bot.*`, `farm.rest_at_percent`, `farm.rest_until_percent`,
+  `farm.mana_rest_at_percent`, `farm.fight_while_travelling`,
+  `farm.travel_interrupts`, `farm.interrupt_at_percent`,
+  `farm.defend_seconds`, `farm.nav.*`, `bank.*` except `bank.at`, and
+  `pace_ms`.
+- Fixed at a job's start, so a change waits for the next `/farm`, `/go`
+  or `/bank`: the loop and its stops, `farm.start`, `farm.finish_at`,
+  `farm.circuit`, the go target, `bank.at`.
 - Connection keys apply at the next `/connect`.
 
 A refused value, a wrong type or a value the validator rejects, changes
