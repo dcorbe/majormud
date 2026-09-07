@@ -628,7 +628,7 @@ fn bot_sneak_is_a_key_that_defaults_on() {
     assert_eq!(s.value("bot.auto_sneak").as_deref(), Some("true"));
     let mut s = Settings::parse(COMMENTED).unwrap();
     s.set("bot.auto_sneak", "false").unwrap();
-    assert!(!s.profile().bot.as_ref().unwrap().sneak);
+    assert!(!s.profile().bot.as_ref().unwrap().auto_sneak);
 }
 ```
 
@@ -662,7 +662,7 @@ Append to `crates/mud-client/tests/farm.rs`:
 /// `[bot]`. One function joins them, so no job can forget the switch.
 #[test]
 fn nav_config_copies_the_sneak_switch_from_the_bot_table() {
-    let bot = BotConfig { sneak: false, ..BotConfig::default() };
+    let bot = BotConfig { auto_sneak: false, ..BotConfig::default() };
     let farm = FarmConfig {
         nav: mud_client::nav::NavConfig { bash_doors: false, ..Default::default() },
         ..FarmConfig::default()
@@ -712,7 +712,7 @@ async fn a_lap_with_sneak_off_never_arms() {
     let bot = BotConfig {
         auto_combat: true,
         max_hp: 30,
-        sneak: false,
+        auto_sneak: false,
         ..BotConfig::default()
     };
 
@@ -750,10 +750,10 @@ In `crates/mud-client/src/bot.rs`, after the `take_keys` field of `BotConfig`:
     /// Arm a sneak before walking, when the character has any stealth.
     /// Off means no walk sneaks and no stealth spell is cast for one.
     /// The recovery job refuses to start without it.
-    pub sneak: bool,
+    pub auto_sneak: bool,
 ```
 
-and in `impl Default for BotConfig`, after `take_keys: true,`: `sneak: true,`.
+and in `impl Default for BotConfig`, after `take_keys: true,`: `auto_sneak: true,`.
 
 In `crates/mud-client/src/settings.rs`, in `KEYS`, after `"bot.take_keys",` add `"bot.auto_sneak",`.
 
@@ -811,7 +811,7 @@ In `crates/mud-client/src/go.rs`, in `run_go`, replace `crate::nav::Navigator::n
 In `docs/mud-client.md`, in the `[bot]` example after the `take_keys` line, add:
 
 ```toml
-sneak = true               # arm a sneak before walking; false never sneaks
+auto_sneak = true          # arm a sneak before walking; false never sneaks
 ```
 
 - [ ] **Step 4: Run the tests**

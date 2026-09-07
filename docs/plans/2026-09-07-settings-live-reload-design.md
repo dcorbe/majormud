@@ -71,7 +71,7 @@ sneak and, once the stealth spec lands, no stealth spell is cast for one.
 
 ### Where it applies
 
-`BotConfig` gains `sneak: bool` with a serde default of true. `NavConfig` gains
+`BotConfig` gains `auto_sneak: bool` with a serde default of true. `NavConfig` gains
 `sneak: bool`. Wherever a `Navigator` is built from the profile, `nav.sneak` is set from
 `bot.auto_sneak`. `Navigator::arm_sneak` returns `Ok(false)` when `sneak` is off, the same
 early return it already takes when the sheet's stealth is zero.
@@ -82,7 +82,7 @@ job picks it up through section 3.
 
 ### Tests
 
-- `bot.auto_sneak` is in `KEYS` and a profile without it parses with `sneak: true`.
+- `bot.auto_sneak` is in `KEYS` and a profile without it parses with `auto_sneak: true`.
 - A navigator with `sneak: false` and a stealthy character walks a two room corridor
   and the board log holds no `sneak`.
 - The same walk with `sneak: true` sends one `sneak` before the first move.

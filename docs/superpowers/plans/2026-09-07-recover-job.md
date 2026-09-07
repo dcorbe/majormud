@@ -1837,7 +1837,7 @@ pub fn refusal(
     if session.capabilities().stealth == 0 {
         return Err("cannot sneak: the sheet says Stealth is 0".into());
     }
-    let sneaks = session.profile().bot.as_ref().is_none_or(|b| b.sneak);
+    let sneaks = session.profile().bot.as_ref().is_none_or(|b| b.auto_sneak);
     if !sneaks {
         return Err("bot.auto_sneak is off, and a recovery is a sneak: /set bot.auto_sneak true".into());
     }
