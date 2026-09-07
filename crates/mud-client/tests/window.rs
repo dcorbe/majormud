@@ -472,7 +472,6 @@ async fn a_failed_connect_keeps_redialling() {
     .await;
 }
 
-
 /// A job's notices land on the window's screen, not on stderr.
 ///
 /// Under the TUI stderr is the raw terminal. A runner's startup notices

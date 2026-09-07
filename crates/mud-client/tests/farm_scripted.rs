@@ -969,10 +969,13 @@ fn the_heal_notice_never_reaches_stderr() {
         ])
         .output()
         .expect("re-run this binary");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "the child run must pass: {stdout}");
+    // `--exact` with no match exits 0 and runs nothing, so a rename of
+    // the test above would leave this passing on an empty stderr.
     assert!(
-        out.status.success(),
-        "the child run must pass: {}",
-        String::from_utf8_lossy(&out.stdout)
+        stdout.contains("1 passed"),
+        "the child must have run the test, not filtered it away: {stdout}"
     );
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(

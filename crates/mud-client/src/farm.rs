@@ -336,29 +336,43 @@ impl FarmPlan {
             }
         }
 
-        // Dark stops WARN rather than refuse: build runs before the
-        // connection exists, so it cannot know the character's kit
-        // (light sources are probed at run start), refusing would brick
-        // mixed circuits that farm their lit stops perfectly well, and
-        // the threshold is bracketed evidence, not proven. The runtime
-        // complement is the graph-aware lighting in travel/farm_stop.
-        for &stop in circuit.iter().chain(finish.iter()) {
-            if let Some(room) = graph.room(stop)
-                && room.light < 0
-            {
-                eprintln!(
-                    "note: {}/{} ({}) is dark (light {}); it needs a working light source",
-                    stop.map, stop.room, room.name, room.light
-                );
-            }
-        }
-
         Ok(FarmPlan {
             start,
             circuit,
             finish,
             roam: None,
         })
+    }
+
+    /// What is worth saying about this plan before the run starts, one
+    /// line each. Empty when there is nothing to say.
+    ///
+    /// A dark stop warns rather than refuses. [`FarmPlan::build`] runs
+    /// before the connection exists, so it cannot know the character's
+    /// kit, light sources are probed at run start, refusing would brick
+    /// mixed circuits that farm their lit stops perfectly well, and the
+    /// threshold is bracketed evidence rather than proven. The runtime
+    /// complement is the graph-aware lighting in travel/farm_stop.
+    ///
+    /// Asked for rather than printed by `build`, for two reasons. A
+    /// named loop builds its plan twice, once to validate the library
+    /// entry and once to run it, so a line printed inside `build` came
+    /// out twice per start. And the caller is the only one that knows
+    /// where the text should go: a window's screen, or stderr.
+    pub fn warnings(&self, graph: &RoomGraph) -> Vec<String> {
+        self.circuit
+            .iter()
+            .chain(self.finish.iter())
+            .filter_map(|&stop| {
+                let room = graph.room(stop)?;
+                (room.light < 0).then(|| {
+                    format!(
+                        "note: {}/{} ({}) is dark (light {}); it needs a working light source",
+                        stop.map, stop.room, room.name, room.light
+                    )
+                })
+            })
+            .collect()
     }
 }
 

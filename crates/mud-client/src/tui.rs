@@ -1839,6 +1839,9 @@ pub fn start_farm(
         }
     };
     let plan = crate::farm::FarmPlan::build(&cfg, &graph)?;
+    for warning in plan.warnings(&graph) {
+        notices(&warning);
+    }
     let bot = profile.bot.clone().unwrap_or_default();
     // Automation goes back under flood control. `play` unpaced this
     // session for the operator's keystrokes; the runner it is about to
@@ -1888,7 +1891,6 @@ pub fn start_roam(
 /// Shared by `/farm` and the map's roam so the two cannot describe the
 /// same ending differently — the only thing that varies is whether laps
 /// or rooms are the number that means anything.
-#[allow(clippy::too_many_arguments)]
 fn spawn_run(
     session: Arc<Session>,
     graph: Arc<crate::graph::RoomGraph>,

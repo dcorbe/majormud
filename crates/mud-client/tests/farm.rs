@@ -152,6 +152,30 @@ fn a_dark_stop_warns_but_builds() {
     assert!(FarmPlan::build(&config("1/1", &["1/3"]), &g).is_ok());
 }
 
+/// The warning is asked for, not printed. `build` used to print it
+/// itself, which put it on stderr with no way for a window to catch it,
+/// and printed it twice for a named loop, which builds its plan once to
+/// validate the library entry and once to run it.
+#[test]
+fn a_dark_stop_is_named_in_the_plans_warnings() {
+    let g = graph_with_a_dark_market();
+    let plan = FarmPlan::build(&config("1/1", &["1/3"]), &g).expect("plan");
+    assert_eq!(
+        plan.warnings(&g),
+        vec![
+            "note: 1/3 (Market Street) is dark (light -200); it needs a working light source"
+                .to_string()
+        ]
+    );
+}
+
+#[test]
+fn a_lit_circuit_has_nothing_to_warn_about() {
+    let g = graph_with_a_dark_market();
+    let plan = FarmPlan::build(&config("1/1", &["1/2"]), &g).expect("plan");
+    assert!(plan.warnings(&g).is_empty(), "{:?}", plan.warnings(&g));
+}
+
 /// The pre-leg question: does this walk cross (or end in) a room the
 /// graph marks dark? Decided from the same route goto will compute.
 #[test]
@@ -2867,3 +2891,4 @@ fn a_stop_ends_over_ignored_coins() {
         }
     );
 }
+

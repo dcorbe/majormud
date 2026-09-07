@@ -379,6 +379,11 @@ fn farm_command(
             return ExitCode::FAILURE;
         }
     };
+    // No window here, so the plan's warnings go where the rest of this
+    // command's output goes.
+    for warning in plan.warnings(&graph) {
+        eprintln!("{warning}");
+    }
 
     let capture = capture.map(|base| Capture {
         raw: base.with_extension("raw"),
