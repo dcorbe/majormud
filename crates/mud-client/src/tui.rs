@@ -233,14 +233,14 @@ pub fn lobby_step(
         | KeyOutcome::Bank
         | KeyOutcome::Where
         | KeyOutcome::Room { .. }
-        | KeyOutcome::Map { .. }
-        | KeyOutcome::NewWindow { .. }
-        | KeyOutcome::CloseWindow
-        | KeyOutcome::Windows
-        | KeyOutcome::Switch(_) => (
+        | KeyOutcome::Map { .. } => (
             LobbyStep::Stay,
             Some("-- not connected: /connect host[:port] --".into()),
         ),
+        KeyOutcome::NewWindow { .. } | KeyOutcome::CloseWindow | KeyOutcome::Windows | KeyOutcome::Switch(_) => {
+            // The front end handles these and never sends them here.
+            (LobbyStep::Stay, None)
+        }
         KeyOutcome::SetList { .. }
         | KeyOutcome::Set { .. }
         | KeyOutcome::Unset { .. }
@@ -1413,6 +1413,7 @@ pub fn help_text() -> &'static str {
 /close               close this window, once it is disconnected
 /windows             list the windows
 /1 .. /9             switch to a window, the lobby is /1
+PageUp, PageDown     scroll this window, any other key returns to the bottom
 Tab                  complete a slash verb or a setting key
 
 Ctrl-F  take the keyboard back from a running farm/go/where/roam

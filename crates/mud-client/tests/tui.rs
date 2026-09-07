@@ -1416,5 +1416,20 @@ fn the_window_verbs_parse() {
         assert!(mud_client::tui::VERBS.contains(&verb), "{verb} is not offered by Tab");
     }
     assert!(help_text().contains("/1"), "the switch is in /help");
+    assert!(help_text().contains("PageUp"), "PageUp is in /help");
+}
+
+#[test]
+fn the_lobby_ignores_the_window_verbs() {
+    let mut settings = Settings::default();
+    let mut armed = false;
+    assert_eq!(
+        lobby_step(KeyOutcome::Windows, &mut settings, &mut armed),
+        (LobbyStep::Stay, None)
+    );
+    assert_eq!(
+        lobby_step(KeyOutcome::Switch(2), &mut settings, &mut armed),
+        (LobbyStep::Stay, None)
+    );
 }
 
