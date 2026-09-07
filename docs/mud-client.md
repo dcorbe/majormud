@@ -590,11 +590,13 @@ When a change takes effect:
   `bot.*`, `farm.rest_at_percent`, `farm.rest_until_percent`,
   `farm.mana_rest_at_percent`, `farm.fight_while_travelling`,
   `farm.travel_interrupts`, `farm.interrupt_at_percent`,
-  `farm.defend_seconds`, `farm.nav.*`, `bank.*` except `bank.at`, and
-  `pace_ms`.
+  `farm.defend_seconds`, `farm.nav.*`, `bank.*`, and `pace_ms`.
+  `farm.nav.*` and `bot.auto_sneak` reach a farm at its next leg, and
+  reach a `/go` or a `/bank` only at the next command, because those two
+  jobs build their navigator once.
 - Fixed at a job's start, so a change waits for the next `/farm`, `/go`
   or `/bank`: the loop and its stops, `farm.start`, `farm.finish_at`,
-  `farm.circuit`, the go target, `bank.at`.
+  `farm.circuit`, `farm.content`, and the go target.
 - Connection keys apply at the next `/connect`.
 
 A refused value, a wrong type or a value the validator rejects, changes
@@ -606,6 +608,12 @@ that is the struct default now. `take_keys` was already on and stays so.
 The first `/set bot.anything` creates the table, and every other bot key
 then takes its struct default. `/set bot` shows the effective values
 either way.
+
+`auto_combat`, `auto_heal`, `auto_get` and `auto_flee` default on now.
+A `[bot]` table that left one of them out because off used to be the
+default has it on from here. `auto_heal = false` no longer stops the
+character resting, because `auto_rest` gates that on its own.
+`auto_rest` and `auto_sneak` are the two new switches.
 
 ## The lobby
 

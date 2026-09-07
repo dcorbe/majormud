@@ -130,18 +130,18 @@ file or of the settings.
 Live, taking effect at the next decision that reads them:
 
 - `bot.*`: the heal, rest and flee marks, the heal and buff spells, `ignore`,
-  `ignore_coins`, `auto_get`, `take_keys`, `sneak`.
+  `ignore_coins`, `auto_get`, `take_keys`, `auto_sneak`.
 - `farm.rest_at_percent`, `farm.rest_until_percent`, `farm.mana_rest_at_percent`,
   `farm.fight_while_travelling`, `farm.travel_interrupts`, `farm.interrupt_at_percent`,
   `farm.defend_seconds`, `farm.nav.*`.
-- `bank.*` except `bank.at`.
+- `bank.*`.
 - `pace_ms`. The writer reads the pace live, so the window calls `set_pace` on a change
   while a job runs. With no job running the pace stays at zero, as it does today.
 
 Fixed at start:
 
 - The loop and its stops, `farm.start`, `farm.finish_at`, `farm.circuit`.
-- The go target. The recover target and start room. `bank.at`.
+- The go target. The recover target and start room.
 - The connection keys.
 
 The docs table under "When a change takes effect" is rewritten to these two lists.
