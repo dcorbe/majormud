@@ -784,9 +784,24 @@ disconnected shows `not connected` and its host in the bar, and takes
 The bar shows the active window's number, then what it showed before,
 then `Act: 2,3` when other windows have an event you have not looked at.
 Only major events count: a connect, a disconnect, a death, a job ending,
-the assist refusing to start. Ordinary output never lights it. Switching
-to the window clears it. The same events are written to the lobby's log
-with a UTC time, the window number and the character.
+the assist refusing to start, a rest. Ordinary output never lights it.
+Switching to the window clears it. The same events are written to the
+lobby's log with a UTC time, the window number and the character.
+
+A rest is logged twice over. Every rest or meditate this client sends
+says which part sent it and what it read, so the lobby answers "why is
+it resting" without a guess:
+
+```
+14:02:11 window 2 salad@bbs:23 rest: assist: rest, hp 12/52 23%, mana 5/20 25%, rest_at 60%, mana_rest_at 30%
+14:02:11 window 2 salad@bbs:23 rest: the prompt shows (Resting)
+```
+
+The sender is `assist`, `stop <room>` for a farm's or a roam's stop, or
+`departure gate` for the wait before a leg sets off, with `after a flee`
+when it follows one. The second line is the board's own word, written
+each time the prompt starts showing a recovery. A prompt line with no
+send before it is a rest this client did not ask for.
 
 The bar is painted only when its text changes, and never by clearing the
 row first, so it no longer flashes over a slow link.

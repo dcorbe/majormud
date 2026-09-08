@@ -1556,6 +1556,35 @@ fn mana_percent_needs_a_pool() {
     assert_eq!(pool.mana_percent(None), None);
 }
 
+/// The lobby's rest log prints the pools the marks were compared against.
+/// Mana only appears when the character has a pool and the prompt carried
+/// a reading, the same two conditions under which `mana_percent` answers.
+#[test]
+fn pools_print_what_the_marks_read() {
+    let hp_only = BotConfig { max_hp: 52, ..BotConfig::default() };
+    assert_eq!(hp_only.pools(12, None), "hp 12/52 23%");
+    assert_eq!(hp_only.pools(12, Some(5)), "hp 12/52 23%", "a reading without a pool");
+    let caster = BotConfig { max_hp: 52, max_mana: 20, ..BotConfig::default() };
+    assert_eq!(caster.pools(12, Some(5)), "hp 12/52 23%, mana 5/20 25%");
+    assert_eq!(caster.pools(12, None), "hp 12/52 23%", "a pool without a reading");
+    let unknown = BotConfig::default();
+    assert_eq!(unknown.pools(12, None), "hp 12/0", "no percent without a max");
+}
+
+/// A rest the bot decided on is explained by the pools and the two marks
+/// it read, whichever command carried it.
+#[test]
+fn rest_reason_names_the_command_the_pools_and_the_marks() {
+    let cfg = BotConfig { max_hp: 52, max_mana: 20, rest_at_percent: 40, mana_rest_at_percent: 30, ..BotConfig::default() };
+    assert!(cfg.is_rest("rest"));
+    assert!(cfg.is_rest("meditate"));
+    assert!(!cfg.is_rest("look"));
+    assert_eq!(
+        cfg.rest_reason("meditate", 50, Some(5)),
+        "meditate, hp 50/52 96%, mana 5/20 25%, rest_at 40%, mana_rest_at 30%"
+    );
+}
+
 /// `hp_percent` is the number the marks are compared against, exposed so
 /// the runner's cast dispatch cannot drift from `on_vitals`'s arithmetic. It
 /// refuses to answer in exactly the two cases `on_vitals` refuses to decide:

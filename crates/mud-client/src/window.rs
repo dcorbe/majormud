@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use crossterm::event::Event as TermEvent;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
+use crate::events::Status;
 use crate::screen::Screen;
 use crate::session::{Capture, Session};
 use crate::settings::Settings;
@@ -44,6 +45,11 @@ pub enum EventKind {
     /// A profile with `reconnect` on is dialling the board again.
     /// `attempt` counts from one and resets once a session plays.
     Reconnecting { attempt: u32 },
+    /// The character is resting, and why. One line for every rest this
+    /// client sends, from whichever job or the assist sent it, and one
+    /// each time the prompt shows a recovery, so a rest nobody here
+    /// asked for stands out as a prompt line with no send before it.
+    Rest(String),
 }
 
 /// What a window sends the front end.
@@ -593,6 +599,9 @@ async fn play(
 ) -> PlayEnd {
     let mut events = session.events();
     let mut state_rx = session.state();
+    let mut rests = session.rests();
+    // The last recovery the prompt showed, so each one is logged once.
+    let mut recovering: Option<Status> = None;
     // One sink for every job this connection starts, so a runner's
     // startup notices land on this window's screen rather than on the
     // terminal the front end is painting.
@@ -836,8 +845,20 @@ async fn play(
                     }
                 }
             }
+            why = rests.recv() => match why {
+                Ok(why) => w.event(EventKind::Rest(why)),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => break PlayEnd::Closed, // disconnected
+            },
             changed = state_rx.changed() => {
                 if changed.is_err() { break PlayEnd::Closed; }
+                let status = state_rx.borrow().status.clone();
+                if status != recovering {
+                    if let Some(s @ (Status::Resting | Status::Meditating)) = &status {
+                        w.event(EventKind::Rest(format!("the prompt shows ({})", s.word())));
+                    }
+                    recovering = status;
+                }
                 if let (Some(nav), Some(room)) = (nav.as_ref(), state_rx.borrow().room.clone()) {
                     here = crate::lost::refix(nav, here, &room);
                     // The shadow model keys identity on the printed name

@@ -2822,7 +2822,8 @@ pub(crate) async fn travel(
         // leg then departs wounded, which is what the travel guard is
         // for. A leg that walks past fights on purpose (the switch off)
         // departs wounded directly.
-        let departure = wait_for_departure_health(session, &cfg, &bot_config, &sight).await;
+        let departure =
+            wait_for_departure_health(session, "departure gate", &cfg, &bot_config, &sight).await;
         if let DepartureWait::Fit { rested: true } = departure {
             sneaking = false;
         }
@@ -3253,6 +3254,8 @@ enum DepartureWait {
 /// otherwise send, and it once sent one in a room full of bugbears.
 async fn wait_for_departure_health(
     session: &crate::session::Session,
+    // Which gate this is, for the lobby's rest log.
+    what: &str,
     cfg: &FarmConfig,
     bot_config: &crate::bot::BotConfig,
     // Judges whether the room we are standing in holds work; the same
@@ -3324,6 +3327,10 @@ async fn wait_for_departure_health(
             } else {
                 "meditate"
             };
+            session.report_rest(format!(
+                "{what}: {cmd}, {}, depart at {mark}%",
+                bot_config.pools(hp, mana)
+            ));
             session.send(cmd);
             sent_heal = true;
         }
@@ -3816,7 +3823,7 @@ async fn farm_stop(
                 crate::bot::Bot::with_refusals(bot_config.clone(), threat.clone(), refusals.clone())
                     .with_pack(session.pack_handle());
             if let DepartureWait::Contested =
-                wait_for_departure_health(session, &cfg, &bot_config, &flee_sight).await
+                wait_for_departure_health(session, "departure gate after a flee", &cfg, &bot_config, &flee_sight).await
             {
                 stats.contested_recoveries += 1;
             }
@@ -3858,6 +3865,16 @@ async fn farm_stop(
             // simply standing about; the bot's own debounce is private.
             if cmd == bot_config.rest_command {
                 resting = true;
+            }
+            // The bot rests off a prompt and nothing else, so the
+            // prompt's own numbers are the ones it read.
+            if bot_config.is_rest(&cmd)
+                && let Event::Prompt { hp, mana, .. } = ev
+            {
+                session.report_rest(format!(
+                    "stop {stop_name}: {}",
+                    bot_config.rest_reason(&cmd, *hp, *mana)
+                ));
             }
             gate.push(cmd);
         }

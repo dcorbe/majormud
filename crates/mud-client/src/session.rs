@@ -343,6 +343,10 @@ pub struct Session {
     events_tx: Mutex<Option<broadcast::Sender<Correlated>>>,
     /// Same reasoning as `events_tx`.
     raw_tx: Mutex<Option<broadcast::Sender<Vec<u8>>>>,
+    /// Why this client rested, one line per rest it sent. Jobs and the
+    /// assist explain here, and the window logs the line in the lobby.
+    /// Same reasoning as `events_tx`.
+    rests_tx: Mutex<Option<broadcast::Sender<String>>>,
     state_rx: watch::Receiver<GameState>,
     /// The profile this session runs under. A watch channel, because a
     /// `/set` replacing it is the event a running job reloads on.
@@ -424,6 +428,7 @@ impl Session {
         });
         let (events_tx, _) = broadcast::channel(8192);
         let (raw_tx, _) = broadcast::channel(8192);
+        let (rests_tx, _) = broadcast::channel(64);
         let (state_tx, state_rx) = watch::channel(GameState::default());
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<Cmd>();
         let purse = Arc::new(Mutex::new(PurseTracker {
@@ -614,6 +619,7 @@ impl Session {
             shared,
             events_tx: Mutex::new(Some(events_tx)),
             raw_tx: Mutex::new(Some(raw_tx)),
+            rests_tx: Mutex::new(Some(rests_tx)),
             state_rx,
             profile: watch::Sender::new(profile.clone()),
             reader: reader.abort_handle(),
@@ -667,6 +673,7 @@ impl Session {
         self.reader.abort();
         self.events_tx.lock().expect("events_tx lock").take();
         self.raw_tx.lock().expect("raw_tx lock").take();
+        self.rests_tx.lock().expect("rests_tx lock").take();
         self.shared.close();
     }
 
@@ -878,6 +885,27 @@ impl Session {
             .as_ref()
             .map(|tx| tx.subscribe())
             .unwrap_or_else(|| broadcast::channel(1).1)
+    }
+
+    /// Why the client rested, one line per rest. Same closed-after-
+    /// `close` behaviour as [`Session::events`].
+    pub fn rests(&self) -> broadcast::Receiver<String> {
+        self.rests_tx
+            .lock()
+            .expect("rests_tx lock")
+            .as_ref()
+            .map(|tx| tx.subscribe())
+            .unwrap_or_else(|| broadcast::channel(1).1)
+    }
+
+    /// Explain a rest this client is sending. Every path that sends a
+    /// rest or a meditate says why here, in the same breath as the
+    /// send, so the lobby's log can answer "why is it resting". Nobody
+    /// listening is fine: a rest needs no witness.
+    pub fn report_rest(&self, why: String) {
+        if let Some(tx) = self.rests_tx.lock().expect("rests_tx lock").as_ref() {
+            let _ = tx.send(why);
+        }
     }
 
     pub fn state(&self) -> watch::Receiver<GameState> {

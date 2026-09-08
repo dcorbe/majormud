@@ -268,6 +268,7 @@ pub fn log_line(
         EventKind::JobEnded(label) => label.clone(),
         EventKind::AssistRefused(why) => format!("assist not started: {why}"),
         EventKind::Reconnecting { attempt } => format!("reconnecting, attempt {attempt}"),
+        EventKind::Rest(why) => format!("rest: {why}"),
     };
     format!("{stamp} window {number} {who} {what}")
 }
@@ -1427,6 +1428,13 @@ pub fn assist_tick(
         watch.on_sent(&cmd);
     }
     for cmd in assist_actions(bot, cor) {
+        // The bot rests off a prompt and nothing else, so the prompt's
+        // own numbers are the ones it read.
+        if cfg.is_rest(&cmd)
+            && let crate::events::Event::Prompt { hp, mana, .. } = &cor.event
+        {
+            session.report_rest(format!("assist: {}", cfg.rest_reason(&cmd, *hp, *mana)));
+        }
         session.send(&cmd);
         watch.on_sent(&cmd);
     }

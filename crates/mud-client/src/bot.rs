@@ -394,6 +394,41 @@ impl BotConfig {
         let mana = mana?;
         (self.max_mana > 0).then(|| mana * 100 / self.max_mana)
     }
+
+    /// Both pools as the lobby's rest log prints them: `hp 12/52 23%`,
+    /// then `mana 5/20 25%` when there is a pool and a reading, which
+    /// are the two conditions under which [`Self::mana_percent`]
+    /// answers. The percents are the ones the marks are compared
+    /// against. No percent without a max: 0 is what the profile says
+    /// when it never said.
+    pub fn pools(&self, hp: i32, mana: Option<i32>) -> String {
+        let mut out = format!("hp {hp}/{}", self.max_hp);
+        if self.max_hp > 0 {
+            out.push_str(&format!(" {}%", hp * 100 / self.max_hp));
+        }
+        if let (Some(m), Some(p)) = (mana, self.mana_percent(mana)) {
+            out.push_str(&format!(", mana {m}/{} {p}%", self.max_mana));
+        }
+        out
+    }
+
+    /// Is this command one of the two recoveries the bot sends? The
+    /// rest command is the profile's own word for it; `meditate` is the
+    /// board's, and the bot sends it verbatim.
+    pub fn is_rest(&self, cmd: &str) -> bool {
+        cmd == self.rest_command || cmd == "meditate"
+    }
+
+    /// Why a rest the bot decided on went out, for the lobby's log: the
+    /// command, the pools, and the two marks `Bot::on_vitals` read.
+    pub fn rest_reason(&self, cmd: &str, hp: i32, mana: Option<i32>) -> String {
+        format!(
+            "{cmd}, {}, rest_at {}%, mana_rest_at {}%",
+            self.pools(hp, mana),
+            self.rest_at_percent,
+            self.mana_rest_at_percent
+        )
+    }
 }
 
 impl BotConfig {

@@ -1647,6 +1647,10 @@ fn the_lobby_log_line_names_the_window_the_character_and_the_event() {
         "01:01:01 window 2 h:23 assist not started: no character name yet"
     );
     assert_eq!(
+        log_line(at, 2, Some(&info), &EventKind::Rest("assist: rest, hp 12/52 23%, rest_at 40%, mana_rest_at 0%".into())),
+        "01:01:01 window 2 dan@h:23 rest: assist: rest, hp 12/52 23%, rest_at 40%, mana_rest_at 0%"
+    );
+    assert_eq!(
         log_line(at, 2, Some(&nameless), &EventKind::Reconnecting { attempt: 2 }),
         "01:01:01 window 2 h:23 reconnecting, attempt 2"
     );
