@@ -222,13 +222,22 @@ fn go_rests_to_the_bots_mark_not_the_farms() {
     assert_eq!(go_config(&base).depart_at_percent, None);
 }
 
-/// `open` is still tried and still free; this only stops a weaponless
-/// character grinding minutes of failed bashes at a locked door.
+/// A walk bashes what the profile's `farm.nav.bash_doors` says a farm
+/// bashes. Forcing it off routed every room behind an unpickable lock
+/// as unreachable for a character who could have bashed the door.
 #[test]
-fn go_fails_loudly_at_a_locked_door() {
+fn go_bashes_doors_when_the_profile_says_so() {
     let base = FarmConfig::default();
-    assert!(base.nav.bash_doors, "the farm bashes, for contrast");
-    assert!(!go_config(&base).nav.bash_doors);
+    assert!(base.nav.bash_doors, "the default");
+    assert!(go_config(&base).nav.bash_doors);
+    let off = FarmConfig {
+        nav: mud_client::nav::NavConfig {
+            bash_doors: false,
+            ..Default::default()
+        },
+        ..FarmConfig::default()
+    };
+    assert!(!go_config(&off).nav.bash_doors);
 }
 
 #[test]

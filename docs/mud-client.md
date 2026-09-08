@@ -509,16 +509,15 @@ without ever having seen it.
 One deliberate difference from `/farm`, because this answers a
 keystroke rather than running unattended:
 
-- **No door bashing.** `open` is still tried and still free, so ordinary
-  closed doors are no obstacle. A lock the character can pick is picked.
-  A lock the character cannot pick is a wall for routing when bashing is
-  off, so `/go` goes around it and says `no route` when there is no way
-  around. The exception is a lock with a positive pick modifier, which
-  never re-locks once anyone has picked it, so routing treats it as an
-  ordinary door. If it turns out to be shut after all and the character
-  cannot pick it, the walk stops there and names the door and the
-  direction. Either way the walk never grinds bashes. Bash it by hand
-  and `/go` again.
+- **Doors as the profile says.** `open` is tried first and is free, so
+  ordinary closed doors are no obstacle. A lock the character can pick
+  is picked. A lock it cannot pick is bashed when `[farm.nav].bash_doors`
+  is on, which it is by default, and is a wall for routing when it is
+  off: `/go` then goes around it and says `no route` when there is no
+  way around. The exception is a lock with a positive pick modifier,
+  which never re-locks once anyone has picked it, so routing treats it
+  as an ordinary door. A bash is minutes of rolls and costs HP per
+  swing, so turn the switch off for a character with no weapon.
 
 The walk rests before its first step as a farm does: a pool under its
 floor starts a recovery, which runs to the bot's mark. Set

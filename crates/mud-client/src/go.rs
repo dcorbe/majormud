@@ -189,19 +189,17 @@ pub fn go_config(base: &FarmConfig) -> FarmConfig {
         // straight off the character's own Picklocks
         // (`crate::graph::Capabilities::picklocks`).
         //
-        // BASHING is the one that is forced off. It is minutes of
-        // silence — up to 60 failed rolls plus four times that in
-        // cooldown scolds — it charges HP per swing, and a freshly-dead
-        // character has no weapon to do it with. A locked door that
-        // resists picking now stops with `DoorLocked`, which names the
-        // door and the direction, so the operator can decide to `bash`
-        // by hand. That is the "fail loudly" this always meant: it used
-        // to report a TIMEOUT for an instant, known refusal, which read
-        // as though the client had hung (live, beef.raw 2026-08-22).
-        nav: crate::nav::NavConfig {
-            bash_doors: false,
-            ..base.nav.clone()
-        },
+        // Bashing follows the profile's `farm.nav.bash_doors`, the same
+        // switch a farm reads. It was forced off here from 2026-08-22 to
+        // 2026-09-08 because a bash is minutes of silence, charges HP
+        // per swing, and a freshly-dead character has no weapon for it.
+        // The cost of that rule was a `no route` to every room behind a
+        // lock the character could not pick, the Crypt included, for a
+        // character who could have bashed the door in a few swings.
+        // A locked door that resists picking is now a bash when the
+        // switch is on, and a stop that names the door and the
+        // direction when it is off.
+        nav: base.nav.clone(),
         // No lap budget: a walk ends when it arrives, dies, or gives up.
         max_seconds: 0,
         ..base.clone()
