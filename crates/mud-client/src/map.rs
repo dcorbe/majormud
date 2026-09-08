@@ -565,6 +565,9 @@ pub struct Marks {
     pub route: BTreeSet<RoomId>,
     /// Rooms a roam is fenced out of ([`crate::roam::Walls`]).
     pub walls: BTreeSet<RoomId>,
+    /// The recovery's safe room and death room
+    /// ([`crate::recover::Marks`]). Drawn as `S` and `D`.
+    pub recover: crate::recover::Marks,
 }
 
 /// A stop on the marked loop: bright gold, in the FOREGROUND like
@@ -585,6 +588,12 @@ const ON_ROUTE: &str = "0;33";
 /// Where the character stands, when that room is not part of the loop.
 /// Bright green on whatever the shell's background already is.
 const HERE: &str = "1;32";
+/// The recovery's safe room: bright cyan, and the death room: bright
+/// magenta. Neither is a colour the palette spends on anything else,
+/// so the two rooms a recovery turns on read at a glance among the
+/// stops and walls marked beside them.
+const SAFE_MARK: &str = "1;36";
+const DEATH_MARK: &str = "1;35";
 
 /// Paint the viewport.
 ///
@@ -627,6 +636,8 @@ pub fn render(
 
             let glyph = match marks.here {
                 Some(here) if here == id => '@',
+                _ if marks.recover.death == Some(id) => 'D',
+                _ if marks.recover.safe == Some(id) => 'S',
                 _ => match zoom {
                     // A single cell cannot carry a connector, so the room
                     // itself is drawn solid and colour does the work.
@@ -704,6 +715,10 @@ fn ink(fg: &'static str, id: RoomId, marks: &Marks) -> Ink {
     // room the run will refuse to enter.
     let fg = if marks.walls.contains(&id) {
         WALL
+    } else if marks.recover.death == Some(id) {
+        DEATH_MARK
+    } else if marks.recover.safe == Some(id) {
+        SAFE_MARK
     } else if marks.stops.contains(&id) {
         STOP_MARK
     } else if marks.route.contains(&id) {

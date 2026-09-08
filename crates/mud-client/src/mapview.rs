@@ -101,6 +101,10 @@ pub struct MapView {
     /// two say opposite things and an operator may well want both in one
     /// sitting: a circuit to walk, and a fence to keep it honest.
     walls: std::collections::BTreeSet<RoomId>,
+    /// The recovery's safe room and death room. Handed in by the window
+    /// when the map opens and read back when it closes, so the marks
+    /// outlive the map the way the character's position does.
+    recover: crate::recover::Marks,
     /// Set while a prompt is taking a line.
     prompt: Option<(Asking, String)>,
     /// One line of explanation, cleared by the next keystroke.
@@ -133,6 +137,7 @@ impl MapView {
             stops: Vec::new(),
             walls: std::collections::BTreeSet::new(),
             route: Default::default(),
+            recover: Default::default(),
             prompt: None,
             message: None,
         };
@@ -176,6 +181,17 @@ impl MapView {
 
     pub fn walls(&self) -> &std::collections::BTreeSet<RoomId> {
         &self.walls
+    }
+
+    /// Open with the recovery marks the window kept from last time.
+    pub fn with_recover_marks(mut self, marks: crate::recover::Marks) -> Self {
+        self.recover = marks;
+        self
+    }
+
+    /// The recovery marks as they stand, for the window to keep.
+    pub fn recover_marks(&self) -> crate::recover::Marks {
+        self.recover
     }
 
     pub fn route(&self) -> &std::collections::BTreeSet<RoomId> {
@@ -368,6 +384,8 @@ impl MapView {
 
             KeyCode::Enter | KeyCode::Char(' ') => self.toggle_stop(),
             KeyCode::Char('x') => self.toggle_wall(),
+            KeyCode::Char('S') => self.toggle_recover_mark(true),
+            KeyCode::Char('D') => self.toggle_recover_mark(false),
             KeyCode::Char('c') => {
                 self.stops.clear();
                 self.route.clear();
@@ -481,6 +499,30 @@ impl MapView {
         }
     }
 
+    /// Mark the room under the cursor as the recovery's safe room, or
+    /// its death room, and unmark it when it already is. The message
+    /// says what the mark now is, since a mark two planes away is not
+    /// otherwise visible.
+    fn toggle_recover_mark(&mut self, safe: bool) {
+        let Some(id) = self.cursor_room() else {
+            self.message = Some("no room under the cursor".into());
+            return;
+        };
+        let slot = if safe { &mut self.recover.safe } else { &mut self.recover.death };
+        *slot = (*slot != Some(id)).then_some(id);
+        let what = if safe { "safe room" } else { "death room" };
+        self.message = Some(match *slot {
+            Some(id) => format!("{what}: {}", self.describe(id)),
+            None => format!("{what} cleared"),
+        });
+    }
+
+    /// `name [map/room]`, the way a note names a room.
+    fn describe(&self, id: RoomId) -> String {
+        let name = self.graph.room(id).map(|r| r.name.as_str()).unwrap_or("?");
+        format!("{name} [{}/{}]", id.map, id.room)
+    }
+
     fn toggle_stop(&mut self) {
         let Some(id) = self.cursor_room() else {
             self.message = Some("no room under the cursor".into());
@@ -561,6 +603,7 @@ impl MapView {
             stops: self.stops.iter().copied().collect(),
             route: self.route.clone(),
             walls: self.walls.clone(),
+            recover: self.recover,
         };
         let map = render(
             &self.plane,
@@ -620,6 +663,12 @@ impl MapView {
             }
         }
 
+        if let Some(id) = self.recover.safe {
+            lines.push(format!("safe room: {}", self.describe(id)));
+        }
+        if let Some(id) = self.recover.death {
+            lines.push(format!("death room: {}", self.describe(id)));
+        }
         let e = self.plane.extent();
         lines.push(String::new());
         lines.push(format!(
@@ -649,7 +698,7 @@ impl MapView {
             ),
             (None, Some(msg)) => format!("-- {msg} --"),
             (None, None) => format!(
-                "{} | {} | {} stops | {} walls | move arrows/hjkl/yubn  < > stairs  +/- zoom  m mode  / find  enter marks  x walls  s saves  r roams  g go  R recover  q leave",
+                "{} | {} | {} stops | {} walls | move arrows/hjkl/yubn  < > stairs  +/- zoom  m mode  / find  enter marks  x walls  s saves  r roams  S safe  D death  g go  R recover  q leave",
                 match self.paint {
                     Paint::Terrain => "terrain",
                     Paint::Danger => "danger",

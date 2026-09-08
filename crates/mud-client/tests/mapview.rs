@@ -129,6 +129,45 @@ fn shift_r_on_nothing_says_so_and_stays() {
     assert_eq!(v.message(), Some("no room under the cursor"));
 }
 
+/// `S` and `D` mark the recovery's two rooms under the cursor. A second
+/// press on the same room clears the mark, the marks read back for the
+/// window to keep, and marks handed in paint on the map.
+#[test]
+fn shift_s_and_shift_d_mark_the_safe_and_death_rooms_and_again_clear_them() {
+    use mud_client::recover::Marks;
+    let mut v = view(DOOR, Fix::Confirmed(DOOR));
+    press(&mut v, KeyCode::Char('h'));
+    assert_eq!(v.cursor_room(), Some(ROAD));
+    let action = v.on_key(&KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT));
+    assert_eq!(action, ViewAction::Continue);
+    assert_eq!(v.recover_marks(), Marks { safe: Some(ROAD), death: None });
+    let status = v.lines().pop().unwrap();
+    assert!(status.contains("safe room: Western Road [2/1]"), "{status}");
+    v.on_key(&KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT));
+    assert_eq!(v.recover_marks(), Marks { safe: Some(ROAD), death: Some(ROAD) });
+    v.on_key(&KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT));
+    assert_eq!(v.recover_marks(), Marks { safe: None, death: Some(ROAD) });
+    let status = v.lines().pop().unwrap();
+    assert!(status.contains("safe room cleared"), "{status}");
+
+    let v = view(DOOR, Fix::Confirmed(DOOR)).with_recover_marks(Marks { safe: Some(STREET), death: Some(ROAD) });
+    assert_eq!(v.recover_marks(), Marks { safe: Some(STREET), death: Some(ROAD) });
+    let frame = v.lines().join("\n");
+    assert!(frame.contains("safe room: Slum Street [1/2]"), "{frame}");
+    assert!(frame.contains("death room: Western Road [2/1]"), "{frame}");
+}
+
+#[test]
+fn shift_s_on_nothing_says_so_and_marks_nothing() {
+    let mut v = view(DOOR, Fix::Confirmed(DOOR));
+    press(&mut v, KeyCode::Char('k'));
+    assert_eq!(v.cursor_room(), None);
+    v.on_key(&KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT));
+    assert_eq!(v.recover_marks(), Default::default());
+    let status = v.lines().pop().unwrap();
+    assert!(status.contains("no room under the cursor"), "{status}");
+}
+
 #[test]
 fn the_legend_names_the_recover_key() {
     let mut v = view(DOOR, Fix::Confirmed(DOOR));
@@ -137,6 +176,6 @@ fn the_legend_names_the_recover_key() {
     // it here so the assertion looks at the whole legend.
     v.resize((200, 30));
     let status = v.lines().pop().unwrap();
-    assert!(status.contains("g go  R recover  q leave"), "{status}");
+    assert!(status.contains("S safe  D death  g go  R recover  q leave"), "{status}");
 }
 

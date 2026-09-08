@@ -280,6 +280,17 @@ pub fn recover_config(p: &crate::profile::Profile) -> (BotConfig, crate::farm::F
     (bot, farm)
 }
 
+/// The two rooms a recovery is marked with from the map, kept by the
+/// window for as long as it is open. `safe` is where the job stages and
+/// runs home to. `death` is where it sneaks to when `/recover` names no
+/// room. Either may be unset: an unset safe room is wherever the
+/// character stands, and an unset death room is the newest logged death.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Marks {
+    pub safe: Option<RoomId>,
+    pub death: Option<RoomId>,
+}
+
 /// Where a `/recover` goes: the room the caller typed, or the newest
 /// logged death for `character` that carries one.
 ///
