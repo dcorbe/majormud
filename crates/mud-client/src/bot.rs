@@ -725,6 +725,12 @@ enum Opener {
     Backstab { restore: Option<String> },
 }
 
+/// Stealth commands sent per situation before the bot stops trying, and
+/// the prompts waited between one and the next. See
+/// [`Bot::idle_stealth`].
+const STEALTH_TRIES: u32 = 3;
+const STEALTH_WAIT: u32 = 3;
+
 /// The set of targets the board has refused, shared across every bot a
 /// run builds. See [`Bot::refused`].
 pub type Refusals = std::sync::Arc<std::sync::Mutex<HashSet<String>>>;
@@ -900,8 +906,18 @@ impl Bot {
                 // A block is a move or a look. Moving un-hides, and a
                 // look only ever follows a send that forgot the hide.
                 // Sneak survives a move exactly when the move said so.
-                self.forget_stealth();
+                // The retry cap starts over in a NEW room only: a
+                // re-render of this one (an empty line typed at the
+                // board prints the room again) is not a new situation,
+                // and reading it as one sent three sneaks per re-render
+                // into a room that refused every one (live, 2026-09-08,
+                // the Bank of Godfrey).
+                self.hidden = false;
                 self.sneaking = std::mem::take(&mut self.sneak_held);
+                self.stealth_pending = 0;
+                if self.swept.0 != room.name {
+                    self.stealth_tries = 0;
+                }
                 // A sneaked move is the arrival a backstab opens from,
                 // the same evidence a walk hands `arm_backstab_opener`.
                 // Not under `auto_hide`: hidden in place was asked for,
@@ -1371,10 +1387,10 @@ impl Bot {
             return Vec::new();
         };
         let up = if cmd == "hide" { self.hidden } else { self.sneaking };
-        if up || self.stealth_pending > 0 || self.stealth_tries >= 3 {
+        if up || self.stealth_pending > 0 || self.stealth_tries >= STEALTH_TRIES {
             return Vec::new();
         }
-        self.stealth_pending = 3;
+        self.stealth_pending = STEALTH_WAIT;
         self.stealth_tries += 1;
         vec![BotAction::Send(cmd.into())]
     }
@@ -1402,8 +1418,11 @@ impl Bot {
         // The stealth echoes and their failures. Matched anywhere on
         // the line: the live board glues a seen failure onto the
         // attempt ("Attempting to sneak...You don't think you're
-        // sneaking."). A failure is retried at the next prompt, under
-        // the same cap as a silence.
+        // sneaking."). A failed roll is retried after a fresh wait,
+        // under the same cap as a silence: retrying at the very next
+        // prompt sent three in a row inside a second, since every
+        // failure prints one. A hard block is not a roll and is not
+        // retried until the situation changes.
         if line.contains("Attempting to hide") {
             self.hidden = true;
             self.stealth_pending = 0;
@@ -1414,11 +1433,16 @@ impl Bot {
         }
         if line.contains("don't think you are hidden") {
             self.hidden = false;
-            self.stealth_pending = 0;
+            self.stealth_pending = STEALTH_WAIT;
         }
-        if line.contains("don't think you're sneaking") || line.contains("You may not sneak right now") {
+        if line.contains("don't think you're sneaking") {
+            self.sneaking = false;
+            self.stealth_pending = STEALTH_WAIT;
+        }
+        if line.contains("You may not sneak right now") {
             self.sneaking = false;
             self.stealth_pending = 0;
+            self.stealth_tries = STEALTH_TRIES;
         }
         // The move's own word on sneak, the only trustworthy one: it
         // opens a sneaked move, right before the room block, and a

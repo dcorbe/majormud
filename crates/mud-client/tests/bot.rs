@@ -1765,10 +1765,11 @@ fn a_finished_rest_sneaks_without_auto_hide() {
 }
 
 /// The board names a failed hide when a perception roll passes. The
-/// retry waits for the next prompt, like every other decision here, and
-/// gives up after three sends until something changes.
+/// retry waits out the same three prompts a silence does, since every
+/// failure prints a prompt and retrying on it sent three in a second,
+/// and gives up after three sends until something changes.
 #[test]
-fn a_noticed_failure_retries_on_the_next_prompt_three_times_then_stops() {
+fn a_noticed_failure_retries_after_a_wait_three_times_then_stops() {
     let mut bot = stealth_bot(true);
     bot.on_event(&room(&[]));
     assert_eq!(bot.on_event(&standing(100)), send("hide"));
@@ -1776,13 +1777,19 @@ fn a_noticed_failure_retries_on_the_next_prompt_three_times_then_stops() {
         assert!(bot.on_event(&line("Attempting to hide...")).is_empty());
         assert!(bot.on_event(&line(" You don't think you are hidden.")).is_empty());
         assert!(!bot.hidden());
+        assert!(bot.on_event(&standing(100)).is_empty(), "not on the failure's own prompt");
+        assert!(bot.on_event(&standing(100)).is_empty());
         assert_eq!(bot.on_event(&standing(100)), send("hide"));
     }
     bot.on_event(&line("Attempting to hide..."));
     bot.on_event(&line(" You don't think you are hidden."));
-    assert!(bot.on_event(&standing(100)).is_empty());
-    // A new room is a new situation.
+    for _ in 0..6 {
+        assert!(bot.on_event(&standing(100)).is_empty());
+    }
+    // A new room is a new situation. This one, printed again, is not.
     bot.on_event(&room(&[]));
+    assert!(bot.on_event(&standing(100)).is_empty());
+    bot.on_event(&Event::RoomSeen(RoomView { name: "Arena, Sand".into(), ..view(&[]) }));
     assert_eq!(bot.on_event(&standing(100)), send("hide"));
 }
 
@@ -1813,19 +1820,37 @@ fn the_sneak_echo_is_believed_and_a_seen_failure_is_not() {
     assert_eq!(bot.on_event(&standing(100)), send("sneak"));
     assert!(bot.on_event(&line("Attempting to sneak...You don't think you're sneaking.")).is_empty());
     assert!(!bot.sneaking());
+    assert!(bot.on_event(&standing(100)).is_empty());
+    assert!(bot.on_event(&standing(100)).is_empty());
     assert_eq!(bot.on_event(&standing(100)), send("sneak"));
     bot.on_event(&line("Attempting to sneak..."));
     assert!(bot.sneaking());
     assert!(bot.on_event(&standing(100)).is_empty());
 }
 
+/// "You may not sneak right now!" is not a failed roll, it is the board
+/// saying no, and asking again in the same situation is what sent
+/// twenty sneaks into the Bank of Godfrey in four seconds (live,
+/// 2026-09-08). Nothing more until the situation changes: a new room,
+/// or a send of the bot's own.
 #[test]
-fn a_hard_block_on_sneak_is_tried_again_at_the_next_prompt() {
-    let mut bot = stealth_bot(false);
+fn a_hard_block_on_sneak_ends_the_tries_until_the_situation_changes() {
+    let mut bot = Bot::new(BotConfig { auto_combat: true, auto_heal: true, max_hp: 100, ..BotConfig::default() })
+        .with_stealth(true);
     bot.on_event(&room(&[]));
     assert_eq!(bot.on_event(&standing(100)), send("sneak"));
     assert!(bot.on_event(&line("You may not sneak right now!")).is_empty());
     assert!(!bot.sneaking());
+    for _ in 0..6 {
+        assert!(bot.on_event(&standing(100)).is_empty());
+    }
+    // The same room printed again is the same situation.
+    bot.on_event(&room(&[]));
+    assert!(bot.on_event(&standing(100)).is_empty());
+    // A fight is a new one: the attack is a send of the bot's own.
+    assert_eq!(bot.on_event(&room(&["kobold thief"])), send("a thief"));
+    bot.on_event(&line("*Combat Off*"));
+    bot.on_event(&room(&[]));
     assert_eq!(bot.on_event(&standing(100)), send("sneak"));
 }
 

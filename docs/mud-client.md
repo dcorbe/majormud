@@ -465,10 +465,13 @@ a party leader does. Both are beliefs: the board's own echo confirms an
 attempt, a named failure or a hard block clears it, any other send
 forgets it, and a room block forgets a hide and keeps a sneak only when
 the move printed "Sneaking...". A stealth command the board swallows
-without a word is tried again after three quiet prompts, and after
-three sends the assist stops until the situation changes: a new room, a
-recovery, or a command of its own. The idle sneak is bare. The stealth
-spell a walk casts before its sneak is not cast here.
+without a word, or answers with a failed roll, is tried again after
+three quiet prompts, and after three sends the assist stops until the
+situation changes: a new room, a recovery, or a command of its own. The
+same room printed again is not a new situation. "You may not sneak
+right now!" is not a roll and is not tried again until then. The idle
+sneak is bare. The stealth spell a walk casts before its sneak is not
+cast here.
 
 A room the character sneaked into is opened with `bs`, off the same
 "Sneaking..." line a walk's arrival reads. The board prints it for a
