@@ -26,7 +26,7 @@
 
 use std::time::{Duration, Instant};
 
-use mud_client::correlate::{is_echo, CmdId, Correlator};
+use mud_client::correlate::{is_echo, is_movement, CmdId, Correlator};
 use mud_client::events::{Actor, Event, RoomView};
 use mud_client::parse::Parser;
 use mud_core::text::color;
@@ -1242,6 +1242,88 @@ fn a_get_is_answered_by_dont_see() {
     assert_eq!(
         ans(&mut c, line("You don't see a rusty dagger here."), t),
         Some(CmdId(1))
+    );
+}
+
+/// The board's minimum abbreviation for `search` is 3, and any prefix of
+/// length 3 or more is the same command: `sea`, `sear`, `searc` and
+/// `search` must all classify the same way.
+#[test]
+fn every_live_spelling_of_a_bare_search_is_the_same_kind() {
+    let t = Instant::now();
+    for cmd in ["sea", "sear", "searc", "search"] {
+        let mut c = Correlator::new(TTL);
+        c.sent(CmdId(1), cmd, t);
+        assert_eq!(ans(&mut c, line(cmd), t), Some(CmdId(1)), "{cmd:?} echo");
+        assert_eq!(
+            ans(&mut c, room("Darkwood Forest"), t),
+            Some(CmdId(1)),
+            "{cmd:?} retired by the room it re-lists"
+        );
+    }
+}
+
+/// `se` is the southeast direction, two letters below the length floor,
+/// and must stay a move rather than fall into the bare search.
+#[test]
+fn se_stays_a_direction_not_a_bare_search() {
+    assert!(is_movement("se"));
+}
+
+/// The directed search's own wordings answer the DIRECTED command, never
+/// the bare one: a pending bare search must survive them.
+#[test]
+fn the_directed_searchs_own_wordings_do_not_retire_a_bare_search() {
+    let t = Instant::now();
+    for reply in [
+        "You found an exit to the north!",
+        "You notice nothing different to the north.",
+    ] {
+        let mut c = Correlator::new(TTL);
+        c.sent(CmdId(1), "search", t);
+        assert_eq!(ans(&mut c, line("search"), t), Some(CmdId(1)));
+        assert_eq!(
+            ans(&mut c, line(reply), t),
+            None,
+            "{reply:?} must not retire a bare search"
+        );
+    }
+}
+
+/// The two wordings for a missing floor item and a missing coin pile,
+/// both live-measured, retire a `get`.
+#[test]
+fn a_get_is_answered_by_its_two_missing_item_wordings() {
+    let t = Instant::now();
+    for reply in [
+        "You don't see a silver amulet here.",
+        "You don't see any copper farthings",
+    ] {
+        let mut c = Correlator::new(TTL);
+        c.sent(CmdId(1), "get silver amulet", t);
+        ans(&mut c, line("get silver amulet"), t);
+        assert_eq!(ans(&mut c, line(reply), t), Some(CmdId(1)), "{reply:?}");
+    }
+}
+
+/// `rob <absent>` refuses "You don't see that anywhere!", live-measured,
+/// and `rob` has no modelled kind. A pending get must survive that line,
+/// not read it as its own missing-item wording.
+#[test]
+fn robs_missing_target_refusal_does_not_retire_a_get() {
+    let t = Instant::now();
+    let mut c = Correlator::new(TTL);
+    c.sent(CmdId(1), "get silver amulet", t);
+    ans(&mut c, line("get silver amulet"), t);
+    assert_eq!(
+        ans(&mut c, line("You don't see that anywhere!"), t),
+        None,
+        "rob's missing-target refusal must not retire a pending get"
+    );
+    assert_eq!(
+        ans(&mut c, line("You picked up a silver amulet."), t),
+        Some(CmdId(1)),
+        "the get is still pending after the unrelated refusal"
     );
 }
 

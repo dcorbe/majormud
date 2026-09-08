@@ -255,7 +255,11 @@ fn kind_of(cmd: &str) -> Kind {
             return Kind::Picklock;
         }
     }
-    if cmd == "search" || cmd == "sea" {
+    // The board's minimum abbreviation for `search` is 3, and any prefix
+    // of length 3 or more is the same command: `sea`, `sear`, `searc` and
+    // `search` all reach here. The length floor keeps `se` and `s` as
+    // directions, caught by the `DIRS` check above.
+    if cmd.len() >= 3 && "search".starts_with(cmd) {
         return Kind::SearchRoom;
     }
     // The DIRECTED form. The bare form is `SearchRoom` above.
@@ -448,11 +452,19 @@ fn completes(kind: Kind, ev: &Event) -> bool {
         // The stock wording, "you took ", is also the DLL's damage line
         // ("you took 12 damage.") -- excluded so a landed blow never
         // retires a pending get. "you picked up" is the reimplemented
-        // board's uncaptured item wording, kept alongside it. "you don't
-        // see" is somebody else getting there first: without it the get
-        // lingered for its whole deadline and the next reply landed on it.
+        // board's uncaptured item wording, kept alongside it. Two more
+        // wordings are somebody else getting there first: "You don't see
+        // a silver amulet here." for a floor item, and "You don't see any
+        // copper farthings" for a coin pile. "You don't see that
+        // anywhere!" is excluded on purpose: it is `rob`'s missing-target
+        // refusal, live-measured, and `rob` has no modelled kind, so a
+        // bare "you don't see" would retire a pending get on somebody
+        // else's `rob`.
         Kind::Get => {
-            has("you picked up") || (has("you took ") && !has("damage")) || has("you don't see")
+            has("you picked up")
+                || (has("you took ") && !has("damage"))
+                || (has("you don't see") && has(" here"))
+                || has("you don't see any ")
         }
         Kind::BuyHealing => has("wounds are healed"),
         Kind::Deposit => {
