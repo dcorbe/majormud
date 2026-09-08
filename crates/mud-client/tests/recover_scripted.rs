@@ -623,6 +623,37 @@ async fn a_dark_death_room_is_lit_before_the_sneak() {
     assert!(cast_at < sneak_at, "lit before armed: {log:?}");
 }
 
+/// The death room is dark and the character carries a torch instead of
+/// knowing a spell. The torch is lit in the start room, before the
+/// sneak, because lighting breaks one. The item arm shares every line
+/// of `ensure_lit` after the command string with the spell arm above,
+/// so this pins the inventory read and the item's own light command.
+#[tokio::test]
+async fn a_dark_death_room_is_lit_by_a_torch_before_the_sneak() {
+    let script = vec![
+        ("stat", NINJA_SHEET.into()),
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying a torch.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .to_string(),
+        ),
+        ("look", format!("\r\nlook{}", block("Guard Post", "north"))),
+        ("light torch", reply("light torch", "You lit the torch.")),
+        ("sneak", reply("sneak", "Attempting to sneak...")),
+        sneaky_step("Inner Ward", "north south"),
+        sneaky_step("Keep", "south"),
+        ("search", reply("search", "Your search revealed nothing.")),
+        ("s", format!("\r\ns{}", block("Inner Ward", "north south"))),
+        ("s", format!("\r\ns{}", block("Guard Post", "north"))),
+    ];
+    let (out, log) = recover_over(corridor(-150), script).await;
+    let end = out.expect("the job must finish");
+    assert_eq!(end.haul().summary(), "0 of 0 items", "log: {log:?}");
+    let lit = log.iter().position(|l| l == "light torch").expect("the torch is lit");
+    let armed = log.iter().position(|l| l == "sneak").expect("the sneak is armed");
+    assert!(lit < armed, "light before sneak: {log:?}");
+}
+
 // ------------------------------------------------------------ the sweep
 
 fn up_to_the_search(items: &str, prompt: &str) -> Vec<(&'static str, String)> {
@@ -793,5 +824,26 @@ async fn a_settings_change_lands_while_the_sweep_waits() {
     };
     assert_eq!(why, HomeWhy::Hurt { mark: 101 }, "log: {log:?}");
     assert_eq!(count(&log, "get leather cap"), 0, "the sweep stopped: {log:?}");
+}
+
+/// A rat swings during the sweep. Above the mark the sweep carries on,
+/// and nothing the job sends is an attack.
+#[tokio::test]
+async fn a_swing_mid_sweep_is_ignored_and_never_answered() {
+    let mut script = up_to_the_search("a rusty dagger, a leather cap", PROMPT);
+    script.push((
+        "get rusty dagger",
+        reply(
+            "get rusty dagger",
+            "The giant rat swings at you but misses!\r\nYou took a rusty dagger.",
+        ),
+    ));
+    script.push(("get leather cap", reply("get leather cap", "You took a leather cap.")));
+    script.extend(home_steps());
+    let (out, log) = recover_over(corridor(0), script).await;
+    let end = out.expect("the job must finish");
+    assert_eq!(end.haul().summary(), "2 of 2 items", "log: {log:?}");
+    assert!(!log.iter().any(|l| l.starts_with("a ")), "never an attack: {log:?}");
+    assert_eq!(count(&log, "look"), 1, "no defence look either: {log:?}");
 }
 
