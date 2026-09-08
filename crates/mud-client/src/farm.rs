@@ -159,14 +159,12 @@ pub struct FarmConfig {
     /// 0 disables the hp trip; dying still stops the walk. Off with
     /// `[bot].auto_rest`, since resting is what the stop is for.
     ///
-    /// A pair where this value exceeds the departure mark is refused,
-    /// because the defend pump would end, the departure gate would
-    /// release at the lower number, and the very next prompt would trip
-    /// the guard again, burning the whole interrupt budget without
-    /// walking a step. [`FarmPlan::build`] refuses it when this farm
-    /// sets its own `depart_at_percent`. With the default, the mark is
-    /// the bot's `rest_until_percent`, which the loader cannot see, so
-    /// [`run_farm`] refuses it at run start instead.
+    /// A pair where this value exceeds the bot's `rest_at_percent` is
+    /// refused, because the departure gate lets a leg set off at that
+    /// floor, and the very next prompt would trip the guard, burning
+    /// the whole interrupt budget without walking a step. The loader
+    /// cannot see the bot's floor, so [`run_farm`] refuses it at run
+    /// start.
     pub interrupt_at_percent: u32,
     /// Interruptions tolerated on a single leg before the run gives up.
     /// A character that keeps being stopped is not going to walk this
@@ -278,17 +276,6 @@ impl FarmPlan {
     pub fn build(cfg: &FarmConfig, graph: &RoomGraph) -> Result<FarmPlan, String> {
         if cfg.circuit.is_empty() {
             return Err("circuit is empty; [farm].circuit needs at least one room".into());
-        }
-        if let Some(depart) = cfg.depart_at_percent
-            && depart != 0
-            && cfg.interrupt_at_percent > depart
-        {
-            return Err(format!(
-                "interrupt_at_percent ({}) is above depart_at_percent ({}): \
-                 the patrol would set off at {}% and be interrupted immediately, \
-                 burning its interrupt budget without walking a step",
-                cfg.interrupt_at_percent, depart, depart
-            ));
         }
         let resolve = |s: &String| -> Result<RoomId, String> {
             let id = parse_room_id(s)
@@ -1715,19 +1702,21 @@ pub fn casts_need_rebuild(before: &crate::bot::BotConfig, after: &crate::bot::Bo
         || before.buffs != after.buffs
 }
 
-/// The interrupt mark must sit under the mark the gate rests to. The
-/// plan cannot check this when the farm leaves the mark to the bot,
-/// since it never sees the bot's config, so both runners check here.
-/// With resting off there is no gate, and nothing to check.
+/// The interrupt mark must sit under the HP floor the gate lets a leg
+/// set off at, which is the bot's `rest_at_percent`. The plan cannot
+/// check this, since it never sees the bot's config, so both runners
+/// check here. With resting off, or the gate off, there is nothing to
+/// sit under. A floor of 0 never rests for HP, and a leg then sets off
+/// at any HP, so there is nothing to check either.
 pub fn check_departure_mark(cfg: &FarmConfig, bot: &crate::bot::BotConfig) -> Result<(), FarmError> {
-    if !bot.auto_rest {
+    if !bot.auto_rest || cfg.depart_at_percent.unwrap_or(bot.rest_until_percent) == 0 {
         return Ok(());
     }
-    let mark = cfg.depart_at_percent.unwrap_or(bot.rest_until_percent);
-    if mark != 0 && cfg.interrupt_at_percent > mark {
+    let floor = bot.rest_at_percent;
+    if floor != 0 && cfg.interrupt_at_percent > floor {
         return Err(FarmError::Config(format!(
-            "interrupt_at_percent ({}) is above the departure mark ({mark}): the walk \
-             would set off at {mark}% and be interrupted at once",
+            "interrupt_at_percent ({}) is above rest_at_percent ({floor}): the walk \
+             would set off at {floor}% and be interrupted at once",
             cfg.interrupt_at_percent
         )));
     }
@@ -3245,9 +3234,17 @@ enum DepartureWait {
 /// Hold at the stop until both pools are fit to travel. The bot is not
 /// driving while the navigator walks, so setting off wounded or out of
 /// mana means relying on the travel guard to stop the leg part-way.
-/// Leaving fit is cheaper. The mark is `cfg.depart_at_percent` if the
-/// farm set its own. Otherwise it is the bot's `rest_until_percent`.
-/// Either way it gates HP and mana alike.
+/// Leaving fit is cheaper.
+///
+/// The gate starts a recovery on the same floors the bot rests on:
+/// HP under `rest_at_percent`, mana under `mana_rest_at_percent`. Over
+/// both, nobody was resting and the leg sets off as it stands. Once a
+/// recovery is running, whether this gate sent it or the prompt already
+/// said so on arrival, it is over at the mark: `cfg.depart_at_percent`
+/// if the farm set its own, else the bot's `rest_until_percent`, for HP
+/// and mana alike. Gating both pools to the mark from a standing start
+/// rested a caster before every leg (Salad, 2026-09-08, at 72% mana
+/// with the floor at 30%), since mana is never near 95% between fights.
 ///
 /// With `auto_rest` off there is no wait at all. The character sets
 /// off as it stands: a rest it did not ask for is what this gate would
@@ -3266,8 +3263,10 @@ async fn wait_for_departure_health(
     if !bot_config.auto_rest || mark == 0 || bot_config.max_hp <= 0 {
         return DepartureWait::Fit { rested: false };
     }
-    let hp_target = bot_config.max_hp * mark as i32 / 100;
-    let mana_target = (bot_config.max_mana > 0).then(|| bot_config.max_mana * mark as i32 / 100);
+    let mark = mark as i32;
+    let hp_floor = bot_config.rest_at_percent as i32;
+    // 0 is never, the way the bot reads it.
+    let mana_floor = (bot_config.mana_rest_at_percent > 0).then_some(bot_config.mana_rest_at_percent as i32);
     let mut state = session.state();
     // Never rest beside a monster — and keep never doing it for the
     // whole wait, not only at its door. The one-shot version of this
@@ -3284,21 +3283,35 @@ async fn wait_for_departure_health(
     let deadline = tokio::time::Instant::now() + Duration::from_secs(cfg.max_rest_seconds);
     let poke = Duration::from_millis(cfg.idle_poke_ms.max(1000));
     loop {
-        let (hp, mana, contested) = {
+        let (hp, mana, contested, recovering) = {
             let s = state.borrow();
             (
                 s.hp,
                 s.mana,
                 s.room.as_ref().is_some_and(|room| sight.has_target(room)),
+                matches!(
+                    s.status,
+                    Some(crate::events::Status::Resting | crate::events::Status::Meditating)
+                ),
             )
+        };
+        // A recovery under way, ours or one the prompt arrived with,
+        // runs to the mark. Otherwise the floors decide whether one
+        // starts at all.
+        let resting = sent_heal || recovering;
+        let (hp_target, mana_target) = if resting {
+            (mark, Some(mark))
+        } else {
+            (hp_floor, mana_floor)
         };
         // Fit first: a healthy character standing in a room it just
         // decided to leave (a capped stop that never went quiet) walks
         // out — re-defending there would un-make the cap's decision.
         // The travel guard covers whatever follows it out.
-        let hp_fit = hp >= hp_target && hp > 0;
+        let hp_fit = hp > 0 && hp * 100 / bot_config.max_hp >= hp_target;
         // An unknown reading is read as fit, the way the bot reads it.
-        let mana_fit = mana_target.is_none_or(|t| mana.is_none_or(|m| m >= t));
+        let mana_fit = mana_target
+            .is_none_or(|t| bot_config.mana_percent(mana).is_none_or(|m| m >= t));
         if hp_fit && mana_fit {
             return DepartureWait::Fit { rested: sent_heal };
         }
@@ -3319,7 +3332,7 @@ async fn wait_for_departure_health(
         // never changed and the watch could not observe recovery even
         // if it happened. It was a 120-second sleep that then departed
         // at whatever HP it started with.
-        if !sent_heal {
+        if !resting {
             // Rest restores both pools. Meditate only mana, and only
             // when the player said the character has it.
             let cmd = if !hp_fit || !bot_config.meditate {
@@ -3328,8 +3341,8 @@ async fn wait_for_departure_health(
                 "meditate"
             };
             session.report_rest(format!(
-                "{what}: {cmd}, {}, depart at {mark}%",
-                bot_config.pools(hp, mana)
+                "{what}: {}, depart at {mark}%",
+                bot_config.rest_reason(cmd, hp, mana)
             ));
             session.send(cmd);
             sent_heal = true;

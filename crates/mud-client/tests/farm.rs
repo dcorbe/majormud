@@ -1077,48 +1077,6 @@ fn a_refused_template_no_longer_trips_the_sighting_guard() {
     assert_eq!(g.on_room(&rat), None);
 }
 
-// ---------------------------------------------------------------------
-// The two travel thresholds have to agree, and the plan is where that
-// gets settled — before the client connects.
-// ---------------------------------------------------------------------
-
-/// Interrupting above the departure gate is a run that goes nowhere: the
-/// defend pump ends, wait_for_departure_health releases at
-/// depart_at_percent, and the very next prompt trips a higher guard. The
-/// whole interrupt budget burns in three prompts without walking a step.
-#[test]
-fn a_threshold_above_the_departure_gate_is_refused() {
-    let cfg = FarmConfig {
-        depart_at_percent: Some(80),
-        interrupt_at_percent: 90,
-        ..config("1/1", &["1/2"])
-    };
-    let err = FarmPlan::build(&cfg, &graph()).expect_err("must refuse");
-    assert!(err.contains("90"), "error should name the threshold: {err}");
-    assert!(err.contains("80"), "error should name the gate: {err}");
-}
-
-#[test]
-fn a_threshold_at_the_departure_gate_is_allowed() {
-    let cfg = FarmConfig {
-        depart_at_percent: Some(80),
-        interrupt_at_percent: 80,
-        ..config("1/1", &["1/2"])
-    };
-    assert!(FarmPlan::build(&cfg, &graph()).is_ok());
-}
-
-/// With the gate disabled there is nothing to disagree with.
-#[test]
-fn a_disabled_departure_gate_constrains_nothing() {
-    let cfg = FarmConfig {
-        depart_at_percent: Some(0),
-        interrupt_at_percent: 101,
-        ..config("1/1", &["1/2"])
-    };
-    assert!(FarmPlan::build(&cfg, &graph()).is_ok());
-}
-
 // --- the finish room -------------------------------------------------
 
 /// A run that ends leaves the character standing wherever it stopped --
@@ -2904,22 +2862,32 @@ fn a_health_line_without_a_pool_has_no_mana() {
     assert_eq!(parse_mana(""), None);
 }
 
-// check_departure_mark: the interrupt mark must sit under the mark the
-// gate will actually rest to, whichever config supplies it.
+// check_departure_mark: the interrupt mark must sit under the HP floor
+// the gate lets a leg set off at, which is the bot's `rest_at_percent`.
 // ---------------------------------------------------------------------
 
 #[test]
-fn the_interrupt_mark_is_checked_against_the_bots_mark_when_the_farm_sets_none() {
-    let cfg = FarmConfig { depart_at_percent: None, interrupt_at_percent: 96, ..FarmConfig::default() };
-    let bot = BotConfig { rest_until_percent: 80, ..BotConfig::default() };
-    let err = check_departure_mark(&cfg, &bot).expect_err("96 is above 80");
+fn the_interrupt_mark_is_checked_against_the_bots_rest_floor() {
+    let cfg = FarmConfig { depart_at_percent: None, interrupt_at_percent: 70, ..FarmConfig::default() };
+    let bot = BotConfig { rest_at_percent: 60, rest_until_percent: 95, ..BotConfig::default() };
+    let err = check_departure_mark(&cfg, &bot).expect_err("70 is above the 60 floor");
     assert!(matches!(err, FarmError::Config(_)), "{err}");
-    assert!(err.to_string().contains("96") && err.to_string().contains("80"), "{err}");
-    let fine = FarmConfig { interrupt_at_percent: 50, ..cfg.clone() };
+    assert!(err.to_string().contains("70") && err.to_string().contains("60"), "{err}");
+    let fine = FarmConfig { interrupt_at_percent: 60, ..cfg.clone() };
     assert!(check_departure_mark(&fine, &bot).is_ok());
+    // The farm's own mark is where a recovery ends, not where a leg
+    // sets off, so it is not the number the interrupt sits under.
+    let own_mark = FarmConfig { depart_at_percent: Some(80), ..cfg.clone() };
+    assert!(check_departure_mark(&own_mark, &bot).is_err());
     // A disabled gate checks nothing.
     let off = BotConfig { rest_until_percent: 0, ..bot.clone() };
     assert!(check_departure_mark(&cfg, &off).is_ok());
+    let off = FarmConfig { depart_at_percent: Some(0), ..cfg.clone() };
+    assert!(check_departure_mark(&off, &bot).is_ok());
+    // A floor of 0 never rests for HP, so a leg sets off at any HP and
+    // there is no number to sit under.
+    let never = BotConfig { rest_at_percent: 0, ..bot.clone() };
+    assert!(check_departure_mark(&cfg, &never).is_ok());
 }
 
 /// With resting off there is no gate to sit under: the walk sets off

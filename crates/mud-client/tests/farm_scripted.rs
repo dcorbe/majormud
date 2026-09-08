@@ -401,13 +401,13 @@ async fn a_rest_contested_by_an_arrival_defends_instead_of_dozing() {
     let (addr, received) = scripted_board(vec![
         (
             "inventory",
-            "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=20/MA=0]:"
+            "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=15/MA=0]:"
                 .into(),
         ),
         // verify_start: wounded, alone — resting here is correct.
         (
             "look",
-            format!("\r\nlook{}", room_block_hp("Guard Post", None, "north", 20)),
+            format!("\r\nlook{}", room_block_hp("Guard Post", None, "north", 15)),
         ),
         (
             "rest",
@@ -418,7 +418,7 @@ async fn a_rest_contested_by_an_arrival_defends_instead_of_dozing() {
             "look",
             format!(
                 "\r\nlook{}",
-                room_block_hp("Guard Post", Some("giant rat"), "north", 20)
+                room_block_hp("Guard Post", Some("giant rat"), "north", 15)
             ),
         ),
         // The defence's own opening ask sees it too.
@@ -426,7 +426,7 @@ async fn a_rest_contested_by_an_arrival_defends_instead_of_dozing() {
             "look",
             format!(
                 "\r\nlook{}",
-                room_block_hp("Guard Post", Some("giant rat"), "north", 20)
+                room_block_hp("Guard Post", Some("giant rat"), "north", 15)
             ),
         ),
         (
@@ -455,7 +455,8 @@ async fn a_rest_contested_by_an_arrival_defends_instead_of_dozing() {
         circuit: vec!["1/3".into()],
         loops: 1,
         idle_poke_ms: 500,
-        // The gate is ON: 80% of 30 = 24, and the character sits at 20.
+        // The gate is ON: 15 of 30 is under the bot's 60% floor, and a
+        // rest ends at 80% of 30 = 24.
         depart_at_percent: Some(80),
         // Short leash so the BLIND failure mode (rest to the deadline,
         // then depart wounded past the rat) fails fast instead of
@@ -1680,10 +1681,234 @@ async fn the_gate_meditates_for_mana_and_leaves_when_both_pools_clear_the_mark()
     );
 }
 
+/// The gate starts a rest on the bot's own floors, not on the mark it
+/// rests to. Mana at 7 of 10 is 70%: over `mana_rest_at_percent`, under
+/// `rest_until_percent`. Nobody was resting, so nothing to finish: the
+/// leg sets off at once. Live 2026-09-08: Salad rested before every leg
+/// at 26 of 36 mana with the floor at 30%, because the gate held both
+/// pools to 95%.
+#[tokio::test]
+async fn mana_over_its_floor_but_under_the_mark_departs_without_a_rest() {
+    let (addr, received) = scripted_board(vec![
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=7]:"
+                .into(),
+        ),
+        (
+            "look",
+            format!(
+                "\r\nlook{}",
+                room_block_vitals("Guard Post", None, "north", 30, 7, None)
+            ),
+        ),
+        ("n", format!("\r\nn{}", room_block_vitals("Inner Ward", None, "north south", 30, 7, None))),
+        ("n", format!("\r\nn{}", room_block_vitals("Keep", None, "south", 30, 7, None))),
+        ("look", format!("\r\nlook{}", room_block_vitals("Keep", None, "south", 30, 7, None))),
+    ])
+    .await;
+    let session = session_for(addr).await;
+    mud_client::farm::probe_sheet(&session, None).await;
+
+    let graph = corridor();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/3".into()],
+        loops: 1,
+        idle_poke_ms: 500,
+        depart_at_percent: None,
+        max_rest_seconds: 5,
+        travel_interrupts: 0,
+        ..FarmConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 30,
+        max_mana: 10,
+        meditate: true,
+        mana_rest_at_percent: 30,
+        rest_until_percent: 95,
+        ..BotConfig::default()
+    };
+
+    let (end, stats) = tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    .unwrap_or_else(|e| panic!("{e:?}\nboard received: {:?}", received.lock().unwrap()));
+    assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
+
+    let log = received.lock().unwrap();
+    assert!(
+        !log.iter().any(|l| l == "rest" || l == "meditate"),
+        "mana was over its floor; the gate must not start a recovery: {log:?}"
+    );
+}
+
+/// Once the gate has started a recovery it runs to the mark, not to the
+/// floor. Mana at 2 of 10 is under the 30% floor, so the gate
+/// meditates. The first poke shows 5 of 10: over the floor, under the
+/// 80% mark, and the gate keeps waiting. The second shows 9, and only
+/// then does the leg set off.
+#[tokio::test]
+async fn a_recovery_the_gate_started_runs_to_the_mark_not_the_floor() {
+    let (addr, received) = scripted_board(vec![
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=2]:"
+                .into(),
+        ),
+        (
+            "look",
+            format!(
+                "\r\nlook{}",
+                room_block_vitals("Guard Post", None, "north", 30, 2, None)
+            ),
+        ),
+        (
+            "meditate",
+            "\r\nmeditate\r\nYou are now meditating.\r\n[HP=30/MA=2]: (Meditating) ".into(),
+        ),
+        (
+            "look",
+            format!(
+                "\r\nlook{}",
+                room_block_vitals("Guard Post", None, "north", 30, 5, Some("Meditating"))
+            ),
+        ),
+        (
+            "look",
+            format!(
+                "\r\nlook{}",
+                room_block_vitals("Guard Post", None, "north", 30, 9, Some("Meditating"))
+            ),
+        ),
+        ("n", format!("\r\nn{}", room_block_vitals("Inner Ward", None, "north south", 30, 9, None))),
+        ("n", format!("\r\nn{}", room_block_vitals("Keep", None, "south", 30, 9, None))),
+        ("look", format!("\r\nlook{}", room_block_vitals("Keep", None, "south", 30, 9, None))),
+    ])
+    .await;
+    let session = session_for(addr).await;
+    mud_client::farm::probe_sheet(&session, None).await;
+
+    let graph = corridor();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/3".into()],
+        loops: 1,
+        idle_poke_ms: 500,
+        depart_at_percent: None,
+        max_rest_seconds: 5,
+        travel_interrupts: 0,
+        ..FarmConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 30,
+        max_mana: 10,
+        meditate: true,
+        mana_rest_at_percent: 30,
+        rest_until_percent: 80,
+        ..BotConfig::default()
+    };
+
+    let (end, stats) = tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    .unwrap_or_else(|e| panic!("{e:?}\nboard received: {:?}", received.lock().unwrap()));
+    assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
+
+    let log = received.lock().unwrap();
+    let meditate = log.iter().position(|l| l == "meditate").expect("the gate meditated");
+    let depart = log.iter().position(|l| l == "n").expect("the leg departed");
+    let pokes = log[meditate..depart].iter().filter(|l| *l == "look").count();
+    assert_eq!(pokes, 2, "the gate must wait through 5 of 10 and leave at 9: {log:?}");
+}
+
+/// A recovery the gate did not start is finished all the same. The
+/// prompt already says resting when the gate is reached, at 20 of 30 HP:
+/// over the 60% floor, under the 80% mark. The gate sends nothing, the
+/// board is already resting, and holds until the poke shows the mark.
+#[tokio::test]
+async fn a_rest_already_under_way_is_held_to_the_mark() {
+    let (addr, received) = scripted_board(vec![
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=20/MA=0]: (Resting) "
+                .into(),
+        ),
+        (
+            "look",
+            format!(
+                "\r\nlook{}",
+                room_block_vitals("Guard Post", None, "north", 20, 0, Some("Resting"))
+            ),
+        ),
+        (
+            "look",
+            format!(
+                "\r\nlook{}",
+                room_block_vitals("Guard Post", None, "north", 26, 0, Some("Resting"))
+            ),
+        ),
+        ("n", format!("\r\nn{}", room_block_hp("Inner Ward", None, "north south", 26))),
+        ("n", format!("\r\nn{}", room_block_hp("Keep", None, "south", 26))),
+        ("look", format!("\r\nlook{}", room_block_hp("Keep", None, "south", 26))),
+    ])
+    .await;
+    let session = session_for(addr).await;
+    mud_client::farm::probe_sheet(&session, None).await;
+
+    let graph = corridor();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/3".into()],
+        loops: 1,
+        idle_poke_ms: 500,
+        depart_at_percent: None,
+        max_rest_seconds: 5,
+        travel_interrupts: 0,
+        ..FarmConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 30,
+        rest_at_percent: 60,
+        rest_until_percent: 80,
+        ..BotConfig::default()
+    };
+
+    let (end, stats) = tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    .unwrap_or_else(|e| panic!("{e:?}\nboard received: {:?}", received.lock().unwrap()));
+    assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
+
+    let log = received.lock().unwrap();
+    assert!(
+        !log.iter().any(|l| l == "rest"),
+        "the board was already resting; the gate must not send another: {log:?}"
+    );
+    let depart = log.iter().position(|l| l == "n").expect("the leg departed");
+    let looks = log[..depart].iter().filter(|l| *l == "look").count();
+    assert_eq!(looks, 2, "the gate must hold at 20 and leave at 26: {log:?}");
+}
+
 /// The plan cannot catch this pair. It never sees the bot's config, so
-/// with no farm mark of its own it does not know the departure gate will
-/// release at 80. Caught at run start instead, before a single step goes
-/// out, rather than after the patrol has burned its interrupt budget.
+/// it does not know the departure gate lets a leg set off at 60. Caught
+/// at run start instead, before a single step goes out, rather than
+/// after the patrol has burned its interrupt budget.
 #[tokio::test]
 async fn an_interrupt_mark_above_the_bots_own_departure_mark_is_refused_at_run_start() {
     let (addr, received) = scripted_board(vec![(
@@ -1701,7 +1926,6 @@ async fn an_interrupt_mark_above_the_bots_own_departure_mark_is_refused_at_run_s
         start: "1/1".into(),
         circuit: vec!["1/3".into()],
         loops: 1,
-        // No farm mark, so the gate falls back to the bot's 80.
         depart_at_percent: None,
         interrupt_at_percent: 96,
         ..FarmConfig::default()
@@ -1710,7 +1934,7 @@ async fn an_interrupt_mark_above_the_bots_own_departure_mark_is_refused_at_run_s
     let bot = BotConfig {
         auto_combat: true,
         max_hp: 30,
-        rest_until_percent: 80,
+        rest_at_percent: 60,
         ..BotConfig::default()
     };
 
@@ -1726,7 +1950,7 @@ async fn an_interrupt_mark_above_the_bots_own_departure_mark_is_refused_at_run_s
         other => panic!("the pair must be refused: {other:?}"),
     };
     assert!(why.contains("96"), "{why}");
-    assert!(why.contains("80"), "{why}");
+    assert!(why.contains("60"), "{why}");
 
     let log = received.lock().unwrap();
     assert_eq!(

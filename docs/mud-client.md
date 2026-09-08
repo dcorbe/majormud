@@ -249,16 +249,19 @@ first entry the minor and its last the major.
   walks it out. It fires on **every** route out including Ctrl-C, and is
   skipped only on a death. Validated at build time from every stop the run
   can end at, not just the start.
-- **`depart_at_percent`** is unset by default and means never start a leg
-  below this mark. Unset, the mark is the bot's `rest_until_percent`,
-  which gates mana too and sends `meditate` when the switch is on. Set it
-  to give this farm its own mark. Set it to `0` to disable the gate for
-  this farm alone.
+- **`depart_at_percent`** is unset by default and is the mark a recovery
+  before a leg runs to, HP and mana alike. Unset, the mark is the bot's
+  `rest_until_percent`. The gate starts a recovery on the bot's own
+  floors, HP under `rest_at_percent` or mana under `mana_rest_at_percent`,
+  and sends `meditate` when only mana is short and the switch is on.
+  Over both floors nothing was resting and the leg sets off as it
+  stands. A recovery already showing on the prompt when the gate is
+  reached is finished to the mark the same way. Set it to give this farm
+  its own mark. Set it to `0` to disable the gate for this farm alone.
   **`interrupt_at_percent`**, 50 by default, stops a leg that gets hurt on
-  the way. It must not exceed the departure mark. A farm that sets its own
-  `depart_at_percent` has the pair rejected when the plan is built. A farm
-  that does not is refused at run start instead, where the bot's mark is
-  finally in hand.
+  the way. It must not exceed the bot's `rest_at_percent`, since that is
+  the HP a leg may set off at. The plan cannot see the bot's floor, so
+  the pair is refused at run start.
   **`max_rest_seconds`**, 180 by default, caps how long the departure gate
   may spend recovering. A caster resting both pools to 95 usually reaches
   this cap first, since mana climbs by one tick every 15 or 30 seconds.
@@ -474,8 +477,9 @@ keystroke rather than running unattended:
   direction. Either way the walk never grinds bashes. Bash it by hand
   and `/go` again.
 
-The walk rests to the bot's mark before its first step, as a farm does.
-Set `rest_until_percent = 0` for the old instant start.
+The walk rests before its first step as a farm does: a pool under its
+floor starts a recovery, which runs to the bot's mark. Set
+`rest_until_percent = 0` for the old instant start.
 
 `/go` needs the room database. The default path is **relative**
 (`re/mmud_wgnt.sqlite`), so a `play` started outside the repo root will
@@ -799,7 +803,8 @@ it resting" without a guess:
 
 The sender is `assist`, `stop <room>` for a farm's or a roam's stop, or
 `departure gate` for the wait before a leg sets off, with `after a flee`
-when it follows one. The second line is the board's own word, written
+when it follows one. The gate's line also names the mark the recovery
+runs to, as `depart at 95%`. The second line is the board's own word, written
 each time the prompt starts showing a recovery. A prompt line with no
 send before it is a rest this client did not ask for.
 

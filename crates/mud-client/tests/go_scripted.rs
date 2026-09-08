@@ -416,7 +416,7 @@ async fn a_walk_refuses_an_interrupt_mark_above_the_bots_mark_before_sending_any
     let bot = BotConfig {
         auto_combat: true,
         max_hp: 30,
-        rest_until_percent: 80,
+        rest_at_percent: 60,
         ..BotConfig::default()
     };
 
@@ -432,7 +432,7 @@ async fn a_walk_refuses_an_interrupt_mark_above_the_bots_mark_before_sending_any
         other => panic!("the pair must be refused: {other:?}"),
     };
     assert!(why.contains("96"), "{why}");
-    assert!(why.contains("80"), "{why}");
+    assert!(why.contains("60"), "{why}");
 
     let log = received.lock().unwrap();
     assert!(
