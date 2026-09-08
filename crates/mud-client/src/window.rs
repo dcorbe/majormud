@@ -1149,7 +1149,7 @@ async fn play(
                             KeyOutcome::Room { target } => {
                                 match (graph.as_ref(), spawns.as_ref()) {
                                     (Some(g), Some(s)) => match here_or(g, here.last_known(), &target) {
-                                        Err(refusal) => w.note(&refusal.lines("go").join("\n")),
+                                        Err(refusal) => w.note(&refusal.lines("room").join("\n")),
                                         Ok(id) => match crate::spawn::Dossier::of(g, s, id) {
                                             None => w.note(&format!("-- room: no room {}/{} --", id.map, id.room)),
                                             Some(d) => w.note(&d.lines().join("\n")),
@@ -1164,7 +1164,7 @@ async fn play(
                             KeyOutcome::Map { target } => {
                                 match (graph.as_ref(), spawns.as_ref()) {
                                     (Some(g), Some(s)) => match here_or(g, here.last_known(), &target) {
-                                        Err(refusal) => w.note(&refusal.lines("go").join("\n")),
+                                        Err(refusal) => w.note(&refusal.lines("map").join("\n")),
                                         Ok(id) => {
                                             let mut view = crate::mapview::MapView::new(
                                                 g.clone(),
@@ -1275,7 +1275,7 @@ async fn play(
                                                     // fix it handed back, and the watch is
                                                     // told so the prompt that follows does
                                                     // not log it twice.
-                                                    if exit.interrupted.as_deref() == Some("you died; the map is closed") {
+                                                    if exit.interrupted.as_deref() == Some(crate::mapview::DIED_CLOSED) {
                                                         deaths.mark_dead();
                                                         if let Some(name) = session.character_name() {
                                                             let namer = |id| {

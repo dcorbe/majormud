@@ -186,6 +186,8 @@ fn the_refusal_names_the_verb_that_asked() {
         GoRefusal::Unknown("Atlantis".into()).lines("recover"),
         vec!["recover: no room matches \"Atlantis\""]
     );
+    assert_eq!(refusal.lines("room")[0], "room: 2 rooms match \"Slum Street\". Nearest:");
+    assert_eq!(refusal.lines("map")[0], "map: 2 rooms match \"Slum Street\". Nearest:");
     // The `/go` wording is unchanged, to the byte.
     assert_eq!(
         refusal.lines("go").last().unwrap(),

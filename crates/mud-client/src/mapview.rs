@@ -35,6 +35,10 @@ const PANEL_NEEDS: usize = 60;
 /// How close the cursor may come to the edge before the viewport follows.
 const MARGIN: i32 = 2;
 
+/// Why the map closes itself when the character dies under it. The
+/// window reads it back to tell a close from a death.
+pub(crate) const DIED_CLOSED: &str = "you died; the map is closed";
+
 /// What a keystroke asked of the caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ViewAction {
@@ -808,7 +812,7 @@ pub async fn run(
                         return Ok(ViewExit {
                             action: ViewAction::Leave,
                             buffered,
-                            interrupted: Some("you died; the map is closed".into()),
+                            interrupted: Some(DIED_CLOSED.into()),
                             here: view.here(),
                         });
                     }

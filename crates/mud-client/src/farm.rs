@@ -3101,7 +3101,7 @@ pub fn leg_needs_light(graph: &RoomGraph, from: RoomId, to: RoomId) -> bool {
 /// How long a stand-still cast cycle may run before it gives up. Long
 /// enough for several rounds of fizzles behind a paced board, and short
 /// enough that a lost outcome cannot wedge the caller.
-const CAST_DEADLINE: Duration = Duration::from_secs(20);
+pub(crate) const CAST_DEADLINE: Duration = Duration::from_secs(20);
 
 /// One spell machine, as [`drive_cast`] sees it. Lighting and buff
 /// upkeep answer different questions but are driven identically: ask

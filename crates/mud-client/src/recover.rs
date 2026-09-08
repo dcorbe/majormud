@@ -217,9 +217,6 @@ impl RecoverEnd {
     }
 }
 
-/// How long the buffs may take before the sneak. Several rounds of
-/// fizzles behind a paced board, and nothing longer.
-const BUFF_WAIT: Duration = Duration::from_secs(20);
 /// Moves the walk home retries when the board refuses one for combat.
 /// Each retry waits out a prompt, and the round passes with it.
 const COMBAT_RETRIES: u32 = 12;
@@ -388,6 +385,11 @@ fn room_name(graph: &RoomGraph, id: RoomId) -> String {
 /// picked up at the next hop, at the next pickup, or in the wait a
 /// pickup is already sitting in. The search's own wait has no arm for
 /// one, so a change that lands during it waits for the first pickup.
+///
+/// The opening look relocalizes when the board's block does not match
+/// `from`, which walks the character a few rooms to tell the candidates
+/// apart and makes the room it settles on the safe room. That happens
+/// before any light, buff or sneak.
 pub async fn run_recover(
     session: &Session,
     graph: Arc<RoomGraph>,
@@ -465,7 +467,7 @@ async fn recover(
     // Standing still, on the same cycle the light runs on. A fizzle is
     // not retried past the deadline: a buff is a bonus, and the sneak
     // goes without it.
-    let buffs_by = tokio::time::Instant::now() + BUFF_WAIT;
+    let buffs_by = tokio::time::Instant::now() + crate::farm::CAST_DEADLINE;
     crate::farm::drive_cast(session, &mut buff, &fixed.clock, buffs_by).await;
 
     // The route, as rooms, so every hop is its own walk and every

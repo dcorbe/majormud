@@ -171,10 +171,6 @@ pub fn record_in(path: &Path, death: &Death) -> std::io::Result<()> {
     writeln!(file, "{}", death.line())
 }
 
-pub fn record(death: &Death) -> std::io::Result<()> {
-    record_in(&path(), death)
-}
-
 /// The newest logged death for `character` that carries a room. A line
 /// that does not parse is skipped rather than fatal: the file is
 /// hand-editable and one bad line must not hide the good ones.

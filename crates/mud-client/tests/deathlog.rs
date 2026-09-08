@@ -156,7 +156,6 @@ fn a_death_marked_from_outside_is_not_fired_again() {
     assert!(w.on_event(&prompt(0), "Beef"));
 }
 
-
 /// A board that prints one room block and then a prompt at zero, which
 /// is a character killed where it stood, and holds the line open.
 ///
