@@ -216,9 +216,6 @@ impl RecoverEnd {
     }
 }
 
-/// How long the search may take to answer. A room block behind a paced
-/// board, and nothing longer.
-const SEARCH_WAIT: Duration = Duration::from_secs(15);
 /// How long the buffs may take before the sneak. Several rounds of
 /// fizzles behind a paced board, and nothing longer.
 const BUFF_WAIT: Duration = Duration::from_secs(20);
@@ -555,19 +552,36 @@ fn vitals_end(ev: &Event, bot: &BotConfig, name: &str) -> Option<SweepEnd> {
     }
 }
 
-/// One bare `search`, then a `get` per listed entry. This lands the
-/// search and the list it produced. The pickups go where the marker
-/// comment sits.
+/// When a command sent inside the sweep has waited long enough. The
+/// crate's own per-command answer deadline, read off the settings every
+/// time so a change moves it mid sweep.
+fn answer_by(live: &Live) -> tokio::time::Instant {
+    tokio::time::Instant::now() + Duration::from_millis(live.farm.nav.step_timeout_ms)
+}
+
+/// One bare `search`, then one `get` per listed entry, gear first and
+/// coins last.
+///
+/// One `get` is in flight at a time. Each is retired by the board's own
+/// word, and an entry somebody else already took is dropped where it
+/// stands rather than asked for again. Silence is the third answer: an
+/// item too heavy to lift draws no line at all, so the attempt is spent
+/// and the entry is asked for [`crate::farm::LOOT_TRIES`] times before
+/// the sweep moves on.
+///
+/// Every reply is followed by a prompt, and every prompt is read: the
+/// sweep ends the moment hitpoints fall under the minor heal mark, with
+/// what it has taken so far.
 async fn sweep(
     session: &Session,
-    live: &Live,
+    live: &mut Live,
     haul: &mut Haul,
     name: &str,
 ) -> Result<SweepEnd, FarmError> {
     let mut events = session.events();
     crate::session::drain(&mut events, |_| {});
     let ask = session.send("search");
-    let deadline = tokio::time::Instant::now() + SEARCH_WAIT;
+    let deadline = answer_by(live);
     let items: Vec<String> = loop {
         match tokio::time::timeout_at(deadline, events.recv()).await {
             Ok(Ok(cor)) => {
@@ -605,16 +619,83 @@ async fn sweep(
         return Ok(SweepEnd::Nothing);
     }
     *haul = Haul::wanted(&list);
-    // The pickups go here. Nothing has been taken yet, so the haul
-    // carries only what the search listed.
+    for take in &list {
+        let mut tries = 0u32;
+        'entry: while tries < crate::farm::LOOT_TRIES {
+            tries += 1;
+            // A change that landed between two asks, which no wait
+            // below was sitting in to hear.
+            live.refresh();
+            let sent = session.send(&take.cmd);
+            let deadline = answer_by(live);
+            loop {
+                // The receiver was subscribed before the search, so it
+                // is already listening when each `get` goes out and no
+                // reply can land unheard. Whatever the reply before
+                // left in it is skipped here by its send id, and read
+                // for vitals on the way past.
+                let ev = tokio::select! {
+                    _ = live.changed() => None,
+                    ev = tokio::time::timeout_at(deadline, events.recv()) => Some(ev),
+                };
+                let Some(ev) = ev else {
+                    // The wake, and the pass after it takes the change.
+                    live.refresh();
+                    continue;
+                };
+                match ev {
+                    Ok(Ok(cor)) => {
+                        if let Some(end) = vitals_end(&cor.event, &live.bot, name) {
+                            return Ok(end);
+                        }
+                        if cor.answers != Some(sent) {
+                            continue;
+                        }
+                        if let Event::Line(line) = &cor.event {
+                            match read_get_reply(line) {
+                                GetReply::Taken => {
+                                    haul.took(take);
+                                    break 'entry;
+                                }
+                                GetReply::Gone => break 'entry,
+                                GetReply::Other => {}
+                            }
+                        }
+                    }
+                    Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
+                    Ok(Err(_)) => return Err(FarmError::Disconnected),
+                    // Silence: the attempt is spent.
+                    Err(_) => break,
+                }
+            }
+        }
+        // The prompt that followed the reply may already say the
+        // character is too hurt to stand here for the next one.
+        let mut end = None;
+        let bot = &live.bot;
+        crate::session::drain(&mut events, |cor| {
+            if end.is_none() {
+                end = vitals_end(&cor.event, bot, name);
+            }
+        });
+        if let Some(end) = end {
+            return Ok(end);
+        }
+    }
     Ok(SweepEnd::Swept)
 }
 
 /// Wait for the next prompt, so a move refused for combat is retried
 /// after the round rather than at once. Bounded, because a board that
 /// prints no prompt must not wedge the walk home.
-async fn wait_a_prompt(session: &Session) {
-    let mut events = session.events();
+///
+/// `events` is the caller's receiver, subscribed before the refused move
+/// went out. Subscribing here instead would start listening after the
+/// board had already answered, and the wait would then sit out its whole
+/// deadline for a prompt it had missed.
+async fn wait_a_prompt(
+    events: &mut tokio::sync::broadcast::Receiver<crate::correlate::Correlated>,
+) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
     loop {
         match tokio::time::timeout_at(deadline, events.recv()).await {
@@ -645,8 +726,12 @@ async fn go_home(
     let mut here = here;
     let mut guard = crate::farm::FarmGuard::death_only(&fixed.name);
     let mut refused = 0u32;
+    // Subscribed before the first step, and emptied before every one, so
+    // the prompt that answers a refusal is waiting in it.
+    let mut events = session.events();
     loop {
         refresh_navs(navs, live, built_at, session, fixed);
+        crate::session::drain(&mut events, |_| {});
         match navs
             .runner
             .goto(session, here, fixed.home, &mut guard, false)
@@ -669,7 +754,7 @@ async fn go_home(
                         if refused < COMBAT_RETRIES =>
                     {
                         refused += 1;
-                        wait_a_prompt(session).await;
+                        wait_a_prompt(&mut events).await;
                     }
                     _ => {
                         return Ok(RecoverEnd::Stopped {

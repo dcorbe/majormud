@@ -40,9 +40,7 @@ fn block(name: &str, exits: &str) -> String {
 
 /// A block whose floor lists `items`, as the board renders after a bare
 /// `search`, with the prompt `prompt` so a test can show hitpoints
-/// falling. Used by the pickup tests. The allow keeps the build clean
-/// until they land.
-#[allow(dead_code)]
+/// falling.
 fn block_with(name: &str, items: &str, exits: &str, prompt: &str) -> String {
     format!("\r\n\x1b[1;36m{name}\r\nYou notice {items} here.\r\nObvious exits: {exits}\r\n{prompt}")
 }
@@ -175,10 +173,10 @@ async fn session_for(addr: std::net::SocketAddr) -> Session {
     Session::connect(&profile, None).await.unwrap()
 }
 
-/// The settings a recovery runs under, with the job's own forced fields
+/// The tables a recovery runs under, with the job's own forced fields
 /// already applied, the way the window derives them. No room database:
 /// these tests read no content at all.
-fn settings() -> Live {
+fn tables() -> (BotConfig, FarmConfig) {
     let mut farm = go_config(
         &FarmConfig {
             content: std::path::PathBuf::new(),
@@ -188,6 +186,10 @@ fn settings() -> Live {
     );
     farm.interrupt_at_percent = 0;
     farm.nav.bash_doors = false;
+    // The scripted board answers at once, and this is what every wait
+    // in the job is bounded by. The shipped 15 seconds would be spent
+    // in real time by every test that makes the board say nothing.
+    farm.nav.step_timeout_ms = 2_000;
     let bot = BotConfig {
         max_hp: 30,
         minor_heal_at_percent: 70,
@@ -196,7 +198,38 @@ fn settings() -> Live {
         auto_get: false,
         ..BotConfig::default()
     };
+    (bot, farm)
+}
+
+/// Settings that never change, which is every test but the one about a
+/// change.
+fn settings() -> Live {
+    let (bot, farm) = tables();
     Live::fixed(bot, farm)
+}
+
+/// The same tables over a channel the test holds the sender of, with a
+/// derive that reads the heal mark off the profile and nothing else.
+/// What `/set bot.minor_heal_at_percent` looks like from inside a
+/// running job.
+fn live_settings(rx: tokio::sync::watch::Receiver<Profile>) -> Live {
+    let (bot, farm) = tables();
+    let base = bot.clone();
+    let table = farm.clone();
+    Live::over(
+        rx,
+        "recover",
+        quiet(),
+        bot,
+        farm,
+        std::sync::Arc::new(move |p: &Profile| {
+            let mut bot = base.clone();
+            if let Some(set) = &p.bot {
+                bot.minor_heal_at_percent = set.minor_heal_at_percent;
+            }
+            (bot, table.clone())
+        }),
+    )
 }
 
 /// The sheet, the inventory, the opening look and the sneak: how every
@@ -534,5 +567,158 @@ async fn a_dark_death_room_is_lit_before_the_sneak() {
         .unwrap_or_else(|| panic!("the light spell must go out: {log:?}"));
     let sneak_at = log.iter().position(|l| l == "sneak").unwrap();
     assert!(cast_at < sneak_at, "lit before armed: {log:?}");
+}
+
+// ------------------------------------------------------------ the sweep
+
+fn up_to_the_search(items: &str, prompt: &str) -> Vec<(&'static str, String)> {
+    let mut script = opening();
+    script.push(sneaky_step("Inner Ward", "north south"));
+    script.push(sneaky_step("Keep", "south"));
+    script.push((
+        "search",
+        format!("\r\nsearch{}", block_with("Keep", items, "south", prompt)),
+    ));
+    script
+}
+
+/// Gear, then coins, then home, and the ending names the counts.
+#[tokio::test]
+async fn the_happy_path_takes_gear_then_coins_and_reports_the_haul() {
+    let mut script = up_to_the_search("a rusty dagger, 5 copper farthings", PROMPT);
+    script.push((
+        "get rusty dagger",
+        reply("get rusty dagger", "You took a rusty dagger."),
+    ));
+    script.push((
+        "get copper",
+        reply("get copper", "You picked up 5 copper farthings"),
+    ));
+    script.extend(home_steps());
+    let (out, log) = recover_over(corridor(0), script).await;
+    let end = out.expect("the job must finish");
+    let RecoverEnd::Home { at, why, haul } = end else {
+        panic!("expected home, got {end:?}, log {log:?}");
+    };
+    assert_eq!(at, START);
+    assert_eq!(why, HomeWhy::Swept);
+    assert_eq!(haul.taken, vec!["a rusty dagger", "5 copper farthings"]);
+    assert_eq!(haul.summary(), "1 of 1 items and 1 coin piles");
+    let dagger = log.iter().position(|l| l == "get rusty dagger").unwrap();
+    let copper = log.iter().position(|l| l == "get copper").unwrap();
+    assert!(dagger < copper, "gear before coins: {log:?}");
+    assert_eq!(count(&log, "search"), 1);
+}
+
+/// Somebody else got the dagger. Dropped without a retry, and the cap
+/// is still taken.
+#[tokio::test]
+async fn a_dont_see_drops_the_entry_without_a_retry() {
+    let mut script = up_to_the_search("a rusty dagger, a leather cap", PROMPT);
+    script.push((
+        "get rusty dagger",
+        reply("get rusty dagger", "You don't see a rusty dagger here."),
+    ));
+    script.push((
+        "get leather cap",
+        reply("get leather cap", "You took a leather cap."),
+    ));
+    script.extend(home_steps());
+    let (out, log) = recover_over(corridor(0), script).await;
+    let end = out.expect("the job must finish");
+    assert_eq!(end.haul().summary(), "1 of 2 items", "log: {log:?}");
+    assert_eq!(count(&log, "get rusty dagger"), 1, "no retry: {log:?}");
+}
+
+/// The board says nothing to the `get`, three times. That is what an
+/// item too heavy to lift looks like, and the entry is dropped after
+/// the third silence.
+#[tokio::test]
+async fn three_silent_attempts_drop_the_entry() {
+    let mut script = up_to_the_search("an anvil", PROMPT);
+    script.push(("get anvil", format!("\r\nget anvil\r\n{PROMPT}")));
+    script.extend(home_steps());
+    let (out, log) = recover_over(corridor(0), script).await;
+    let end = out.expect("the job must finish");
+    assert_eq!(end.haul().summary(), "0 of 1 items", "log: {log:?}");
+    assert_eq!(count(&log, "get anvil"), 3, "three attempts: {log:?}");
+    assert_eq!(count(&log, "s"), 2, "and then home: {log:?}");
+}
+
+/// The prompt after the first pickup shows 15 of 30, under the 70 mark.
+/// The sweep ends there with what it has, and the cap stays on the
+/// floor.
+#[tokio::test]
+async fn hitpoints_under_the_mark_end_the_sweep_with_a_partial_haul() {
+    let mut script = up_to_the_search("a rusty dagger, a leather cap", PROMPT);
+    script.push((
+        "get rusty dagger",
+        "\r\nget rusty dagger\r\nYou took a rusty dagger.\r\n[HP=15/MA=0]:".to_string(),
+    ));
+    script.extend(home_steps());
+    let (out, log) = recover_over(corridor(0), script).await;
+    let end = out.expect("the job must finish");
+    let RecoverEnd::Home { why, haul, .. } = end else {
+        panic!("expected home, got {end:?}, log {log:?}");
+    };
+    assert_eq!(why, HomeWhy::Hurt { mark: 70 });
+    assert_eq!(haul.summary(), "1 of 2 items");
+    assert_eq!(count(&log, "get leather cap"), 0, "the sweep stopped: {log:?}");
+}
+
+
+/// The operator raises the heal mark to 101 while the sweep is waiting
+/// out a `get` the board will not answer. The next prompt is read
+/// against the new mark, so a character at full hitpoints is now too
+/// hurt to go on, and the second entry is never asked for.
+#[tokio::test]
+async fn a_settings_change_lands_while_the_sweep_waits() {
+    let mut script = up_to_the_search("an anvil, a leather cap", PROMPT);
+    script.push(("get anvil", format!("\r\nget anvil\r\n{PROMPT}")));
+    script.extend(home_steps());
+    let (addr, received) = scripted_board(script).await;
+    let session = session_for(addr).await;
+    probe_sheet(&session, None).await;
+    let (tx, rx) = tokio::sync::watch::channel(Profile::default());
+    let log = Arc::clone(&received);
+    let notices = quiet();
+    let (out, ()) = tokio::join!(
+        tokio::time::timeout(
+            Duration::from_secs(60),
+            run_recover(
+                &session,
+                corridor(0),
+                START,
+                DEATH,
+                live_settings(rx),
+                None,
+                &notices,
+            ),
+        ),
+        async {
+            // The change goes out once the first `get` has, so it can
+            // only land in the wait the sweep is already sitting in.
+            while !log.lock().unwrap().iter().any(|l| l == "get anvil") {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            tx.send(Profile {
+                bot: Some(BotConfig {
+                    minor_heal_at_percent: 101,
+                    ..BotConfig::default()
+                }),
+                ..Default::default()
+            })
+            .unwrap();
+        },
+    );
+    let end = out
+        .expect("run_recover should finish, not hang")
+        .expect("the job must finish");
+    let log = received.lock().unwrap().clone();
+    let RecoverEnd::Home { why, .. } = end else {
+        panic!("expected home, got {end:?}, log {log:?}");
+    };
+    assert_eq!(why, HomeWhy::Hurt { mark: 101 }, "log: {log:?}");
+    assert_eq!(count(&log, "get leather cap"), 0, "the sweep stopped: {log:?}");
 }
 
