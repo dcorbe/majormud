@@ -245,7 +245,6 @@ fn the_recovery_config_takes_the_fighting_out_of_a_walk() {
     assert_eq!(farm.interrupt_at_percent, 0);
 }
 
-
 /// Where `/recover` goes when the operator typed a room.
 #[test]
 fn a_typed_target_resolves_and_a_typed_nonsense_name_refuses() {
