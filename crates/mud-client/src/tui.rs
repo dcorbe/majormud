@@ -2136,11 +2136,12 @@ pub fn start_recover(
     session: Arc<Session>,
     graph: Arc<crate::graph::RoomGraph>,
     here: Option<mud_core::content::RoomId>,
+    safe: Option<mud_core::content::RoomId>,
     target: mud_core::content::RoomId,
     notices: crate::farm::Notices,
 ) -> Result<Job, String> {
     needs_name(&session)?;
-    let from = crate::recover::refusal(&session, &graph, here, target)?;
+    let from = crate::recover::refusal(&session, &graph, here, safe, target)?;
     // Automation goes back under flood control, exactly as a go does.
     session.set_pace(session.profile().pace());
     // The job's own settings, and the rule that rebuilds them when the
@@ -2161,6 +2162,7 @@ pub fn start_recover(
             &session,
             graph,
             from,
+            safe,
             target,
             live,
             Some(&tx),

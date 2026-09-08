@@ -354,7 +354,7 @@ fn recover_to(
     notices: crate::farm::Notices,
 ) -> Option<Job> {
     let name = g.room(to).map(|r| r.name.clone()).unwrap_or_default();
-    match start_recover(session, g, here, to, notices) {
+    match start_recover(session, g, here, None, to, notices) {
         Err(e) => {
             w.note(&format!("-- recover: {e} --"));
             None
@@ -1157,6 +1157,7 @@ async fn play(
                                                 g,
                                                 here.confirmed(),
                                                 target.as_deref(),
+                                                None,
                                                 &session.character_name().unwrap_or_default(),
                                                 &crate::deathlog::path(),
                                             );

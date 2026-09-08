@@ -252,14 +252,14 @@ fn a_typed_target_resolves_and_a_typed_nonsense_name_refuses() {
     let graph = target_graph();
     let log = target_log("typed");
     assert_eq!(
-        target_of(&graph, None, Some("1/2810"), "beef", &log),
+        target_of(&graph, None, Some("1/2810"), None, "beef", &log),
         Ok(DEATH_ROOM)
     );
     assert_eq!(
-        target_of(&graph, None, Some("Sunken Vault"), "beef", &log),
+        target_of(&graph, None, Some("Sunken Vault"), None, "beef", &log),
         Ok(DEATH_ROOM)
     );
-    let why = target_of(&graph, None, Some("no such place"), "beef", &log)
+    let why = target_of(&graph, None, Some("no such place"), None, "beef", &log)
         .expect_err("a name that names nothing refuses");
     assert!(
         why.iter().all(|l| l.starts_with("recover:")),
@@ -277,9 +277,9 @@ fn an_untyped_target_reads_the_log_and_refuses_when_it_holds_nothing() {
     let graph = target_graph();
     let log = target_log("untyped");
     assert_eq!(
-        target_of(&graph, None, None, "beef", &log),
+        target_of(&graph, None, None, None, "beef", &log),
         Err(vec![
-            "-- recover: no logged death with a room. /recover <room> --".to_string()
+            "-- recover: no logged death with a room. /recover <room>, or D on the map --".to_string()
         ]),
         "no file at all is an empty log"
     );
@@ -295,13 +295,43 @@ fn an_untyped_target_reads_the_log_and_refuses_when_it_holds_nothing() {
         },
     )
     .unwrap();
-    assert_eq!(target_of(&graph, None, None, "beef", &log), Ok(DEATH_ROOM));
+    assert_eq!(target_of(&graph, None, None, None, "beef", &log), Ok(DEATH_ROOM));
     assert_eq!(
-        target_of(&graph, None, None, "porkchop", &log),
+        target_of(&graph, None, None, None, "porkchop", &log),
         Err(vec![
-            "-- recover: no logged death with a room. /recover <room> --".to_string()
+            "-- recover: no logged death with a room. /recover <room>, or D on the map --".to_string()
         ]),
         "another character's death is not this one's target"
+    );
+}
+
+/// A death room marked on the map outranks the log and yields to a
+/// typed room.
+#[test]
+fn a_marked_death_room_beats_the_log_and_yields_to_a_typed_room() {
+    use mud_client::deathlog::{Death, FixWord, record_in};
+    use mud_client::recover::target_of;
+
+    let graph = target_graph();
+    let log = target_log("marked");
+    const LOGGED: RoomId = RoomId { map: 3, room: 3 };
+    record_in(
+        &log,
+        &Death {
+            stamp: "2026-09-07T14:42:07Z".into(),
+            character: "beef".into(),
+            room: Some(LOGGED),
+            name: "Somewhere Else".into(),
+            fix: FixWord::Confirmed,
+        },
+    )
+    .unwrap();
+    assert_eq!(target_of(&graph, None, None, Some(DEATH_ROOM), "beef", &log), Ok(DEATH_ROOM));
+    assert_eq!(target_of(&graph, None, None, None, "beef", &log), Ok(LOGGED));
+    assert_eq!(
+        target_of(&graph, None, Some("Sunken Vault"), Some(LOGGED), "beef", &log),
+        Ok(DEATH_ROOM),
+        "a typed room is the operator's word"
     );
 }
 

@@ -228,6 +228,7 @@ pub fn refusal(
     session: &Session,
     graph: &RoomGraph,
     here: Option<RoomId>,
+    safe: Option<RoomId>,
     target: RoomId,
 ) -> Result<RoomId, String> {
     let from = here.ok_or(
@@ -239,10 +240,27 @@ pub fn refusal(
     if graph.room(target).is_none() {
         return Err(format!("no such room {}/{}", target.map, target.room));
     }
-    if graph.route(from, target).is_none() {
+    // The sneak starts from the safe room when one is marked, and the
+    // run there comes first, so both legs have to route.
+    let staged = match safe {
+        Some(safe) => {
+            if graph.room(safe).is_none() {
+                return Err(format!("no such safe room {}/{}", safe.map, safe.room));
+            }
+            if safe != from && graph.route(from, safe).is_none() {
+                return Err(format!(
+                    "no route from {}/{} to the safe room {}/{}",
+                    from.map, from.room, safe.map, safe.room
+                ));
+            }
+            safe
+        }
+        None => from,
+    };
+    if graph.route(staged, target).is_none() {
         return Err(format!(
             "no route from {}/{} to {}/{}",
-            from.map, from.room, target.map, target.room
+            staged.map, staged.room, target.map, target.room
         ));
     }
     Ok(from)
@@ -291,8 +309,9 @@ pub struct Marks {
     pub death: Option<RoomId>,
 }
 
-/// Where a `/recover` goes: the room the caller typed, or the newest
-/// logged death for `character` that carries one.
+/// Where a `/recover` goes: the room the caller typed, else the death
+/// room marked on the map, else the newest logged death for `character`
+/// that carries one.
 ///
 /// The refusal is a list of lines so a typed name that matches several
 /// rooms stays one candidate per line.
@@ -300,15 +319,17 @@ pub fn target_of(
     graph: &RoomGraph,
     from: Option<RoomId>,
     typed: Option<&str>,
+    marked: Option<RoomId>,
     character: &str,
     log: &std::path::Path,
 ) -> Result<RoomId, Vec<String>> {
-    match typed {
-        Some(typed) => crate::go::resolve(graph, from, typed).map_err(|r| r.lines("recover")),
-        None => crate::deathlog::last_in(log, character)
+    match (typed, marked) {
+        (Some(typed), _) => crate::go::resolve(graph, from, typed).map_err(|r| r.lines("recover")),
+        (None, Some(marked)) => Ok(marked),
+        (None, None) => crate::deathlog::last_in(log, character)
             .and_then(|d| d.room)
             .ok_or_else(|| {
-                vec!["-- recover: no logged death with a room. /recover <room> --".to_string()]
+                vec!["-- recover: no logged death with a room. /recover <room>, or D on the map --".to_string()]
             }),
     }
 }
@@ -364,7 +385,8 @@ impl Navs {
 struct Fixed {
     graph: Arc<RoomGraph>,
     clock: crate::world::RoundClock,
-    /// The room the job started in, which is also the safe room.
+    /// The safe room: the one marked on the map, else the room the job
+    /// started in. Where the sneak sets off from and the run home ends.
     home: RoomId,
     /// The character's own name, so a guard can see its death line.
     name: String,
@@ -410,27 +432,30 @@ pub async fn run_recover(
     session: &Session,
     graph: Arc<RoomGraph>,
     from: RoomId,
+    safe: Option<RoomId>,
     target: RoomId,
     live: Live,
     phase: PhaseSink<'_>,
     notices: &Notices,
 ) -> Result<RecoverEnd, FarmError> {
-    refusal(session, &graph, Some(from), target).map_err(FarmError::Config)?;
+    refusal(session, &graph, Some(from), safe, target).map_err(FarmError::Config)?;
     // Both fight switches off for the job's life. The guard reads this
     // one live, and the job's own bot config has combat off, so no code
     // path in the runner can swing.
     let fought = session.travel_fights().get();
     session.travel_fights().set(false);
     let mut live = live;
-    let out = recover(session, graph, from, target, &mut live, phase, notices).await;
+    let out = recover(session, graph, from, safe, target, &mut live, phase, notices).await;
     session.travel_fights().set(fought);
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn recover(
     session: &Session,
     graph: Arc<RoomGraph>,
     from: RoomId,
+    safe: Option<RoomId>,
     target: RoomId,
     live: &mut Live,
     phase: PhaseSink<'_>,
@@ -453,12 +478,33 @@ async fn recover(
         .await
         .map_err(FarmError::Lost)?
         .at;
-    let fixed = Fixed {
+    let mut fixed = Fixed {
         graph,
         clock,
         home,
         name: session.character_name().unwrap_or_default(),
     };
+
+    // A marked safe room the character is not standing in is run to
+    // first, the way the run home goes: unsneaked, through blows, and
+    // it becomes home for the rest of the job.
+    if let Some(safe) = safe
+        && safe != home
+    {
+        set_phase(phase, Phase::Travelling { to: safe });
+        match run_to(session, &fixed, &mut navs, live, &mut built_at, home, safe).await? {
+            Run::Arrived(at) if at == safe => fixed.home = safe,
+            Run::Arrived(at) | Run::Stopped(at) => {
+                return Ok(RecoverEnd::Stopped {
+                    at,
+                    name: room_name(&fixed.graph, at),
+                    haul: Haul::default(),
+                });
+            }
+            Run::Died => return Ok(RecoverEnd::Died { haul: Haul::default() }),
+        }
+    }
+    let home = fixed.home;
 
     // Every percent mark divides by the maximum, and 0 means nobody
     // said. The answer is kept on the settings, so a reload cannot lose
@@ -808,9 +854,7 @@ async fn wait_a_prompt(
     }
 }
 
-/// The unsneaked run back. Only a death stops it: blows do not, and a
-/// move the board refuses for combat is sent again once the round has
-/// passed.
+/// The unsneaked run back to the safe room.
 #[allow(clippy::too_many_arguments)]
 async fn go_home(
     session: &Session,
@@ -824,6 +868,41 @@ async fn go_home(
     haul: Haul,
 ) -> Result<RecoverEnd, FarmError> {
     set_phase(phase, Phase::GoingHome { to: fixed.home });
+    Ok(
+        match run_to(session, fixed, navs, live, built_at, here, fixed.home).await? {
+            Run::Arrived(at) => RecoverEnd::Home { at, why, haul },
+            Run::Stopped(at) => RecoverEnd::Stopped {
+                at,
+                name: room_name(&fixed.graph, at),
+                haul,
+            },
+            Run::Died => RecoverEnd::Died { haul },
+        },
+    )
+}
+
+/// How an unsneaked run ended.
+enum Run {
+    /// The walk completed. Where it ended, which the walker reports
+    /// honestly when that is short of the target.
+    Arrived(RoomId),
+    /// The run did not complete. Where the character stands.
+    Stopped(RoomId),
+    Died,
+}
+
+/// One unsneaked run with the runner, the leg to the safe room and the
+/// leg home alike. Only a death stops it: blows do not, and a move the
+/// board refuses for combat is sent again once the round has passed.
+async fn run_to(
+    session: &Session,
+    fixed: &Fixed,
+    navs: &mut Navs,
+    live: &mut Live,
+    built_at: &mut u64,
+    here: RoomId,
+    to: RoomId,
+) -> Result<Run, FarmError> {
     let mut here = here;
     let mut guard = crate::farm::FarmGuard::death_only(&fixed.name);
     let mut refused = 0u32;
@@ -832,24 +911,12 @@ async fn go_home(
     let mut events = session.events();
     loop {
         refresh_navs(navs, live, built_at, session, fixed);
-        match navs
-            .runner
-            .goto(session, here, fixed.home, &mut guard, false)
-            .await
-        {
-            Ok(arrived) => {
-                return Ok(RecoverEnd::Home {
-                    at: arrived.at,
-                    why,
-                    haul,
-                });
-            }
+        match navs.runner.goto(session, here, to, &mut guard, false).await {
+            Ok(arrived) => return Ok(Run::Arrived(arrived.at)),
             Err(e) => {
                 here = e.at;
                 match e.kind {
-                    NavErrorKind::Interrupted(Interrupt::Died) => {
-                        return Ok(RecoverEnd::Died { haul });
-                    }
+                    NavErrorKind::Interrupted(Interrupt::Died) => return Ok(Run::Died),
                     NavErrorKind::Interrupted(Interrupt::Attacked { .. })
                         if refused < COMBAT_RETRIES =>
                     {
@@ -860,13 +927,7 @@ async fn go_home(
                         crate::session::drain(&mut events, |_| {});
                         wait_a_prompt(&mut events).await;
                     }
-                    _ => {
-                        return Ok(RecoverEnd::Stopped {
-                            at: here,
-                            name: room_name(&fixed.graph, here),
-                            haul,
-                        });
-                    }
+                    _ => return Ok(Run::Stopped(here)),
                 }
             }
         }

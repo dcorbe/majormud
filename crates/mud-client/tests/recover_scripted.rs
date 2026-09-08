@@ -367,6 +367,19 @@ async fn recover_as(
     live: Live,
     bot_on: bool,
 ) -> (Result<RecoverEnd, FarmError>, Vec<String>) {
+    recover_staged(graph, script, content, profile_bot, live, bot_on, None).await
+}
+
+/// As `recover_as`, from `START` to `DEATH` by way of a marked safe room.
+async fn recover_staged(
+    graph: Arc<RoomGraph>,
+    script: Vec<(&'static str, String)>,
+    content: Option<Content>,
+    profile_bot: BotConfig,
+    live: Live,
+    bot_on: bool,
+    safe: Option<RoomId>,
+) -> (Result<RecoverEnd, FarmError>, Vec<String>) {
     let (addr, received) = scripted_board(script).await;
     let session = session_as(addr, profile_bot).await;
     session.set_bot_on(bot_on);
@@ -376,7 +389,7 @@ async fn recover_as(
     }
     let out = tokio::time::timeout(
         Duration::from_secs(60),
-        run_recover(&session, graph, START, DEATH, live, None, &quiet()),
+        run_recover(&session, graph, START, safe, DEATH, live, None, &quiet()),
     )
     .await
     .expect("run_recover should finish, not hang");
@@ -407,6 +420,7 @@ async fn stealth_zero_is_refused_before_anything_is_sent() {
         &session,
         corridor(0),
         START,
+        None,
         DEATH,
         settings(),
         None,
@@ -503,6 +517,59 @@ async fn a_broken_sneak_turns_for_home_without_searching() {
     );
     assert_eq!(count(&log, "search"), 0, "no search after a break: {log:?}");
     assert_eq!(count(&log, "sneak"), 1, "the walk home does not arm: {log:?}");
+}
+
+/// A safe room marked one room up the corridor: the job runs there
+/// unsneaked before it arms, sneaks the one hop from it, and the run
+/// home ends there rather than where the job started.
+#[tokio::test]
+async fn a_marked_safe_room_is_run_to_first_and_run_home_to() {
+    let mut script = vec![
+        ("stat", NINJA_SHEET.into()),
+        ("inventory", EMPTY_HANDED.into()),
+        ("look", format!("\r\nlook{}", block("Guard Post", "north"))),
+        ("n", format!("\r\nn{}", block("Inner Ward", "north south"))),
+        ("sneak", reply("sneak", "Attempting to sneak...")),
+    ];
+    script.push(sneaky_step("Keep", "south"));
+    script.push(("search", reply("search", "Your search revealed nothing.")));
+    script.push(("s", format!("\r\ns{}", block("Inner Ward", "north south"))));
+    let (out, log) = recover_staged(corridor(0), script, None, profile_bot(), settings(), true, Some(MIDWAY)).await;
+    let end = out.expect("the job must finish");
+    assert_eq!(
+        end,
+        RecoverEnd::Home {
+            at: MIDWAY,
+            why: HomeWhy::Nothing,
+            haul: Default::default(),
+        },
+        "log: {log:?}"
+    );
+    let first_move = log.iter().position(|l| l == "n").unwrap();
+    let sneak_at = log.iter().position(|l| l == "sneak").unwrap();
+    assert!(first_move < sneak_at, "the run to the safe room comes before the sneak arms: {log:?}");
+    assert_eq!(count(&log, "n"), 2, "one unsneaked hop, one sneaked: {log:?}");
+    assert_eq!(count(&log, "s"), 1, "home is the safe room, one hop back: {log:?}");
+}
+
+/// A safe room with no route from where the character stands is refused
+/// before anything is sent.
+#[tokio::test]
+async fn an_unreachable_safe_room_is_refused_before_anything_is_sent() {
+    const ISLAND: RoomId = RoomId { map: 9, room: 9 };
+    let mut rooms: Vec<(RoomId, GraphRoom)> = Vec::new();
+    for id in [START, MIDWAY, DEATH] {
+        rooms.push((id, corridor(0).room(id).unwrap().clone()));
+    }
+    rooms.push((ISLAND, GraphRoom { name: "Island".into(), ..Default::default() }));
+    let graph = Arc::new(RoomGraph::from_rooms(rooms));
+    let script = vec![("stat", NINJA_SHEET.into()), ("inventory", EMPTY_HANDED.into())];
+    let (out, log) = recover_staged(graph, script, None, profile_bot(), settings(), true, Some(ISLAND)).await;
+    match out {
+        Err(FarmError::Config(why)) => assert!(why.contains("no route") && why.contains("safe room"), "{why}"),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert_eq!(count(&log, "look"), 0, "refused before the opening look: {log:?}");
 }
 
 /// The floor is bare. One search, then home.
@@ -874,6 +941,7 @@ async fn a_settings_change_lands_while_the_sweep_waits() {
                 &session,
                 corridor(0),
                 START,
+                None,
                 DEATH,
                 live_settings(rx),
                 None,
