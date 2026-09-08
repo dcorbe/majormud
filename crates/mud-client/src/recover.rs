@@ -274,7 +274,8 @@ pub fn recover_config(p: &crate::profile::Profile) -> (BotConfig, crate::farm::F
         content: crate::tui::content_path(p),
         ..Default::default()
     });
-    let mut farm = crate::go::go_config(&base, false);
+    let mut farm = crate::go::go_config(&base);
+    farm.fight_while_travelling = false;
     farm.interrupt_at_percent = 0;
     farm.nav.bash_doors = false;
     let mut bot = crate::tui::assist_config_for(p);

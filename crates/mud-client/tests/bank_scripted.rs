@@ -179,13 +179,11 @@ async fn bank_walks_to_the_nearest_bank_and_deposits_above_the_floor() {
     let session = session_for(addr, 5).await;
     probe_sheet(&session, None).await;
     session.set_content(Arc::new(content()));
-    let cfg = go_config(
-        &FarmConfig {
-            depart_at_percent: Some(0),
-            ..FarmConfig::default()
-        },
-        false,
-    );
+    let cfg = go_config(&FarmConfig {
+        depart_at_percent: Some(0),
+        fight_while_travelling: false,
+        ..FarmConfig::default()
+    });
     let bot = BotConfig {
         max_hp: 30,
         ..BotConfig::default()

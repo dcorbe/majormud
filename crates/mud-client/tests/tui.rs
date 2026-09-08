@@ -1460,11 +1460,10 @@ async fn every_job_start_refuses_without_a_name() {
             Some(here),
             here,
             bot.clone(),
-            false,
             quiet(),
         )
         .err(),
-        start_bank(session.clone(), graph.clone(), Some(here), bot, false, quiet()).err(),
+        start_bank(session.clone(), graph.clone(), Some(here), bot, quiet()).err(),
         start_recover(session.clone(), graph.clone(), Some(here), here, quiet()).err(),
         start_where(session.clone(), graph.clone(), Some(here)).err(),
     ];
@@ -1835,4 +1834,3 @@ async fn a_window_opened_from_the_lobby_records_the_capture() {
     assert_eq!(front.active(), 2, "the connect opened a window");
     assert!(raw.exists(), "the capture followed the window opened from the lobby");
 }
-

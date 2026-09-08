@@ -172,13 +172,11 @@ async fn start() -> Server {
 /// sqlite file, so threat ranking and death wordings are simply absent,
 /// which `run_go` must treat as "no opinion" rather than as fatal.
 fn cfg() -> FarmConfig {
-    mud_client::go::go_config(
-        &FarmConfig {
-            content: std::path::PathBuf::from("/nonexistent/rooms.sqlite"),
-            ..Default::default()
-        },
-        false,
-    )
+    mud_client::go::go_config(&FarmConfig {
+        content: std::path::PathBuf::from("/nonexistent/rooms.sqlite"),
+        fight_while_travelling: false,
+        ..Default::default()
+    })
 }
 
 #[tokio::test]

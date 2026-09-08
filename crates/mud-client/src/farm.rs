@@ -156,7 +156,8 @@ pub struct FarmConfig {
     pub fight_while_travelling: bool,
     /// Stop walking a leg when hp drops below this percent, defend where
     /// the character stands, and resume once it is fit to travel again.
-    /// 0 disables the hp trip; dying still stops the walk.
+    /// 0 disables the hp trip; dying still stops the walk. Off with
+    /// `[bot].auto_rest`, since resting is what the stop is for.
     ///
     /// A pair where this value exceeds the departure mark is refused,
     /// because the defend pump would end, the departure gate would
@@ -1531,8 +1532,8 @@ pub struct FarmGuard {
     hurt_at_percent: u32,
     username: String,
     /// Stop and fight — for a blow, a whiff, an entry or a sighting —
-    /// rather than walk on. Read at every decision, never copied: the
-    /// `/bot` toggle flips it under a walk in progress
+    /// rather than walk on. Read at every decision, never copied: a
+    /// settings reload or a `/bot` moves it under a walk in progress
     /// ([`FarmGuard::follows`]). On unless the caller explicitly wants
     /// to run.
     fights: crate::session::Switch,
@@ -1691,16 +1692,12 @@ pub fn nav_config(bot: &crate::bot::BotConfig, farm: &FarmConfig) -> crate::nav:
     }
 }
 
-/// Whether a settings reload should re-assert the travel fight switch,
-/// and to what.
-///
-/// The switch is the session's own live state and `/bot` flips it mid
-/// run, so re-asserting it on every reload would let a `/set` of an
-/// unrelated key silently undo a toggle the player made by hand. Only a
-/// reload that actually moved `fight_while_travelling` speaks for it.
-pub fn fight_switch_after_refresh(before: &FarmConfig, after: &FarmConfig) -> Option<bool> {
-    (before.fight_while_travelling != after.fight_while_travelling)
-        .then_some(after.fight_while_travelling)
+/// What the session's travel fight switch is set to from these tables:
+/// the farm says whether the walk takes fights on the way, and a bot
+/// that does not fight at all takes none. `/bot` off reaches the walk
+/// this way, since it turns the live bot's combat off.
+pub fn fights_on_the_way(bot: &crate::bot::BotConfig, farm: &FarmConfig) -> bool {
+    farm.fight_while_travelling && bot.auto_combat
 }
 
 /// Whether a settings reload has to build fresh heal and buff states.
@@ -1721,7 +1718,11 @@ pub fn casts_need_rebuild(before: &crate::bot::BotConfig, after: &crate::bot::Bo
 /// The interrupt mark must sit under the mark the gate rests to. The
 /// plan cannot check this when the farm leaves the mark to the bot,
 /// since it never sees the bot's config, so both runners check here.
+/// With resting off there is no gate, and nothing to check.
 pub fn check_departure_mark(cfg: &FarmConfig, bot: &crate::bot::BotConfig) -> Result<(), FarmError> {
+    if !bot.auto_rest {
+        return Ok(());
+    }
     let mark = cfg.depart_at_percent.unwrap_or(bot.rest_until_percent);
     if mark != 0 && cfg.interrupt_at_percent > mark {
         return Err(FarmError::Config(format!(
@@ -1765,9 +1766,9 @@ pub async fn run_farm(
 ) -> Result<(FarmEnd, FarmStats), FarmError> {
     let mut live = live;
     check_departure_mark(&live.farm, &live.bot)?;
-    // The config says how the run STARTS; the session's switch is what
-    // every leg reads, so `/bot` can move it while the run is going.
-    session.travel_fights().set(live.farm.fight_while_travelling);
+    // The tables say how the run starts; the session's switch is what
+    // every leg reads, and every reload below sets it again.
+    session.travel_fights().set(fights_on_the_way(&live.bot, &live.farm));
     // The board's own per-monster death wordings, so the room model can
     // see a kill somebody ELSE landed. Best effort: without it the model
     // falls back to the award-and-one-phrase test it always had.
@@ -1914,10 +1915,9 @@ async fn farm_loop(
     // walker and nothing changes.
     let mut bank_nav = walker(nav_cfg);
     let mut built_at = live.generation();
-    // The tables the block above and the incoming casts were built
-    // from. A reload compares against these to tell a key it owns from
-    // a key it does not, so it leaves alone what did not move.
-    let mut built_farm = live.farm.clone();
+    // The bot table the incoming casts were built from. A reload
+    // compares against it to tell a spell choice that moved from one
+    // that did not, so it keeps the cast times of what did not move.
     let mut built_bot = live.bot.clone();
     // Danger ranking from the shipped data. A missing or unreadable
     // database is not fatal: an empty table simply means "no opinion",
@@ -2044,10 +2044,7 @@ async fn farm_loop(
                     casts.buff = crate::sheet::BuffState::new(sheet.buffs.0);
                 }
                 bank_cfg = live.profile().bank;
-                if let Some(fights) = fight_switch_after_refresh(&built_farm, &live.farm) {
-                    session.travel_fights().set(fights);
-                }
-                built_farm = live.farm.clone();
+                session.travel_fights().set(fights_on_the_way(&live.bot, &live.farm));
                 built_bot = live.bot.clone();
             }
             if let Some(end) = time_up(started, &live.farm) {
@@ -2752,8 +2749,9 @@ pub(crate) async fn travel(
     let mut cfg = live.farm.clone();
 
     // Whether the leg stops for fights at all is the session's live
-    // switch (`/bot` flips it mid-walk), read at each sighting, entry
-    // and blow rather than fixed here. Sighting rides the same switch:
+    // switch (a reload or `/bot` moves it mid-walk), read at each
+    // sighting, entry and blow rather than fixed here. Sighting rides
+    // the same switch:
     // "take fights on the way" covers a monster the arrival block
     // LISTS, not only one that has already drawn blood. The bot is a
     // predicate — never fed events — and shares the run's refusals, so
@@ -2761,10 +2759,14 @@ pub(crate) async fn travel(
     //
     // Built through a closure because a settings change rebuilds both
     // from the new tables at the top of the next pass.
+    //
+    // The hurt mark exists to stop and rest. With resting off it would
+    // only stop, spend the interrupt budget on nothing and end the leg
+    // `TooHurt`, so it is off with the resting.
     let build = |bot_config: &crate::bot::BotConfig, cfg: &FarmConfig| {
         let guard = FarmGuard::new(
             bot_config.max_hp,
-            cfg.interrupt_at_percent,
+            if bot_config.auto_rest { cfg.interrupt_at_percent } else { 0 },
             &session.character_name().unwrap_or_default(),
         )
         .sighting(
@@ -3245,6 +3247,10 @@ enum DepartureWait {
 /// Leaving fit is cheaper. The mark is `cfg.depart_at_percent` if the
 /// farm set its own. Otherwise it is the bot's `rest_until_percent`.
 /// Either way it gates HP and mana alike.
+///
+/// With `auto_rest` off there is no wait at all. The character sets
+/// off as it stands: a rest it did not ask for is what this gate would
+/// otherwise send, and it once sent one in a room full of bugbears.
 async fn wait_for_departure_health(
     session: &crate::session::Session,
     cfg: &FarmConfig,
@@ -3254,7 +3260,7 @@ async fn wait_for_departure_health(
     sight: &crate::bot::Bot,
 ) -> DepartureWait {
     let mark = cfg.depart_at_percent.unwrap_or(bot_config.rest_until_percent);
-    if mark == 0 || bot_config.max_hp <= 0 {
+    if !bot_config.auto_rest || mark == 0 || bot_config.max_hp <= 0 {
         return DepartureWait::Fit { rested: false };
     }
     let hp_target = bot_config.max_hp * mark as i32 / 100;

@@ -419,30 +419,40 @@ remembers is the tail. An ambiguous name is never a guess: `/go` prints
 the nearest candidates with their ids and step counts and waits to be
 asked again.
 
-**Walk versus run is the `/bot` toggle**, not a second command:
+**`/bot` is the master switch** for everything automatic, in every mode:
+a `/go`, a `/farm`, a `/roam`, a `/bank`, a `/recover`, and the assist
+beside a character walked by hand. Off, nothing automatic runs: no
+fighting on the way, no looting, no resting, no heals, no buffs, no flee,
+and no health gate before a leg departs. On, what the profile's `[bot]`
+keys select runs, and only that. `auto_rest = false` never rests and
+never gates a departure on health, `auto_heal = false` never casts a
+heal. A job never turns a key on for itself. The switch does not touch
+the profile: what `/set` chose is still there when the bot comes back on.
 
-| `/bot` | Behaviour |
+Whether a `/go` walks or runs comes from the same tables:
+
+| `farm.fight_while_travelling` and `bot.auto_combat` | Behaviour |
 |---|---|
-| on | **Walk** — stops for anything the bot would attack or loot, clears the room, resumes |
-| off | **Run** — keeps moving, engages only when the board refuses the move |
+| both on, with `/bot` on | **Walk** — stops for anything the bot would attack or loot, clears the room, resumes |
+| either off, or `/bot` off | **Run** — keeps moving, engages only when the board refuses the move |
 
-The assist recovers by the same marks a farm does: it rests, meditates
-and casts heals, and after a rest it hides when the sheet shows Stealth.
-Fleeing follows `auto_flee` as it does for a farm.
+The assist recovers by the same marks a farm does: it rests and
+meditates when `auto_rest` says so, casts heals when `auto_heal` does,
+and after a rest it hides when the sheet shows Stealth. Fleeing follows
+`auto_flee` as it does for a farm.
 
-Run mode still fights, and has to: the board answers a move with *"You
-may not enter that room while in combat"*, so a walk that would never
-fight is a walk that stays stuck wherever something picked a fight. What
-`/bot off` buys is that whiffs, passing monsters and floor loot no longer
-stop the leg. After three interruptions the walk gives up and reports the
-room it is standing in.
+A run still fights, and has to: the board answers a move with *"You may
+not enter that room while in combat"*, so a walk that would never fight
+is a walk that stays stuck wherever something picked a fight. What a run
+buys is that whiffs, passing monsters and floor loot no longer stop the
+leg. After three interruptions the walk gives up and reports the room it
+is standing in.
 
-The toggle works mid-walk. Pressing `/bot` while a `/go` or a `/farm`
-is running changes what the walk does from its next sighting, entry or
-blow onward. It does not stop a step already sent, and a walk that has
-already stopped to defend finishes that defence first. A `/farm` starts
-from the profile's `fight_while_travelling` and follows the toggle from
-then on.
+The switch works mid-job. Pressing `/bot` while a job is running reaches
+it at its next hop, sighting, entry or wait, the same way a `/set` does,
+and the job prints a notice saying which way it went. It does not stop a
+step already sent, and a walk that has already stopped to defend finishes
+that defence first.
 
 When the walk ends with `/bot` on, the client sends one `look` before
 handing the keyboard back. The walk consumed the block its last step
@@ -695,7 +705,8 @@ either way.
 A `[bot]` table that left one of them out because off used to be the
 default has it on from here. `auto_heal = false` no longer stops the
 character resting, because `auto_rest` gates that on its own.
-`auto_rest` and `auto_sneak` are the two new switches.
+`auto_rest` and `auto_sneak` are the two new switches. `/bot` turns every
+one of them off at once and back on, without touching the profile.
 
 ## The lobby
 
@@ -1047,7 +1058,9 @@ those rounds is a step that does not land.
 
 Turn it off for legs whose point is to get somewhere. The character then
 still stops for the HP gate and for dying — but note it can still be
-pinned, because the refusal is the board's, not the client's.
+pinned, because the refusal is the board's, not the client's. The HP gate
+is a rest, so it follows `bot.auto_rest` and the `/bot` switch: with
+either off, nothing but dying stops the leg.
 
 The walk home fights too, for the same reason.
 

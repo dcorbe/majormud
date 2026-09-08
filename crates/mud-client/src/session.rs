@@ -361,6 +361,9 @@ pub struct Session {
     /// flipped by the `/bot` toggle while it runs. See
     /// [`Session::travel_fights`].
     travel_fights: Switch,
+    /// The master switch over every automatic policy, `/bot`. See
+    /// [`Session::bot_switch`].
+    bot: watch::Sender<bool>,
     /// The session's own running balance, kept current by the reader
     /// task off whichever `i` reply arrives -- ours or a caller's.
     purse: Arc<Mutex<PurseTracker>>,
@@ -617,6 +620,7 @@ impl Session {
             next_id: AtomicU64::new(1),
             pace_ms,
             travel_fights: Switch::default(),
+            bot: watch::Sender::new(true),
             purse,
             stats,
             toll_log,
@@ -678,12 +682,32 @@ impl Session {
     }
 
     /// The live "fight while travelling" switch. A walk's travel guard
-    /// reads it at every sighting, entry and blow, so the `/bot` toggle
-    /// changes a walk already in progress — the same retune-a-live-job
-    /// shape as [`Session::set_pace`]. [`crate::farm::run_farm`] and
-    /// [`crate::go::run_go`] seed it from their config at entry.
+    /// reads it at every sighting, entry and blow. The jobs set it from
+    /// their live settings at entry and on every reload
+    /// ([`crate::farm::fights_on_the_way`]), so a `/set` or a `/bot`
+    /// changes a walk already in progress.
     pub fn travel_fights(&self) -> &Switch {
         &self.travel_fights
+    }
+
+    /// Whether `/bot` is on. Off means nothing automatic runs in any
+    /// mode: no fighting, healing, resting, looting, sneaking, fleeing
+    /// or buffing, and no health gate on a walk's departures. On means
+    /// what the profile's `[bot]` table turned on runs. On until the
+    /// window says otherwise, so the headless commands are unaffected.
+    pub fn bot_on(&self) -> bool {
+        *self.bot.borrow()
+    }
+
+    /// Flip `/bot`. Every job on the session hears it through
+    /// [`Session::bot_switch`] at its next decision.
+    pub fn set_bot_on(&self, on: bool) {
+        self.bot.send_replace(on);
+    }
+
+    /// A receiver on the `/bot` switch, for [`crate::live::Live`].
+    pub fn bot_switch(&self) -> watch::Receiver<bool> {
+        self.bot.subscribe()
     }
 
     /// Queue a line for sending (CRLF appended); pacing applies. The

@@ -211,13 +211,11 @@ async fn session_for(addr: std::net::SocketAddr) -> Session {
 /// already applied, the way the window derives them. No room database:
 /// these tests read no content at all.
 fn tables() -> (BotConfig, FarmConfig) {
-    let mut farm = go_config(
-        &FarmConfig {
-            content: std::path::PathBuf::new(),
-            ..FarmConfig::default()
-        },
-        false,
-    );
+    let mut farm = go_config(&FarmConfig {
+        content: std::path::PathBuf::new(),
+        ..FarmConfig::default()
+    });
+    farm.fight_while_travelling = false;
     farm.interrupt_at_percent = 0;
     farm.nav.bash_doors = false;
     // The scripted board answers at once, and this is what every wait

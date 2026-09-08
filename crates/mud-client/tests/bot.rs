@@ -2031,3 +2031,26 @@ fn reconfigure_keeps_the_engaged_latch_and_changes_the_policy() {
     assert!(bot.ignores_coin("copper"), "the new policy applies");
 }
 
+
+/// What `/bot` off makes of a profile's table: every automatic policy
+/// off, and everything that is a choice rather than a policy kept, so
+/// the next press restores the table as it was.
+#[test]
+fn switched_off_keeps_the_marks_and_pools_but_runs_nothing() {
+    let cfg = BotConfig {
+        max_hp: 52,
+        max_mana: 10,
+        buffs: vec!["bless".into()],
+        rest_at_percent: 60,
+        ignore: vec!["beetle".into()],
+        ..BotConfig::default()
+    };
+    let off = cfg.switched_off();
+    assert!(!off.auto_combat && !off.auto_heal && !off.auto_rest, "{off:?}");
+    assert!(!off.auto_get && !off.take_keys && !off.auto_sneak && !off.auto_flee, "{off:?}");
+    assert!(off.buffs.is_empty(), "a buff is a cast nobody asked for: {off:?}");
+    assert_eq!((off.max_hp, off.max_mana), (52, 10));
+    assert_eq!(off.rest_at_percent, 60);
+    assert_eq!(off.ignore, vec!["beetle".to_string()]);
+    assert_eq!(off.switched_off(), off, "off twice is off");
+}

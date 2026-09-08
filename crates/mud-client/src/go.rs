@@ -168,16 +168,16 @@ pub fn resolve(graph: &RoomGraph, from: Option<RoomId>, typed: &str) -> Result<R
 /// The config a `/go` runs under, from the profile's `[farm]` table (or
 /// its defaults when the profile has no farm at all).
 ///
-/// `walking` is the `/bot` toggle as it stood when `/go` was typed: on
-/// means take the fights on the way, off means walk past them. Later
-/// presses reach the walk through the session's switch, not this.
+/// Whether the walk takes the fights on the way is the profile's
+/// `fight_while_travelling`, the same as a farm's leg, and `/bot` off
+/// walks past them whatever it says. Both reach the walk through its
+/// live settings.
 ///
 /// Three fields deliberately diverge from what a farm would use. Each is
 /// the difference between a command that answers a keystroke and one
 /// that appears to have hung.
-pub fn go_config(base: &FarmConfig, walking: bool) -> FarmConfig {
+pub fn go_config(base: &FarmConfig) -> FarmConfig {
     FarmConfig {
-        fight_while_travelling: walking,
         // The walk rests to the bot's mark like a farm does. A profile
         // that wants the old instant start sets `rest_until_percent`
         // to 0.
@@ -238,9 +238,9 @@ pub async fn run_go(
 ) -> Result<GoEnd, FarmError> {
     let mut live = live;
     crate::farm::check_departure_mark(&live.farm, &live.bot)?;
-    // How the walk starts; `/bot` moves the switch from here on. See
+    // How the walk starts; the leg sets it again on every reload. See
     // `run_farm`.
-    session.travel_fights().set(live.farm.fight_while_travelling);
+    session.travel_fights().set(crate::farm::fights_on_the_way(&live.bot, &live.farm));
     // The board's own per-monster death wordings, so the room model can
     // see a kill somebody else landed. Best effort, as in `run_farm`.
     if let Err(e) = crate::deaths::init(&live.farm.content) {

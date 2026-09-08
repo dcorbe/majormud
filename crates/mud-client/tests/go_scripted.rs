@@ -176,13 +176,11 @@ fn bot() -> BotConfig {
 /// No room database behind the tiny corridor, which `run_go` must treat
 /// as "no threat opinion" rather than as fatal.
 fn cfg(walking: bool) -> FarmConfig {
-    go_config(
-        &FarmConfig {
-            content: std::path::PathBuf::from("/nonexistent/rooms.sqlite"),
-            ..Default::default()
-        },
-        walking,
-    )
+    go_config(&FarmConfig {
+        content: std::path::PathBuf::from("/nonexistent/rooms.sqlite"),
+        fight_while_travelling: walking,
+        ..Default::default()
+    })
 }
 
 async fn walk(walking: bool, script: Vec<(&'static str, String)>) -> (GoEnd, Vec<String>) {
@@ -411,13 +409,10 @@ async fn a_walk_refuses_an_interrupt_mark_above_the_bots_mark_before_sending_any
     let (addr, received) = scripted_board(vec![]).await;
     let session = session_for(addr).await;
     let graph = corridor();
-    let cfg = go_config(
-        &FarmConfig {
-            interrupt_at_percent: 96,
-            ..Default::default()
-        },
-        false,
-    );
+    let cfg = go_config(&FarmConfig {
+        interrupt_at_percent: 96,
+        ..Default::default()
+    });
     let bot = BotConfig {
         auto_combat: true,
         max_hp: 30,
@@ -456,10 +451,10 @@ async fn a_profile_change_mid_walk_leaves_the_target_alone() {
     let session = session_for(addr).await;
     let (tx, rx) = tokio::sync::watch::channel(Profile::default());
     let derive: Derive = Arc::new(|p: &Profile| {
-        let base = p.farm.clone().unwrap_or_default();
+        let base = FarmConfig { fight_while_travelling: false, ..p.farm.clone().unwrap_or_default() };
         (
             BotConfig { auto_combat: false, ..p.bot.clone().unwrap_or_default() },
-            go_config(&base, false),
+            go_config(&base),
         )
     });
     let live = Live::over(rx, "go", quiet(), bot(), cfg(false), derive);
@@ -618,3 +613,71 @@ async fn a_go_walk_casts_the_stealth_spell_it_discovered() {
     );
 }
 
+
+// --- the bot's switches on the walk ------------------------------------
+
+/// The same block at a chosen HP.
+fn room_block_hp(name: &str, exits: &str, hp: i32) -> String {
+    format!("\r\n\x1b[1;36m{name}\r\nObvious exits: {exits}\r\n[HP={hp}/MA=0]:")
+}
+
+/// `auto_rest` off means the walk neither rests nor waits on health: a
+/// character at a third of its HP sets off at once, and the travel
+/// guard's hurt mark does not stop it on the way. The board is scripted
+/// strictly, so a rest or a stop would leave the walk waiting on a
+/// reply that never comes.
+#[tokio::test]
+async fn a_walk_with_resting_off_neither_rests_nor_stops_for_the_hurt_mark() {
+    let script = vec![
+        ("look", format!("\r\nlook{}", room_block_hp("Guard Post", "north", 10))),
+        ("n", format!("\r\nn{}", room_block_hp("Inner Ward", "north south", 10))),
+        ("n", format!("\r\nn{}", room_block_hp("Keep", "south", 10))),
+    ];
+    let (addr, received) = scripted_board(script).await;
+    let session = session_for(addr).await;
+    let bot = BotConfig { auto_rest: false, ..bot() };
+    let cfg = FarmConfig { interrupt_at_percent: 50, max_rest_seconds: 2, ..cfg(true) };
+    let end = tokio::time::timeout(
+        Duration::from_secs(10),
+        run_go(&session, corridor(), Some(START), STOP, Live::fixed(bot, cfg), None, &quiet()),
+    )
+    .await
+    .expect("run_go should finish, not hang")
+    .unwrap();
+    let log = received.lock().unwrap();
+    assert_eq!(end, GoEnd::Arrived(STOP), "log: {log:?}");
+    assert!(
+        !log.iter().any(|l| l == "rest" || l == "meditate"),
+        "resting is off: {log:?}"
+    );
+}
+
+/// `/bot` off is the master switch. The profile says to take the fights
+/// on the way, and the walk would, but with the switch off it walks
+/// past the whiff like a run.
+#[tokio::test]
+async fn the_bot_switch_off_walks_past_a_fight_the_profile_would_take() {
+    let mut script = up_to_the_whiff();
+    script.push(("n", format!("\r\nn{}", room_block("Keep", None, "south"))));
+    let (addr, received) = scripted_board(script).await;
+    let session = session_for(addr).await;
+    let (_profile, rx) = tokio::sync::watch::channel(Profile::default());
+    let (_switch, off) = tokio::sync::watch::channel(false);
+    let derive: Derive = Arc::new(|p: &Profile| {
+        (
+            BotConfig { auto_combat: true, max_hp: 30, ..p.bot.clone().unwrap_or_default() },
+            cfg(true),
+        )
+    });
+    let live = Live::over(rx, "go", quiet(), bot(), cfg(true), derive).switched(off);
+    let end = tokio::time::timeout(
+        Duration::from_secs(30),
+        run_go(&session, corridor(), Some(START), STOP, live, None, &quiet()),
+    )
+    .await
+    .expect("run_go should finish, not hang")
+    .unwrap();
+    let log = received.lock().unwrap();
+    assert_eq!(end, GoEnd::Arrived(STOP), "log: {log:?}");
+    assert!(!log.iter().any(|l| l.starts_with("a ")), "nothing was fought: {log:?}");
+}

@@ -473,7 +473,7 @@ pub async fn run_bank(
 ) -> Result<ErrandEnd, FarmError> {
     let mut live = live;
     crate::farm::check_departure_mark(&live.farm, &live.bot)?;
-    session.travel_fights().set(live.farm.fight_while_travelling);
+    session.travel_fights().set(crate::farm::fights_on_the_way(&live.bot, &live.farm));
     if let Err(e) = crate::deaths::init(&live.farm.content) {
         notices(&format!(
             "death wordings unavailable ({e}); shared-room kills will be missed"

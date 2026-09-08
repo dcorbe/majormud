@@ -151,13 +151,11 @@ fn bot() -> mud_client::bot::BotConfig {
 /// No room database behind the two-room gate graph, which `run_go` must
 /// treat as "no threat opinion" rather than as fatal.
 fn cfg(walking: bool) -> FarmConfig {
-    go_config(
-        &FarmConfig {
-            content: std::path::PathBuf::from("/nonexistent/rooms.sqlite"),
-            ..Default::default()
-        },
-        walking,
-    )
+    go_config(&FarmConfig {
+        content: std::path::PathBuf::from("/nonexistent/rooms.sqlite"),
+        fight_while_travelling: walking,
+        ..Default::default()
+    })
 }
 
 /// The property the whole task exists for: a toll fact learned by ONE

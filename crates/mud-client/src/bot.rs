@@ -396,6 +396,28 @@ impl BotConfig {
     }
 }
 
+impl BotConfig {
+    /// The table with every automatic policy off. What a job runs under
+    /// while `/bot` is off: no fighting, healing, resting, looting, key
+    /// taking, sneaking, fleeing or buffing, whatever the profile says.
+    /// The marks, the spell names, the ignore lists and the pools are
+    /// choices rather than policies and stay, so the next press
+    /// restores the table as it was.
+    pub fn switched_off(&self) -> BotConfig {
+        BotConfig {
+            auto_combat: false,
+            auto_heal: false,
+            auto_rest: false,
+            auto_get: false,
+            take_keys: false,
+            auto_sneak: false,
+            auto_flee: false,
+            buffs: Vec::new(),
+            ..self.clone()
+        }
+    }
+}
+
 impl Default for BotConfig {
     fn default() -> Self {
         BotConfig {

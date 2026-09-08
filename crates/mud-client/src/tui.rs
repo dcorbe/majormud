@@ -2039,7 +2039,6 @@ pub fn start_go(
     hint: Option<mud_core::content::RoomId>,
     to: mud_core::content::RoomId,
     bot: crate::bot::BotConfig,
-    walking: bool,
     notices: crate::farm::Notices,
 ) -> Result<Job, String> {
     let profile = session.profile();
@@ -2051,7 +2050,7 @@ pub fn start_go(
         content: content_path(&profile),
         ..Default::default()
     });
-    let cfg = crate::go::go_config(&base, walking);
+    let cfg = crate::go::go_config(&base);
     // Automation goes back under flood control, exactly as a farm does:
     // `play` unpaced this session for the operator's keystrokes.
     session.set_pace(profile.pace());
@@ -2067,7 +2066,7 @@ pub fn start_go(
                 content: content_path(p),
                 ..Default::default()
             });
-            (assist_config_for(p), crate::go::go_config(&base, walking))
+            (assist_config_for(p), crate::go::go_config(&base))
         }),
     );
     let handle = tokio::spawn(async move {
@@ -2188,7 +2187,6 @@ pub fn start_bank(
     graph: Arc<crate::graph::RoomGraph>,
     hint: Option<mud_core::content::RoomId>,
     bot: crate::bot::BotConfig,
-    walking: bool,
     notices: crate::farm::Notices,
 ) -> Result<Job, String> {
     let profile = session.profile();
@@ -2197,7 +2195,7 @@ pub fn start_bank(
         content: content_path(&profile),
         ..Default::default()
     });
-    let cfg = crate::go::go_config(&base, walking);
+    let cfg = crate::go::go_config(&base);
     session.set_pace(profile.pace());
     let (tx, rx) = tokio::sync::watch::channel(crate::farm::Phase::default());
     let live = crate::live::Live::new(
@@ -2211,7 +2209,7 @@ pub fn start_bank(
                 content: content_path(p),
                 ..Default::default()
             });
-            (assist_config_for(p), crate::go::go_config(&base, walking))
+            (assist_config_for(p), crate::go::go_config(&base))
         }),
     );
     let handle = tokio::spawn(async move {

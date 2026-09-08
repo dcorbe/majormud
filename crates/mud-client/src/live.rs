@@ -14,11 +14,17 @@ pub type Derive = std::sync::Arc<
 /// A job's settings, kept current while it runs.
 ///
 /// The window replaces the session's profile on every `/set`, `/unset`
-/// and `/load`. This holds the receiver, the configs the job runs
-/// under, and the rule that derives one from the other. A job asks
-/// [`Live::refresh`] at every decision that reads a config and selects
-/// on [`Live::changed`] where it waits on the board, so a change lands
-/// at the next step, pass or pickup and never part way through one.
+/// and `/load`, and flips the session's bot switch on every `/bot`.
+/// This holds both receivers, the configs the job runs under, and the
+/// rule that derives one from the other. A job asks [`Live::refresh`]
+/// at every decision that reads a config and selects on
+/// [`Live::changed`] where it waits on the board, so a change lands at
+/// the next step, pass or pickup and never part way through one.
+///
+/// The switch is applied after `derive`: off replaces the bot table
+/// with [`crate::bot::BotConfig::switched_off`], so a job never has to
+/// ask about it. What the profile says is what runs when the switch is
+/// on, and nothing automatic runs when it is off.
 ///
 /// The generation counter is for the guards, bots and watches a job
 /// builds from the configs: each remembers the generation it was built
@@ -26,6 +32,10 @@ pub type Derive = std::sync::Arc<
 /// refresh.
 pub struct Live {
     rx: tokio::sync::watch::Receiver<crate::profile::Profile>,
+    switch: tokio::sync::watch::Receiver<bool>,
+    /// The switch as last applied, so a flip can be named in the
+    /// notice.
+    on: bool,
     derive: Derive,
     pub bot: crate::bot::BotConfig,
     pub farm: crate::farm::FarmConfig,
@@ -43,6 +53,9 @@ pub struct Live {
     /// `fixed` keeps its own sender so the receiver never reports a
     /// closed channel.
     _pinned: Option<tokio::sync::watch::Sender<crate::profile::Profile>>,
+    /// The switch's own sender until [`Live::switched`] hands over the
+    /// session's, for the same reason.
+    _pinned_switch: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 impl Live {
@@ -57,11 +70,12 @@ impl Live {
         farm: crate::farm::FarmConfig,
         derive: Derive,
     ) -> Live {
-        Live::over(session.profile_changes(), what, notices, bot, farm, derive)
+        Live::over(session.profile_changes(), what, notices, bot, farm, derive).switched(session.bot_switch())
     }
 
     /// As [`Live::new`], over a receiver the caller holds the sender
-    /// of. What a test uses to change the settings under a job.
+    /// of, with the bot switch pinned on. What a test uses to change
+    /// the settings under a job.
     pub fn over(
         rx: tokio::sync::watch::Receiver<crate::profile::Profile>,
         what: &'static str,
@@ -70,8 +84,11 @@ impl Live {
         farm: crate::farm::FarmConfig,
         derive: Derive,
     ) -> Live {
+        let (switch_tx, switch) = tokio::sync::watch::channel(true);
         Live {
             rx,
+            switch,
+            on: true,
             derive,
             bot,
             farm,
@@ -81,7 +98,22 @@ impl Live {
             notices,
             pending: false,
             _pinned: None,
+            _pinned_switch: Some(switch_tx),
         }
+    }
+
+    /// Follow a bot switch the caller holds the sender of: the
+    /// session's for a real job, a test's otherwise. The switch as it
+    /// stands is applied to the starting table at once, and is not a
+    /// change for the first `refresh` to report.
+    pub fn switched(mut self, mut switch: tokio::sync::watch::Receiver<bool>) -> Live {
+        self.on = *switch.borrow_and_update();
+        if !self.on {
+            self.bot = self.bot.switched_off();
+        }
+        self.switch = switch;
+        self._pinned_switch = None;
+        self
     }
 
     /// Settings that never change: the headless commands, and every
@@ -119,11 +151,11 @@ impl Live {
         self.bot.max_mana = max_mana;
     }
 
-    /// Rebuild the configs if the profile has changed since the last
-    /// look, or a `changed` wait landed one since then. True when it
-    /// did. The pending flag is false on the way out whichever path
-    /// ran, so a wait that already forced this rebuild does not force a
-    /// second one right after.
+    /// Rebuild the configs if the profile or the bot switch has changed
+    /// since the last look, or a `changed` wait landed one since then.
+    /// True when it did. The pending flag is false on the way out
+    /// whichever path ran, so a wait that already forced this rebuild
+    /// does not force a second one right after.
     ///
     /// Reads `Ref::has_changed` off the borrow rather than
     /// `Receiver::has_changed`, which reports the channel closed the
@@ -132,14 +164,17 @@ impl Live {
     /// whatever it last set.
     pub fn refresh(&mut self) -> bool {
         let now = self.rx.borrow_and_update();
+        let switch = self.switch.borrow_and_update();
         // The early return leaves `pending` alone on purpose: it can
         // only be false here, since a true one would have made this
         // changed. Nothing to clear, and nothing to clone either.
-        if !(self.pending || now.has_changed()) {
+        if !(self.pending || now.has_changed() || switch.has_changed()) {
             return false;
         }
         let profile = now.clone();
+        let on = *switch;
         drop(now);
+        drop(switch);
         self.pending = false;
         let (bot, farm) = (self.derive)(&profile);
         self.bot = bot;
@@ -150,8 +185,17 @@ impl Live {
             self.bot.max_hp = hp;
             self.bot.max_mana = mana;
         }
+        if !on {
+            self.bot = self.bot.switched_off();
+        }
         self.generation += 1;
-        (self.notices)(&format!("-- {}: settings reloaded --", self.what));
+        let flipped = on != self.on;
+        self.on = on;
+        (self.notices)(&match (flipped, on) {
+            (true, false) => format!("-- {}: bot off, nothing automatic from here --", self.what),
+            (true, true) => format!("-- {}: bot on, the profile's policies run from here --", self.what),
+            (false, _) => format!("-- {}: settings reloaded --", self.what),
+        });
         true
     }
 
@@ -169,8 +213,9 @@ impl Live {
         true
     }
 
-    /// Resolves when the profile changes. Never, once the sender is
-    /// gone. A select arm that fired forever would spin the pump.
+    /// Resolves when the profile or the bot switch changes. Never, once
+    /// the senders are gone. A select arm that fired forever would spin
+    /// the pump.
     ///
     /// Marks the wake pending on `Live` itself rather than asking
     /// `watch::Receiver::mark_changed` to fake one. That call rewinds
@@ -181,7 +226,11 @@ impl Live {
     /// `refresh` consumes it, so a second wait genuinely waits for a
     /// second send.
     pub async fn changed(&mut self) {
-        if self.rx.changed().await.is_ok() {
+        let arrived = tokio::select! {
+            sent = self.rx.changed() => sent.is_ok(),
+            sent = self.switch.changed() => sent.is_ok(),
+        };
+        if arrived {
             self.pending = true;
         } else {
             std::future::pending::<()>().await;

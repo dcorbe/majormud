@@ -197,11 +197,15 @@ fn the_refusal_names_the_verb_that_asked() {
 
 // --- config ---------------------------------------------------------
 
+/// Whether the walk takes fights on the way is the profile's own
+/// `fight_while_travelling`, the same key a farm's leg reads. `/bot`
+/// off walks past them through the live settings, not through this.
 #[test]
-fn walk_mode_fights_on_the_way_and_run_mode_does_not() {
-    let base = FarmConfig::default();
-    assert!(go_config(&base, true).fight_while_travelling);
-    assert!(!go_config(&base, false).fight_while_travelling);
+fn go_takes_the_profiles_fight_while_travelling() {
+    let fights = FarmConfig { fight_while_travelling: true, ..FarmConfig::default() };
+    let runs = FarmConfig { fight_while_travelling: false, ..FarmConfig::default() };
+    assert!(go_config(&fights).fight_while_travelling);
+    assert!(!go_config(&runs).fight_while_travelling);
 }
 
 /// The walk rests to the bot's own mark, the same as a farm would.
@@ -215,7 +219,7 @@ fn go_rests_to_the_bots_mark_not_the_farms() {
         depart_at_percent: Some(80),
         ..FarmConfig::default()
     };
-    assert_eq!(go_config(&base, true).depart_at_percent, None);
+    assert_eq!(go_config(&base).depart_at_percent, None);
 }
 
 /// `open` is still tried and still free; this only stops a weaponless
@@ -224,7 +228,7 @@ fn go_rests_to_the_bots_mark_not_the_farms() {
 fn go_fails_loudly_at_a_locked_door() {
     let base = FarmConfig::default();
     assert!(base.nav.bash_doors, "the farm bashes, for contrast");
-    assert!(!go_config(&base, true).nav.bash_doors);
+    assert!(!go_config(&base).nav.bash_doors);
 }
 
 #[test]
@@ -237,7 +241,7 @@ fn go_keeps_the_profiles_other_nav_limits() {
         },
         ..Default::default()
     };
-    let cfg = go_config(&base, true);
+    let cfg = go_config(&base);
     assert_eq!(cfg.nav.step_timeout_ms, 4321);
     assert_eq!(cfg.interrupt_at_percent, 33);
 }
@@ -249,7 +253,7 @@ fn go_runs_without_a_time_budget() {
         max_seconds: 600,
         ..Default::default()
     };
-    assert_eq!(go_config(&base, true).max_seconds, 0);
+    assert_eq!(go_config(&base).max_seconds, 0);
 }
 
 // --- Phase::Done carries where it ended -------------------------------

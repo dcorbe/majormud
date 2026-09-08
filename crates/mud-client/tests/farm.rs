@@ -11,7 +11,7 @@ use mud_client::events::{Actor, Event, RoomView};
 use mud_client::farm::{
     ACK_TIMEOUT, FarmConfig, FarmError, FarmGuard, FarmPlan, FarmStats, Gate, HealWatch,
     LOOT_TRIES, StopState, Verdict, casts_need_rebuild, check_departure_mark,
-    fight_switch_after_refresh, is_player_death, parse_health, parse_mana, parse_room_id,
+    fights_on_the_way, is_player_death, parse_health, parse_mana, parse_room_id,
 };
 use mud_client::nav::{Interrupt, TravelGuard};
 use mud_client::session::Switch;
@@ -2922,6 +2922,16 @@ fn the_interrupt_mark_is_checked_against_the_bots_mark_when_the_farm_sets_none()
     assert!(check_departure_mark(&cfg, &off).is_ok());
 }
 
+/// With resting off there is no gate to sit under: the walk sets off
+/// whatever the pools say, so the interrupt mark has nothing to be
+/// above.
+#[test]
+fn the_interrupt_mark_is_unchecked_when_resting_is_off() {
+    let cfg = FarmConfig { depart_at_percent: None, interrupt_at_percent: 96, ..FarmConfig::default() };
+    let bot = BotConfig { auto_rest: false, rest_until_percent: 80, ..BotConfig::default() };
+    assert!(check_departure_mark(&cfg, &bot).is_ok());
+}
+
 /// The stop verdict sweeps through the bot's ignore list: a floor that
 /// holds only ignored coins is finished, not `Loot`.
 #[test]
@@ -2969,38 +2979,18 @@ fn farm_config_defaults_max_rest_seconds_to_180() {
     assert_eq!(FarmConfig::default().max_rest_seconds, 180);
 }
 
-/// A reload that did not touch the travel fight key says nothing about
-/// the switch, so a `/bot` toggle made by hand survives a `/set` of
-/// anything else.
+/// The travel switch every leg reads: fights on the way need both the
+/// farm's say-so and a bot that fights at all. `/bot` off turns the
+/// bot's combat off, and with it the walk's.
 #[test]
-fn an_unchanged_fight_key_leaves_the_travel_switch_alone() {
-    let before = FarmConfig {
-        fight_while_travelling: true,
-        stop_seconds: 10,
-        ..FarmConfig::default()
-    };
-    let after = FarmConfig {
-        stop_seconds: 99,
-        ..before.clone()
-    };
-    assert_eq!(fight_switch_after_refresh(&before, &after), None);
-    assert_eq!(fight_switch_after_refresh(&before, &before), None);
-}
-
-/// A reload that moved the key speaks for the switch, in both
-/// directions.
-#[test]
-fn a_flipped_fight_key_re_asserts_the_travel_switch() {
-    let on = FarmConfig {
-        fight_while_travelling: true,
-        ..FarmConfig::default()
-    };
-    let off = FarmConfig {
-        fight_while_travelling: false,
-        ..FarmConfig::default()
-    };
-    assert_eq!(fight_switch_after_refresh(&on, &off), Some(false));
-    assert_eq!(fight_switch_after_refresh(&off, &on), Some(true));
+fn the_walk_fights_only_when_both_the_farm_and_the_bot_say_so() {
+    let on = FarmConfig { fight_while_travelling: true, ..FarmConfig::default() };
+    let off = FarmConfig { fight_while_travelling: false, ..FarmConfig::default() };
+    let fighter = BotConfig { auto_combat: true, ..BotConfig::default() };
+    let pacifist = BotConfig { auto_combat: false, ..BotConfig::default() };
+    assert!(fights_on_the_way(&fighter, &on));
+    assert!(!fights_on_the_way(&fighter, &off));
+    assert!(!fights_on_the_way(&pacifist, &on));
 }
 
 /// The cast timers are live state. A reload that left the spell choices

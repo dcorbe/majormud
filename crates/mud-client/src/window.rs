@@ -675,6 +675,10 @@ async fn play(
             Err(why) => assist_refused = Some(why),
         }
     }
+    // `/bot` is one switch over every mode: the assist beside the
+    // operator, and every job's own policies through its live settings.
+    // The session carries it so a job hears the press.
+    session.set_bot_on(assist.is_some());
     // The maintained room model, running in SHADOW: it decides nothing
     // here, it only records where it and the board disagree. The farm
     // builds its own per stop (`farm.rs`), so this one exists for the
@@ -1030,14 +1034,17 @@ async fn play(
                                                     .and_then(|f| g.route(f, to))
                                                     .map(|r| format!(", {} steps", r.len()))
                                                     .unwrap_or_default();
-                                                let how = if assist.is_some() { "walking" } else { "running" };
+                                                // The same test the job makes at its start.
+                                                let table = session.profile().farm.clone().unwrap_or_default();
+                                                let fights = session.bot_on()
+                                                    && crate::farm::fights_on_the_way(&assist_config, &table);
+                                                let how = if fights { "walking" } else { "running" };
                                                 match start_go(
                                                     session.clone(),
                                                     g.clone(),
                                                     here.confirmed(),
                                                     to,
                                                     assist_config.clone(),
-                                                    assist.is_some(),
                                                     notices.clone(),
                                                 ) {
                                                     Err(e) => w.note(&format!("-- {e} --")),
@@ -1113,7 +1120,6 @@ async fn play(
                                             g.clone(),
                                             here.confirmed(),
                                             assist_config.clone(),
-                                            assist.is_some(),
                                             notices.clone(),
                                         ) {
                                             Err(e) => w.note(&format!("-- {e} --")),
@@ -1337,7 +1343,6 @@ async fn play(
                                                                 here.confirmed(),
                                                                 to,
                                                                 assist_config.clone(),
-                                                                assist.is_some(),
                                                                 notices.clone(),
                                                             ) {
                                                                 Err(e) => w.note(&format!("-- {e} --")),
@@ -1416,23 +1421,24 @@ async fn play(
                                         crate::farm::HealWatch::new(&assist_config, &crate::farm::FarmConfig::default());
                                     assist_book_seen = usize::MAX;
                                     // A running job owns the connection and
-                                    // never hears the assist, so the toggle
-                                    // reaches it the only way it can: the
-                                    // session's fight switch, which its
-                                    // travel guard reads at every decision.
-                                    // A walk already stopped to defend
-                                    // finishes that defence either way.
+                                    // never hears the assist, so the press
+                                    // reaches it through the session's
+                                    // switch, which its live settings
+                                    // follow: off turns every policy off at
+                                    // its next decision, on restores the
+                                    // profile's. A walk already stopped to
+                                    // defend finishes that defence either
+                                    // way.
+                                    session.set_bot_on(on);
                                     match (&job, on) {
                                         (Some(j), true) => {
-                                            session.travel_fights().set(true);
-                                            w.note(&format!("-- bot assist on: the {} fights what it meets from here (/bot to stop) --", j.what));
+                                            w.note(&format!("-- bot on: the {} runs the profile's policies from here (/bot to stop) --", j.what));
                                         }
                                         (Some(j), false) => {
-                                            session.travel_fights().set(false);
-                                            w.note(&format!("-- bot assist off: the {} walks past fights from here --", j.what));
+                                            w.note(&format!("-- bot off: the {} does nothing automatic from here --", j.what));
                                         }
-                                        (None, true) => w.note("-- bot assist on: fighting and looting beside you (/bot to stop) --"),
-                                        (None, false) => w.note("-- bot assist off --"),
+                                        (None, true) => w.note("-- bot on: fighting and looting beside you (/bot to stop) --"),
+                                        (None, false) => w.note("-- bot off --"),
                                     }
                                 }
                             }
