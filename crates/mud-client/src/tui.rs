@@ -1111,7 +1111,7 @@ pub fn help_text() -> &'static str {
 /bot                 toggle the fight/loot assist (walk vs. run for /go)
 /go <room>           walk to a room, by id (1/2324) or name
 /bank                walk to the nearest bank and deposit the purse
-/recover [room]      sneak to where you died, search once, take everything, run back here
+/recover [room]      sneak to the death room, search once, take everything, run back to the safe room (mark both on the map with S and D)
 /where               work out which room you're standing in
 /room [target]       what the world database knows about a room (default: here)
 /map [target]        draw the plane around a room (default: here)

@@ -557,6 +557,8 @@ On the map (`/map`):
 | `x` | wall the room under the cursor — it paints red |
 | `r` | leave the map and roam what the walls leave |
 | `c` | clear stops **and** walls |
+| `S` | mark the room under the cursor as the recovery's safe room; again clears it |
+| `D` | mark it as the death room; again clears it |
 
 Walls and loop stops coexist; `enter` still marks a stop, and you can
 build both in one sitting. A room marked as both paints as a wall,
@@ -622,19 +624,35 @@ with, so it says so rather than discarding the marking silently.
 
 | Command | What it does |
 |---|---|
-| `/recover [room]` | Sneak to a room, search it once, take everything listed, and run back here. Without a room, the room of the last logged death. |
+| `/recover [room]` | Sneak to a room, search it once, take everything listed, and run back to the safe room. Without a room, the death room marked on the map, else the room of the last logged death. |
 
 A full death drops everything the character carries into the room it died
-in. `/recover` goes and gets it back. The character stands in a safe room,
-the job sneaks to the death room one hop at a time, searches once, picks up
-everything the search lists, and runs back to the safe room. It never
-attacks. On the map, `R` with the cursor on a room does the same. On an
-empty cell it says there is no room under the cursor, and the offline
-`mmc map` says recover needs a connection.
+in. `/recover` goes and gets it back. The job runs to the safe room if the
+character is not already standing in it, sneaks from there to the death
+room one hop at a time, searches once, picks up everything the search
+lists, and runs back to the safe room. It never attacks. On the map, `R`
+with the cursor on a room does the same with that room as the death room.
+On an empty cell it says there is no room under the cursor, and the
+offline `mmc map` says recover needs a connection.
+
+The two rooms are marked on the map: `S` on the safe room, `D` on the
+death room, each a second time to clear. The map draws them as `S` and
+`D` in their own colours and names them in the panel. The marks live as
+long as the window does and are not saved. Without a safe mark the safe
+room is wherever the character stands. Without a death mark, and with no
+room typed, the target is the newest logged death. A typed room always
+wins. The note that starts the job names both rooms:
+`-- recovering from Keep [1/3] via the safe room Inner Ward [1/2] --`.
+
+The run to the safe room is the run home in reverse: unsneaked, through
+blows, and a move refused for combat is sent again once the round has
+passed. A run that stops short ends the job as `stopped at` that room
+with nothing taken.
 
 The job refuses to start, and says why, when another job is running, when
-the character's position is not confirmed, when there is no route, or when
-the stat sheet says Stealth is 0. `/recover` with no room refuses as well
+the character's position is not confirmed, when there is no route to the
+safe room or from it to the death room, or when the stat sheet says
+Stealth is 0. `/recover` with no room refuses as well
 when the log holds no death with a room. `bot.auto_sneak` and `/bot` do not
 reach it: they say whether a walk sneaks on its own, and this sneak was
 asked for. With `/bot` off the job still sneaks in and runs home, and only

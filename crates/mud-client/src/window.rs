@@ -350,20 +350,25 @@ fn recover_to(
     session: Arc<Session>,
     g: Arc<crate::graph::RoomGraph>,
     here: Option<mud_core::content::RoomId>,
+    safe: Option<mud_core::content::RoomId>,
     to: mud_core::content::RoomId,
     notices: crate::farm::Notices,
 ) -> Option<Job> {
-    let name = g.room(to).map(|r| r.name.clone()).unwrap_or_default();
-    match start_recover(session, g, here, None, to, notices) {
+    let name = |id: mud_core::content::RoomId| {
+        format!("{} [{}/{}]", g.room(id).map(|r| r.name.clone()).unwrap_or_default(), id.map, id.room)
+    };
+    let via = match safe {
+        Some(safe) => format!(" via the safe room {}", name(safe)),
+        None => String::new(),
+    };
+    let note = format!("-- recovering from {}{via} (Ctrl-F to take over) --", name(to));
+    match start_recover(session, g, here, safe, to, notices) {
         Err(e) => {
             w.note(&format!("-- recover: {e} --"));
             None
         }
         Ok(started) => {
-            w.note(&format!(
-                "-- recovering from {name} [{}/{}] (Ctrl-F to take over) --",
-                to.map, to.room
-            ));
+            w.note(&note);
             Some(started)
         }
     }
@@ -688,6 +693,10 @@ async fn play(
     // `bot.max_hp` at zero. Asked at the loop head once the character
     // is in the realm, and applied to every rebuild of the config.
     let mut assist_vitals = AssistVitals::Unknown;
+    // The recovery's safe room and death room, marked on the map with S
+    // and D. Kept here so they outlive the map, and gone with the
+    // window: a mark is for the death it was made after.
+    let mut recover_marks = crate::recover::Marks::default();
     // `/bot` is one switch over every mode: the assist beside the
     // operator, and every job's own policies through its live settings.
     // The session carries it so a job hears the press.
@@ -1157,7 +1166,7 @@ async fn play(
                                                 g,
                                                 here.confirmed(),
                                                 target.as_deref(),
-                                                None,
+                                                recover_marks.death,
                                                 &session.character_name().unwrap_or_default(),
                                                 &crate::deathlog::path(),
                                             );
@@ -1169,6 +1178,7 @@ async fn play(
                                                         session.clone(),
                                                         g.clone(),
                                                         here.confirmed(),
+                                                        recover_marks.safe,
                                                         to,
                                                         notices.clone(),
                                                     ) {
@@ -1259,7 +1269,8 @@ async fn play(
                                                     ..Default::default()
                                                 },
                                                 (cols as usize, rows as usize),
-                                            );
+                                            )
+                                            .with_recover_marks(recover_marks);
                                             // What the assist refused while the
                                             // map had the terminal. Collected
                                             // rather than printed. The screen
@@ -1328,6 +1339,10 @@ async fn play(
                                             // keystroke the next time the map opens.
                                             while w.keys.try_recv().is_ok() {}
                                             w.takeover(false);
+                                            // Whatever was marked while the map
+                                            // was open, for the next /recover and
+                                            // the next map.
+                                            recover_marks = view.recover_marks();
                                             // The screen is the window's again.
                                             for why in refused_under_map {
                                                 w.note(&format!("-- {why} --"));
@@ -1443,6 +1458,7 @@ async fn play(
                                                                 session.clone(),
                                                                 g.clone(),
                                                                 here.confirmed(),
+                                                                recover_marks.safe,
                                                                 to,
                                                                 notices.clone(),
                                                             ) {

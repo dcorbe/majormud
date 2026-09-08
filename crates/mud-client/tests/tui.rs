@@ -1470,7 +1470,7 @@ async fn every_job_start_refuses_without_a_name() {
         )
         .err(),
         start_bank(session.clone(), graph.clone(), Some(here), bot, quiet()).err(),
-        start_recover(session.clone(), graph.clone(), Some(here), here, quiet()).err(),
+        start_recover(session.clone(), graph.clone(), Some(here), None, here, quiet()).err(),
         start_where(session.clone(), graph.clone(), Some(here)).err(),
     ];
     for refusal in refusals {
@@ -1504,7 +1504,7 @@ async fn recover_refuses_a_character_that_cannot_sneak() {
             ..Default::default()
         },
     )]));
-    let why = start_recover(session, graph, Some(here), here, quiet())
+    let why = start_recover(session, graph, Some(here), None, here, quiet())
         .err()
         .expect("a job started for a character that cannot sneak");
     assert!(why.contains("Stealth is 0"), "{why}");
@@ -1872,7 +1872,7 @@ async fn the_bot_switch_does_not_refuse_a_recovery() {
             ..Default::default()
         },
     )]));
-    let why = start_recover(session, graph, Some(here), here, quiet())
+    let why = start_recover(session, graph, Some(here), None, here, quiet())
         .err()
         .expect("the banner board's sheet says Stealth is 0");
     assert!(why.contains("Stealth is 0"), "{why}");

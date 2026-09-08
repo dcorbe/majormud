@@ -428,6 +428,7 @@ fn room_name(graph: &RoomGraph, id: RoomId) -> String {
 /// `from`, which walks the character a few rooms to tell the candidates
 /// apart and makes the room it settles on the safe room. That happens
 /// before any light, buff or sneak.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_recover(
     session: &Session,
     graph: Arc<RoomGraph>,
