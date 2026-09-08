@@ -236,12 +236,6 @@ pub fn refusal(
     if session.capabilities().stealth == 0 {
         return Err("cannot sneak: the sheet says Stealth is 0".into());
     }
-    let sneaks = session.profile().bot.as_ref().is_none_or(|b| b.auto_sneak);
-    if !sneaks {
-        return Err(
-            "bot.auto_sneak is off, and a recovery is a sneak: /set bot.auto_sneak true".into(),
-        );
-    }
     if graph.room(target).is_none() {
         return Err(format!("no such room {}/{}", target.map, target.room));
     }
@@ -263,9 +257,10 @@ pub fn refusal(
 /// spent on nothing, so the walk in never stops to swing, and doors stay
 /// unbashed because a corpse run is quiet.
 ///
-/// `bot.auto_sneak` is left as the profile has it. [`refusal`] reads the
-/// same key off the same profile, and a job that forced it on would
-/// start on a promise the refusal never made.
+/// `bot.auto_sneak` and the `/bot` switch say whether a walk arms a
+/// sneak on its own. Neither reaches a recovery: the operator asked for
+/// the sneak by name, so [`Navs::build`] arms it whatever they say, and
+/// [`refusal`] asks only whether the character can sneak at all.
 ///
 /// One function so the window's initial pair and the reload that follows
 /// a `/set` cannot drift apart.
@@ -327,10 +322,19 @@ impl Navs {
         clock: &crate::world::RoundClock,
     ) -> Navs {
         let caps = session.capabilities();
-        let cfg = crate::farm::nav_config(&live.bot, &live.farm);
-        let sneaker = Navigator::new(graph.clone(), cfg.clone())
-            .with_capabilities(caps.clone())
-            .with_stealth(crate::farm::stealth_buffs(session), clock.clone());
+        let cfg = live.farm.nav.clone();
+        // The sneak is the job, so it is armed whatever `bot.auto_sneak`
+        // or the bot switch say. Those two govern walks that sneak on
+        // their own, and this one was asked for.
+        let sneaker = Navigator::new(
+            graph.clone(),
+            crate::nav::NavConfig {
+                sneak: true,
+                ..cfg.clone()
+            },
+        )
+        .with_capabilities(caps.clone())
+        .with_stealth(crate::farm::stealth_buffs(session), clock.clone());
         let runner = Navigator::new(
             graph.clone(),
             crate::nav::NavConfig {

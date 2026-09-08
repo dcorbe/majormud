@@ -187,6 +187,22 @@ async fn scripted_board(
 }
 
 async fn session_for(addr: std::net::SocketAddr) -> Session {
+    session_as(addr, profile_bot()).await
+}
+
+/// The profile's bot table: known maxima, so the job never asks
+/// `health` and every percent mark is against 30.
+fn profile_bot() -> BotConfig {
+    BotConfig {
+        max_hp: 30,
+        minor_heal_at_percent: 70,
+        ..BotConfig::default()
+    }
+}
+
+/// A session whose profile carries `bot`, which is what the job's
+/// refusal reads.
+async fn session_as(addr: std::net::SocketAddr, bot: BotConfig) -> Session {
     let profile = Profile {
         target: mud_client::dialect::Target::MbbsEmu,
         host: addr.ip().to_string(),
@@ -194,13 +210,7 @@ async fn session_for(addr: std::net::SocketAddr) -> Session {
         username: "Beef".into(),
         password: "testpass".into(),
         pace_ms: Some(0),
-        // Known maxima, so the job never asks `health` and every
-        // percent mark is against 30.
-        bot: Some(BotConfig {
-            max_hp: 30,
-            minor_heal_at_percent: 70,
-            ..BotConfig::default()
-        }),
+        bot: Some(bot),
         farm: None,
         ..Default::default()
     };
@@ -343,15 +353,30 @@ async fn recover_with(
     script: Vec<(&'static str, String)>,
     content: Option<Content>,
 ) -> (Result<RecoverEnd, FarmError>, Vec<String>) {
+    recover_as(graph, script, content, profile_bot(), settings(), true).await
+}
+
+/// A run with everything the job reads chosen by the test: the profile's
+/// bot table the refusal reads, the live settings the walk reads, and
+/// the session's bot switch.
+async fn recover_as(
+    graph: Arc<RoomGraph>,
+    script: Vec<(&'static str, String)>,
+    content: Option<Content>,
+    profile_bot: BotConfig,
+    live: Live,
+    bot_on: bool,
+) -> (Result<RecoverEnd, FarmError>, Vec<String>) {
     let (addr, received) = scripted_board(script).await;
-    let session = session_for(addr).await;
+    let session = session_as(addr, profile_bot).await;
+    session.set_bot_on(bot_on);
     probe_sheet(&session, None).await;
     if let Some(content) = content {
         session.set_content(Arc::new(content));
     }
     let out = tokio::time::timeout(
         Duration::from_secs(60),
-        run_recover(&session, graph, START, DEATH, settings(), None, &quiet()),
+        run_recover(&session, graph, START, DEATH, live, None, &quiet()),
     )
     .await
     .expect("run_recover should finish, not hang");
@@ -394,6 +419,63 @@ async fn stealth_zero_is_refused_before_anything_is_sent() {
     };
     assert!(why.contains("Stealth is 0"), "{why}");
     assert!(received.lock().unwrap().is_empty(), "nothing may be sent");
+}
+
+/// `bot.auto_sneak` off is the operator saying no walk arms a sneak on
+/// its own. A recovery is a sneak the operator asked for by name, so it
+/// is not refused for the key, and it arms one anyway.
+#[tokio::test]
+async fn a_recovery_sneaks_with_auto_sneak_off() {
+    let mut script = opening();
+    script.push(("n", format!("\r\nn{}", block("Inner Ward", "north south"))));
+    script.push(("s", format!("\r\ns{}", block("Guard Post", "north"))));
+    let (bot, farm) = tables();
+    let live = Live::fixed(BotConfig { auto_sneak: false, ..bot }, farm);
+    let profile_bot = BotConfig { auto_sneak: false, ..profile_bot() };
+    let (out, log) = recover_as(corridor(0), script, None, profile_bot, live, true).await;
+    let end = out.expect("a recovery is a sneak whatever auto_sneak says");
+    assert_eq!(
+        end,
+        RecoverEnd::Home {
+            at: START,
+            why: HomeWhy::Broke {
+                at: MIDWAY,
+                name: "Inner Ward".into()
+            },
+            haul: Default::default(),
+        },
+        "log: {log:?}"
+    );
+    assert_eq!(count(&log, "sneak"), 1, "the walk in arms: {log:?}");
+}
+
+/// `/bot` off turns off everything automatic, and a recovery is not
+/// automatic: the operator typed it. The job still arms its sneak, still
+/// walks, and still comes home. What the switch takes away is the
+/// profile's buffs before the walk, which these tables never had.
+#[tokio::test]
+async fn a_recovery_runs_with_the_bot_off() {
+    let mut script = opening();
+    script.push(("n", format!("\r\nn{}", block("Inner Ward", "north south"))));
+    script.push(("s", format!("\r\ns{}", block("Guard Post", "north"))));
+    let (bot, farm) = tables();
+    let (_keep, off) = tokio::sync::watch::channel(false);
+    let live = Live::fixed(bot, farm).switched(off);
+    let (out, log) = recover_as(corridor(0), script, None, profile_bot(), live, false).await;
+    let end = out.expect("a recovery runs with the bot off");
+    assert_eq!(
+        end,
+        RecoverEnd::Home {
+            at: START,
+            why: HomeWhy::Broke {
+                at: MIDWAY,
+                name: "Inner Ward".into()
+            },
+            haul: Default::default(),
+        },
+        "log: {log:?}"
+    );
+    assert_eq!(count(&log, "sneak"), 1, "the walk in arms: {log:?}");
 }
 
 // ---------------------------------------------------------- the walk in

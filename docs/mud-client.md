@@ -589,9 +589,12 @@ empty cell it says there is no room under the cursor, and the offline
 `mmc map` says recover needs a connection.
 
 The job refuses to start, and says why, when another job is running, when
-the character's position is not confirmed, when there is no route, when the
-stat sheet says Stealth is 0, or when `bot.auto_sneak` is off. `/recover`
-with no room refuses as well when the log holds no death with a room.
+the character's position is not confirmed, when there is no route, or when
+the stat sheet says Stealth is 0. `/recover` with no room refuses as well
+when the log holds no death with a room. `bot.auto_sneak` and `/bot` do not
+reach it: they say whether a walk sneaks on its own, and this sneak was
+asked for. With `/bot` off the job still sneaks in and runs home, and only
+the buffs from `bot.buffs` are skipped.
 
 Before the sneak it lights up if the route or the death room is dark, and
 casts the buffs in `bot.buffs`. Both break a sneak, so both come first. The

@@ -232,7 +232,6 @@ fn the_recovery_config_takes_the_fighting_out_of_a_walk() {
     assert!(!bot.auto_combat, "a recovery never swings");
     assert!(!bot.auto_flee, "the job turns for home itself");
     assert!(!bot.auto_get, "the sweep does the taking");
-    assert!(bot.auto_sneak, "auto_sneak is the operator's, and refusal reads it");
     assert!(!farm.fight_while_travelling, "the walk in never stops to fight");
     assert_eq!(farm.interrupt_at_percent, 0);
     assert!(!farm.nav.bash_doors, "a corpse run is quiet");

@@ -1834,3 +1834,37 @@ async fn a_window_opened_from_the_lobby_records_the_capture() {
     assert_eq!(front.active(), 2, "the connect opened a window");
     assert!(raw.exists(), "the capture followed the window opened from the lobby");
 }
+
+/// `/bot` off is not a reason to refuse: the operator typed the
+/// recovery, so the sneak is theirs and not the bot's. The refusal this
+/// session earns is the sheet's, since the banner board has no stat
+/// sheet and Stealth reads 0.
+#[tokio::test]
+async fn the_bot_switch_does_not_refuse_a_recovery() {
+    use mud_client::graph::{GraphRoom, RoomGraph};
+    use mud_client::tui::start_recover;
+    use std::sync::Arc;
+
+    let addr = banner_board().await;
+    let profile = Profile {
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        username: "dan".into(),
+        ..Default::default()
+    };
+    let session = Arc::new(Session::connect(&profile, None).await.unwrap());
+    session.set_bot_on(false);
+    let here = mud_core::content::RoomId { map: 1, room: 1 };
+    let graph = Arc::new(RoomGraph::from_rooms(vec![(
+        here,
+        GraphRoom {
+            name: "Home".into(),
+            ..Default::default()
+        },
+    )]));
+    let why = start_recover(session, graph, Some(here), here, quiet())
+        .err()
+        .expect("the banner board's sheet says Stealth is 0");
+    assert!(why.contains("Stealth is 0"), "{why}");
+    assert!(!why.contains("bot"), "the switch is no refusal: {why}");
+}
