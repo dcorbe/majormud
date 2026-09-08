@@ -31,6 +31,7 @@ pub mod profile;
 pub mod progress;
 pub mod purse;
 pub mod puzzle;
+pub mod recover;
 pub mod roam;
 pub mod screen;
 pub mod script;
