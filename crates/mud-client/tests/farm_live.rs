@@ -17,7 +17,8 @@ use std::time::Duration;
 
 use mud_client::bot::BotConfig;
 use mud_client::dialect::{self, Target};
-use mud_client::farm::{FarmConfig, FarmEnd, FarmError, FarmPlan, FarmStats, Live, run_farm};
+use mud_client::farm::{FarmConfig, FarmEnd, FarmError, FarmPlan, FarmStats, run_farm};
+use mud_client::live::Live;
 use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::profile::Profile;
 use mud_client::session::Session;

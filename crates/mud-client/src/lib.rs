@@ -19,6 +19,7 @@ pub mod farm;
 pub mod go;
 pub mod graph;
 pub mod items;
+pub mod live;
 pub mod loops;
 pub mod lost;
 pub mod map;

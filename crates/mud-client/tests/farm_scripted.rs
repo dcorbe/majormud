@@ -20,7 +20,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use mud_client::bot::BotConfig;
-use mud_client::farm::{Derive, FarmConfig, FarmEnd, FarmError, FarmPlan, Live, run_farm};
+use mud_client::farm::{FarmConfig, FarmEnd, FarmError, FarmPlan, run_farm};
+use mud_client::live::{Derive, Live};
 use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::profile::Profile;
 use mud_client::session::Session;

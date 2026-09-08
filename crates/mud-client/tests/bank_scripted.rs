@@ -11,7 +11,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use mud_client::bank::{ErrandEnd, run_bank};
 use mud_client::bot::BotConfig;
-use mud_client::farm::{FarmConfig, Live, probe_sheet};
+use mud_client::farm::{FarmConfig, probe_sheet};
+use mud_client::live::Live;
 use mud_client::go::go_config;
 use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::profile::Profile;

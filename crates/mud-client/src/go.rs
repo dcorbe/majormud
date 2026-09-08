@@ -25,7 +25,8 @@ use std::time::Instant;
 
 use mud_core::content::RoomId;
 
-use crate::farm::{FarmConfig, FarmError, FarmStats, LegEnd, Live};
+use crate::farm::{FarmConfig, FarmError, FarmStats, LegEnd};
+use crate::live::Live;
 use crate::graph::RoomGraph;
 
 /// How many candidates an ambiguous name lists before giving up on

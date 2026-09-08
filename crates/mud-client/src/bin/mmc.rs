@@ -565,7 +565,7 @@ fn farm_command(
                 &session,
                 graph.clone(),
                 &plan,
-                mud_client::farm::Live::fixed(bot_config.clone(), farm_config.clone()),
+                mud_client::live::Live::fixed(bot_config.clone(), farm_config.clone()),
                 Some(&phase_tx),
                 &notices,
             ) => Some(r),

@@ -25,7 +25,8 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use mud_client::farm::{FarmConfig, Live};
+use mud_client::farm::FarmConfig;
+use mud_client::live::Live;
 use mud_client::go::{GoEnd, go_config, run_go};
 use mud_client::graph::{Capabilities, ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::nav::{NavConfig, Navigator};

@@ -12,7 +12,8 @@
 use std::sync::Arc;
 
 use mud_client::dialect::{self, Target};
-use mud_client::farm::{FarmConfig, Live};
+use mud_client::farm::FarmConfig;
+use mud_client::live::Live;
 use mud_client::go::{GoEnd, resolve, run_go};
 use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::profile::Profile;

@@ -18,7 +18,8 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use mud_client::bot::BotConfig;
-use mud_client::farm::{Derive, FarmConfig, FarmError, Live, probe_sheet};
+use mud_client::farm::{FarmConfig, FarmError, probe_sheet};
+use mud_client::live::{Derive, Live};
 use mud_client::go::{GoEnd, go_config, run_go};
 use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::profile::Profile;

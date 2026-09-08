@@ -1879,7 +1879,7 @@ pub fn start_farm(
     // session for the operator's keystrokes; the runner it is about to
     // hand the connection to cycled at loopback echo speed without this
     // (~40 look+attack commands in 400ms, run4 2026-08-01).
-    let live = crate::farm::Live::new(
+    let live = crate::live::Live::new(
         &session,
         "farm",
         notices.clone(),
@@ -1925,7 +1925,7 @@ pub fn start_roam(
     )?;
     let plan = crate::farm::FarmPlan::roaming(start, walls, &graph)?;
     let bot = profile.bot.clone().unwrap_or_default();
-    let live = crate::farm::Live::new(
+    let live = crate::live::Live::new(
         &session,
         "roam",
         notices.clone(),
@@ -1947,7 +1947,7 @@ fn spawn_run(
     session: Arc<Session>,
     graph: Arc<crate::graph::RoomGraph>,
     plan: crate::farm::FarmPlan,
-    live: crate::farm::Live,
+    live: crate::live::Live,
     what: &'static str,
     notices: crate::farm::Notices,
 ) -> Job {
@@ -2054,7 +2054,7 @@ pub fn start_go(
     // `play` unpaced this session for the operator's keystrokes.
     session.set_pace(profile.pace());
     let (tx, rx) = tokio::sync::watch::channel(crate::farm::Phase::default());
-    let live = crate::farm::Live::new(
+    let live = crate::live::Live::new(
         &session,
         "go",
         notices.clone(),
@@ -2132,7 +2132,7 @@ pub fn start_recover(
     // operator edits the profile mid-run. Both are `recover_config`, so
     // what the job starts under and what a `/set` gives it cannot drift.
     let (bot, cfg) = crate::recover::recover_config(&session.profile());
-    let live = crate::farm::Live::new(
+    let live = crate::live::Live::new(
         &session,
         "recover",
         notices.clone(),
@@ -2198,7 +2198,7 @@ pub fn start_bank(
     let cfg = crate::go::go_config(&base, walking);
     session.set_pace(profile.pace());
     let (tx, rx) = tokio::sync::watch::channel(crate::farm::Phase::default());
-    let live = crate::farm::Live::new(
+    let live = crate::live::Live::new(
         &session,
         "bank",
         notices.clone(),
