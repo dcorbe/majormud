@@ -45,6 +45,7 @@ pub const KEYS: &[&str] = &[
     "bot.meditate",
     "bot.flee_at_percent",
     "bot.rest_command",
+    "bot.attack_command",
     "bot.minor_heal_spell",
     "bot.major_heal_spell",
     "bot.hp_regen_spell",

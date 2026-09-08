@@ -64,6 +64,7 @@ rest_until_percent = 95    # a rest or a meditation is over at this
 flee_at_percent = 20       # run below this
 meditate = false           # send meditate for mana. A quest ability, so you say.
 rest_command = "rest"
+attack_command = "a"       # the fight's verb: a, pu or ju for a mystic, "cast lbol" for a caster
 minor_heal_spell = ""      # empty = the cheapest heal in the book
 major_heal_spell = ""      # empty = the dearest
 hp_regen_spell = ""        # a heal over time, cast between the two marks
@@ -104,6 +105,17 @@ applying a farm-tuned 2500ms to a human delays every command after the
 first in a burst by the full interval — 2.5 seconds per step when
 walking. If interactive play ever does trip the board's limit, the board
 says so and you can slow down.
+
+### `attack_command`
+
+The verb a fight opens and continues with, sent as it is with the
+target's noun after it. `a` swings. A mystic sets `pu` or `ju`. A caster
+who fights with magic sets the whole cast, `"cast lbol"`, and the bot
+sends `cast lbol rat`. The backstab opener is `bs` whatever this says,
+since it is the sneak that asked for it. The verb also reads the echo
+that tells the bot its target was gone before the swing: the board
+speaks a command it cannot resolve, and `You say "pu rat"` ends that
+fight the same way `You say "a rat"` did.
 
 ### `disable_evil_warnings`
 

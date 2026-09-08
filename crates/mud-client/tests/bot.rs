@@ -31,6 +31,24 @@ fn combat_bot() -> Bot {
     })
 }
 
+/// The verb is the profile's: a swing for most, a punch or a kick for a
+/// mystic, a spell for a caster who fights with magic. Sent as it is
+/// with the noun after it, and the speech echo that says the target was
+/// gone is read with the same verb.
+#[test]
+fn the_attack_verb_is_the_profiles() {
+    let mut bot = Bot::new(BotConfig {
+        auto_combat: true,
+        attack_command: "cast lbol".into(),
+        ..BotConfig::default()
+    });
+    assert_eq!(bot.on_event(&room(&["kobold thief"])), vec![BotAction::Send("cast lbol thief".into())]);
+    assert_eq!(bot.engaged(), Some("kobold thief"));
+    bot.on_event(&Event::Line("You say \"cast lbol thief\"".into()));
+    assert_eq!(bot.engaged(), None, "the echo as speech means the target was gone");
+    assert_eq!(BotConfig::default().attack_command, "a");
+}
+
 #[test]
 fn attacks_monster_on_sighting() {
     let mut bot = combat_bot();

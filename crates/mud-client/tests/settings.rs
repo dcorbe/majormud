@@ -576,6 +576,18 @@ fn bot_auto_sneak_and_auto_rest_are_keys_that_default_on() {
     assert!(!s.profile().bot.as_ref().unwrap().auto_sneak);
 }
 
+/// The attack verb is a key, `a` by default, so a mystic or a caster can
+/// fight with what their class fights with.
+#[test]
+fn bot_attack_command_is_a_key_that_defaults_to_a_swing() {
+    assert!(KEYS.contains(&"bot.attack_command"));
+    let s = Settings::default();
+    assert_eq!(s.value("bot.attack_command").as_deref(), Some("\"a\""));
+    let mut s = Settings::parse(COMMENTED).unwrap();
+    s.set("bot.attack_command", "pu").unwrap();
+    assert_eq!(s.profile().bot.as_ref().unwrap().attack_command, "pu");
+}
+
 /// Hiding when idle is a key too, off by default: it is the choice
 /// between staying hidden in place and sneaking into the next room.
 #[test]

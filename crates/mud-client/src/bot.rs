@@ -266,6 +266,13 @@ pub struct BotConfig {
     /// `rest_at_percent`.
     #[serde(alias = "heal_command")]
     pub rest_command: String,
+    /// The verb a fight opens and continues with, sent as it is with
+    /// the target's noun after it: `a` for a swing, `pu` or `ju` for a
+    /// mystic, `cast lbol` for a caster who fights with magic. A
+    /// backstab opener is `bs` regardless, since it is the sneak that
+    /// asked for it.
+    #[serde(default = "default_attack_command")]
+    pub attack_command: String,
     /// The minor heal, by the book's name. Empty means the cheapest
     /// heal in the book.
     pub minor_heal_spell: String,
@@ -440,6 +447,10 @@ impl BotConfig {
     }
 }
 
+fn default_attack_command() -> String {
+    "a".into()
+}
+
 impl BotConfig {
     /// The table with every automatic policy off. What a job runs under
     /// while `/bot` is off: no fighting, healing, resting, looting, key
@@ -484,6 +495,7 @@ impl Default for BotConfig {
             meditate: false,
             flee_at_percent: 20,
             rest_command: "rest".into(),
+            attack_command: default_attack_command(),
             minor_heal_spell: String::new(),
             major_heal_spell: String::new(),
             hp_regen_spell: String::new(),
@@ -1270,7 +1282,7 @@ impl Bot {
             Some(Opener::Backstab { restore: None }) => {
                 vec![BotAction::Send(format!("bs {target}"))]
             }
-            None => vec![BotAction::Send(format!("a {target}"))],
+            None => vec![BotAction::Send(format!("{} {target}", self.config.attack_command))],
         }
     }
 
@@ -1487,7 +1499,7 @@ impl Bot {
         // ever arrive. Only the echo of the exact attack we have in
         // flight counts — anything else said is just words.
         if let Some(noun) = self.engaged.as_deref().map(target_word)
-            && line == format!("You say \"a {noun}\"")
+            && line == format!("You say \"{} {noun}\"", self.config.attack_command)
         {
             self.engaged = None;
             self.quiet_prompts = 0;
