@@ -221,6 +221,7 @@ pub fn lobby_step(
         | KeyOutcome::ToggleAssist
         | KeyOutcome::Go { .. }
         | KeyOutcome::Bank
+        | KeyOutcome::Recover { .. }
         | KeyOutcome::Where
         | KeyOutcome::Room { .. }
         | KeyOutcome::Map { .. } => (
@@ -902,7 +903,7 @@ pub fn key_bytes(key: &KeyEvent) -> Option<Vec<u8>> {
 /// does not claim, or that `help_text` does not list, fails the test
 /// `every_verb_in_the_completion_list_is_claimed_and_in_help`.
 pub const VERBS: &[&str] = &[
-    "/quit", "/farm", "/loop", "/bot", "/go", "/bank", "/where", "/room", "/map", "/help",
+    "/quit", "/farm", "/loop", "/bot", "/go", "/bank", "/recover", "/where", "/room", "/map", "/help",
     "/set", "/unset", "/save", "/load", "/connect", "/disconnect", "/new", "/close", "/windows",
 ];
 
@@ -968,6 +969,12 @@ pub enum KeyOutcome {
     },
     /// Walk to the bank and deposit above the keep floor, now.
     Bank,
+    /// Sneak to a room, search it once, take everything listed, and run
+    /// back here. `None` means the room of the character's last logged
+    /// death. Unparsed for the same reason `Go` is.
+    Recover {
+        target: Option<String>,
+    },
     /// Print what the world database knows about a room. `None` means the
     /// one the character is standing in — unlike `/go`, a bare `/room` is
     /// the commonest form rather than a mistake.
@@ -1037,6 +1044,9 @@ pub fn slash(line: &str) -> Option<KeyOutcome> {
             target: rest.to_string(),
         }),
         "/bank" => Some(KeyOutcome::Bank),
+        "/recover" => Some(KeyOutcome::Recover {
+            target: (!rest.is_empty()).then(|| rest.to_string()),
+        }),
         "/where" => Some(KeyOutcome::Where),
         "/room" => Some(KeyOutcome::Room {
             target: (!rest.is_empty()).then(|| rest.to_string()),
@@ -1098,6 +1108,7 @@ pub fn help_text() -> &'static str {
 /bot                 toggle the fight/loot assist (walk vs. run for /go)
 /go <room>           walk to a room, by id (1/2324) or name
 /bank                walk to the nearest bank and deposit the purse
+/recover [room]      sneak to where you died, search once, take everything, run back here
 /where               work out which room you're standing in
 /room [target]       what the world database knows about a room (default: here)
 /map [target]        draw the plane around a room (default: here)
@@ -2095,6 +2106,76 @@ pub fn start_go(
         handle,
         phase: rx,
         what: "go",
+    })
+}
+
+/// `/recover`. The same job shape as `start_go`, ending in a
+/// `Phase::Done` that says what was taken and where the character is.
+///
+/// Refused outright when the character has no name, for the reason
+/// `start_go` gives, and when the job's own `refusal` finds a reason:
+/// no confirmed position, no stealth, `bot.auto_sneak` off, or no route. The
+/// refusal is read here, synchronously, so the operator sees it on the
+/// spot rather than as a failed phase a moment later.
+pub fn start_recover(
+    session: Arc<Session>,
+    graph: Arc<crate::graph::RoomGraph>,
+    here: Option<mud_core::content::RoomId>,
+    target: mud_core::content::RoomId,
+    notices: crate::farm::Notices,
+) -> Result<Job, String> {
+    needs_name(&session)?;
+    let from = crate::recover::refusal(&session, &graph, here, target)?;
+    // Automation goes back under flood control, exactly as a go does.
+    session.set_pace(session.profile().pace());
+    // The job's own settings, and the rule that rebuilds them when the
+    // operator edits the profile mid-run. Combat is off both ways round:
+    // the runner never swings, and the walk never stops to fight.
+    let derive: crate::farm::Derive = std::sync::Arc::new(move |p: &crate::profile::Profile| {
+        let base = p.farm.clone().unwrap_or_else(|| crate::farm::FarmConfig {
+            content: content_path(p),
+            ..Default::default()
+        });
+        let mut farm = crate::go::go_config(&base, false);
+        farm.interrupt_at_percent = 0;
+        farm.nav.bash_doors = false;
+        let mut bot = assist_config_for(p);
+        bot.auto_combat = false;
+        bot.auto_flee = false;
+        bot.auto_get = false;
+        (bot, farm)
+    });
+    let (bot, cfg) = derive(&session.profile());
+    let live = crate::farm::Live::new(&session, "recover", notices.clone(), bot, cfg, derive.clone());
+    let (tx, rx) = tokio::sync::watch::channel(crate::farm::Phase::default());
+    let handle = tokio::spawn(async move {
+        let end = match crate::recover::run_recover(
+            &session,
+            graph,
+            from,
+            target,
+            live,
+            Some(&tx),
+            &notices,
+        )
+        .await
+        {
+            Ok(end) => {
+                // What came back, one per line, so it can be checked
+                // against what was lost.
+                for item in &end.haul().taken {
+                    notices(&format!("recovered {item}"));
+                }
+                end.phase()
+            }
+            Err(e) => crate::farm::Phase::Failed { why: e.to_string() },
+        };
+        let _ = tx.send(end);
+    });
+    Ok(Job {
+        handle,
+        phase: rx,
+        what: "recover",
     })
 }
 

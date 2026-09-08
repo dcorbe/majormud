@@ -18,7 +18,7 @@ use crate::tui::{
     ContentCache, Job, KeyOutcome, LEVEL_POLL, LobbyStep, apply_settings, assist_config_for,
     assist_tick, content_path, describe_loops, finish_locator, handover_actions, help_text,
     here_or, import_loop, lobby_step, needs_name, new_assist, on_realm_entry, pace_on_change,
-    render_status, start_bank, start_farm, start_go, start_roam, start_where,
+    render_status, start_bank, start_farm, start_go, start_recover, start_roam, start_where,
 };
 
 /// A window's identity. Stable for its life, unlike its number, which
@@ -1030,6 +1030,56 @@ async fn play(
                                                 }
                                             }
                                         },
+                                    }
+                                }
+                            }
+                            KeyOutcome::Recover { target } => {
+                                if let Some(j) = job.as_ref() {
+                                    w.note(&format!("-- {} already running (Ctrl-F to take over) --", j.what));
+                                } else {
+                                    match graph.as_ref() {
+                                        None => w.note(&format!(
+                                            "-- recover: no room database at {} --",
+                                            world_path.display()
+                                        )),
+                                        Some(g) => {
+                                            // A named room, or the last logged death.
+                                            let to = match target {
+                                                Some(typed) => crate::go::resolve(g, here.confirmed(), &typed)
+                                                    .map_err(|r| r.lines().join("\n")),
+                                                None => {
+                                                    let name = session.character_name().unwrap_or_default();
+                                                    crate::deathlog::last(&name)
+                                                        .and_then(|d| d.room)
+                                                        .ok_or_else(|| "recover: no logged death with a room. /recover <room>".to_string())
+                                                }
+                                            };
+                                            match to {
+                                                Err(why) => w.note(&format!("-- {why} --")),
+                                                Ok(to) => {
+                                                    let name = g.room(to).map(|r| r.name.clone()).unwrap_or_default();
+                                                    match start_recover(
+                                                        session.clone(),
+                                                        g.clone(),
+                                                        here.confirmed(),
+                                                        to,
+                                                        notices.clone(),
+                                                    ) {
+                                                        Err(e) => w.note(&format!("-- recover: {e} --")),
+                                                        Ok(started) => {
+                                                            exp.reset();
+                                                            exp_since = std::time::Instant::now();
+                                                            w.note(&format!(
+                                                                "-- recovering from {name} [{}/{}] (Ctrl-F to take over) --",
+                                                                to.map, to.room
+                                                            ));
+                                                            phase_rx = Some(started.phase.clone());
+                                                            job = Some(started);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }

@@ -411,6 +411,23 @@ fn the_settings_verbs_parse() {
 }
 
 #[test]
+fn recover_parses_with_and_without_a_room() {
+    assert_eq!(slash("/recover"), Some(KeyOutcome::Recover { target: None }));
+    assert_eq!(
+        slash("/recover 1/2810"),
+        Some(KeyOutcome::Recover {
+            target: Some("1/2810".into())
+        })
+    );
+    assert_eq!(
+        slash("/recover Darkwood Forest"),
+        Some(KeyOutcome::Recover {
+            target: Some("Darkwood Forest".into())
+        })
+    );
+}
+
+#[test]
 fn every_verb_in_the_completion_list_is_claimed_and_in_help() {
     for verb in mud_client::tui::VERBS {
         assert!(slash(verb).is_some() || slash(&format!("{verb} x")).is_some(), "{verb} is not claimed");
@@ -1408,7 +1425,7 @@ fn a_missing_world_database_is_none_and_asked_again_next_time() {
 #[tokio::test]
 async fn every_job_start_refuses_without_a_name() {
     use mud_client::graph::{GraphRoom, RoomGraph};
-    use mud_client::tui::{start_bank, start_farm, start_go, start_roam, start_where};
+    use mud_client::tui::{start_bank, start_farm, start_go, start_recover, start_roam, start_where};
     use std::sync::Arc;
 
     let addr = banner_board().await;
@@ -1448,12 +1465,44 @@ async fn every_job_start_refuses_without_a_name() {
         )
         .err(),
         start_bank(session.clone(), graph.clone(), Some(here), bot, false, quiet()).err(),
+        start_recover(session.clone(), graph.clone(), Some(here), here, quiet()).err(),
         start_where(session.clone(), graph.clone(), Some(here)).err(),
     ];
     for refusal in refusals {
         let why = refusal.expect("a job started without a name");
         assert!(why.contains("no character name yet"), "{why}");
     }
+}
+
+/// With a name but no stealth, the job is refused before it spawns, so
+/// the operator reads the reason on the spot rather than as a failed
+/// phase.
+#[tokio::test]
+async fn recover_refuses_a_character_that_cannot_sneak() {
+    use mud_client::graph::{GraphRoom, RoomGraph};
+    use mud_client::tui::start_recover;
+    use std::sync::Arc;
+
+    let addr = banner_board().await;
+    let profile = Profile {
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        username: "dan".into(),
+        ..Default::default()
+    };
+    let session = Arc::new(Session::connect(&profile, None).await.unwrap());
+    let here = mud_core::content::RoomId { map: 1, room: 1 };
+    let graph = Arc::new(RoomGraph::from_rooms(vec![(
+        here,
+        GraphRoom {
+            name: "Home".into(),
+            ..Default::default()
+        },
+    )]));
+    let why = start_recover(session, graph, Some(here), here, quiet())
+        .err()
+        .expect("a job started for a character that cannot sneak");
+    assert!(why.contains("Stealth is 0"), "{why}");
 }
 
 #[test]
