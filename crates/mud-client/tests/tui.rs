@@ -516,10 +516,16 @@ fn a_fight_ending_pokes_a_look_so_the_next_monster_is_seen() {
     );
 }
 
-/// The runner's own believing rule: an unattributed block — somebody
-/// else's render, a stale answer — must not start a swing.
+/// A block that answers no command of ours is an arrival all the same:
+/// a party leader's move drags the character into the room and prints
+/// the block with nothing sent from this side. The farm's pump refuses
+/// unattributed blocks because it subscribes late and can see a render
+/// from before its own arrival; the assist reads one stream from
+/// connect, so every block it sees describes the room it is standing in.
+/// A follower that ignored these stood idle beside whatever the leader
+/// walked it into.
 #[test]
-fn an_unattributed_block_starts_nothing() {
+fn a_dragged_arrival_is_engaged() {
     let mut bot = assist_bot();
     let room = RoomView {
         name: "Dungeon, Entrance".into(),
@@ -528,7 +534,7 @@ fn an_unattributed_block_starts_nothing() {
     };
     assert_eq!(
         assist_actions(&mut bot, &unsolicited(Event::RoomSeen(room))),
-        Vec::<String>::new()
+        vec!["a rat".to_string()]
     );
 }
 

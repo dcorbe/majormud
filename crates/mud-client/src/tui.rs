@@ -1444,15 +1444,22 @@ pub fn assist_tick(
 /// The assist's reply to one correlated event: the bot's own decisions,
 /// plus the re-look the farm's pump would have made for it.
 ///
-/// Room blocks are believed under the runner's own rule (farm.rs
-/// `bot_sees`): only a block that answers a command — the operator's
-/// look or step included — reaches the bot, so a stale or foreign
-/// render cannot clear a latch or start a swing. And the board's own
-/// fight-over announcement pokes a `look`: a fight's end says nothing
-/// about who else is standing in the room, and an assist without the
-/// poke killed one monster of a pack and stopped (live, 2026-08-01).
-/// The poke's answer is attributed, names the survivors, and the next
-/// engage comes off it — never off the fight chatter.
+/// Every room block the character is standing in reaches the bot,
+/// answered or not. An unanswered block is how a party leader's move
+/// arrives: the leader steps, the follower is dragged, and the board
+/// prints the new room with nothing sent from this side. The farm's
+/// pump (farm.rs `bot_sees`) refuses unattributed blocks because it
+/// subscribes late and can see a render from before its own arrival;
+/// the assist reads one stream from connect, so that race does not
+/// exist here, and the rule cost a dragged character every fight.
+/// A peek is the one block that is not this room, and it is told apart
+/// by `elsewhere`, not by attribution.
+///
+/// The board's own fight-over announcement pokes a `look`: a fight's
+/// end says nothing about who else is standing in the room, and an
+/// assist without the poke killed one monster of a pack and stopped
+/// (live, 2026-08-01). The poke's answer names the survivors, and the
+/// next engage comes off it — never off the fight chatter.
 pub fn assist_actions(
     bot: &mut crate::bot::Bot,
     cor: &crate::correlate::Correlated,
@@ -1460,8 +1467,7 @@ pub fn assist_actions(
     // A `look <direction>` block names the neighbour's occupants, not
     // ours — feeding it to the bot is how an assist would attack a
     // monster standing in the room next door.
-    let sees = !matches!(cor.event, crate::events::Event::RoomSeen(_))
-        || (cor.answers.is_some() && !cor.elsewhere);
+    let sees = !matches!(cor.event, crate::events::Event::RoomSeen(_)) || !cor.elsewhere;
     let mut out: Vec<String> = if sees {
         bot.on_event(&cor.event)
             .into_iter()

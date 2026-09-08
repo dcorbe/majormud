@@ -444,6 +444,13 @@ meditates when `auto_rest` says so, casts heals when `auto_heal` does,
 and after a rest it hides when the sheet shows Stealth. Fleeing follows
 `auto_flee` as it does for a farm.
 
+The assist acts on every room block the character is standing in,
+whether or not the client asked for it. A party leader's move drags the
+character into the next room and prints the block with nothing sent from
+this side, and the assist engages what it finds there the same as after
+a step of its own. A `look <direction>` block is the one exception: it
+describes the neighbour, and the assist never fights the neighbour.
+
 A run still fights, and has to: the board answers a move with *"You may
 not enter that room while in combat"*, so a walk that would never fight
 is a walk that stays stuck wherever something picked a fight. What a run
