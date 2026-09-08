@@ -564,6 +564,79 @@ single room is allowed — that is a vigil.
 `mmc map` can mark walls but cannot roam: there is no connection to roam
 with, so it says so rather than discarding the marking silently.
 
+## Recovering gear
+
+| Command | What it does |
+|---|---|
+| `/recover [room]` | Sneak to a room, search it once, take everything listed, and run back here. Without a room, the room of the last logged death. |
+
+A full death drops everything the character carries into the room it died
+in. `/recover` goes and gets it back. The character stands in a safe room,
+the job sneaks to the death room one hop at a time, searches once, picks up
+everything the search lists, and runs back to the safe room. It never
+attacks. On the map, `R` with the cursor on a room does the same. On an
+empty cell it says there is no room under the cursor, and the offline
+`mmc map` says recover needs a connection.
+
+The job refuses to start, and says why, when another job is running, when
+the character's position is not confirmed, when there is no route, when the
+stat sheet says Stealth is 0, or when `bot.auto_sneak` is off.
+
+Before the sneak it lights up if the route or the death room is dark, and
+casts the buffs in `bot.buffs`. Both break a sneak, so both come first. The
+stealth spell the sheet found is cast by the navigator as part of arming.
+
+On the way in, a hop that arrives without the board's `Sneaking...` line is
+a break, and the job turns for home from that room without searching. A
+move the board refuses for combat is treated the same way.
+
+In the death room the job sends one bare `search`. A search the board
+never answers ends as `nothing there`, the same as an empty search. The
+floor is listed as `You notice ... here.`, and every entry is taken with
+one `get` each, gear first and coins last, including denominations in
+`bot.ignore_coins`. An entry the board says it does not see is dropped. An
+entry the board says nothing about is tried three times and dropped, since
+there is no wording for an item too heavy to lift. Every wait in the
+sweep, the search and each of an entry's three attempts, is bounded by
+`farm.nav.step_timeout_ms`, the same key that bounds a walk's steps. After
+every reply the job reads the prompt, and hitpoints under
+`bot.minor_heal_at_percent` end the sweep at once.
+
+The run home is unsneaked and does not stop for blows. Aggressive monsters
+acquire a target inside the combat round and skip a player who moved this
+round, so a character that keeps moving is neither acquired nor followed.
+
+The job ends the way a go does. The bar shows the reason, the window adopts
+the room, and the items taken are printed one per line:
+
+| ending | phase text |
+| --- | --- |
+| swept and home | `recovered 5 of 7 items and 2 coin piles` |
+| break on the way in | `sneak broke at 1/2810 Darkwood Forest, nothing taken` |
+| refused a move for combat | `attacked at 1/2810 Darkwood Forest, nothing taken` |
+| hurt mid sweep | `hurt under 70%, back with 3 of 7 items` |
+| empty search | `nothing there` |
+| walk home did not complete | `stopped at 1/2812 Darkwood Forest with 3 of 7 items` |
+| died | `died` |
+
+The bare search's item line is unverified on the live board. The first live
+run settles it.
+
+### The death log
+
+Every death writes one line to `~/.config/mmc/deaths.log`, beside the
+profiles, from hand play, under a job, and under the map alike. `mmc farm`
+writes it too. Append only. A line reads:
+
+    2026-09-07T14:42:07Z beef 1/2810 Darkwood Forest confirmed
+
+The character field is the name the stat sheet gave, or the profile's
+username before a sheet exists. The last word is `confirmed`, `stale` or
+`unknown`, and says how sure the client was of the room. A death with no
+known room writes `- - unknown` for the id, the name and the fix, so the
+death itself is not lost. `/recover` with no argument takes the newest
+line for the character that has a room.
+
 ## Live settings
 
 Every profile key can be read and changed from inside the client, the way
@@ -601,9 +674,10 @@ When a change takes effect:
   `farm.nav.*` and `bot.auto_sneak` reach a farm at its next leg, and
   reach a `/go` or a `/bank` only at the next command, because those two
   jobs build their navigator once.
-- Fixed at a job's start, so a change waits for the next `/farm`, `/go`
-  or `/bank`: the loop and its stops, `farm.start`, `farm.finish_at`,
-  `farm.circuit`, `farm.content`, and the go target.
+- Fixed at a job's start, so a change waits for the next `/farm`, `/go`,
+  `/bank` or `/recover`: the loop and its stops, `farm.start`,
+  `farm.finish_at`, `farm.circuit`, `farm.content`, the go target, and the
+  recover target and start room.
 - Connection keys apply at the next `/connect`.
 
 A refused value, a wrong type or a value the validator rejects, changes
