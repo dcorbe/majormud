@@ -182,10 +182,6 @@ pub fn last_in(path: &Path, character: &str) -> Option<Death> {
         .find(|d| d.character == character && d.room.is_some())
 }
 
-pub fn last(character: &str) -> Option<Death> {
-    last_in(&path(), character)
-}
-
 /// Sees a death exactly once.
 ///
 /// The board says it three ways: the prompt drops to zero hitpoints,
