@@ -1813,3 +1813,26 @@ fn a_save_onto_another_characters_profile_is_refused_at_the_keyboard() {
     assert_eq!(std::fs::read_to_string(dir.join("beef.toml")).unwrap(), "username = \"beef\"\n");
 }
 
+/// `mmc play --capture` without a profile starts in the lobby. The
+/// capture has to follow the first window opened from it, or the file
+/// is never written.
+#[tokio::test]
+async fn a_window_opened_from_the_lobby_records_the_capture() {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("tui").join("capture");
+    std::fs::create_dir_all(&dir).unwrap();
+    let raw = dir.join("lobby.raw");
+    let _ = std::fs::remove_file(&raw);
+    let addr = banner_board().await;
+    let (keys, key_rx) = tokio::sync::mpsc::unbounded_channel();
+    let capture = mud_client::session::Capture { raw: raw.clone(), timing: None };
+    let mut front = mud_client::tui::Front::new(Settings::default(), Some(capture), 80, 24, key_rx);
+    let mut out = Vec::new();
+    typed(&format!("/connect {}:{}", addr.ip(), addr.port()), &keys);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !raw.exists() && Instant::now() < deadline {
+        settle(&mut front, &mut out).await;
+    }
+    assert_eq!(front.active(), 2, "the connect opened a window");
+    assert!(raw.exists(), "the capture followed the window opened from the lobby");
+}
+

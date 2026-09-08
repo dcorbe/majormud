@@ -349,6 +349,10 @@ pub struct Front {
     front_rx: tokio::sync::mpsc::UnboundedReceiver<crate::window::FrontMsg>,
     key_rx: tokio::sync::mpsc::UnboundedReceiver<TermEvent>,
     cache: Arc<std::sync::Mutex<ContentCache>>,
+    /// `--capture`, until a window takes it. The first window opened
+    /// records, whether the profile named a host or the operator
+    /// connected from the lobby.
+    capture: Option<crate::session::Capture>,
 }
 
 enum Flow {
@@ -392,11 +396,12 @@ impl Front {
             front_rx,
             key_rx,
             cache: Arc::new(std::sync::Mutex::new(ContentCache::default())),
+            capture,
         };
         // Started with a profile that names a host: window 2, connected,
         // and the capture goes with it.
         if !front.lobby.profile().host.is_empty() {
-            let number = front.open(front.lobby.clone(), capture, None);
+            let number = front.open(front.lobby.clone(), None);
             front.switch(number);
         }
         front
@@ -467,12 +472,9 @@ impl Front {
         Ok(true)
     }
 
-    fn open(
-        &mut self,
-        settings: crate::settings::Settings,
-        capture: Option<crate::session::Capture>,
-        first: Option<KeyOutcome>,
-    ) -> usize {
+    /// Open a window on `settings`. The first one opened takes the
+    /// capture with it.
+    fn open(&mut self, settings: crate::settings::Settings, first: Option<KeyOutcome>) -> usize {
         let id = self.next_id;
         self.next_id += 1;
         let handle = crate::window::spawn(
@@ -482,7 +484,7 @@ impl Front {
             self.cols,
             self.cache.clone(),
             self.front_tx.clone(),
-            capture,
+            self.capture.take(),
             first,
         );
         self.windows.push(handle);
@@ -620,7 +622,7 @@ impl Front {
                 };
                 match settings {
                     Ok(s) => {
-                        let number = self.open(s, None, None);
+                        let number = self.open(s, None);
                         self.switch(number);
                     }
                     Err(e) => self.note(&format!("-- new: {e} --")),
@@ -673,7 +675,7 @@ impl Front {
                     // nowhere to dial.
                     if let KeyOutcome::Connect { target: Some(target) } = other {
                         let first = KeyOutcome::Connect { target: Some(target) };
-                        let number = self.open(self.lobby.detached(), None, Some(first));
+                        let number = self.open(self.lobby.detached(), Some(first));
                         self.switch(number);
                         return Flow::Continue;
                     }
@@ -687,7 +689,7 @@ impl Front {
                         self.log.note(&text);
                     }
                     if let LobbyStep::Connect = step {
-                        let number = self.open(self.lobby.detached(), None, None);
+                        let number = self.open(self.lobby.detached(), None);
                         self.switch(number);
                     }
                 } else if let Some(w) = self.active_window()
