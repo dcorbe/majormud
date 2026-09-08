@@ -34,6 +34,7 @@ pub const KEYS: &[&str] = &[
     "bot.auto_get",
     "bot.take_keys",
     "bot.auto_sneak",
+    "bot.auto_hide",
     "bot.ignore_coins",
     "bot.auto_flee",
     "bot.minor_heal_at_percent",

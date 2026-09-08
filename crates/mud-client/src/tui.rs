@@ -1373,7 +1373,7 @@ pub fn handle_key(
 /// stored one, and refreshes the hide flag on every tick.
 pub(crate) fn new_assist(session: &Session, cfg: &crate::bot::BotConfig) -> (crate::bot::Bot, crate::sheet::HealState) {
     let bot = crate::bot::Bot::new(cfg.clone())
-        .with_hide(session.capabilities().stealth > 0)
+        .with_stealth(session.capabilities().stealth > 0)
         .with_pack(session.pack_handle());
     (bot, crate::sheet::HealState::new(Vec::new()))
 }
@@ -1404,7 +1404,7 @@ pub fn assist_tick(
     now: std::time::Instant,
 ) -> Vec<String> {
     let Some(spells) = session.book_len() else { return Vec::new() };
-    bot.set_hide(session.capabilities().stealth > 0);
+    bot.set_stealth(session.capabilities().stealth > 0);
     // The assist is built before realm entry calls `set_content` and
     // hands the pack over, the same reason the hide flag is refreshed
     // here rather than trusted from the build.

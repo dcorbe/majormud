@@ -576,3 +576,15 @@ fn bot_auto_sneak_and_auto_rest_are_keys_that_default_on() {
     assert!(!s.profile().bot.as_ref().unwrap().auto_sneak);
 }
 
+/// Hiding when idle is a key too, off by default: it is the choice
+/// between staying hidden in place and sneaking into the next room.
+#[test]
+fn bot_auto_hide_is_a_key_that_defaults_off() {
+    assert!(KEYS.contains(&"bot.auto_hide"));
+    let s = Settings::default();
+    assert_eq!(s.value("bot.auto_hide").as_deref(), Some("false"));
+    let mut s = Settings::parse(COMMENTED).unwrap();
+    s.set("bot.auto_hide", "true").unwrap();
+    assert!(s.profile().bot.as_ref().unwrap().auto_hide);
+}
+

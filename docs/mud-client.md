@@ -53,7 +53,8 @@ auto_flee = true
 auto_get = true            # coins only; floor items are never announced
 take_keys = true           # keys the ring lacks; independent of auto_get
 auto_rest = true           # rest or meditate at the marks below; false never rests
-auto_sneak = true          # arm a sneak before walking; false never sneaks
+auto_sneak = true          # arm a sneak before walking, and when idle; false never sneaks
+auto_hide = false          # hide when idle instead of sneaking, and never backstab
 ignore_coins = ["copper"]  # denominations the sweep leaves on the floor
 minor_heal_at_percent = 70 # cast the minor heal below this; 0 = never
 major_heal_at_percent = 40 # cast the major heal below this; 0 = never
@@ -147,7 +148,8 @@ As health falls with the defaults:
 A rest or a meditation is over when the pools reach `rest_until_percent`,
 HP and mana for a rest, mana for a meditation. The board has no command
 to end one. The character stands on its next action, and with Stealth on
-the sheet the assist's next action is `hide`. The defaults are MudPlay's.
+the sheet the assist's next action is `hide` or `sneak`, whichever idle
+time is spent under. The defaults are MudPlay's.
 
 #### Why casting works mid-fight and resting does not
 
@@ -441,8 +443,21 @@ Whether a `/go` walks or runs comes from the same tables:
 
 The assist recovers by the same marks a farm does: it rests and
 meditates when `auto_rest` says so, casts heals when `auto_heal` does,
-and after a rest it hides when the sheet shows Stealth. Fleeing follows
-`auto_flee` as it does for a farm.
+and it keeps stealth up while idle when the sheet shows Stealth.
+Fleeing follows `auto_flee` as it does for a farm.
+
+Idle means standing, not resting, with nothing in the room to fight.
+Under `auto_hide` the assist sends `hide` whenever it finds itself idle
+and believes it is not hidden. Otherwise, with `auto_sneak` on, it sends
+`sneak`, so the next move goes unseen whether the character makes it or
+a party leader does. Both are beliefs: the board's own echo confirms an
+attempt, a named failure or a hard block clears it, any other send
+forgets it, and a room block forgets a hide and keeps a sneak only when
+the move printed "Sneaking...". A stealth command the board swallows
+without a word is tried again after three quiet prompts, and after
+three sends the assist stops until the situation changes: a new room, a
+recovery, or a command of its own. The idle sneak is bare. The stealth
+spell a walk casts before its sneak is not cast here.
 
 The assist acts on every room block the character is standing in,
 whether or not the client asked for it. A party leader's move drags the
@@ -719,8 +734,9 @@ either way.
 A `[bot]` table that left one of them out because off used to be the
 default has it on from here. `auto_heal = false` no longer stops the
 character resting, because `auto_rest` gates that on its own.
-`auto_rest` and `auto_sneak` are the two new switches. `/bot` turns every
-one of them off at once and back on, without touching the profile.
+`auto_rest` and `auto_sneak` are the two new switches, and `auto_hide`
+is a third, off by default. `/bot` turns every one of them off at once
+and back on, without touching the profile.
 
 ## The lobby
 

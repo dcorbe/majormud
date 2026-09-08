@@ -206,7 +206,16 @@ pub struct BotConfig {
     pub take_keys: bool,
     /// Arm a sneak before walking, when the character has any stealth.
     /// Off means no walk sneaks and no stealth spell is cast for one.
+    /// The assist reads it too: standing idle it keeps a sneak armed,
+    /// so the next move, its own or a party leader's, goes unseen, and
+    /// a room it sneaked into is opened with a backstab.
     pub auto_sneak: bool,
+    /// Hide when idle instead of sneaking, when the character has any
+    /// stealth. Off by default. On, the assist sends `hide` whenever
+    /// it finds itself standing idle, never sends `sneak`, and never
+    /// opens with a backstab: hidden in place is what was asked for.
+    #[serde(default)]
+    pub auto_hide: bool,
     /// Denominations the sweep leaves on the floor, named as `get`
     /// takes them: copper, silver, gold, platinum, runic. At higher
     /// levels a copper pile is not worth the send. Applies to every
@@ -434,7 +443,8 @@ impl BotConfig {
 impl BotConfig {
     /// The table with every automatic policy off. What a job runs under
     /// while `/bot` is off: no fighting, healing, resting, looting, key
-    /// taking, sneaking, fleeing or buffing, whatever the profile says.
+    /// taking, sneaking, hiding, fleeing or buffing, whatever the
+    /// profile says.
     /// The marks, the spell names, the ignore lists and the pools are
     /// choices rather than policies and stay, so the next press
     /// restores the table as it was.
@@ -446,6 +456,7 @@ impl BotConfig {
             auto_get: false,
             take_keys: false,
             auto_sneak: false,
+            auto_hide: false,
             auto_flee: false,
             buffs: Vec::new(),
             ..self.clone()
@@ -462,6 +473,7 @@ impl Default for BotConfig {
             auto_get: true,
             take_keys: true,
             auto_sneak: true,
+            auto_hide: false,
             ignore_coins: Vec::new(),
             auto_flee: true,
             minor_heal_at_percent: 70,
@@ -666,18 +678,31 @@ pub struct Bot {
     /// test can consult, the "log it as a correction" the plan calls
     /// for.
     backstab_corrections: u32,
-    /// Hide once a recovery is over. Set by the assist when the sheet
-    /// shows Stealth, never by a farm.
-    hide_when_idle: bool,
+    /// The character has Stealth on the sheet, so idle time is spent
+    /// hidden or sneaking (`auto_hide` says which). Set by the assist,
+    /// never by a farm: a farm's stops are not idle.
+    stealth: bool,
     /// The board answers a successful hide with silence, so this is a
     /// belief: set by `Attempting to hide...`, cleared by the noticed
-    /// failure wording and by any other send.
+    /// failure wording, by any room block (moving un-hides, and a look
+    /// only ever follows a send) and by any other send.
     hidden: bool,
-    /// A hide is out and the board has not moved on. Keeps the burst of
-    /// resting prompts around the echo from sending a second one.
-    hide_pending: bool,
-    /// Hides sent since the recovery ended, capped at three.
-    hide_tries: u32,
+    /// The same belief for sneak. Set by `Attempting to sneak...`,
+    /// which is also what a silently failed attempt prints, so the
+    /// move's own word outranks it: a block behind "Sneaking..." keeps
+    /// the belief and any other block drops it.
+    sneaking: bool,
+    /// "Sneaking..." has printed since the last room block: the move
+    /// that block describes was made sneaking. Consumed by the block.
+    sneak_held: bool,
+    /// Prompts left to wait on a hide or sneak that is out. The echo
+    /// clears it early. Counted down rather than held, because a
+    /// stealth command sent too fast behind another is swallowed by the
+    /// board without a word, and a flag would then wait forever.
+    stealth_pending: u32,
+    /// Stealth commands sent since the situation last changed, capped
+    /// at three. A room block, a recovery and any other send reset it.
+    stealth_tries: u32,
 }
 
 /// One arrival's belief about how the very next `engage` should open —
@@ -737,10 +762,12 @@ impl Bot {
             pack: None,
             opener: None,
             backstab_corrections: 0,
-            hide_when_idle: false,
+            stealth: false,
             hidden: false,
-            hide_pending: false,
-            hide_tries: 0,
+            sneaking: false,
+            sneak_held: false,
+            stealth_pending: 0,
+            stealth_tries: 0,
         }
     }
 
@@ -773,19 +800,19 @@ impl Bot {
         self.backstab_corrections
     }
 
-    /// Hide once a recovery is over. The assist turns this on when the
+    /// Keep stealth up when idle. The assist turns this on when the
     /// sheet shows Stealth. A farm never does, its stops are not idle.
-    pub fn with_hide(mut self, hide: bool) -> Self {
-        self.set_hide(hide);
+    pub fn with_stealth(mut self, stealth: bool) -> Self {
+        self.set_stealth(stealth);
         self
     }
 
-    /// The same switch as [`Bot::with_hide`], settable after the build.
-    /// The assist needs it: it is built before the realm entry probe has
-    /// read the stat sheet, so Stealth reads 0 at the build and only
-    /// becomes known a few prompts later.
-    pub fn set_hide(&mut self, hide: bool) {
-        self.hide_when_idle = hide;
+    /// The same switch as [`Bot::with_stealth`], settable after the
+    /// build. The assist needs it: it is built before the realm entry
+    /// probe has read the stat sheet, so Stealth reads 0 at the build
+    /// and only becomes known a few prompts later.
+    pub fn set_stealth(&mut self, stealth: bool) {
+        self.stealth = stealth;
     }
 
     /// Hand the bot the character's pack, so it can tell a key on the
@@ -807,6 +834,11 @@ impl Bot {
     /// Does the bot believe the character is hidden.
     pub fn hidden(&self) -> bool {
         self.hidden
+    }
+
+    /// Does the bot believe the character is sneaking.
+    pub fn sneaking(&self) -> bool {
+        self.sneaking
     }
 
     /// Release the one-shot heal/flee latches. Both re-arm on their own
@@ -850,11 +882,11 @@ impl Bot {
     /// Feed one parsed event; returns the commands to send now.
     pub fn on_event(&mut self, ev: &Event) -> Vec<BotAction> {
         let actions = self.decide(ev);
-        // Nearly every command breaks hide. Any send that is not the
-        // hide itself forgets the belief.
-        if actions.iter().any(|BotAction::Send(cmd)| cmd != "hide") {
-            self.hidden = false;
-            self.hide_tries = 0;
+        // Nearly every command breaks hide and sneak alike. Any send
+        // that is not one of the two forgets both beliefs, and is a
+        // new situation for the retry cap.
+        if actions.iter().any(|BotAction::Send(cmd)| cmd != "hide" && cmd != "sneak") {
+            self.forget_stealth();
         }
         actions
     }
@@ -865,6 +897,11 @@ impl Bot {
                 self.exits = room.exits.clone();
                 // Somewhere new: running away is allowed again.
                 self.fled = false;
+                // A block is a move or a look. Moving un-hides, and a
+                // look only ever follows a send that forgot the hide.
+                // Sneak survives a move exactly when the move said so.
+                self.forget_stealth();
+                self.sneaking = std::mem::take(&mut self.sneak_held);
                 // Settle the wander-out cooldown before choosing a
                 // target: absence means the leave completed; presence in
                 // a SECOND block means it never was leaving, and this
@@ -1252,6 +1289,7 @@ impl Bot {
             self.fled = true;
             return vec![BotAction::Send(exit_command(exit).to_string())];
         }
+        self.stealth_pending = self.stealth_pending.saturating_sub(1);
         let mana_percent = self.config.mana_percent(mana);
         let until = self.config.rest_until_percent as i32;
         let resting = matches!(status, Some(Status::Resting));
@@ -1264,13 +1302,16 @@ impl Bot {
             let over = until > 0 && if resting { hp_ok && mana_ok } else { mana_ok };
             return if over { self.on_recovered() } else { Vec::new() };
         }
-        self.hide_pending = false;
         let hp_low = percent < self.config.rest_at_percent as i32;
         let mana_low = self.config.mana_rest_at_percent > 0
             && mana_percent.is_some_and(|m| m < self.config.mana_rest_at_percent as i32);
         if !hp_low && !mana_low {
             self.healing = false;
-            return Vec::new();
+            return if self.engaged.is_none() && !self.room_has_work {
+                self.idle_stealth()
+            } else {
+                Vec::new()
+            };
         }
         // Never rest in a room that holds a fight or work: the board
         // disengages combat to rest, the un-latch frees the bot, the
@@ -1281,6 +1322,8 @@ impl Bot {
             return Vec::new();
         }
         self.healing = true;
+        // A recovery is a new situation for the stealth that follows it.
+        self.stealth_tries = 0;
         let cmd = if hp_low || !self.config.meditate {
             self.config.rest_command.clone()
         } else {
@@ -1290,15 +1333,52 @@ impl Bot {
     }
 
     /// The recovery is over and the bot is free to act. With Stealth
-    /// that means hide, which also ends the rest. Once, guarded by the
-    /// pending flag, because the echo's own prompt still says resting.
+    /// that means hide or sneak, which also ends the rest. Once, guarded
+    /// by the pending count, because the echo's own prompt still says
+    /// resting.
     fn on_recovered(&mut self) -> Vec<BotAction> {
-        if !self.hide_when_idle || self.hidden || self.hide_pending {
+        self.idle_stealth()
+    }
+
+    /// The stealth command idle time is spent under: `hide` when
+    /// `auto_hide` says so, else `sneak` when `auto_sneak` does, and
+    /// nothing without Stealth on the sheet or with both off.
+    fn stealth_command(&self) -> Option<&'static str> {
+        if !self.stealth {
+            None
+        } else if self.config.auto_hide {
+            Some("hide")
+        } else if self.config.auto_sneak {
+            Some("sneak")
+        } else {
+            None
+        }
+    }
+
+    /// Standing idle: keep stealth up. Once per situation while the
+    /// belief says it is down, waited on through `stealth_pending`, and
+    /// capped at three sends so a room the character cannot hide in
+    /// does not draw a hide per prompt.
+    fn idle_stealth(&mut self) -> Vec<BotAction> {
+        let Some(cmd) = self.stealth_command() else {
+            return Vec::new();
+        };
+        let up = if cmd == "hide" { self.hidden } else { self.sneaking };
+        if up || self.stealth_pending > 0 || self.stealth_tries >= 3 {
             return Vec::new();
         }
-        self.hide_pending = true;
-        self.hide_tries = 1;
-        vec![BotAction::Send("hide".into())]
+        self.stealth_pending = 3;
+        self.stealth_tries += 1;
+        vec![BotAction::Send(cmd.into())]
+    }
+
+    /// The situation changed: nothing is believed up and the retry cap
+    /// starts over.
+    fn forget_stealth(&mut self) {
+        self.hidden = false;
+        self.sneaking = false;
+        self.stealth_pending = 0;
+        self.stealth_tries = 0;
     }
 
     /// Does this text name the monster we are fighting? Matched on the
@@ -1312,16 +1392,36 @@ impl Bot {
     }
 
     fn on_line(&mut self, line: &str) -> Vec<BotAction> {
+        // The stealth echoes and their failures. Matched anywhere on
+        // the line: the live board glues a seen failure onto the
+        // attempt ("Attempting to sneak...You don't think you're
+        // sneaking."). A failure is retried at the next prompt, under
+        // the same cap as a silence.
         if line.contains("Attempting to hide") {
             self.hidden = true;
+            self.stealth_pending = 0;
+        }
+        if line.contains("Attempting to sneak") {
+            self.sneaking = true;
+            self.stealth_pending = 0;
         }
         if line.contains("don't think you are hidden") {
             self.hidden = false;
-            if self.hide_pending && self.hide_tries < 3 {
-                self.hide_tries += 1;
-                return vec![BotAction::Send("hide".into())];
-            }
-            self.hide_pending = false;
+            self.stealth_pending = 0;
+        }
+        if line.contains("don't think you're sneaking") || line.contains("You may not sneak right now") {
+            self.sneaking = false;
+            self.stealth_pending = 0;
+        }
+        // The move's own word on sneak, the only trustworthy one: it
+        // opens a sneaked move, right before the room block, and a
+        // failed roll is announced on entry instead.
+        let lower = line.trim_start().to_lowercase();
+        if lower.starts_with("sneaking...") {
+            self.sneak_held = true;
+        }
+        if lower.contains("you make a sound as you enter the room") {
+            self.sneaking = false;
         }
         // The fight ended: re-arm so the next arrival is engaged. Death
         // lines name the template, not the rolled instance, so any death

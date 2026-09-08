@@ -1698,62 +1698,213 @@ fn the_rest_latch_clears_when_the_board_shows_the_rest_landed() {
     assert_eq!(bot.on_event(&vitals(48, None, None)), vec![BotAction::Send("rest".into())]);
 }
 
-// --- hide when idle ----------------------------------------------------
+// --- stealth when idle ---------------------------------------------------
+//
+// A character with Stealth on the sheet keeps it up whenever the assist
+// finds it standing idle: `hide` under `auto_hide`, otherwise a `sneak`
+// so the next move, its own or a party leader's, goes unseen. Both are
+// beliefs read off the board's echo and forgotten on any other send.
 
-fn hiding_bot() -> Bot {
-    Bot::new(BotConfig { auto_heal: true, max_hp: 100, ..BotConfig::default() }).with_hide(true)
+fn stealth_bot(auto_hide: bool) -> Bot {
+    Bot::new(BotConfig { auto_heal: true, auto_hide, max_hp: 100, ..BotConfig::default() }).with_stealth(true)
 }
 
 fn line(l: &str) -> Event {
     Event::Line(l.into())
 }
 
+fn standing(hp: i32) -> Event {
+    vitals(hp, None, None)
+}
+
+fn send(cmd: &str) -> Vec<BotAction> {
+    vec![BotAction::Send(cmd.into())]
+}
+
+/// Hiding is the operator's choice and a policy `/bot` off must stop.
+#[test]
+fn auto_hide_is_off_by_default_and_off_under_bot_off() {
+    assert!(!BotConfig::default().auto_hide);
+    let cfg = BotConfig { auto_hide: true, ..BotConfig::default() };
+    assert!(!cfg.switched_off().auto_hide);
+}
+
+#[test]
+fn an_idle_prompt_hides_with_auto_hide_and_sneaks_without() {
+    let mut bot = stealth_bot(true);
+    bot.on_event(&room(&[]));
+    assert_eq!(bot.on_event(&standing(100)), send("hide"));
+    let mut bot = stealth_bot(false);
+    bot.on_event(&room(&[]));
+    assert_eq!(bot.on_event(&standing(100)), send("sneak"));
+}
+
 #[test]
 fn a_finished_rest_hides_once_and_believes_the_attempt() {
-    let mut bot = hiding_bot();
+    let mut bot = stealth_bot(true);
     bot.on_event(&room(&[]));
-    bot.on_event(&vitals(50, None, None));
-    assert_eq!(
-        bot.on_event(&vitals(95, None, Some(Status::Resting))),
-        vec![BotAction::Send("hide".into())]
-    );
+    bot.on_event(&standing(50));
+    assert_eq!(bot.on_event(&vitals(95, None, Some(Status::Resting))), send("hide"));
     // The echo's prompt still says resting. No second hide.
     assert!(bot.on_event(&vitals(95, None, Some(Status::Resting))).is_empty());
     assert!(bot.on_event(&line("Attempting to hide...")).is_empty());
     assert!(bot.hidden());
-    assert!(bot.on_event(&vitals(95, None, None)).is_empty());
+    assert!(bot.on_event(&standing(95)).is_empty());
 }
 
 #[test]
-fn a_noticed_failure_retries_three_times_then_stops() {
-    let mut bot = hiding_bot();
+fn a_finished_rest_sneaks_without_auto_hide() {
+    let mut bot = stealth_bot(false);
     bot.on_event(&room(&[]));
-    bot.on_event(&vitals(50, None, None));
-    assert_eq!(bot.on_event(&vitals(95, None, Some(Status::Resting))), vec![BotAction::Send("hide".into())]);
+    bot.on_event(&standing(50));
+    assert_eq!(bot.on_event(&vitals(95, None, Some(Status::Resting))), send("sneak"));
+    assert!(bot.on_event(&vitals(95, None, Some(Status::Resting))).is_empty());
+    assert!(bot.on_event(&line("Attempting to sneak...")).is_empty());
+    assert!(bot.sneaking());
+    assert!(bot.on_event(&standing(95)).is_empty());
+}
+
+/// The board names a failed hide when a perception roll passes. The
+/// retry waits for the next prompt, like every other decision here, and
+/// gives up after three sends until something changes.
+#[test]
+fn a_noticed_failure_retries_on_the_next_prompt_three_times_then_stops() {
+    let mut bot = stealth_bot(true);
+    bot.on_event(&room(&[]));
+    assert_eq!(bot.on_event(&standing(100)), send("hide"));
     for _ in 0..2 {
         assert!(bot.on_event(&line("Attempting to hide...")).is_empty());
-        assert_eq!(
-            bot.on_event(&line(" You don't think you are hidden.")),
-            vec![BotAction::Send("hide".into())]
-        );
+        assert!(bot.on_event(&line(" You don't think you are hidden.")).is_empty());
         assert!(!bot.hidden());
+        assert_eq!(bot.on_event(&standing(100)), send("hide"));
     }
     bot.on_event(&line("Attempting to hide..."));
-    assert!(bot.on_event(&line(" You don't think you are hidden.")).is_empty());
-    assert!(!bot.hidden());
+    bot.on_event(&line(" You don't think you are hidden."));
+    assert!(bot.on_event(&standing(100)).is_empty());
+    // A new room is a new situation.
+    bot.on_event(&room(&[]));
+    assert_eq!(bot.on_event(&standing(100)), send("hide"));
+}
+
+/// Prompts arrive in bursts. One sneak per burst, and a sneak the board
+/// swallowed without a word (sent too fast behind another command) is
+/// tried again after three quiet prompts rather than never.
+#[test]
+fn a_burst_of_prompts_sends_one_sneak_and_a_silent_one_is_retried() {
+    let mut bot = stealth_bot(false);
+    bot.on_event(&room(&[]));
+    assert_eq!(bot.on_event(&standing(100)), send("sneak"));
+    assert!(bot.on_event(&standing(100)).is_empty());
+    assert!(bot.on_event(&standing(100)).is_empty());
+    assert_eq!(bot.on_event(&standing(100)), send("sneak"));
+    assert!(bot.on_event(&standing(100)).is_empty());
+    assert!(bot.on_event(&standing(100)).is_empty());
+    assert_eq!(bot.on_event(&standing(100)), send("sneak"));
+    for _ in 0..6 {
+        assert!(bot.on_event(&standing(100)).is_empty(), "three tries, then silence");
+    }
+}
+
+/// The live board glues a seen failure onto the attempt line.
+#[test]
+fn the_sneak_echo_is_believed_and_a_seen_failure_is_not() {
+    let mut bot = stealth_bot(false);
+    bot.on_event(&room(&[]));
+    assert_eq!(bot.on_event(&standing(100)), send("sneak"));
+    assert!(bot.on_event(&line("Attempting to sneak...You don't think you're sneaking.")).is_empty());
+    assert!(!bot.sneaking());
+    assert_eq!(bot.on_event(&standing(100)), send("sneak"));
+    bot.on_event(&line("Attempting to sneak..."));
+    assert!(bot.sneaking());
+    assert!(bot.on_event(&standing(100)).is_empty());
 }
 
 #[test]
-fn any_other_send_forgets_the_hidden_belief() {
-    let mut bot = Bot::new(BotConfig { auto_combat: true, auto_heal: true, max_hp: 100, ..BotConfig::default() })
-        .with_hide(true);
+fn a_hard_block_on_sneak_is_tried_again_at_the_next_prompt() {
+    let mut bot = stealth_bot(false);
     bot.on_event(&room(&[]));
-    bot.on_event(&vitals(50, None, None));
-    bot.on_event(&vitals(95, None, Some(Status::Resting)));
+    assert_eq!(bot.on_event(&standing(100)), send("sneak"));
+    assert!(bot.on_event(&line("You may not sneak right now!")).is_empty());
+    assert!(!bot.sneaking());
+    assert_eq!(bot.on_event(&standing(100)), send("sneak"));
+}
+
+#[test]
+fn any_other_send_forgets_both_beliefs() {
+    let mut bot = Bot::new(BotConfig { auto_combat: true, auto_heal: true, max_hp: 100, ..BotConfig::default() })
+        .with_stealth(true);
+    bot.on_event(&room(&[]));
+    assert_eq!(bot.on_event(&standing(100)), send("sneak"));
+    bot.on_event(&line("Attempting to sneak..."));
+    assert!(bot.sneaking());
+    assert_eq!(bot.on_event(&room(&["kobold thief"])), send("a thief"));
+    assert!(!bot.sneaking());
+    assert!(bot.on_event(&standing(100)).is_empty(), "no sneak mid-fight");
+    let mut bot = Bot::new(BotConfig { auto_combat: true, auto_heal: true, auto_hide: true, max_hp: 100, ..BotConfig::default() })
+        .with_stealth(true);
+    bot.on_event(&room(&[]));
+    bot.on_event(&standing(100));
     bot.on_event(&line("Attempting to hide..."));
     assert!(bot.hidden());
-    assert_eq!(bot.on_event(&room(&["kobold thief"])), vec![BotAction::Send("a thief".into())]);
+    assert_eq!(bot.on_event(&room(&["kobold thief"])), send("a thief"));
     assert!(!bot.hidden());
+}
+
+/// Once the fight is over the assist's own look answers with a clear
+/// room, and the next prompt re-arms.
+#[test]
+fn the_sneak_is_re_armed_after_a_fight() {
+    let mut bot = Bot::new(BotConfig { auto_combat: true, auto_heal: true, max_hp: 100, ..BotConfig::default() })
+        .with_stealth(true);
+    bot.on_event(&room(&["kobold thief"]));
+    bot.on_event(&line("*Combat Off*"));
+    assert!(bot.on_event(&room(&[])).is_empty());
+    assert_eq!(bot.on_event(&standing(100)), send("sneak"));
+}
+
+/// A move made while sneaking opens with "Sneaking..." and nothing else
+/// does. A block without it is a move that was not sneaked, or a look,
+/// and either way the belief is not worth keeping: a look after a fight
+/// already follows a send that forgot it, and a silent move means the
+/// sneak did not hold.
+#[test]
+fn a_room_block_keeps_the_sneak_only_behind_the_sneaking_line() {
+    let mut bot = stealth_bot(false);
+    bot.on_event(&room(&[]));
+    bot.on_event(&standing(100));
+    bot.on_event(&line("Attempting to sneak..."));
+    assert!(bot.sneaking());
+    bot.on_event(&line("Sneaking..."));
+    bot.on_event(&room(&[]));
+    assert!(bot.sneaking());
+    assert!(bot.on_event(&standing(100)).is_empty());
+    bot.on_event(&room(&[]));
+    assert!(!bot.sneaking());
+    assert_eq!(bot.on_event(&standing(100)), send("sneak"));
+}
+
+#[test]
+fn a_sound_on_entry_breaks_the_sneak() {
+    let mut bot = stealth_bot(false);
+    bot.on_event(&room(&[]));
+    bot.on_event(&standing(100));
+    bot.on_event(&line("Attempting to sneak..."));
+    assert!(bot.on_event(&line("You make a sound as you enter the room!")).is_empty());
+    assert!(!bot.sneaking());
+}
+
+/// Moving un-hides. A block is a move or a look, and a look only ever
+/// follows a send that already forgot the belief.
+#[test]
+fn a_room_block_forgets_the_hide() {
+    let mut bot = stealth_bot(true);
+    bot.on_event(&room(&[]));
+    bot.on_event(&standing(100));
+    bot.on_event(&line("Attempting to hide..."));
+    assert!(bot.hidden());
+    bot.on_event(&room(&[]));
+    assert!(!bot.hidden());
+    assert_eq!(bot.on_event(&standing(100)), send("hide"));
 }
 
 /// The assist is built before the realm entry probe reads the stat
@@ -1761,28 +1912,51 @@ fn any_other_send_forgets_the_hidden_belief() {
 /// settable afterwards. Without this the assist never hid all session.
 #[test]
 fn stealth_learned_after_the_build_still_hides() {
-    let mut bot = Bot::new(BotConfig { auto_heal: true, max_hp: 100, ..BotConfig::default() });
-    bot.set_hide(true);
+    let mut bot = Bot::new(BotConfig { auto_heal: true, auto_hide: true, max_hp: 100, ..BotConfig::default() });
     bot.on_event(&room(&[]));
-    bot.on_event(&vitals(50, None, None));
-    assert_eq!(
-        bot.on_event(&vitals(95, None, Some(Status::Resting))),
-        vec![BotAction::Send("hide".into())]
-    );
+    assert!(bot.on_event(&standing(100)).is_empty());
+    bot.set_stealth(true);
+    assert_eq!(bot.on_event(&standing(100)), send("hide"));
 }
 
 #[test]
-fn without_stealth_a_finished_rest_hides_nothing() {
+fn without_stealth_or_without_a_switch_idle_sends_nothing() {
     let mut bot = resting_bot(0, false);
     bot.on_event(&room(&[]));
-    bot.on_event(&vitals(50, None, None));
+    assert!(bot.on_event(&standing(100)).is_empty());
+    bot.on_event(&standing(50));
     assert!(bot.on_event(&vitals(95, None, Some(Status::Resting))).is_empty());
+    let mut bot = Bot::new(BotConfig { auto_heal: true, auto_sneak: false, max_hp: 100, ..BotConfig::default() })
+        .with_stealth(true);
+    bot.on_event(&room(&[]));
+    assert!(bot.on_event(&standing(100)).is_empty());
+    bot.on_event(&standing(50));
+    assert!(bot.on_event(&vitals(95, None, Some(Status::Resting))).is_empty());
+}
+
+/// A room with something to fight is not idle, whether the fight has
+/// started or not. An ignored monster is not work.
+#[test]
+fn a_room_with_work_does_not_sneak() {
+    let mut bot = Bot::new(BotConfig {
+        auto_combat: true,
+        auto_heal: true,
+        max_hp: 100,
+        ignore: vec!["town guard".into()],
+        ..BotConfig::default()
+    })
+    .with_stealth(true);
+    assert_eq!(bot.on_event(&room(&["kobold thief"])), send("a thief"));
+    assert!(bot.on_event(&standing(100)).is_empty());
+    bot.on_event(&line("*Combat Off*"));
+    bot.on_event(&room(&["town guard"]));
+    assert_eq!(bot.on_event(&standing(100)), send("sneak"));
 }
 
 #[test]
 fn a_rest_with_a_low_pool_does_not_hide_yet() {
-    let mut bot = Bot::new(BotConfig { auto_heal: true, max_hp: 100, max_mana: 20, ..BotConfig::default() })
-        .with_hide(true);
+    let mut bot = Bot::new(BotConfig { auto_heal: true, auto_hide: true, max_hp: 100, max_mana: 20, ..BotConfig::default() })
+        .with_stealth(true);
     bot.on_event(&room(&[]));
     bot.on_event(&vitals(50, Some(5), None));
     // HP is over the mark, mana is not: still resting, so no hide yet.
@@ -2069,6 +2243,7 @@ fn switched_off_keeps_the_marks_and_pools_but_runs_nothing() {
     let cfg = BotConfig {
         max_hp: 52,
         max_mana: 10,
+        auto_hide: true,
         buffs: vec!["bless".into()],
         rest_at_percent: 60,
         ignore: vec!["beetle".into()],
@@ -2077,6 +2252,7 @@ fn switched_off_keeps_the_marks_and_pools_but_runs_nothing() {
     let off = cfg.switched_off();
     assert!(!off.auto_combat && !off.auto_heal && !off.auto_rest, "{off:?}");
     assert!(!off.auto_get && !off.take_keys && !off.auto_sneak && !off.auto_flee, "{off:?}");
+    assert!(!off.auto_hide, "{off:?}");
     assert!(off.buffs.is_empty(), "a buff is a cast nobody asked for: {off:?}");
     assert_eq!((off.max_hp, off.max_mana), (52, 10));
     assert_eq!(off.rest_at_percent, 60);
