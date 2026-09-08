@@ -179,3 +179,20 @@ fn every_ending_reads_as_the_table_says() {
     assert_eq!(died.haul().items_taken, 1);
 }
 
+#[test]
+fn the_jobs_phases_have_labels_the_bar_can_show() {
+    assert_eq!(Phase::Preparing.label(), "preparing");
+    assert_eq!(
+        Phase::SneakingIn { to: DEATH_ROOM }.label(),
+        "sneaking in to 1/2810"
+    );
+    assert_eq!(Phase::Sweeping { at: DEATH_ROOM }.label(), "sweeping 1/2810");
+    assert_eq!(Phase::GoingHome { to: HOME }.label(), "going home to 1/2400");
+    assert_eq!(
+        Phase::Sweeping { at: DEATH_ROOM }.room(),
+        Some(DEATH_ROOM),
+        "standing still in a known room is a position"
+    );
+    assert_eq!(Phase::SneakingIn { to: DEATH_ROOM }.room(), None);
+}
+

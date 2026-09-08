@@ -412,6 +412,21 @@ pub enum Phase {
     Banking {
         at: RoomId,
     },
+    /// `/recover`: lighting up and buffing in the start room before the
+    /// sneak.
+    Preparing,
+    /// `/recover`: walking to the death room one hop at a time, armed.
+    SneakingIn {
+        to: RoomId,
+    },
+    /// `/recover`: searching and picking up in the death room.
+    Sweeping {
+        at: RoomId,
+    },
+    /// `/recover`: the unsneaked run back to the start room.
+    GoingHome {
+        to: RoomId,
+    },
     /// The run ended on its own terms — and says WHICH terms. A bare
     /// "done" hid a TooHurt ending from the operator watching a healthy
     /// character stand idle (cwgaming, 2026-08-01); the reason rides in
@@ -455,6 +470,10 @@ impl Phase {
             Phase::Recovering { to } => format!("recovering to {}/{}", to.map, to.room),
             Phase::WalkingHome => "walking home".into(),
             Phase::Banking { at } => format!("banking at {}/{}", at.map, at.room),
+            Phase::Preparing => "preparing".into(),
+            Phase::SneakingIn { to } => format!("sneaking in to {}/{}", to.map, to.room),
+            Phase::Sweeping { at } => format!("sweeping {}/{}", at.map, at.room),
+            Phase::GoingHome { to } => format!("going home to {}/{}", to.map, to.room),
             Phase::Done { why, .. } => format!("done: {why}"),
             // First line only. A NavError's Display carries a multi-line
             // `tail:` of raw board output, and the bar is one row.
@@ -476,6 +495,7 @@ impl Phase {
             Phase::Waiting { at }
             | Phase::Fighting { at, .. }
             | Phase::Resting { at }
+            | Phase::Sweeping { at }
             | Phase::Placed { at, .. } => Some(*at),
             Phase::Done { at, .. } => *at,
             _ => None,
@@ -3268,7 +3288,7 @@ pub fn leg_needs_light(graph: &RoomGraph, from: RoomId, to: RoomId) -> bool {
 /// can work — proceeding blind is then the explicit fallback, exactly
 /// today's behavior. Bounded by a hard deadline so a lost outcome can
 /// never wedge a leg.
-async fn ensure_lit(
+pub(crate) async fn ensure_lit(
     session: &crate::session::Session,
     light: &mut crate::sheet::LightState,
     clock: &crate::world::RoundClock,
