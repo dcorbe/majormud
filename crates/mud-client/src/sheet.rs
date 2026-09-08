@@ -903,10 +903,12 @@ pub fn buffs(
     let mut refused = Vec::new();
     for name in wanted {
         let lower = name.to_lowercase();
+        // The full name or the short one: `shld` is what the operator
+        // types at the board, and what the book's own listing shows.
         let Some(known) = spellbook
             .spells
             .iter()
-            .find(|s| s.name.to_lowercase() == lower)
+            .find(|s| s.name.to_lowercase() == lower || s.short.to_lowercase() == lower)
         else {
             refused.push(format!("`{name}` is not in this character's book"));
             continue;

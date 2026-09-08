@@ -838,6 +838,23 @@ fn buffs_are_refused_with_a_reason() {
     assert!(refused[1].contains("no duration"), "{refused:?}");
 }
 
+/// A buff may be named by its short name, the one `cast` takes and the
+/// book's listing shows, as well as its full name. `["shld", "blur"]`
+/// in a profile cast nothing, refused as not in the book, because only
+/// the full name was matched (2026-09-08).
+#[test]
+fn a_buff_may_be_named_by_its_short_name() {
+    let (kept, refused) = mud_client::sheet::buffs(
+        &buff_book(),
+        &["bles".into(), "BLESS".into()],
+        &durations(),
+        Casting::Spells,
+    );
+    assert!(refused.is_empty(), "{refused:?}");
+    assert_eq!(kept.len(), 2);
+    assert!(kept.iter().all(|b| b.cmd == "cast bles"), "{kept:?}");
+}
+
 /// The budget, end to end. Cast once, then nothing until the rounds run
 /// out. Only a CONFIRMED cast starts the clock, because a fizzle leaves
 /// the buff genuinely down.
