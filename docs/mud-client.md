@@ -446,6 +446,17 @@ meditates when `auto_rest` says so, casts heals when `auto_heal` does,
 and it keeps stealth up while idle when the sheet shows Stealth.
 Fleeing follows `auto_flee` as it does for a farm.
 
+Every one of those marks is a percentage of the pools, and a profile
+that leaves `bot.max_hp` out means "ask the board". The assist asks
+with `health` once the character is in the realm, the same probe every
+job runs, and the lobby notes the answer as
+`-- assist: the board says 102 hits, 20 mana --`. Until the answer
+lands the marks are off, and a board that never answers is said so and
+asked again at the next realm entry. A profile that names `max_hp` is
+believed over the board, as it is for a job. Until 2026-09-08 the
+assist never asked, so with the recommended profile it never rested,
+healed, fled or kept stealth up at all.
+
 Idle means standing, not resting, with nothing in the room to fight.
 Under `auto_hide` the assist sends `hide` whenever it finds itself idle
 and believes it is not hidden. Otherwise, with `auto_sneak` on, it sends

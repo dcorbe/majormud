@@ -684,6 +684,10 @@ async fn play(
             Err(why) => assist_refused = Some(why),
         }
     }
+    // What the board says the pools are, for a profile that leaves
+    // `bot.max_hp` at zero. Asked at the loop head once the character
+    // is in the realm, and applied to every rebuild of the config.
+    let mut assist_vitals = AssistVitals::Unknown;
     // `/bot` is one switch over every mode: the assist beside the
     // operator, and every job's own policies through its live settings.
     // The session carries it so a job hears the press.
@@ -728,6 +732,21 @@ async fn play(
     w.set_bar(bar_text(&state_rx, target, job.as_ref(), here, exp.per_hour(exp_since.elapsed()), level, assist.is_some(), cols), job.is_some());
 
     let end = loop {
+        // Every percent policy the assist has divides by the pools, and
+        // `Bot::hp_percent` refuses to decide on a zero max. A profile
+        // that leaves `max_hp` out means "ask the board", and every job
+        // does through the same `discover_vitals`. The assist ran on
+        // the zero until 2026-09-08: a character at 102/102 with
+        // Stealth and `/bot` on never rested, healed, fled or sneaked.
+        if in_realm
+            && assist.is_some()
+            && assist_config.max_hp == 0
+            && matches!(assist_vitals, AssistVitals::Unknown)
+        {
+            let probe = session.clone();
+            assist_vitals =
+                AssistVitals::Asking(tokio::spawn(async move { crate::farm::discover_vitals(&probe).await }));
+        }
         tokio::select! {
             bytes = raw_rx.recv() => match bytes {
                 Ok(bytes) => {
@@ -784,6 +803,11 @@ async fn play(
                         // blank for the first minute of every session.
                         if present && !in_realm {
                             on_realm_entry(&session, content.clone());
+                            // A board that did not answer last time is
+                            // asked again on the next entry, not before.
+                            if matches!(assist_vitals, AssistVitals::Unanswered) {
+                                assist_vitals = AssistVitals::Unknown;
+                            }
                         }
                         in_realm = present;
                     }
@@ -921,6 +945,37 @@ async fn play(
                 }
                 w.set_bar(bar_text(&state_rx, target, job.as_ref(), here, exp.per_hour(exp_since.elapsed()), level, assist.is_some(), cols), job.is_some());
             }
+            learned = async {
+                match &mut assist_vitals {
+                    AssistVitals::Asking(probe) => probe.await.ok().flatten(),
+                    _ => std::future::pending().await,
+                }
+            } => {
+                assist_vitals = match learned {
+                    Some(vitals) => AssistVitals::Known(vitals),
+                    None => AssistVitals::Unanswered,
+                };
+                match learned {
+                    Some(vitals) => {
+                        assist_config = with_vitals(assist_config, &assist_vitals);
+                        // Reconfigured, not rebuilt, for the reason the
+                        // settings arm gives: the memory stays.
+                        if let Some(bot) = assist.as_mut() {
+                            bot.reconfigure(assist_config.clone());
+                        }
+                        assist_watch.reconfigure(&assist_config, &crate::farm::FarmConfig::default());
+                        let mana = if vitals.max_mana > 0 {
+                            format!(", {} mana", vitals.max_mana)
+                        } else {
+                            String::new()
+                        };
+                        w.note(&format!("-- assist: the board says {} hits{mana} --", vitals.max_hp));
+                    }
+                    None => w.note(
+                        "-- assist: no answer to health, so the rest, heal and flee marks are off until /set bot.max_hp --",
+                    ),
+                }
+            }
             _ = tick_paint.tick() => {
                 w.set_bar(bar_text(&state_rx, target, job.as_ref(), here, exp.per_hour(exp_since.elapsed()), level, assist.is_some(), cols), job.is_some());
             }
@@ -958,7 +1013,7 @@ async fn play(
                             }
                             w.sync_info(Some(&session));
                             if applied.bot_changed {
-                                assist_config = assist_config_for(w.settings.profile());
+                                assist_config = with_vitals(assist_config_for(w.settings.profile()), &assist_vitals);
                                 if assist.is_some() {
                                     let (bot, heal) = new_assist(&session, &assist_config);
                                     assist = Some(bot);
@@ -1493,3 +1548,29 @@ async fn play(
     end
 }
 
+/// What the assist knows about the pools when the profile leaves
+/// `bot.max_hp` at zero. Asked of the board with the same `health` a
+/// job sends, once per realm entry, and applied to every rebuild of the
+/// assist's config: the rule [`crate::live::Live::learned_vitals`]
+/// gives a job.
+enum AssistVitals {
+    Unknown,
+    Asking(tokio::task::JoinHandle<Option<crate::farm::Vitals>>),
+    Known(crate::farm::Vitals),
+    /// The board did not answer in time. Not asked again until the
+    /// character enters the realm again.
+    Unanswered,
+}
+
+/// The profile's table with the learned pools filled in where the
+/// profile left them at zero. A profile that names `max_hp` is
+/// believed over the board, as it is for a job.
+fn with_vitals(mut cfg: crate::bot::BotConfig, vitals: &AssistVitals) -> crate::bot::BotConfig {
+    if cfg.max_hp == 0
+        && let AssistVitals::Known(v) = vitals
+    {
+        cfg.max_hp = v.max_hp;
+        cfg.max_mana = v.max_mana;
+    }
+    cfg
+}
