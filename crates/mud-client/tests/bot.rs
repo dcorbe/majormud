@@ -1963,6 +1963,25 @@ fn a_rest_with_a_low_pool_does_not_hide_yet() {
     assert!(bot.on_event(&vitals(96, Some(10), Some(Status::Resting))).is_empty());
 }
 
+/// A room the character sneaked into is opened with a backstab. The
+/// move's own "Sneaking..." is the evidence, the same line a walk's
+/// arrival reads, and a party leader's move prints it for the follower
+/// too. Under `auto_hide` the fight opens plainly: hidden in place is
+/// what was asked for, not a backstab on entry.
+#[test]
+fn a_sneaked_arrival_opens_with_a_backstab_unless_auto_hide() {
+    let mut bot = Bot::new(BotConfig { auto_combat: true, auto_heal: true, max_hp: 100, ..BotConfig::default() })
+        .with_stealth(true);
+    bot.on_event(&line("Sneaking..."));
+    assert_eq!(bot.on_event(&room(&["kobold thief"])), send("bs thief"));
+    bot.on_event(&line("*Combat Off*"));
+    assert_eq!(bot.on_event(&room(&["giant rat"])), send("a rat"), "no sneak on this move");
+    let mut bot = Bot::new(BotConfig { auto_combat: true, auto_heal: true, auto_hide: true, max_hp: 100, ..BotConfig::default() })
+        .with_stealth(true);
+    bot.on_event(&line("Sneaking..."));
+    assert_eq!(bot.on_event(&room(&["kobold thief"])), send("a thief"));
+}
+
 // --- which heal ----------------------------------------------------------
 
 #[test]

@@ -459,6 +459,13 @@ three sends the assist stops until the situation changes: a new room, a
 recovery, or a command of its own. The idle sneak is bare. The stealth
 spell a walk casts before its sneak is not cast here.
 
+A room the character sneaked into is opened with `bs`, off the same
+"Sneaking..." line a walk's arrival reads. The board prints it for a
+party follower on the leader's move, so a dragged character backstabs
+what it is dragged into. Under `auto_hide` every fight opens with a
+plain attack. The wielded weapon is used as it is. The swap to a
+backstab-only weapon a farm's walk makes is not made here.
+
 The assist acts on every room block the character is standing in,
 whether or not the client asked for it. A party leader's move drags the
 character into the next room and prints the block with nothing sent from

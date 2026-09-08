@@ -902,6 +902,13 @@ impl Bot {
                 // Sneak survives a move exactly when the move said so.
                 self.forget_stealth();
                 self.sneaking = std::mem::take(&mut self.sneak_held);
+                // A sneaked move is the arrival a backstab opens from,
+                // the same evidence a walk hands `arm_backstab_opener`.
+                // Not under `auto_hide`: hidden in place was asked for,
+                // not a backstab on entry.
+                if self.sneaking && !self.config.auto_hide {
+                    self.opener = Some(Opener::Backstab { restore: None });
+                }
                 // Settle the wander-out cooldown before choosing a
                 // target: absence means the leave completed; presence in
                 // a SECOND block means it never was leaving, and this
