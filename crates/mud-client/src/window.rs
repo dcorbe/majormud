@@ -336,6 +336,33 @@ fn arm_redial(w: &Window) -> Option<std::time::Duration> {
     Some(std::time::Duration::from_secs(profile.reconnect_delay_seconds))
 }
 
+/// Start a recover job for `to` and note the outcome on `w`, whichever
+/// key asked for it. `None` means the refusal is already noted and there
+/// is nothing for the caller to fold into `job` or `phase_rx`.
+fn recover_to(
+    w: &Window,
+    session: Arc<Session>,
+    g: Arc<crate::graph::RoomGraph>,
+    here: Option<mud_core::content::RoomId>,
+    to: mud_core::content::RoomId,
+    notices: crate::farm::Notices,
+) -> Option<Job> {
+    let name = g.room(to).map(|r| r.name.clone()).unwrap_or_default();
+    match start_recover(session, g, here, to, notices) {
+        Err(e) => {
+            w.note(&format!("-- recover: {e} --"));
+            None
+        }
+        Ok(started) => {
+            w.note(&format!(
+                "-- recovering from {name} [{}/{}] (Ctrl-F to take over) --",
+                to.map, to.room
+            ));
+            Some(started)
+        }
+    }
+}
+
 async fn run(mut w: Window, first: Option<KeyOutcome>) {
     // A window opened on a profile that already names a host connects
     // without being asked, the way the old lobby did. Only on the way
@@ -1061,25 +1088,18 @@ async fn play(
                                             match to {
                                                 Err(why) => w.note(&why.join("\n")),
                                                 Ok(to) => {
-                                                    let name = g.room(to).map(|r| r.name.clone()).unwrap_or_default();
-                                                    match start_recover(
+                                                    if let Some(started) = recover_to(
+                                                        w,
                                                         session.clone(),
                                                         g.clone(),
                                                         here.confirmed(),
                                                         to,
                                                         notices.clone(),
                                                     ) {
-                                                        Err(e) => w.note(&format!("-- recover: {e} --")),
-                                                        Ok(started) => {
-                                                            exp.reset();
-                                                            exp_since = std::time::Instant::now();
-                                                            w.note(&format!(
-                                                                "-- recovering from {name} [{}/{}] (Ctrl-F to take over) --",
-                                                                to.map, to.room
-                                                            ));
-                                                            phase_rx = Some(started.phase.clone());
-                                                            job = Some(started);
-                                                        }
+                                                        exp.reset();
+                                                        exp_since = std::time::Instant::now();
+                                                        phase_rx = Some(started.phase.clone());
+                                                        job = Some(started);
                                                     }
                                                 }
                                             }
@@ -1337,6 +1357,23 @@ async fn play(
                                                                     phase_rx = Some(started.phase.clone());
                                                                     job = Some(started);
                                                                 }
+                                                            }
+                                                        }
+                                                        crate::mapview::ViewAction::Recover(to) if job.is_some() => {
+                                                            w.note("-- something is already driving (Ctrl-F to take over) --");
+                                                            let _ = to;
+                                                        }
+                                                        crate::mapview::ViewAction::Recover(to) => {
+                                                            if let Some(started) = recover_to(
+                                                                w,
+                                                                session.clone(),
+                                                                g.clone(),
+                                                                here.confirmed(),
+                                                                to,
+                                                                notices.clone(),
+                                                            ) {
+                                                                phase_rx = Some(started.phase.clone());
+                                                                job = Some(started);
                                                             }
                                                         }
                                                         _ => {}

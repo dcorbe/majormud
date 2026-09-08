@@ -107,3 +107,36 @@ fn the_panel_names_the_stair_and_counts_the_maps() {
     assert!(text.contains("plane 3 rooms in 2 maps, 3x1"), "{text}");
     assert!(!text.contains("that way"), "{text}");
 }
+
+use mud_client::mapview::ViewAction;
+
+#[test]
+fn shift_r_on_a_room_asks_to_recover_from_it() {
+    let mut v = view(DOOR, Fix::Confirmed(DOOR));
+    press(&mut v, KeyCode::Char('h'));
+    assert_eq!(v.cursor_room(), Some(ROAD));
+    let action = v.on_key(&KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT));
+    assert_eq!(action, ViewAction::Recover(ROAD));
+}
+
+#[test]
+fn shift_r_on_nothing_says_so_and_stays() {
+    let mut v = view(DOOR, Fix::Confirmed(DOOR));
+    press(&mut v, KeyCode::Char('k'));
+    assert_eq!(v.cursor_room(), None, "the cell north of the door is empty");
+    let action = v.on_key(&KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT));
+    assert_eq!(action, ViewAction::Continue);
+    assert_eq!(v.message(), Some("no room under the cursor"));
+}
+
+#[test]
+fn the_legend_names_the_recover_key() {
+    let mut v = view(DOOR, Fix::Confirmed(DOOR));
+    // The legend runs past the 100-column width `view` sets up, so the
+    // status line clips before reaching this tail on that width. Widen
+    // it here so the assertion looks at the whole legend.
+    v.resize((200, 30));
+    let status = v.lines().pop().unwrap();
+    assert!(status.contains("g go  R recover  q leave"), "{status}");
+}
+

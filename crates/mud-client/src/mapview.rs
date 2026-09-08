@@ -46,6 +46,9 @@ pub enum ViewAction {
     Quit,
     /// Leave the map and walk to this room.
     Go(RoomId),
+    /// Leave the map and recover from this room: sneak there, search
+    /// once, take everything, run back to where the character stands.
+    Recover(RoomId),
     /// Write this loop to the library. Built here and written by the
     /// caller: the view stays free of the filesystem, which is what
     /// makes every key it handles testable.
@@ -390,6 +393,16 @@ impl MapView {
                 };
             }
 
+            KeyCode::Char('R') => {
+                return match self.cursor_room() {
+                    Some(id) => ViewAction::Recover(id),
+                    None => {
+                        self.message = Some("no room under the cursor".into());
+                        ViewAction::Continue
+                    }
+                };
+            }
+
             KeyCode::Char('q') | KeyCode::Esc => return ViewAction::Leave,
             _ => {}
         }
@@ -632,7 +645,7 @@ impl MapView {
             ),
             (None, Some(msg)) => format!("-- {msg} --"),
             (None, None) => format!(
-                "{} | {} | {} stops | {} walls | move arrows/hjkl/yubn  < > stairs  +/- zoom  m mode  / find  enter marks  x walls  s saves  r roams  g go  q leave",
+                "{} | {} | {} stops | {} walls | move arrows/hjkl/yubn  < > stairs  +/- zoom  m mode  / find  enter marks  x walls  s saves  r roams  g go  R recover  q leave",
                 match self.paint {
                     Paint::Terrain => "terrain",
                     Paint::Danger => "danger",

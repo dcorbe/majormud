@@ -271,6 +271,12 @@ fn map_command(at: &str, content: &std::path::Path) -> ExitCode {
             println!("{}/{}  {name}", id.map, id.room);
             ExitCode::SUCCESS
         }
+        // Recovering means sneaking there and walking back, which needs
+        // a live connection `mmc map` does not hold.
+        Ok(ViewAction::Recover(_)) => {
+            eprintln!("recover needs a connection, run it from inside `mmc play` instead");
+            ExitCode::FAILURE
+        }
         Ok(_) => ExitCode::SUCCESS,
     }
 }
