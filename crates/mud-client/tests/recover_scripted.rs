@@ -22,7 +22,7 @@ use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::profile::Profile;
 use mud_client::recover::{HomeWhy, RecoverEnd, run_recover};
 use mud_client::session::Session;
-use mud_core::content::{Direction, RoomId};
+use mud_core::content::{Content, Direction, RoomId};
 
 fn quiet() -> mud_client::farm::Notices {
     std::sync::Arc::new(|_: &str| {})
@@ -221,21 +221,84 @@ fn home_steps() -> Vec<(&'static str, String)> {
     ]
 }
 
-async fn recover_over(
+/// The board's reply to `spells` for a character who knows starlight.
+const STARLIGHT_BOOK: &str = "\r\nspells\r\nYou have the following spells:\r\n\
+Level Mana Short Spell Name\r\n\x20 1   4    star  starlight                     \r\n\
+[HP=30/MA=0]:";
+
+/// One shipped `starlight` record, with only the fields discovery reads
+/// set to anything: the ability list, the `target` column decoded as
+/// `match_type`, and the mana cost. Everything else is zero. The same
+/// shape `farm_scripted.rs` builds, duplicated because test crates do
+/// not share modules.
+fn starlight() -> mud_core::content::Spell {
+    use mud_core::ability::Ability;
+    use mud_core::content::{Element, MatchType, SaveClass, ScalePair, Spell, SpellId, TargetMode};
+    Spell {
+        id: SpellId(26),
+        name: "starlight".into(),
+        short_name: "star".into(),
+        cast_msg_a: None,
+        cast_msg_b: None,
+        abilities: vec![(Ability::RoomIllu, 0)],
+        level_cap: 0,
+        round_cost: 0,
+        required_power: 0,
+        min_base: 0,
+        max_base: 0,
+        target_mode: TargetMode::Benign,
+        save_class: SaveClass::None,
+        base_chance: 0,
+        duration_per_level: 0,
+        match_type: MatchType::Single1,
+        duration: 80,
+        element: Element::Magic,
+        class_gate_group: 0,
+        mana_cost: 4,
+        max_increase: ScalePair::NONE,
+        required_class_level: 0,
+        min_increase: ScalePair::NONE,
+        duration_increase: ScalePair::NONE,
+        msg_style: 0,
+    }
+}
+
+/// The spell table the light discovery reads. Handed to the session by
+/// the test, because the job's own content path is empty here.
+fn spell_table() -> Content {
+    let mut content = Content::default();
+    content.add_spell(starlight());
+    content
+}
+
+/// The whole job over a scripted board, with `content` on the session
+/// before it starts.
+async fn recover_with(
     graph: Arc<RoomGraph>,
     script: Vec<(&'static str, String)>,
+    content: Option<Content>,
 ) -> (Result<RecoverEnd, FarmError>, Vec<String>) {
     let (addr, received) = scripted_board(script).await;
     let session = session_for(addr).await;
     probe_sheet(&session, None).await;
+    if let Some(content) = content {
+        session.set_content(Arc::new(content));
+    }
     let out = tokio::time::timeout(
-        Duration::from_secs(40),
+        Duration::from_secs(60),
         run_recover(&session, graph, START, DEATH, settings(), None, &quiet()),
     )
     .await
     .expect("run_recover should finish, not hang");
     let log = received.lock().unwrap().clone();
     (out, log)
+}
+
+async fn recover_over(
+    graph: Arc<RoomGraph>,
+    script: Vec<(&'static str, String)>,
+) -> (Result<RecoverEnd, FarmError>, Vec<String>) {
+    recover_with(graph, script, None).await
 }
 
 fn count(log: &[String], line: &str) -> usize {
@@ -353,5 +416,123 @@ async fn a_search_refused_for_combat_goes_home() {
         !log.iter().any(|l| l.starts_with("a ")),
         "never an attack: {log:?}"
     );
+}
+
+/// The board swallows the `search` and says nothing at all. There is
+/// nothing to be learned by standing in the room the character died in,
+/// so the job goes home reading it as an empty floor.
+#[tokio::test]
+async fn a_search_the_board_never_answers_goes_home() {
+    let mut script = opening();
+    script.push(sneaky_step("Inner Ward", "north south"));
+    script.push(sneaky_step("Keep", "south"));
+    // The entry is consumed and answered with nothing, so the search
+    // waits out its whole deadline.
+    script.push(("search", String::new()));
+    script.extend(home_steps());
+    let (out, log) = recover_over(corridor(0), script).await;
+    let end = out.expect("an unanswered search must not strand the character");
+    assert_eq!(
+        end,
+        RecoverEnd::Home {
+            at: START,
+            why: HomeWhy::Nothing,
+            haul: Default::default(),
+        },
+        "log: {log:?}"
+    );
+    assert_eq!(count(&log, "search"), 1, "exactly one search: {log:?}");
+}
+
+/// The second hop is refused because something already has the
+/// character. The job never searches, and it names the room it was
+/// standing in when the board said no.
+#[tokio::test]
+async fn a_move_refused_for_combat_turns_for_home() {
+    let mut script = opening();
+    script.push(sneaky_step("Inner Ward", "north south"));
+    script.push((
+        "n",
+        reply("n", "You may not enter that room while in combat!"),
+    ));
+    script.push(("s", format!("\r\ns{}", block("Guard Post", "north"))));
+    let (out, log) = recover_over(corridor(0), script).await;
+    let end = out.expect("a refused move must not fail the job");
+    assert_eq!(
+        end,
+        RecoverEnd::Home {
+            at: START,
+            why: HomeWhy::Attacked {
+                at: MIDWAY,
+                name: "Inner Ward".into()
+            },
+            haul: Default::default(),
+        },
+        "log: {log:?}"
+    );
+    assert_eq!(count(&log, "search"), 0, "no search after a refusal: {log:?}");
+}
+
+/// The walk home is refused once and sent again after the round. The
+/// run completes, because a refused move on the way back is retried
+/// rather than given up on.
+#[tokio::test]
+async fn the_walk_home_retries_a_move_refused_for_combat() {
+    let mut script = opening();
+    script.push(sneaky_step("Inner Ward", "north south"));
+    script.push(sneaky_step("Keep", "south"));
+    script.push(("search", reply("search", "Your search revealed nothing.")));
+    script.push((
+        "s",
+        reply("s", "You may not enter that room while in combat!"),
+    ));
+    script.extend(home_steps());
+    let (out, log) = recover_over(corridor(0), script).await;
+    let end = out.expect("the retry must carry the walk home");
+    assert_eq!(
+        end,
+        RecoverEnd::Home {
+            at: START,
+            why: HomeWhy::Nothing,
+            haul: Default::default(),
+        },
+        "log: {log:?}"
+    );
+    assert_eq!(count(&log, "s"), 3, "the refused move is sent again: {log:?}");
+}
+
+// ------------------------------------------------------------- the light
+
+/// The death room is dark and the character knows starlight, so the
+/// spell goes out standing still, before the sneak is armed.
+#[tokio::test]
+async fn a_dark_death_room_is_lit_before_the_sneak() {
+    let mut script = opening();
+    script.insert(2, ("spells", STARLIGHT_BOOK.into()));
+    script.insert(
+        4,
+        ("cast star", reply("cast star", "You cast starlight!")),
+    );
+    script.push(sneaky_step("Inner Ward", "north south"));
+    script.push(sneaky_step("Keep", "south"));
+    script.push(("search", reply("search", "Your search revealed nothing.")));
+    script.extend(home_steps());
+    let (out, log) = recover_with(corridor(-1), script, Some(spell_table())).await;
+    let end = out.expect("the job must finish");
+    assert_eq!(
+        end,
+        RecoverEnd::Home {
+            at: START,
+            why: HomeWhy::Nothing,
+            haul: Default::default(),
+        },
+        "log: {log:?}"
+    );
+    let cast_at = log
+        .iter()
+        .position(|l| l == "cast star")
+        .unwrap_or_else(|| panic!("the light spell must go out: {log:?}"));
+    let sneak_at = log.iter().position(|l| l == "sneak").unwrap();
+    assert!(cast_at < sneak_at, "lit before armed: {log:?}");
 }
 

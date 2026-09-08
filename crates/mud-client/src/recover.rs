@@ -13,7 +13,7 @@
 //! above the job so they are tested without a board.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use mud_core::content::RoomId;
 
@@ -216,10 +216,12 @@ impl RecoverEnd {
     }
 }
 
-
 /// How long the search may take to answer. A room block behind a paced
 /// board, and nothing longer.
 const SEARCH_WAIT: Duration = Duration::from_secs(15);
+/// How long the buffs may take before the sneak. Several rounds of
+/// fizzles behind a paced board, and nothing longer.
+const BUFF_WAIT: Duration = Duration::from_secs(20);
 /// Moves the walk home retries when the board refuses one for combat.
 /// Each retry waits out a prompt, and the round passes with it.
 const COMBAT_RETRIES: u32 = 12;
@@ -409,7 +411,11 @@ async fn recover(
     if fixed.graph.dark(target) || crate::farm::leg_needs_light(&fixed.graph, home, target) {
         crate::farm::ensure_lit(session, &mut light, &fixed.clock).await;
     }
-    cast_buffs(session, &mut buff, &fixed.clock).await;
+    // Standing still, on the same cycle the light runs on. A fizzle is
+    // not retried past the deadline: a buff is a bonus, and the sneak
+    // goes without it.
+    let buffs_by = tokio::time::Instant::now() + BUFF_WAIT;
+    crate::farm::drive_cast(session, &mut buff, &fixed.clock, buffs_by).await;
 
     // The route, as rooms, so every hop is its own walk and every
     // arrival's sneak state is read. One walk to the target would hide
@@ -469,6 +475,11 @@ async fn recover(
                 here = e.at;
                 return match e.kind {
                     NavErrorKind::Interrupted(Interrupt::Died) => Ok(RecoverEnd::Died { haul }),
+                    // Not a blow. `FarmGuard::death_only` never trips on
+                    // one, so the only thing that reaches here is a move
+                    // the board refused because something already has
+                    // the character in combat, and a refused move is a
+                    // hop that will not happen however long it waits.
                     NavErrorKind::Interrupted(Interrupt::Attacked { .. }) => {
                         let why = HomeWhy::Attacked {
                             at: here,
@@ -494,7 +505,7 @@ async fn recover(
     }
 
     set_phase(phase, Phase::Sweeping { at: here });
-    let why = match sweep(session, live, &mut haul, &fixed.name, notices).await? {
+    let why = match sweep(session, live, &mut haul, &fixed.name).await? {
         SweepEnd::Died => return Ok(RecoverEnd::Died { haul }),
         SweepEnd::Swept => HomeWhy::Swept,
         SweepEnd::Nothing => HomeWhy::Nothing,
@@ -516,42 +527,6 @@ async fn recover(
         haul,
     )
     .await
-}
-
-/// Cast every lapsed buff, standing still, before the sneak. Bounded by
-/// a deadline like `ensure_lit`. A fizzle is not retried: a buff is a
-/// bonus, and the sneak goes without it.
-async fn cast_buffs(
-    session: &Session,
-    buff: &mut crate::sheet::BuffState,
-    clock: &crate::world::RoundClock,
-) {
-    if buff.is_empty() {
-        return;
-    }
-    let mut events = session.events();
-    crate::session::drain(&mut events, |cor| buff.on_event(cor, Instant::now()));
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    loop {
-        if tokio::time::Instant::now() >= deadline {
-            return;
-        }
-        match buff.attempt(Instant::now(), clock) {
-            crate::sheet::CastAttempt::Send(cmd) => {
-                let id = session.send(&cmd);
-                buff.on_sent(&cmd, id);
-            }
-            crate::sheet::CastAttempt::Hold(_) => {}
-            crate::sheet::CastAttempt::Nothing if !buff.in_flight() => return,
-            crate::sheet::CastAttempt::Nothing => {}
-        }
-        match tokio::time::timeout(Duration::from_millis(300), events.recv()).await {
-            Ok(Ok(cor)) => buff.on_event(&cor, Instant::now()),
-            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
-            Ok(Err(_)) => return,
-            Err(_) => {}
-        }
-    }
 }
 
 /// How the sweep ended.
@@ -585,10 +560,9 @@ fn vitals_end(ev: &Event, bot: &BotConfig, name: &str) -> Option<SweepEnd> {
 /// comment sits.
 async fn sweep(
     session: &Session,
-    live: &mut Live,
+    live: &Live,
     haul: &mut Haul,
     name: &str,
-    notices: &Notices,
 ) -> Result<SweepEnd, FarmError> {
     let mut events = session.events();
     crate::session::drain(&mut events, |_| {});
@@ -618,11 +592,12 @@ async fn sweep(
             }
             Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
             Ok(Err(_)) => return Err(FarmError::Disconnected),
-            Err(_) => {
-                return Err(FarmError::NoRoomBlock {
-                    whose: "the recovery's search".into(),
-                });
-            }
+            // A search the board never answered and a search that found
+            // nothing say the same thing to the operator: there is
+            // nothing here to take. Erroring out instead left the
+            // character standing in the room it died in, which is the
+            // one place the job exists to leave.
+            Err(_) => return Ok(SweepEnd::Nothing),
         }
     };
     let list = sweep_list(&items);
@@ -630,10 +605,8 @@ async fn sweep(
         return Ok(SweepEnd::Nothing);
     }
     *haul = Haul::wanted(&list);
-    // The pickups go here, and `notices` is how they are reported.
-    // Nothing has been taken yet, so the haul carries only what the
-    // search listed.
-    let _ = notices;
+    // The pickups go here. Nothing has been taken yet, so the haul
+    // carries only what the search listed.
     Ok(SweepEnd::Swept)
 }
 

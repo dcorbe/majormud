@@ -3282,45 +3282,134 @@ pub fn leg_needs_light(graph: &RoomGraph, from: RoomId, to: RoomId) -> bool {
     false
 }
 
-/// Light up before a dark leg, standing still. Runs the attempt/outcome
-/// cycle directly (no gate: the walk does not own the connection yet),
-/// retrying fizzles on the round and giving up honestly when nothing
-/// can work — proceeding blind is then the explicit fallback, exactly
-/// today's behavior. Bounded by a hard deadline so a lost outcome can
-/// never wedge a leg.
+/// How long a stand-still cast cycle may run before it gives up. Long
+/// enough for several rounds of fizzles behind a paced board, and short
+/// enough that a lost outcome cannot wedge the caller.
+const CAST_DEADLINE: Duration = Duration::from_secs(20);
+
+/// One spell machine, as [`drive_cast`] sees it. Lighting and buff
+/// upkeep answer different questions but are driven identically: ask
+/// what to send, say what went out, fold what comes back, and say
+/// whether an outcome is still owed.
+pub(crate) trait CastState {
+    fn attempt(
+        &mut self,
+        now: Instant,
+        clock: &crate::world::RoundClock,
+    ) -> crate::sheet::CastAttempt;
+    fn on_sent(&mut self, line: &str, id: crate::correlate::CmdId);
+    /// `now` is ignored by a machine that keeps no budget.
+    fn on_event(&mut self, cor: &Correlated, now: Instant);
+    fn in_flight(&self) -> bool;
+    /// Nothing left worth sending, whatever the deadline says.
+    fn done(&self) -> bool;
+}
+
+impl CastState for crate::sheet::LightState {
+    fn attempt(
+        &mut self,
+        now: Instant,
+        clock: &crate::world::RoundClock,
+    ) -> crate::sheet::CastAttempt {
+        crate::sheet::LightState::attempt(self, now, clock)
+    }
+
+    fn on_sent(&mut self, line: &str, id: crate::correlate::CmdId) {
+        crate::sheet::LightState::on_sent(self, line, id)
+    }
+
+    fn on_event(&mut self, cor: &Correlated, _now: Instant) {
+        crate::sheet::LightState::on_event(self, cor)
+    }
+
+    fn in_flight(&self) -> bool {
+        crate::sheet::LightState::in_flight(self)
+    }
+
+    fn done(&self) -> bool {
+        self.lit()
+    }
+}
+
+impl CastState for crate::sheet::BuffState {
+    fn attempt(
+        &mut self,
+        now: Instant,
+        clock: &crate::world::RoundClock,
+    ) -> crate::sheet::CastAttempt {
+        crate::sheet::BuffState::attempt(self, now, clock)
+    }
+
+    fn on_sent(&mut self, line: &str, id: crate::correlate::CmdId) {
+        crate::sheet::BuffState::on_sent(self, line, id)
+    }
+
+    fn on_event(&mut self, cor: &Correlated, now: Instant) {
+        crate::sheet::BuffState::on_event(self, cor, now)
+    }
+
+    fn in_flight(&self) -> bool {
+        crate::sheet::BuffState::in_flight(self)
+    }
+
+    /// An empty book has nothing to keep up, and a full one is never
+    /// finished: upkeep stops when nothing is wanted and nothing is
+    /// owed, which is the driver's own `Nothing` arm.
+    fn done(&self) -> bool {
+        self.is_empty()
+    }
+}
+
+/// Drive one spell machine, standing still, until it is done, until it
+/// wants nothing with nothing owed, or until `deadline`. True when
+/// anything was sent.
+///
+/// Runs the attempt and outcome cycle directly, with no gate, because
+/// the caller does not own the connection yet. A fizzle is retried on
+/// the round, and giving up honestly is the answer when nothing can
+/// work.
+pub(crate) async fn drive_cast(
+    session: &crate::session::Session,
+    state: &mut impl CastState,
+    clock: &crate::world::RoundClock,
+    deadline: tokio::time::Instant,
+) -> bool {
+    let mut events = session.events();
+    crate::session::drain(&mut events, |cor| state.on_event(cor, Instant::now()));
+    let mut sent = false;
+    loop {
+        if state.done() || tokio::time::Instant::now() >= deadline {
+            return sent;
+        }
+        match state.attempt(Instant::now(), clock) {
+            crate::sheet::CastAttempt::Send(cmd) => {
+                let id = session.send(&cmd);
+                state.on_sent(&cmd, id);
+                sent = true;
+            }
+            crate::sheet::CastAttempt::Hold(_) => {}
+            crate::sheet::CastAttempt::Nothing if !state.in_flight() => return sent,
+            crate::sheet::CastAttempt::Nothing => {}
+        }
+        match tokio::time::timeout(Duration::from_millis(300), events.recv()).await {
+            Ok(Ok(cor)) => state.on_event(&cor, Instant::now()),
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
+            Ok(Err(_)) => return sent,
+            Err(_) => {}
+        }
+    }
+}
+
+/// Light up before a dark leg, standing still. Proceeding blind is the
+/// explicit fallback when nothing can work, and the deadline is what
+/// keeps a lost outcome from wedging the leg.
 pub(crate) async fn ensure_lit(
     session: &crate::session::Session,
     light: &mut crate::sheet::LightState,
     clock: &crate::world::RoundClock,
 ) -> bool {
-    if light.lit() {
-        return false;
-    }
-    let mut events = session.events();
-    crate::session::drain(&mut events, |_| {});
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    let mut cast = false;
-    loop {
-        if light.lit() || tokio::time::Instant::now() >= deadline {
-            return cast;
-        }
-        match light.attempt(Instant::now(), clock) {
-            crate::sheet::CastAttempt::Send(cmd) => {
-                let id = session.send(&cmd);
-                light.on_sent(&cmd, id);
-                cast = true;
-            }
-            crate::sheet::CastAttempt::Hold(_) => {}
-            crate::sheet::CastAttempt::Nothing if !light.in_flight() => return cast,
-            crate::sheet::CastAttempt::Nothing => {}
-        }
-        match tokio::time::timeout(Duration::from_millis(300), events.recv()).await {
-            Ok(Ok(cor)) => light.on_event(&cor),
-            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
-            Ok(Err(_)) => return cast,
-            Err(_) => {}
-        }
-    }
+    let deadline = tokio::time::Instant::now() + CAST_DEADLINE;
+    drive_cast(session, light, clock, deadline).await
 }
 
 /// How the departure wait ended: fit to walk (or past caring — the
