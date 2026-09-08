@@ -332,8 +332,9 @@ fn room_name(graph: &RoomGraph, id: RoomId) -> String {
 /// starts, and it is also the safe room.
 ///
 /// `live` is the job's settings as the window keeps them. A change is
-/// picked up at the next hop, the next pickup, or the next wait in the
-/// sweep.
+/// picked up at the next hop, at the next pickup, or in the wait a
+/// pickup is already sitting in. The search's own wait has no arm for
+/// one, so a change that lands during it waits for the first pickup.
 pub async fn run_recover(
     session: &Session,
     graph: Arc<RoomGraph>,
@@ -552,11 +553,38 @@ fn vitals_end(ev: &Event, bot: &BotConfig, name: &str) -> Option<SweepEnd> {
     }
 }
 
-/// When a command sent inside the sweep has waited long enough. The
-/// crate's own per-command answer deadline, read off the settings every
-/// time so a change moves it mid sweep.
+/// When a command sent inside the sweep has waited long enough.
+///
+/// `farm.nav.step_timeout_ms` is the crate's per-command answer
+/// deadline, and it bounds every wait the sweep makes: the search, and
+/// each of the three attempts an entry is worth. So an operator who
+/// shortens it shortens the sweep, and an entry the board never answers
+/// costs three of it. Read off the settings every time, so a change
+/// moves it mid sweep.
 fn answer_by(live: &Live) -> tokio::time::Instant {
     tokio::time::Instant::now() + Duration::from_millis(live.farm.nav.step_timeout_ms)
+}
+
+/// A death or the hitpoint mark, read off whatever the board has
+/// already said.
+///
+/// Only what has already arrived: [`crate::session::drain`] is
+/// `try_recv` and never waits. The prompt that follows a reply is
+/// normally in the receiver by the time this runs, because the board
+/// writes a reply and its prompt together, but one still on the wire is
+/// left for the next wait to read.
+fn drained_end(
+    events: &mut tokio::sync::broadcast::Receiver<crate::correlate::Correlated>,
+    bot: &BotConfig,
+    name: &str,
+) -> Option<SweepEnd> {
+    let mut end = None;
+    crate::session::drain(events, |cor| {
+        if end.is_none() {
+            end = vitals_end(&cor.event, bot, name);
+        }
+    });
+    end
 }
 
 /// One bare `search`, then one `get` per listed entry, gear first and
@@ -619,6 +647,12 @@ async fn sweep(
         return Ok(SweepEnd::Nothing);
     }
     *haul = Haul::wanted(&list);
+    // The prompt the search's own block ended on. Read before the first
+    // `get` goes out, so a character who arrived already under the mark
+    // asks for nothing.
+    if let Some(end) = drained_end(&mut events, &live.bot, name) {
+        return Ok(end);
+    }
     for take in &list {
         let mut tries = 0u32;
         'entry: while tries < crate::farm::LOOT_TRIES {
@@ -671,14 +705,7 @@ async fn sweep(
         }
         // The prompt that followed the reply may already say the
         // character is too hurt to stand here for the next one.
-        let mut end = None;
-        let bot = &live.bot;
-        crate::session::drain(&mut events, |cor| {
-            if end.is_none() {
-                end = vitals_end(&cor.event, bot, name);
-            }
-        });
-        if let Some(end) = end {
+        if let Some(end) = drained_end(&mut events, &live.bot, name) {
             return Ok(end);
         }
     }
@@ -689,10 +716,13 @@ async fn sweep(
 /// after the round rather than at once. Bounded, because a board that
 /// prints no prompt must not wedge the walk home.
 ///
-/// `events` is the caller's receiver, subscribed before the refused move
-/// went out. Subscribing here instead would start listening after the
-/// board had already answered, and the wait would then sit out its whole
-/// deadline for a prompt it had missed.
+/// `events` is the caller's receiver, opened before the refused move went
+/// out and emptied right before this call. Opening one here instead
+/// would start listening after the board had already answered, and the
+/// wait would sit out its whole deadline for a prompt it had missed.
+/// Not emptying it first would end the wait on the refusal's own
+/// prompt, which is this round's, and the retry would go out inside the
+/// round that just refused it.
 async fn wait_a_prompt(
     events: &mut tokio::sync::broadcast::Receiver<crate::correlate::Correlated>,
 ) {
@@ -726,12 +756,11 @@ async fn go_home(
     let mut here = here;
     let mut guard = crate::farm::FarmGuard::death_only(&fixed.name);
     let mut refused = 0u32;
-    // Subscribed before the first step, and emptied before every one, so
-    // the prompt that answers a refusal is waiting in it.
+    // Opened before the first step, so nothing the board says about one
+    // can be missed.
     let mut events = session.events();
     loop {
         refresh_navs(navs, live, built_at, session, fixed);
-        crate::session::drain(&mut events, |_| {});
         match navs
             .runner
             .goto(session, here, fixed.home, &mut guard, false)
@@ -754,6 +783,10 @@ async fn go_home(
                         if refused < COMBAT_RETRIES =>
                     {
                         refused += 1;
+                        // Everything the refused step printed, the
+                        // round's own prompt with it. What the wait
+                        // ends on is then the next round's.
+                        crate::session::drain(&mut events, |_| {});
                         wait_a_prompt(&mut events).await;
                     }
                     _ => {

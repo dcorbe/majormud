@@ -102,6 +102,16 @@ fn corridor(keep_light: i64) -> Arc<RoomGraph> {
     ]))
 }
 
+/// Splits a script entry's reply in two. The board writes the first
+/// half at once and the second [`PAUSE_MS`] later, still reading while
+/// it waits. What a board printing the next round's prompt a moment
+/// after a refusal looks like.
+const PAUSE: &str = "\x00";
+/// Written into the board's log where the second half went out, so a
+/// test can say what the client sent before it and what after.
+const LATER: &str = "-- the second half --";
+const PAUSE_MS: u64 = 200;
+
 async fn scripted_board(
     script: Vec<(&'static str, String)>,
 ) -> (std::net::SocketAddr, Arc<Mutex<Vec<String>>>) {
@@ -110,18 +120,30 @@ async fn scripted_board(
     let received = Arc::new(Mutex::new(Vec::new()));
     let log = Arc::clone(&received);
     tokio::spawn(async move {
-        let (mut sock, _) = listener.accept().await.unwrap();
-        sock.write_all(block("Guard Post", "north").as_bytes())
+        let (sock, _) = listener.accept().await.unwrap();
+        let (mut rd, mut wr) = sock.into_split();
+        wr.write_all(block("Guard Post", "north").as_bytes())
             .await
             .unwrap();
+        // The halves of a paused reply come back through this, so the
+        // read loop is never the thing that is asleep.
+        let (say, mut said) = tokio::sync::mpsc::unbounded_channel::<String>();
         let mut used: Vec<Option<u64>> = vec![None; script.len()];
         let mut clock: u64 = 0;
         let mut pending = String::new();
         let mut buf = [0u8; 512];
-        while let Ok(n) = sock.read(&mut buf).await {
-            if n == 0 {
-                break;
-            }
+        loop {
+            let n = tokio::select! {
+                read = rd.read(&mut buf) => match read {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => n,
+                },
+                Some(late) = said.recv() => {
+                    log.lock().unwrap().push(LATER.to_string());
+                    wr.write_all(late.as_bytes()).await.unwrap();
+                    continue;
+                }
+            };
             pending.push_str(&String::from_utf8_lossy(&buf[..n]));
             while let Some(nl) = pending.find('\n') {
                 let line: String = pending.drain(..=nl).collect();
@@ -145,7 +167,18 @@ async fn scripted_board(
                         None => format!("\r\n{line}\r\nYou say \"{line}\"\r\n{PROMPT}"),
                     },
                 };
-                sock.write_all(reply.as_bytes()).await.unwrap();
+                match reply.split_once(PAUSE) {
+                    Some((now, later)) => {
+                        wr.write_all(now.as_bytes()).await.unwrap();
+                        let say = say.clone();
+                        let later = later.to_string();
+                        tokio::spawn(async move {
+                            tokio::time::sleep(Duration::from_millis(PAUSE_MS)).await;
+                            let _ = say.send(later);
+                        });
+                    }
+                    None => wr.write_all(reply.as_bytes()).await.unwrap(),
+                }
             }
         }
     });
@@ -515,9 +548,15 @@ async fn the_walk_home_retries_a_move_refused_for_combat() {
     script.push(sneaky_step("Inner Ward", "north south"));
     script.push(sneaky_step("Keep", "south"));
     script.push(("search", reply("search", "Your search revealed nothing.")));
+    // The refusal ends the round it was refused in. The next round's
+    // prompt comes a moment later, and that is the one the retry waits
+    // for.
     script.push((
         "s",
-        reply("s", "You may not enter that room while in combat!"),
+        format!(
+            "{}{PAUSE}\r\n{PROMPT}",
+            reply("s", "You may not enter that room while in combat!")
+        ),
     ));
     script.extend(home_steps());
     let (out, log) = recover_over(corridor(0), script).await;
@@ -532,6 +571,21 @@ async fn the_walk_home_retries_a_move_refused_for_combat() {
         "log: {log:?}"
     );
     assert_eq!(count(&log, "s"), 3, "the refused move is sent again: {log:?}");
+    let later = log
+        .iter()
+        .position(|l| l == LATER)
+        .unwrap_or_else(|| panic!("the second prompt must go out: {log:?}"));
+    let retry = log
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| *l == "s")
+        .map(|(i, _)| i)
+        .nth(1)
+        .unwrap();
+    assert!(
+        later < retry,
+        "the retry waits for the next round's prompt: {log:?}"
+    );
 }
 
 // ------------------------------------------------------------- the light
@@ -666,6 +720,25 @@ async fn hitpoints_under_the_mark_end_the_sweep_with_a_partial_haul() {
     assert_eq!(count(&log, "get leather cap"), 0, "the sweep stopped: {log:?}");
 }
 
+/// The character arrived already too hurt to stay: the search's own
+/// block ends on 15 of 30, under the 70 mark. Nothing is asked for.
+#[tokio::test]
+async fn a_search_block_under_the_mark_asks_for_nothing() {
+    let mut script = up_to_the_search("a rusty dagger", "[HP=15/MA=0]:");
+    script.extend(home_steps());
+    let (out, log) = recover_over(corridor(0), script).await;
+    let end = out.expect("the job must finish");
+    let RecoverEnd::Home { why, haul, .. } = end else {
+        panic!("expected home, got {end:?}, log {log:?}");
+    };
+    assert_eq!(why, HomeWhy::Hurt { mark: 70 });
+    assert_eq!(haul.summary(), "0 of 1 items");
+    assert_eq!(
+        count(&log, "get rusty dagger"),
+        0,
+        "nothing is asked for: {log:?}"
+    );
+}
 
 /// The operator raises the heal mark to 101 while the sweep is waiting
 /// out a `get` the board will not answer. The next prompt is read
