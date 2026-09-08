@@ -245,3 +245,85 @@ fn the_recovery_config_takes_the_fighting_out_of_a_walk() {
     assert_eq!(farm.interrupt_at_percent, 0);
 }
 
+
+/// Where `/recover` goes when the operator typed a room.
+#[test]
+fn a_typed_target_resolves_and_a_typed_nonsense_name_refuses() {
+    use mud_client::recover::target_of;
+
+    let graph = target_graph();
+    let log = target_log("typed");
+    assert_eq!(
+        target_of(&graph, None, Some("1/2810"), "beef", &log),
+        Ok(DEATH_ROOM)
+    );
+    assert_eq!(
+        target_of(&graph, None, Some("Sunken Vault"), "beef", &log),
+        Ok(DEATH_ROOM)
+    );
+    let why = target_of(&graph, None, Some("no such place"), "beef", &log)
+        .expect_err("a name that names nothing refuses");
+    assert!(
+        why.iter().all(|l| l.starts_with("recover:")),
+        "the refusal names the verb that asked: {why:?}"
+    );
+}
+
+/// With no room typed, the target is the newest logged death that
+/// carries one, and an empty log is a refusal rather than a guess.
+#[test]
+fn an_untyped_target_reads_the_log_and_refuses_when_it_holds_nothing() {
+    use mud_client::deathlog::{Death, FixWord, record_in};
+    use mud_client::recover::target_of;
+
+    let graph = target_graph();
+    let log = target_log("untyped");
+    assert_eq!(
+        target_of(&graph, None, None, "beef", &log),
+        Err(vec![
+            "-- recover: no logged death with a room. /recover <room> --".to_string()
+        ]),
+        "no file at all is an empty log"
+    );
+
+    record_in(
+        &log,
+        &Death {
+            stamp: "2026-09-07T14:42:07Z".into(),
+            character: "beef".into(),
+            room: Some(DEATH_ROOM),
+            name: "Sunken Vault".into(),
+            fix: FixWord::Confirmed,
+        },
+    )
+    .unwrap();
+    assert_eq!(target_of(&graph, None, None, "beef", &log), Ok(DEATH_ROOM));
+    assert_eq!(
+        target_of(&graph, None, None, "porkchop", &log),
+        Err(vec![
+            "-- recover: no logged death with a room. /recover <room> --".to_string()
+        ]),
+        "another character's death is not this one's target"
+    );
+}
+
+/// The one room a typed target can name.
+fn target_graph() -> mud_client::graph::RoomGraph {
+    mud_client::graph::RoomGraph::from_rooms(vec![(
+        DEATH_ROOM,
+        mud_client::graph::GraphRoom {
+            name: "Sunken Vault".into(),
+            ..Default::default()
+        },
+    )])
+}
+
+/// A scratch log under the test target directory, never the real one.
+fn target_log(test: &str) -> std::path::PathBuf {
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("recover_target")
+        .join(test);
+    let _ = std::fs::remove_dir_all(&dir);
+    dir.join("deaths.log")
+}
+

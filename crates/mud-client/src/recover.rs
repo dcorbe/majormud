@@ -287,6 +287,28 @@ pub fn recover_config(p: &crate::profile::Profile) -> (BotConfig, crate::farm::F
     (bot, farm)
 }
 
+/// Where a `/recover` goes: the room the caller typed, or the newest
+/// logged death for `character` that carries one.
+///
+/// The refusal is a list of lines so a typed name that matches several
+/// rooms stays one candidate per line.
+pub fn target_of(
+    graph: &RoomGraph,
+    from: Option<RoomId>,
+    typed: Option<&str>,
+    character: &str,
+    log: &std::path::Path,
+) -> Result<RoomId, Vec<String>> {
+    match typed {
+        Some(typed) => crate::go::resolve(graph, from, typed).map_err(|r| r.lines("recover")),
+        None => crate::deathlog::last_in(log, character)
+            .and_then(|d| d.room)
+            .ok_or_else(|| {
+                vec!["-- recover: no logged death with a room. /recover <room> --".to_string()]
+            }),
+    }
+}
+
 /// The two navigators a recovery walks with, built together because
 /// both read the same tables and a settings change moves both.
 struct Navs {

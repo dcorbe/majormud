@@ -580,7 +580,8 @@ empty cell it says there is no room under the cursor, and the offline
 
 The job refuses to start, and says why, when another job is running, when
 the character's position is not confirmed, when there is no route, when the
-stat sheet says Stealth is 0, or when `bot.auto_sneak` is off.
+stat sheet says Stealth is 0, or when `bot.auto_sneak` is off. `/recover`
+with no room refuses as well when the log holds no death with a room.
 
 Before the sneak it lights up if the route or the death room is dark, and
 casts the buffs in `bot.buffs`. Both break a sneak, so both come first. The

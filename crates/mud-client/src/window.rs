@@ -1070,21 +1070,13 @@ async fn play(
                                             world_path.display()
                                         )),
                                         Some(g) => {
-                                            // A named room, or the last logged death.
-                                            // The refusal is a list of lines, so a
-                                            // candidate list stays one room per line.
-                                            let to = match target {
-                                                Some(typed) => crate::go::resolve(g, here.confirmed(), &typed)
-                                                    .map_err(|r| r.lines("recover")),
-                                                None => {
-                                                    let name = session.character_name().unwrap_or_default();
-                                                    crate::deathlog::last(&name)
-                                                        .and_then(|d| d.room)
-                                                        .ok_or_else(|| vec![
-                                                            "-- recover: no logged death with a room. /recover <room> --".to_string(),
-                                                        ])
-                                                }
-                                            };
+                                            let to = crate::recover::target_of(
+                                                g,
+                                                here.confirmed(),
+                                                target.as_deref(),
+                                                &session.character_name().unwrap_or_default(),
+                                                &crate::deathlog::path(),
+                                            );
                                             match to {
                                                 Err(why) => w.note(&why.join("\n")),
                                                 Ok(to) => {
