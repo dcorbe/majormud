@@ -196,3 +196,52 @@ fn the_jobs_phases_have_labels_the_bar_can_show() {
     assert_eq!(Phase::SneakingIn { to: DEATH_ROOM }.room(), None);
 }
 
+/// What a recovery runs under, from a profile that has every switch on.
+/// A recovery that fights, flees or loots on its own is a different job
+/// with the same name, and the operator finds out by watching the
+/// character swing at what killed it.
+#[test]
+fn the_recovery_config_takes_the_fighting_out_of_a_walk() {
+    use mud_client::bot::BotConfig;
+    use mud_client::farm::FarmConfig;
+    use mud_client::profile::Profile;
+    use mud_client::recover::recover_config;
+
+    let profile = Profile {
+        bot: Some(BotConfig {
+            auto_combat: true,
+            auto_flee: true,
+            auto_get: true,
+            auto_sneak: true,
+            ..Default::default()
+        }),
+        farm: Some(FarmConfig {
+            fight_while_travelling: true,
+            interrupt_at_percent: 60,
+            depart_at_percent: Some(80),
+            max_seconds: 900,
+            nav: mud_client::nav::NavConfig {
+                bash_doors: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let (bot, farm) = recover_config(&profile);
+    assert!(!bot.auto_combat, "a recovery never swings");
+    assert!(!bot.auto_flee, "the job turns for home itself");
+    assert!(!bot.auto_get, "the sweep does the taking");
+    assert!(bot.auto_sneak, "auto_sneak is the operator's, and refusal reads it");
+    assert!(!farm.fight_while_travelling, "the walk in never stops to fight");
+    assert_eq!(farm.interrupt_at_percent, 0);
+    assert!(!farm.nav.bash_doors, "a corpse run is quiet");
+    assert_eq!(farm.depart_at_percent, None);
+    assert_eq!(farm.max_seconds, 0);
+
+    let (bot, farm) = recover_config(&Profile::default());
+    assert!(!bot.auto_combat && !bot.auto_flee && !bot.auto_get);
+    assert!(!farm.fight_while_travelling && !farm.nav.bash_doors);
+    assert_eq!(farm.interrupt_at_percent, 0);
+}
+

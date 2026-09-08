@@ -995,7 +995,7 @@ async fn play(
                                             world_path.display()
                                         )),
                                         Some(g) => match crate::go::resolve(g, here.confirmed(), &target) {
-                                            Err(refusal) => w.note(&refusal.lines().join("\n")),
+                                            Err(refusal) => w.note(&refusal.lines("go").join("\n")),
                                             Ok(to) => {
                                                 let name = g.room(to).map(|r| r.name.clone()).unwrap_or_default();
                                                 let steps = here
@@ -1044,18 +1044,22 @@ async fn play(
                                         )),
                                         Some(g) => {
                                             // A named room, or the last logged death.
+                                            // The refusal is a list of lines, so a
+                                            // candidate list stays one room per line.
                                             let to = match target {
                                                 Some(typed) => crate::go::resolve(g, here.confirmed(), &typed)
-                                                    .map_err(|r| r.lines().join("\n")),
+                                                    .map_err(|r| r.lines("recover")),
                                                 None => {
                                                     let name = session.character_name().unwrap_or_default();
                                                     crate::deathlog::last(&name)
                                                         .and_then(|d| d.room)
-                                                        .ok_or_else(|| "recover: no logged death with a room. /recover <room>".to_string())
+                                                        .ok_or_else(|| vec![
+                                                            "-- recover: no logged death with a room. /recover <room> --".to_string(),
+                                                        ])
                                                 }
                                             };
                                             match to {
-                                                Err(why) => w.note(&format!("-- {why} --")),
+                                                Err(why) => w.note(&why.join("\n")),
                                                 Ok(to) => {
                                                     let name = g.room(to).map(|r| r.name.clone()).unwrap_or_default();
                                                     match start_recover(
@@ -1133,7 +1137,7 @@ async fn play(
                             KeyOutcome::Room { target } => {
                                 match (graph.as_ref(), spawns.as_ref()) {
                                     (Some(g), Some(s)) => match here_or(g, here.last_known(), &target) {
-                                        Err(refusal) => w.note(&refusal.lines().join("\n")),
+                                        Err(refusal) => w.note(&refusal.lines("go").join("\n")),
                                         Ok(id) => match crate::spawn::Dossier::of(g, s, id) {
                                             None => w.note(&format!("-- room: no room {}/{} --", id.map, id.room)),
                                             Some(d) => w.note(&d.lines().join("\n")),
@@ -1148,7 +1152,7 @@ async fn play(
                             KeyOutcome::Map { target } => {
                                 match (graph.as_ref(), spawns.as_ref()) {
                                     (Some(g), Some(s)) => match here_or(g, here.last_known(), &target) {
-                                        Err(refusal) => w.note(&refusal.lines().join("\n")),
+                                        Err(refusal) => w.note(&refusal.lines("go").join("\n")),
                                         Ok(id) => {
                                             let mut view = crate::mapview::MapView::new(
                                                 g.clone(),

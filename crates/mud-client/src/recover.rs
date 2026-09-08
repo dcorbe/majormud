@@ -256,6 +256,36 @@ pub fn refusal(
     Ok(from)
 }
 
+/// What a recovery runs under, derived from the profile.
+///
+/// A recovery is a walk with the fighting taken out of it. Combat is off
+/// at both switches, the flee is off because the job turns for home
+/// itself, and the loot assist is off because the sweep does the taking
+/// and a second hand in the room would race it. The travel interrupt is
+/// spent on nothing, so the walk in never stops to swing, and doors stay
+/// unbashed because a corpse run is quiet.
+///
+/// `bot.auto_sneak` is left as the profile has it. [`refusal`] reads the
+/// same key off the same profile, and a job that forced it on would
+/// start on a promise the refusal never made.
+///
+/// One function so the window's initial pair and the reload that follows
+/// a `/set` cannot drift apart.
+pub fn recover_config(p: &crate::profile::Profile) -> (BotConfig, crate::farm::FarmConfig) {
+    let base = p.farm.clone().unwrap_or_else(|| crate::farm::FarmConfig {
+        content: crate::tui::content_path(p),
+        ..Default::default()
+    });
+    let mut farm = crate::go::go_config(&base, false);
+    farm.interrupt_at_percent = 0;
+    farm.nav.bash_doors = false;
+    let mut bot = crate::tui::assist_config_for(p);
+    bot.auto_combat = false;
+    bot.auto_flee = false;
+    bot.auto_get = false;
+    (bot, farm)
+}
+
 /// The two navigators a recovery walks with, built together because
 /// both read the same tables and a settings change moves both.
 struct Navs {

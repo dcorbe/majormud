@@ -58,19 +58,24 @@ pub enum GoRefusal {
 impl GoRefusal {
     /// One line each, for the caller to print.
     ///
+    /// `verb` is the command that asked, without its slash. The prefix
+    /// and the re-issue example both name it, because an operator who
+    /// typed `/recover` and is told to re-issue `/go` would walk the
+    /// character unsneaked into the room they died in.
+    ///
     /// Deliberately not [`std::fmt::Display`]: the caller paints into a
     /// raw-mode terminal and needs the lines separately.
-    pub fn lines(&self) -> Vec<String> {
+    pub fn lines(&self, verb: &str) -> Vec<String> {
         match self {
             GoRefusal::Unknown(typed) => {
-                vec![format!("go: no room matches {typed:?}")]
+                vec![format!("{verb}: no room matches {typed:?}")]
             }
             GoRefusal::Ambiguous {
                 typed,
                 nearest,
                 total,
             } => {
-                let mut out = vec![format!("go: {total} rooms match {typed:?}. Nearest:")];
+                let mut out = vec![format!("{verb}: {total} rooms match {typed:?}. Nearest:")];
                 for c in nearest {
                     let where_ = match c.steps {
                         Some(0) => "  (you are here)".to_string(),
@@ -84,7 +89,7 @@ impl GoRefusal {
                     ));
                 }
                 out.push(format!(
-                    "go: re-issue with the id, e.g. /go {}/{}",
+                    "{verb}: re-issue with the id, e.g. /{verb} {}/{}",
                     nearest.first().map(|c| c.id.map).unwrap_or(1),
                     nearest.first().map(|c| c.id.room).unwrap_or(1),
                 ));

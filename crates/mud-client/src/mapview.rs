@@ -522,7 +522,7 @@ impl MapView {
                             &typed,
                         ) {
                             Ok(id) => self.go_to_room(id),
-                            Err(refusal) => self.message = refusal.lines().first().cloned(),
+                            Err(refusal) => self.message = refusal.lines("go").first().cloned(),
                         }
                     }
                     Asking::LoopName => {

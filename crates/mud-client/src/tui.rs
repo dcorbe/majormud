@@ -2129,24 +2129,17 @@ pub fn start_recover(
     // Automation goes back under flood control, exactly as a go does.
     session.set_pace(session.profile().pace());
     // The job's own settings, and the rule that rebuilds them when the
-    // operator edits the profile mid-run. Combat is off both ways round:
-    // the runner never swings, and the walk never stops to fight.
-    let derive: crate::farm::Derive = std::sync::Arc::new(move |p: &crate::profile::Profile| {
-        let base = p.farm.clone().unwrap_or_else(|| crate::farm::FarmConfig {
-            content: content_path(p),
-            ..Default::default()
-        });
-        let mut farm = crate::go::go_config(&base, false);
-        farm.interrupt_at_percent = 0;
-        farm.nav.bash_doors = false;
-        let mut bot = assist_config_for(p);
-        bot.auto_combat = false;
-        bot.auto_flee = false;
-        bot.auto_get = false;
-        (bot, farm)
-    });
-    let (bot, cfg) = derive(&session.profile());
-    let live = crate::farm::Live::new(&session, "recover", notices.clone(), bot, cfg, derive.clone());
+    // operator edits the profile mid-run. Both are `recover_config`, so
+    // what the job starts under and what a `/set` gives it cannot drift.
+    let (bot, cfg) = crate::recover::recover_config(&session.profile());
+    let live = crate::farm::Live::new(
+        &session,
+        "recover",
+        notices.clone(),
+        bot,
+        cfg,
+        std::sync::Arc::new(crate::recover::recover_config),
+    );
     let (tx, rx) = tokio::sync::watch::channel(crate::farm::Phase::default());
     let handle = tokio::spawn(async move {
         let end = match crate::recover::run_recover(

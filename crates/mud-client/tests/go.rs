@@ -146,7 +146,7 @@ fn the_refusal_names_every_candidate_with_its_id() {
     let Err(refusal) = resolve(&g, Some(id(1)), "Slum Street") else {
         panic!("must refuse");
     };
-    let lines = refusal.lines();
+    let lines = refusal.lines("go");
     assert!(lines[0].contains("2 rooms match"), "{lines:?}");
     assert!(lines.iter().any(|l| l.contains("1/2") && l.contains("1 step")), "{lines:?}");
     assert!(lines.iter().any(|l| l.contains("1/4") && l.contains("3 steps")), "{lines:?}");
@@ -159,7 +159,38 @@ fn the_refusal_names_every_candidate_with_its_id() {
 #[test]
 fn an_unknown_target_says_what_it_could_not_find() {
     let refusal = GoRefusal::Unknown("Atlantis".into());
-    assert_eq!(refusal.lines(), vec!["go: no room matches \"Atlantis\""]);
+    assert_eq!(refusal.lines("go"), vec!["go: no room matches \"Atlantis\""]);
+}
+
+/// The refusal answers the verb that asked. An operator who typed
+/// `/recover Slum` and is told to re-issue `/go 1/2` walks the character
+/// unsneaked into the room they died in, which is the one move a
+/// recovery exists to avoid.
+#[test]
+fn the_refusal_names_the_verb_that_asked() {
+    let g = line(&["Town Gates", "Slum Street", "Alley", "Slum Street"]);
+    let Err(refusal) = resolve(&g, Some(id(1)), "Slum Street") else {
+        panic!("must refuse");
+    };
+    let lines = refusal.lines("recover");
+    assert_eq!(lines[0], "recover: 2 rooms match \"Slum Street\". Nearest:");
+    assert_eq!(
+        lines.last().unwrap(),
+        "recover: re-issue with the id, e.g. /recover 1/2"
+    );
+    assert!(
+        lines.iter().all(|l| !l.contains("/go") && !l.starts_with("go:")),
+        "a recovery must never be told to go: {lines:?}"
+    );
+    assert_eq!(
+        GoRefusal::Unknown("Atlantis".into()).lines("recover"),
+        vec!["recover: no room matches \"Atlantis\""]
+    );
+    // The `/go` wording is unchanged, to the byte.
+    assert_eq!(
+        refusal.lines("go").last().unwrap(),
+        "go: re-issue with the id, e.g. /go 1/2"
+    );
 }
 
 // --- config ---------------------------------------------------------
@@ -237,3 +268,4 @@ fn a_walk_that_ended_without_arriving_reports_no_room() {
     let done = Phase::Done { why: "gave up".into(), at: None };
     assert_eq!(done.room(), None);
 }
+

@@ -213,7 +213,7 @@ fn map_command(at: &str, content: &std::path::Path) -> ExitCode {
     let anchor = match mud_client::go::resolve(&graph, None, at) {
         Ok(id) => id,
         Err(refusal) => {
-            for line in refusal.lines() {
+            for line in refusal.lines("go") {
                 eprintln!("{line}");
             }
             return ExitCode::FAILURE;
