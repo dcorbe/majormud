@@ -863,6 +863,12 @@ impl Bot {
         self.engaged.as_deref()
     }
 
+    /// Did the last room block list something this bot would swing at,
+    /// fight started or not. What makes a room not quiet.
+    pub fn has_work(&self) -> bool {
+        self.room_has_work
+    }
+
     /// Has the board already refused to let us attack this?
     fn is_refused(&self, noun: &str) -> bool {
         self.refused.lock().expect("refusals").contains(noun)

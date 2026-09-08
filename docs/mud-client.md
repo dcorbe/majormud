@@ -67,7 +67,7 @@ rest_command = "rest"
 minor_heal_spell = ""      # empty = the cheapest heal in the book
 major_heal_spell = ""      # empty = the dearest
 hp_regen_spell = ""        # a heal over time, cast between the two marks
-buffs = ["bless"]          # kept up on a duration budget, not an HP mark
+buffs = ["bless"]          # kept up on a duration budget, not an HP mark; short names work
 ignore = ["guard", "healer"]
 # max_hp and max_mana omitted: the runner probes the board for them at startup
 
@@ -213,7 +213,15 @@ redundant cast is the worst case; a buff silently down is not.
 
 A buff the character does not know, or one with no duration, is refused at
 startup with the reason printed. Nothing is skipped quietly: a buff that is
-not being kept up looks exactly like one that is.
+not being kept up looks exactly like one that is. A buff may be named by
+its full name or by the short name `cast` takes: `["shld", "blur"]` and
+`["shockshield", "blur"]` are the same list.
+
+The assist keeps the buffs up the same way a job does, standing in a
+quiet room: no fight in progress, nothing in the room it would swing at,
+and no rest or meditation under way, since a cast ends one. Until
+2026-09-08 only a job built a buff state, and a character played by hand
+with `/bot` on cast nothing.
 
 Buffs are never cast mid-fight. A buff bought during the fight it was meant
 to help is mana spent too late to matter.

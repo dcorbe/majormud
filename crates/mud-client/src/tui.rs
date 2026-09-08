@@ -1371,11 +1371,28 @@ pub fn handle_key(
 /// realm entry probe has not read the stat sheet or the spellbook yet.
 /// [`assist_tick`] reads the sheet on its first tick after the probe has
 /// stored one, and refreshes the hide flag on every tick.
-pub(crate) fn new_assist(session: &Session, cfg: &crate::bot::BotConfig) -> (crate::bot::Bot, crate::sheet::HealState) {
+pub(crate) fn new_assist(session: &Session, cfg: &crate::bot::BotConfig) -> (crate::bot::Bot, AssistCasts) {
     let bot = crate::bot::Bot::new(cfg.clone())
         .with_stealth(session.capabilities().stealth > 0)
         .with_pack(session.pack_handle());
-    (bot, crate::sheet::HealState::new(Vec::new()))
+    (bot, AssistCasts::default())
+}
+
+/// The spells the assist casts: heals by the marks, and the profile's
+/// buffs on their duration budget. Built empty and filled from the
+/// sheet on the first tick after the realm entry probe has stored one.
+pub struct AssistCasts {
+    pub heal: crate::sheet::HealState,
+    pub buff: crate::sheet::BuffState,
+}
+
+impl Default for AssistCasts {
+    fn default() -> Self {
+        AssistCasts {
+            heal: crate::sheet::HealState::new(Vec::new()),
+            buff: crate::sheet::BuffState::new(Vec::new()),
+        }
+    }
 }
 
 /// One correlated event for the assist while no job runs: keep its
@@ -1396,7 +1413,7 @@ pub fn assist_tick(
     cfg: &crate::bot::BotConfig,
     durations: &std::collections::BTreeMap<String, u32>,
     bot: &mut crate::bot::Bot,
-    heal: &mut crate::sheet::HealState,
+    casts: &mut AssistCasts,
     watch: &mut crate::farm::HealWatch,
     book_seen: &mut usize,
     clock: &crate::world::RoundClock,
@@ -1412,20 +1429,35 @@ pub fn assist_tick(
     let mut refusals = Vec::new();
     if spells != *book_seen {
         let sheet = crate::farm::sheet_from(session, cfg, durations);
-        *heal = crate::sheet::HealState::new(sheet.heals.0);
+        casts.heal = crate::sheet::HealState::new(sheet.heals.0);
+        casts.buff = crate::sheet::BuffState::new(sheet.buffs.0);
+        // The prompt the book was read after has already passed this
+        // state by, so the pool it showed is seeded rather than waited
+        // for.
+        if let Some(mana) = session.state().borrow().mana {
+            casts.buff.seed_mana(mana);
+        }
         *book_seen = spells;
         refusals = sheet.heals.1;
+        refusals.extend(sheet.buffs.1);
     }
-    heal.on_event(cor, now);
+    casts.heal.on_event(cor, now);
+    casts.buff.on_event(cor, now);
     if watch.on_event(&cor.event) {
         bot.rearm();
     }
     if let crate::events::Event::Prompt { hp, .. } = &cor.event
-        && let Some(cmd) = assist_heal(cfg, bot, heal, clock, *hp, now)
+        && let Some(cmd) = assist_heal(cfg, bot, &mut casts.heal, clock, *hp, now)
     {
         let id = session.send(&cmd);
-        heal.on_sent(&cmd, id);
+        casts.heal.on_sent(&cmd, id);
         watch.on_sent(&cmd);
+    }
+    if let crate::events::Event::Prompt { status, .. } = &cor.event
+        && let Some(cmd) = assist_buff(bot, &mut casts.buff, clock, status.as_ref(), now)
+    {
+        let id = session.send(&cmd);
+        casts.buff.on_sent(&cmd, id);
     }
     for cmd in assist_actions(bot, cor) {
         // The bot rests off a prompt and nothing else, so the prompt's
@@ -1502,6 +1534,28 @@ pub fn assist_heal(
     let percent = bot.hp_percent(hp)?;
     let need = crate::bot::heal_need(cfg, percent)?;
     match heal.attempt(now, clock, need) {
+        crate::sheet::CastAttempt::Send(cmd) => Some(cmd),
+        _ => None,
+    }
+}
+
+/// The assist's buff for one prompt: the first lapsed, affordable buff,
+/// and only standing in a quiet room. A buff bought mid-fight is mana
+/// spent too late to matter, and a cast ends a rest, so neither a fight
+/// in progress, work in the room, nor a recovery under way is a moment
+/// to cast in. The state owns mana, the round and the budget, the same
+/// as it does for a farm.
+pub fn assist_buff(
+    bot: &crate::bot::Bot,
+    buff: &mut crate::sheet::BuffState,
+    clock: &crate::world::RoundClock,
+    status: Option<&crate::events::Status>,
+    now: std::time::Instant,
+) -> Option<String> {
+    if bot.engaged().is_some() || bot.has_work() || bot.fled() || status.is_some() {
+        return None;
+    }
+    match buff.attempt(now, clock) {
         crate::sheet::CastAttempt::Send(cmd) => Some(cmd),
         _ => None,
     }

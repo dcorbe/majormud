@@ -666,7 +666,7 @@ async fn play(
     // profile's `assist_play` starts it on. Rebuilt on every toggle-on
     // so its latches start clean.
     let mut assist: Option<crate::bot::Bot> = None;
-    let mut assist_heal_state: Option<crate::sheet::HealState> = None;
+    let mut assist_casts: Option<crate::tui::AssistCasts> = None;
     let mut assist_config = assist_config_for(&session.profile());
     // Rests the assist sends and the spells its book was last read to
     // hold. Both live beside the bot and are reset with it, because both
@@ -682,9 +682,9 @@ async fn play(
     if assist_config.assist_play {
         match needs_name(&session) {
             Ok(_) => {
-                let (bot, heal) = new_assist(&session, &assist_config);
+                let (bot, casts) = new_assist(&session, &assist_config);
                 assist = Some(bot);
-                assist_heal_state = Some(heal);
+                assist_casts = Some(casts);
             }
             Err(why) => assist_refused = Some(why),
         }
@@ -840,8 +840,8 @@ async fn play(
                     // While a farm runs it owns the connection outright;
                     // the assist only drives a hand-played session.
                     if job.is_none()
-                        && let (Some(bot), Some(heal)) =
-                            (assist.as_mut(), assist_heal_state.as_mut())
+                        && let (Some(bot), Some(casts)) =
+                            (assist.as_mut(), assist_casts.as_mut())
                     {
                         let clock = state_rx.borrow().ticks.round.clone();
                         let refusals = assist_tick(
@@ -849,7 +849,7 @@ async fn play(
                             &assist_config,
                             &durations,
                             bot,
-                            heal,
+                            casts,
                             &mut assist_watch,
                             &mut assist_book_seen,
                             &clock,
@@ -939,9 +939,9 @@ async fn play(
                     // fights that are over, so the assist starts clean for
                     // the same reason `/bot` rebuilds it on every toggle-on.
                     if assist.is_some() {
-                        let (bot, heal) = new_assist(&session, &assist_config);
+                        let (bot, casts) = new_assist(&session, &assist_config);
                         assist = Some(bot);
-                        assist_heal_state = Some(heal);
+                        assist_casts = Some(casts);
                         assist_watch =
                             crate::farm::HealWatch::new(&assist_config, &crate::farm::FarmConfig::default());
                         assist_book_seen = usize::MAX;
@@ -1024,9 +1024,9 @@ async fn play(
                             if applied.bot_changed {
                                 assist_config = with_vitals(assist_config_for(w.settings.profile()), &assist_vitals);
                                 if assist.is_some() {
-                                    let (bot, heal) = new_assist(&session, &assist_config);
+                                    let (bot, casts) = new_assist(&session, &assist_config);
                                     assist = Some(bot);
-                                    assist_heal_state = Some(heal);
+                                    assist_casts = Some(casts);
                                     // Reconfigured, not rebuilt: a fresh
                                     // watch starts at "not watching" and
                                     // would drop the rest in flight, and
@@ -1299,15 +1299,15 @@ async fn play(
                                                         exp.observe(line);
                                                     }
                                                     if job.is_none()
-                                                        && let (Some(bot), Some(heal)) =
-                                                            (assist.as_mut(), assist_heal_state.as_mut())
+                                                        && let (Some(bot), Some(casts)) =
+                                                            (assist.as_mut(), assist_casts.as_mut())
                                                     {
                                                         let refusals = assist_tick(
                                                             &session,
                                                             &assist_config,
                                                             &durations,
                                                             bot,
-                                                            heal,
+                                                            casts,
                                                             &mut assist_watch,
                                                             &mut assist_book_seen,
                                                             &assist_clock,
@@ -1504,11 +1504,11 @@ async fn play(
                                         // Fresh on every start: latches from
                                         // an earlier stretch describe fights
                                         // that are over.
-                                        let (bot, heal) = new_assist(&session, &assist_config);
+                                        let (bot, casts) = new_assist(&session, &assist_config);
                                         assist = Some(bot);
-                                        assist_heal_state = Some(heal);
+                                        assist_casts = Some(casts);
                                     } else {
-                                        assist_heal_state = None;
+                                        assist_casts = None;
                                     }
                                     assist_watch =
                                         crate::farm::HealWatch::new(&assist_config, &crate::farm::FarmConfig::default());

@@ -1089,6 +1089,45 @@ fn the_assist_casts_by_the_marks_and_once_per_round() {
     assert_eq!(assist_heal(&off, &bot, &mut heal, &clock, 30, now + ROUND * 3), None);
 }
 
+/// The assist keeps the profile's buffs up the way a farm does: the
+/// first lapsed, affordable buff, once per round, standing in a quiet
+/// room. `bot.buffs = ["shld", "blur"]` cast nothing in hand play
+/// until 2026-09-08, because only a job built a buff state.
+#[test]
+fn the_assist_keeps_buffs_up_in_a_quiet_room() {
+    use mud_client::sheet::BuffState;
+    use mud_client::tui::assist_buff;
+    let book = Spellbook::parse("  2    4  bles   bless
+");
+    let durations = BTreeMap::from([("bless".to_string(), 40u32)]);
+    let (kept, refused) = mud_client::sheet::buffs(&book, &["bles".into()], &durations, Casting::Spells);
+    assert!(refused.is_empty(), "{refused:?}");
+    let mut buff = BuffState::new(kept);
+    let clock = mud_client::world::RoundClock::new();
+    let now = Instant::now();
+    let mut bot = Bot::new(BotConfig { auto_combat: true, max_hp: 100, ..BotConfig::default() });
+    // No mana known yet: nothing.
+    assert_eq!(assist_buff(&bot, &mut buff, &clock, None, now), None);
+    buff.seed_mana(10);
+    // Resting: a cast would end the rest.
+    assert_eq!(assist_buff(&bot, &mut buff, &clock, Some(&Status::Resting), now), None);
+    assert_eq!(assist_buff(&bot, &mut buff, &clock, None, now), Some("cast bles".into()));
+    buff.on_sent("cast bles", CmdId(7));
+    // In flight: nothing until the board answers.
+    assert_eq!(assist_buff(&bot, &mut buff, &clock, None, now + ROUND * 2), None);
+    let cast = Correlated { event: Event::Line("You cast bless on yourself.".into()), answers: Some(CmdId(7)), elsewhere: false };
+    buff.on_event(&cast, now);
+    // Bought: nothing until the budget runs out.
+    assert_eq!(assist_buff(&bot, &mut buff, &clock, None, now + ROUND * 2), None);
+    let lapsed = now + ROUND * 41;
+    // A fight in the room is not the moment.
+    assert_eq!(bot.on_event(&Event::RoomSeen(RoomView { name: "Cave".into(), also_here: vec!["giant rat".into()], ..RoomView::default() })), vec![mud_client::bot::BotAction::Send("a rat".into())]);
+    assert_eq!(assist_buff(&bot, &mut buff, &clock, None, lapsed), None);
+    bot.on_event(&Event::Line("*Combat Off*".into()));
+    bot.on_event(&Event::RoomSeen(RoomView { name: "Cave".into(), ..RoomView::default() }));
+    assert_eq!(assist_buff(&bot, &mut buff, &clock, None, lapsed), Some("cast bles".into()));
+}
+
 #[test]
 fn bank_is_its_own_outcome() {
     assert_eq!(slash("/bank"), Some(KeyOutcome::Bank));
