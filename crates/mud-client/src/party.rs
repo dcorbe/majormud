@@ -342,6 +342,12 @@ impl WaitState {
         WaitState::default()
     }
 
+    /// Whether a `@wait` is out and its `@ok` is still owed. Callers
+    /// read the party only when this says something is in flight.
+    pub fn is_waiting(&self) -> bool {
+        self.waiting
+    }
+
     pub fn on_rest_sent(&mut self) -> Option<Signal> {
         if self.waiting {
             return None;

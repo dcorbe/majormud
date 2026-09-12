@@ -1406,6 +1406,9 @@ pub struct AssistCasts {
     /// An `i` the gate sent is still out. One read at a time, so a
     /// stream of pickups costs one command, not one each.
     pub follower_read: bool,
+    /// The follower's side of the wait handshake around a rest. Idle
+    /// unless the character is following someone.
+    pub wait: crate::party::WaitState,
 }
 
 impl Default for AssistCasts {
@@ -1415,6 +1418,7 @@ impl Default for AssistCasts {
             buff: crate::sheet::BuffState::new(Vec::new()),
             follower: crate::bank::FollowerGate::new(),
             follower_read: false,
+            wait: crate::party::WaitState::new(),
         }
     }
 }
@@ -1475,6 +1479,16 @@ pub fn assist_tick(
     casts.buff.on_event(cor, now);
     if watch.on_event(&cor.event) {
         bot.rearm();
+        // A refused rest is over before it began. The leader is free to
+        // move again, so the release goes out at once rather than
+        // waiting for a status the board will never paint.
+        if casts.wait.is_waiting()
+            && let Some(leader) = follower_leader(session)
+            && casts.wait.on_refused() == Some(crate::party::Signal::Ok)
+        {
+            session.send(&crate::party::telepath(&leader, "@ok"));
+            session.party_note(format!("party: told {leader} @ok"));
+        }
     }
     if let crate::events::Event::Prompt { hp, .. } = &cor.event
         && let Some(cmd) = assist_heal(cfg, bot, &mut casts.heal, clock, *hp, now)
@@ -1489,19 +1503,56 @@ pub fn assist_tick(
         let id = session.send(&cmd);
         casts.buff.on_sent(&cmd, id);
     }
+    // The rest the leader was warned about is over on the first prompt
+    // the board paints without the status. The party is read only while
+    // a warning is actually out.
+    if let crate::events::Event::Prompt { status, .. } = &cor.event
+        && casts.wait.is_waiting()
+    {
+        match follower_leader(session) {
+            Some(leader) => {
+                if casts.wait.on_prompt(status.as_ref()) == Some(crate::party::Signal::Ok) {
+                    session.send(&crate::party::telepath(&leader, "@ok"));
+                    session.party_note(format!("party: told {leader} @ok"));
+                }
+            }
+            // The party ended while the character was sitting down.
+            // Nobody is owed a release, and a stray one later would
+            // reach whoever the name belongs to now.
+            None => casts.wait.reset(),
+        }
+    }
     follower_gate(session, bot, casts, cor, now);
     for cmd in assist_actions(bot, cor) {
-        // The bot rests off a prompt and nothing else, so the prompt's
-        // own numbers are the ones it read.
-        if cfg.is_rest(&cmd)
-            && let crate::events::Event::Prompt { hp, mana, .. } = &cor.event
-        {
-            session.report_rest(format!("assist: {}", cfg.rest_reason(&cmd, *hp, *mana)));
+        if cfg.is_rest(&cmd) {
+            // The bot rests off a prompt and nothing else, so the
+            // prompt's own numbers are the ones it read.
+            if let crate::events::Event::Prompt { hp, mana, .. } = &cor.event {
+                session.report_rest(format!("assist: {}", cfg.rest_reason(&cmd, *hp, *mana)));
+            }
+            // A follower cannot chase a leader that walked off while it
+            // was sitting down, so the warning goes out ahead of the
+            // rest itself.
+            if let Some(leader) = follower_leader(session)
+                && casts.wait.on_rest_sent() == Some(crate::party::Signal::Wait)
+            {
+                session.send(&crate::party::telepath(&leader, "@wait"));
+                session.party_note(format!("party: told {leader} @wait"));
+            }
         }
         session.send(&cmd);
         watch.on_sent(&cmd);
     }
     refusals
+}
+
+/// The leader to tell, when the character is following someone.
+///
+/// Reading the party copies, so this is asked only once something is
+/// actually due, never on the lines in between.
+fn follower_leader(session: &Session) -> Option<String> {
+    let party = session.party();
+    party.is_follower().then_some(party.leader).flatten()
 }
 
 /// The leader to ask and the bank settings to judge by, when the
@@ -1510,11 +1561,7 @@ pub fn assist_tick(
 /// Reading the party and the profile both copy, so this is asked only
 /// once something is actually due, never on the lines in between.
 fn follower_bank(session: &Session) -> Option<(String, crate::bank::BankConfig)> {
-    let party = session.party();
-    if !party.is_follower() {
-        return None;
-    }
-    let leader = party.leader?;
+    let leader = follower_leader(session)?;
     let bank = session.profile().bank;
     bank.auto_deposit.then_some((leader, bank))
 }

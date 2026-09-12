@@ -1035,8 +1035,13 @@ async fn play(
                         // let the follower ask again inside the five
                         // minutes. The deposit job is the one job that
                         // clears it, because the coins are in the bank.
+                        // The wait handshake is not a latch either: a
+                        // job that ran while the character was sitting
+                        // down must not swallow the `@ok` its `@wait`
+                        // owes the leader.
                         if let Some(old) = assist_casts.take() {
                             casts.follower = old.follower;
+                            casts.wait = old.wait;
                         }
                         if what == crate::tui::PARTY_DEPOSIT {
                             casts.follower.deposited();
