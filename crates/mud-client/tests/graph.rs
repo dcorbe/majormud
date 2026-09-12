@@ -2,7 +2,7 @@
 //! costs the walker.
 
 use mud_core::content::{Direction, RoomId};
-use mud_client::graph::{Capabilities, Cost, ExitRequirement, exit_cost_for};
+use mud_client::graph::{Capabilities, Cost, ExitRequirement, GraphRoom, exit_cost_for};
 use mud_client::purse::Purse;
 
 /// A toll you can pay is a step. A toll you cannot pay is a wall.
@@ -331,4 +331,96 @@ fn an_item_gate_is_a_step_with_the_item_and_a_wall_without() {
         Cost::Steps(1),
         "a map query is not a walker"
     );
+}
+
+/// Two ways from A to D: two steps through B, or four steps round by C.
+/// B is the room under test.
+fn detour_graph(b: GraphRoom) -> mud_client::graph::RoomGraph {
+    use mud_client::graph::{ExitEdge, RoomGraph};
+    let id = |n| RoomId { map: 1, room: n };
+    let (a, b_id, c1, c2, c3, d) = (id(1), id(2), id(3), id(4), id(5), id(6));
+    let plain = |dest| {
+        Some(ExitEdge {
+            dest,
+            exit_type: 0,
+            command: None,
+            requirement: ExitRequirement::None,
+        })
+    };
+    let mut room_a = GraphRoom::default();
+    room_a.exits[Direction::North as usize] = plain(b_id);
+    room_a.exits[Direction::East as usize] = plain(c1);
+    let mut room_b = b;
+    room_b.exits[Direction::North as usize] = plain(d);
+    let mut room_c1 = GraphRoom::default();
+    room_c1.exits[Direction::East as usize] = plain(c2);
+    let mut room_c2 = GraphRoom::default();
+    room_c2.exits[Direction::North as usize] = plain(c3);
+    let mut room_c3 = GraphRoom::default();
+    room_c3.exits[Direction::West as usize] = plain(d);
+    RoomGraph::from_rooms(vec![
+        (a, room_a),
+        (b_id, room_b),
+        (c1, room_c1),
+        (c2, room_c2),
+        (c3, room_c3),
+        (d, GraphRoom::default()),
+    ])
+}
+
+/// A safe route pays 60 to enter a room that can spawn something both
+/// hostile and above the character, so a detour of up to 60 steps
+/// wins. A short route, an unknown level, and a room the character
+/// outranks all take the two-step way.
+#[test]
+fn a_safe_route_detours_round_a_room_above_the_character() {
+    use mud_client::graph::{GraphRoom, RouteMode};
+    let graph = detour_graph(GraphRoom {
+        hostile_level: Some(10),
+        ..Default::default()
+    });
+    let (a, d) = (RoomId { map: 1, room: 1 }, RoomId { map: 1, room: 6 });
+    let walker = |level, route| Capabilities {
+        level,
+        route,
+        ..Capabilities::unrestricted()
+    };
+    let short = vec![Direction::North, Direction::North];
+    let round = vec![Direction::East, Direction::East, Direction::North, Direction::West];
+    assert_eq!(graph.route_for(a, d, &walker(Some(5), RouteMode::Safe)), Some(round));
+    assert_eq!(graph.route_for(a, d, &walker(Some(5), RouteMode::Short)), Some(short.clone()));
+    assert_eq!(graph.route_for(a, d, &walker(None, RouteMode::Safe)), Some(short.clone()));
+    assert_eq!(graph.route_for(a, d, &walker(Some(10), RouteMode::Safe)), Some(short));
+}
+
+/// The price is a cost, not a wall: with no detour the dangerous room
+/// is still walked. Townsfolk at the Slum Gates are the only way out
+/// of the slums, and "no route" there would strand every character.
+#[test]
+fn the_danger_price_is_a_cost_not_a_wall() {
+    use mud_client::graph::{ExitEdge, GraphRoom, RoomGraph, RouteMode};
+    let id = |n| RoomId { map: 1, room: n };
+    let mut a = GraphRoom::default();
+    a.exits[Direction::North as usize] = Some(ExitEdge {
+        dest: id(2),
+        exit_type: 0,
+        command: None,
+        requirement: ExitRequirement::None,
+    });
+    let graph = RoomGraph::from_rooms(vec![
+        (id(1), a),
+        (
+            id(2),
+            GraphRoom {
+                hostile_level: Some(17),
+                ..Default::default()
+            },
+        ),
+    ]);
+    let caps = Capabilities {
+        level: Some(3),
+        route: RouteMode::Safe,
+        ..Capabilities::unrestricted()
+    };
+    assert_eq!(graph.route_for(id(1), id(2), &caps), Some(vec![Direction::North]));
 }

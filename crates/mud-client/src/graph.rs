@@ -316,6 +316,15 @@ pub struct Capabilities {
     /// off a gate refuses a patrol circuit at config load for a walk
     /// the character may well be able to make.
     pub every_item: bool,
+    /// The character's level off the `stat` sheet, the same source as
+    /// `picklocks`. `None` until a sheet has been read, and a safe
+    /// route then has nothing to compare against and prices like a
+    /// short one.
+    pub level: Option<u32>,
+    /// Which route this walker wants. The session leaves it Short and
+    /// the navigator sets it from its own `[farm.nav].route`, the same
+    /// arrangement as `bash_doors`.
+    pub route: RouteMode,
 }
 
 impl Capabilities {
@@ -344,6 +353,9 @@ impl Capabilities {
             bash_doors: true,
             // A walker never holds everything.
             every_item: false,
+            // No sheet, and the route every caller had before the key.
+            level: None,
+            route: RouteMode::Short,
         }
     }
 
@@ -416,6 +428,30 @@ impl TollLog {
         )
     }
 }
+
+/// Which route a walker wants: the cheapest by exit, or the cheapest
+/// that also keeps clear of rooms above the character.
+///
+/// `[farm.nav].route` in the profile. Short is the default because it
+/// is what every walk did before the key existed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RouteMode {
+    #[default]
+    Short,
+    /// Entering a room whose [`GraphRoom::hostile_level`] exceeds the
+    /// character's level costs [`DANGER_COST`] on top of the exit. A
+    /// cost rather than a wall, for the same reason the exit table
+    /// prices a trap instead of refusing it: the Slum Gates spawn
+    /// level 17 townsfolk and are the only way out of the slums, and
+    /// "no route" there strands every character under 18.
+    Safe,
+}
+
+/// What a safe route pays to enter a room above the character: the
+/// price of a gate the walk cannot satisfy, so almost any detour wins
+/// and the room is still walked when it is the only way.
+pub const DANGER_COST: u32 = 60;
 
 /// What one edge costs this walker, or that it cannot be walked at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -623,6 +659,17 @@ pub struct GraphRoom {
     /// read as "assume dark": a false positive costs one cheap
     /// pre-light, a false negative costs a blind fight.
     pub light: i64,
+    /// The highest level among the monsters this room can hold that
+    /// would start a fight with a neutral character: the spawn
+    /// candidates, the forced monster, and the permanent resident, each
+    /// filtered by [`crate::spawn::initiates`]. `None` when nothing
+    /// hostile can be here. Passive townsfolk do not count however high
+    /// their level, or the Slum Gates would read as a level 17 danger.
+    ///
+    /// Neutral standing is fixed at load: only 19 templates consult it,
+    /// and a per-room constant is what lets the router read it at every
+    /// step without a table lookup.
+    pub hostile_level: Option<i64>,
 }
 
 pub struct RoomGraph {
@@ -664,7 +711,9 @@ impl RoomGraph {
                     resident: room.boss_monster.map(|m| i64::from(m.0)),
                 },
                 light: i64::from(room.light),
+                hostile_level: None,
             };
+            graph_room.hostile_level = Self::hostile_level(content, &graph_room.spawn);
             for (d, exit) in room.exits.iter().enumerate() {
                 let Some(exit) = exit else { continue };
                 let exit_type = i64::from(exit.exit_type);
@@ -729,6 +778,36 @@ impl RoomGraph {
             });
         }
         RoomGraph { rooms }
+    }
+
+    /// [`GraphRoom::hostile_level`] for one room: the same candidate
+    /// set [`crate::spawn::SpawnTable::candidates`] draws, plus the
+    /// resident, kept to the ones that initiate against a neutral
+    /// character. Field names follow `mud_core`: a monster's
+    /// `roam_class` is its spawn group and `herd_id` the class
+    /// [`crate::spawn::initiates`] calls `roam_class`.
+    fn hostile_level(content: &Content, spawn: &Spawn) -> Option<i64> {
+        use mud_core::content::{Monster, MonsterId};
+        let by_number = |n: i64| u16::try_from(n).ok().and_then(|n| content.monsters.get(&MonsterId(n)));
+        let candidates: Vec<&Monster> = match spawn.forced {
+            Some(n) => by_number(n).into_iter().collect(),
+            None if spawn.draws_from_region() => content
+                .monsters
+                .values()
+                .filter(|m| {
+                    i64::from(m.roam_class) == spawn.region
+                        && (spawn.band.0..=spawn.band.1).contains(&i64::from(m.level))
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        let neutral = crate::spawn::Standing::default();
+        candidates
+            .into_iter()
+            .chain(spawn.resident.and_then(by_number))
+            .filter(|m| crate::spawn::initiates(i64::from(m.behaviour), i64::from(m.herd_id), &neutral))
+            .map(|m| i64::from(m.level))
+            .max()
     }
 
     /// A command exit's phrase: the trigger message's FIRST line
@@ -1116,6 +1195,19 @@ impl RoomGraph {
         Some(steps)
     }
 
+    /// What a safe route pays on top of the exit to enter `room`:
+    /// [`DANGER_COST`] when the room's hostile level exceeds the
+    /// walker's, nothing on a short route or without a sheet.
+    fn danger(&self, room: RoomId, caps: &Capabilities) -> u32 {
+        if caps.route != RouteMode::Safe {
+            return 0;
+        }
+        let (Some(level), Some(hostile)) = (caps.level, self.rooms[&room].hostile_level) else {
+            return 0;
+        };
+        if hostile > i64::from(level) { DANGER_COST } else { 0 }
+    }
+
     /// Dijkstra over exits into known rooms, ordered by total
     /// [`exit_cost_for`] and broken by hop count, so the cheapest route is
     /// also the shortest of the equally cheap ones. `target` stops the
@@ -1168,7 +1260,7 @@ impl RoomGraph {
                     // An edge this walker cannot open is not a dear edge.
                     // Skipping it is what lets the detour win.
                     Cost::Impassable => continue,
-                    Cost::Steps(c) => (cost + u64::from(c), hops + 1),
+                    Cost::Steps(c) => (cost + u64::from(c) + u64::from(self.danger(edge.dest, caps)), hops + 1),
                 };
                 if best.get(&edge.dest).is_none_or(|r| (r.cost, r.hops) > step) {
                     best.insert(

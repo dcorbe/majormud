@@ -938,6 +938,8 @@ impl Session {
             pack: self.pack_handle(),
             bash_doors: false,
             every_item: false,
+            level: self.stats().level,
+            route: crate::graph::RouteMode::Short,
         }
     }
 

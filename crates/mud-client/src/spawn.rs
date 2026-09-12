@@ -137,26 +137,35 @@ impl Template {
     /// SUPPRESS an attack, so a positive here is an upper bound — "may
     /// attack you", never "will".
     pub fn initiates_against(&self, you: &Standing) -> bool {
-        // The hunter branch is decided before the mode, and is the only
-        // place a mode-6 reading flips.
-        if self.roam_class == 5 {
-            return if self.behaviour == 6 {
-                !you.notorious()
-            } else {
-                you.notorious()
-            };
-        }
-        match self.behaviour {
-            0 | 3 | 4 => false,
-            6 => !you.notorious(),
-            _ => true,
-        }
+        initiates(self.behaviour, self.roam_class, you)
     }
 
     /// Whether it can fight at all. 124 templates have no attack table —
     /// the shopkeepers, healers, trainers and props.
     pub fn armed(&self) -> bool {
         self.attack_percent > 0
+    }
+}
+
+/// [`Template::initiates_against`] on the two raw columns, for a caller
+/// holding a `mud_core` monster rather than a [`Template`]: the room
+/// graph prices a room by this at load
+/// ([`crate::graph::GraphRoom::hostile_level`]). One taxonomy, read
+/// two ways.
+pub fn initiates(behaviour: i64, roam_class: i64, you: &Standing) -> bool {
+    // The hunter branch is decided before the mode, and is the only
+    // place a mode-6 reading flips.
+    if roam_class == 5 {
+        return if behaviour == 6 {
+            !you.notorious()
+        } else {
+            you.notorious()
+        };
+    }
+    match behaviour {
+        0 | 3 | 4 => false,
+        6 => !you.notorious(),
+        _ => true,
     }
 }
 

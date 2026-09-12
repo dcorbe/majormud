@@ -77,6 +77,7 @@ pub const KEYS: &[&str] = &[
     "farm.nav.step_timeout_ms",
     "farm.nav.bash_doors",
     "farm.nav.search_hidden",
+    "farm.nav.route",
     "bank.auto_deposit",
     "bank.deposit_at_coins",
     "bank.deposit_on_weight_class",

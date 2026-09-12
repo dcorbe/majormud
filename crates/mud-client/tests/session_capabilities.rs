@@ -230,3 +230,50 @@ async fn a_toll_learned_by_run_go_is_known_to_the_next_navigator() {
     );
 }
 
+
+/// The character's level comes off the stat sheet, the way picklocks
+/// and stealth already do, so a safe route can compare a room against
+/// it. `None` until a sheet has been read.
+#[tokio::test]
+async fn the_stat_sheet_level_reaches_the_walker() {
+    const SHEET: &str = "\r\nstat\r\n\
+Name: Beef                             Lives/CP:    9/100\r\n\
+Race: Dark-Elf    Exp: 0               Perception:     43\r\n\
+Class: Ninja      Level: 7             Stealth:        56\r\n\
+Hits:    30/30    Armour Class:   0/0  Thievery:        0\r\n\
+                                       Traps:          29\r\n\
+                                       Picklocks:      31\r\n\
+Strength:  40     Agility: 50          Tracking:       26\r\n\
+Intellect: 50     Health:  30          Martial Arts:   51\r\n\
+Willpower: 30     Charm:   40          MagicRes:       35\r\n\
+[HP=30/MA=20]:";
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        sock.write_all(room_block("Silvermere Gate", "west").as_bytes())
+            .await
+            .unwrap();
+        let mut buf = [0u8; 512];
+        while let Ok(n) = sock.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            let line = String::from_utf8_lossy(&buf[..n]).trim().to_lowercase();
+            let reply = if line == "stat" {
+                SHEET.to_string()
+            } else {
+                format!("\r\n{line}\r\nYou say \"{line}\"\r\n[HP=30/MA=20]:")
+            };
+            sock.write_all(reply.as_bytes()).await.unwrap();
+        }
+    });
+    let session = session_for(addr).await;
+    assert_eq!(session.capabilities().level, None, "no sheet yet");
+    session.send("stat");
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while session.stats().level.is_none() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(session.capabilities().level, Some(7));
+}

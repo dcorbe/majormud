@@ -83,6 +83,7 @@ max_seconds = 3600         # 0 = unlimited
 [farm.nav]
 step_timeout_ms = 15000
 bash_doors = true
+route = "short"            # or "safe": detour round rooms above the character
 
 [bank]
 auto_deposit = true              # detour to a bank during a farm when a gate trips
@@ -385,6 +386,14 @@ case where no room block is coming at all.
   switch. Turning it off makes a locked door the character cannot pick a
   wall: routing goes around it, and a route that has no way around says
   `no route`.
+- **`route`** (`short`) — `safe` makes every walk price a room that can
+  spawn something both hostile and above the character's level as 60
+  extra steps, so a detour of up to sixty steps wins. It is a price, not
+  a wall: the Slum Gates spawn level 17 townsfolk and are the only way
+  out of the slums, and a wall there would say `no route` for every
+  character under 18. Townsfolk do not count anyway, because only
+  monsters that start fights are counted. The level is read off the
+  `stat` sheet, and until one has been read `safe` routes like `short`.
 
 ## Full-screen board screens (`train stats`)
 

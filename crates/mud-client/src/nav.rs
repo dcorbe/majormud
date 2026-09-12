@@ -217,6 +217,10 @@ pub struct NavConfig {
     /// one switch, in the bot table, that every walker reads.
     #[serde(skip)]
     pub sneak: bool,
+    /// Which route the walk asks for, see [`crate::graph::RouteMode`].
+    /// `short` unless the profile says `safe`.
+    #[serde(default)]
+    pub route: crate::graph::RouteMode,
 }
 
 impl Default for NavConfig {
@@ -226,6 +230,7 @@ impl Default for NavConfig {
             bash_doors: true,
             search_hidden: true,
             sneak: true,
+            route: crate::graph::RouteMode::Short,
         }
     }
 }
@@ -655,6 +660,10 @@ pub struct Navigator {
     /// `NavConfig::sneak`. Off is the operator's word, and it outranks
     /// the sheet's stealth.
     sneak: bool,
+    /// `NavConfig::route`, stamped onto the capabilities the way
+    /// `bash_doors` is, so routing prices the world the way this walk
+    /// was configured rather than the way the session was.
+    route: crate::graph::RouteMode,
     /// The plane a fenced walk is confined to, alongside `fence`.
     plane: Option<u16>,
     /// Rooms every route must avoid ([`crate::roam::Walls`]).
@@ -723,10 +732,12 @@ impl Navigator {
             picking_fenced_off: false,
             search_hidden: cfg.search_hidden,
             sneak: cfg.sneak,
+            route: cfg.route,
             fence: None,
             plane: None,
             capabilities: crate::graph::Capabilities {
                 bash_doors: cfg.bash_doors,
+                route: cfg.route,
                 ..crate::graph::Capabilities::unrestricted()
             },
             backstab: None,
@@ -748,8 +759,10 @@ impl Navigator {
     pub fn with_capabilities(mut self, caps: crate::graph::Capabilities) -> Self {
         // Routing must price a lock the way this walk will treat it,
         // so the bashing switch is this navigator's, not the caller's.
+        // The route mode is the same kind of thing.
         self.capabilities = crate::graph::Capabilities {
             bash_doors: self.bash_doors,
+            route: self.route,
             ..caps
         };
         self

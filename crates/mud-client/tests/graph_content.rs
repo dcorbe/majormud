@@ -613,3 +613,58 @@ fn lock_fields_become_door_key_door_and_item_gate_requirements() {
     assert_eq!(req(Direction::Up), ExitRequirement::Door { locked: false, pick: 30 });
     assert_eq!(req(Direction::Down), ExitRequirement::Door { locked: true, pick: -999 });
 }
+
+/// The graph records, per room, the highest level among the monsters
+/// its spawner can put there that would start a fight with a neutral
+/// character. Passive townsfolk do not count however high their level,
+/// a candidate outside the band does not count, a room whose spawner
+/// never draws has none, and a permanent resident counts like a spawn.
+#[test]
+fn from_content_records_the_hostile_top_level() {
+    use mud_core::content::{Monster, MonsterId};
+    let monster = |n: u16, level: i16, behaviour: i16| {
+        (
+            MonsterId(n),
+            Monster {
+                id: MonsterId(n),
+                name: format!("m{n}"),
+                level,
+                roam_class: 6,
+                behaviour,
+                ..Default::default()
+            },
+        )
+    };
+    let mut content = Content::default();
+    content.monsters.extend([
+        monster(1, 4, 2),
+        monster(2, 5, 3),
+        monster(3, 9, 2),
+        monster(4, 12, 1),
+    ]);
+    let spawning = Room {
+        room_type: 0,
+        spawn_zone: 6,
+        min_level: 2,
+        max_level: 5,
+        ..Default::default()
+    };
+    let boot_fill = Room {
+        room_type: 1,
+        ..spawning.clone()
+    };
+    let with_resident = Room {
+        boss_monster: Some(MonsterId(4)),
+        ..Default::default()
+    };
+    let id = |n| RoomId { map: 1, room: n };
+    content.rooms.insert(id(1), spawning);
+    content.rooms.insert(id(2), boot_fill);
+    content.rooms.insert(id(3), with_resident);
+    content.rooms.insert(id(4), Room::default());
+    let graph = RoomGraph::from_content(&content);
+    assert_eq!(graph.room(id(1)).unwrap().hostile_level, Some(4));
+    assert_eq!(graph.room(id(2)).unwrap().hostile_level, None);
+    assert_eq!(graph.room(id(3)).unwrap().hostile_level, Some(12));
+    assert_eq!(graph.room(id(4)).unwrap().hostile_level, None);
+}

@@ -600,3 +600,18 @@ fn bot_auto_hide_is_a_key_that_defaults_off() {
     assert!(s.profile().bot.as_ref().unwrap().auto_hide);
 }
 
+
+/// `[farm.nav].route` is a live key: `/set` moves a walk between the
+/// short route and the safe one, and refuses a word that is neither.
+#[test]
+fn farm_nav_route_is_a_live_key() {
+    use mud_client::graph::RouteMode;
+    assert!(KEYS.contains(&"farm.nav.route"));
+    let mut s = Settings::parse("[farm]\nstart = \"1/1\"\n").unwrap();
+    assert_eq!(s.profile().farm.as_ref().unwrap().nav.route, RouteMode::Short);
+    s.set("farm.nav.route", "safe").unwrap();
+    assert_eq!(s.profile().farm.as_ref().unwrap().nav.route, RouteMode::Safe);
+    let err = s.set("farm.nav.route", "wild").unwrap_err();
+    assert!(err.contains("route"), "{err}");
+    assert_eq!(s.profile().farm.as_ref().unwrap().nav.route, RouteMode::Safe);
+}
