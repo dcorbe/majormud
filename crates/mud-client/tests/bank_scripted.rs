@@ -216,3 +216,28 @@ async fn bank_walks_to_the_nearest_bank_and_deposits_above_the_floor() {
     );
 }
 
+/// The at-the-bank half on its own: standing in the bank already, read,
+/// deposit above the floor, read again.
+#[tokio::test]
+async fn deposit_here_reads_deposits_and_reads_again() {
+    use mud_client::bank::deposit_here;
+    use mud_client::farm::FarmStats;
+    let (addr, received) = scripted_board(vec![
+        ("i", "\r\ni\r\nYou are carrying 15 gold crowns\r\nYou have no keys.\r\nEncumbrance: 5/2400 - None [0%]\r\n[HP=30/MA=0]:".into()),
+        ("deposit 1000", "\r\ndeposit 1000\r\nYou deposit 10 gold crowns.\r\n[HP=30/MA=0]:".into()),
+        ("i", "\r\ni\r\nYou are carrying 5 gold crowns\r\nYou have no keys.\r\nEncumbrance: 1/2400 - None [0%]\r\n[HP=30/MA=0]:".into()),
+    ])
+    .await;
+    let session = session_for(addr, 5).await;
+    let mut stats = FarmStats::default();
+    let end = tokio::time::timeout(
+        Duration::from_secs(20),
+        deposit_here(&session, &session.profile().bank, "Bank of Godfrey", BANK, &mut stats),
+    )
+    .await
+    .unwrap();
+    assert_eq!(end, ErrandEnd::Deposited { farthings: 1000, at: BANK, bank: "Bank of Godfrey".into() }, "{:?}", received.lock().unwrap());
+    assert_eq!(stats.deposits, 1);
+    assert_eq!(session.capabilities().purse.farthings(), 500);
+}
+

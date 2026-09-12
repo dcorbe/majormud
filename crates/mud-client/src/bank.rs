@@ -315,6 +315,43 @@ async fn send_deposit(session: &Session, farthings: u64) -> Option<DepositReply>
     }
 }
 
+/// The errand's at-the-bank half: read the purse, deposit above the
+/// keep floor, read again so the purse meter and the pack agree. A
+/// follower dragged into a bank runs this on its own.
+pub async fn deposit_here(
+    session: &Session,
+    bank: &BankConfig,
+    name: &str,
+    at: RoomId,
+    stats: &mut FarmStats,
+) -> ErrandEnd {
+    let purse = read_inventory(session).await.coins().purse();
+    let farthings = purse.farthings().saturating_sub(bank.keep().farthings());
+    if farthings == 0 {
+        return ErrandEnd::Nothing(format!("nothing above the keep floor at {name}"));
+    }
+    let reply = send_deposit(session, farthings).await;
+    // Read again whatever the reply was, so the purse the router
+    // sees is the board's, not a guess.
+    let _ = read_inventory(session).await;
+    match reply {
+        Some(DepositReply::Deposited(_)) => {
+            stats.deposits += 1;
+            stats.deposited_farthings += farthings;
+            ErrandEnd::Deposited { farthings, at, bank: name.to_string() }
+        }
+        Some(DepositReply::NotABank) => {
+            stats.relocalizations += 1;
+            ErrandEnd::Nothing(format!(
+                "the board says {}/{} is not a bank: the walk did not land where the graph says",
+                at.map, at.room
+            ))
+        }
+        Some(DepositReply::Unreasonable) => ErrandEnd::Nothing(format!("the board refused a deposit of {farthings}")),
+        None => ErrandEnd::Nothing("no reply to the deposit".into()),
+    }
+}
+
 /// Walk to the bank and deposit the purse above the keep floor.
 ///
 /// The walk is `farm::travel`, so fights on the way, interrupts, the
@@ -398,38 +435,7 @@ pub(crate) async fn errand(
         // part an operator most wants named.
         crate::farm::set_phase(phase, Phase::Banking { at: to });
     }
-    let purse = read_inventory(session).await.coins().purse();
-    let farthings = purse.farthings().saturating_sub(bank.keep().farthings());
-    let end = if farthings == 0 {
-        ErrandEnd::Nothing(format!("nothing above the keep floor at {name}"))
-    } else {
-        let reply = send_deposit(session, farthings).await;
-        // Read again whatever the reply was, so the purse the router
-        // sees is the board's, not a guess.
-        let _ = read_inventory(session).await;
-        match reply {
-            Some(DepositReply::Deposited(_)) => {
-                stats.deposits += 1;
-                stats.deposited_farthings += farthings;
-                ErrandEnd::Deposited {
-                    farthings,
-                    at: to,
-                    bank: name.clone(),
-                }
-            }
-            Some(DepositReply::NotABank) => {
-                stats.relocalizations += 1;
-                ErrandEnd::Nothing(format!(
-                    "the board says {}/{} is not a bank: the walk did not land where the graph says",
-                    to.map, to.room
-                ))
-            }
-            Some(DepositReply::Unreasonable) => {
-                ErrandEnd::Nothing(format!("the board refused a deposit of {farthings}"))
-            }
-            None => ErrandEnd::Nothing("no reply to the deposit".into()),
-        }
-    };
+    let end = deposit_here(session, bank, &name, to, stats).await;
     if let Some(back) = return_to.filter(|back| *back != *current) {
         let leg = crate::farm::travel(
             session, nav, graph, current, back, live, threat, refusals, casts, clock,
