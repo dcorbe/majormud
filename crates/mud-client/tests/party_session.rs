@@ -94,22 +94,68 @@ async fn the_session_learns_it_is_following_and_queues_the_leaders_requests() {
 }
 
 #[tokio::test]
-async fn ok_releases_a_hold_and_the_party_ending_clears_everything() {
+async fn ok_releases_the_hold_that_wait_took() {
     let (addr, _) = board(vec![
         "Pootwaddle started to follow you.",
         "Pootwaddle telepaths: @wait",
         "Pootwaddle telepaths: @ok",
+    ])
+    .await;
+    let session = session_for(addr).await;
+    wait_until(&session, |s| s.party().role == Role::Leader).await;
+    wait_until(&session, |s| !s.party_holds_clear()).await;
+    assert_eq!(session.party_holds().lock().unwrap().names(), vec!["Pootwaddle".to_string()]);
+    wait_until(&session, |s| s.party_holds_clear()).await;
+    assert_eq!(
+        session.party().role,
+        Role::Leader,
+        "@ok releases the hold, it does not end the party"
+    );
+}
+
+#[tokio::test]
+async fn the_party_ending_clears_everything_and_publishes_the_new_state() {
+    let (addr, _) = board(vec![
+        "Pootwaddle started to follow you.",
         "Pootwaddle telepaths: @wait",
         "You are not in a party at the present time.",
     ])
     .await;
     let session = session_for(addr).await;
-    let changes = session.party_changes();
+    let mut changes = session.party_changes();
     wait_until(&session, |s| s.party().role == Role::Leader).await;
-    tokio::time::sleep(Duration::from_millis(400)).await;
-    assert_eq!(session.party().role, Role::None);
-    assert!(session.party_holds_clear());
+    // Pinned here as well as at the end: the ending resets the party to
+    // the watch's own initial value, so an equality check taken only
+    // after it would pass against a tracker that published nothing but
+    // blanks.
+    let joined = changes.borrow_and_update().clone();
+    assert_eq!(joined, session.party(), "the watch publishes the join");
+    wait_until(&session, |s| !s.party_holds_clear()).await;
+    wait_until(&session, |s| s.party().role == Role::None).await;
+    assert!(session.party_holds_clear(), "the ending drops the hold the @wait took");
     assert!(changes.has_changed().unwrap());
+    // Cloned out of the borrow rather than compared inside it. The
+    // reader task takes the party lock and then sends on this watch, so
+    // holding the watch borrow across a `party()` call inverts that
+    // order.
+    let published = changes.borrow_and_update().clone();
+    assert_eq!(published, session.party(), "the watch publishes what party() reads");
+}
+
+/// A consumer parked on the notes must end when the line closes, the
+/// way `rests()` does, rather than wait forever on a sender the session
+/// still holds.
+#[tokio::test]
+async fn the_notes_end_when_the_session_closes() {
+    let (addr, _) = board(vec![]).await;
+    let session = session_for(addr).await;
+    let mut parked = session.party_notes();
+    session.close();
+    let ended = tokio::time::timeout(Duration::from_secs(1), parked.recv()).await;
+    assert!(ended.expect("the notes must end at close, not hang").is_err());
+    let mut after = session.party_notes();
+    let ended = tokio::time::timeout(Duration::from_secs(1), after.recv()).await;
+    assert!(ended.expect("a receiver taken after close must end at once").is_err());
 }
 
 #[tokio::test]

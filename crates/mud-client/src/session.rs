@@ -297,7 +297,12 @@ struct PartyTracker {
     holds: Arc<Mutex<crate::party::Holds>>,
     requests: Vec<crate::party::Request>,
     changes: watch::Sender<crate::party::PartyState>,
-    notes: broadcast::Sender<String>,
+    /// `None` once `close` has dropped it, for the same reason the
+    /// session holds `rests_tx` behind an `Option`: a broadcast channel
+    /// only reports `Closed` to its receivers once every sender is gone,
+    /// and this one outlives the reader task. Without the drop, a window
+    /// parked on `party_notes().recv()` would wait forever after close.
+    notes: Option<broadcast::Sender<String>>,
     wait_secs: u64,
 }
 
@@ -470,7 +475,7 @@ impl Session {
             holds: Arc::new(Mutex::new(crate::party::Holds::new())),
             requests: Vec::new(),
             changes: watch::Sender::new(crate::party::PartyState::new()),
-            notes: broadcast::channel(64).0,
+            notes: Some(broadcast::channel(64).0),
             wait_secs: profile.party.wait_secs,
         }));
 
@@ -703,6 +708,7 @@ impl Session {
         self.events_tx.lock().expect("events_tx lock").take();
         self.raw_tx.lock().expect("raw_tx lock").take();
         self.rests_tx.lock().expect("rests_tx lock").take();
+        self.party.lock().expect("party lock").notes.take();
         self.shared.close();
     }
 
@@ -1025,13 +1031,22 @@ impl Session {
     /// One line per change, request accepted, and request sent, in the
     /// shape `rests()` uses, for the window to print.
     pub fn party_notes(&self) -> broadcast::Receiver<String> {
-        self.party.lock().expect("party lock").notes.subscribe()
+        self.party
+            .lock()
+            .expect("party lock")
+            .notes
+            .as_ref()
+            .map(|tx| tx.subscribe())
+            .unwrap_or_else(|| broadcast::channel(1).1)
     }
 
     /// The tracker's own sender, for the assist and the jobs to say what
     /// they telepathed.
     pub fn party_note(&self, text: String) {
-        let _ = self.party.lock().expect("party lock").notes.send(text);
+        let t = self.party.lock().expect("party lock");
+        if let Some(tx) = &t.notes {
+            let _ = tx.send(text);
+        }
     }
 
     /// Take the requests the party has made and not had answered. Each
@@ -1337,7 +1352,9 @@ fn feed_party(party: &Mutex<PartyTracker>, cor: &Correlated) {
             let state = t.state.clone();
             t.holds.lock().expect("holds lock").retain_members(&state);
         }
-        let _ = t.notes.send(note);
+        if let Some(tx) = &t.notes {
+            let _ = tx.send(note);
+        }
         let state = t.state.clone();
         let _ = t.changes.send(state);
     }
@@ -1355,7 +1372,9 @@ fn feed_party(party: &Mutex<PartyTracker>, cor: &Correlated) {
         crate::party::Remote::Wait => "@wait",
         crate::party::Remote::Ok => "@ok",
     };
-    let _ = t.notes.send(format!("party: {} asks {word}", req.from));
+    if let Some(tx) = &t.notes {
+        let _ = tx.send(format!("party: {} asks {word}", req.from));
+    }
     match req.command {
         crate::party::Remote::Wait => {
             let until = Instant::now() + Duration::from_secs(t.wait_secs);
