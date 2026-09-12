@@ -2180,62 +2180,100 @@ async fn farm_loop(
                 StopEnd::Died => return Ok((FarmEnd::Died, stats)),
                 StopEnd::TimeUp => return Ok((FarmEnd::TimeUp, stats)),
             }
+            // A follower cannot walk to a bank of its own accord, it is
+            // being dragged, so its `@bank` is a request for a detour.
+            // Drained at the same place the run judges its own gate, so
+            // an ask and a gate that trip together make one errand and
+            // not two, and honoured whatever the leader's purse says.
+            let asked = if session.party().is_leader() {
+                let by: Vec<String> = session
+                    .take_party_requests()
+                    .into_iter()
+                    .filter(|r| r.command == crate::party::Remote::Bank)
+                    .map(|r| r.from)
+                    .collect();
+                if !by.is_empty() {
+                    notices(&format!("bank: {} asked for the bank", by.join(", ")));
+                }
+                !by.is_empty()
+            } else {
+                false
+            };
+            // The run's own gate. `bank_off` is tested here as well as
+            // on the errand below, so a run that has switched deposits
+            // off stops spending an `i` per stop on a reading nothing
+            // will act on.
+            let mut own = false;
             if bank_cfg.auto_deposit
                 && !bank_off
                 && stats.coin_pickups > judged_pickups
-                && let Some(content) = &content
+                && content.is_some()
             {
                 judged_pickups = stats.coin_pickups;
                 let inv = crate::bank::read_inventory(session).await;
-                if let Some(reading) = crate::bank::Reading::of(&inv)
-                    && gate.judge(&bank_cfg, reading) == crate::bank::Judgement::Deposit
-                {
-                    let out = crate::bank::errand(
-                        session,
-                        &bank_nav,
-                        &graph,
-                        content,
-                        &bank_cfg,
-                        live,
-                        &threat,
-                        &refusals,
-                        casts,
-                        clock,
-                        started,
-                        &mut stats,
-                        phase,
-                        notices,
-                        &mut current,
-                        // A circuit walks on from the bank: its next
-                        // stop is named and the route to it is the
-                        // errand's to plan. A roam picks its next room
-                        // from inside the fence, so it has to be back
-                        // inside the fence to pick one.
-                        roam.is_some().then_some(stop),
-                    )
-                    .await?;
-                    // The errand walked and sent, and neither survives
-                    // a sneak.
-                    sneaking = false;
-                    match out {
-                        crate::bank::ErrandEnd::Died => return Ok((FarmEnd::Died, stats)),
-                        crate::bank::ErrandEnd::TimeUp => return Ok((FarmEnd::TimeUp, stats)),
-                        crate::bank::ErrandEnd::TooHurt => return Ok((FarmEnd::TooHurt, stats)),
-                        crate::bank::ErrandEnd::Deposited { farthings, at, bank } => {
-                            notices(&format!(
-                                "deposited {farthings} copper farthings at {bank} ({}/{})",
-                                at.map, at.room
-                            ));
-                            if let Some(after) = crate::bank::Reading::of(&session.contents()) {
-                                gate.seed(after);
-                            }
+                own = crate::bank::Reading::of(&inv)
+                    .is_some_and(|r| gate.judge(&bank_cfg, r) == crate::bank::Judgement::Deposit);
+            }
+            if (own || asked)
+                && !bank_off
+                && let Some(content) = &content
+            {
+                let out = crate::bank::errand(
+                    session,
+                    &bank_nav,
+                    &graph,
+                    content,
+                    &bank_cfg,
+                    asked,
+                    live,
+                    &threat,
+                    &refusals,
+                    casts,
+                    clock,
+                    started,
+                    &mut stats,
+                    phase,
+                    notices,
+                    &mut current,
+                    // A circuit walks on from the bank: its next
+                    // stop is named and the route to it is the
+                    // errand's to plan. A roam picks its next room
+                    // from inside the fence, so it has to be back
+                    // inside the fence to pick one.
+                    roam.is_some().then_some(stop),
+                )
+                .await?;
+                // The errand walked and sent, and neither survives
+                // a sneak.
+                sneaking = false;
+                match out {
+                    crate::bank::ErrandEnd::Died => return Ok((FarmEnd::Died, stats)),
+                    crate::bank::ErrandEnd::TimeUp => return Ok((FarmEnd::TimeUp, stats)),
+                    crate::bank::ErrandEnd::TooHurt => return Ok((FarmEnd::TooHurt, stats)),
+                    // Nothing of the leader's own to put away. Only
+                    // an asked errand reports that as a deposit,
+                    // and only because the walk was worth making
+                    // for the followers.
+                    crate::bank::ErrandEnd::Deposited { farthings: 0, .. } => {
+                        notices("bank: nothing to deposit, followers banked");
+                        if let Some(after) = crate::bank::Reading::of(&session.contents()) {
+                            gate.seed(after);
                         }
-                        crate::bank::ErrandEnd::Nothing(why) => {
-                            notices(&format!(
-                                "bank: {why}. Deposits are off for the rest of this run"
-                            ));
-                            bank_off = true;
+                    }
+                    crate::bank::ErrandEnd::Deposited { farthings, at, bank } => {
+                        notices(&format!(
+                            "deposited {farthings} copper farthings at {bank} ({}/{})",
+                            at.map, at.room
+                        ));
+                        if let Some(after) = crate::bank::Reading::of(&session.contents()) {
+                            gate.seed(after);
                         }
+                    }
+                    crate::bank::ErrandEnd::Nothing(why) => {
+                        notices(&format!(
+                            "bank: {why}. Deposits are off for the rest of this run"
+                        ));
+                        bank_off = true;
                     }
                 }
             }

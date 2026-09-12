@@ -430,6 +430,12 @@ pub async fn deposit_here(
 /// room it left, because a roam chooses its next room from inside its
 /// fence and the bank is outside it. A walk back that fails is printed
 /// and the errand still reports the deposit it made.
+///
+/// `asked` means a follower sent `@bank`, so the walk is being made on
+/// the party's account and not on the purse's. It changes two things:
+/// the leader's own empty purse is not a failure, and the errand stands
+/// at the bank afterwards for the followers to deposit, see
+/// [`bank_wait`].
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn errand(
     session: &Session,
@@ -437,6 +443,7 @@ pub(crate) async fn errand(
     graph: &RoomGraph,
     content: &Content,
     bank: &BankConfig,
+    asked: bool,
     live: &mut Live,
     threat: &std::sync::Arc<crate::bot::ThreatTable>,
     refusals: &crate::bot::Refusals,
@@ -499,6 +506,28 @@ pub(crate) async fn errand(
         crate::farm::set_phase(phase, Phase::Banking { at: to });
     }
     let end = deposit_here(session, bank, &name, to, stats).await;
+    // Asked by a follower, the leader's own empty purse is not a
+    // failure: the coin that wanted a bank is in somebody else's pack.
+    // Reported as a deposit of nothing so the caller leaves deposits on
+    // for the rest of the run.
+    let end = match end {
+        ErrandEnd::Nothing(why) if asked && why.starts_with("nothing above the keep floor") => {
+            notices(&format!("bank: {why}"));
+            ErrandEnd::Deposited { farthings: 0, at: to, bank: name.clone() }
+        }
+        other => other,
+    };
+    // The followers were dragged here and each deposits on its own
+    // account. Leading means standing still while they do.
+    if session.party().is_leader()
+        && let Some(out) = bank_wait(
+            session, nav, graph, live, threat, refusals, casts, clock, started, stats,
+            phase, notices, to,
+        )
+        .await?
+    {
+        return Ok(out);
+    }
     if let Some(back) = return_to.filter(|back| *back != *current) {
         let leg = crate::farm::travel(
             session, nav, graph, current, back, live, threat, refusals, casts, clock,
@@ -525,6 +554,73 @@ pub(crate) async fn errand(
         }
     }
     Ok(end)
+}
+
+/// Refresh the roster with `par`, put a hold on every follower, and
+/// stand at the bank until each has said `@ok` or the wait runs out.
+///
+/// The roster is asked for rather than taken from what the run already
+/// believes: a character that joined or left while the leg walked is
+/// only known once the board has said so, and a hold on somebody who is
+/// no longer here would be a wait nothing can end.
+///
+/// `Some(end)` means the wait ended the errand rather than the errand
+/// carrying on: a death, or the run's time budget. `None` means carry
+/// on.
+#[allow(clippy::too_many_arguments)]
+async fn bank_wait(
+    session: &Session,
+    nav: &crate::nav::Navigator,
+    graph: &RoomGraph,
+    live: &mut Live,
+    threat: &std::sync::Arc<crate::bot::ThreatTable>,
+    refusals: &crate::bot::Refusals,
+    casts: &mut Casts,
+    clock: &mut crate::world::RoundClock,
+    started: Instant,
+    stats: &mut FarmStats,
+    phase: PhaseSink<'_>,
+    notices: &crate::farm::Notices,
+    at: RoomId,
+) -> Result<Option<ErrandEnd>, FarmError> {
+    let mut changes = session.party_changes();
+    // A receiver reports as changed anything that moved before it was
+    // built, so without this the wait below would return on party news
+    // from the walk out and read the roster it already had.
+    changes.mark_unchanged();
+    session.send("par");
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), changes.changed()).await;
+    let followers = session.party().followers();
+    if followers.is_empty() {
+        return Ok(None);
+    }
+    let secs = session.profile().party.bank_wait_secs;
+    let until = Instant::now() + std::time::Duration::from_secs(secs);
+    for name in &followers {
+        session.party_hold(name, until);
+    }
+    notices(&format!(
+        "party: waiting at the bank for {}",
+        followers.join(", ")
+    ));
+    match crate::farm::hold_here(
+        session, nav, graph, at, live, threat, refusals, casts, clock, started, stats,
+        phase, notices,
+    )
+    .await?
+    {
+        crate::farm::HoldEnd::Released { expired } => {
+            if !expired.is_empty() {
+                notices(&format!(
+                    "party: bank wait: no reply from {}",
+                    expired.join(", ")
+                ));
+            }
+            Ok(None)
+        }
+        crate::farm::HoldEnd::Died => Ok(Some(ErrandEnd::Died)),
+        crate::farm::HoldEnd::TimeUp => Ok(Some(ErrandEnd::TimeUp)),
+    }
 }
 
 /// `/bank`: from wherever the character stands, walk to the bank and
@@ -592,6 +688,9 @@ pub async fn run_bank(
         &graph,
         &content,
         &bank,
+        // The operator asked for the bank, not a follower. An empty
+        // purse on this errand is worth saying out loud.
+        false,
         &mut live,
         &threat,
         &refusals,
