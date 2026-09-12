@@ -2074,3 +2074,28 @@ async fn the_bot_switch_does_not_refuse_a_recovery() {
     assert!(why.contains("Stealth is 0"), "{why}");
     assert!(!why.contains("bot"), "the switch is no refusal: {why}");
 }
+
+/// The bot's request for a block is the assist's `look`: an arrival
+/// the painted board has not yet coloured is neither attacked nor
+/// ignored until the block says which.
+#[test]
+fn the_assist_looks_when_the_bot_cannot_place_an_arrival() {
+    let mut bot = assist_bot();
+    let painted = mud_client::events::RoomView {
+        name: "Noble Street".into(),
+        exits: vec!["east".into()],
+        also_here: vec!["happy guardsman".into()],
+        also_here_sgr: vec![Some("0;37".into())],
+        items: vec![],
+    };
+    assist_actions(&mut bot, &attributed(Event::RoomSeen(painted)), false);
+    let out = assist_actions(
+        &mut bot,
+        &attributed(Event::ActorEntered {
+            name: "tall thug".into(),
+            from: None,
+        }),
+        false,
+    );
+    assert_eq!(out, vec!["look".to_string()]);
+}

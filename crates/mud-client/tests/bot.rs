@@ -2350,3 +2350,99 @@ fn idle_is_no_fight_and_no_heal_in_flight() {
     bot.on_event(&Event::Line("You say \"a thief\"".into()));
     assert!(bot.is_idle(), "the target was gone");
 }
+
+// ---------------------------------------------------------------------
+// Arrivals on a painted board. The board paints every arrival line the
+// same bright yellow, guardsman and rogue alike, so the line cannot
+// say whether the newcomer is fair game; only an "Also here:" block
+// can. Beef and Salad each backstabbed two town guardsmen that walked
+// in on them and became outlaws (cw-beef, cw-salad, 2026-09-12). The
+// bot now remembers how the last painted block coloured each noun.
+// ---------------------------------------------------------------------
+
+/// A noun the board painted passive is left alone when it walks in.
+#[test]
+fn a_known_passive_noun_arriving_is_left_alone() {
+    let mut bot = fighter();
+    bot.on_event(&Event::RoomSeen(painted(&[("0;37", "happy guardsman")])));
+    let acts = bot.on_event(&Event::ActorEntered {
+        name: "fat guardsman".into(),
+        from: Some("south".into()),
+    });
+    assert!(acts.is_empty(), "white is law: {acts:?}");
+}
+
+/// A noun the board painted aggressive is still engaged the moment it
+/// arrives: waiting for a block would let it hit first.
+#[test]
+fn a_known_aggressive_noun_arriving_is_engaged_at_once() {
+    let mut bot = fighter();
+    let acts = bot.on_event(&Event::RoomSeen(painted(&[("1;35", "big orc rogue")])));
+    assert_eq!(acts, vec![BotAction::Send("a rogue".into())]);
+    bot.on_event(&Event::ActorLeft {
+        name: "big orc rogue".into(),
+        to: Some("east".into()),
+    });
+    let acts = bot.on_event(&Event::ActorEntered {
+        name: "small orc rogue".into(),
+        from: Some("west".into()),
+    });
+    assert_eq!(acts, vec![BotAction::Send("a rogue".into())]);
+}
+
+/// A noun the board has never painted is neither attacked nor ignored:
+/// the bot asks for the block that can decide.
+#[test]
+fn an_unknown_noun_arriving_on_a_painted_board_asks_for_a_look() {
+    let mut bot = fighter();
+    bot.on_event(&Event::RoomSeen(painted(&[("0;37", "happy guardsman")])));
+    let acts = bot.on_event(&Event::ActorEntered {
+        name: "tall thug".into(),
+        from: None,
+    });
+    assert_eq!(acts, vec![BotAction::Look]);
+    // The block answers, and the answer is what engages.
+    let acts = bot.on_event(&Event::RoomSeen(painted(&[
+        ("0;37", "happy guardsman"),
+        ("1;35", "tall thug"),
+    ])));
+    assert_eq!(acts, vec![BotAction::Send("a thug".into())]);
+}
+
+/// A player walking in never earns a look, painted board or not.
+#[test]
+fn a_player_arriving_on_a_painted_board_earns_no_look() {
+    let mut bot = fighter();
+    bot.on_event(&Event::RoomSeen(painted(&[("0;37", "happy guardsman")])));
+    let acts = bot.on_event(&Event::ActorEntered {
+        name: "Habuji".into(),
+        from: Some("north".into()),
+    });
+    assert!(acts.is_empty(), "{acts:?}");
+}
+
+/// An unpainted board has no opinion, and the case rule alone decides
+/// as it always has.
+#[test]
+fn an_unpainted_board_still_engages_arrivals_by_name() {
+    let mut bot = fighter();
+    bot.on_event(&room(&[]));
+    let acts = bot.on_event(&Event::ActorEntered {
+        name: "tall thug".into(),
+        from: None,
+    });
+    assert_eq!(acts, vec![BotAction::Send("a thug".into())]);
+}
+
+/// A block that painted only players still proves the board paints:
+/// the first monster to walk in afterwards is asked about, not hit.
+#[test]
+fn a_block_of_painted_players_makes_the_next_arrival_a_question() {
+    let mut bot = fighter();
+    bot.on_event(&Event::RoomSeen(painted(&[("1;35", "Blueberry"), ("1;35", "Beef")])));
+    let acts = bot.on_event(&Event::ActorEntered {
+        name: "fat guardsman".into(),
+        from: Some("south".into()),
+    });
+    assert_eq!(acts, vec![BotAction::Look]);
+}

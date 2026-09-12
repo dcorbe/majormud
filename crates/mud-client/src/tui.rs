@@ -1708,7 +1708,10 @@ pub fn assist_actions(
     } else if sees {
         bot.on_event(&cor.event)
             .into_iter()
-            .map(|crate::bot::BotAction::Send(cmd)| cmd)
+            .map(|action| match action {
+                crate::bot::BotAction::Send(cmd) => cmd,
+                crate::bot::BotAction::Look => "look".into(),
+            })
             .collect()
     } else {
         Vec::new()

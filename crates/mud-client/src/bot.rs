@@ -2,7 +2,7 @@
 //! AutoGet, AutoFlee) as a pure decision core: events in, commands out.
 //! The async runner glues it to a [`crate::session::Session`].
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -513,6 +513,10 @@ impl Default for BotConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BotAction {
     Send(String),
+    /// Ask for a room block. The bot has an arrival it can neither
+    /// attack nor ignore, and only a painted "Also here:" line can say
+    /// which; whoever owns the looks decides how to answer.
+    Look,
 }
 
 /// The word the board's targeting actually accepts. Spawned instances
@@ -666,6 +670,17 @@ pub struct Bot {
     /// drop line's job. Name-keyed, so the same-named-twin hazard costs
     /// a missed pile, never a loop.
     swept: (String, HashSet<String>),
+    /// How the last painted block coloured each attackable noun:
+    /// true for aggressive, false for anything else. Arrival lines
+    /// paint every monster alike, guardsman and rogue both in bright
+    /// yellow (cw-beef, 2026-09-12), so an arrival is judged by the
+    /// noun's last listing instead.
+    paint: HashMap<String, bool>,
+    /// Some block painted somebody: this board colours its occupants,
+    /// so an arrival it has not coloured yet is an open question, not
+    /// a target. Kept apart from `paint`, which holds only monsters: a
+    /// block listing nothing but players still proves the board paints.
+    painted: bool,
     /// Keys already asked for this visit, keyed by room the same way
     /// `swept` is, and for the same reason: the board relists the
     /// floor on every block.
@@ -776,6 +791,8 @@ impl Bot {
             refused,
             cooling: None,
             swept: (String::new(), HashSet::new()),
+            paint: HashMap::new(),
+            painted: false,
             taken: (String::new(), HashSet::new()),
             pack: None,
             opener: None,
@@ -929,7 +946,12 @@ impl Bot {
         // Nearly every command breaks hide and sneak alike. Any send
         // that is not one of the two forgets both beliefs, and is a
         // new situation for the retry cap.
-        if actions.iter().any(|BotAction::Send(cmd)| cmd != "hide" && cmd != "sneak") {
+        // A look is not a command the board sees as movement or
+        // action; it leaves both beliefs alone.
+        if actions
+            .iter()
+            .any(|a| matches!(a, BotAction::Send(cmd) if cmd != "hide" && cmd != "sneak"))
+        {
             self.forget_stealth();
         }
         actions
@@ -1009,6 +1031,15 @@ impl Bot {
                     .iter()
                     .enumerate()
                     .any(|(i, name)| self.would_attack(name) && aggressive_here(room, i));
+                if room.also_here_sgr.iter().any(Option::is_some) {
+                    self.painted = true;
+                    for (i, name) in room.also_here.iter().enumerate() {
+                        if is_attackable(name) {
+                            self.paint
+                                .insert(target_word(name).to_string(), aggressive_here(room, i));
+                        }
+                    }
+                }
                 if self.swept.0 != room.name {
                     self.swept = (room.name.clone(), HashSet::new());
                 }
@@ -1085,6 +1116,22 @@ impl Bot {
                     .is_some_and(|(noun, _)| target_word(name) == noun)
                 {
                     self.cooling = None;
+                }
+                // On a board that paints, the noun's last listing
+                // decides: passive is left alone, aggressive is engaged
+                // at once, and a noun never listed is asked about.
+                if self.painted {
+                    match self.paint.get(target_word(name)) {
+                        Some(true) => {}
+                        Some(false) => return Vec::new(),
+                        None => {
+                            return if self.attackable(name) {
+                                vec![BotAction::Look]
+                            } else {
+                                Vec::new()
+                            };
+                        }
+                    }
                 }
                 if self.would_attack(name) {
                     self.room_has_work = true;

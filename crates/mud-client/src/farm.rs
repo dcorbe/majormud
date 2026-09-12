@@ -3679,8 +3679,12 @@ async fn farm_stop(
     // the `recheck` shelf life forces the re-ask that bounds it.
     if let Some(room) = arrival {
         let now = Instant::now();
-        for crate::bot::BotAction::Send(cmd) in bot.on_event(&Event::RoomSeen(room.clone())) {
-            gate.push(cmd);
+        for action in bot.on_event(&Event::RoomSeen(room.clone())) {
+            // A block never produces a look request; the stop asks
+            // its own looks in any case.
+            if let crate::bot::BotAction::Send(cmd) = action {
+                gate.push(cmd);
+            }
         }
         // The model is seeded from the arrival too, and must be before
         // the state reads it. It was ATTRIBUTED (to the leg's final
@@ -4073,7 +4077,14 @@ async fn farm_stop(
         } else {
             Vec::new()
         };
-        for crate::bot::BotAction::Send(cmd) in actions {
+        for action in actions {
+            // The stop owns the looks: an arrival already invalidated
+            // the evidence (`StopState::on_event`) and the next pass
+            // asks. The bot's request would be a second look for the
+            // same answer.
+            let crate::bot::BotAction::Send(cmd) = action else {
+                continue;
+            };
             // The heal command is the only way to tell resting from
             // simply standing about; the bot's own debounce is private.
             if cmd == bot_config.rest_command {
