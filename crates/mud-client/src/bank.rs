@@ -505,6 +505,20 @@ pub(crate) async fn errand(
         // part an operator most wants named.
         crate::farm::set_phase(phase, Phase::Banking { at: to });
     }
+    // The followers are held the moment the leg arrives, before the
+    // deposit and before the `par` below. A follower starts its own
+    // bank exchange off the same room block, and its `@ok` can land
+    // while the leader is still depositing. A release with no hold
+    // under it is lost, and the leader then stands the whole wait for
+    // somebody who answered. A follower cannot answer before its first
+    // `i` comes back, so a hold placed here always wins the race.
+    let until = Instant::now()
+        + std::time::Duration::from_secs(session.profile().party.bank_wait_secs);
+    let held =
+        if session.party().is_leader() { session.party().followers() } else { Vec::new() };
+    for name in &held {
+        session.party_hold(name, until);
+    }
     let end = deposit_here(session, bank, &name, to, stats).await;
     // Asked by a follower, the leader's own empty purse is not a
     // failure: the coin that wanted a bank is in somebody else's pack.
@@ -522,7 +536,7 @@ pub(crate) async fn errand(
     if session.party().is_leader()
         && let Some(out) = bank_wait(
             session, nav, graph, live, threat, refusals, casts, clock, started, stats,
-            phase, notices, to,
+            phase, notices, to, until, &held,
         )
         .await?
     {
@@ -556,13 +570,17 @@ pub(crate) async fn errand(
     Ok(end)
 }
 
-/// Refresh the roster with `par`, put a hold on every follower, and
-/// stand at the bank until each has said `@ok` or the wait runs out.
+/// Refresh the roster with `par`, hold whoever the arrival did not,
+/// and stand at the bank until every hold is gone or the wait runs out.
 ///
 /// The roster is asked for rather than taken from what the run already
-/// believes: a character that joined or left while the leg walked is
-/// only known once the board has said so, and a hold on somebody who is
-/// no longer here would be a wait nothing can end.
+/// believes: a character that joined while the leg walked is only known
+/// once the board has said so. `held` names those the arrival already
+/// put a hold on, and they are left alone here. One of them may have
+/// deposited and said `@ok` during the leader's own deposit, and
+/// holding that name again would be a wait nothing can end. A follower
+/// that left is dropped by the roster itself, through
+/// [`crate::party::Holds::retain_members`].
 ///
 /// `Some(end)` means the wait ended the errand rather than the errand
 /// carrying on: a death, or the run's time budget. `None` means carry
@@ -582,6 +600,8 @@ async fn bank_wait(
     phase: PhaseSink<'_>,
     notices: &crate::farm::Notices,
     at: RoomId,
+    until: Instant,
+    held: &[String],
 ) -> Result<Option<ErrandEnd>, FarmError> {
     let mut changes = session.party_changes();
     // A receiver reports as changed anything that moved before it was
@@ -590,18 +610,18 @@ async fn bank_wait(
     changes.mark_unchanged();
     session.send("par");
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), changes.changed()).await;
-    let followers = session.party().followers();
-    if followers.is_empty() {
-        return Ok(None);
+    for name in session.party().followers() {
+        if !held.iter().any(|h| h.eq_ignore_ascii_case(&name)) {
+            session.party_hold(&name, until);
+        }
     }
-    let secs = session.profile().party.bank_wait_secs;
-    let until = Instant::now() + std::time::Duration::from_secs(secs);
-    for name in &followers {
-        session.party_hold(name, until);
+    let waiting = session.party_holds().lock().expect("holds lock").names();
+    if waiting.is_empty() {
+        return Ok(None);
     }
     notices(&format!(
         "party: waiting at the bank for {}",
-        followers.join(", ")
+        waiting.join(", ")
     ));
     match crate::farm::hold_here(
         session, nav, graph, at, live, threat, refusals, casts, clock, started, stats,

@@ -499,21 +499,26 @@ const CARRYING: &str = "\r\ni\r\nYou are carrying 15 gold crowns\r\nYou have no 
 /// An empty purse, which is nothing above a keep floor of zero.
 const EMPTY: &str = "\r\ni\r\nYou are carrying nothing.\r\nYou have no keys.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:";
 
-/// The board's answer to `par`: one follower, then the blank line that
-/// ends the block.
-fn roster() -> String {
-    format!(
-        "\r\npar\r\n{}\r\n  Pootwaddle   Mystic\r\n\r\n[HP=30/MA=0]:",
-        mud_client::party::ROSTER_HEADER
-    )
+/// The board's answer to `par`: the header, one indented row per name,
+/// then the blank line that ends the block.
+fn roster(rows: &[&str]) -> String {
+    let mut out = format!("\r\npar\r\n{}\r\n", mud_client::party::ROSTER_HEADER);
+    for row in rows {
+        out.push_str(&format!("  {row}\r\n"));
+    }
+    out.push_str("\r\n[HP=30/MA=0]:");
+    out
 }
 
 /// The one-lap circuit Home -> Field with a detour east to the bank.
 /// `Pootwaddle telepaths: @bank` rides out behind the step into Field,
 /// so the request is in hand when the stop judges its gate. `tail` is
-/// what the board answers at the bank, which is the only part the
-/// three tests disagree about.
-fn detour_script(tail: Vec<(&'static str, String)>) -> Vec<(&'static str, String)> {
+/// what the board answers at the bank and `rows` is who `par` names,
+/// which are the only parts the detour tests disagree about.
+fn detour_script(
+    rows: &[&str],
+    tail: Vec<(&'static str, String)>,
+) -> Vec<(&'static str, String)> {
     let mut script = vec![
         (
             "inventory",
@@ -533,7 +538,7 @@ fn detour_script(tail: Vec<(&'static str, String)>) -> Vec<(&'static str, String
         ("e", format!("\r\ne{}", room_block("Bank of Godfrey", "west"))),
     ];
     script.extend(tail);
-    script.push(("par", roster()));
+    script.push(("par", roster(rows)));
     // The bank wait stands at the bank, and its stop looks where it
     // stands.
     script.push((
@@ -561,7 +566,7 @@ fn armed_gate() -> BankConfig {
 #[tokio::test]
 async fn a_follower_s_bank_detours_the_leader_and_waits_for_ok() {
     let (addr, received, pushed) = scripted_board(
-        detour_script(vec![
+        detour_script(&["Pootwaddle   Mystic"], vec![
             ("i", CARRYING.into()),
             (
                 "deposit 1500",
@@ -649,7 +654,7 @@ async fn a_follower_s_bank_detours_the_leader_and_waits_for_ok() {
 #[tokio::test]
 async fn a_bank_wait_with_no_ok_expires_and_names_the_silent() {
     let (addr, received, _pushed) = scripted_board(
-        detour_script(vec![
+        detour_script(&["Pootwaddle   Mystic"], vec![
             ("i", CARRYING.into()),
             (
                 "deposit 1500",
@@ -715,7 +720,7 @@ async fn a_bank_wait_with_no_ok_expires_and_names_the_silent() {
 #[tokio::test]
 async fn an_asked_detour_with_an_empty_purse_leaves_deposits_on() {
     let (addr, received, _pushed) = scripted_board(
-        detour_script(vec![("i", EMPTY.into())]),
+        detour_script(&["Pootwaddle   Mystic"], vec![("i", EMPTY.into())]),
         vec![
             (
                 "look",
@@ -772,6 +777,166 @@ async fn an_asked_detour_with_an_empty_purse_leaves_deposits_on() {
     assert!(
         !said.iter().any(|l| l.contains("Deposits are off")),
         "an asked errand that deposits nothing is not a failure: {said:?}"
+    );
+}
+
+/// The follower answers while the leader is still depositing. The
+/// board writes `@ok` ahead of the deposit's own reply, which puts it
+/// behind the leader's first `i` at the bank and well before the `par`.
+/// The hold has to be in place by then, or the release lands on
+/// nothing and the leader stands the whole of `bank_wait_secs` for a
+/// follower that answered.
+#[tokio::test]
+async fn an_ok_during_the_deposit_ends_the_bank_wait_at_once() {
+    let (addr, received, pushed) = scripted_board(
+        detour_script(
+            &["Pootwaddle   Mystic"],
+            vec![
+                ("i", CARRYING.into()),
+                (
+                    "deposit 1500",
+                    "\r\ndeposit 1500\r\nYou deposit 15 gold crowns.\r\n[HP=30/MA=0]:".into(),
+                ),
+                ("i", EMPTY.into()),
+            ],
+        ),
+        vec![
+            (
+                "look",
+                Duration::ZERO,
+                "follow",
+                "\r\nPootwaddle started to follow you.\r\n".into(),
+            ),
+            (
+                "deposit 1500",
+                Duration::ZERO,
+                "ok",
+                "\r\nPootwaddle telepaths: @ok\r\n".into(),
+            ),
+        ],
+    )
+    .await;
+    let session = session_with(addr, PartyConfig::default(), armed_gate()).await;
+    mud_client::farm::probe_sheet(&session, None).await;
+    session.set_content(Arc::new(bank_content()));
+
+    let graph = bank_corridor();
+    let cfg = lap_config();
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 30,
+        ..BotConfig::default()
+    };
+    let (notices, said) = collected();
+
+    let (end, stats) = tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, Live::fixed(bot, cfg), None, &notices),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    .expect("the lap must finish");
+    let ended = Instant::now();
+    assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
+
+    let log = received.lock().unwrap().clone();
+    let heard: Vec<String> = log.iter().map(|(_, l)| l.clone()).collect();
+    let steps: Vec<Instant> = log.iter().filter(|(_, l)| l == "e").map(|(t, _)| *t).collect();
+    assert_eq!(steps.len(), 2, "Home to Field, then Field to the bank: {heard:?}");
+    pushed_at(&pushed, "ok")
+        .unwrap_or_else(|| panic!("the board said @ok during the deposit: {heard:?}"));
+    let waited = ended.saturating_duration_since(steps[1]);
+    assert!(
+        waited < Duration::from_secs(3),
+        "the early @ok ended the wait, not bank_wait_secs: {waited:?} {heard:?}"
+    );
+    let said = said.lock().unwrap().clone();
+    assert!(
+        !said.iter().any(|l| l.contains("no reply from")),
+        "the follower answered before the hold was even asked for: {said:?}"
+    );
+}
+
+/// Two followers on the roster. The leader leaves as soon as both have
+/// answered, which is well under `bank_wait_secs`.
+#[tokio::test]
+async fn a_bank_wait_ends_when_both_followers_answer() {
+    let (addr, received, pushed) = scripted_board(
+        detour_script(
+            &["Pootwaddle   Mystic", "Grumbleweed  Warrior"],
+            vec![("i", EMPTY.into())],
+        ),
+        vec![
+            (
+                "look",
+                Duration::ZERO,
+                "follow",
+                "\r\nPootwaddle started to follow you.\r\nGrumbleweed started to follow you.\r\n"
+                    .into(),
+            ),
+            (
+                "par",
+                Duration::from_millis(300),
+                "ok one",
+                "\r\nPootwaddle telepaths: @ok\r\n".into(),
+            ),
+            (
+                "par",
+                Duration::from_millis(900),
+                "ok two",
+                "\r\nGrumbleweed telepaths: @ok\r\n".into(),
+            ),
+        ],
+    )
+    .await;
+    let session = session_with(addr, PartyConfig::default(), armed_gate()).await;
+    mud_client::farm::probe_sheet(&session, None).await;
+    session.set_content(Arc::new(bank_content()));
+
+    let graph = bank_corridor();
+    let cfg = lap_config();
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 30,
+        ..BotConfig::default()
+    };
+    let (notices, said) = collected();
+
+    let (end, stats) = tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, graph.clone(), &plan, Live::fixed(bot, cfg), None, &notices),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    .expect("the lap must finish");
+    let ended = Instant::now();
+    assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
+
+    let log = received.lock().unwrap().clone();
+    let heard: Vec<String> = log.iter().map(|(_, l)| l.clone()).collect();
+    let par_at = at(&log, "par").expect("the leader asked who is in the party");
+    let second = pushed_at(&pushed, "ok two")
+        .unwrap_or_else(|| panic!("the leg finished before the second @ok: {heard:?}"));
+    assert!(
+        ended >= second,
+        "the leader waited for both followers: {heard:?}"
+    );
+    let waited = ended.saturating_duration_since(par_at);
+    assert!(
+        waited < Duration::from_secs(5),
+        "both answers ended the wait, not bank_wait_secs: {waited:?} {heard:?}"
+    );
+    let said = said.lock().unwrap().clone();
+    assert!(
+        said.iter()
+            .any(|l| l == "party: waiting at the bank for Grumbleweed, Pootwaddle"),
+        "both followers are held: {said:?}"
+    );
+    assert!(
+        !said.iter().any(|l| l.contains("no reply from")),
+        "both answered: {said:?}"
     );
 }
 
