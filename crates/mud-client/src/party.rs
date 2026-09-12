@@ -159,10 +159,16 @@ impl PartyState {
         }
         if let Some(c) = REMOVED.captures(line) {
             let name = c[1].to_string();
-            self.members.retain(|m| !same(&m.name, &name));
+            self.remove(&name);
             return Some(Change::Left(name));
         }
         None
+    }
+
+    /// Drop a member by name, case insensitively. Absent means nothing
+    /// to do.
+    pub fn remove(&mut self, name: &str) {
+        self.members.retain(|m| !same(&m.name, name));
     }
 
     /// A prompt ends a roster block the same way a blank line does.

@@ -304,6 +304,12 @@ struct PartyTracker {
     /// parked on `party_notes().recv()` would wait forever after close.
     notes: Option<broadcast::Sender<String>>,
     wait_secs: u64,
+    /// The profile's username, which is what the character is called
+    /// until a stat sheet says otherwise. The tracker never sees the
+    /// session, so the name it must not treat as a party member is kept
+    /// here and the sheet's is read off the stat tracker at feed time.
+    /// The pair is [`Session::character_name`]'s, with the same order.
+    username: String,
 }
 
 /// The character's inventory and spellbook, read once at realm entry —
@@ -477,6 +483,7 @@ impl Session {
             changes: watch::Sender::new(crate::party::PartyState::new()),
             notes: Some(broadcast::channel(64).0),
             wait_secs: profile.party.wait_secs,
+            username: profile.username.clone(),
         }));
 
         let mut raw_file = match &capture {
@@ -610,7 +617,7 @@ impl Session {
                             feed_stats(&stats, &cor);
                             feed_contents(&contents, &equipment, &pack, &cor);
                             feed_equipment(&equipment, &cor);
-                            feed_party(&party, &cor);
+                            feed_party(&party, &stats, &cor);
                             let _ = events_tx.send(cor);
                         }
                     }
@@ -635,7 +642,7 @@ impl Session {
                         feed_stats(&stats, &cor);
                         feed_contents(&contents, &equipment, &pack, &cor);
                         feed_equipment(&equipment, &cor);
-                        feed_party(&party, &cor);
+                        feed_party(&party, &stats, &cor);
                         let _ = events_tx.send(cor);
                     }
                 }
@@ -680,7 +687,11 @@ impl Session {
     /// Replace the profile. Every job holding a receiver from
     /// [`Session::profile_changes`] wakes.
     pub fn set_profile(&self, profile: Profile) {
-        self.party.lock().expect("party lock").wait_secs = profile.party.wait_secs;
+        {
+            let mut t = self.party.lock().expect("party lock");
+            t.wait_secs = profile.party.wait_secs;
+            t.username = profile.username.clone();
+        }
         self.profile.send_replace(profile);
     }
 
@@ -1328,7 +1339,17 @@ fn feed_equipment(equipment: &Mutex<Equipment>, cor: &Correlated) {
 /// and every prompt, then the same line is offered to the telepath
 /// grammar. A request from anyone who is not in the party is dropped
 /// without a word.
-fn feed_party(party: &Mutex<PartyTracker>, cor: &Correlated) {
+///
+/// The character itself is never a member of its own party. The board
+/// lists it on its own roster, and a row taken at face value would put
+/// the leader on a hold of its own name at every bank trip, and would
+/// let a co-follower's `@wait` pass as permitted on a follower.
+fn feed_party(party: &Mutex<PartyTracker>, stats: &Mutex<StatTracker>, cor: &Correlated) {
+    // Read before the party lock, never under it: the reader task is
+    // the only thing that takes both, and taking them in one order
+    // everywhere is what keeps that true.
+    let sheet_name =
+        stats.lock().expect("stats lock").current.name.clone().filter(|n| !n.is_empty());
     let mut t = party.lock().expect("party lock");
     let change = match &cor.event {
         Event::Line(line) => t.state.observe(line),
@@ -1337,6 +1358,10 @@ fn feed_party(party: &Mutex<PartyTracker>, cor: &Correlated) {
     };
     if let Some(change) = change {
         use crate::party::Change;
+        let own = sheet_name.unwrap_or_else(|| t.username.clone());
+        if !own.is_empty() {
+            t.state.remove(&own);
+        }
         let note = match &change {
             Change::Following(who) => format!("party: following {who}"),
             Change::Joined(who) => format!("party: {who} joined"),
