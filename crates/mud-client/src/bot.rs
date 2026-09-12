@@ -101,6 +101,22 @@ pub fn picked_up_item(line: &str) -> Option<String> {
     Some(name)
 }
 
+/// "You don't see any silver nobles": the pile was gone when our `get`
+/// landed. Somebody else was faster, on a shared floor. Returns the
+/// denomination as `get` takes it.
+static PILE_GONE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^You don't see any (copper|silver|gold|platinum|runic) (?:farthing|noble|crown|piece|coin)s?$",
+    )
+    .unwrap()
+});
+
+/// Did the board just answer a coin `get` with "not here", and for
+/// which denomination?
+pub fn pile_gone(line: &str) -> Option<String> {
+    PILE_GONE_RE.captures(line).map(|c| c[1].to_string())
+}
+
 /// Somebody ELSE swept the floor: "Mystic picked up some coins."
 /// (VERIFIED, cwrun2.raw — 35 of them in one shared Arena session).
 ///
@@ -662,13 +678,17 @@ pub struct Bot {
     /// listed blocks — a monster still there after two looks is not
     /// leaving, it is standing there.
     cooling: Option<(String, u32)>,
-    /// Coin denominations already swept this visit, keyed by the room
-    /// name the block carried. A pile the character cannot carry
+    /// Coin denominations claimed this visit, keyed by the room name
+    /// the block carried. A pile the character cannot carry
     /// (encumbrance refusal) stays listed in every block, and a bot
     /// that re-swept per block would `get` at the pacer floor forever.
-    /// One try per denomination per visit; a fresh pile mid-stay is the
-    /// drop line's job. Name-keyed, so the same-named-twin hazard costs
-    /// a missed pile, never a loop.
+    /// A claim lasts until the board answers it: a pickup or a "You
+    /// don't see any" releases it, and a drop line is a new pile that
+    /// claims afresh. A `get` the board never answers keeps its claim
+    /// for the visit. Without the release, one contested `get` in a
+    /// room the character never left silenced every later pile there
+    /// (cw-carrot, 2026-09-12). Name-keyed, so the same-named-twin
+    /// hazard costs a missed pile, never a loop.
     swept: (String, HashSet<String>),
     /// How the last painted block coloured each attackable noun:
     /// true for aggressive, false for anything else. Arrival lines
@@ -1597,28 +1617,34 @@ impl Bot {
         if self.config.take_keys && self.pack.is_some() && picked_up_item(line).is_some() {
             return vec![BotAction::Send("i".into())];
         }
-        // Consult the same per-visit memo the room-render sweep uses
-        // (~line 602): a kill's drop line and the room's own "You
-        // notice ..." listing name the SAME pile, and without this a
-        // kill sent `get gold` here, then the very next block re-listed
-        // the pile and the room-render path sent it again. `insert`
-        // returns false when the denomination is already claimed, so
-        // whichever source sees the pile first wins and the other is a
-        // no-op.
+        // The board answered a `get`: the claim on that denomination
+        // is settled either way, and the next listing is a new pile.
+        if let Some((_, denom)) = picked_up(line) {
+            self.swept.1.remove(&denom);
+        }
+        if let Some(denom) = pile_gone(line) {
+            self.swept.1.remove(&denom);
+        }
+        // A drop line is a NEW pile, whatever the memo says: the claim
+        // is taken afresh, so the block that follows -- which lists
+        // the very pile the kill just reported -- finds it claimed and
+        // sends nothing. Before this the drop line deferred to the
+        // memo, and a pile dropped after a contested `get` was never
+        // taken.
         //
-        // This does not key on room name the way the render path does —
+        // This does not key on room name the way the render path does:
         // a drop line only ever arrives mid-visit, after the RoomSeen
         // that keyed `swept.0` for the room we are standing in. The one
         // gap is a bot whose very first event is a drop line with no
         // room seen yet: the memo is still keyed to the empty string,
         // and the next RoomSeen resets it, undoing this claim and
-        // allowing one repeat `get`. That is the same reset the memo
-        // already performs on every room change; it does not survive
-        // being asked about a room it has not seen yet.
+        // allowing one repeat `get`.
         coin_drop(line)
             .filter(|(_, denom)| self.wants_coin(denom))
-            .filter(|(_, denom)| self.swept.1.insert(denom.clone()))
-            .map(|(_, denom)| vec![BotAction::Send(format!("get {denom}"))])
+            .map(|(_, denom)| {
+                self.swept.1.insert(denom.clone());
+                vec![BotAction::Send(format!("get {denom}"))]
+            })
             .unwrap_or_default()
     }
 }

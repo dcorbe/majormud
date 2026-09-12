@@ -2446,3 +2446,60 @@ fn a_block_of_painted_players_makes_the_next_arrival_a_question() {
     });
     assert_eq!(acts, vec![BotAction::Look]);
 }
+
+// ---------------------------------------------------------------------
+// The sweep memo is a claim, not a verdict. It exists so a pile the
+// character cannot carry is tried once per visit and not on every
+// block. Carrot stood in the Arena all session: one contested `get`
+// was refused, the memo kept the denomination, and every later pile
+// there was left (99 listings, one get; cw-carrot 2026-09-12). The
+// board's own answers release the claim, and a drop line is a new
+// pile whatever the memo says.
+// ---------------------------------------------------------------------
+
+/// A drop line announces a NEW pile: it is swept even when the
+/// denomination was claimed earlier this visit.
+#[test]
+fn a_drop_line_is_a_new_pile_even_when_the_denomination_was_claimed() {
+    let mut bot = get_bot();
+    assert_eq!(
+        bot.on_event(&Event::RoomSeen(view_with_items(&[], &["7 silver nobles"]))),
+        vec![BotAction::Send("get silver".into())]
+    );
+    assert_eq!(
+        bot.on_event(&Event::Line("7 silver drop to the ground.".into())),
+        vec![BotAction::Send("get silver".into())]
+    );
+    // The block that follows lists the pile the drop line announced:
+    // the same pile, claimed once.
+    assert!(
+        bot.on_event(&Event::RoomSeen(view_with_items(&[], &["7 silver nobles"])))
+            .is_empty()
+    );
+}
+
+/// "You don't see any silver nobles": somebody else was faster. The
+/// claim is released, and the next pile of that denomination is tried.
+#[test]
+fn a_pile_the_board_says_is_gone_releases_the_claim() {
+    let mut bot = get_bot();
+    bot.on_event(&Event::RoomSeen(view_with_items(&[], &["7 silver nobles"])));
+    bot.on_event(&Event::Line("You don't see any silver nobles".into()));
+    assert_eq!(
+        bot.on_event(&Event::RoomSeen(view_with_items(&[], &["3 silver nobles"]))),
+        vec![BotAction::Send("get silver".into())]
+    );
+}
+
+/// "You picked up 7 silver nobles": the pile left the floor with us.
+/// A later listing of that denomination is a new pile.
+#[test]
+fn a_pickup_releases_the_claim() {
+    let mut bot = get_bot();
+    bot.on_event(&Event::RoomSeen(view_with_items(&[], &["7 silver nobles"])));
+    bot.on_event(&Event::Line("You picked up 7 silver nobles".into()));
+    assert_eq!(
+        bot.on_event(&Event::RoomSeen(view_with_items(&[], &["3 silver nobles"]))),
+        vec![BotAction::Send("get silver".into())]
+    );
+}
