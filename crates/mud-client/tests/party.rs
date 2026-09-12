@@ -228,6 +228,21 @@ fn bank_names_are_the_shop_type_seven_rooms() {
 }
 
 #[test]
+fn a_bank_room_is_found_by_the_name_the_block_prints() {
+    use mud_client::party::bank_room;
+    use mud_core::content::{Room, RoomId, Shop, ShopId, ShopStock};
+    let mut c = Content::default();
+    // The shop's name is not the room's for four of the five shipped
+    // banks, and the block prints the room's.
+    c.add_shop(Shop { id: ShopId(8), name: "Rhudaur Bank".into(), shop_type: 7, min_level: 0, max_level: 0, markup: 0, class_limit: 0, stock: [ShopStock::default(); 20] });
+    c.add_room(Room { id: RoomId { map: 2, room: 2568 }, name: "Bank of Rhudaur".into(), room_type: 1, shop: Some(ShopId(8)), ..Default::default() });
+    c.add_room(Room { id: RoomId { map: 2, room: 2569 }, name: "Rhudaur Bank".into(), ..Default::default() });
+    assert_eq!(bank_room(&c, "Bank of Rhudaur"), Some(RoomId { map: 2, room: 2568 }));
+    assert_eq!(bank_room(&c, "Rhudaur Bank"), None, "the shop's name names no room");
+    assert_eq!(bank_room(&c, "Armoury"), None);
+}
+
+#[test]
 fn wait_state_signals_once_each_way() {
     let mut w = WaitState::new();
     assert_eq!(w.on_rest_sent(), Some(Signal::Wait));

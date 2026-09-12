@@ -18,7 +18,7 @@ use std::time::Instant;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use mud_core::content::Content;
+use mud_core::content::{Content, Room, RoomId};
 
 /// The stock `You are now following %s` has no trailing period. The
 /// roster row is any indented line before the block ends. Its name is
@@ -290,6 +290,15 @@ impl Holds {
     }
 }
 
+/// Whether this room is a bank: a shop room whose shop banks.
+fn is_bank(content: &Content, room: &Room) -> bool {
+    room.room_type == 1
+        && room
+            .shop
+            .and_then(|s| content.shops.get(&s))
+            .is_some_and(|shop| shop.shop_type == crate::bank::BANK_SHOP_TYPE)
+}
+
 /// The names of the bank rooms, unique across the shipped world,
 /// checked 2026-09-12. A room block naming one is a bank arrival with
 /// no localisation.
@@ -297,14 +306,20 @@ pub fn bank_names(content: &Content) -> BTreeSet<String> {
     content
         .rooms
         .values()
-        .filter(|room| room.room_type == 1)
-        .filter(|room| {
-            room.shop
-                .and_then(|s| content.shops.get(&s))
-                .is_some_and(|shop| shop.shop_type == crate::bank::BANK_SHOP_TYPE)
-        })
+        .filter(|room| is_bank(content, room))
         .map(|room| room.name.clone())
         .collect()
+}
+
+/// The bank room the block named, when exactly one bank carries that
+/// name. The block prints the ROOM's name, which is not the shop's for
+/// four of the five shipped banks, so the shop names `bank::bank_rooms`
+/// returns cannot answer this.
+pub fn bank_room(content: &Content, name: &str) -> Option<RoomId> {
+    let mut found =
+        content.rooms.values().filter(|room| room.name == name && is_bank(content, room));
+    let first = found.next()?;
+    found.next().is_none().then_some(first.id)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -17,9 +17,10 @@ use crate::session::{Capture, Session};
 use crate::settings::Settings;
 use crate::tui::{
     ContentCache, Job, KeyOutcome, LEVEL_POLL, LobbyStep, apply_settings, assist_config_for,
-    assist_tick, content_path, describe_loops, finish_locator, handover_actions, help_text,
-    here_or, import_loop, lobby_step, needs_name, new_assist, on_realm_entry, pace_on_change,
-    render_status, start_bank, start_farm, start_go, start_recover, start_roam, start_where,
+    assist_tick, content_path, describe_loops, finish_locator, follower_bank_arrival_decision,
+    handover_actions, help_text, here_or, import_loop, lobby_step, needs_name, new_assist,
+    on_realm_entry, pace_on_change, render_status, start_bank, start_farm, start_follower_deposit,
+    start_go, start_recover, start_roam, start_where,
 };
 
 /// A window's identity. Stable for its life, unlike its number, which
@@ -703,6 +704,14 @@ async fn play(
     let found = w.cache.lock().expect("cache lock").world(&world_path);
     let (graph, nav, spawns, content) = finish_locator(found, &session);
     let durations = content.as_ref().map(|c| crate::views::spell_durations(c)).unwrap_or_default();
+    // The room names that are banks. Read on every room block while
+    // following, so it is built once rather than per block.
+    let party_banks = content.as_ref().map(|c| crate::party::bank_names(c)).unwrap_or_default();
+    // The name on the last room block the character was in, which is
+    // what makes the next one an arrival rather than a re-render. Names
+    // rather than ids: the bank gate reads the printed name too, and
+    // both must work with no room database at all.
+    let mut last_room: Option<String> = None;
     // The assist: a bot that fights and loots, rests, heals and hides
     // BESIDE the operator while no farm runs. `/bot` toggles it; the
     // profile's `assist_play` starts it on. Rebuilt on every toggle-on
@@ -869,6 +878,37 @@ async fn play(
                         // `play` used to keep a second, private
                         // `PurseMeter` fed the same way and never read
                         // it. One tracker for one fact.
+                    }
+                    // Dragged into a bank while following: deposit and
+                    // tell the leader. It takes the job slot, which is
+                    // what holds the assist off while it runs, and the
+                    // end notice and the handover are the slot's own.
+                    //
+                    // Room blocks are tested here as well as inside the
+                    // decision, so that reading the party and the
+                    // profile, both of which copy, costs nothing on the
+                    // lines between blocks.
+                    if job.is_none()
+                        && assist.is_some()
+                        && matches!(&cor.event, crate::events::Event::RoomSeen(_))
+                        && let Some(content) = content.as_ref()
+                        && let Some(bank) = follower_bank_arrival_decision(
+                            &session.party(),
+                            session.bot_on(),
+                            session.profile().bank.auto_deposit,
+                            &party_banks,
+                            last_room.as_deref(),
+                            cor,
+                        )
+                    {
+                        w.note(&format!("-- party: at {bank}, depositing --"));
+                        let started =
+                            start_follower_deposit(session.clone(), content.clone(), &bank);
+                        phase_rx = Some(started.phase.clone());
+                        job = Some(started);
+                    }
+                    if let crate::events::Event::RoomSeen(room) = &cor.event && !cor.elsewhere {
+                        last_room = Some(room.name.clone());
                     }
                     // While a farm runs it owns the connection outright;
                     // the assist only drives a hand-played session.

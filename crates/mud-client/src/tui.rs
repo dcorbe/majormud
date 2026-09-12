@@ -1928,10 +1928,10 @@ impl Drop for StatusBar {
 /// blocks, so two of these at once would fight over the same events (see
 /// [`crate::farm::run_farm`]).
 pub struct Job {
-    pub(crate) handle: tokio::task::JoinHandle<()>,
-    pub(crate) phase: tokio::sync::watch::Receiver<crate::farm::Phase>,
+    pub handle: tokio::task::JoinHandle<()>,
+    pub phase: tokio::sync::watch::Receiver<crate::farm::Phase>,
     /// "farm" or "go", for the retirement notice.
-    pub(crate) what: &'static str,
+    pub what: &'static str,
 }
 
 /// Start a farm run on an already-connected session.
@@ -2360,6 +2360,86 @@ pub fn start_bank(
         phase: rx,
         what: "bank",
     })
+}
+
+/// Whether this room block is a bank arrival the follower should act
+/// on: following, the switch on, deposits on, and the room named as a
+/// bank. Returns the bank's name.
+///
+/// A peek down a corridor is not an arrival, so a `look east` into the
+/// bank next door decides nothing. This models where the character is,
+/// which is what [`crate::correlate::Correlated::elsewhere`] rules on.
+///
+/// Neither is a second block for the room already stood in, which is
+/// why `last_room` is asked for: the job hands over with a `look`, and
+/// on its block the deposit would otherwise start again, and again.
+pub fn follower_bank_arrival_decision(
+    party: &crate::party::PartyState,
+    bot_on: bool,
+    auto_deposit: bool,
+    banks: &std::collections::BTreeSet<String>,
+    last_room: Option<&str>,
+    cor: &crate::correlate::Correlated,
+) -> Option<String> {
+    let crate::events::Event::RoomSeen(room) = &cor.event else {
+        return None;
+    };
+    if cor.elsewhere || last_room == Some(room.name.as_str()) {
+        return None;
+    }
+    (party.is_follower() && bot_on && auto_deposit && banks.contains(&room.name))
+        .then(|| room.name.clone())
+}
+
+/// The follower's deposit on a bank arrival, run in the job slot so the
+/// assist stays quiet for as long as it takes, as it does for a job
+/// the operator typed.
+///
+/// It ends with `@ok` to the leader whatever the deposit did, because a
+/// leader waiting on the replies must never be held by a follower whose
+/// purse was empty or whose deposit was refused.
+///
+/// Automatic and under `/bot`, so the `not_following` refusal that
+/// guards a typed job does not apply: this job is the point of
+/// following.
+pub fn start_follower_deposit(
+    session: Arc<Session>,
+    content: Arc<mud_core::content::Content>,
+    room: &str,
+) -> Job {
+    let (tx, rx) = tokio::sync::watch::channel(crate::farm::Phase::default());
+    let room = room.to_string();
+    let handle = tokio::spawn(async move {
+        // The block named the room, and a name no bank room carries
+        // leaves the position unknown rather than guessed: the phase's
+        // room is adopted as a fix when the job ends.
+        let at = crate::party::bank_room(&content, &room);
+        let bank = session.profile().bank;
+        let mut stats = crate::farm::FarmStats::default();
+        let end =
+            crate::bank::deposit_here(&session, &bank, &room, at.unwrap_or_default(), &mut stats)
+                .await;
+        let why = match &end {
+            crate::bank::ErrandEnd::Deposited { farthings, bank, .. } => {
+                format!("deposited {farthings} copper farthings at {bank}")
+            }
+            crate::bank::ErrandEnd::Nothing(why) => format!("nothing deposited: {why}"),
+            // `deposit_here` neither walks nor fights, so it returns
+            // neither of the travelling endings. Reported rather than
+            // panicked over: a follower is not worth a dead task.
+            other => format!("{other:?}"),
+        };
+        if let Some(leader) = session.party().leader {
+            session.send(&crate::party::telepath(&leader, "@ok"));
+            session.party_note(format!("party: told {leader} @ok"));
+        }
+        let _ = tx.send(crate::farm::Phase::Done { why, at });
+    });
+    Job {
+        handle,
+        phase: rx,
+        what: "party deposit",
+    }
 }
 
 /// The room database this profile uses: `[farm].content` when it has
