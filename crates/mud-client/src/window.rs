@@ -1029,19 +1029,11 @@ async fn play(
                     // the same reason `/bot` rebuilds it on every toggle-on.
                     if assist.is_some() {
                         let (bot, mut casts) = new_assist(&session, &assist_config);
-                        // The follower's deposit gate is not a fight
-                        // latch: it carries how long ago the leader was
-                        // asked for a bank, and a job ending must not
-                        // let the follower ask again inside the five
-                        // minutes. The deposit job is the one job that
-                        // clears it, because the coins are in the bank.
-                        // The wait handshake is not a latch either: a
-                        // job that ran while the character was sitting
-                        // down must not swallow the `@ok` its `@wait`
-                        // owes the leader.
+                        // The latches go, the party state stays. The
+                        // deposit job is the one job that clears the
+                        // gate's ask, because the coins are in the bank.
                         if let Some(old) = assist_casts.take() {
-                            casts.follower = old.follower;
-                            casts.wait = old.wait;
+                            casts.carry_party(old);
                         }
                         if what == crate::tui::PARTY_DEPOSIT {
                             casts.follower.deposited();
@@ -1130,7 +1122,16 @@ async fn play(
                             if applied.bot_changed {
                                 assist_config = with_vitals(assist_config_for(w.settings.profile()), &assist_vitals);
                                 if assist.is_some() {
-                                    let (bot, casts) = new_assist(&session, &assist_config);
+                                    let (bot, mut casts) = new_assist(&session, &assist_config);
+                                    // Same as a job handing back: a
+                                    // setting changing under the assist
+                                    // is not a reason to drop an `@ok`
+                                    // the leader is standing for, or to
+                                    // let the follower ask for a bank
+                                    // again inside the five minutes.
+                                    if let Some(old) = assist_casts.take() {
+                                        casts.carry_party(old);
+                                    }
                                     assist = Some(bot);
                                     assist_casts = Some(casts);
                                     // Reconfigured, not rebuilt: a fresh

@@ -1,13 +1,17 @@
-//! The party state machine, the telepath grammar, the hold set and the
-//! wait state. Pure functions, no board.
+//! The party state machine, the telepath grammar, the hold set, the
+//! wait state, and the party state an assist rebuild carries across.
+//! Pure functions, no board.
 
 use std::time::{Duration, Instant};
 
+use mud_client::bank::{BankConfig, Reading};
 use mud_client::events::Status;
 use mud_client::party::{
     Change, Holds, Member, PartyConfig, PartyState, Remote, Request, Role, Signal, WaitState,
     bank_names, permitted, remote, telepath,
 };
+use mud_client::sheet::Inventory;
+use mud_client::tui::AssistCasts;
 use mud_core::content::Content;
 
 fn state() -> PartyState {
@@ -299,4 +303,40 @@ fn the_bar_names_the_party() {
     let text =
         render_status(&GameState::default(), Instant::now(), None, Fix::Unknown, None, None, None, false, &leader, 120);
     assert!(text.contains("leading 2"), "{text}");
+}
+
+/// The assist is rebuilt when a job hands the character back and when a
+/// `bot.*` setting changes under it. Both go through `carry_party`, so
+/// neither drops an `@ok` the leader is standing for, and neither lets
+/// the follower ask for a bank again inside the five minutes.
+#[test]
+fn a_rebuild_carries_the_wait_and_the_ask_throttle() {
+    let cfg = BankConfig { deposit_at_coins: 10, ..BankConfig::default() };
+    let heavy = Reading::of(&Inventory::parse(
+        "You are carrying 50 gold crowns\nEncumbrance: 16/2400 - None [0%]\n",
+    ))
+    .expect("a reply with an encumbrance line");
+    let now = Instant::now();
+    let minute = now + Duration::from_secs(60);
+
+    let mut old = AssistCasts::default();
+    old.follower.on_pickup();
+    assert!(old.follower.on_reading(&cfg, heavy, now), "the leader is asked once");
+    assert_eq!(old.wait.on_rest_sent(), Some(Signal::Wait), "the rest owes an @ok");
+
+    let mut rebuilt = AssistCasts::default();
+    rebuilt.carry_party(old);
+    assert!(rebuilt.wait.is_waiting(), "the owed @ok survives the rebuild");
+    rebuilt.follower.on_pickup();
+    assert!(
+        !rebuilt.follower.on_reading(&cfg, heavy, minute),
+        "the leader was asked a minute ago, rebuild or not"
+    );
+
+    // The control: a gate that carried nothing has nobody to wait on
+    // and asks straight away, which is what the rebuilt one must not do.
+    let mut blank = AssistCasts::default();
+    blank.follower.on_pickup();
+    assert!(blank.follower.on_reading(&cfg, heavy, minute));
+    assert!(!blank.wait.is_waiting());
 }

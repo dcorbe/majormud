@@ -1423,6 +1423,28 @@ impl Default for AssistCasts {
     }
 }
 
+impl AssistCasts {
+    /// Take the party state off the assist being replaced.
+    ///
+    /// A rebuild throws away the fight latches on purpose: they
+    /// describe fights that are over. The party state is not a latch
+    /// and must survive. The deposit gate carries how long ago the
+    /// leader was asked for a bank, and a rebuild that dropped it would
+    /// let the follower ask again inside the five minutes. The wait
+    /// state carries an `@ok` the character owes its leader, and a
+    /// rebuild that dropped it would leave the leader standing for the
+    /// whole of `wait_secs`.
+    ///
+    /// Every rebuild that hands the character back to the assist calls
+    /// this: a job ending, and a `bot.*` setting changing under it. The
+    /// `/bot` toggle does not, because the switch is meant to stop
+    /// every send this side makes.
+    pub fn carry_party(&mut self, old: AssistCasts) {
+        self.follower = old.follower;
+        self.wait = old.wait;
+    }
+}
+
 /// One correlated event for the assist while no job runs: keep its
 /// sheet current, feed the heal state, cast when a heal is due, rearm a
 /// rest that plainly failed, and let the bot decide the rest.
