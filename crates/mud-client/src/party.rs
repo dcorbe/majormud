@@ -114,9 +114,11 @@ impl PartyState {
                 return None;
             }
             // Anything else ends the block: the board never prints a
-            // row without its indent.
+            // row without its indent. The line ends the roster, then
+            // is processed on its own. Its own change wins if it has
+            // one, otherwise the roster's change is returned.
             let ended = self.end_roster();
-            return ended.or_else(|| self.observe(line));
+            return self.observe(line).or(ended);
         }
         let line = line.trim_end();
         if line == ROSTER_HEADER {

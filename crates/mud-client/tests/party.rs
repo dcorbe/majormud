@@ -101,6 +101,29 @@ fn an_empty_roster_while_leading_ends_the_party() {
 }
 
 #[test]
+fn a_non_indented_line_ends_the_roster_and_is_then_read_itself() {
+    let mut s = state();
+    s.observe("Pootwaddle started to follow you.");
+    s.observe("Blueberry started to follow you.");
+    s.observe("The following people are in your travel party:");
+    s.observe("  Pootwaddle                     Mystic");
+    assert_eq!(
+        s.observe("Blueberry has been removed from your followers."),
+        Some(Change::Left("Blueberry".into()))
+    );
+    assert_eq!(s.members, vec![Member { name: "Pootwaddle".into(), invited: false }]);
+}
+
+#[test]
+fn a_roster_ended_by_chatter_still_reads_as_the_roster() {
+    let mut s = state();
+    s.observe("Pootwaddle started to follow you.");
+    s.observe("The following people are in your travel party:");
+    s.observe("  Pootwaddle                     Mystic");
+    assert_eq!(s.observe("Beef says \"hi\""), Some(Change::Roster));
+}
+
+#[test]
 fn chatter_changes_nothing() {
     let mut s = state();
     assert_eq!(s.observe("Beef says \"You are now following me, ha\""), None);
