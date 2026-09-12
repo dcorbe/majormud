@@ -875,6 +875,13 @@ impl Bot {
         self.engaged.as_deref()
     }
 
+    /// Nothing in hand: no fight running and no heal in flight. What a
+    /// caller asks before spending the character's turn on an errand of
+    /// its own, such as the follower gate's inventory read.
+    pub fn is_idle(&self) -> bool {
+        self.engaged.is_none() && !self.healing
+    }
+
     /// Did the last room block list something this bot would swing at,
     /// fight started or not. What makes a room not quiet.
     pub fn has_work(&self) -> bool {

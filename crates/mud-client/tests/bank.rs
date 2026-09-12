@@ -341,3 +341,49 @@ fn the_deposit_replies_are_told_apart() {
     );
     assert_eq!(deposit_reply("You picked up 11 silver nobles"), None);
 }
+
+/// A follower cannot walk to the bank, so its gate asks the leader. It
+/// asks once, and not again until it has deposited or five minutes
+/// have passed. Every ask needs a fresh pickup behind it: the reading
+/// is taken because coins arrived, not on a timer.
+#[test]
+fn the_follower_gate_asks_once_per_five_minutes() {
+    use mud_client::bank::FollowerGate;
+    use std::time::{Duration, Instant};
+    let cfg = BankConfig {
+        deposit_at_coins: 10,
+        ..BankConfig::default()
+    };
+    let t0 = Instant::now();
+    let light = reading([0, 0, 0, 0, 0], 5);
+    let heavy = reading([0, 0, 50, 0, 0], 16);
+    let mut g = FollowerGate::new();
+    g.seed(light);
+    assert!(!g.wants_reading(t0), "no pickup yet");
+    g.on_pickup();
+    assert!(g.wants_reading(t0));
+    assert!(g.on_reading(&cfg, heavy, t0), "over the mark: ask");
+    assert!(!g.wants_reading(t0), "the reading answered the pickup");
+    g.on_pickup();
+    assert!(g.wants_reading(t0 + Duration::from_secs(60)));
+    assert!(
+        !g.on_reading(&cfg, heavy, t0 + Duration::from_secs(60)),
+        "asked a minute ago"
+    );
+    g.on_pickup();
+    assert!(
+        g.on_reading(&cfg, heavy, t0 + Duration::from_secs(301)),
+        "five minutes on: ask again"
+    );
+    g.deposited();
+    g.on_pickup();
+    assert!(
+        g.on_reading(&cfg, heavy, t0 + Duration::from_secs(302)),
+        "a deposit resets the ask"
+    );
+    g.on_pickup();
+    assert!(
+        !g.on_reading(&cfg, light, t0 + Duration::from_secs(303)),
+        "nothing worth banking, no ask"
+    );
+}

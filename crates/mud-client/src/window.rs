@@ -1028,7 +1028,19 @@ async fn play(
                     // fights that are over, so the assist starts clean for
                     // the same reason `/bot` rebuilds it on every toggle-on.
                     if assist.is_some() {
-                        let (bot, casts) = new_assist(&session, &assist_config);
+                        let (bot, mut casts) = new_assist(&session, &assist_config);
+                        // The follower's deposit gate is not a fight
+                        // latch: it carries how long ago the leader was
+                        // asked for a bank, and a job ending must not
+                        // let the follower ask again inside the five
+                        // minutes. The deposit job is the one job that
+                        // clears it, because the coins are in the bank.
+                        if let Some(old) = assist_casts.take() {
+                            casts.follower = old.follower;
+                        }
+                        if what == crate::tui::PARTY_DEPOSIT {
+                            casts.follower.deposited();
+                        }
                         assist = Some(bot);
                         assist_casts = Some(casts);
                         assist_watch =

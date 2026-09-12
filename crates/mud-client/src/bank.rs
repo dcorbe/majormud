@@ -237,6 +237,69 @@ impl BankGate {
     }
 }
 
+/// How long a follower waits before asking its leader again. The leader
+/// may be mid-fight, or not running a client that answers at all, so an
+/// ask that went nowhere is retried rather than repeated.
+pub const ASK_AGAIN_AFTER: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// A follower's deposit gate. A follower cannot walk to the bank, it is
+/// being dragged, so on `Deposit` it asks the leader with `@bank`, once,
+/// and not again until it has deposited or [`ASK_AGAIN_AFTER`] has
+/// passed.
+///
+/// The reading itself costs a command, so it is taken only when coins
+/// have arrived since the last one: [`FollowerGate::on_pickup`] arms it
+/// and the next idle prompt spends the `i`.
+#[derive(Debug, Clone, Default)]
+pub struct FollowerGate {
+    gate: BankGate,
+    pending: bool,
+    asked_at: Option<Instant>,
+}
+
+impl FollowerGate {
+    pub fn new() -> FollowerGate {
+        FollowerGate::default()
+    }
+
+    /// The reading a class crossing is measured from, as
+    /// [`BankGate::seed`] takes it.
+    pub fn seed(&mut self, reading: Reading) {
+        self.gate.seed(reading);
+    }
+
+    /// The board confirmed a coin pickup. The next idle prompt reads.
+    pub fn on_pickup(&mut self) {
+        self.pending = true;
+    }
+
+    /// Is a reading owed? `now` is unused today and named so the caller
+    /// reads as one clocked conversation with the gate.
+    pub fn wants_reading(&self, _now: Instant) -> bool {
+        self.pending
+    }
+
+    /// Judge one reading. True means send the `@bank` now. The pickup is
+    /// answered whatever the judgement, so a purse under the mark costs
+    /// one `i` per pickup and nothing more.
+    pub fn on_reading(&mut self, cfg: &BankConfig, reading: Reading, now: Instant) -> bool {
+        self.pending = false;
+        if self.gate.judge(cfg, reading) != Judgement::Deposit {
+            return false;
+        }
+        if self.asked_at.is_some_and(|t| now.duration_since(t) < ASK_AGAIN_AFTER) {
+            return false;
+        }
+        self.asked_at = Some(now);
+        true
+    }
+
+    /// The coins are in the bank. The next crossing may ask again.
+    pub fn deposited(&mut self) {
+        self.asked_at = None;
+    }
+}
+
 /// How the board answered a `deposit`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DepositReply {

@@ -2321,3 +2321,17 @@ fn switched_off_keeps_the_marks_and_pools_but_runs_nothing() {
     assert_eq!(off.ignore, vec!["beetle".to_string()]);
     assert_eq!(off.switched_off(), off, "off twice is off");
 }
+
+/// Idle is nothing in hand: no fight running and no heal in flight.
+/// What the follower's deposit gate asks before it spends the
+/// character's turn on an inventory read.
+#[test]
+fn idle_is_no_fight_and_no_heal_in_flight() {
+    let mut bot = combat_bot();
+    assert!(bot.is_idle(), "a fresh bot has nothing in hand");
+    bot.on_event(&room(&["kobold thief"]));
+    assert_eq!(bot.engaged(), Some("kobold thief"));
+    assert!(!bot.is_idle(), "a fight is running");
+    bot.on_event(&Event::Line("You say \"a thief\"".into()));
+    assert!(bot.is_idle(), "the target was gone");
+}

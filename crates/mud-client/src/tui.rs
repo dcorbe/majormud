@@ -1400,6 +1400,12 @@ pub(crate) fn new_assist(session: &Session, cfg: &crate::bot::BotConfig) -> (cra
 pub struct AssistCasts {
     pub heal: crate::sheet::HealState,
     pub buff: crate::sheet::BuffState,
+    /// The follower's deposit gate. Idle unless the character is
+    /// following someone.
+    pub follower: crate::bank::FollowerGate,
+    /// An `i` the gate sent is still out. One read at a time, so a
+    /// stream of pickups costs one command, not one each.
+    pub follower_read: bool,
 }
 
 impl Default for AssistCasts {
@@ -1407,6 +1413,8 @@ impl Default for AssistCasts {
         AssistCasts {
             heal: crate::sheet::HealState::new(Vec::new()),
             buff: crate::sheet::BuffState::new(Vec::new()),
+            follower: crate::bank::FollowerGate::new(),
+            follower_read: false,
         }
     }
 }
@@ -1456,6 +1464,12 @@ pub fn assist_tick(
         *book_seen = spells;
         refusals = sheet.heals.1;
         refusals.extend(sheet.buffs.1);
+        // The realm entry probe's own inventory read is the reading a
+        // class crossing is measured from. Seeded, not judged: whatever
+        // the character walked in carrying is where it started.
+        if let Some(reading) = crate::bank::Reading::of(&session.contents()) {
+            casts.follower.seed(reading);
+        }
     }
     casts.heal.on_event(cor, now);
     casts.buff.on_event(cor, now);
@@ -1475,6 +1489,7 @@ pub fn assist_tick(
         let id = session.send(&cmd);
         casts.buff.on_sent(&cmd, id);
     }
+    follower_gate(session, bot, casts, cor, now);
     for cmd in assist_actions(bot, cor) {
         // The bot rests off a prompt and nothing else, so the prompt's
         // own numbers are the ones it read.
@@ -1487,6 +1502,71 @@ pub fn assist_tick(
         watch.on_sent(&cmd);
     }
     refusals
+}
+
+/// The leader to ask and the bank settings to judge by, when the
+/// character is following and the profile lets the gate act.
+///
+/// Reading the party and the profile both copy, so this is asked only
+/// once something is actually due, never on the lines in between.
+fn follower_bank(session: &Session) -> Option<(String, crate::bank::BankConfig)> {
+    let party = session.party();
+    if !party.is_follower() {
+        return None;
+    }
+    let leader = party.leader?;
+    let bank = session.profile().bank;
+    bank.auto_deposit.then_some((leader, bank))
+}
+
+/// The follower's deposit gate, one event at a time.
+///
+/// A follower is dragged from room to room, so it cannot take itself to
+/// a bank. What it can do is say so: a pickup arms a reading, the next
+/// idle prompt spends an `i`, and a purse over the mark telepaths the
+/// leader `@bank`. The leader's client answers that by walking the
+/// party to a bank, where the arrival does the deposit.
+///
+/// Only while following, and only when `[bank].auto_deposit` is on.
+/// `/bot` gates it too, one level up: the assist runs only with the bot
+/// on.
+fn follower_gate(
+    session: &Session,
+    bot: &crate::bot::Bot,
+    casts: &mut AssistCasts,
+    cor: &crate::correlate::Correlated,
+    now: std::time::Instant,
+) {
+    match &cor.event {
+        crate::events::Event::Line(line) => {
+            // The session's own contents tracker parses the same reply
+            // before this event is published, so by the encumbrance
+            // line `session.contents()` is the reading just read.
+            if casts.follower_read && line.trim_start().starts_with("Encumbrance:") {
+                casts.follower_read = false;
+                if let Some((leader, bank)) = follower_bank(session)
+                    && let Some(reading) = crate::bank::Reading::of(&session.contents())
+                    && casts.follower.on_reading(&bank, reading, now)
+                {
+                    session.send(&crate::party::telepath(&leader, "@bank"));
+                    session.party_note(format!("party: asked {leader} @bank"));
+                }
+            } else if crate::bot::picked_up(line).is_some() && follower_bank(session).is_some() {
+                casts.follower.on_pickup();
+            }
+        }
+        crate::events::Event::Prompt { .. } => {
+            if !casts.follower_read
+                && casts.follower.wants_reading(now)
+                && bot.is_idle()
+                && follower_bank(session).is_some()
+            {
+                casts.follower_read = true;
+                session.send("i");
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The assist's reply to one correlated event: the bot's own decisions,
@@ -2393,6 +2473,10 @@ pub fn follower_bank_arrival_decision(
         .then(|| room.name.clone())
 }
 
+/// The job slot's name for the follower's deposit. The window reads it
+/// back when the job ends, to tell that errand from every other one.
+pub const PARTY_DEPOSIT: &str = "party deposit";
+
 /// The follower's deposit on a bank arrival, run in the job slot so the
 /// assist stays quiet for as long as it takes, as it does for a job
 /// the operator typed.
@@ -2440,7 +2524,7 @@ pub fn start_follower_deposit(
     Job {
         handle,
         phase: rx,
-        what: "party deposit",
+        what: PARTY_DEPOSIT,
     }
 }
 
