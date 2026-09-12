@@ -24,7 +24,8 @@ pub enum Command {
         /// host[:port]`, then `/save <name>`.
         #[arg(long)]
         profile: Option<PathBuf>,
-        /// Capture basename: writes `<capture>.raw` and `<capture>_timing.log`
+        /// Capture basename: every window writes `<capture>-<name>.raw`
+        /// and `<capture>-<name>_timing.log`, named by its profile
         #[arg(long)]
         capture: Option<PathBuf>,
     },

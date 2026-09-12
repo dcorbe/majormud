@@ -60,10 +60,7 @@ fn play_command(
         },
         None => mud_client::settings::Settings::default(),
     };
-    let capture = capture.map(|base| Capture {
-        raw: base.with_extension("raw"),
-        timing: Some(append_to_stem(base, "_timing.log")),
-    });
+    let capture = capture.map(std::path::Path::to_path_buf);
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
@@ -98,10 +95,7 @@ fn run_command(
         eprintln!("profile {}: {e}", profile_path.display());
         return ExitCode::FAILURE;
     }
-    let capture = capture.map(|base| Capture {
-        raw: base.with_extension("raw"),
-        timing: Some(append_to_stem(base, "_timing.log")),
-    });
+    let capture = capture.map(Capture::at);
     let sections_path = capture
         .as_ref()
         .map(|c| append_to_stem(&c.raw.with_extension(""), "_sections.json"));
@@ -402,10 +396,7 @@ fn farm_command(
         eprintln!("{warning}");
     }
 
-    let capture = capture.map(|base| Capture {
-        raw: base.with_extension("raw"),
-        timing: Some(append_to_stem(base, "_timing.log")),
-    });
+    let capture = capture.map(Capture::at);
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
@@ -672,9 +663,5 @@ async fn stop_signal() {
 }
 
 /// "out/run1" + "_timing.log" -> "out/run1_timing.log"
-fn append_to_stem(base: &std::path::Path, suffix: &str) -> std::path::PathBuf {
-    let mut s = base.as_os_str().to_os_string();
-    s.push(suffix);
-    std::path::PathBuf::from(s)
-}
+use mud_client::session::append_to_stem;
 

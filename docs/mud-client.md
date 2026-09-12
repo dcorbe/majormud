@@ -17,9 +17,12 @@ prints a live feed by default — where the character is, what
 it is fighting, what it killed, and HP whenever it changes. The feed is the **full transcript** — everything the board sends;
 `--brief` cuts it to notable lines only (arrivals, combat, kills, flood
 control, HP changes) and `--quiet` prints nothing until the run ends. For a
-permanent record use `--capture BASE`, which writes `BASE.raw` (the raw
-socket bytes) and `BASE_timing.log`. Keep captures OUT of `re/oracle/` —
-two corpus tests count the files in there.
+permanent record use `--capture BASE`. `mmc run` and `mmc farm` write
+`BASE.raw` (the raw socket bytes) and `BASE_timing.log`. `mmc play` writes
+one pair per window, `BASE-NAME.raw` and `BASE-NAME_timing.log`, NAME being
+the window's profile name, or its window number when it was opened without
+one. Keep captures OUT of `re/oracle/` — two corpus tests count the files in
+there.
 
 It targets the live MBBSEmu board (WCCMMUD 1.11p-WG) and the in-repo
 `mud-server` reimplementation. The two differ in more than the login
@@ -911,8 +914,8 @@ row first, so it no longer flashes over a slow link.
 
 Started as `mmc play` with no profile, the client opens the lobby alone.
 Started with `--profile`, it opens the lobby and window 2 connected to
-that profile, and shows window 2. A capture, when given, records window
-2's first connection.
+that profile, and shows window 2. A capture, when given, records every
+window's first connection, each under its own name (see `--capture`).
 
 ## The status bar
 

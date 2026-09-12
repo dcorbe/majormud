@@ -1987,18 +1987,18 @@ fn a_save_onto_another_characters_profile_is_refused_at_the_keyboard() {
 }
 
 /// `mmc play --capture` without a profile starts in the lobby. The
-/// capture has to follow the first window opened from it, or the file
-/// is never written.
+/// capture has to follow the window opened from it, or the file is
+/// never written. A window opened without a profile records under its
+/// number.
 #[tokio::test]
 async fn a_window_opened_from_the_lobby_records_the_capture() {
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("tui").join("capture");
     std::fs::create_dir_all(&dir).unwrap();
-    let raw = dir.join("lobby.raw");
+    let raw = dir.join("lobby-2.raw");
     let _ = std::fs::remove_file(&raw);
     let addr = banner_board().await;
     let (keys, key_rx) = tokio::sync::mpsc::unbounded_channel();
-    let capture = mud_client::session::Capture { raw: raw.clone(), timing: None };
-    let mut front = mud_client::tui::Front::new(Settings::default(), Some(capture), 80, 24, key_rx);
+    let mut front = mud_client::tui::Front::new(Settings::default(), Some(dir.join("lobby")), 80, 24, key_rx);
     let mut out = Vec::new();
     typed(&format!("/connect {}:{}", addr.ip(), addr.port()), &keys);
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -2007,6 +2007,38 @@ async fn a_window_opened_from_the_lobby_records_the_capture() {
     }
     assert_eq!(front.active(), 2, "the connect opened a window");
     assert!(raw.exists(), "the capture followed the window opened from the lobby");
+}
+
+/// Two characters up in one `mmc play --capture` leave two records,
+/// each named by its profile. It used to be one: the first window
+/// opened took the capture and every later one recorded nothing, which
+/// is how a whole fight went unrecorded on 2026-09-12.
+#[tokio::test]
+async fn every_window_records_under_its_own_name() {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("tui").join("capture-each");
+    std::fs::create_dir_all(&dir).unwrap();
+    let salad_raw = dir.join("board-salad.raw");
+    let beef_raw = dir.join("board-beef.raw");
+    let _ = std::fs::remove_file(&salad_raw);
+    let _ = std::fs::remove_file(&beef_raw);
+    let salad = banner_board().await;
+    let beef = banner_board().await;
+    let salad_toml = dir.join("salad.toml");
+    let beef_toml = dir.join("beef.toml");
+    std::fs::write(&salad_toml, format!("host = \"{}\"\nport = {}\n", salad.ip(), salad.port())).unwrap();
+    std::fs::write(&beef_toml, format!("host = \"{}\"\nport = {}\n", beef.ip(), beef.port())).unwrap();
+    let (keys, key_rx) = tokio::sync::mpsc::unbounded_channel();
+    let settings = Settings::load(&salad_toml).unwrap();
+    let mut front = mud_client::tui::Front::new(settings, Some(dir.join("board")), 80, 24, key_rx);
+    let mut out = Vec::new();
+    typed(&format!("/new {}", beef_toml.display()), &keys);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !(salad_raw.exists() && beef_raw.exists()) && Instant::now() < deadline {
+        settle(&mut front, &mut out).await;
+    }
+    assert_eq!(front.active(), 3, "the /new opened a third window");
+    assert!(salad_raw.exists(), "window 2 records under its profile's name");
+    assert!(beef_raw.exists(), "window 3 records under its own profile's name");
 }
 
 /// `/bot` off is not a reason to refuse: the operator typed the

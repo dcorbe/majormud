@@ -80,6 +80,25 @@ pub struct Capture {
     pub timing: Option<PathBuf>,
 }
 
+impl Capture {
+    /// The two files a `--capture` basename names: `BASE.raw` and
+    /// `BASE_timing.log`.
+    pub fn at(base: &std::path::Path) -> Capture {
+        Capture {
+            raw: base.with_extension("raw"),
+            timing: Some(append_to_stem(base, "_timing.log")),
+        }
+    }
+}
+
+/// `base` with `suffix` glued onto its last component, so `out/run1`
+/// and `_timing.log` make `out/run1_timing.log`.
+pub fn append_to_stem(base: &std::path::Path, suffix: &str) -> PathBuf {
+    let mut s = base.as_os_str().to_os_string();
+    s.push(suffix);
+    PathBuf::from(s)
+}
+
 /// Rolling view of the character, fed from parsed events.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GameState {

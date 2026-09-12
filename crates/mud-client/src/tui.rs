@@ -279,7 +279,7 @@ pub fn log_line(
 /// copies and its screen is the log of every window's major events.
 pub async fn run(
     settings: crate::settings::Settings,
-    capture: Option<crate::session::Capture>,
+    capture: Option<std::path::PathBuf>,
 ) -> std::io::Result<()> {
     let (cols, rows) = crossterm::terminal::size()?;
     crossterm::terminal::enable_raw_mode()?;
@@ -350,10 +350,14 @@ pub struct Front {
     front_rx: tokio::sync::mpsc::UnboundedReceiver<crate::window::FrontMsg>,
     key_rx: tokio::sync::mpsc::UnboundedReceiver<TermEvent>,
     cache: Arc<std::sync::Mutex<ContentCache>>,
-    /// `--capture`, until a window takes it. The first window opened
-    /// records, whether the profile named a host or the operator
-    /// connected from the lobby.
-    capture: Option<crate::session::Capture>,
+    /// `--capture`'s basename. Every window opened records under it,
+    /// named by its profile, so a session with three characters up
+    /// leaves three captures and not one.
+    capture: Option<std::path::PathBuf>,
+    /// The capture names handed out this session. A second window on
+    /// the same profile would otherwise create the same files and
+    /// truncate the first window's record under it.
+    captured: Vec<String>,
 }
 
 enum Flow {
@@ -366,7 +370,7 @@ impl Front {
     /// which is `run` in play and a test otherwise.
     pub fn new(
         settings: crate::settings::Settings,
-        capture: Option<crate::session::Capture>,
+        capture: Option<std::path::PathBuf>,
         cols: u16,
         rows: u16,
         key_rx: tokio::sync::mpsc::UnboundedReceiver<TermEvent>,
@@ -398,9 +402,9 @@ impl Front {
             key_rx,
             cache: Arc::new(std::sync::Mutex::new(ContentCache::default())),
             capture,
+            captured: Vec::new(),
         };
-        // Started with a profile that names a host: window 2, connected,
-        // and the capture goes with it.
+        // Started with a profile that names a host: window 2, connected.
         if !front.lobby.profile().host.is_empty() {
             let number = front.open(front.lobby.clone(), None);
             front.switch(number);
@@ -473,11 +477,13 @@ impl Front {
         Ok(true)
     }
 
-    /// Open a window on `settings`. The first one opened takes the
-    /// capture with it.
+    /// Open a window on `settings`, with a capture of its own when the
+    /// session records.
     fn open(&mut self, settings: crate::settings::Settings, first: Option<KeyOutcome>) -> usize {
         let id = self.next_id;
         self.next_id += 1;
+        let number = self.windows.len() + 2;
+        let capture = self.capture.clone().map(|base| self.capture_for(&base, &settings, id, number));
         let handle = crate::window::spawn(
             id,
             settings,
@@ -485,13 +491,36 @@ impl Front {
             self.cols,
             self.cache.clone(),
             self.front_tx.clone(),
-            self.capture.take(),
+            capture,
             first,
         );
         self.windows.push(handle);
-        let number = self.windows.len() + 1;
         self.log.note(&format!("-- opened window {number} --"));
         number
+    }
+
+    /// The window's capture: `BASE-NAME.raw` and `BASE-NAME_timing.log`,
+    /// NAME being the profile's file name, or the window's number when
+    /// it was opened without one. A name already recording this
+    /// session gets the window's id after it, so nothing truncates a
+    /// file another window is still writing.
+    fn capture_for(
+        &mut self,
+        base: &std::path::Path,
+        settings: &crate::settings::Settings,
+        id: crate::window::WindowId,
+        number: usize,
+    ) -> crate::session::Capture {
+        let mut name = settings
+            .path()
+            .and_then(|p| p.file_stem())
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| number.to_string());
+        if self.captured.contains(&name) {
+            name = format!("{name}-{id}");
+        }
+        self.captured.push(name.clone());
+        crate::session::Capture::at(&crate::session::append_to_stem(base, &format!("-{name}")))
     }
 
     fn switch(&mut self, number: usize) {
