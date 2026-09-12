@@ -74,8 +74,13 @@ pub fn is_stealth_spell(spell: &Spell) -> bool {
 /// The `... rain` family targets the room rather than one character
 /// (`target` 13), which still heals the caster — a group heal cast solo
 /// is just an expensive self-heal, and the mana cost says so.
-pub const HEAL_SPELLS: [&str; 9] = [
+///
+/// `way of the swan` (36) is the mystic's heal: ability 18, no
+/// duration, invoked rather than cast. Without it a mystic's book
+/// discovers no heal at all.
+pub const HEAL_SPELLS: [&str; 10] = [
     "minor healing",
+    "way of the swan",
     "mend",
     "healing rain",
     "greater healing",
@@ -336,9 +341,12 @@ impl Spellbook {
     ) -> (Vec<HealSource>, Vec<String>) {
         let mut out = Vec::new();
         let mut refused = Vec::new();
+        // The full name or the short one, the same way a buff is named.
         let known = |name: &str| {
             let lower = name.to_lowercase();
-            self.spells.iter().find(|s| s.name.to_lowercase() == lower)
+            self.spells
+                .iter()
+                .find(|s| s.name.to_lowercase() == lower || s.short.to_lowercase() == lower)
         };
         let source = |s: &KnownSpell, kind: HealKind| HealSource {
             name: s.name.clone(),

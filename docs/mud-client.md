@@ -65,7 +65,7 @@ flee_at_percent = 20       # run below this
 meditate = false           # send meditate for mana. A quest ability, so you say.
 rest_command = "rest"
 attack_command = "a"       # the fight's verb: a, pu or ju for a mystic, "cast lbol" for a caster
-minor_heal_spell = ""      # empty = the cheapest heal in the book
+minor_heal_spell = ""      # empty = the cheapest heal in the book; short names work
 major_heal_spell = ""      # empty = the dearest
 hp_regen_spell = ""        # a heal over time, cast between the two marks
 buffs = ["bless"]          # kept up on a duration budget, not an HP mark; short names work
@@ -186,7 +186,9 @@ from the board's own wording rather than assumed.
 `minor_heal_spell` and `major_heal_spell` empty mean **discover**: the
 client reads the character's own spellbook, takes the cheapest heal as
 the minor and the dearest as the major, with the mana costs the book
-reports. Name one to pin it. A name the book does not know is refused at
+reports. A mystic's way of the swan is a heal, so a mystic discovers it
+too and invokes it. Name one to pin it, by its full name or by the short
+name the listing shows. A name the book does not know is refused at
 startup with the reason.
 
 `hp_regen_spell` is only ever named. It is a heal over time, cast between

@@ -1152,3 +1152,45 @@ fn the_report_carries_a_refusal_as_its_own_line() {
     );
 }
 
+
+/// A mystic's book, as the oracle listing shows it
+/// (`re/oracle/oracle_kai_mystic_timing.log`): kai for mana, and
+/// every power named "way of the ...".
+fn mystic_book() -> Spellbook {
+    Spellbook::parse(
+        "You have the following powers:\n\
+         Level Kai  Short Spell Name\n\
+         \x20 2   1    swan  way of the swan               \n\
+         \x20 3   2     owl  way of the owl                \n",
+    )
+}
+
+/// Way of the swan heals (ability 18 in the shipped table), so a
+/// mystic's minor heal is discovered the same way a cleric's is, and
+/// invoked rather than cast.
+#[test]
+fn a_mystic_discovers_way_of_the_swan_as_the_minor_heal() {
+    let (heals, refused) = mystic_book().heal_spells(no_choice(), &BTreeMap::new(), Casting::Powers);
+    assert!(refused.is_empty(), "{refused:?}");
+    let minor = heals.iter().find(|h| h.kind == HealKind::Minor).expect("a minor heal");
+    assert_eq!(minor.name, "way of the swan");
+    assert_eq!(minor.cmd, "invoke swan");
+    assert!(heals.iter().all(|h| h.kind != HealKind::Major));
+}
+
+/// `swan` is what the operator types at the board and what the listing
+/// shows, so it names the heal too, the way a buff may be named by its
+/// short name.
+#[test]
+fn a_heal_may_be_named_by_its_short_name() {
+    let (heals, refused) = healer_book().heal_spells(
+        HealChoice { minor: "mend", major: "maj", regen: "" },
+        &BTreeMap::new(),
+        Casting::Spells,
+    );
+    assert!(refused.is_empty(), "{refused:?}");
+    let minor = heals.iter().find(|h| h.kind == HealKind::Minor).expect("a minor heal");
+    let major = heals.iter().find(|h| h.kind == HealKind::Major).expect("a major heal");
+    assert_eq!(minor.name, "mend");
+    assert_eq!(major.name, "major healing");
+}
