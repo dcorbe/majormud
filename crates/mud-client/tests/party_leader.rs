@@ -52,7 +52,7 @@ fn edge(dest: RoomId) -> ExitEdge {
 }
 
 /// A chain of rooms numbered 1/1 upward, each east to the next and
-/// west back. Two of them is one leg of one step; three is a leg long
+/// west back. Two of them is one leg of one step. Three is a leg long
 /// enough for a hold to land between steps.
 fn corridor(names: &[&str]) -> Arc<RoomGraph> {
     let ids = [HOME, FIELD, MEADOW];
@@ -111,9 +111,9 @@ async fn scripted_board(
         // Shared because a delayed push and the reply loop both write.
         let tx = Arc::new(tokio::sync::Mutex::new(tx));
         write(&tx, &room_block("Home", "east")).await;
-        // One-shot entries consumed in order; a re-ask replays the most
-        // recently consumed matching entry, exactly as a real board
-        // re-answers a look with the room it is still showing.
+        // One-shot entries consumed in order. A re-ask replays the
+        // most recently consumed matching entry, exactly as a real
+        // board re-answers a look with the room it is still showing.
         let mut used: Vec<Option<u64>> = vec![None; script.len()];
         let mut fired = vec![false; pushes.len()];
         let mut clock: u64 = 0;

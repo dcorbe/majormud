@@ -24,7 +24,7 @@ const DRAG: &str = "\r\n -- Following your Party leader east --\r\n\r\n\x1b[1;36
 const BANK: RoomId = RoomId { map: 1, room: 297 };
 
 /// The two unprompted lines, in the order the board prints them. The
-/// follow line needs its own framing; the drag carries its own.
+/// follow line needs its own framing. The drag carries its own.
 fn arrival() -> Vec<String> {
     vec![format!("\r\n{FOLLOW}\r\n[HP=30/MA=0]:"), DRAG.to_string()]
 }
