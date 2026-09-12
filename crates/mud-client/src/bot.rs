@@ -869,6 +869,19 @@ impl Bot {
         self.fled = false;
     }
 
+    /// The board printed `*Combat Off*` in answer to a cast this client
+    /// sent. Any cast made mid-fight ends the fight this way, a
+    /// self-targeted heal included, and the target has not moved. This
+    /// is the one Combat Off that must NOT start the wander-out
+    /// cooldown: the runner pokes a look, the block lists the target,
+    /// and the cooldown would refuse it once and then wait for a second
+    /// block nobody sends. Live 2026-09-12: a mend mid-fight, then
+    /// standing beside the monster until it killed the character.
+    pub fn disengaged_by_own_cast(&mut self) {
+        self.engaged = None;
+        self.quiet_prompts = 0;
+    }
+
     /// The name currently under attack. The runner reads this to tell a
     /// quiet room from an unfinished fight.
     pub fn engaged(&self) -> Option<&str> {

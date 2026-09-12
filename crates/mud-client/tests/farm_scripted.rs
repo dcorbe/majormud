@@ -862,9 +862,14 @@ async fn a_flee_rests_before_it_walks_back() {
 /// character in an occupied room with NO recovery at all — fight on, or
 /// run.
 ///
-/// A cast disengages nothing, so it is not the same decision. Below the
-/// spell mark and still in the fight, the bot must cast; `rest` must
-/// still not go out while the bear is standing there.
+/// A cast is not the same decision. The board prints `*Combat Off*`
+/// ahead of any cast made mid-fight, a self-targeted heal included, as
+/// seen live on 2026-09-12. The bear has not moved, and the re-engage off
+/// the next look breaks nothing. Below the spell mark and still in the
+/// fight, the bot must cast, the look must follow, and the very next
+/// send must be the swing: the wander-out cooldown refusing the bear
+/// once was what left Salad standing beside its monster until it died.
+/// `rest` must still not go out while the bear is standing there.
 #[tokio::test]
 async fn a_fight_below_the_spell_mark_is_healed_not_rested() {
     let (addr, received) = scripted_board(vec![
@@ -903,14 +908,29 @@ async fn a_fight_below_the_spell_mark_is_healed_not_rested() {
             "\r\na bear\r\nYou smack cave bear for 2 damage!\r\nThe cave bear bites you for 12 damage!\r\n[HP=18/MA=20]:"
                 .into(),
         ),
-        // The cast and the round it happens in arrive together, which is
-        // what a real board does: the character never swings again by
-        // its own decision, because once engaged the ROUNDS are the
-        // board's. The bear dies in this one, so the stop proves empty
-        // and the lap finishes.
+        // The live shape: the cast ends the fight, and the board says
+        // so before it says the cast landed. The bear is still up and
+        // still here, so the stop re-asks once its view is old enough,
+        // and the look's block must be swung off directly.
         (
             "cast heal",
-            "\r\ncast heal\r\nYou cast minor healing!\r\nYou feel better.\r\nYou smack cave bear for 30 damage!\r\nThe cave bear collapses in a heap.\r\nYou gain 300 experience.\r\n*Combat Off*\r\n[HP=27/MA=17]:"
+            "\r\ncast heal\r\n*Combat Off*\r\nYou cast minor healing!\r\nYou feel better.\r\n[HP=27/MA=17]:"
+                .into(),
+        ),
+        (
+            "look",
+            format!(
+                "\r\nlook{}",
+                room_block_vitals("Inner Ward", Some("cave bear"), "south", 27, 17, None)
+            ),
+        ),
+        // The round the swing happens in arrives with it, which is what
+        // a real board does: once engaged the ROUNDS are the board's.
+        // The bear dies in this one, so the stop proves empty and the
+        // lap finishes.
+        (
+            "a bear",
+            "\r\na bear\r\nYou smack cave bear for 30 damage!\r\nThe cave bear collapses in a heap.\r\nYou gain 300 experience.\r\n*Combat Off*\r\n[HP=27/MA=17]:"
                 .into(),
         ),
         (
@@ -983,6 +1003,15 @@ async fn a_fight_below_the_spell_mark_is_healed_not_rested() {
     assert!(
         !log.iter().any(|l| l == "rest"),
         "resting beside the bear is the spiral this replaced: {log:?}"
+    );
+    // The cast's Combat Off is ours, and the bear never left: one look,
+    // then the swing. A second look here is the wander-out cooldown
+    // refusing the bear off the first one.
+    let cast_at = log.iter().position(|l| l == "cast heal").unwrap();
+    assert_eq!(
+        &log[cast_at..cast_at + 3],
+        ["cast heal", "look", "a bear"],
+        "the fight resumes off the first look after the cast: {log:?}"
     );
     assert!(stats.kills >= 1, "the bear should still have died: {stats:?}");
     let said = said.lock().unwrap();

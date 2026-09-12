@@ -2497,6 +2497,11 @@ impl Casts {
         self.heal.new_visit();
         self.buff.new_visit();
     }
+
+    /// A cast of ours is out and the board has not said how it went.
+    pub fn in_flight(&self) -> bool {
+        self.light.in_flight() || self.heal.in_flight() || self.buff.in_flight()
+    }
 }
 
 /// Ask the board for the inventory and the spellbook, and cache the
@@ -3793,7 +3798,9 @@ async fn farm_stop(
         // have are the point: no `bot.engaged().is_none()`, no
         // `room_has_work`. Those guard RESTING, because the board
         // disengages combat to rest and the re-engage breaks it — the
-        // 2026-08-01 spiral. Casting disengages nothing.
+        // 2026-08-01 spiral. A cast disengages too, but the re-engage
+        // off the next block breaks nothing, so the pump tells the bot
+        // whose Combat Off it was and the fight simply resumes.
         //
         // What it is gated on:
         // - the flee mark, which outranks everything — but ONLY when
@@ -4049,9 +4056,23 @@ async fn farm_stop(
         // A `look <direction>` block names the neighbour's occupants,
         // not the stop's — feeding it to the bot is how the farm would
         // attack a monster standing in the room next door.
+        // A Combat Off while a cast of ours is out is the fight ending
+        // by our hand, not the target leaving: the bot is told so, or it
+        // would start the wander-out cooldown against a monster still
+        // standing there. The correlator cannot say whose the line is,
+        // because a Combat Off completes nothing.
+        let own_cast = matches!(ev, Event::Line(line) if crate::bot::is_combat_off(line))
+            && casts.in_flight();
         let bot_sees =
             !matches!(ev, Event::RoomSeen(_)) || (cor.answers.is_some() && !cor.elsewhere);
-        let actions = if bot_sees { bot.on_event(ev) } else { Vec::new() };
+        let actions = if own_cast {
+            bot.disengaged_by_own_cast();
+            Vec::new()
+        } else if bot_sees {
+            bot.on_event(ev)
+        } else {
+            Vec::new()
+        };
         for crate::bot::BotAction::Send(cmd) in actions {
             // The heal command is the only way to tell resting from
             // simply standing about; the bot's own debounce is private.

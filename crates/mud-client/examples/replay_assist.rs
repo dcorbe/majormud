@@ -64,7 +64,7 @@ fn main() {
         let decoded = cp437_to_string(&out.data);
         for ev in parser.push(&decoded) {
             let c = cor.on_event(ev, now);
-            let actions = assist_actions(&mut bot, &c);
+            let actions = assist_actions(&mut bot, &c, false);
             match &c.event {
                 Event::RoomSeen(r) => println!(
                     "{:>9.3} ROOM {:?} here={:?} sgr={:?} answers={:?} elsewhere={} engaged={:?} -> {:?}",

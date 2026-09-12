@@ -1439,6 +1439,11 @@ impl AssistCasts {
         self.follower = old.follower;
         self.wait = old.wait;
     }
+
+    /// A cast of ours is out and the board has not said how it went.
+    pub fn in_flight(&self) -> bool {
+        self.heal.in_flight() || self.buff.in_flight()
+    }
 }
 
 /// One correlated event for the assist while no job runs: keep its
@@ -1541,7 +1546,7 @@ pub fn assist_tick(
         }
     }
     follower_gate(session, bot, casts, cor, now);
-    for cmd in assist_actions(bot, cor) {
+    for cmd in assist_actions(bot, cor, casts.in_flight()) {
         if cfg.is_rest(&cmd) {
             // The bot rests off a prompt and nothing else, so the
             // prompt's own numbers are the ones it read.
@@ -1652,15 +1657,26 @@ fn follower_gate(
 /// assist without the poke killed one monster of a pack and stopped
 /// (live, 2026-08-01). The poke's answer names the survivors, and the
 /// next engage comes off it — never off the fight chatter.
+///
+/// `own_cast` says a cast this side sent is out and unanswered. The
+/// Combat Off the board prints ahead of a mid-fight cast ends the fight
+/// by our own hand, and the bot must not read it as the target leaving.
+/// The correlator attributes that line to nothing, so the open cast is
+/// the only evidence there is.
 pub fn assist_actions(
     bot: &mut crate::bot::Bot,
     cor: &crate::correlate::Correlated,
+    own_cast: bool,
 ) -> Vec<String> {
+    let combat_off = matches!(&cor.event, crate::events::Event::Line(line) if crate::bot::is_combat_off(line));
     // A `look <direction>` block names the neighbour's occupants, not
     // ours — feeding it to the bot is how an assist would attack a
     // monster standing in the room next door.
     let sees = !matches!(cor.event, crate::events::Event::RoomSeen(_)) || !cor.elsewhere;
-    let mut out: Vec<String> = if sees {
+    let mut out: Vec<String> = if combat_off && own_cast {
+        bot.disengaged_by_own_cast();
+        Vec::new()
+    } else if sees {
         bot.on_event(&cor.event)
             .into_iter()
             .map(|crate::bot::BotAction::Send(cmd)| cmd)
@@ -1668,9 +1684,7 @@ pub fn assist_actions(
     } else {
         Vec::new()
     };
-    if let crate::events::Event::Line(line) = &cor.event
-        && crate::bot::is_combat_off(line)
-    {
+    if combat_off {
         out.push("look".into());
     }
     out

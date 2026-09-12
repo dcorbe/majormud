@@ -510,7 +510,7 @@ fn a_fight_ending_pokes_a_look_so_the_next_monster_is_seen() {
         ..RoomView::default()
     };
     assert_eq!(
-        assist_actions(&mut bot, &attributed(Event::RoomSeen(room.clone()))),
+        assist_actions(&mut bot, &attributed(Event::RoomSeen(room.clone())), false),
         vec!["a rat".to_string()]
     );
     assert_eq!(
@@ -518,13 +518,14 @@ fn a_fight_ending_pokes_a_look_so_the_next_monster_is_seen() {
             &mut bot,
             &unsolicited(Event::Line(
                 "The giant rat falls to the ground with a tortured squeak.".into()
-            ))
+            )),
+            false
         ),
         Vec::<String>::new()
     );
     // The board's own fight-over announcement is the poke's trigger.
     assert_eq!(
-        assist_actions(&mut bot, &unsolicited(Event::Line("*Combat Off*".into()))),
+        assist_actions(&mut bot, &unsolicited(Event::Line("*Combat Off*".into())), false),
         vec!["look".to_string()]
     );
     // The poke's answer names the survivor and the assist engages it.
@@ -534,8 +535,33 @@ fn a_fight_ending_pokes_a_look_so_the_next_monster_is_seen() {
         ..RoomView::default()
     };
     assert_eq!(
-        assist_actions(&mut bot, &attributed(Event::RoomSeen(survivor))),
+        assist_actions(&mut bot, &attributed(Event::RoomSeen(survivor)), false),
         vec!["a thief".to_string()]
+    );
+}
+
+/// The Combat Off a cast of ours drew still pokes the look, and the
+/// look's answer re-engages the monster the cast interrupted: it never
+/// left, so the wander-out cooldown must not hold it.
+#[test]
+fn a_combat_off_from_our_own_cast_reengages_off_the_poked_look() {
+    let mut bot = assist_bot();
+    let room = RoomView {
+        name: "Crypt, Stone Hallway".into(),
+        also_here: vec!["giant bat".into()],
+        ..RoomView::default()
+    };
+    assert_eq!(
+        assist_actions(&mut bot, &attributed(Event::RoomSeen(room.clone())), false),
+        vec!["a bat".to_string()]
+    );
+    assert_eq!(
+        assist_actions(&mut bot, &attributed(Event::Line("*Combat Off*".into())), true),
+        vec!["look".to_string()]
+    );
+    assert_eq!(
+        assist_actions(&mut bot, &attributed(Event::RoomSeen(room)), false),
+        vec!["a bat".to_string()]
     );
 }
 
@@ -556,7 +582,7 @@ fn a_dragged_arrival_is_engaged() {
         ..RoomView::default()
     };
     assert_eq!(
-        assist_actions(&mut bot, &unsolicited(Event::RoomSeen(room))),
+        assist_actions(&mut bot, &unsolicited(Event::RoomSeen(room)), false),
         vec!["a rat".to_string()]
     );
 }
@@ -575,7 +601,7 @@ fn a_directional_look_starts_nothing() {
         ..RoomView::default()
     };
     assert_eq!(
-        assist_actions(&mut bot, &peeked(Event::RoomSeen(room))),
+        assist_actions(&mut bot, &peeked(Event::RoomSeen(room)), false),
         Vec::<String>::new()
     );
 }

@@ -498,9 +498,14 @@ pub enum CastAttempt {
 ///
 /// - **It fires in combat.** Resting is suppressed while the room holds a
 ///   fight, because the board disengages combat to rest and the
-///   re-engage breaks it — the 2026-08-01 death spiral. Casting
-///   disengages nothing, so it is the only recovery a character has while
-///   something is still hitting it. That is the whole reason this exists.
+///   re-engage breaks it, the 2026-08-01 death spiral. A cast ends the
+///   fight too, with a `*Combat Off*` printed ahead of the cast line,
+///   but a cast is a moment and a rest is a state: the next room block
+///   re-engages the target and nothing is broken by it. So this is the
+///   only recovery a character has while something is still hitting it,
+///   and that is the whole reason this exists. The runner reads the
+///   Combat Off a cast draws through [`HealState::in_flight`], so the
+///   bot does not take it for the target leaving.
 /// - **Sources are not a preference order but a choice by kind.** Lighting
 ///   walks its sources in order and kills them as they fail; healing
 ///   holds at most one source per [`HealKind`] and the caller's
@@ -559,6 +564,12 @@ impl HealState {
     }
 
     /// A cast is out and its outcome has not arrived.
+    ///
+    /// The runner asks this about a `*Combat Off*`: the board prints
+    /// one ahead of any cast made mid-fight, a self-targeted heal
+    /// included, and the correlator attributes it to nothing, so the
+    /// cast being out is the only sign that it is ours and not the
+    /// target leaving.
     pub fn in_flight(&self) -> bool {
         self.pending.is_some()
     }

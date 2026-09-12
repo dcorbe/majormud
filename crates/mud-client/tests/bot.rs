@@ -1212,6 +1212,21 @@ fn a_kill_then_combat_off_starts_no_cooldown() {
     assert_eq!(actions, vec![BotAction::Send("a rat".into())]);
 }
 
+/// A cast mid-fight prints Combat Off first. A self-targeted mend ends
+/// the fight the same as a cast at the target does, per re/docs/charm.md,
+/// and the monster has not moved. Read as a wander-out, the cooldown
+/// held through the one poked look and nobody sent the second one it
+/// waits for. Live 2026-09-12: Salad cast mend and stood there to death.
+#[test]
+fn a_combat_off_answering_our_own_cast_starts_no_cooldown() {
+    let mut bot = combat_bot();
+    bot.on_event(&room(&["thin giant rat"]));
+    bot.disengaged_by_own_cast();
+    assert!(bot.engaged().is_none(), "the fight is over by our own hand");
+    let actions = bot.on_event(&room(&["thin giant rat"]));
+    assert_eq!(actions, vec![BotAction::Send("a rat".into())]);
+}
+
 /// The cooldown must not make the stop look finished: a leaver mid-
 /// transition is still work-in-question, and declaring the room clear
 /// would re-enable resting beside it.
