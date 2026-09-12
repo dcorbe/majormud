@@ -1702,10 +1702,10 @@ pub fn quit_windows_refusal(connected: &[usize], dirty: &[usize], armed: &mut bo
 pub fn render_status(
     state: &GameState,
     now: std::time::Instant,
-    target: &str,
     phase: Option<&crate::farm::Phase>,
     room_id: crate::lost::Fix,
     exp_per_hour: Option<i64>,
+    gold_per_hour: Option<crate::purse::Purse>,
     level: Option<crate::progress::LevelProgress>,
     assist: bool,
     width: usize,
@@ -1743,6 +1743,11 @@ pub fn render_status(
     if let Some(rate) = exp_per_hour {
         s.push_str(&format!(" | {rate} xp/hr"));
     }
+    // Coins picked up, valued in gold, beside the rate they are weighed
+    // against: a circuit is run for one or the other.
+    if let Some(rate) = gold_per_hour {
+        s.push_str(&format!(" | {:.1} gold/hr", rate.gold()));
+    }
     // How long until the next level, at the rate we are actually
     // earning. Refreshed on its own timer, so it goes stale between
     // ticks rather than jittering with every kill.
@@ -1754,7 +1759,6 @@ pub fn render_status(
             crate::progress::eta_label(p.needed, exp_per_hour)
         ));
     }
-    s.push_str(&format!(" | {target}"));
     fit(&s, width)
 }
 

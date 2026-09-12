@@ -435,18 +435,14 @@ fn farm_command(
             let mut phase_rx = phase_rx.clone();
             let mut state_rx = session.state();
             let graph = graph.clone();
-            let profile_target = profile.target;
             tokio::spawn(async move {
                 // No bar when stdout is not a terminal: piping the feed to
                 // a file should give lines, not escape sequences.
                 let mut bar = mud_client::tui::StatusBar::enter();
                 let mut exp = mud_client::progress::ExpMeter::default();
+                let mut income = mud_client::progress::IncomeMeter::default();
                 let started = std::time::Instant::now();
                 let cols = crossterm::terminal::size().map(|(c, _)| c as usize).unwrap_or(80);
-                let target_label = match profile_target {
-                    mud_client::dialect::Target::MbbsEmu => "mbbs",
-                    mud_client::dialect::Target::RustServer => "rust",
-                };
                 let emit = move |line: String, bar: &mut Option<mud_client::tui::StatusBar>| {
                     match bar {
                         Some(b) => b.line(&line),
@@ -474,10 +470,10 @@ fn farm_command(
                         mud_client::tui::render_status(
                             &state,
                             std::time::Instant::now(),
-                            target_label,
                             Some(&phase),
                             room_id,
                             exp.per_hour(started.elapsed()),
+                            income.per_hour(started.elapsed()),
                             // Headless `mmc farm` does not poll `exp`:
                             // the bar is a progress feed, not a session
                             // the operator is sitting in front of.
@@ -497,6 +493,7 @@ fn farm_command(
                                 let ev = ev.event;
                                 if let mud_client::events::Event::Line(line) = &ev {
                                     exp.observe(line);
+                                    income.observe(line);
                                 }
                                 if let Some(line) = view.on_event(&ev) {
                                     emit(line, &mut bar);

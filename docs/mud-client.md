@@ -907,21 +907,25 @@ started it. `mmc farm` reserves the bottom terminal row and scrolls the
 feed above it (DECSTBM, the same mechanism `mmc play` uses):
 
 ```
- attacking cave bear | HP 23 MA 8 | Small Cavern [1/2156] | mbbs
+ attacking cave bear | HP 23 MA 8 | Small Cavern [1/2156]
 ```
 
 With no runner attached — ordinary interactive play — the activity is
 absent, but the **position is still tracked**:
 
 ```
- HP 38 MA 10 | Newhaven, Narrow Road [1/2146] | mbbs
+ HP 38 MA 10 | Newhaven, Narrow Road [1/2146]
 ```
 
-With the rate and the level known the bar also shows experience per
-hour and the time to the next level at that rate.
+With the rates and the level known the bar also shows experience per
+hour, the coins picked up per hour valued in gold, and the time to the
+next level at the experience rate. Income counts the board's "You picked
+up 11 silver nobles" confirmations and nothing else: a pile the bot left
+on the floor, a sale and a deposit all change nothing. `/go` and `/farm`
+restart both rates together, so a job is measured from its own start.
 
 ```
- HP 38 MA 10 | Tick 3.2 | HP 12.3 | MA 21.0 | Newhaven, Narrow Road [1/2146] | 4200 xp/hr | L3->4 1h12m | mbbs
+ HP 38 MA 10 | Tick 3.2 | HP 12.3 | MA 21.0 | Newhaven, Narrow Road [1/2146] | 4200 xp/hr | 12.4 gold/hr | L3->4 1h12m
 ```
 
 A room block is a room block whoever caused it, so the client localizes
@@ -939,7 +943,7 @@ While the character rests or meditates the board paints a word into its
 prompt, and the bar repeats it after the vitals:
 
 ```
- HP 42 MA 12 (Resting) | Dark Cave [1/2160] | mbbs
+ HP 42 MA 12 (Resting) | Dark Cave [1/2160]
 ```
 
 The board has no wording for the end of a rest. The prompt is the only
@@ -969,7 +973,7 @@ The board never says when it ticks. The client infers three clocks and
 shows their countdowns in the bar:
 
 ```
- HP 42 MA 12 (Resting) | Tick 3.2 | HP 12.3/4.5 | MA 21.0 | Dark Cave [1/2160] | mbbs
+ HP 42 MA 12 (Resting) | Tick 3.2 | HP 12.3/4.5 | MA 21.0 | Dark Cave [1/2160]
 ```
 
 `Tick` is the combat round, locked by any hit or miss line and 5.13

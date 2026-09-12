@@ -572,10 +572,9 @@ pub fn event_for(ended: &crate::farm::Phase) -> EventKind {
 #[allow(clippy::too_many_arguments)]
 fn bar_text(
     state_rx: &tokio::sync::watch::Receiver<crate::session::GameState>,
-    target: &str,
     job: Option<&Job>,
     here: crate::lost::Fix,
-    exp_per_hour: Option<i64>,
+    rates: &Rates,
     level: Option<crate::progress::LevelProgress>,
     assist: bool,
     cols: u16,
@@ -589,7 +588,54 @@ fn bar_text(
         None => here,
     };
     let state = state_rx.borrow().clone();
-    render_status(&state, std::time::Instant::now(), target, phase.as_ref(), room_id, exp_per_hour, level, assist, cols as usize)
+    render_status(&state, std::time::Instant::now(), phase.as_ref(), room_id, rates.exp_per_hour(), rates.gold_per_hour(), level, assist, cols as usize)
+}
+
+/// The session's two rates and the one clock they are measured against.
+///
+/// One clock, because the two meters have the same contract: a reset
+/// that zeroes the total without restarting the clock reads as a spike.
+/// Holding the clock here makes that mistake impossible to write.
+struct Rates {
+    exp: crate::progress::ExpMeter,
+    income: crate::progress::IncomeMeter,
+    since: std::time::Instant,
+}
+
+impl Rates {
+    fn new() -> Self {
+        Rates {
+            exp: Default::default(),
+            income: Default::default(),
+            since: std::time::Instant::now(),
+        }
+    }
+
+    /// Feed both meters one line. True when either total moved, which is
+    /// when the bar is worth repainting.
+    fn observe(&mut self, line: &str) -> bool {
+        let before = (self.exp.total(), self.income.total());
+        self.exp.observe(line);
+        self.income.observe(line);
+        before != (self.exp.total(), self.income.total())
+    }
+
+    /// Start both rates over from now. A long `/go` or `/farm` would
+    /// otherwise dilute the session's rate with the minutes before the
+    /// job started.
+    fn reset(&mut self) {
+        self.exp.reset();
+        self.income.reset();
+        self.since = std::time::Instant::now();
+    }
+
+    fn exp_per_hour(&self) -> Option<i64> {
+        self.exp.per_hour(self.since.elapsed())
+    }
+
+    fn gold_per_hour(&self) -> Option<crate::purse::Purse> {
+        self.income.per_hour(self.since.elapsed())
+    }
 }
 
 /// One connected session, until the line closes or the front end lets go.
@@ -611,15 +657,6 @@ async fn play(
     // startup notices land on this window's screen rather than on the
     // terminal the front end is painting.
     let notices = notices(w.id, w.screen.clone(), w.front.clone());
-    // Bound once because it is a connection-time fact: this session was
-    // opened against that board and goes on speaking its dialect. A
-    // `/set target` mid-session applies at the next `/connect`, and the
-    // bar goes on naming the board actually on the other end.
-    let target = match session.profile().target {
-        crate::dialect::Target::MbbsEmu => "mbbs",
-        crate::dialect::Target::RustServer => "rust",
-    };
-
     let (mut cols, mut rows) = (w.cols, w.rows);
     // Set while the runner drives this session; carries its phase for the
     // status bar and the handle needed to call it off.
@@ -645,10 +682,10 @@ async fn play(
     // events arm, from the blocks it has itself seen, so a death is
     // logged against the last room this arm read BEFORE the death.
     let mut death_fix = crate::lost::Fix::Unknown;
-    // Experience rate, counted from the board's award lines. Runs for the
-    // whole session, not just while a farm is attached: a hand-played
-    // stretch is worth measuring too.
-    let mut exp = crate::progress::ExpMeter::default();
+    // Experience and income rates, counted from the board's award and
+    // pickup lines. Run for the whole session, not just while a farm is
+    // attached: a hand-played stretch is worth measuring too.
+    let mut rates = Rates::new();
     // `content` is held for the session's lifetime alongside `graph` and
     // `spawns`; `on_realm_entry` is its one reader, for the spellbook
     // probe's class/magictype skip (Task 5 of `one-path-to-content`).
@@ -727,18 +764,12 @@ async fn play(
     // socket opened (live, 2026-08-01). Nothing sent on a timer may
     // assume a game is running.
     let mut in_realm = false;
-    // Named apart from the job-handle `started` bound inside the Farm
-    // and Go match arms below (`Ok(started) => { job = Some(started); }`)
-    // on purpose: a reset written as `started = Instant::now()` inside
-    // those arms would silently assign the SHADOWED job binding instead
-    // of this clock, compile cleanly, and reset nothing.
-    let mut exp_since = std::time::Instant::now();
 
     if let Some(why) = &assist_refused {
         w.note(&format!("-- bot assist not started: {why} --"));
         w.event(EventKind::AssistRefused(why.clone()));
     }
-    w.set_bar(bar_text(&state_rx, target, job.as_ref(), here, exp.per_hour(exp_since.elapsed()), level, assist.is_some(), cols), job.is_some());
+    w.set_bar(bar_text(&state_rx, job.as_ref(), here, &rates, level, assist.is_some(), cols), job.is_some());
 
     let end = loop {
         // Every percent policy the assist has divides by the pools, and
@@ -760,7 +791,7 @@ async fn play(
             bytes = raw_rx.recv() => match bytes {
                 Ok(bytes) => {
                     w.feed(&bytes);
-                    w.set_bar(bar_text(&state_rx, target, job.as_ref(), here, exp.per_hour(exp_since.elapsed()), level, assist.is_some(), cols), job.is_some());
+                    w.set_bar(bar_text(&state_rx, job.as_ref(), here, &rates, level, assist.is_some(), cols), job.is_some());
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(_) => break PlayEnd::Closed, // disconnected
@@ -824,11 +855,8 @@ async fn play(
                         if let Some(p) = crate::progress::level_progress(line) {
                             level = Some(p);
                         }
-                        let before = exp.total();
-                        exp.observe(line);
-                        if exp.total() != before {
-                            w.set_bar(bar_text(&state_rx, target, job.as_ref(), here,
-                                    exp.per_hour(exp_since.elapsed()), level, assist.is_some(), cols), job.is_some());
+                        if rates.observe(line) {
+                            w.set_bar(bar_text(&state_rx, job.as_ref(), here, &rates, level, assist.is_some(), cols), job.is_some());
                         }
                         // The carried balance is the session's own
                         // answer now (`Session::capabilities`), fed
@@ -903,7 +931,7 @@ async fn play(
                         model.note_room(id);
                     }
                 }
-                w.set_bar(bar_text(&state_rx, target, job.as_ref(), here, exp.per_hour(exp_since.elapsed()), level, assist.is_some(), cols), job.is_some());
+                w.set_bar(bar_text(&state_rx, job.as_ref(), here, &rates, level, assist.is_some(), cols), job.is_some());
             }
             // The bar must follow the runner, not just HP: travelling and
             // fighting can pass without a single point of damage.
@@ -952,7 +980,7 @@ async fn play(
                     w.note(&format!("-- {what} ended: {} --", ended.label()));
                     w.event(event_for(&ended));
                 }
-                w.set_bar(bar_text(&state_rx, target, job.as_ref(), here, exp.per_hour(exp_since.elapsed()), level, assist.is_some(), cols), job.is_some());
+                w.set_bar(bar_text(&state_rx, job.as_ref(), here, &rates, level, assist.is_some(), cols), job.is_some());
             }
             learned = async {
                 match &mut assist_vitals {
@@ -986,7 +1014,7 @@ async fn play(
                 }
             }
             _ = tick_paint.tick() => {
-                w.set_bar(bar_text(&state_rx, target, job.as_ref(), here, exp.per_hour(exp_since.elapsed()), level, assist.is_some(), cols), job.is_some());
+                w.set_bar(bar_text(&state_rx, job.as_ref(), here, &rates, level, assist.is_some(), cols), job.is_some());
             }
             _ = level_tick.tick() => {
                 // Only while a game is actually running — see `in_realm`.
@@ -1005,7 +1033,7 @@ async fn play(
                         cols = c;
                         rows = r;
                         w.resize(r, c);
-                        w.set_bar(bar_text(&state_rx, target, job.as_ref(), here, exp.per_hour(exp_since.elapsed()), level, assist.is_some(), cols), job.is_some());
+                        w.set_bar(bar_text(&state_rx, job.as_ref(), here, &rates, level, assist.is_some(), cols), job.is_some());
                     }
                     WindowMsg::Outcome(outcome) => {
                         if let Some(applied) = apply_settings(&outcome, &mut w.settings) {
@@ -1077,13 +1105,10 @@ async fn play(
                                     match start_farm(session.clone(), loop_name.as_deref(), notices.clone()) {
                                         Ok(started) => {
                                             // Fresh figures for a fresh
-                                            // job: the total and the
-                                            // clock it is divided by
-                                            // reset together, or the
-                                            // rate reads as a spike or a
-                                            // sink instead of the truth.
-                                            exp.reset();
-                                            exp_since = std::time::Instant::now();
+                                            // job, measured from its own
+                                            // start rather than the
+                                            // session's.
+                                            rates.reset();
                                             w.note(&match &loop_name {
                                                 Some(n) => format!("-- farming loop {n:?} (Ctrl-F to take over) --"),
                                                 None => "-- farm running (Ctrl-F to take over) --".to_string(),
@@ -1134,11 +1159,9 @@ async fn play(
                                                 ) {
                                                     Err(e) => w.note(&format!("-- {e} --")),
                                                     Ok(started) => {
-                                                        // See the StartFarm arm
-                                                        // above: total and clock
-                                                        // reset together.
-                                                        exp.reset();
-                                                        exp_since = std::time::Instant::now();
+                                                        // Fresh figures for a
+                                                        // fresh job.
+                                                        rates.reset();
                                                         w.note(&format!(
                                                             "-- {how} to {name} [{}/{}]{steps} (Ctrl-F to take over) --",
                                                             to.map, to.room
@@ -1182,8 +1205,7 @@ async fn play(
                                                         to,
                                                         notices.clone(),
                                                     ) {
-                                                        exp.reset();
-                                                        exp_since = std::time::Instant::now();
+                                                        rates.reset();
                                                         phase_rx = Some(started.phase.clone());
                                                         job = Some(started);
                                                     }
@@ -1211,10 +1233,8 @@ async fn play(
                                         ) {
                                             Err(e) => w.note(&format!("-- {e} --")),
                                             Ok(started) => {
-                                                // See the StartFarm arm above:
-                                                // total and clock reset together.
-                                                exp.reset();
-                                                exp_since = std::time::Instant::now();
+                                                // Fresh figures for a fresh job.
+                                                rates.reset();
                                                 w.note("-- banking (Ctrl-F to take over) --");
                                                 phase_rx = Some(started.phase.clone());
                                                 job = Some(started);
@@ -1296,7 +1316,7 @@ async fn play(
                                                 let assist_clock = state_rx.borrow().ticks.round.clone();
                                                 let mut on_event = |cor: &crate::correlate::Correlated| {
                                                     if let crate::events::Event::Line(line) = &cor.event {
-                                                        exp.observe(line);
+                                                        rates.observe(line);
                                                     }
                                                     if job.is_none()
                                                         && let (Some(bot), Some(casts)) =
@@ -1546,7 +1566,7 @@ async fn play(
                             | KeyOutcome::Switch(_) => {}
                             KeyOutcome::Continue => {}
                         }
-                        w.set_bar(bar_text(&state_rx, target, job.as_ref(), here, exp.per_hour(exp_since.elapsed()), level, assist.is_some(), cols), job.is_some());
+                        w.set_bar(bar_text(&state_rx, job.as_ref(), here, &rates, level, assist.is_some(), cols), job.is_some());
                     }
                 }
             }

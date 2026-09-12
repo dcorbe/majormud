@@ -19,6 +19,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use crate::events::{Actor, Event};
+use crate::purse::Purse;
 
 /// Lines that are worth showing even in the quiet feed, because each one
 /// is either the point of the run or a reason it might be going wrong.
@@ -193,6 +194,50 @@ impl ExpMeter {
             return None;
         }
         Some((self.total as f64 * 3600.0 / secs).round() as i64)
+    }
+}
+
+/// Coins picked up since the run began, and the rate they are coming in.
+///
+/// Fed from "You picked up 11 silver nobles", the board's confirmation of
+/// a `get` ([`crate::bot::picked_up`]), so it counts what reached the
+/// purse and nothing else: a pile left on the floor by `ignore_coins`,
+/// a sale, or a deposit changes nothing here. Gross pickups, not a
+/// balance. Beside [`ExpMeter`] it says whether a circuit that pays in
+/// experience also pays in money, the other thing a level costs.
+#[derive(Debug, Default, Clone)]
+pub struct IncomeMeter {
+    total: Purse,
+}
+
+impl IncomeMeter {
+    /// Note a line; coin pickups are counted, everything else ignored.
+    pub fn observe(&mut self, line: &str) {
+        if let Some((count, word)) = crate::bot::picked_up(line.trim_start())
+            && let Some(coins) = Purse::from_coins(count, &word)
+        {
+            self.total = Purse::from_farthings(self.total.farthings() + coins.farthings());
+        }
+    }
+
+    pub fn total(&self) -> Purse {
+        self.total
+    }
+
+    /// Zero the running total. Same contract as [`ExpMeter::reset`]: the
+    /// caller restarts the elapsed clock too.
+    pub fn reset(&mut self) {
+        self.total = Purse::ZERO;
+    }
+
+    /// Income per hour over `elapsed`, or `None` when too little time has
+    /// passed for the figure to mean anything.
+    pub fn per_hour(&self, elapsed: std::time::Duration) -> Option<Purse> {
+        let secs = elapsed.as_secs_f64();
+        if secs < 1.0 {
+            return None;
+        }
+        Some(Purse::from_farthings((self.total.farthings() as f64 * 3600.0 / secs).round() as u64))
     }
 }
 

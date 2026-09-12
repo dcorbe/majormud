@@ -114,6 +114,20 @@ impl Purse {
     pub fn from_gold(gold: u32) -> Purse {
         Purse(u64::from(gold) * GOLD)
     }
+
+    /// `count` coins of one denomination, named as `get` and the pickup
+    /// line name it ("silver"). `None` for a word that is not a
+    /// denomination, so a caller cannot value coins it misread.
+    pub fn from_coins(count: u32, word: &str) -> Option<Purse> {
+        let index = DENOMINATION_WORDS.iter().position(|w| *w == word)?;
+        Some(Purse(u64::from(count) * DENOMINATIONS[index].2))
+    }
+
+    /// The same money in gold crowns, the unit a player thinks in, with
+    /// the smaller coins as a fraction.
+    pub fn gold(&self) -> f64 {
+        self.0 as f64 / GOLD as f64
+    }
 }
 
 /// Match one comma-separated segment ("2 gold crowns") against the

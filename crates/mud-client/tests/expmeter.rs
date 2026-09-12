@@ -116,3 +116,57 @@ fn an_estimate_reads_in_hours_and_minutes() {
 fn an_absurd_estimate_is_capped() {
     assert_eq!(eta_label(10_000_000, Some(60)), ">99h");
 }
+
+// ---------------------------------------------------------------------
+// Income. The board confirms every `get` of coins with "You picked up 11
+// silver nobles", the same line the bot reads to retire a pile. Valued
+// in farthings through the purse ladder and shown in gold.
+// ---------------------------------------------------------------------
+
+use mud_client::progress::IncomeMeter;
+use mud_client::purse::Purse;
+
+#[test]
+fn it_counts_coins_picked_up() {
+    let mut m = IncomeMeter::default();
+    m.observe("You picked up 11 silver nobles");
+    m.observe("You picked up 1 gold crown");
+    m.observe("You picked up 5 copper farthings");
+    assert_eq!(m.total(), Purse::from_farthings(215));
+}
+
+/// Items are announced the same way, and a coin pile on the floor or a
+/// kill line says nothing about what the character took.
+#[test]
+fn lines_that_are_not_coin_pickups_are_ignored() {
+    let mut m = IncomeMeter::default();
+    m.observe("You picked up a silver holy amulet");
+    m.observe("5 copper drop to the ground.");
+    m.observe("You gain 300 experience.");
+    assert_eq!(m.total(), Purse::ZERO);
+}
+
+#[test]
+fn it_reports_income_per_hour() {
+    let mut m = IncomeMeter::default();
+    m.observe("You picked up 2 gold crowns");
+    m.observe("You picked up 2 gold crowns");
+    assert_eq!(m.per_hour(Duration::from_secs(120)), Some(Purse::from_gold(120)));
+    assert_eq!(m.per_hour(Duration::from_secs(60)), Some(Purse::from_gold(240)));
+    assert_eq!(m.per_hour(Duration::from_secs(0)), None);
+}
+
+#[test]
+fn reset_zeroes_the_income() {
+    let mut m = IncomeMeter::default();
+    m.observe("You picked up 2 gold crowns");
+    m.reset();
+    assert_eq!(m.total(), Purse::ZERO);
+}
+
+/// The bar reads gold, the unit a player thinks in.
+#[test]
+fn a_purse_reads_in_gold() {
+    assert_eq!(Purse::from_farthings(1_240).gold(), 12.4);
+    assert_eq!(Purse::ZERO.gold(), 0.0);
+}
