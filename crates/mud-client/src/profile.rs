@@ -67,6 +67,10 @@ pub struct Profile {
     /// nothing, and use the nearest bank. See [`crate::bank::BankConfig`].
     #[serde(default)]
     pub bank: crate::bank::BankConfig,
+    /// Party behaviour, as `[party]`. Absent means the defaults. See
+    /// [`crate::party::PartyConfig`].
+    #[serde(default)]
+    pub party: crate::party::PartyConfig,
 }
 
 fn default_scrollback() -> u32 {
@@ -96,6 +100,7 @@ impl Default for Profile {
             bot: None,
             farm: None,
             bank: crate::bank::BankConfig::default(),
+            party: crate::party::PartyConfig::default(),
         }
     }
 }

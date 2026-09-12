@@ -213,6 +213,21 @@ fn flatten(table: &toml::Table, prefix: &str, out: &mut Vec<String>) {
     }
 }
 
+#[test]
+fn party_keys_are_live() {
+    let path = scratch("party.toml");
+    std::fs::write(
+        &path,
+        "target = \"mbbs\"\nhost = \"h\"\nport = 1\nusername = \"u\"\npassword = \"p\"\n",
+    )
+    .unwrap();
+    let mut s = Settings::load(&path).unwrap();
+    s.set("party.bank_wait_secs", "30").unwrap();
+    assert_eq!(s.profile().party.bank_wait_secs, 30);
+    assert!(s.set("party.wait_secs", "0").is_err(), "zero is refused by validate");
+    assert_eq!(s.profile().party.wait_secs, 90, "a refused set leaves the value alone");
+}
+
 fn scratch(name: &str) -> std::path::PathBuf {
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("settings");
     std::fs::create_dir_all(&dir).unwrap();

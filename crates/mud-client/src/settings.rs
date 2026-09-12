@@ -83,6 +83,9 @@ pub const KEYS: &[&str] = &[
     "bank.deposit_on_weight_class",
     "bank.keep_gold",
     "bank.at",
+    "party.wait_secs",
+    "party.bank_wait_secs",
+    "party.follow_normal",
 ];
 
 /// Keys that were renamed, and what they are called now. Deserialisation
@@ -382,6 +385,7 @@ fn profile_of(doc: &DocumentMut) -> Result<Profile, ParseFailure> {
         bot.validate().map_err(ParseFailure::Invalid)?;
     }
     profile.bank.validate().map_err(ParseFailure::Invalid)?;
+    profile.party.validate().map_err(ParseFailure::Invalid)?;
     Ok(profile)
 }
 
