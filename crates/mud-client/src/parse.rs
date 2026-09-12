@@ -115,6 +115,13 @@ static MOB_LEAVE_RE: LazyLock<Regex> = LazyLock::new(|| {
 pub struct Parser {
     buf: String,
     room: Option<RoomView>,
+    /// A floor listing still being read. The board wraps "You notice
+    /// ... here." at 79 columns, mid-item ("113 copper" / "farthings
+    /// here."), so the prefix and the suffix land on different
+    /// physical lines. Holds the text after the prefix until a line
+    /// supplies the suffix; dropped when the block moves on to its
+    /// occupants or exits, or a new block starts.
+    notice: Option<String>,
 }
 
 impl Parser {
@@ -122,6 +129,7 @@ impl Parser {
         Parser {
             buf: String::new(),
             room: None,
+            notice: None,
         }
     }
 
@@ -235,9 +243,25 @@ impl Parser {
                 name: text_line.to_string(),
                 ..RoomView::default()
             });
+            self.notice = None;
             return;
         }
         if self.room.is_some() {
+            // A wrapped listing continues until a line ends it. The
+            // occupants and exits lines never belong to it: a listing
+            // that reaches them was not one, and they close the block
+            // as usual.
+            if let Some(pending) = self.notice.take()
+                && !text_line.starts_with(text::OBVIOUS_EXITS)
+                && !text_line.starts_with(text::ALSO_HERE)
+            {
+                let joined = format!("{pending} {text_line}");
+                match joined.strip_suffix(" here.") {
+                    Some(items) => self.room.as_mut().unwrap().items = split_items(items),
+                    None => self.notice = Some(joined),
+                }
+                return;
+            }
             if let Some(exits) = text_line.strip_prefix(text::OBVIOUS_EXITS) {
                 let mut room = self.room.take().unwrap();
                 if exits != text::NO_EXITS {
@@ -263,12 +287,19 @@ impl Parser {
                 };
                 return;
             }
-            if let Some(items) = text_line
-                .strip_prefix("You notice ")
-                .and_then(|t| t.strip_suffix(" here."))
-            {
-                let room = self.room.as_mut().unwrap();
-                room.items = items.split(", ").map(str::to_string).collect();
+            if let Some(listing) = text_line.strip_prefix("You notice ") {
+                if let Some(items) = listing.strip_suffix(" here.") {
+                    self.room.as_mut().unwrap().items = split_items(items);
+                    return;
+                }
+                // "You notice Salad sneak in from the east." is a
+                // notice, not a listing; only a line nothing else
+                // claims is read as the head of a wrapped one.
+                if let Some(ev) = classify_line(text_line, opening) {
+                    events.push(ev);
+                    return;
+                }
+                self.notice = Some(listing.to_string());
                 return;
             }
             // Async events can interleave with a rendering room block;
@@ -282,6 +313,11 @@ impl Parser {
             classify_line(text_line, opening).unwrap_or_else(|| Event::Line(text_line.to_string())),
         );
     }
+}
+
+/// The entries of a "You notice ... here." listing, comma separated.
+fn split_items(items: &str) -> Vec<String> {
+    items.split(", ").map(str::to_string).collect()
 }
 
 impl Default for Parser {

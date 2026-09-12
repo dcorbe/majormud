@@ -67,8 +67,8 @@ fn main() {
             let actions = assist_actions(&mut bot, &c, false);
             match &c.event {
                 Event::RoomSeen(r) => println!(
-                    "{:>9.3} ROOM {:?} here={:?} sgr={:?} answers={:?} elsewhere={} engaged={:?} -> {:?}",
-                    ts - t0v, r.name, r.also_here, r.also_here_sgr, c.answers, c.elsewhere, bot.engaged(), actions
+                    "{:>9.3} ROOM {:?} here={:?} items={:?} sgr={:?} answers={:?} elsewhere={} engaged={:?} -> {:?}",
+                    ts - t0v, r.name, r.also_here, r.items, r.also_here_sgr, c.answers, c.elsewhere, bot.engaged(), actions
                 ),
                 Event::ActorEntered { .. } => println!("{:>9.3} {:?} -> {:?}", ts - t0v, c.event, actions),
                 _ if !actions.is_empty() => println!("{:>9.3} {:?} -> {:?}", ts - t0v, c.event, actions),

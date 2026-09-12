@@ -958,3 +958,69 @@ fn only_a_single_word_reads_as_a_trailing_status() {
         ]
     );
 }
+
+/// The board wraps a long floor listing at 79 columns, mid-item
+/// (oracle: "... 42 silver nobles, 113 copper" / "farthings here.").
+/// Neither physical line carries both the prefix and the suffix, and
+/// a walk that read them as description walked past 44 silver
+/// (cw-blueberry, 2026-09-12).
+#[test]
+fn room_block_wrapped_floor_listing() {
+    let block = format!(
+        "{name}Slum Street{reset}\r\n\
+         {plain}This is a dirty, unkept street.{reset}\r\n\
+         You notice 24 platinum pieces, 77 gold crowns, 42 silver nobles, 113 copper\r\n\
+         farthings, padded boots, scroll of magic\r\n\
+         missile here.\r\n\
+         Also here: kobold thief.\r\n\
+         Obvious exits: north, south, east\r\n",
+        name = color::ROOM_NAME,
+        plain = color::PLAIN,
+        reset = color::RESET,
+    );
+    let ev = parse_all(&block);
+    match ev.as_slice() {
+        [Event::RoomSeen(r)] => {
+            assert_eq!(
+                r.items,
+                vec![
+                    "24 platinum pieces",
+                    "77 gold crowns",
+                    "42 silver nobles",
+                    "113 copper farthings",
+                    "padded boots",
+                    "scroll of magic missile"
+                ]
+            );
+            assert_eq!(r.also_here, vec!["kobold thief"]);
+            assert_eq!(r.exits, vec!["north", "south", "east"]);
+        }
+        other => panic!("expected one RoomSeen, got {other:?}"),
+    }
+}
+
+/// A "You notice" line inside a block that is not a floor listing
+/// must not swallow the lines after it: the occupants and exits still
+/// close the block.
+#[test]
+fn room_block_survives_a_notice_that_is_not_a_listing() {
+    let block = format!(
+        "{name}Slum Street{reset}\r\n\
+         You notice Salad sneak in from the east.\r\n\
+         Also here: kobold thief.\r\n\
+         Obvious exits: north\r\n",
+        name = color::ROOM_NAME,
+        reset = color::RESET,
+    );
+    let ev = parse_all(&block);
+    let room = ev
+        .iter()
+        .find_map(|e| match e {
+            Event::RoomSeen(r) => Some(r),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no RoomSeen in {ev:?}"));
+    assert!(room.items.is_empty(), "{:?}", room.items);
+    assert_eq!(room.also_here, vec!["kobold thief"]);
+    assert_eq!(room.exits, vec!["north"]);
+}
