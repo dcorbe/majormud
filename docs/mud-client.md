@@ -91,6 +91,11 @@ deposit_at_coins = 1000          # raw coin count, every denomination counts one
 deposit_on_weight_class = true   # a pickup lifted None->Light, Light->Medium, Medium->Heavy
 keep_gold = 0                    # left in the purse, in gold crowns
 # at = "1/297"                   # a fixed bank; unset = the nearest
+
+[party]
+wait_secs = 90        # a follower's @wait holds the leader this long at most
+bank_wait_secs = 15   # the leader waits at the bank this long for @ok replies
+follow_normal = true  # send "set follow normal" when following begins
 ```
 
 ### `pace_ms`
@@ -984,7 +989,7 @@ The board never says when it ticks. The client infers three clocks and
 shows their countdowns in the bar:
 
 ```
- HP 42 MA 12 (Resting) | Tick 3.2 | HP 12.3/4.5 | MA 21.0 | Dark Cave [1/2160]
+ HP 42 MA 12 (Resting) | Tick 3.2 | HP 12.3/4.5 | MA 12.3 | Dark Cave [1/2160]
 ```
 
 `Tick` is the combat round, locked by any hit or miss line and 5.13
@@ -1060,6 +1065,169 @@ plain step. Without the item it is a wall.
 The bot picks up any key it sees on the floor that the ring lacks,
 `[bot].take_keys`, on by default.
 
+## Parties
+
+Two or more characters run by this client can play as a board party. The
+leader walks and the board drags the followers along, printing each room
+to them as though they had stepped into it themselves. The client learns
+the party from the board's own lines: `You are now following Foo`, `Foo
+started to follow you.`, the invite, the two wordings for leaving, and
+the `par` roster block, which replaces the member list wholesale so a
+stale list heals. Nothing here invites or follows for you. You type
+`invite`, `follow` and `par` yourself and the client reads what comes
+back.
+
+The party lives in the session beside the purse and the stat sheet, so
+it survives a flee's rebuild of the assist and it is there whether a job
+runs or not. The status bar shows `following Foo` while following and
+`leading 2` while leading. Every role change, every request sent and
+every request accepted is a lobby note, as
+`-- party: Foo asks @bank --`.
+
+### The telepath channel
+
+A telepath whose text starts with `@` is a command for the receiving
+client rather than something to read. That is MudPlay's protocol and
+this client speaks it, so a MudPlay peer understands what this client
+sends. The wire form is the board's own `/Foo @ok`.
+
+| Command | Meaning |
+|---|---|
+| `@bank` | the sender's purse has tripped its deposit gate and it wants the party taken to a bank |
+| `@wait` | hold the leg, the sender is busy |
+| `@ok` | the sender is done, release the hold |
+
+The sender has to be in the party. A leader takes a command from a
+member of its roster, a follower takes one from its leader, and anything
+from anyone else is dropped without a word. An invited character has not
+joined yet and cannot hold the party. An unknown word after the `@` is
+dropped the same silent way, as MudPlay drops it. A telepath without an
+`@` is chat and is left alone.
+
+### Following
+
+A follower is the assist plus the party state. There is no follower job.
+Everything a follower does by itself is assist behaviour under
+**`/bot`**, and with the switch off none of it runs, the `@ok` replies
+included, so a follower with the bot off costs its leader the full bank
+wait. The assist already fights, sweeps and keeps stealth up in a room
+it was dragged into. The party adds three things.
+
+**A deposit gate.** The follower counts the same coin pickups a farm
+counts, spends one `i` on the next idle prompt, and judges the purse by
+the same `[bank]` gates a farm uses. It cannot walk to a bank, so acting
+on the gate means asking: it telepaths its leader `@bank` once and does
+not ask again until it has deposited or five minutes have passed.
+`[bank].auto_deposit` gates it.
+
+**A deposit on arrival.** A room block naming one of the five banks,
+while following, is a bank arrival. The deposit runs in the job slot as
+a short automatic task, shown in the activity list as `party deposit`,
+so the assist stays quiet for the few seconds it takes, the way it does
+for a job you typed. It reads the purse, deposits everything above
+`keep_gold`, reads once more, and telepaths the leader `@ok` whatever
+happened. Nothing above the floor means `@ok` at once with no deposit. A
+leader who moved on before the deposit landed gets the `@ok` too,
+because a leader standing at the bank must never be held by a follower
+whose purse was empty. **Ctrl-F** during the task takes the keyboard
+back and aborts it, and then no `@ok` goes out and the leader waits out
+`bank_wait_secs`.
+
+The arrival is recognised by the room's printed name, which is not the
+shop's name for four of the five banks. The names are unique across the
+world, so the block alone settles it without a route or a position. A
+block that repeats the room the character is already standing in starts
+no second deposit, which is what keeps the `look` a finished job sends
+from running the exchange again.
+
+**A wait before a rest.** When the assist decides to rest or meditate it
+telepaths `@wait` first, so the leader stands still rather than dragging
+the character out of its rest. The `@ok` goes out on the first prompt
+without the Resting or Meditating word after one that had it, which
+covers both the mark being reached and a fight breaking the rest, or at
+once when the board refused the rest. One of each per rest, under
+`auto_rest` like the rest itself.
+
+Jobs that move refuse to start while following. `/go`, `/farm`, `/roam`,
+`/bank` and `/recover` answer
+`following Foo; a job that moves does not run in a party`. A walk of its
+own fights the drag, and the two undo each other until the character is
+nowhere either of them meant. `/where` still runs.
+
+### Leading
+
+A leader runs the jobs it always did. Two hooks and one interrupt make
+them party-aware, and out of a party every one of them is inert.
+
+**A hold stops the leg.** A follower's `@wait` puts a hold on its
+sender, and the telepath line is itself the interruption, so the hold
+lands before the next step goes out. A step already sent cannot be
+recalled. The leader then stands where it is, defends itself with the
+defence any walk interruption gets, and resumes the leg from the room it
+is in once every hold is gone. A hold that expires is dropped and named:
+`-- party: hold on foo expired --`. **`[party].wait_secs`** is how long
+one lasts, 90 seconds by default. The leg looks for holds before its first
+step as well, so one that arrived during a stop is honoured. `/go`,
+`/farm` and `/roam` walk through the same leg, so a follower's `@wait`
+holds all three.
+
+**A `@bank` detours.** The leader drains the requests where a farm
+judges its own deposit gate, at the end of a stop, so an ask and its own
+gate tripping together make one errand rather than two. The detour runs
+even with `[bank].auto_deposit` off, because an errand asked for by name
+is not automatic behaviour. An earlier errand that failed and switched
+deposits off for the run still stops it. Arriving with nothing above its
+own keep floor is not a failure on an asked errand, and deposits stay
+on.
+
+**Then the wait.** After its own deposit the leader sends `par`, waits
+up to five seconds for the roster, and puts a hold on every member that
+is not invited. It stands at the bank until each has said `@ok` or
+**`[party].bank_wait_secs`** passes, 15 seconds by default, and the notice
+at the end names any follower that did not reply. This happens on every
+errand while leading, asked or not, since the leader's own gate trip
+drags the whole party into the bank. `par` is sent there and nowhere
+else. A follower that left without the leader hearing costs one timeout,
+and the roster at the next bank corrects it.
+
+With no job running, only the assist, a `@bank` or a `@wait` is printed
+as a note and nothing else happens. The bank request stays queued for
+the next farm. There is nothing to hold still when nothing is moving.
+
+### `[party]`
+
+```toml
+[party]
+wait_secs = 90        # a follower's @wait holds the leader this long at most
+bank_wait_secs = 15   # the leader waits at the bank this long for @ok replies
+follow_normal = true  # send "set follow normal" when following begins
+```
+
+All three are live keys, so `/set party.bank_wait_secs 30` reaches a run
+already going. A `wait_secs` or a `bank_wait_secs` of 0 is refused.
+
+**`follow_normal`**, on by default, sends `set follow normal` once each
+time the character begins following. The board keeps a follow mode per
+character and this client assumes the normal one, where the leader's
+move prints the room. `set follow blind` prints the drag line alone, and
+a follower in that mode sees no room, so it cannot fight, sweep or
+recognise a bank. The mode is a board setting that lives on the
+character, so it sits beside `disable_evil_warnings` and is not under
+`/bot`.
+
+Every party wording this client matches comes from the string table of
+the stock `WCCMMUD.DLL` and none of them has been captured on the live
+board. A wording that never matches fails safe: the party is never seen
+and nothing party-shaped runs. The first live party settles them.
+
+The follow-ups are the assist's backstab weapon swap, with a
+`[bot].backstab_weapon` key naming the weapon or meaning any capable one
+in the pack, since a follower dragged into a room is exactly the
+character that wants the swap. Then gangpath and room speech as command
+channels, the reply-only queries `@health`, `@where`, `@party`,
+`@wealth` and `@version`, poison and blindness as wait reasons, and an
+`@ok` when the operator takes the keyboard back during a deposit.
+
 ## Banking
 
 A farm picks up every pile it kills over. Coins weigh a third of a unit
@@ -1096,6 +1264,16 @@ An errand that deposits nothing switches deposits off for the rest of
 the run and prints one line saying so. That covers a bank no route
 reaches, a walk that fails, a deposit the board refuses, and a purse
 with nothing above the keep floor.
+
+**In a party.** A follower cannot walk itself to a bank, so a follower
+whose gate trips telepaths its leader `@bank` and the leader detours at
+the end of its next stop. A follower dragged into a bank deposits there
+on its own and tells the leader `@ok` when it is done. A leader's errand
+holds every follower at the bank until each has replied or
+`[party].bank_wait_secs` runs out, and that happens on every errand
+while leading, whether a follower asked for it or the leader's own gate
+tripped. An asked errand that finds nothing above the keep floor is not
+a failure and leaves deposits on. See [Parties](#parties).
 
 **The nearest bank** is the one the fewest hops away along a route the
 character can take. The world has five bank rooms: 1/297 Bank of
