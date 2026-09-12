@@ -288,6 +288,19 @@ struct ContentsTracker {
     buffer: Option<String>,
 }
 
+/// The party the character is in, the followers holding it still, and
+/// the requests waiting for whoever drains them. Fed every line, so the
+/// state survives a flee's bot rebuild and is readable from every mode.
+/// See `docs/superpowers/specs/2026-09-12-party-mechanics-design.md`.
+struct PartyTracker {
+    state: crate::party::PartyState,
+    holds: Arc<Mutex<crate::party::Holds>>,
+    requests: Vec<crate::party::Request>,
+    changes: watch::Sender<crate::party::PartyState>,
+    notes: broadcast::Sender<String>,
+    wait_secs: u64,
+}
+
 /// The character's inventory and spellbook, read once at realm entry —
 /// see [`crate::farm::probe_sheet`] and [`Session::set_sheet`] — and
 /// held here so `/go`, a farm start, and the dark-finish walk stop
@@ -411,6 +424,9 @@ pub struct Session {
     /// resolve names on its own, and it does not load the world
     /// database on its own account.
     pack: Arc<Mutex<Option<crate::pack::PackHandle>>>,
+    /// The session's own party reading, kept current by the reader task
+    /// off every line the board prints. See [`PartyTracker`].
+    party: Arc<Mutex<PartyTracker>>,
 }
 
 impl Session {
@@ -449,6 +465,14 @@ impl Session {
         }));
         let equipment = Arc::new(Mutex::new(Equipment::new()));
         let pack = Arc::new(Mutex::new(None));
+        let party = Arc::new(Mutex::new(PartyTracker {
+            state: crate::party::PartyState::new(),
+            holds: Arc::new(Mutex::new(crate::party::Holds::new())),
+            requests: Vec::new(),
+            changes: watch::Sender::new(crate::party::PartyState::new()),
+            notes: broadcast::channel(64).0,
+            wait_secs: profile.party.wait_secs,
+        }));
 
         let mut raw_file = match &capture {
             Some(c) => Some(File::create(&c.raw)?),
@@ -539,6 +563,7 @@ impl Session {
             let contents = Arc::clone(&contents);
             let equipment = Arc::clone(&equipment);
             let pack = Arc::clone(&pack);
+            let party = Arc::clone(&party);
             tokio::spawn(async move {
                 let mut filter = TelnetFilter::new();
                 let mut stripper = AnsiStripper::new();
@@ -580,6 +605,7 @@ impl Session {
                             feed_stats(&stats, &cor);
                             feed_contents(&contents, &equipment, &pack, &cor);
                             feed_equipment(&equipment, &cor);
+                            feed_party(&party, &cor);
                             let _ = events_tx.send(cor);
                         }
                     }
@@ -604,6 +630,7 @@ impl Session {
                         feed_stats(&stats, &cor);
                         feed_contents(&contents, &equipment, &pack, &cor);
                         feed_equipment(&equipment, &cor);
+                        feed_party(&party, &cor);
                         let _ = events_tx.send(cor);
                     }
                 }
@@ -634,6 +661,7 @@ impl Session {
             contents,
             equipment,
             pack,
+            party,
         })
     }
 
@@ -647,6 +675,7 @@ impl Session {
     /// Replace the profile. Every job holding a receiver from
     /// [`Session::profile_changes`] wakes.
     pub fn set_profile(&self, profile: Profile) {
+        self.party.lock().expect("party lock").wait_secs = profile.party.wait_secs;
         self.profile.send_replace(profile);
     }
 
@@ -981,6 +1010,57 @@ impl Session {
         self.contents.lock().expect("contents lock").current.clone()
     }
 
+    /// The party as the board's lines have described it so far. A clone,
+    /// so a reader never holds the tracker's lock.
+    pub fn party(&self) -> crate::party::PartyState {
+        self.party.lock().expect("party lock").state.clone()
+    }
+
+    /// Wakes on every change to the party. The receiver reports the
+    /// current party on `borrow`.
+    pub fn party_changes(&self) -> watch::Receiver<crate::party::PartyState> {
+        self.party.lock().expect("party lock").changes.subscribe()
+    }
+
+    /// One line per change, request accepted, and request sent, in the
+    /// shape `rests()` uses, for the window to print.
+    pub fn party_notes(&self) -> broadcast::Receiver<String> {
+        self.party.lock().expect("party lock").notes.subscribe()
+    }
+
+    /// The tracker's own sender, for the assist and the jobs to say what
+    /// they telepathed.
+    pub fn party_note(&self, text: String) {
+        let _ = self.party.lock().expect("party lock").notes.send(text);
+    }
+
+    /// Take the requests the party has made and not had answered. Each
+    /// one is handed out once: whoever drains them owns them.
+    pub fn take_party_requests(&self) -> Vec<crate::party::Request> {
+        std::mem::take(&mut self.party.lock().expect("party lock").requests)
+    }
+
+    /// The hold set itself, shared. A job holds it across a whole bank
+    /// wait rather than asking the session again on every poll.
+    pub fn party_holds(&self) -> Arc<Mutex<crate::party::Holds>> {
+        Arc::clone(&self.party.lock().expect("party lock").holds)
+    }
+
+    /// Hold the party for `name` until `until`.
+    pub fn party_hold(&self, name: &str, until: Instant) {
+        self.party_holds().lock().expect("holds lock").hold(name, until);
+    }
+
+    /// Whether nothing is holding the party still.
+    pub fn party_holds_clear(&self) -> bool {
+        self.party_holds().lock().expect("holds lock").is_empty()
+    }
+
+    /// Drop and return every hold whose deadline has passed.
+    pub fn party_expire_holds(&self) -> Vec<String> {
+        self.party_holds().lock().expect("holds lock").expire(Instant::now())
+    }
+
     /// Hand the session the item table so it can keep a pack by id.
     ///
     /// Called once by whoever loads the world database for this
@@ -1227,6 +1307,63 @@ fn feed_equipment(equipment: &Mutex<Equipment>, cor: &Correlated) {
         return;
     };
     equipment.lock().expect("equipment lock").observe(line);
+}
+
+/// Fold one event into the party: the state machine reads every line
+/// and every prompt, then the same line is offered to the telepath
+/// grammar. A request from anyone who is not in the party is dropped
+/// without a word.
+fn feed_party(party: &Mutex<PartyTracker>, cor: &Correlated) {
+    let mut t = party.lock().expect("party lock");
+    let change = match &cor.event {
+        Event::Line(line) => t.state.observe(line),
+        Event::Prompt { .. } => t.state.observe_prompt(),
+        _ => None,
+    };
+    if let Some(change) = change {
+        use crate::party::Change;
+        let note = match &change {
+            Change::Following(who) => format!("party: following {who}"),
+            Change::Joined(who) => format!("party: {who} joined"),
+            Change::Invited(who) => format!("party: invited {who}"),
+            Change::Left(who) => format!("party: {who} left"),
+            Change::Ended => "party: ended".to_string(),
+            Change::Roster => format!("party: roster {}", t.state.followers().join(", ")),
+        };
+        if change == Change::Ended {
+            t.holds.lock().expect("holds lock").clear();
+            t.requests.clear();
+        } else {
+            let state = t.state.clone();
+            t.holds.lock().expect("holds lock").retain_members(&state);
+        }
+        let _ = t.notes.send(note);
+        let state = t.state.clone();
+        let _ = t.changes.send(state);
+    }
+    let Event::Line(line) = &cor.event else {
+        return;
+    };
+    let Some(req) = crate::party::remote(line) else {
+        return;
+    };
+    if !crate::party::permitted(&t.state, &req.from) {
+        return;
+    }
+    let word = match req.command {
+        crate::party::Remote::Bank => "@bank",
+        crate::party::Remote::Wait => "@wait",
+        crate::party::Remote::Ok => "@ok",
+    };
+    let _ = t.notes.send(format!("party: {} asks {word}", req.from));
+    match req.command {
+        crate::party::Remote::Wait => {
+            let until = Instant::now() + Duration::from_secs(t.wait_secs);
+            t.holds.lock().expect("holds lock").hold(&req.from, until);
+        }
+        crate::party::Remote::Ok => t.holds.lock().expect("holds lock").release(&req.from),
+        crate::party::Remote::Bank => t.requests.push(req),
+    }
 }
 
 /// Throw away everything already queued on an event receiver.

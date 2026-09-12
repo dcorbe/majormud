@@ -1,0 +1,125 @@
+//! The session learns the party from the board's lines and keeps the
+//! holds and requests for whoever drains them.
+
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+use mud_client::party::{Remote, Role};
+use mud_client::profile::Profile;
+use mud_client::session::Session;
+
+/// A board that prints `lines` after the prompt, one every 50ms, and
+/// echoes anything sent.
+async fn board(lines: Vec<&'static str>) -> (std::net::SocketAddr, Arc<Mutex<Vec<String>>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&received);
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        sock.write_all(b"\r\n\x1b[1;36mHome\r\nObvious exits: east\r\n[HP=30/MA=0]:").await.unwrap();
+        for line in lines {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            sock.write_all(format!("\r\n{line}\r\n[HP=30/MA=0]:").as_bytes()).await.unwrap();
+        }
+        let mut buf = [0u8; 512];
+        while let Ok(n) = sock.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            let text = String::from_utf8_lossy(&buf[..n]).to_string();
+            for l in text.lines() {
+                log.lock().unwrap().push(l.trim().to_string());
+            }
+            sock.write_all(format!("\r\n{}\r\n[HP=30/MA=0]:", text.trim()).as_bytes()).await.unwrap();
+        }
+    });
+    (addr, received)
+}
+
+async fn session_for(addr: std::net::SocketAddr) -> Session {
+    let profile = Profile {
+        target: mud_client::dialect::Target::MbbsEmu,
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        username: "testuser".into(),
+        password: "testpass".into(),
+        pace_ms: Some(0),
+        ..Default::default()
+    };
+    Session::connect(&profile, None).await.unwrap()
+}
+
+async fn wait_until(session: &Session, pred: impl Fn(&Session) -> bool) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !pred(session) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the session should reach the state");
+}
+
+#[tokio::test]
+async fn the_session_learns_it_is_following_and_queues_the_leaders_requests() {
+    let (addr, _) = board(vec![
+        "You are now following Beef",
+        "Beef telepaths: @wait",
+        "Stranger telepaths: @wait",
+        "Beef telepaths: @bank",
+    ])
+    .await;
+    let session = session_for(addr).await;
+    wait_until(&session, |s| s.party().role == Role::Follower).await;
+    assert_eq!(session.party().leader.as_deref(), Some("Beef"));
+    wait_until(&session, |s| !s.party_holds_clear()).await;
+    assert_eq!(session.party_holds().lock().unwrap().names(), vec!["Beef".to_string()]);
+    wait_until(&session, |s| {
+        s.party().role == Role::Follower && s.party_holds().lock().unwrap().names().len() == 1
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        session.party_holds().lock().unwrap().names(),
+        vec!["Beef".to_string()],
+        "the stranger is not in the party, so the stranger's @wait holds nothing"
+    );
+    let requests = session.take_party_requests();
+    assert_eq!(requests.len(), 1, "the stranger's @wait and the stranger are dropped");
+    assert_eq!(requests[0].from, "Beef");
+    assert_eq!(requests[0].command, Remote::Bank);
+    assert!(session.take_party_requests().is_empty(), "drained");
+}
+
+#[tokio::test]
+async fn ok_releases_a_hold_and_the_party_ending_clears_everything() {
+    let (addr, _) = board(vec![
+        "Pootwaddle started to follow you.",
+        "Pootwaddle telepaths: @wait",
+        "Pootwaddle telepaths: @ok",
+        "Pootwaddle telepaths: @wait",
+        "You are not in a party at the present time.",
+    ])
+    .await;
+    let session = session_for(addr).await;
+    let changes = session.party_changes();
+    wait_until(&session, |s| s.party().role == Role::Leader).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(session.party().role, Role::None);
+    assert!(session.party_holds_clear());
+    assert!(changes.has_changed().unwrap());
+}
+
+#[tokio::test]
+async fn notes_name_every_change_and_accepted_request() {
+    let (addr, _) =
+        board(vec!["Pootwaddle started to follow you.", "Pootwaddle telepaths: @bank"]).await;
+    let session = session_for(addr).await;
+    let mut notes = session.party_notes();
+    let first = tokio::time::timeout(Duration::from_secs(5), notes.recv()).await.unwrap().unwrap();
+    assert_eq!(first, "party: Pootwaddle joined");
+    let second = tokio::time::timeout(Duration::from_secs(5), notes.recv()).await.unwrap().unwrap();
+    assert_eq!(second, "party: Pootwaddle asks @bank");
+}
