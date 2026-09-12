@@ -79,3 +79,27 @@ fn a_navigator_routes_by_its_own_route_mode() {
         "the default navigator takes the short way whatever the capabilities said"
     );
 }
+
+/// `[farm.nav] avoid` fences rooms out of every route this navigator
+/// computes, doors and all: an outlaw's walk keeps out of the streets
+/// the guardsmen patrol whichever job asked for the route.
+#[test]
+fn a_navigator_routes_around_the_rooms_its_config_avoids() {
+    let direct = Navigator::new(detour_graph(), NavConfig::default());
+    assert_eq!(
+        direct.route_from(id(1), id(6)),
+        Some(vec![Direction::North, Direction::North])
+    );
+    let avoiding = Navigator::new(
+        detour_graph(),
+        NavConfig {
+            avoid: vec!["1/2".into()],
+            ..NavConfig::default()
+        },
+    );
+    assert_eq!(
+        avoiding.route_from(id(1), id(6)),
+        Some(vec![Direction::East, Direction::East, Direction::North, Direction::West])
+    );
+    assert_eq!(avoiding.route_from(id(1), id(2)), None, "an avoided room is never entered");
+}

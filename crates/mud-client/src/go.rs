@@ -243,6 +243,15 @@ pub async fn run_go(
     if waypoints.is_empty() {
         return Err(FarmError::Config("go: nowhere to walk to".into()));
     }
+    // Said by name rather than left to the router's "no route": the
+    // operator marked the room, and the mark is the reason.
+    let avoided = live.farm.nav.avoided();
+    if let Some(stop) = waypoints.iter().find(|w| avoided.contains(w)) {
+        return Err(FarmError::Config(format!(
+            "go: {}/{} is on the avoid list (a on the map clears it)",
+            stop.map, stop.room
+        )));
+    }
     crate::farm::check_departure_mark(&live.farm, &live.bot)?;
     // How the walk starts; the leg sets it again on every reload. See
     // `run_farm`.

@@ -256,6 +256,16 @@ pub fn load(dir: &Path, name: &str) -> Result<Loop, String> {
 /// refuses to save such a loop; the map still has to draw the legs that
 /// do exist while somebody is halfway through building one.
 pub fn route_rooms(graph: &RoomGraph, stops: &[RoomId]) -> BTreeSet<RoomId> {
+    route_rooms_avoiding(graph, stops, &BTreeSet::new())
+}
+
+/// As [`route_rooms`], keeping every leg out of `avoid` the way a walk
+/// under that profile would ([`crate::nav::NavConfig::avoid`]).
+pub fn route_rooms_avoiding(
+    graph: &RoomGraph,
+    stops: &[RoomId],
+    avoid: &BTreeSet<RoomId>,
+) -> BTreeSet<RoomId> {
     let mut out: BTreeSet<RoomId> = stops.iter().copied().collect();
     if stops.len() < 2 {
         return out;
@@ -265,7 +275,7 @@ pub fn route_rooms(graph: &RoomGraph, stops: &[RoomId]) -> BTreeSet<RoomId> {
         .map(|p| (p[0], p[1]))
         .chain(std::iter::once((stops[stops.len() - 1], stops[0])));
     for (from, to) in legs {
-        let Some(steps) = graph.route(from, to) else {
+        let Some(steps) = graph.route_within(from, to, &|_, e| !avoid.contains(&e.dest)) else {
             continue;
         };
         let mut at = from;

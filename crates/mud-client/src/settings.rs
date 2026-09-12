@@ -78,6 +78,7 @@ pub const KEYS: &[&str] = &[
     "farm.nav.bash_doors",
     "farm.nav.search_hidden",
     "farm.nav.route",
+    "farm.nav.avoid",
     "bank.auto_deposit",
     "bank.deposit_at_coins",
     "bank.deposit_on_weight_class",

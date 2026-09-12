@@ -226,6 +226,25 @@ pub struct NavConfig {
     /// `short` unless the profile says `safe`.
     #[serde(default)]
     pub route: crate::graph::RouteMode,
+    /// Rooms no walk may enter, as `map/room` ids. Marked on the map
+    /// with `a` and kept in the profile, so they hold for every job
+    /// the character runs: an outlaw's streets stay off every route
+    /// until the mark is cleared. Unlike a roam's fence this refuses
+    /// only the rooms named, never a door.
+    #[serde(default)]
+    pub avoid: Vec<String>,
+}
+
+impl NavConfig {
+    /// The avoid list as room ids. An entry that is not `map/room` is
+    /// dropped rather than refused: the profile parser accepted it,
+    /// and a walk that stops for a typo in a fence helps nobody.
+    pub fn avoided(&self) -> std::collections::BTreeSet<RoomId> {
+        self.avoid
+            .iter()
+            .filter_map(|s| crate::farm::parse_room_id(s))
+            .collect()
+    }
 }
 
 impl Default for NavConfig {
@@ -236,6 +255,7 @@ impl Default for NavConfig {
             search_hidden: true,
             sneak: true,
             route: crate::graph::RouteMode::Short,
+            avoid: Vec::new(),
         }
     }
 }
@@ -679,6 +699,9 @@ pub struct Navigator {
     /// would happily cut through a wall when that was cheaper. A fence
     /// you can walk through is not a fence.
     fence: Option<crate::roam::Walls>,
+    /// Rooms the profile keeps every walk out of ([`NavConfig::avoid`]).
+    /// Applied to every route, fenced or not.
+    avoid: std::collections::BTreeSet<RoomId>,
     /// What this walker can bring to bear on a costed exit, and what it
     /// has personally measured about toll edges. Defaults to
     /// [`crate::graph::Capabilities::unrestricted`], which is exactly
@@ -740,6 +763,7 @@ impl Navigator {
             route: cfg.route,
             fence: None,
             plane: None,
+            avoid: cfg.avoided(),
             capabilities: crate::graph::Capabilities {
                 bash_doors: cfg.bash_doors,
                 route: cfg.route,
@@ -901,14 +925,24 @@ impl Navigator {
     /// why a fence that bound only destinations would look fine for a
     /// long time and then quietly walk through one.
     pub fn route_from(&self, from: RoomId, to: RoomId) -> Option<Vec<Direction>> {
+        let avoid = &self.avoid;
         match (&self.fence, self.plane) {
-            (Some(walls), Some(plane)) => self.graph.route_within_for(
+            (Some(walls), Some(plane)) => {
+                let fenced = crate::roam::passable(plane, walls);
+                self.graph.route_within_for(
+                    from,
+                    to,
+                    &|d, e| fenced(d, e) && !avoid.contains(&e.dest),
+                    &self.capabilities,
+                )
+            }
+            _ if avoid.is_empty() => self.graph.route_for(from, to, &self.capabilities),
+            _ => self.graph.route_within_for(
                 from,
                 to,
-                &crate::roam::passable(plane, walls),
+                &|_, e| !avoid.contains(&e.dest),
                 &self.capabilities,
             ),
-            _ => self.graph.route_for(from, to, &self.capabilities),
         }
     }
 

@@ -244,3 +244,52 @@ fn the_status_line_says_g_walks_via_the_marks() {
     press(&mut v, KeyCode::Enter);
     assert!(status(&v).contains("g go via marks"), "{}", status(&v));
 }
+
+// ---------------------------------------------------------------------
+// Avoid marks: rooms no walk may enter, kept in the profile.
+// ---------------------------------------------------------------------
+
+#[test]
+fn a_toggles_an_avoid_mark_under_the_cursor() {
+    let mut v = view(DOOR, Fix::Confirmed(DOOR));
+    press(&mut v, KeyCode::Char('a'));
+    assert_eq!(v.avoid().iter().copied().collect::<Vec<_>>(), vec![DOOR]);
+    press(&mut v, KeyCode::Char('a'));
+    assert!(v.avoid().is_empty());
+}
+
+#[test]
+fn avoid_marks_come_in_with_the_view_and_go_out_with_it() {
+    let mut v = view(DOOR, Fix::Confirmed(DOOR)).with_avoid([STREET].into_iter().collect());
+    assert!(v.avoid().contains(&STREET));
+    press(&mut v, KeyCode::Char('a'));
+    let out: Vec<RoomId> = v.avoid().iter().copied().collect();
+    assert_eq!(out, vec![DOOR, STREET]);
+}
+
+#[test]
+fn g_refuses_a_destination_on_the_avoid_list() {
+    let mut v = view(DOOR, Fix::Confirmed(DOOR));
+    press(&mut v, KeyCode::Char('h'));
+    press(&mut v, KeyCode::Char('a'));
+    let action = v.on_key(&KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+    assert_eq!(action, mud_client::mapview::ViewAction::Continue);
+    let status = v.lines().last().cloned().unwrap_or_default();
+    assert!(status.contains("avoid"), "{status}");
+}
+
+#[test]
+fn the_status_line_counts_avoid_marks() {
+    let mut v = MapView::new(
+        world(),
+        Arc::new(SpawnTable::default()),
+        DOOR,
+        Fix::Confirmed(DOOR),
+        PaintCtx::default(),
+        (220, 30),
+    );
+    press(&mut v, KeyCode::Char('a'));
+    let status = v.lines().last().cloned().unwrap_or_default();
+    assert!(status.contains("1 avoid"), "{status}");
+    assert!(status.contains("a avoid"), "{status}");
+}

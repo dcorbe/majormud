@@ -22,7 +22,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use mud_core::content::{Direction, RoomId};
 
 use crate::graph::RoomGraph;
-use crate::loops::{Loop, Stop, route_rooms};
+use crate::loops::{Loop, Stop, route_rooms_avoiding};
 use crate::map::{Cell, Marks, Paint, PaintCtx, Plane, Style, Zoom, layout, render, styles};
 use crate::spawn::{Dossier, SpawnTable};
 
@@ -103,6 +103,11 @@ pub struct MapView {
     /// two say opposite things and an operator may well want both in one
     /// sitting: a circuit to walk, and a fence to keep it honest.
     walls: std::collections::BTreeSet<RoomId>,
+    /// Rooms no walk may ever enter, from the profile's `[farm.nav]
+    /// avoid` and back into it when the map closes. Not a wall: a wall
+    /// is one roam's fence and dies with it, an avoid mark outlives the
+    /// session.
+    avoid: std::collections::BTreeSet<RoomId>,
     /// The recovery's safe room and death room. Handed in by the window
     /// when the map opens and read back when it closes, so the marks
     /// outlive the map the way the character's position does.
@@ -138,6 +143,7 @@ impl MapView {
             back: Vec::new(),
             stops: Vec::new(),
             walls: std::collections::BTreeSet::new(),
+            avoid: std::collections::BTreeSet::new(),
             route: Default::default(),
             recover: Default::default(),
             prompt: None,
@@ -179,6 +185,18 @@ impl MapView {
     /// The marked circuit, in walking order.
     pub fn stops(&self) -> &[RoomId] {
         &self.stops
+    }
+
+    /// The avoid marks, as they stand now.
+    pub fn avoid(&self) -> &std::collections::BTreeSet<RoomId> {
+        &self.avoid
+    }
+
+    /// Open with the profile's avoid marks already drawn.
+    pub fn with_avoid(mut self, avoid: std::collections::BTreeSet<RoomId>) -> Self {
+        self.avoid = avoid;
+        self.route = self.preview();
+        self
     }
 
     pub fn walls(&self) -> &std::collections::BTreeSet<RoomId> {
@@ -386,6 +404,7 @@ impl MapView {
 
             KeyCode::Enter | KeyCode::Char(' ') => self.toggle_stop(),
             KeyCode::Char('x') => self.toggle_wall(),
+            KeyCode::Char('a') => self.toggle_avoid(),
             KeyCode::Char('S') => self.toggle_recover_mark(true),
             KeyCode::Char('D') => self.toggle_recover_mark(false),
             KeyCode::Char('c') => {
@@ -409,6 +428,10 @@ impl MapView {
 
             KeyCode::Char('g') => {
                 return match self.cursor_room() {
+                    Some(id) if self.avoid.contains(&id) => {
+                        self.message = Some("that room is on the avoid list (a clears it)".into());
+                        ViewAction::Continue
+                    }
                     Some(id) => {
                         // The marks are waypoints: visited in order,
                         // and the cursor room is where the walk ends.
@@ -501,6 +524,26 @@ impl MapView {
     /// where one may not go, and the region they imply is worked out by
     /// the runner from where the character actually stands rather than
     /// from the cursor.
+    /// Mark the room under the cursor as one no walk may enter, or
+    /// clear the mark. The route preview is redrawn, since the marks
+    /// change where the legs may go.
+    fn toggle_avoid(&mut self) {
+        let Some(id) = self.cursor_room() else {
+            self.message = Some("no room under the cursor".into());
+            return;
+        };
+        if !self.avoid.insert(id) {
+            self.avoid.remove(&id);
+        }
+        self.route = self.preview();
+    }
+
+    /// The rooms the marked legs walk through, keeping out of the
+    /// avoid marks the way every walk does.
+    fn preview(&self) -> std::collections::BTreeSet<RoomId> {
+        route_rooms_avoiding(&self.graph, &self.stops, &self.avoid)
+    }
+
     fn toggle_wall(&mut self) {
         let Some(id) = self.cursor_room() else {
             self.message = Some("no room under the cursor".into());
@@ -546,7 +589,7 @@ impl MapView {
             }
             None => self.stops.push(id),
         }
-        self.route = route_rooms(&self.graph, &self.stops);
+        self.route = self.preview();
     }
 
     /// The marked circuit as a loop file, ready for the caller to write.
@@ -615,6 +658,7 @@ impl MapView {
             stops: self.stops.iter().copied().collect(),
             route: self.route.clone(),
             walls: self.walls.clone(),
+            avoid: self.avoid.clone(),
             recover: self.recover,
         };
         let map = render(
@@ -710,7 +754,7 @@ impl MapView {
             ),
             (None, Some(msg)) => format!("-- {msg} --"),
             (None, None) => format!(
-                "{} | {} | {} stops | {} walls | move arrows/hjkl/yubn  < > stairs  +/- zoom  m mode  / find  enter marks  x walls  s saves  r roams  S safe  D death  {}  R recover  q leave",
+                "{} | {} | {} stops | {} walls | {} avoid | move arrows/hjkl/yubn  < > stairs  +/- zoom  m mode  / find  enter marks  x walls  a avoid  s saves  r roams  S safe  D death  {}  R recover  q leave",
                 match self.paint {
                     Paint::Terrain => "terrain",
                     Paint::Danger => "danger",
@@ -723,6 +767,7 @@ impl MapView {
                 },
                 self.stops.len(),
                 self.walls.len(),
+                self.avoid.len(),
                 if self.stops.is_empty() { "g go" } else { "g go via marks" },
             ),
         };

@@ -630,3 +630,14 @@ fn farm_nav_route_is_a_live_key() {
     assert!(err.contains("route"), "{err}");
     assert_eq!(s.profile().farm.as_ref().unwrap().nav.route, RouteMode::Safe);
 }
+
+#[test]
+fn the_avoid_list_is_a_nav_key() {
+    let mut s = Settings::default();
+    s.set("farm.nav.avoid", r#"["1/224", "1/253"]"#).unwrap();
+    assert_eq!(
+        s.profile().farm.as_ref().unwrap().nav.avoid,
+        vec!["1/224".to_string(), "1/253".to_string()]
+    );
+    assert!(s.text().contains("avoid = ["), "{}", s.text());
+}

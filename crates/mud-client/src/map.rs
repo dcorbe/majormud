@@ -565,6 +565,9 @@ pub struct Marks {
     pub route: BTreeSet<RoomId>,
     /// Rooms a roam is fenced out of ([`crate::roam::Walls`]).
     pub walls: BTreeSet<RoomId>,
+    /// Rooms no walk may enter ([`crate::nav::NavConfig::avoid`]).
+    /// Drawn like a wall: both say "not through here".
+    pub avoid: BTreeSet<RoomId>,
     /// The recovery's safe room and death room
     /// ([`crate::recover::Marks`]). Drawn as `S` and `D`.
     pub recover: crate::recover::Marks,
@@ -713,7 +716,7 @@ fn ink(fg: &'static str, id: RoomId, marks: &Marks) -> Ink {
     // both is contradictory and the fence is the half that must win:
     // paint it gold and the operator reads "the run stands here" about a
     // room the run will refuse to enter.
-    let fg = if marks.walls.contains(&id) {
+    let fg = if marks.walls.contains(&id) || marks.avoid.contains(&id) {
         WALL
     } else if marks.recover.death == Some(id) {
         DEATH_MARK

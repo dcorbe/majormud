@@ -1369,7 +1369,8 @@ async fn play(
                                                 },
                                                 (cols as usize, rows as usize),
                                             )
-                                            .with_recover_marks(recover_marks);
+                                            .with_recover_marks(recover_marks)
+                                            .with_avoid(avoid_marks(w.settings.profile()));
                                             // What the assist refused while the
                                             // map had the terminal. Collected
                                             // rather than printed. The screen
@@ -1442,6 +1443,34 @@ async fn play(
                                             // was open, for the next /recover and
                                             // the next map.
                                             recover_marks = view.recover_marks();
+                                            // The avoid marks go back to the
+                                            // profile they came from, dirty
+                                            // until /save writes them, and to
+                                            // the session so a walk started
+                                            // now already keeps out of them.
+                                            if *view.avoid() != avoid_marks(w.settings.profile()) {
+                                                let list = view
+                                                    .avoid()
+                                                    .iter()
+                                                    .map(|r| format!("\"{}/{}\"", r.map, r.room))
+                                                    .collect::<Vec<_>>()
+                                                    .join(", ");
+                                                let wrote = if list.is_empty() {
+                                                    w.settings.unset("farm.nav.avoid")
+                                                } else {
+                                                    w.settings.set("farm.nav.avoid", &format!("[{list}]"))
+                                                };
+                                                match wrote {
+                                                    Ok(()) => {
+                                                        session.set_profile(w.settings.profile().clone());
+                                                        w.note(&format!(
+                                                            "-- avoid list: {} rooms (/save keeps it) --",
+                                                            view.avoid().len()
+                                                        ));
+                                                    }
+                                                    Err(e) => w.note(&format!("-- avoid list: {e} --")),
+                                                }
+                                            }
                                             // The screen is the window's again.
                                             for why in refused_under_map {
                                                 w.note(&format!("-- {why} --"));
@@ -1692,4 +1721,14 @@ fn with_vitals(mut cfg: crate::bot::BotConfig, vitals: &AssistVitals) -> crate::
         cfg.max_mana = v.max_mana;
     }
     cfg
+}
+
+/// The profile's avoid marks as room ids, for the map to draw and to
+/// hand back changed.
+fn avoid_marks(profile: &crate::profile::Profile) -> std::collections::BTreeSet<mud_core::content::RoomId> {
+    profile
+        .farm
+        .as_ref()
+        .map(|f| f.nav.avoided())
+        .unwrap_or_default()
 }
