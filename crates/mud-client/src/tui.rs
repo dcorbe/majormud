@@ -1930,7 +1930,9 @@ impl Drop for StatusBar {
 pub struct Job {
     pub handle: tokio::task::JoinHandle<()>,
     pub phase: tokio::sync::watch::Receiver<crate::farm::Phase>,
-    /// "farm" or "go", for the retirement notice.
+    /// What this job is, for the retirement notice and the refusal a
+    /// second one reads: "farm", "roam", "go", "bank", "recover",
+    /// "where" or "party deposit".
     pub what: &'static str,
 }
 
