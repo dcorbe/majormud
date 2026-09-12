@@ -1,0 +1,433 @@
+//! The leader's side of the wait handshake, against a scripted board.
+//!
+//! A follower that says `@wait` holds the leader where it stands. The
+//! leg does not send its next step until the follower says `@ok`, or
+//! until `[party].wait_secs` runs out. The harness is
+//! `farm_scripted.rs`'s scripted board, extended with lines the board
+//! volunteers, since a telepath arrives unasked.
+//!
+//! Test crates do not share modules, so the board is duplicated here,
+//! which is this suite's existing pattern.
+
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use mud_client::bot::BotConfig;
+use mud_client::farm::{FarmConfig, FarmEnd, FarmPlan, run_farm};
+use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
+use mud_client::live::Live;
+use mud_client::party::PartyConfig;
+use mud_client::profile::Profile;
+use mud_client::session::Session;
+use mud_core::content::{Direction, RoomId};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+const HOME: RoomId = RoomId { map: 1, room: 1 };
+const FIELD: RoomId = RoomId { map: 1, room: 2 };
+const MEADOW: RoomId = RoomId { map: 1, room: 3 };
+
+/// A notices sink that keeps every line, and the lines it kept.
+fn collected() -> (mud_client::farm::Notices, Arc<Mutex<Vec<String>>>) {
+    let said = Arc::new(Mutex::new(Vec::new()));
+    let into = Arc::clone(&said);
+    (
+        Arc::new(move |line: &str| into.lock().unwrap().push(line.to_string())),
+        said,
+    )
+}
+
+fn room_block(name: &str, exits: &str) -> String {
+    format!("\r\n\x1b[1;36m{name}\r\nObvious exits: {exits}\r\n[HP=30/MA=0]:")
+}
+
+/// A chain of rooms numbered 1/1 upward, each east to the next and
+/// west back. Two of them is one leg of one step; three is a leg long
+/// enough for a hold to land between steps.
+fn corridor(names: &[&str]) -> Arc<RoomGraph> {
+    let ids = [HOME, FIELD, MEADOW];
+    let mut rooms = Vec::new();
+    for (i, name) in names.iter().enumerate() {
+        let mut room = GraphRoom {
+            name: (*name).into(),
+            exits: Default::default(),
+            light: 0,
+            ..Default::default()
+        };
+        if let Some(&east) = ids.get(i + 1).filter(|_| i + 1 < names.len()) {
+            room.exits[Direction::East as usize] = Some(ExitEdge {
+                dest: east,
+                exit_type: 0,
+                command: None,
+                requirement: ExitRequirement::None,
+            });
+        }
+        if i > 0 {
+            room.exits[Direction::West as usize] = Some(ExitEdge {
+                dest: ids[i - 1],
+                exit_type: 0,
+                command: None,
+                requirement: ExitRequirement::None,
+            });
+        }
+        rooms.push((ids[i], room));
+    }
+    Arc::new(RoomGraph::from_rooms(rooms))
+}
+
+/// A line the board volunteers, unasked: the received line that arms
+/// it, how long after that line it goes out, a label, and the text.
+///
+/// Armed by a received line rather than by the clock, so a scenario is
+/// ordered against the run itself. A zero delay goes out ahead of that
+/// line's own reply, which is how a board interleaves somebody else's
+/// telepath with an answer it was already about to send. Each push
+/// fires once.
+type Push = (&'static str, Duration, &'static str, String);
+
+/// What the board received, and when.
+type Heard = Arc<Mutex<Vec<(Instant, String)>>>;
+/// What the board volunteered, by label, and when.
+type Pushed = Arc<Mutex<Vec<(String, Instant)>>>;
+
+/// The `farm_scripted.rs` board: a per-line script of `(matcher,
+/// reply)`, each entry used once, first unused match wins, unmatched
+/// lines echo and say back. Every received line is logged with the
+/// instant it arrived, and every push with the instant it went out, so
+/// a test can order a sent step against a line the board volunteered.
+async fn scripted_board(
+    script: Vec<(&'static str, String)>,
+    pushes: Vec<Push>,
+) -> (std::net::SocketAddr, Heard, Pushed) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let received: Heard = Arc::new(Mutex::new(Vec::new()));
+    let pushed: Pushed = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&received);
+    let sent = Arc::clone(&pushed);
+    tokio::spawn(async move {
+        let (sock, _) = listener.accept().await.unwrap();
+        let (mut rx, tx) = tokio::io::split(sock);
+        // Shared because a delayed push and the reply loop both write.
+        let tx = Arc::new(tokio::sync::Mutex::new(tx));
+        write(&tx, &room_block("Home", "east")).await;
+        // One-shot entries consumed in order; a re-ask replays the most
+        // recently consumed matching entry, exactly as a real board
+        // re-answers a look with the room it is still showing.
+        let mut used: Vec<Option<u64>> = vec![None; script.len()];
+        let mut fired = vec![false; pushes.len()];
+        let mut clock: u64 = 0;
+        let mut pending = String::new();
+        let mut buf = [0u8; 512];
+        while let Ok(n) = rx.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            pending.push_str(&String::from_utf8_lossy(&buf[..n]));
+            while let Some(nl) = pending.find('\n') {
+                let line: String = pending.drain(..=nl).collect();
+                let line = line.trim().to_lowercase();
+                log.lock().unwrap().push((Instant::now(), line.clone()));
+                for (i, (on, delay, label, text)) in pushes.iter().enumerate() {
+                    if fired[i] || *on != line {
+                        continue;
+                    }
+                    fired[i] = true;
+                    if delay.is_zero() {
+                        write(&tx, text).await;
+                        sent.lock().unwrap().push((label.to_string(), Instant::now()));
+                        continue;
+                    }
+                    let tx = Arc::clone(&tx);
+                    let sent = Arc::clone(&sent);
+                    let (delay, label, text) = (*delay, label.to_string(), text.clone());
+                    tokio::spawn(async move {
+                        tokio::time::sleep(delay).await;
+                        write(&tx, &text).await;
+                        sent.lock().unwrap().push((label, Instant::now()));
+                    });
+                }
+                let next = used.iter().position(Option::is_none);
+                let fresh = next.filter(|&i| script[i].0 == line);
+                let reply = match fresh {
+                    Some(i) => {
+                        clock += 1;
+                        used[i] = Some(clock);
+                        script[i].1.clone()
+                    }
+                    None => match script
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, (m, _))| used[*i].is_some() && *m == line)
+                        .max_by_key(|(i, _)| used[*i])
+                    {
+                        Some((_, (_, r))) => r.clone(),
+                        None => format!("\r\n{line}\r\nYou say \"{line}\"\r\n[HP=30/MA=0]:"),
+                    },
+                };
+                write(&tx, &reply).await;
+            }
+        }
+    });
+    (addr, received, pushed)
+}
+
+async fn write(tx: &tokio::sync::Mutex<tokio::io::WriteHalf<tokio::net::TcpStream>>, text: &str) {
+    let mut out = tx.lock().await;
+    out.write_all(text.as_bytes()).await.unwrap();
+    out.flush().await.unwrap();
+}
+
+async fn session_for(addr: std::net::SocketAddr, party: PartyConfig) -> Session {
+    let profile = Profile {
+        target: mud_client::dialect::Target::MbbsEmu,
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        username: "testuser".into(),
+        password: "testpass".into(),
+        pace_ms: Some(0),
+        disable_evil_warnings: false,
+        bot: None,
+        farm: None,
+        bank: mud_client::bank::BankConfig {
+            auto_deposit: false,
+            ..Default::default()
+        },
+        party,
+        ..Default::default()
+    };
+    Session::connect(&profile, None).await.unwrap()
+}
+
+/// The board's script for the one-lap circuit Home -> Field.
+fn lap_script() -> Vec<(&'static str, String)> {
+    vec![
+        (
+            "inventory",
+            "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                .into(),
+        ),
+        // verify_start's attributed look.
+        ("look", format!("\r\nlook{}", room_block("Home", "east"))),
+        ("e", format!("\r\ne{}", room_block("Field", "west"))),
+        ("look", format!("\r\nlook{}", room_block("Field", "west"))),
+    ]
+}
+
+fn lap_config() -> FarmConfig {
+    FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/2".into()],
+        loops: 1,
+        idle_poke_ms: 500,
+        depart_at_percent: Some(0),
+        ..FarmConfig::default()
+    }
+}
+
+/// Pootwaddle joins and says `@wait` on the same breath as the run's
+/// opening look, so the hold is in place before the leg's first step.
+/// `@ok` follows a second and a half later, and the step east must
+/// come after it.
+#[tokio::test]
+async fn a_wait_holds_the_leg_until_ok() {
+    let (addr, received, pushed) = scripted_board(
+        lap_script(),
+        vec![
+            (
+                "look",
+                Duration::ZERO,
+                "wait",
+                "\r\nPootwaddle started to follow you.\r\nPootwaddle telepaths: @wait\r\n".into(),
+            ),
+            (
+                "look",
+                Duration::from_millis(1500),
+                "ok",
+                "\r\nPootwaddle telepaths: @ok\r\n".into(),
+            ),
+        ],
+    )
+    .await;
+    let session = session_for(addr, PartyConfig::default()).await;
+    mud_client::farm::probe_sheet(&session, None).await;
+
+    let graph = corridor(&["Home", "Field"]);
+    let cfg = lap_config();
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 30,
+        ..BotConfig::default()
+    };
+    let (notices, _said) = collected();
+
+    let (end, stats) = tokio::time::timeout(
+        Duration::from_secs(20),
+        run_farm(&session, graph.clone(), &plan, Live::fixed(bot, cfg), None, &notices),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    .expect("the lap must finish");
+    assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
+
+    let log = received.lock().unwrap().clone();
+    let heard: Vec<String> = log.iter().map(|(_, l)| l.clone()).collect();
+    let e_sent_at = at(&log, "e").expect("the leg stepped east");
+    let ok_seen = pushed_at(&pushed, "ok").unwrap_or_else(|| {
+        panic!("the leg finished before the board could say @ok: {heard:?}")
+    });
+    assert!(
+        e_sent_at >= ok_seen,
+        "the step east waited for @ok: {heard:?}"
+    );
+}
+
+/// No `@ok` ever comes. With `[party].wait_secs = 1` the hold expires
+/// on its own, the leg goes on, and the run says whose hold it dropped.
+#[tokio::test]
+async fn a_wait_with_no_ok_expires_and_the_leg_goes_on() {
+    let (addr, received, pushed) = scripted_board(
+        lap_script(),
+        vec![(
+            "look",
+            Duration::ZERO,
+            "wait",
+            "\r\nPootwaddle started to follow you.\r\nPootwaddle telepaths: @wait\r\n".into(),
+        )],
+    )
+    .await;
+    let session = session_for(
+        addr,
+        PartyConfig {
+            wait_secs: 1,
+            ..PartyConfig::default()
+        },
+    )
+    .await;
+    mud_client::farm::probe_sheet(&session, None).await;
+
+    let graph = corridor(&["Home", "Field"]);
+    let cfg = lap_config();
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 30,
+        ..BotConfig::default()
+    };
+    let (notices, said) = collected();
+
+    let (end, stats) = tokio::time::timeout(
+        Duration::from_secs(20),
+        run_farm(&session, graph.clone(), &plan, Live::fixed(bot, cfg), None, &notices),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    .expect("the lap must finish");
+    assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
+
+    let log = received.lock().unwrap().clone();
+    let heard: Vec<String> = log.iter().map(|(_, l)| l.clone()).collect();
+    let e_sent_at = at(&log, "e").expect("the leg stepped east");
+    let wait_seen = pushed_at(&pushed, "wait").expect("the board said @wait");
+    let held_for = e_sent_at.saturating_duration_since(wait_seen);
+    assert!(
+        held_for >= Duration::from_secs(1),
+        "the leg stood for the hold's second, not {held_for:?}: {heard:?}"
+    );
+    let said = said.lock().unwrap().clone();
+    assert!(
+        said.iter().any(|l| l == "party: hold on Pootwaddle expired"),
+        "the expiry is named: {said:?}"
+    );
+}
+
+/// The `@wait` lands while the leg is already walking: the board says
+/// it on the same breath as the first step's own answer. The hold has
+/// to stop the SECOND step, which is what `Interrupt::Held` is for.
+#[tokio::test]
+async fn a_wait_mid_leg_stops_the_next_step() {
+    let (addr, received, pushed) = scripted_board(
+        vec![
+            (
+                "inventory",
+                "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=30/MA=0]:"
+                    .into(),
+            ),
+            ("look", format!("\r\nlook{}", room_block("Home", "east"))),
+            // The telepath rides out behind the step's own answer, the
+            // way a board interleaves one. Ahead of the answer it
+            // would be an interrupt arriving instead of the arrival,
+            // which is a different scenario and not this one.
+            (
+                "e",
+                format!(
+                    "\r\ne{}\r\nPootwaddle started to follow you.\r\nPootwaddle telepaths: @wait\r\n",
+                    room_block("Field", "east west")
+                ),
+            ),
+            // The hold's own stop looks where it stands. Without this
+            // the fallback would replay Home's block at Field and the
+            // stop would believe it had been moved.
+            ("look", format!("\r\nlook{}", room_block("Field", "east west"))),
+            ("e", format!("\r\ne{}", room_block("Meadow", "west"))),
+            ("look", format!("\r\nlook{}", room_block("Meadow", "west"))),
+        ],
+        vec![(
+            "e",
+            Duration::from_millis(1500),
+            "ok",
+            "\r\nPootwaddle telepaths: @ok\r\n".into(),
+        )],
+    )
+    .await;
+    let session = session_for(addr, PartyConfig::default()).await;
+    mud_client::farm::probe_sheet(&session, None).await;
+
+    let graph = corridor(&["Home", "Field", "Meadow"]);
+    let cfg = FarmConfig {
+        circuit: vec!["1/3".into()],
+        ..lap_config()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 30,
+        ..BotConfig::default()
+    };
+    let (notices, _said) = collected();
+
+    let (end, stats) = tokio::time::timeout(
+        Duration::from_secs(20),
+        run_farm(&session, graph.clone(), &plan, Live::fixed(bot, cfg), None, &notices),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    .expect("the lap must finish");
+    assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
+    assert_eq!(
+        stats.interrupts, 0,
+        "a hold is not danger and must never spend the budget: {stats:?}"
+    );
+
+    let log = received.lock().unwrap().clone();
+    let heard: Vec<String> = log.iter().map(|(_, l)| l.clone()).collect();
+    let steps: Vec<Instant> = log.iter().filter(|(_, l)| l == "e").map(|(t, _)| *t).collect();
+    assert_eq!(steps.len(), 2, "the leg is two steps: {heard:?}");
+    let ok_seen = pushed_at(&pushed, "ok").unwrap_or_else(|| {
+        panic!("the leg finished before the board could say @ok: {heard:?}")
+    });
+    assert!(
+        steps[1] >= ok_seen,
+        "the second step waited for @ok: {heard:?}"
+    );
+}
+
+/// When the board first received this line.
+fn at(log: &[(Instant, String)], line: &str) -> Option<Instant> {
+    log.iter().find(|(_, l)| l == line).map(|(t, _)| *t)
+}
+
+/// When the board volunteered the push with this label.
+fn pushed_at(pushed: &Pushed, label: &str) -> Option<Instant> {
+    pushed.lock().unwrap().iter().find(|(l, _)| l == label).map(|(_, t)| *t)
+}

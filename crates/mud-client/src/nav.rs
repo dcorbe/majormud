@@ -131,6 +131,11 @@ pub enum Interrupt {
     /// per-monster data, so the name is display-only and the defence
     /// starts by asking the board where it stands.
     Entered { name: String },
+    /// A follower asked the leader to wait, or the leader is waiting at
+    /// the bank for its followers. Raised the moment the hold set is
+    /// non-empty, so no further step is sent. Never spends the
+    /// interrupt budget.
+    Held,
 }
 
 /// Watches the events a walk goes past and says when to stop walking.

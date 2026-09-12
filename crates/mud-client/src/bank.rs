@@ -468,7 +468,7 @@ pub(crate) async fn errand(
     if *current != to {
         let leg = crate::farm::travel(
             session, nav, graph, current, to, live, threat, refusals, casts, clock,
-            started, stats, phase, false,
+            started, stats, phase, notices, false,
         )
         .await;
         // A bank the walk cannot reach ends the errand, not the run: a
@@ -502,7 +502,7 @@ pub(crate) async fn errand(
     if let Some(back) = return_to.filter(|back| *back != *current) {
         let leg = crate::farm::travel(
             session, nav, graph, current, back, live, threat, refusals, casts, clock,
-            started, stats, phase, false,
+            started, stats, phase, notices, false,
         )
         .await;
         // The same bargain as the walk out, with one difference: the

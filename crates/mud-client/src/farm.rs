@@ -401,6 +401,10 @@ pub enum Phase {
     Banking {
         at: RoomId,
     },
+    /// Standing still because a follower asked the leader to wait.
+    Holding {
+        at: RoomId,
+    },
     /// `/recover`: lighting up and buffing in the start room before the
     /// sneak.
     Preparing,
@@ -459,6 +463,7 @@ impl Phase {
             Phase::Recovering { to } => format!("recovering to {}/{}", to.map, to.room),
             Phase::WalkingHome => "walking home".into(),
             Phase::Banking { at } => format!("banking at {}/{}", at.map, at.room),
+            Phase::Holding { .. } => "holding for the party".into(),
             Phase::Preparing => "preparing".into(),
             Phase::SneakingIn { to } => format!("sneaking in to {}/{}", to.map, to.room),
             Phase::Sweeping { at } => format!("sweeping {}/{}", at.map, at.room),
@@ -1527,6 +1532,11 @@ pub struct FarmGuard {
     /// Stop for rooms this bot would fight in. None (recover, the walk
     /// home, a leg that already defended this room) sights nothing.
     sight: Option<crate::bot::Bot>,
+    /// The party's hold set, shared with the session's tracker. None
+    /// for every walk that is not a led one, and only
+    /// [`crate::farm::travel`] ever attaches it, so nothing else can
+    /// be stopped by a follower.
+    holds: Option<std::sync::Arc<std::sync::Mutex<crate::party::Holds>>>,
 }
 
 impl FarmGuard {
@@ -1537,6 +1547,7 @@ impl FarmGuard {
             username: username.to_string(),
             fights: crate::session::Switch::new(true),
             sight: None,
+            holds: None,
         }
     }
 
@@ -1558,6 +1569,28 @@ impl FarmGuard {
     pub fn sighting(mut self, bot: crate::bot::Bot) -> Self {
         self.sight = Some(bot);
         self
+    }
+
+    /// Stop while a follower holds the party. The hold set is the
+    /// session's, not a copy: a `@wait` arriving mid-walk is seen by
+    /// the next event this guard judges, and the matching `@ok`
+    /// releases it the same way.
+    pub fn holds(mut self, holds: std::sync::Arc<std::sync::Mutex<crate::party::Holds>>) -> Self {
+        self.holds = Some(holds);
+        self
+    }
+
+    /// Whether somebody is holding the party right now. Expires the
+    /// stale entries on the way past, so a follower that went quiet
+    /// cannot hold the leader forever. The names go unsaid here: the
+    /// notice belongs to [`hold_here`], which is the only place the
+    /// leader is actually standing still and waiting for them.
+    pub(crate) fn held(&self) -> bool {
+        self.holds.as_ref().is_some_and(|h| {
+            let mut h = h.lock().expect("holds lock");
+            h.expire(Instant::now());
+            !h.is_empty()
+        })
     }
 
     /// Walk past sightings for the rest of this leg. The runner calls
@@ -1597,11 +1630,24 @@ impl FarmGuard {
 impl crate::nav::TravelGuard for FarmGuard {
     fn on_event(&mut self, ev: &Event) -> Option<crate::nav::Interrupt> {
         use crate::nav::Interrupt;
+        // Death outranks the hold. A leader that is down has nothing to
+        // wait for, and standing still to be hit again is the one
+        // reading of `@wait` nobody asked for.
         match ev {
-            Event::Line(line) if is_player_death(line, &self.username) => Some(Interrupt::Died),
+            Event::Line(line) if is_player_death(line, &self.username) => {
+                return Some(Interrupt::Died);
+            }
             // HP reads negative while downed, and nothing lands until a
             // revive.
-            Event::Prompt { hp, .. } if *hp <= 0 => Some(Interrupt::Died),
+            Event::Prompt { hp, .. } if *hp <= 0 => return Some(Interrupt::Died),
+            _ => {}
+        }
+        // Before anything else this guard could say: a held leader
+        // sends no further step, whatever else the event was about.
+        if self.held() {
+            return Some(Interrupt::Held);
+        }
+        match ev {
             // 0 max HP means the profile never said and the probe found
             // nothing. Guessing would mis-scale the one decision keeping
             // the character alive, so say nothing rather than something
@@ -2064,6 +2110,7 @@ async fn farm_loop(
                     started,
                     &mut stats,
                     phase,
+                    notices,
                     sneaking,
                 )
                 .await;
@@ -2725,6 +2772,10 @@ pub(crate) async fn travel(
     started: Instant,
     stats: &mut FarmStats,
     phase: PhaseSink<'_>,
+    // Where a hold's expiry is said out loud. The leg is the only
+    // thing a follower's `@wait` stops, so it is also the only thing
+    // that can say when one ran out.
+    notices: &Notices,
     // What the caller believes about the character's sneak as the leg
     // begins -- see `Navigator::goto`. Handed on through `LegEnd::
     // Arrived`, and cleared here by everything the leg itself does
@@ -2762,7 +2813,11 @@ pub(crate) async fn travel(
             crate::bot::Bot::with_refusals(bot_config.clone(), threat.clone(), refusals.clone())
                 .with_pack(session.pack_handle()),
         )
-        .follows(session.travel_fights().clone());
+        .follows(session.travel_fights().clone())
+        // Only a led leg stops for a follower. Every other guard in
+        // the client is built without this, so `Interrupt::Held` can
+        // never fire outside `travel`.
+        .holds(session.party_holds());
         // Predicate-only, like the guard's sighting bot: judges whether
         // the departure gate is standing beside work (never fed events).
         let sight = crate::bot::Bot::with_refusals(bot_config.clone(), threat.clone(), refusals.clone())
@@ -2848,7 +2903,29 @@ pub(crate) async fn travel(
         {
             sneaking = false;
         }
-    set_phase(phase, Phase::Travelling { to: stop });
+        // The leg's entry honours a hold before its first step. The
+        // guard only ever judges events, so a `@wait` that landed
+        // while the run was doing something else leaves nothing for
+        // the drain before the first step to find. This is also where
+        // an `Interrupt::Held` comes back to, which is why the arm
+        // below only has to write the position and loop.
+        if guard.held() {
+            match hold_here(
+                session, nav, graph, *current, live, threat, refusals, casts, clock,
+                started, stats, phase, notices,
+            )
+            .await?
+            {
+                // Standing still is a break in the sneak: the stop
+                // pump looks, pokes and may swing, and none of that
+                // survives as stealth.
+                HoldEnd::Released { .. } => sneaking = false,
+                HoldEnd::Died => return Ok(LegEnd::Died),
+                HoldEnd::TimeUp => return Ok(LegEnd::TimeUp),
+            }
+        }
+
+        set_phase(phase, Phase::Travelling { to: stop });
 
         let err = match nav.goto(session, *current, stop, &mut guard, sneaking).await {
             // The block the last step was answered with IS the stop's,
@@ -2878,6 +2955,13 @@ pub(crate) async fn travel(
 
         match err.kind {
             NavErrorKind::Interrupted(Interrupt::Died) => return Ok(LegEnd::Died),
+            // A follower asked the leader to wait. The position and
+            // the sneak belief are already written above, so the loop
+            // top serves this exactly as it serves a hold that was
+            // placed before the leg began: one wait, one code path.
+            // It never touches the interrupt budget, since being asked
+            // to wait is not danger.
+            NavErrorKind::Interrupted(Interrupt::Held) => continue,
             // The arrival block listed something worth fighting, or
             // something the policy would fight walked in mid-step. NOT
             // an emergency: it never touches the interrupt budget and
@@ -3375,6 +3459,63 @@ enum StopEnd {
     Dwelt { sneaking: bool },
     Died,
     TimeUp,
+}
+
+/// How a hold ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HoldEnd {
+    /// Nobody is holding the party any more. `expired` names the holds
+    /// the deadline dropped rather than an `@ok` released, in the order
+    /// they were dropped. Empty when every follower answered.
+    Released { expired: Vec<String> },
+    Died,
+    TimeUp,
+}
+
+/// Stand here until every hold is released or expired.
+///
+/// Two-second stops, so a monster that walks in is fought by the stop
+/// pump: the same defence a walk interruption gets, rather than a sleep
+/// that would let the leader be chewed on while it waits. Expired holds
+/// are named as the board gave the name.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn hold_here(
+    session: &crate::session::Session,
+    nav: &crate::nav::Navigator,
+    graph: &RoomGraph,
+    at: RoomId,
+    live: &mut Live,
+    threat: &std::sync::Arc<crate::bot::ThreatTable>,
+    refusals: &crate::bot::Refusals,
+    casts: &mut Casts,
+    clock: &mut crate::world::RoundClock,
+    started: Instant,
+    stats: &mut FarmStats,
+    phase: PhaseSink<'_>,
+    notices: &Notices,
+) -> Result<HoldEnd, FarmError> {
+    let mut expired: Vec<String> = Vec::new();
+    loop {
+        for name in session.party_expire_holds() {
+            notices(&format!("party: hold on {name} expired"));
+            expired.push(name);
+        }
+        if session.party_holds_clear() {
+            return Ok(HoldEnd::Released { expired });
+        }
+        set_phase(phase, Phase::Holding { at });
+        let until = Instant::now() + Duration::from_secs(2);
+        match farm_stop(
+            session, nav, graph, at, live, threat, refusals, casts, clock, started,
+            Some(until), true, None, false, None, stats, phase,
+        )
+        .await?
+        {
+            StopEnd::Dwelt { .. } => continue,
+            StopEnd::Died => return Ok(HoldEnd::Died),
+            StopEnd::TimeUp => return Ok(HoldEnd::TimeUp),
+        }
+    }
 }
 
 /// Farm one stop until it goes quiet.
