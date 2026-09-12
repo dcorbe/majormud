@@ -434,6 +434,9 @@ fn farm_command(
             let mut view = mud_client::progress::ProgressView::new(!brief);
             let mut phase_rx = phase_rx.clone();
             let mut state_rx = session.state();
+            // The party the same way the state comes: a receiver, so the
+            // bar task never needs the session itself.
+            let party_rx = session.party_changes();
             let graph = graph.clone();
             tokio::spawn(async move {
                 // No bar when stdout is not a terminal: piping the feed to
@@ -481,6 +484,7 @@ fn farm_command(
                             // Headless: the runner IS the driver, and
                             // its phase already says so.
                             false,
+                            &party_rx.borrow(),
                             cols,
                         )
                     };

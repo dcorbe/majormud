@@ -577,6 +577,7 @@ fn bar_text(
     rates: &Rates,
     level: Option<crate::progress::LevelProgress>,
     assist: bool,
+    party: &crate::party::PartyState,
     cols: u16,
 ) -> String {
     let phase = job.map(|j| j.phase.borrow().clone());
@@ -588,7 +589,7 @@ fn bar_text(
         None => here,
     };
     let state = state_rx.borrow().clone();
-    render_status(&state, std::time::Instant::now(), phase.as_ref(), room_id, rates.exp_per_hour(), rates.gold_per_hour(), level, assist, cols as usize)
+    render_status(&state, std::time::Instant::now(), phase.as_ref(), room_id, rates.exp_per_hour(), rates.gold_per_hour(), level, assist, party, cols as usize)
 }
 
 /// The session's two rates and the one clock they are measured against.
@@ -651,6 +652,10 @@ async fn play(
     let mut events = session.events();
     let mut state_rx = session.state();
     let mut rests = session.rests();
+    // What the party did, in the session's own words. Printed on this
+    // window's screen the way a rest is, and never parked on alone: the
+    // channel ends with the session, exactly as `rests` does.
+    let mut party_notes = session.party_notes();
     // The last recovery the prompt showed, so each one is logged once.
     let mut recovering: Option<Status> = None;
     // One sink for every job this connection starts, so a runner's
@@ -769,7 +774,7 @@ async fn play(
         w.note(&format!("-- bot assist not started: {why} --"));
         w.event(EventKind::AssistRefused(why.clone()));
     }
-    w.set_bar(bar_text(&state_rx, job.as_ref(), here, &rates, level, assist.is_some(), cols), job.is_some());
+    w.set_bar(bar_text(&state_rx, job.as_ref(), here, &rates, level, assist.is_some(), &session.party(), cols), job.is_some());
 
     let end = loop {
         // Every percent policy the assist has divides by the pools, and
@@ -791,7 +796,7 @@ async fn play(
             bytes = raw_rx.recv() => match bytes {
                 Ok(bytes) => {
                     w.feed(&bytes);
-                    w.set_bar(bar_text(&state_rx, job.as_ref(), here, &rates, level, assist.is_some(), cols), job.is_some());
+                    w.set_bar(bar_text(&state_rx, job.as_ref(), here, &rates, level, assist.is_some(), &session.party(), cols), job.is_some());
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(_) => break PlayEnd::Closed, // disconnected
@@ -856,7 +861,7 @@ async fn play(
                             level = Some(p);
                         }
                         if rates.observe(line) {
-                            w.set_bar(bar_text(&state_rx, job.as_ref(), here, &rates, level, assist.is_some(), cols), job.is_some());
+                            w.set_bar(bar_text(&state_rx, job.as_ref(), here, &rates, level, assist.is_some(), &session.party(), cols), job.is_some());
                         }
                         // The carried balance is the session's own
                         // answer now (`Session::capabilities`), fed
@@ -911,6 +916,22 @@ async fn play(
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(_) => break PlayEnd::Closed, // disconnected
             },
+            note = party_notes.recv() => match note {
+                Ok(note) => {
+                    w.note(&format!("-- {note} --"));
+                    // The board keeps a per-character follow mode and
+                    // the client assumes the normal one, where the
+                    // leader's move drags the follower. Set on every
+                    // began-following note, and only when the profile
+                    // asks for it. Not a `/bot` decision: how the
+                    // operator follows is not automation.
+                    if note.starts_with("party: following ") && session.profile().party.follow_normal {
+                        session.send("set follow normal");
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => break PlayEnd::Closed, // disconnected
+            },
             changed = state_rx.changed() => {
                 if changed.is_err() { break PlayEnd::Closed; }
                 let status = state_rx.borrow().status.clone();
@@ -931,7 +952,7 @@ async fn play(
                         model.note_room(id);
                     }
                 }
-                w.set_bar(bar_text(&state_rx, job.as_ref(), here, &rates, level, assist.is_some(), cols), job.is_some());
+                w.set_bar(bar_text(&state_rx, job.as_ref(), here, &rates, level, assist.is_some(), &session.party(), cols), job.is_some());
             }
             // The bar must follow the runner, not just HP: travelling and
             // fighting can pass without a single point of damage.
@@ -980,7 +1001,7 @@ async fn play(
                     w.note(&format!("-- {what} ended: {} --", ended.label()));
                     w.event(event_for(&ended));
                 }
-                w.set_bar(bar_text(&state_rx, job.as_ref(), here, &rates, level, assist.is_some(), cols), job.is_some());
+                w.set_bar(bar_text(&state_rx, job.as_ref(), here, &rates, level, assist.is_some(), &session.party(), cols), job.is_some());
             }
             learned = async {
                 match &mut assist_vitals {
@@ -1014,7 +1035,7 @@ async fn play(
                 }
             }
             _ = tick_paint.tick() => {
-                w.set_bar(bar_text(&state_rx, job.as_ref(), here, &rates, level, assist.is_some(), cols), job.is_some());
+                w.set_bar(bar_text(&state_rx, job.as_ref(), here, &rates, level, assist.is_some(), &session.party(), cols), job.is_some());
             }
             _ = level_tick.tick() => {
                 // Only while a game is actually running — see `in_realm`.
@@ -1033,7 +1054,7 @@ async fn play(
                         cols = c;
                         rows = r;
                         w.resize(r, c);
-                        w.set_bar(bar_text(&state_rx, job.as_ref(), here, &rates, level, assist.is_some(), cols), job.is_some());
+                        w.set_bar(bar_text(&state_rx, job.as_ref(), here, &rates, level, assist.is_some(), &session.party(), cols), job.is_some());
                     }
                     WindowMsg::Outcome(outcome) => {
                         if let Some(applied) = apply_settings(&outcome, &mut w.settings) {
@@ -1566,7 +1587,7 @@ async fn play(
                             | KeyOutcome::Switch(_) => {}
                             KeyOutcome::Continue => {}
                         }
-                        w.set_bar(bar_text(&state_rx, job.as_ref(), here, &rates, level, assist.is_some(), cols), job.is_some());
+                        w.set_bar(bar_text(&state_rx, job.as_ref(), here, &rates, level, assist.is_some(), &session.party(), cols), job.is_some());
                     }
                 }
             }

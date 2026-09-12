@@ -1265,6 +1265,22 @@ pub fn needs_name(session: &Session) -> Result<String, String> {
         .ok_or_else(|| "no character name yet. Enter the realm first, or /set username <name>".into())
 }
 
+/// A job that moves does not run while the character is following
+/// someone. The board drags a follower wherever the leader walks, so a
+/// walk of its own fights the drag: the runner and the leader take turns
+/// undoing each other and the character ends up nowhere either of them
+/// meant. A leader is free to run one. Public for the test that pins the
+/// refusal.
+pub fn not_following(session: &Session) -> Result<(), String> {
+    let party = session.party();
+    match party.leader {
+        Some(leader) if party.is_follower() => {
+            Err(format!("following {leader}; a job that moves does not run in a party"))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// `host` or `host:port`. The port defaults to telnet's 23. An IPv6
 /// literal is out of scope and is not parsed: a hostname or an IPv4
 /// address is what this expects.
@@ -1708,6 +1724,7 @@ pub fn render_status(
     gold_per_hour: Option<crate::purse::Purse>,
     level: Option<crate::progress::LevelProgress>,
     assist: bool,
+    party: &crate::party::PartyState,
     width: usize,
 ) -> String {
     let mut s = String::new();
@@ -1721,6 +1738,18 @@ pub fn render_status(
         s.push_str(&format!("{} | ", phase.label()));
     } else if assist {
         s.push_str("assist | ");
+    }
+    // Which party the character is in, because every walking job
+    // refuses while a leader is dragging the character around and the
+    // operator should be able to read why without typing anything.
+    match party.role {
+        crate::party::Role::Follower => {
+            s.push_str(&format!("following {} | ", party.leader.as_deref().unwrap_or("?")));
+        }
+        crate::party::Role::Leader => {
+            s.push_str(&format!("leading {} | ", party.followers().len()));
+        }
+        crate::party::Role::None => {}
     }
     s.push_str(&format!("HP {}", state.hp));
     if let Some(ma) = state.mana {
@@ -1925,6 +1954,7 @@ pub fn start_farm(
 ) -> Result<Job, String> {
     let profile = session.profile();
     needs_name(&session)?;
+    not_following(&session)?;
     // A named loop replaces the circuit, not the policy: every knob in
     // the profile's [farm] table -- the hp gates, the dwell budgets, the
     // nav limits -- still applies to it. The library holds routes, not
@@ -1988,6 +2018,7 @@ pub fn start_roam(
 ) -> Result<Job, String> {
     let profile = session.profile();
     needs_name(&session)?;
+    not_following(&session)?;
     let cfg = profile.farm.clone().unwrap_or_default();
     let graph = Arc::new(crate::graph::RoomGraph::load(&cfg.content)?);
     // Where the character stands is what the region is measured from, so
@@ -2115,6 +2146,7 @@ pub fn start_go(
 ) -> Result<Job, String> {
     let profile = session.profile();
     needs_name(&session)?;
+    not_following(&session)?;
     let base = profile.farm.clone().unwrap_or_else(|| crate::farm::FarmConfig {
         // A profile with no [farm] table still gets a working `/go`; it
         // just needs to be told where the rooms live, and that is the
@@ -2199,6 +2231,7 @@ pub fn start_recover(
     notices: crate::farm::Notices,
 ) -> Result<Job, String> {
     needs_name(&session)?;
+    not_following(&session)?;
     let from = crate::recover::refusal(&session, &graph, here, safe, target)?;
     // Automation goes back under flood control, exactly as a go does.
     session.set_pace(session.profile().pace());
@@ -2265,6 +2298,7 @@ pub fn start_bank(
 ) -> Result<Job, String> {
     let profile = session.profile();
     needs_name(&session)?;
+    not_following(&session)?;
     let base = profile.farm.clone().unwrap_or_else(|| crate::farm::FarmConfig {
         content: content_path(&profile),
         ..Default::default()

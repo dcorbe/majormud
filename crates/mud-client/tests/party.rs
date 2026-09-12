@@ -257,3 +257,31 @@ fn party_config_defaults_and_refuses_zero_waits() {
     assert!(PartyConfig { wait_secs: 0, ..Default::default() }.validate().is_err());
     assert!(PartyConfig { bank_wait_secs: 0, ..Default::default() }.validate().is_err());
 }
+
+/// The bar says which party the character is in. A follower reads the
+/// leader's name, a leader reads how many have joined, and a character
+/// on their own reads neither.
+#[test]
+fn the_bar_names_the_party() {
+    use mud_client::lost::Fix;
+    use mud_client::session::GameState;
+    use mud_client::tui::render_status;
+
+    let mut alone = state();
+    let text =
+        render_status(&GameState::default(), Instant::now(), None, Fix::Unknown, None, None, None, false, &alone, 120);
+    assert!(!text.contains("following"), "{text}");
+    assert!(!text.contains("leading"), "{text}");
+
+    alone.observe("You are now following Beef");
+    let text =
+        render_status(&GameState::default(), Instant::now(), None, Fix::Unknown, None, None, None, false, &alone, 120);
+    assert!(text.contains("following Beef"), "{text}");
+
+    let mut leader = state();
+    leader.observe("A started to follow you.");
+    leader.observe("B started to follow you.");
+    let text =
+        render_status(&GameState::default(), Instant::now(), None, Fix::Unknown, None, None, None, false, &leader, 120);
+    assert!(text.contains("leading 2"), "{text}");
+}
