@@ -784,7 +784,8 @@ When a change takes effect:
   `bot.*`, `farm.rest_at_percent`, `farm.rest_until_percent`,
   `farm.mana_rest_at_percent`, `farm.fight_while_travelling`,
   `farm.travel_interrupts`, `farm.interrupt_at_percent`,
-  `farm.defend_seconds`, `farm.nav.*`, `bank.*`, and `pace_ms`.
+  `farm.defend_seconds`, `farm.nav.*`, `bank.*`, `party.*`, and
+  `pace_ms`.
   `farm.nav.*` and `bot.auto_sneak` reach a farm at its next leg, and
   reach a `/go` or a `/bank` only at the next command, because those two
   jobs build their navigator once.
@@ -941,7 +942,7 @@ on the floor, a sale and a deposit all change nothing. `/go` and `/farm`
 restart both rates together, so a job is measured from its own start.
 
 ```
- HP 38 MA 10 | Tick 3.2 | HP 12.3 | MA 21.0 | Newhaven, Narrow Road [1/2146] | 4200 xp/hr | 12.4 gold/hr | L3->4 1h12m
+ HP 38 MA 10 | Tick 3.2 | HP 12.3 | MA 12.3 | Newhaven, Narrow Road [1/2146] | 4200 xp/hr | 12.4 gold/hr | L3->4 1h12m
 ```
 
 A room block is a room block whoever caused it, so the client localizes
@@ -1126,8 +1127,9 @@ a short automatic task, shown in the activity list as `party deposit`,
 so the assist stays quiet for the few seconds it takes, the way it does
 for a job you typed. It reads the purse, deposits everything above
 `keep_gold`, reads once more, and telepaths the leader `@ok` whatever
-happened. Nothing above the floor means `@ok` at once with no deposit. A
-leader who moved on before the deposit landed gets the `@ok` too,
+happened. A leader who moved on before the deposit landed gets the `@ok`
+anyway, and the board's refusal is printed on the follower's screen.
+Nothing above the keep floor means `@ok` at once with no deposit,
 because a leader standing at the bank must never be held by a follower
 whose purse was empty. **Ctrl-F** during the task takes the keyboard
 back and aborts it, and then no `@ok` goes out and the leader waits out
@@ -1225,8 +1227,9 @@ The follow-ups are the assist's backstab weapon swap, with a
 in the pack, since a follower dragged into a room is exactly the
 character that wants the swap. Then gangpath and room speech as command
 channels, the reply-only queries `@health`, `@where`, `@party`,
-`@wealth` and `@version`, poison and blindness as wait reasons, and an
-`@ok` when the operator takes the keyboard back during a deposit.
+`@wealth` and `@version`, poison and blindness as wait reasons, a reply
+telepath to the follower when the leader's errand fails, and an `@ok`
+when the operator takes the keyboard back during a deposit.
 
 ## Banking
 
