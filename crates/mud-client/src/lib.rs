@@ -27,6 +27,7 @@ pub mod mega;
 pub mod mapview;
 pub mod nav;
 pub mod pack;
+pub mod party;
 pub mod parse;
 pub mod profile;
 pub mod progress;
