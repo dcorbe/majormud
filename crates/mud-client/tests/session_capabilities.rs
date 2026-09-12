@@ -190,7 +190,7 @@ async fn a_toll_learned_by_run_go_is_known_to_the_next_navigator() {
     let graph = gate_graph();
     let end = tokio::time::timeout(
         Duration::from_secs(20),
-        run_go(&session, Arc::clone(&graph), Some(GATE), BEYOND, Live::fixed(bot(), cfg(true)), None, &quiet()),
+        run_go(&session, Arc::clone(&graph), Some(GATE), &[BEYOND], Live::fixed(bot(), cfg(true)), None, &quiet()),
     )
     .await
     .expect("run_go should not hang")

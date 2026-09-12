@@ -189,7 +189,7 @@ async fn walk(walking: bool, script: Vec<(&'static str, String)>) -> (GoEnd, Vec
     let graph = corridor();
     let end = match tokio::time::timeout(
         Duration::from_secs(30),
-        run_go(&session, graph, Some(START), STOP, Live::fixed(bot(), cfg(walking)), None, &quiet()),
+        run_go(&session, graph, Some(START), &[STOP], Live::fixed(bot(), cfg(walking)), None, &quiet()),
     )
     .await
     .expect("run_go should finish, not hang")
@@ -372,7 +372,7 @@ async fn a_second_go_in_one_session_sends_no_spells() {
 
     let first = tokio::time::timeout(
         Duration::from_secs(10),
-        run_go(&session, graph.clone(), Some(START), STOP, Live::fixed(bot(), cfg(false)), None, &quiet()),
+        run_go(&session, graph.clone(), Some(START), &[STOP], Live::fixed(bot(), cfg(false)), None, &quiet()),
     )
     .await
     .expect("first /go should not hang")
@@ -381,7 +381,7 @@ async fn a_second_go_in_one_session_sends_no_spells() {
 
     let second = tokio::time::timeout(
         Duration::from_secs(10),
-        run_go(&session, graph, Some(STOP), START, Live::fixed(bot(), cfg(false)), None, &quiet()),
+        run_go(&session, graph, Some(STOP), &[START], Live::fixed(bot(), cfg(false)), None, &quiet()),
     )
     .await
     .expect("second /go should not hang")
@@ -422,7 +422,7 @@ async fn a_walk_refuses_an_interrupt_mark_above_the_bots_mark_before_sending_any
 
     let out = tokio::time::timeout(
         Duration::from_secs(10),
-        run_go(&session, graph, Some(START), STOP, Live::fixed(bot, cfg), None, &quiet()),
+        run_go(&session, graph, Some(START), &[STOP], Live::fixed(bot, cfg), None, &quiet()),
     )
     .await
     .expect("run_go should refuse at once, not hang");
@@ -473,7 +473,7 @@ async fn a_profile_change_mid_walk_leaves_the_target_alone() {
     });
     let end = tokio::time::timeout(
         Duration::from_secs(30),
-        run_go(&session, corridor(), Some(START), STOP, live, None, &quiet()),
+        run_go(&session, corridor(), Some(START), &[STOP], live, None, &quiet()),
     )
     .await
     .expect("run_go should finish, not hang")
@@ -592,7 +592,7 @@ async fn a_go_walk_casts_the_stealth_spell_it_discovered() {
     // did send, so that failure names the missing line.
     let walk = tokio::time::timeout(
         Duration::from_secs(20),
-        run_go(&session, graph, Some(START), STOP, Live::fixed(bot(), cfg(false)), None, &quiet()),
+        run_go(&session, graph, Some(START), &[STOP], Live::fixed(bot(), cfg(false)), None, &quiet()),
     )
     .await;
     let end = match walk {
@@ -639,7 +639,7 @@ async fn a_walk_with_resting_off_neither_rests_nor_stops_for_the_hurt_mark() {
     let cfg = FarmConfig { interrupt_at_percent: 50, max_rest_seconds: 2, ..cfg(true) };
     let end = tokio::time::timeout(
         Duration::from_secs(10),
-        run_go(&session, corridor(), Some(START), STOP, Live::fixed(bot, cfg), None, &quiet()),
+        run_go(&session, corridor(), Some(START), &[STOP], Live::fixed(bot, cfg), None, &quiet()),
     )
     .await
     .expect("run_go should finish, not hang")
@@ -672,7 +672,7 @@ async fn the_bot_switch_off_walks_past_a_fight_the_profile_would_take() {
     let live = Live::over(rx, "go", quiet(), bot(), cfg(true), derive).switched(off);
     let end = tokio::time::timeout(
         Duration::from_secs(30),
-        run_go(&session, corridor(), Some(START), STOP, live, None, &quiet()),
+        run_go(&session, corridor(), Some(START), &[STOP], live, None, &quiet()),
     )
     .await
     .expect("run_go should finish, not hang")
@@ -680,4 +680,46 @@ async fn the_bot_switch_off_walks_past_a_fight_the_profile_would_take() {
     let log = received.lock().unwrap();
     assert_eq!(end, GoEnd::Arrived(STOP), "log: {log:?}");
     assert!(!log.iter().any(|l| l.starts_with("a ")), "nothing was fought: {log:?}");
+}
+
+/// Waypoints are walked in order: out to the Keep, then back to the
+/// Guard Post, in one `/go`. The final waypoint is the destination.
+#[tokio::test]
+async fn a_go_with_waypoints_walks_each_leg_in_order() {
+    let (addr, received) = scripted_board(vec![
+        ("look", format!("\r\nlook{}", room_block("Guard Post", None, "north"))),
+        ("n", format!("\r\nn{}", room_block("Inner Ward", None, "north south"))),
+        ("n", format!("\r\nn{}", room_block("Keep", None, "south"))),
+        ("s", format!("\r\ns{}", room_block("Inner Ward", None, "north south"))),
+        ("s", format!("\r\ns{}", room_block("Guard Post", None, "north"))),
+    ])
+    .await;
+    let session = session_for(addr).await;
+    probe_sheet(&session, None).await;
+
+    let end = tokio::time::timeout(
+        Duration::from_secs(10),
+        run_go(
+            &session,
+            corridor(),
+            Some(START),
+            &[STOP, START],
+            Live::fixed(bot(), cfg(false)),
+            None,
+            &quiet(),
+        ),
+    )
+    .await
+    .expect("the walk should not hang")
+    .expect("the walk should arrive");
+    assert_eq!(end, GoEnd::Arrived(START));
+
+    let moves: Vec<String> = received
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|l| matches!(l.as_str(), "n" | "s"))
+        .cloned()
+        .collect();
+    assert_eq!(moves, vec!["n", "n", "s", "s"], "{:?}", received.lock().unwrap());
 }

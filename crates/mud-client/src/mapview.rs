@@ -48,8 +48,10 @@ pub enum ViewAction {
     Leave,
     /// Close the client entirely.
     Quit,
-    /// Leave the map and walk to this room.
-    Go(RoomId),
+    /// Leave the map and walk these rooms in order, the last being
+    /// the destination: the marked stops, then the cursor room. With
+    /// nothing marked it is the cursor room alone.
+    Go(Vec<RoomId>),
     /// Leave the map and recover from this room: sneak there, search
     /// once, take everything, run back to where the character stands.
     Recover(RoomId),
@@ -407,7 +409,17 @@ impl MapView {
 
             KeyCode::Char('g') => {
                 return match self.cursor_room() {
-                    Some(id) => ViewAction::Go(id),
+                    Some(id) => {
+                        // The marks are waypoints: visited in order,
+                        // and the cursor room is where the walk ends.
+                        // A cursor already on the last mark names the
+                        // same room twice, which is one walk, not two.
+                        let mut way = self.stops.clone();
+                        if way.last() != Some(&id) {
+                            way.push(id);
+                        }
+                        ViewAction::Go(way)
+                    }
                     None => {
                         self.message = Some("no room under the cursor".into());
                         ViewAction::Continue
@@ -698,7 +710,7 @@ impl MapView {
             ),
             (None, Some(msg)) => format!("-- {msg} --"),
             (None, None) => format!(
-                "{} | {} | {} stops | {} walls | move arrows/hjkl/yubn  < > stairs  +/- zoom  m mode  / find  enter marks  x walls  s saves  r roams  S safe  D death  g go  R recover  q leave",
+                "{} | {} | {} stops | {} walls | move arrows/hjkl/yubn  < > stairs  +/- zoom  m mode  / find  enter marks  x walls  s saves  r roams  S safe  D death  {}  R recover  q leave",
                 match self.paint {
                     Paint::Terrain => "terrain",
                     Paint::Danger => "danger",
@@ -711,6 +723,7 @@ impl MapView {
                 },
                 self.stops.len(),
                 self.walls.len(),
+                if self.stops.is_empty() { "g go" } else { "g go via marks" },
             ),
         };
         let mut line: String = text

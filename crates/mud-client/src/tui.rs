@@ -1143,7 +1143,7 @@ pub fn help_text() -> &'static str {
 /recover [room]      sneak to the death room, search once, take everything, run back to the safe room (mark both on the map with S and D)
 /where               work out which room you're standing in
 /room [target]       what the world database knows about a room (default: here)
-/map [target]        draw the plane around a room (default: here)
+/map [target]        draw the plane around a room (default: here); enter marks stops, g walks them in order then the cursor room
 /help, /?            this list
 /set [pattern]       list settings, all or those the glob matches: bot, bot.rest*, *heal*
 /set <key> <value>   change a setting now, as TOML, where a bare word is a string
@@ -2332,7 +2332,7 @@ pub fn start_go(
     session: Arc<Session>,
     graph: Arc<crate::graph::RoomGraph>,
     hint: Option<mud_core::content::RoomId>,
-    to: mud_core::content::RoomId,
+    waypoints: Vec<mud_core::content::RoomId>,
     bot: crate::bot::BotConfig,
     notices: crate::farm::Notices,
 ) -> Result<Job, String> {
@@ -2370,7 +2370,7 @@ pub fn start_go(
             &session,
             graph,
             hint,
-            to,
+            &waypoints,
             live,
             Some(&tx),
             &notices,

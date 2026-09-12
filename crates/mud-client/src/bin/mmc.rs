@@ -257,12 +257,14 @@ fn map_command(at: &str, content: &std::path::Path) -> ExitCode {
         }
         // Nothing to walk with, so the answer is the room itself: enough
         // to paste into a profile, a loop file or a `/go`.
-        Ok(ViewAction::Go(id)) => {
-            let name = graph
-                .room(id)
-                .map(|r| r.name.clone())
-                .unwrap_or_else(|| "?".into());
-            println!("{}/{}  {name}", id.map, id.room);
+        Ok(ViewAction::Go(way)) => {
+            for id in way {
+                let name = graph
+                    .room(id)
+                    .map(|r| r.name.clone())
+                    .unwrap_or_else(|| "?".into());
+                println!("{}/{}  {name}", id.map, id.room);
+            }
             ExitCode::SUCCESS
         }
         // Recovering means sneaking there and walking back, which needs

@@ -1232,7 +1232,7 @@ async fn play(
                                                     session.clone(),
                                                     g.clone(),
                                                     here.confirmed(),
-                                                    to,
+                                                    vec![to],
                                                     assist_config.clone(),
                                                     notices.clone(),
                                                 ) {
@@ -1522,25 +1522,28 @@ async fn play(
                                                                 Err(e) => w.note(&format!("-- roam: {e} --")),
                                                             }
                                                         }
-                                                        crate::mapview::ViewAction::Go(to) if job.is_some() => {
+                                                        crate::mapview::ViewAction::Go(_) if job.is_some() => {
                                                             w.note("-- something is already driving (Ctrl-F to take over) --");
-                                                            let _ = to;
                                                         }
-                                                        crate::mapview::ViewAction::Go(to) => {
+                                                        crate::mapview::ViewAction::Go(way) => {
+                                                            let to = *way.last().expect("a go names at least the cursor room");
                                                             let name = g.room(to).map(|r| r.name.clone()).unwrap_or_default();
+                                                            let legs = way.len();
                                                             match start_go(
                                                                 session.clone(),
                                                                 g.clone(),
                                                                 here.confirmed(),
-                                                                to,
+                                                                way,
                                                                 assist_config.clone(),
                                                                 notices.clone(),
                                                             ) {
                                                                 Err(e) => w.note(&format!("-- {e} --")),
                                                                 Ok(started) => {
                                                                     w.note(&format!(
-                                                                        "-- walking to {name} [{}/{}] (Ctrl-F to take over) --",
-                                                                        to.map, to.room
+                                                                        "-- walking to {name} [{}/{}]{} (Ctrl-F to take over) --",
+                                                                        to.map,
+                                                                        to.room,
+                                                                        if legs > 1 { format!(" via {} marks", legs - 1) } else { String::new() }
                                                                     ));
                                                                     phase_rx = Some(started.phase.clone());
                                                                     job = Some(started);

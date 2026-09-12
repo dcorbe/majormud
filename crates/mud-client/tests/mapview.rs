@@ -179,3 +179,68 @@ fn the_legend_names_the_recover_key() {
     assert!(status.contains("S safe  D death  g go  R recover  q leave"), "{status}");
 }
 
+
+// ---------------------------------------------------------------------
+// `g` with marks. The marks are waypoints: the walk visits them in
+// order and finishes at the cursor room, so a route can be planned by
+// hand around a place the router would otherwise choose.
+// ---------------------------------------------------------------------
+
+#[test]
+fn g_without_marks_goes_straight_to_the_cursor_room() {
+    let mut v = view(DOOR, Fix::Confirmed(DOOR));
+    press(&mut v, KeyCode::Char('h'));
+    let action = v.on_key(&KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+    assert_eq!(action, mud_client::mapview::ViewAction::Go(vec![ROAD]));
+}
+
+#[test]
+fn g_with_marks_walks_them_in_order_then_the_cursor_room() {
+    let mut v = view(DOOR, Fix::Confirmed(DOOR));
+    // Mark the Landing, then the Street, then put the cursor on the Road.
+    press(&mut v, KeyCode::Char('<'));
+    press(&mut v, KeyCode::Enter);
+    press(&mut v, KeyCode::Char('>'));
+    press(&mut v, KeyCode::Char('l'));
+    press(&mut v, KeyCode::Enter);
+    press(&mut v, KeyCode::Char('h'));
+    press(&mut v, KeyCode::Char('h'));
+    assert_eq!(v.cursor_room(), Some(ROAD));
+    let action = v.on_key(&KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+    assert_eq!(
+        action,
+        mud_client::mapview::ViewAction::Go(vec![LANDING, STREET, ROAD])
+    );
+}
+
+#[test]
+fn g_on_the_last_mark_does_not_walk_it_twice() {
+    let mut v = view(DOOR, Fix::Confirmed(DOOR));
+    press(&mut v, KeyCode::Char('<'));
+    press(&mut v, KeyCode::Enter);
+    press(&mut v, KeyCode::Char('>'));
+    press(&mut v, KeyCode::Char('h'));
+    press(&mut v, KeyCode::Enter);
+    assert_eq!(v.cursor_room(), Some(ROAD));
+    let action = v.on_key(&KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+    assert_eq!(action, mud_client::mapview::ViewAction::Go(vec![LANDING, ROAD]));
+}
+
+/// Wide enough a terminal to show the whole status line; the key list
+/// is cut at the right edge on a narrow one.
+#[test]
+fn the_status_line_says_g_walks_via_the_marks() {
+    let mut v = MapView::new(
+        world(),
+        Arc::new(SpawnTable::default()),
+        DOOR,
+        Fix::Confirmed(DOOR),
+        PaintCtx::default(),
+        (220, 30),
+    );
+    let status = |v: &MapView| v.lines().last().cloned().unwrap_or_default();
+    assert!(status(&v).contains("g go "), "{}", status(&v));
+    assert!(!status(&v).contains("g go via marks"), "{}", status(&v));
+    press(&mut v, KeyCode::Enter);
+    assert!(status(&v).contains("g go via marks"), "{}", status(&v));
+}

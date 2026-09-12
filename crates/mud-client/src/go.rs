@@ -217,7 +217,12 @@ pub enum GoEnd {
     Died,
 }
 
-/// Walk to `to` from wherever the character is currently standing.
+/// Walk `waypoints` in order from wherever the character is currently
+/// standing; the last one is the destination. A waypoint the character
+/// is already standing in is skipped. Each leg is routed afresh from
+/// where the previous one ended, so the waypoints are what keep a
+/// hand-planned route off the streets the router would pick: a leg
+/// long enough to have a cheaper way through them will take it.
 ///
 /// `hint` is the caller's best guess at the current room — the TUI keeps
 /// one. It is passed to [`crate::nav::Navigator::localize_view`] as a
@@ -229,12 +234,15 @@ pub async fn run_go(
     session: &crate::session::Session,
     graph: Arc<RoomGraph>,
     hint: Option<RoomId>,
-    to: RoomId,
+    waypoints: &[RoomId],
     live: Live,
     phase: crate::farm::PhaseSink<'_>,
     notices: &crate::farm::Notices,
 ) -> Result<GoEnd, FarmError> {
     let mut live = live;
+    if waypoints.is_empty() {
+        return Err(FarmError::Config("go: nowhere to walk to".into()));
+    }
     crate::farm::check_departure_mark(&live.farm, &live.bot)?;
     // How the walk starts; the leg sets it again on every reload. See
     // `run_farm`.
@@ -266,10 +274,6 @@ pub async fn run_go(
         .await
         .map_err(FarmError::Lost)?
         .at;
-    if from == to {
-        return Ok(GoEnd::Arrived(to));
-    }
-
     // Every percent policy divides by these, and a wrong value mis-scales
     // the travel guard silently. 0 max_hp means the profile did not say,
     // so ask, and the same answer carries max_mana.
@@ -300,36 +304,54 @@ pub async fn run_go(
     let mut clock = crate::world::RoundClock::new();
     let mut stats = FarmStats::default();
     let mut current = from;
-
-    let leg = crate::farm::travel(
-        session,
-        &nav,
-        &graph,
-        &mut current,
-        to,
-        &mut live,
-        &threat,
-        &refusals,
-        &mut casts,
-        &mut clock,
-        Instant::now(),
-        &mut stats,
-        phase,
-        notices,
-        // A person typed this walk; what they were doing before it is
-        // not known here, so it starts unarmed.
-        false,
-    )
-    .await?;
-
-    let end = match leg {
-        LegEnd::Arrived { .. } => GoEnd::Arrived(current),
-        LegEnd::Died => GoEnd::Died,
-        // `TimeUp` cannot arise from a `go_config`, which sets
-        // `max_seconds = 0`; a caller passing its own config could still
-        // reach it, and "stopped where it stands" is the honest reading.
-        LegEnd::TooHurt | LegEnd::TimeUp => GoEnd::Stopped(current),
-    };
+    let started = Instant::now();
+    let mut end = GoEnd::Arrived(current);
+    for (i, &stop) in waypoints.iter().enumerate() {
+        if current == stop {
+            continue;
+        }
+        if waypoints.len() > 1 {
+            let name = graph.room(stop).map(|r| r.name.clone()).unwrap_or_default();
+            notices(&format!(
+                "go: leg {} of {} to {name} [{}/{}]",
+                i + 1,
+                waypoints.len(),
+                stop.map,
+                stop.room
+            ));
+        }
+        let leg = crate::farm::travel(
+            session,
+            &nav,
+            &graph,
+            &mut current,
+            stop,
+            &mut live,
+            &threat,
+            &refusals,
+            &mut casts,
+            &mut clock,
+            started,
+            &mut stats,
+            phase,
+            notices,
+            // A person typed this walk; what they were doing before it is
+            // not known here, so it starts unarmed.
+            false,
+        )
+        .await?;
+        end = match leg {
+            LegEnd::Arrived { .. } => GoEnd::Arrived(current),
+            LegEnd::Died => GoEnd::Died,
+            // `TimeUp` cannot arise from a `go_config`, which sets
+            // `max_seconds = 0`; a caller passing its own config could still
+            // reach it, and "stopped where it stands" is the honest reading.
+            LegEnd::TooHurt | LegEnd::TimeUp => GoEnd::Stopped(current),
+        };
+        if !matches!(end, GoEnd::Arrived(_)) {
+            break;
+        }
+    }
     // A lit source burns a use per tick whether anything needs the light
     // or not. A dead character cannot put it out.
     if !matches!(end, GoEnd::Died)

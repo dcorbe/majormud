@@ -1552,7 +1552,7 @@ async fn every_job_start_refuses_without_a_name() {
             session.clone(),
             graph.clone(),
             Some(here),
-            here,
+            vec![here],
             bot.clone(),
             quiet(),
         )
