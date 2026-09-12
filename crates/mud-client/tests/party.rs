@@ -1,7 +1,14 @@
 //! The party state machine, the telepath grammar, the hold set and the
 //! wait state. Pure functions, no board.
 
-use mud_client::party::{Change, Member, PartyState, Role};
+use std::time::{Duration, Instant};
+
+use mud_client::events::Status;
+use mud_client::party::{
+    Change, Holds, Member, PartyConfig, PartyState, Remote, Request, Role, Signal, WaitState,
+    bank_names, permitted, remote, telepath,
+};
+use mud_core::content::Content;
 
 fn state() -> PartyState {
     PartyState::new()
@@ -137,4 +144,116 @@ fn followers_excludes_invited_rows() {
     s.observe("Pootwaddle started to follow you.");
     s.observe("You have invited Newguy to follow you.");
     assert_eq!(s.followers(), vec!["Pootwaddle".to_string()]);
+}
+
+#[test]
+fn a_telepath_with_a_known_word_is_a_request() {
+    assert_eq!(
+        remote("Pootwaddle telepaths: @bank"),
+        Some(Request { from: "Pootwaddle".into(), command: Remote::Bank })
+    );
+    assert_eq!(remote("Beef telepaths: @WAIT").map(|r| r.command), Some(Remote::Wait));
+    assert_eq!(remote("Beef telepaths: @Ok now").map(|r| r.command), Some(Remote::Ok));
+}
+
+#[test]
+fn chat_unknown_words_and_the_send_echo_are_not_requests() {
+    assert_eq!(remote("Pootwaddle telepaths: hello there"), None);
+    assert_eq!(remote("Pootwaddle telepaths: @reroll"), None);
+    assert_eq!(remote("--- Telepath Sent to Pootwaddle ---"), None);
+    assert_eq!(remote("Pootwaddle gangpaths: @bank"), None);
+}
+
+#[test]
+fn only_the_leader_and_joined_members_are_permitted() {
+    let mut s = PartyState::new();
+    s.observe("You are now following Beef");
+    assert!(permitted(&s, "beef"));
+    assert!(!permitted(&s, "Stranger"));
+
+    let mut l = PartyState::new();
+    l.observe("Pootwaddle started to follow you.");
+    l.observe("You have invited Newguy to follow you.");
+    assert!(permitted(&l, "POOTWADDLE"));
+    assert!(!permitted(&l, "Newguy"));
+    assert!(!permitted(&l, "Stranger"));
+}
+
+#[test]
+fn the_wire_form_is_a_slash_and_the_name() {
+    assert_eq!(telepath("Beef", "@ok"), "/Beef @ok");
+}
+
+#[test]
+fn holds_expire_release_and_follow_the_roster() {
+    let t0 = Instant::now();
+    let mut h = Holds::new();
+    assert!(h.is_empty());
+    h.hold("Pootwaddle", t0 + Duration::from_secs(10));
+    h.hold("Blueberry", t0 + Duration::from_secs(20));
+    assert_eq!(h.names(), vec!["Blueberry".to_string(), "Pootwaddle".to_string()]);
+    h.release("pootwaddle");
+    assert_eq!(h.names(), vec!["Blueberry".to_string()]);
+    assert_eq!(h.expire(t0 + Duration::from_secs(15)), Vec::<String>::new());
+    assert_eq!(h.expire(t0 + Duration::from_secs(21)), vec!["Blueberry".to_string()]);
+    assert!(h.is_empty());
+
+    h.hold("Gone", t0 + Duration::from_secs(60));
+    let mut s = PartyState::new();
+    s.observe("Pootwaddle started to follow you.");
+    h.retain_members(&s);
+    assert!(h.is_empty());
+}
+
+#[test]
+fn a_hold_is_extended_not_shortened() {
+    let t0 = Instant::now();
+    let mut h = Holds::new();
+    h.hold("Pootwaddle", t0 + Duration::from_secs(60));
+    h.hold("Pootwaddle", t0 + Duration::from_secs(10));
+    assert!(h.expire(t0 + Duration::from_secs(30)).is_empty());
+}
+
+#[test]
+fn bank_names_are_the_shop_type_seven_rooms() {
+    use mud_core::content::{Room, RoomId, Shop, ShopId, ShopStock};
+    let mut c = Content::default();
+    c.add_shop(Shop { id: ShopId(8), name: "Bank of Godfrey".into(), shop_type: 7, min_level: 0, max_level: 0, markup: 0, class_limit: 0, stock: [ShopStock::default(); 20] });
+    c.add_shop(Shop { id: ShopId(9), name: "Weapons".into(), shop_type: 1, min_level: 0, max_level: 0, markup: 0, class_limit: 0, stock: [ShopStock::default(); 20] });
+    c.add_room(Room { id: RoomId { map: 1, room: 297 }, name: "Bank of Godfrey".into(), room_type: 1, shop: Some(ShopId(8)), ..Default::default() });
+    c.add_room(Room { id: RoomId { map: 1, room: 298 }, name: "Armoury".into(), room_type: 1, shop: Some(ShopId(9)), ..Default::default() });
+    let names = bank_names(&c);
+    assert!(names.contains("Bank of Godfrey"));
+    assert!(!names.contains("Armoury"));
+}
+
+#[test]
+fn wait_state_signals_once_each_way() {
+    let mut w = WaitState::new();
+    assert_eq!(w.on_rest_sent(), Some(Signal::Wait));
+    assert_eq!(w.on_rest_sent(), None);
+    assert_eq!(w.on_prompt(Some(&Status::Resting)), None);
+    assert_eq!(w.on_prompt(Some(&Status::Resting)), None);
+    assert_eq!(w.on_prompt(None), Some(Signal::Ok));
+    assert_eq!(w.on_prompt(None), None);
+}
+
+#[test]
+fn a_refused_rest_releases_at_once() {
+    let mut w = WaitState::new();
+    w.on_rest_sent();
+    assert_eq!(w.on_refused(), Some(Signal::Ok));
+    assert_eq!(w.on_refused(), None);
+    assert_eq!(w.on_prompt(None), None);
+}
+
+#[test]
+fn party_config_defaults_and_refuses_zero_waits() {
+    let cfg = PartyConfig::default();
+    assert_eq!(cfg.wait_secs, 90);
+    assert_eq!(cfg.bank_wait_secs, 15);
+    assert!(cfg.follow_normal);
+    assert!(cfg.validate().is_ok());
+    assert!(PartyConfig { wait_secs: 0, ..Default::default() }.validate().is_err());
+    assert!(PartyConfig { bank_wait_secs: 0, ..Default::default() }.validate().is_err());
 }

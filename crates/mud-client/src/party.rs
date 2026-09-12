@@ -10,9 +10,15 @@
 //!
 //! Nothing here sends anything.
 
+use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::LazyLock;
+use std::time::Instant;
 
 use regex::Regex;
+use serde::{Deserialize, Serialize};
+
+use mud_core::content::Content;
 
 /// The stock `You are now following %s` has no trailing period. The
 /// roster row is any indented line before the block ends. Its name is
@@ -172,5 +178,220 @@ impl PartyState {
         }
         self.members = rows;
         Some(Change::Roster)
+    }
+}
+
+/// The three commands this cut understands. Any other word after the
+/// `@` is dropped without a word, as MudPlay drops unknown commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Remote {
+    Bank,
+    Wait,
+    Ok,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Request {
+    pub from: String,
+    pub command: Remote,
+}
+
+/// `Foo telepaths: @bank`. MudPlay's inbound shape, and the DLL's
+/// `%s telepaths: %s%s`.
+static TELEPATH: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(\w+) telepaths: @(\S+)").unwrap());
+
+pub fn remote(line: &str) -> Option<Request> {
+    let c = TELEPATH.captures(line.trim_end())?;
+    let command = match c[2].to_ascii_lowercase().as_str() {
+        "bank" => Remote::Bank,
+        "wait" => Remote::Wait,
+        "ok" => Remote::Ok,
+        _ => return None,
+    };
+    Some(Request { from: c[1].to_string(), command })
+}
+
+/// The leader, or a member that has joined. An invited character is
+/// not in the party yet and cannot hold it. This is the whole
+/// permission model until a character database exists.
+pub fn permitted(state: &PartyState, sender: &str) -> bool {
+    state.leader.as_deref().is_some_and(|l| same(l, sender))
+        || state.members.iter().any(|m| !m.invited && same(&m.name, sender))
+}
+
+/// The wire form MudPlay sends on the live board.
+pub fn telepath(to: &str, text: &str) -> String {
+    format!("/{to} {text}")
+}
+
+/// Followers the leader must not walk away from, each with a deadline.
+/// A follower that said `@wait`, or one the leader put here for a bank
+/// wait. Keyed lowercased so the same name never holds twice under a
+/// different case. Each entry keeps the name as it was given, for
+/// display.
+#[derive(Debug, Clone, Default)]
+pub struct Holds {
+    by: BTreeMap<String, (String, Instant)>,
+}
+
+impl Holds {
+    pub fn new() -> Holds {
+        Holds::default()
+    }
+
+    fn key(name: &str) -> String {
+        name.to_ascii_lowercase()
+    }
+
+    /// Insert, or extend. A later shorter deadline never shortens.
+    pub fn hold(&mut self, name: &str, until: Instant) {
+        match self.by.entry(Holds::key(name)) {
+            Entry::Vacant(e) => {
+                e.insert((name.to_string(), until));
+            }
+            Entry::Occupied(mut e) => {
+                if until > e.get().1 {
+                    e.get_mut().1 = until;
+                }
+            }
+        }
+    }
+
+    pub fn release(&mut self, name: &str) {
+        self.by.remove(&Holds::key(name));
+    }
+
+    /// Drop and return every name whose deadline has passed.
+    pub fn expire(&mut self, now: Instant) -> Vec<String> {
+        let gone: Vec<String> =
+            self.by.iter().filter(|(_, (_, t))| *t <= now).map(|(_, (n, _))| n.clone()).collect();
+        for n in &gone {
+            self.by.remove(&Holds::key(n));
+        }
+        gone
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by.is_empty()
+    }
+
+    /// Held names as they were given, sorted by their lowercased key.
+    pub fn names(&self) -> Vec<String> {
+        self.by.values().map(|(n, _)| n.clone()).collect()
+    }
+
+    pub fn retain_members(&mut self, state: &PartyState) {
+        self.by.retain(|_, (n, _)| permitted(state, n));
+    }
+
+    pub fn clear(&mut self) {
+        self.by.clear();
+    }
+}
+
+/// The names of the bank rooms, unique across the shipped world,
+/// checked 2026-09-12. A room block naming one is a bank arrival with
+/// no localisation.
+pub fn bank_names(content: &Content) -> BTreeSet<String> {
+    content
+        .rooms
+        .values()
+        .filter(|room| room.room_type == 1)
+        .filter(|room| {
+            room.shop
+                .and_then(|s| content.shops.get(&s))
+                .is_some_and(|shop| shop.shop_type == crate::bank::BANK_SHOP_TYPE)
+        })
+        .map(|room| room.name.clone())
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Signal {
+    Wait,
+    Ok,
+}
+
+/// A follower's side of the wait handshake. `@wait` goes out with the
+/// rest, `@ok` on the first prompt without the Resting status after a
+/// prompt that had it, or at once when the board refused the rest.
+#[derive(Debug, Clone, Default)]
+pub struct WaitState {
+    waiting: bool,
+    seen_resting: bool,
+}
+
+impl WaitState {
+    pub fn new() -> WaitState {
+        WaitState::default()
+    }
+
+    pub fn on_rest_sent(&mut self) -> Option<Signal> {
+        if self.waiting {
+            return None;
+        }
+        self.waiting = true;
+        self.seen_resting = false;
+        Some(Signal::Wait)
+    }
+
+    pub fn on_prompt(&mut self, status: Option<&crate::events::Status>) -> Option<Signal> {
+        if !self.waiting {
+            return None;
+        }
+        let resting = matches!(status, Some(crate::events::Status::Resting | crate::events::Status::Meditating));
+        if resting {
+            self.seen_resting = true;
+            return None;
+        }
+        if self.seen_resting {
+            self.reset();
+            return Some(Signal::Ok);
+        }
+        None
+    }
+
+    pub fn on_refused(&mut self) -> Option<Signal> {
+        if !self.waiting {
+            return None;
+        }
+        self.reset();
+        Some(Signal::Ok)
+    }
+
+    pub fn reset(&mut self) {
+        self.waiting = false;
+        self.seen_resting = false;
+    }
+}
+
+/// The `[party]` table of a profile. Absent means these defaults.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PartyConfig {
+    /// A follower's `@wait` holds the leader this long at most.
+    pub wait_secs: u64,
+    /// The leader waits at the bank this long for `@ok` replies.
+    pub bank_wait_secs: u64,
+    /// Send `set follow normal` when the character begins following.
+    pub follow_normal: bool,
+}
+
+impl Default for PartyConfig {
+    fn default() -> Self {
+        PartyConfig { wait_secs: 90, bank_wait_secs: 15, follow_normal: true }
+    }
+}
+
+impl PartyConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.wait_secs == 0 {
+            return Err("[party].wait_secs must be above 0".into());
+        }
+        if self.bank_wait_secs == 0 {
+            return Err("[party].bank_wait_secs must be above 0".into());
+        }
+        Ok(())
     }
 }
