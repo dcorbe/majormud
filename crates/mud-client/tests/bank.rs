@@ -387,3 +387,44 @@ fn the_follower_gate_asks_once_per_five_minutes() {
         "nothing worth banking, no ask"
     );
 }
+
+/// The `i` the gate spends can go missing: flood control swallows the
+/// send, or the reply never lands. The gate gives it ten seconds and
+/// then reads again, rather than holding the one read slot for the
+/// rest of the session and never asking the leader for a bank again.
+#[test]
+fn a_reading_that_never_comes_back_times_out() {
+    use mud_client::bank::{FollowerGate, READ_TIMEOUT};
+    use std::time::{Duration, Instant};
+    let cfg = BankConfig {
+        deposit_at_coins: 10,
+        ..BankConfig::default()
+    };
+    let t0 = Instant::now();
+    let heavy = reading([0, 0, 50, 0, 0], 16);
+    let mut g = FollowerGate::new();
+    g.seed(reading([0, 0, 0, 0, 0], 5));
+    g.on_pickup();
+    assert!(g.wants_reading(t0), "a pickup owes a reading");
+    g.on_read_sent(t0);
+    assert!(!g.wants_reading(t0), "one read at a time");
+    assert_eq!(
+        READ_TIMEOUT,
+        Duration::from_secs(10),
+        "the deadline farm::ask allows a listing"
+    );
+    let almost = t0 + Duration::from_millis(9_999);
+    assert!(g.reading_out(almost), "the reply is still worth waiting for");
+    assert!(!g.wants_reading(almost));
+    let after = t0 + Duration::from_secs(10);
+    assert!(!g.reading_out(after), "ten seconds on, the reply is lost");
+    assert!(g.wants_reading(after), "the pickup is still owed a reading");
+    // The second `i` answers the same pickup, and the reply that lands
+    // closes the read whatever it says.
+    g.on_read_sent(after);
+    assert!(g.reading_out(after));
+    assert!(g.on_reading(&cfg, heavy, after), "over the mark: ask");
+    g.on_read_done();
+    assert!(!g.reading_out(after), "the reply landed");
+    assert!(!g.wants_reading(after), "the reading answered the pickup");
+}

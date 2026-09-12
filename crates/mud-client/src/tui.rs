@@ -1403,9 +1403,6 @@ pub struct AssistCasts {
     /// The follower's deposit gate. Idle unless the character is
     /// following someone.
     pub follower: crate::bank::FollowerGate,
-    /// An `i` the gate sent is still out. One read at a time, so a
-    /// stream of pickups costs one command, not one each.
-    pub follower_read: bool,
     /// The follower's side of the wait handshake around a rest. Idle
     /// unless the character is following someone.
     pub wait: crate::party::WaitState,
@@ -1417,7 +1414,6 @@ impl Default for AssistCasts {
             heal: crate::sheet::HealState::new(Vec::new()),
             buff: crate::sheet::BuffState::new(Vec::new()),
             follower: crate::bank::FollowerGate::new(),
-            follower_read: false,
             wait: crate::party::WaitState::new(),
         }
     }
@@ -1611,8 +1607,8 @@ fn follower_gate(
             // The session's own contents tracker parses the same reply
             // before this event is published, so by the encumbrance
             // line `session.contents()` is the reading just read.
-            if casts.follower_read && line.trim_start().starts_with("Encumbrance:") {
-                casts.follower_read = false;
+            if casts.follower.reading_out(now) && line.trim_start().starts_with("Encumbrance:") {
+                casts.follower.on_read_done();
                 if let Some((leader, bank)) = follower_bank(session)
                     && let Some(reading) = crate::bank::Reading::of(&session.contents())
                     && casts.follower.on_reading(&bank, reading, now)
@@ -1625,12 +1621,11 @@ fn follower_gate(
             }
         }
         crate::events::Event::Prompt { .. } => {
-            if !casts.follower_read
-                && casts.follower.wants_reading(now)
+            if casts.follower.wants_reading(now)
                 && bot.is_idle()
                 && follower_bank(session).is_some()
             {
-                casts.follower_read = true;
+                casts.follower.on_read_sent(now);
                 session.send("i");
             }
         }

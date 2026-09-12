@@ -242,6 +242,12 @@ impl BankGate {
 /// ask that went nowhere is retried rather than repeated.
 pub const ASK_AGAIN_AFTER: std::time::Duration = std::time::Duration::from_secs(300);
 
+/// How long an `i` the gate sent may stay out before the gate gives up
+/// on it and reads again. The same deadline `farm::ask` allows a
+/// listing, for the same reason: flood control can swallow a reply, and
+/// a gate that waited for one forever would never read again.
+pub const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// A follower's deposit gate. A follower cannot walk to the bank, it is
 /// being dragged, so on `Deposit` it asks the leader with `@bank`, once,
 /// and not again until it has deposited or [`ASK_AGAIN_AFTER`] has
@@ -255,6 +261,10 @@ pub struct FollowerGate {
     gate: BankGate,
     pending: bool,
     asked_at: Option<Instant>,
+    /// When the `i` in flight went out, `None` when none is. One read
+    /// at a time, so a stream of pickups costs one command and not one
+    /// each.
+    read_at: Option<Instant>,
 }
 
 impl FollowerGate {
@@ -273,10 +283,28 @@ impl FollowerGate {
         self.pending = true;
     }
 
-    /// Is a reading owed? `now` is unused today and named so the caller
-    /// reads as one clocked conversation with the gate.
-    pub fn wants_reading(&self, _now: Instant) -> bool {
-        self.pending
+    /// Is a reading owed and nothing already out to answer it? A read
+    /// older than [`READ_TIMEOUT`] counts as lost, so a reply flood
+    /// control swallowed costs one wasted `i` rather than shutting the
+    /// gate for the rest of the session.
+    pub fn wants_reading(&self, now: Instant) -> bool {
+        self.pending && !self.reading_out(now)
+    }
+
+    /// Whether the `i` the gate sent is still worth waiting for.
+    pub fn reading_out(&self, now: Instant) -> bool {
+        self.read_at.is_some_and(|t| now.duration_since(t) < READ_TIMEOUT)
+    }
+
+    /// The gate spent its `i`. The reply is owed from `now`.
+    pub fn on_read_sent(&mut self, now: Instant) {
+        self.read_at = Some(now);
+    }
+
+    /// The reply landed, whatever it turned out to say. The next
+    /// pickup may spend another `i`.
+    pub fn on_read_done(&mut self) {
+        self.read_at = None;
     }
 
     /// Judge one reading. True means send the `@bank` now. The pickup is
