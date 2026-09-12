@@ -1024,3 +1024,64 @@ fn room_block_survives_a_notice_that_is_not_a_listing() {
     assert_eq!(room.also_here, vec!["kobold thief"]);
     assert_eq!(room.exits, vec!["north"]);
 }
+
+/// The board wraps a long "Also here:" line at 79 columns, after a
+/// separator (cw-beef, 2026-09-12: five guardsmen on Silver Street).
+/// The names on the second line were lost, and so was their colour.
+#[test]
+fn a_wrapped_occupant_line_keeps_every_name_and_its_colour() {
+    let mut p = Parser::new();
+    let text = "\r\n\x1b[1;36mSilver Street\r\n\
+        \x1b[0;35mAlso here: \x1b[0m\x1b[1;35mThesifer\x1b[0m\x1b[0m\x1b[0;35m, \x1b[0m\
+        \x1b[0;36mMayor Godfrey\x1b[0m\x1b[0m\x1b[0;35m, \x1b[0m\
+        \x1b[0;37melite guardsman\x1b[0m\x1b[0m\x1b[0;35m,\x1b[0m\r\n\
+        \x1b[0;37mhappy guardsman\x1b[0m\x1b[0m\x1b[0;35m, \x1b[0m\
+        \x1b[1;35mgiant rat\x1b[0m\x1b[0m\x1b[0;35m.\x1b[0m\r\n\
+        \x1b[0;32mObvious exits: east, west\r\n";
+    let mut evs = p.push(text);
+    evs.extend(p.finish());
+    let r = evs
+        .into_iter()
+        .find_map(|e| match e {
+            Event::RoomSeen(r) => Some(r),
+            _ => None,
+        })
+        .expect("a room block");
+    assert_eq!(
+        r.also_here,
+        vec!["Thesifer", "Mayor Godfrey", "elite guardsman", "happy guardsman", "giant rat"]
+    );
+    assert_eq!(
+        r.also_here_sgr,
+        vec![
+            Some("1;35".to_string()),
+            Some("0;36".to_string()),
+            Some("0;37".to_string()),
+            Some("0;37".to_string()),
+            Some("1;35".to_string()),
+        ]
+    );
+    assert_eq!(r.exits, vec!["east", "west"]);
+}
+
+/// The same wrap on a board that paints nobody.
+#[test]
+fn a_wrapped_occupant_line_on_an_unpainted_board() {
+    let mut p = Parser::new();
+    let mut evs = p.push(
+        "\r\n\x1b[1;36mSilver Street\r\nAlso here: elite guardsman, large elite guardsman,\r\nhappy guardsman.\r\nObvious exits: east, west\r\n",
+    );
+    evs.extend(p.finish());
+    let r = evs
+        .into_iter()
+        .find_map(|e| match e {
+            Event::RoomSeen(r) => Some(r),
+            _ => None,
+        })
+        .expect("a room block");
+    assert_eq!(
+        r.also_here,
+        vec!["elite guardsman", "large elite guardsman", "happy guardsman"]
+    );
+    assert!(r.also_here_sgr.iter().all(Option::is_none), "{:?}", r.also_here_sgr);
+}

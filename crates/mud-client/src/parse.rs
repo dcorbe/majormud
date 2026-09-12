@@ -122,6 +122,12 @@ pub struct Parser {
     /// supplies the suffix; dropped when the block moves on to its
     /// occupants or exits, or a new block starts.
     notice: Option<String>,
+    /// An occupant list still being read: the names so far and the
+    /// colour each was painted. The board wraps "Also here:" the same
+    /// way it wraps a floor listing, after a separator, and the list
+    /// ends with a full stop. Dropped when a new block starts; closed
+    /// with what it holds if the exits line arrives first.
+    occupants: Option<(String, Vec<Option<String>>)>,
 }
 
 impl Parser {
@@ -130,6 +136,7 @@ impl Parser {
             buf: String::new(),
             room: None,
             notice: None,
+            occupants: None,
         }
     }
 
@@ -185,17 +192,13 @@ impl Parser {
         let cleaned = resolve_backspaces(&strip_ansi(raw));
         let mut rest = cleaned.as_str();
         let mut opening = opening_sgr(raw);
-        // Computed from the RAW line: `cleaned` has already lost the
-        // colours, and the colour is the only thing that says what an
-        // occupant IS.
-        let sgr = also_here_sgr(raw);
         let mut saw_prompt = false;
         // Prompts can appear anywhere in a physical line (mid-line
         // redraws); classify the segments between them in order.
         while let Some(found) = find_prompt(rest) {
             let before = &rest[..found.start];
             if !before.is_empty() {
-                self.classify(before, opening, &sgr, events);
+                self.classify(before, opening, raw, events);
             }
             events.push(found.event);
             rest = &rest[found.end..];
@@ -218,14 +221,17 @@ impl Parser {
                 .rfind("]:")
                 .and_then(|p| opening_sgr(&raw[p + 2..]));
         }
-        self.classify(rest, opening, &sgr, events);
+        self.classify(rest, opening, raw, events);
     }
 
+    /// `raw` is the whole physical line with its escapes: the colour
+    /// is the only thing that says what an occupant IS, and `text_line`
+    /// has already lost it.
     fn classify(
         &mut self,
         text_line: &str,
         opening: Option<&str>,
-        sgr: &[Option<String>],
+        raw: &str,
         events: &mut Vec<Event>,
     ) {
         // A bare carriage return is a redraw, not text: foreign boards
@@ -244,9 +250,28 @@ impl Parser {
                 ..RoomView::default()
             });
             self.notice = None;
+            self.occupants = None;
             return;
         }
         if self.room.is_some() {
+            // A wrapped occupant list continues until a line ends it
+            // with a full stop. The exits line closes it with whatever
+            // it holds: some names beat none.
+            if let Some((mut names, mut sgr)) = self.occupants.take() {
+                if text_line.starts_with(text::OBVIOUS_EXITS) {
+                    self.set_occupants(&names, sgr);
+                } else {
+                    names.push(' ');
+                    names.push_str(text_line);
+                    sgr.extend(name_sgr(raw, false));
+                    if text_line.ends_with('.') {
+                        self.set_occupants(&names, sgr);
+                    } else {
+                        self.occupants = Some((names, sgr));
+                    }
+                    return;
+                }
+            }
             // A wrapped listing continues until a line ends it. The
             // occupants and exits lines never belong to it: a listing
             // that reaches them was not one, and they close the block
@@ -271,20 +296,12 @@ impl Parser {
                 return;
             }
             if let Some(names) = text_line.strip_prefix(text::ALSO_HERE) {
-                let room = self.room.as_mut().unwrap();
-                room.also_here = names
-                    .trim_end_matches('.')
-                    .split(", ")
-                    .map(str::to_string)
-                    .collect();
-                // Only when the split agrees with what the raw line
-                // painted; a mismatch means one of the two readings is
-                // wrong, and a wrong colour is worse than none.
-                room.also_here_sgr = if sgr.len() == room.also_here.len() {
-                    sgr.to_vec()
+                let sgr = name_sgr(raw, true);
+                if names.ends_with('.') {
+                    self.set_occupants(names, sgr);
                 } else {
-                    Vec::new()
-                };
+                    self.occupants = Some((names.to_string(), sgr));
+                }
                 return;
             }
             if let Some(listing) = text_line.strip_prefix("You notice ") {
@@ -315,6 +332,28 @@ impl Parser {
     }
 }
 
+impl Parser {
+    /// Record a complete "Also here:" list on the block being read.
+    /// `names` is the text after the marker, `sgr` the colour of each
+    /// name in order.
+    fn set_occupants(&mut self, names: &str, sgr: Vec<Option<String>>) {
+        let room = self.room.as_mut().unwrap();
+        room.also_here = names
+            .trim_end_matches('.')
+            .split(", ")
+            .map(str::to_string)
+            .collect();
+        // Only when the split agrees with what the raw line painted;
+        // a mismatch means one of the two readings is wrong, and a
+        // wrong colour is worse than none.
+        room.also_here_sgr = if sgr.len() == room.also_here.len() {
+            sgr
+        } else {
+            Vec::new()
+        };
+    }
+}
+
 /// The entries of a "You notice ... here." listing, comma separated.
 fn split_items(items: &str) -> Vec<String> {
     items.split(", ").map(str::to_string).collect()
@@ -339,7 +378,11 @@ impl Default for Parser {
 /// Empty when the line carried no escape at all: callers must read that
 /// as "this board does not paint occupants", never as "nothing here is
 /// aggressive".
-fn also_here_sgr(raw: &str) -> Vec<Option<String>> {
+///
+/// `marked` says the line opens with the "Also here:" marker; a
+/// continuation line of a wrapped list has none, and every run on it
+/// is a name or a separator.
+fn name_sgr(raw: &str, marked: bool) -> Vec<Option<String>> {
     let mut runs: Vec<(Option<String>, String)> = Vec::new();
     let mut cur: Option<String> = None;
     let mut text = String::new();
@@ -370,18 +413,22 @@ fn also_here_sgr(raw: &str) -> Vec<Option<String>> {
     if !painted {
         return Vec::new();
     }
-    let start = match runs
-        .iter()
-        .position(|(_, t)| t.contains(text::ALSO_HERE))
-    {
-        Some(i) => i,
-        None => return Vec::new(),
+    let start = if marked {
+        match runs
+            .iter()
+            .position(|(_, t)| t.contains(text::ALSO_HERE))
+        {
+            Some(i) => i,
+            None => return Vec::new(),
+        }
+    } else {
+        0
     };
     // The marker's own run may carry the first name behind it when the
     // board does not reset between them.
     let mut out = Vec::new();
     for (idx, (sgr, t)) in runs.iter().enumerate().skip(start) {
-        let t = if idx == start {
+        let t = if marked && idx == start {
             match t.split_once(text::ALSO_HERE) {
                 Some((_, after)) => after,
                 None => continue,
