@@ -1059,9 +1059,7 @@ async fn play(
                     // `/farm` setting. The plan is rebuilt here rather
                     // than kept, because `start_farm` moved the one it
                     // built into the job that just ended.
-                    let died = matches!(&ended, crate::farm::Phase::Done { why, .. } if why.starts_with(crate::farm::DIED));
-                    if what == "farm"
-                        && !died
+                    if crate::tui::walks_to_finish(what, &ended)
                         && let Some(g) = graph.clone()
                         && let Some(farm_config) = session.profile().farm.clone()
                     {

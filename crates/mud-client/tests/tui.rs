@@ -8,7 +8,7 @@ use mud_client::session::GameState;
 use mud_client::sheet::{Casting, HealChoice, HealState, Spellbook};
 use mud_client::tui::{
     InputEditor, act_suffix, assist_heal, bottom_bytes, help_text, pace_on_change, quit_windows_refusal, render_status,
-    screen_bytes, window_bar, windows_listing,
+    screen_bytes, walks_to_finish, window_bar, windows_listing,
 };
 use mud_client::window::WindowInfo;
 use mud_client::world::{TickClock, ROUND};
@@ -623,6 +623,49 @@ fn the_done_phase_carries_the_reason() {
         at: None,
     };
     assert_eq!(phase.label(), "done: too hurt: travel interrupt budget spent");
+}
+
+/// A `/farm` run that ended on its own terms — loops walked, time up, or
+/// too hurt — is the one case `finish_at` should be walked to.
+#[test]
+fn a_farm_that_finished_on_its_own_walks_to_finish() {
+    let ended = mud_client::farm::Phase::Done {
+        why: "loops walked (3/3)".into(),
+        at: None,
+    };
+    assert!(walks_to_finish("farm", &ended));
+}
+
+/// A farm that ended in death cannot walk anywhere, and `go_to_finish`
+/// says as much, so the guard must refuse before ever calling it.
+#[test]
+fn a_farm_that_died_does_not_walk_to_finish() {
+    let ended = mud_client::farm::Phase::Done {
+        why: format!("{} to a cave worm", mud_client::farm::DIED),
+        at: None,
+    };
+    assert!(!walks_to_finish("farm", &ended));
+}
+
+/// `finish_at` is a `/farm` setting; `/go`'s stop is not a farm's finish
+/// room even when the job ended the same way a farm would.
+#[test]
+fn a_go_job_never_walks_to_finish() {
+    let ended = mud_client::farm::Phase::Done {
+        why: "loops walked (3/3)".into(),
+        at: None,
+    };
+    assert!(!walks_to_finish("go", &ended));
+}
+
+/// A `Failed` farm did not finish on its own terms, so it does not walk
+/// to `finish_at` either.
+#[test]
+fn a_failed_farm_does_not_walk_to_finish() {
+    let ended = mud_client::farm::Phase::Failed {
+        why: "could not build a plan".into(),
+    };
+    assert!(!walks_to_finish("farm", &ended));
 }
 
 /// The status bar carries the level and how long until the next one, so

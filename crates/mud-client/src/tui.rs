@@ -1823,6 +1823,19 @@ pub fn handover_actions(ended: &crate::farm::Phase, assist: bool) -> Vec<String>
     }
 }
 
+/// Whether a finished job should walk the character to `finish_at`.
+/// True only for a `/farm` run that ended on its own — loops walked,
+/// time up, or too hurt — never a death (a dead character cannot walk,
+/// and `go_to_finish` says as much) and never `/go`/`/roam`/`/bank`/
+/// `/recover`, whose stops are not a farm's finish room. A job stopped by
+/// Ctrl-F does not reach here (that is `KeyOutcome::TakeOver`, which aborts
+/// separately); this only sees a task that returned on its own, so `ended`
+/// is always a terminal `Phase`.
+pub fn walks_to_finish(what: &str, ended: &crate::farm::Phase) -> bool {
+    what == "farm"
+        && matches!(ended, crate::farm::Phase::Done { why, .. } if !why.starts_with(crate::farm::DIED))
+}
+
 /// The two reserved rows. The bar is written only when its text changed,
 /// and always by overwriting the row with text padded to the width. A
 /// clear-line before the rewrite is what made the bar flash over SSH.
