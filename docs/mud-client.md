@@ -279,9 +279,9 @@ first entry the minor and its last the major.
 - **`finish_at`** — where to leave the character when the run stops.
   Without it a run ends wherever it happened to be, which for a lair
   circuit means standing among the monsters, linkdead, until somebody
-  walks it out. It fires on **every** route out including Ctrl-C, and is
-  skipped only on a death. Validated at build time from every stop the run
-  can end at, not just the start.
+  walks it out. `/farm` walks itself there in-session, on **every** route
+  out including Ctrl-F, skipped only on a death. Validated at build time
+  from every stop the run can end at, not just the start.
 - **`depart_at_percent`** is unset by default and is the mark a recovery
   before a leg runs to, HP and mana alike. Unset, the mark is the bot's
   `rest_until_percent`. The gate starts a recovery on the bot's own

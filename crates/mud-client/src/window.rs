@@ -1052,6 +1052,31 @@ async fn play(
                     for cmd in handover_actions(&ended, assist.is_some()) {
                         session.send(&cmd);
                     }
+                    // A farm run's own finish room, walked on every exit
+                    // but a death — a dead character cannot walk, and
+                    // `go_to_finish` says as much. Never for `/go`,
+                    // `/roam`, `/bank` or `/recover`: `finish_at` is a
+                    // `/farm` setting. The plan is rebuilt here rather
+                    // than kept, because `start_farm` moved the one it
+                    // built into the job that just ended.
+                    let died = matches!(&ended, crate::farm::Phase::Done { why, .. } if why.starts_with(crate::farm::DIED));
+                    if what == "farm"
+                        && !died
+                        && let Some(g) = graph.clone()
+                        && let Some(farm_config) = session.profile().farm.clone()
+                    {
+                        let bot_config = session.profile().bot.clone().unwrap_or_default();
+                        match crate::farm::FarmPlan::build(&farm_config, &g) {
+                            Ok(plan) => {
+                                if let Err(e) =
+                                    crate::farm::go_to_finish(&session, g, &plan, &bot_config, &farm_config).await
+                                {
+                                    w.note(&format!("-- could not walk to finish: {e} --"));
+                                }
+                            }
+                            Err(e) => w.note(&format!("-- could not walk to finish: {e} --")),
+                        }
+                    }
                     w.note(&format!("-- {what} ended: {} --", ended.label()));
                     w.event(event_for(&ended));
                 }
