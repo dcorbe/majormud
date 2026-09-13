@@ -642,16 +642,15 @@ pub struct Bot {
     /// How dangerous each template is. Empty means "no opinion", and the
     /// bot then keeps the board's own listing order.
     threat: std::sync::Arc<ThreatTable>,
-    /// Name currently under attack; cleared once it is gone.
-    engaged: Option<String>,
+    /// The target under attack, the wander-out cooldown, and the
+    /// target-switch window — see [`crate::combat::CombatState`].
+    combat: crate::combat::CombatState,
     /// Exits from the most recent room block — the flee routes.
     exits: Vec<String>,
     /// A heal is already in flight; suppresses one per prompt.
     healing: bool,
     /// Already fled this room; suppresses one per prompt.
     fled: bool,
-    /// Prompts seen since the last blow involving the engaged target.
-    quiet_prompts: u32,
     /// The last room view this bot was shown listed something it would
     /// attack (the pump only shows it ATTRIBUTED blocks), or something
     /// attackable walked in since. Consulted before healing: in an
@@ -675,18 +674,6 @@ pub struct Bot {
     /// per lap — and on the live board a refused swing is a crime-system
     /// interaction, not a free no-op.
     refused: Refusals,
-    /// A noun we must not re-engage yet, and how many blocks have listed
-    /// it since. Set by a TARGETLESS *Combat Off* — the un-latch firing
-    /// while we still believed we were engaged, which is the signature of
-    /// the target wandering out mid-fight (a kill un-latches on the death
-    /// line first). The board keeps listing a leaver for the length of
-    /// its leave transition, so the freed bot re-engaged it off the next
-    /// block and the board flipped Engaged/Off — ~40 cycles in 400ms live
-    /// (run4, 2026-08-01). Cleared by absence from a block, by the leave
-    /// or arrival event that settles the question, or by surviving two
-    /// listed blocks — a monster still there after two looks is not
-    /// leaving, it is standing there.
-    cooling: Option<(String, u32)>,
     /// Coin denominations claimed this visit, keyed by the room name
     /// the block carried. A pile the character cannot carry
     /// (encumbrance refusal) stays listed in every block, and a bot
@@ -733,18 +720,6 @@ pub struct Bot {
     /// again on the landing blow, and this is what says the fight owes
     /// one. Assigned on every engage, so it can never outlive its fight.
     backstab_open: bool,
-    /// A `*Combat Off*` just un-latched a fight, and the very next event
-    /// decides whether it was real. An attack sent while already in
-    /// melee — a target switch, or the backstab mode-revert — is
-    /// answered by the board with `*Combat Off*` then `*Combat Engaged*`
-    /// back to back (live, every re-sent `a` and `ju`, and the
-    /// goblin/archer ping-pong, cw-beef 2026-09-13). The Off clears the
-    /// target at once, as a real ending must; if a `*Combat Engaged*`
-    /// follows immediately this restores it and cancels the cooldown the
-    /// Off armed. `Some(None)` is the window with nothing to restore (a
-    /// kill had already cleared the target); `None` is no window open.
-    /// One event wide: any other event closes it and the un-latch stands.
-    switch_watch: Option<Option<String>>,
     /// How many times the board has told us the wielded weapon could not
     /// backstab (`mud-core`'s `text::CANNOT_BACKSTAB_WEAPON`) — meaning
     /// whatever this bot's caller believed was wielded at swap time was
@@ -831,14 +806,12 @@ impl Bot {
         Bot {
             config,
             threat,
-            engaged: None,
+            combat: crate::combat::CombatState::new(),
             exits: Vec::new(),
             healing: false,
             fled: false,
-            quiet_prompts: 0,
             room_has_work: false,
             refused,
-            cooling: None,
             swept: (String::new(), HashSet::new()),
             paint: HashMap::new(),
             painted: false,
@@ -846,7 +819,6 @@ impl Bot {
             pack: None,
             opener: None,
             backstab_open: false,
-            switch_watch: None,
             backstab_corrections: 0,
             stealth: false,
             hidden: false,
@@ -946,21 +918,20 @@ impl Bot {
     /// block nobody sends. Live 2026-09-12: a mend mid-fight, then
     /// standing beside the monster until it killed the character.
     pub fn disengaged_by_own_cast(&mut self) {
-        self.engaged = None;
-        self.quiet_prompts = 0;
+        self.combat.clear();
     }
 
     /// The name currently under attack. The runner reads this to tell a
     /// quiet room from an unfinished fight.
     pub fn engaged(&self) -> Option<&str> {
-        self.engaged.as_deref()
+        self.combat.engaged()
     }
 
     /// Nothing in hand: no fight running and no heal in flight. What a
     /// caller asks before spending the character's turn on an errand of
     /// its own, such as the follower gate's inventory read.
     pub fn is_idle(&self) -> bool {
-        self.engaged.is_none() && !self.healing
+        self.combat.engaged().is_none() && !self.healing
     }
 
     /// Did the last room block list something this bot would swing at,
@@ -1009,23 +980,16 @@ impl Bot {
     }
 
     fn decide(&mut self, ev: &Event) -> Vec<BotAction> {
-        // Resolve a Combat Off's one-event window (see `switch_watch`).
-        // A `*Combat Engaged*` right after the Off is the second half of
+        // Resolve a Combat Off's one-event window (see
+        // `crate::combat::CombatState`'s switch window doc). A
+        // `*Combat Engaged*` right after the Off is the second half of
         // a target switch: the fight never ended, so restore the target
         // and cancel the wander-out cooldown the Off armed against it.
         // Any other event closes the window and the un-latch stands.
-        if let Some(restore) = self.switch_watch.take()
-            && matches!(ev, Event::Line(l) if is_combat_engaged(l))
-            && let Some(target) = restore
-        {
-            if self
-                .cooling
-                .as_ref()
-                .is_some_and(|(noun, _)| *noun == target_word(&target))
-            {
-                self.cooling = None;
-            }
-            self.engaged = Some(target);
+        if matches!(ev, Event::Line(l) if is_combat_engaged(l)) {
+            self.combat.on_combat_engaged();
+        } else {
+            self.combat.close_switch_window();
         }
         match ev {
             Event::RoomSeen(room) => {
@@ -1058,15 +1022,12 @@ impl Bot {
                 // target: absence means the leave completed; presence in
                 // a SECOND block means it never was leaving, and this
                 // very block engages it.
-                if let Some((noun, listed)) = &mut self.cooling {
+                if let Some(noun) = self.combat.cooling_noun() {
                     let present = room
                         .also_here
                         .iter()
                         .any(|name| target_word(name) == noun);
-                    *listed += 1;
-                    if !present || *listed >= 2 {
-                        self.cooling = None;
-                    }
+                    self.combat.settle_cooling(present);
                 }
                 // Compared through `strip_status`, not by exact string.
                 // A monster that sits down mid-fight re-renders with a
@@ -1076,13 +1037,13 @@ impl Bot {
                 // and the bot sent a fresh attack on every room block --
                 // straight into flood control, on a fight already in
                 // progress.
-                if self.engaged.as_deref().is_some_and(|target| {
+                if self.combat.engaged().is_some_and(|target| {
                     !room
                         .also_here
                         .iter()
                         .any(|name| strip_status(name) == strip_status(target))
                 }) {
-                    self.engaged = None;
+                    self.combat.clear();
                 }
                 // Biggest threat first. "Also here:" is in the board's
                 // own order, which is not danger order -- taking the
@@ -1131,7 +1092,7 @@ impl Bot {
                 // Standing over a pile mid-fight is how loot gets a
                 // character killed; standing over one BEFORE the fight
                 // costs at most a round of grace.
-                if self.engaged.is_none() {
+                if self.combat.engaged().is_none() {
                     for entry in &room.items {
                         if let Some((_, denom)) = coin_pile(entry)
                             && self.wants_coin(&denom)
@@ -1146,7 +1107,7 @@ impl Bot {
                 // later route, and it is not somebody's loot the way a
                 // dropped weapon is. Same per-visit memo as the sweep,
                 // same reason.
-                if self.config.take_keys && self.engaged.is_none() {
+                if self.config.take_keys && self.combat.engaged().is_none() {
                     if let Some(pack) = &self.pack {
                         if self.taken.0 != room.name {
                             self.taken = (room.name.clone(), HashSet::new());
@@ -1179,12 +1140,8 @@ impl Bot {
             Event::ActorEntered { name, .. } => {
                 // An arrival is affirmative evidence: a NEW instance
                 // walked in, whatever noun it shares with the leaver.
-                if self
-                    .cooling
-                    .as_ref()
-                    .is_some_and(|(noun, _)| target_word(name) == noun)
-                {
-                    self.cooling = None;
+                if self.combat.cooling_noun() == Some(target_word(name)) {
+                    self.combat.settle_cooling(false);
                 }
                 // On a board that paints, the noun's last listing
                 // decides: passive is left alone, aggressive is engaged
@@ -1208,17 +1165,13 @@ impl Bot {
                 self.engage(name)
             }
             Event::ActorLeft { name, .. } => {
-                if self.engaged.as_deref() == Some(name.as_str()) {
-                    self.engaged = None;
+                if self.combat.engaged() == Some(name.as_str()) {
+                    self.combat.clear();
                 }
                 // The leave line is the transition COMPLETING — the very
                 // thing the cooldown was waiting out.
-                if self
-                    .cooling
-                    .as_ref()
-                    .is_some_and(|(noun, _)| target_word(name) == noun)
-                {
-                    self.cooling = None;
+                if self.combat.cooling_noun() == Some(target_word(name)) {
+                    self.combat.settle_cooling(false);
                 }
                 Vec::new()
             }
@@ -1227,13 +1180,7 @@ impl Bot {
                 // board called the ending. Counted here rather than on
                 // the death line because the death line is exactly what
                 // cannot be relied on.
-                if self.engaged.is_some() {
-                    self.quiet_prompts += 1;
-                    if self.quiet_prompts >= self.config.combat_idle_prompts {
-                        self.engaged = None;
-                        self.quiet_prompts = 0;
-                    }
-                }
+                self.combat.note_quiet_prompt(self.config.combat_idle_prompts);
                 self.on_vitals(*hp, *mana, status.as_ref())
             }
             Event::CombatHit {
@@ -1242,7 +1189,7 @@ impl Bot {
                 if self.involves_target(&actor_name(attacker))
                     || self.involves_target(&actor_name(target))
                 {
-                    self.quiet_prompts = 0;
+                    self.combat.note_blow();
                 }
                 // The backstab's one blow landed: the board is now in
                 // plain-attack mode, so the fight's own verb goes out
@@ -1255,7 +1202,7 @@ impl Bot {
                 if self.backstab_open
                     && *attacker == crate::events::Actor::You
                     && self.involves_target(&actor_name(target))
-                    && let Some(noun) = self.engaged.as_deref().map(target_word)
+                    && let Some(noun) = self.combat.engaged().map(target_word)
                 {
                     self.backstab_open = false;
                     return vec![BotAction::Send(format!("{} {noun}", self.config.attack_command))];
@@ -1274,7 +1221,7 @@ impl Bot {
             }
             Event::CombatMiss { line } => {
                 if self.involves_target(line) {
-                    self.quiet_prompts = 0;
+                    self.combat.note_blow();
                 }
                 Vec::new()
             }
@@ -1364,16 +1311,14 @@ impl Bot {
     /// [`Bot::engage`] so candidates can be ranked before one is chosen,
     /// rather than the first acceptable name winning by position.
     fn attackable(&self, name: &str) -> bool {
-        self.engaged.is_none()
+        self.combat.engaged().is_none()
             && self.would_attack(name)
-            // Not while its wander-out is in question — see `cooling`.
-            // Only here, NOT in `would_attack`: the leaver still counts
-            // as the room's work, so the stop waits and nobody rests
-            // beside a transition.
-            && !self
-                .cooling
-                .as_ref()
-                .is_some_and(|(noun, _)| target_word(name) == noun)
+            // Not while its wander-out is in question — see
+            // `crate::combat::CombatState`. Only here, NOT in
+            // `would_attack`: the leaver still counts as the room's
+            // work, so the stop waits and nobody rests beside a
+            // transition.
+            && self.combat.cooling_noun() != Some(target_word(name))
     }
 
     /// How dangerous `name` is.
@@ -1407,8 +1352,7 @@ impl Bot {
         if !self.attackable(name) {
             return Vec::new();
         }
-        self.engaged = Some(name.to_string());
-        self.quiet_prompts = 0;
+        self.combat.engage(name);
         self.opening_attack(name)
     }
 
@@ -1502,7 +1446,7 @@ impl Bot {
             && mana_percent.is_some_and(|m| m < self.config.mana_rest_at_percent as i32);
         if !hp_low && !mana_low {
             self.healing = false;
-            return if self.engaged.is_none() && !self.room_has_work {
+            return if self.combat.engaged().is_none() && !self.room_has_work {
                 self.idle_stealth()
             } else {
                 Vec::new()
@@ -1513,7 +1457,7 @@ impl Bot {
         // next block re-engages and breaks the rest. That was the live
         // death spiral of 2026-08-01. Fight or flee are the occupied
         // room choices, and flee is checked above.
-        if !self.config.auto_rest || self.healing || self.engaged.is_some() || self.room_has_work {
+        if !self.config.auto_rest || self.healing || self.combat.engaged().is_some() || self.room_has_work {
             return Vec::new();
         }
         self.healing = true;
@@ -1580,8 +1524,8 @@ impl Bot {
     /// trailing noun, the same word the attack command uses, so a rolled
     /// adjective ("fat kobold thief") still counts as our fight.
     fn involves_target(&self, text: &str) -> bool {
-        self.engaged
-            .as_deref()
+        self.combat
+            .engaged()
             .map(target_word)
             .is_some_and(|noun| text.to_lowercase().contains(&noun.to_lowercase()))
     }
@@ -1644,35 +1588,31 @@ impl Bot {
             // most Combat Offs are real, and the tests and the runner
             // read `engaged` the instant this returns. A target switch
             // is the exception the board words as `*Combat Off*` then
-            // `*Combat Engaged*` in one breath; `switch_watch` holds what
-            // was cleared so the very next event can undo it if the
-            // Engaged proves the fight never ended. `Some(None)` is the
-            // window with nothing to restore.
+            // `*Combat Engaged*` in one breath; the switch window holds
+            // what was cleared so the very next event can undo it if the
+            // Engaged proves the fight never ended.
             if is_combat_off(line) {
-                self.switch_watch = Some(self.engaged.clone());
-                if let Some(target) = &self.engaged {
-                    self.cooling = Some((target_word(target).to_string(), 0));
-                }
+                self.combat.on_combat_off();
+            } else {
+                self.combat.on_kill();
             }
-            self.engaged = None;
-            self.quiet_prompts = 0;
         }
         // Our attack echoed back as SPEECH: the target resolved to
         // nobody (it left in the race between the block and the swing),
         // the fight never started, and nothing that ends a fight will
         // ever arrive. Only the echo of the exact attack we have in
         // flight counts — anything else said is just words.
-        if let Some(noun) = self.engaged.as_deref().map(target_word)
+        if let Some(noun) = self.combat.engaged().map(target_word)
             && line == format!("You say \"{} {noun}\"", self.config.attack_command)
         {
-            self.engaged = None;
-            self.quiet_prompts = 0;
+            self.combat.clear();
         }
         // The refusal names no monster, so the target is whichever one we
         // just swung at.
         if ATTACK_REFUSALS.iter().any(|r| line.contains(r))
-            && let Some(name) = self.engaged.take()
+            && let Some(name) = self.combat.engaged().map(str::to_string)
         {
+            self.combat.clear();
             self.refused
                 .lock()
                 .expect("refusals")

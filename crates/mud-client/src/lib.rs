@@ -9,6 +9,7 @@ pub mod backstab;
 pub mod bank;
 pub mod bot;
 pub mod cli;
+pub mod combat;
 pub mod correlate;
 pub mod deathlog;
 pub mod deaths;
