@@ -1,37 +1,33 @@
 # mud-client / `mmc`
 
-The automated MajorMUD client. One engine, four uses:
+The automated MajorMUD client. One engine, a few uses:
 
 | Command | What it does |
 |---|---|
 | `mmc play [--profile P]` | Interactive terminal session. Opens the lobby, and with a profile a second window connected to it. |
 | `mmc run SCRIPT --profile P` | Headless Lua-scripted run (oracle captures, acceptance tests) |
 | `mmc path FROM TO` | Print a route between two rooms, e.g. `mmc path 1/2146 1/2156` |
-| `mmc farm --profile P` | Walk a patrol circuit, farming each stop |
+| `mmc replay CAPTURE [--profile P]` | Replay a capture's board output through the bot and flag command loops |
 
-`mmc play` is **never paced** — see [`pace_ms`](#pace_ms). It can also
-drive the session you are already sitting in: type **`/farm`** to patrol
-or **`/go <room>`** to travel, and **Ctrl-F** takes the keyboard back.
-`mmc farm`
-prints a live feed by default — where the character is, what
-it is fighting, what it killed, and HP whenever it changes. The feed is the **full transcript** — everything the board sends;
-`--brief` cuts it to notable lines only (arrivals, combat, kills, flood
-control, HP changes) and `--quiet` prints nothing until the run ends. For a
-permanent record use `--capture BASE`. `mmc run` and `mmc farm` write
-`BASE.raw` (the raw socket bytes) and `BASE_timing.log`. `mmc play` writes
-one pair per window, `BASE-NAME.raw` and `BASE-NAME_timing.log`, NAME being
-the window's profile name, or its window number when it was opened without
-one. Keep captures OUT of `re/oracle/` — two corpus tests count the files in
-there.
+`mmc play` is **never paced** — see [`pace_ms`](#pace_ms). It is the one
+way to farm: type **`/farm`** to patrol the profile's circuit or a named
+loop, **`/go <room>`** to travel, and **Ctrl-F** to take the keyboard
+back. There is no headless farm — a patrol runs inside a `play` window,
+where a keystroke can stop it. For a permanent record use `--capture
+BASE`. `mmc run` writes `BASE.raw` (the raw socket bytes) and
+`BASE_timing.log`. `mmc play` writes one pair per window, `BASE-NAME.raw`
+and `BASE-NAME_timing.log`, NAME being the window's profile name, or its
+window number when it was opened without one. Keep captures OUT of
+`re/oracle/` — two corpus tests count the files in there.
 
 It targets the live MBBSEmu board (WCCMMUD 1.11p-WG) and the in-repo
 `mud-server` reimplementation. The two differ in more than the login
 dance — see [Target differences](#target-differences).
 
-> **`mmc farm` has no dry run.** Building the plan validates the whole
-> configuration, but the command then connects and starts farming as soon
-> as the start room checks out. Running it "just to check the config"
-> will farm.
+> **`/farm` has no dry run.** Building the plan validates the whole
+> configuration, but `/farm` then starts patrolling on the connected
+> session as soon as the start room checks out. Type it "just to check
+> the config" and it will farm.
 
 ## Profiles
 
@@ -746,8 +742,8 @@ run settles it.
 ### The death log
 
 Every death writes one line to `~/.config/mmc/deaths.log`, beside the
-profiles, from hand play, under a job, and under the map alike. `mmc farm`
-writes it too. Append only. A line reads:
+profiles, from hand play, under a job, and under the map alike. Append
+only. A line reads:
 
     2026-09-07T14:42:07Z beef 1/2810 Darkwood Forest confirmed
 
@@ -774,7 +770,7 @@ intact.
 | `/save [name]` | Write the settings. Started with `--profile`, no name is needed. A bare name is a profile under `~/.config/mmc`, so `/save beef` writes `~/.config/mmc/beef.toml`. Anything with a slash or a `.toml` suffix is a path. A file these settings were not loaded from is refused: `/load` it first, or pick another name. |
 | `/load <name>` | Replace the settings from a profile, named the same way. The connection stays open. |
 
-`--profile` on `mmc play`, `mmc run` and `mmc farm` takes the same names.
+`--profile` on `mmc play`, `mmc run` and `mmc replay` takes the same names.
 
 Tab completes a slash verb or, after `/set` and `/unset`, a key:
 `/set bot.ignore_c<Tab>` gives `/set bot.ignore_coins`. When several keys
@@ -869,7 +865,7 @@ password at the board's prompt. The automation needs the character's
 name, because it matches your own death line against it. It reads that
 name off the stat sheet, so once you are in the realm it has one whatever
 the profile says. The `username` key only matters before that, and for
-the headless `mmc farm` and `mmc run`, which log in for you. With no name
+the headless `mmc run`, which logs in for you. With no name
 from either place, `/farm`, `/go`, `/bank`, `/where`, `/bot` and the map
 view's own roam and go refuse to start and say so. A profile whose
 `assist_play` is on gets the same refusal at connect, and the assist
@@ -942,9 +938,8 @@ window's first connection, each under its own name (see `--capture`).
 In play the bar is prefixed with the window's number, and carries the
 activity list described under Windows.
 
-One renderer for both commands, so a session looks the same whichever
-started it. `mmc farm` reserves the bottom terminal row and scrolls the
-feed above it (DECSTBM, the same mechanism `mmc play` uses):
+`mmc play` reserves the bottom terminal row for the bar and scrolls the
+feed above it (DECSTBM):
 
 ```
  attacking cave bear | HP 23 MA 8 | Small Cavern [1/2156]
@@ -1025,9 +1020,8 @@ number appears, the 15 second meditate tick. A dash means nothing has
 locked that clock yet. A pool rising within three seconds of one of your
 own casts is the spell landing and moves no clock.
 
-The cadence is MudPlay's measurement of the stock board. In `play` the
-bar is repainted four times a second so the numbers move between
-events. The headless `mmc farm` bar repaints on events only.
+The cadence is MudPlay's measurement of the stock board. The bar is
+repainted four times a second so the numbers move between events.
 
 ## Doors
 

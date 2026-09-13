@@ -244,27 +244,18 @@ pub(crate) fn log_death(
     Ok(death)
 }
 
-/// Log deaths on a session no window is watching, which is `mmc farm`.
+/// Log deaths on a session no window is watching, against a log file the
+/// caller names.
 ///
 /// The room is the last block the board rendered, resolved by its name
 /// when the graph has exactly one room by that name, and unknown
-/// otherwise. That is the same rule the headless status bar uses, and
-/// it is coarser than the window's locator on purpose: a headless run
-/// has no locator, and a death is not the moment to build one.
+/// otherwise: coarser than the window's locator on purpose, since a
+/// session watched this way has no locator and a death is not the moment
+/// to build one.
 ///
 /// A session with no character name at all is watched but never logged.
 /// An empty name matches no death line, and it would write a record
 /// with an empty field that reads back as a different line.
-pub fn watch_headless(
-    session: std::sync::Arc<crate::session::Session>,
-    graph: std::sync::Arc<crate::graph::RoomGraph>,
-) -> tokio::task::JoinHandle<()> {
-    watch_headless_in(session, graph, path())
-}
-
-/// [`watch_headless`] against a log file the caller names, which is how
-/// a test watches a scripted board without an environment to point at a
-/// scratch directory.
 pub fn watch_headless_in(
     session: std::sync::Arc<crate::session::Session>,
     graph: std::sync::Arc<crate::graph::RoomGraph>,

@@ -81,24 +81,5 @@ pub enum Command {
         #[arg(long)]
         start: Option<String>,
     },
-    /// Walk the profile's patrol circuit, farming each stop
-    Farm {
-        /// Character profile: a name under ~/.config/mmc, or a path.
-        /// Needs a `[farm]` table
-        #[arg(long)]
-        profile: PathBuf,
-        /// Capture basename: writes `<capture>.raw` and `<capture>_timing.log`
-        #[arg(long)]
-        capture: Option<PathBuf>,
-        /// Room database, overriding the profile's `[farm].content`
-        #[arg(long)]
-        content: Option<PathBuf>,
-        /// Show only notable lines instead of everything the board sends
-        #[arg(long)]
-        brief: bool,
-        /// Print nothing until the run ends
-        #[arg(long, conflicts_with = "brief")]
-        quiet: bool,
-    },
 }
 

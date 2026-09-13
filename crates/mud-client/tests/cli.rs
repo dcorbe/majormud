@@ -56,7 +56,7 @@ fn cli_has_expected_subcommands() {
         .get_subcommands()
         .map(|s| s.get_name().to_string())
         .collect();
-    for expected in ["play", "run", "path", "farm"] {
+    for expected in ["play", "run", "path", "replay"] {
         assert!(
             subs.contains(&expected.to_string()),
             "missing subcommand {expected}"
@@ -65,71 +65,22 @@ fn cli_has_expected_subcommands() {
 }
 
 #[test]
-fn farm_subcommand_takes_profile_capture_and_content() {
+fn replay_subcommand_takes_a_capture_and_an_optional_profile() {
     use clap::Parser;
-    let cli = Cli::parse_from([
-        "mmc",
-        "farm",
-        "--profile",
-        "chars/nav.toml",
-        "--capture",
-        "out/farm1",
-        "--content",
-        "re/other.sqlite",
-    ]);
+    let cli = Cli::parse_from(["mmc", "replay", "out/cw-beef.raw", "--profile", "chars/beef.toml"]);
     match cli.command {
-        mud_client::cli::Command::Farm {
-            profile,
-            capture,
-            content,
-            ..
-        } => {
-            assert_eq!(profile.to_str(), Some("chars/nav.toml"));
-            assert_eq!(capture.as_deref().and_then(|p| p.to_str()), Some("out/farm1"));
-            assert_eq!(content.as_deref().and_then(|p| p.to_str()), Some("re/other.sqlite"));
+        mud_client::cli::Command::Replay { capture, profile } => {
+            assert_eq!(capture.to_str(), Some("out/cw-beef.raw"));
+            assert_eq!(profile.as_deref().and_then(|p| p.to_str()), Some("chars/beef.toml"));
         }
-        _ => panic!("expected farm subcommand"),
+        _ => panic!("expected replay subcommand"),
     }
-}
 
-/// Without --content the room database comes from [farm].content in the
-/// profile, so the flag has no default of its own to disagree with it.
-#[test]
-fn farm_content_defaults_to_the_profile() {
-    use clap::Parser;
-    let cli = Cli::parse_from(["mmc", "farm", "--profile", "chars/nav.toml"]);
+    let cli = Cli::parse_from(["mmc", "replay", "out/cw-beef.raw"]);
     match cli.command {
-        mud_client::cli::Command::Farm { content, .. } => assert_eq!(content, None),
-        _ => panic!("expected farm subcommand"),
+        mud_client::cli::Command::Replay { profile, .. } => assert_eq!(profile, None),
+        _ => panic!("expected replay subcommand"),
     }
-}
-
-/// The feed defaults ON and defaults to the FULL transcript: a farm that
-/// printed nothing between start and finish was indistinguishable from a
-/// wedged one, and a summary hides the line you actually need.
-#[test]
-fn farm_brief_and_quiet_are_optional_and_exclusive() {
-    use clap::Parser;
-    let cli = Cli::parse_from(["mmc", "farm", "--profile", "chars/salad.toml"]);
-    match cli.command {
-        mud_client::cli::Command::Farm { brief, quiet, .. } => {
-            assert!(!brief, "the full transcript is the default");
-            assert!(!quiet, "the feed is on by default");
-        }
-        _ => panic!("expected farm"),
-    }
-
-    let cli = Cli::parse_from(["mmc", "farm", "--profile", "p.toml", "--brief"]);
-    match cli.command {
-        mud_client::cli::Command::Farm { brief, .. } => assert!(brief),
-        _ => panic!("expected farm"),
-    }
-
-    // Asking for the firehose and for silence at once is a contradiction
-    // the parser should catch rather than resolve arbitrarily.
-    assert!(
-        Cli::try_parse_from(["mmc", "farm", "--profile", "p.toml", "--brief", "--quiet"]).is_err()
-    );
 }
 
 #[test]
