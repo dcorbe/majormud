@@ -172,6 +172,15 @@ pub fn is_combat_off(line: &str) -> bool {
     line.contains("*Combat Off*")
 }
 
+/// The board's word that a fight has BEGUN. A lone one opens a fresh
+/// fight; one landing immediately after a `*Combat Off*` is the second
+/// half of a target switch — the same attack the board answered by
+/// ending the old fight and starting the new one in a single breath, so
+/// nothing actually ended. See [`Bot`]'s `switch_watch`.
+pub fn is_combat_engaged(line: &str) -> bool {
+    line.contains("*Combat Engaged*")
+}
+
 /// Which heal the HP percent asks for, by the marks. None above the
 /// minor mark. Below the major mark the instant heal, never the slow
 /// regen. Between them the regen when one is named, else the minor.
@@ -724,13 +733,18 @@ pub struct Bot {
     /// again on the landing blow, and this is what says the fight owes
     /// one. Assigned on every engage, so it can never outlive its fight.
     backstab_open: bool,
-    /// The verb was just re-sent mid-fight. The board answers that with
-    /// `*Combat Off*` and `*Combat Engaged*` back to back (live, every
-    /// re-sent `a` and `ju`, 2026-09-13): that Off is a mode switch,
-    /// not the target leaving, and must not un-latch or start the
-    /// wander-out cooldown. Cleared by the Off it excuses, or by a kill
-    /// that beat it (the surprise blow killed and the verb hit nothing).
-    switching: bool,
+    /// A `*Combat Off*` just un-latched a fight, and the very next event
+    /// decides whether it was real. An attack sent while already in
+    /// melee — a target switch, or the backstab mode-revert — is
+    /// answered by the board with `*Combat Off*` then `*Combat Engaged*`
+    /// back to back (live, every re-sent `a` and `ju`, and the
+    /// goblin/archer ping-pong, cw-beef 2026-09-13). The Off clears the
+    /// target at once, as a real ending must; if a `*Combat Engaged*`
+    /// follows immediately this restores it and cancels the cooldown the
+    /// Off armed. `Some(None)` is the window with nothing to restore (a
+    /// kill had already cleared the target); `None` is no window open.
+    /// One event wide: any other event closes it and the un-latch stands.
+    switch_watch: Option<Option<String>>,
     /// How many times the board has told us the wielded weapon could not
     /// backstab (`mud-core`'s `text::CANNOT_BACKSTAB_WEAPON`) — meaning
     /// whatever this bot's caller believed was wielded at swap time was
@@ -832,7 +846,7 @@ impl Bot {
             pack: None,
             opener: None,
             backstab_open: false,
-            switching: false,
+            switch_watch: None,
             backstab_corrections: 0,
             stealth: false,
             hidden: false,
@@ -995,6 +1009,24 @@ impl Bot {
     }
 
     fn decide(&mut self, ev: &Event) -> Vec<BotAction> {
+        // Resolve a Combat Off's one-event window (see `switch_watch`).
+        // A `*Combat Engaged*` right after the Off is the second half of
+        // a target switch: the fight never ended, so restore the target
+        // and cancel the wander-out cooldown the Off armed against it.
+        // Any other event closes the window and the un-latch stands.
+        if let Some(restore) = self.switch_watch.take()
+            && matches!(ev, Event::Line(l) if is_combat_engaged(l))
+            && let Some(target) = restore
+        {
+            if self
+                .cooling
+                .as_ref()
+                .is_some_and(|(noun, _)| *noun == target_word(&target))
+            {
+                self.cooling = None;
+            }
+            self.engaged = Some(target);
+        }
         match ev {
             Event::RoomSeen(room) => {
                 self.exits = room.exits.clone();
@@ -1226,7 +1258,6 @@ impl Bot {
                     && let Some(noun) = self.engaged.as_deref().map(target_word)
                 {
                     self.backstab_open = false;
-                    self.switching = true;
                     return vec![BotAction::Send(format!("{} {noun}", self.config.attack_command))];
                 }
                 // Deliberately NO counter-attack here. The attacker slot
@@ -1602,22 +1633,26 @@ impl Bot {
         // announcement and covers the endings the other signals miss: a
         // prose death under the untrained-XP cap produces neither a
         // death mark nor an award, and the latch then held for 29s live.
-        if is_combat_off(line) && self.switching {
-            // The Off half of the re-sent verb's Off/Engaged pair: the
-            // fight is still on and the target has not moved. See
-            // `switching`.
-            self.switching = false;
-        } else if is_kill_line(line) || is_combat_off(line) {
-            self.switching = false;
+        if is_kill_line(line) || is_combat_off(line) {
             // A Combat Off that still finds the latch held is TARGETLESS:
             // no death line or award preceded it, so the fight ended some
             // way we did not see — the wander-out. Start the same-noun
             // cooldown. A kill's Combat Off finds the latch already
             // cleared and starts nothing.
-            if is_combat_off(line)
-                && let Some(target) = &self.engaged
-            {
-                self.cooling = Some((target_word(target).to_string(), 0));
+            //
+            // The un-latch is applied at once, as a real ending must be:
+            // most Combat Offs are real, and the tests and the runner
+            // read `engaged` the instant this returns. A target switch
+            // is the exception the board words as `*Combat Off*` then
+            // `*Combat Engaged*` in one breath; `switch_watch` holds what
+            // was cleared so the very next event can undo it if the
+            // Engaged proves the fight never ended. `Some(None)` is the
+            // window with nothing to restore.
+            if is_combat_off(line) {
+                self.switch_watch = Some(self.engaged.clone());
+                if let Some(target) = &self.engaged {
+                    self.cooling = Some((target_word(target).to_string(), 0));
+                }
             }
             self.engaged = None;
             self.quiet_prompts = 0;

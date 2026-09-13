@@ -349,3 +349,83 @@ fn someone_elses_blow_does_not_end_the_opening_round() {
     assert!(bot.on_event(&theirs).is_empty());
     assert_eq!(bot.on_event(&our_hit("punch kobold thief")), vec![BotAction::Send("a thief".into())]);
 }
+
+// ---------------------------------------------------------------------
+// bot.rs: a target switch is not a fight ending
+// ---------------------------------------------------------------------
+
+/// The board answers an attack sent while already in melee with a target
+/// switch: `*Combat Off*` then `*Combat Engaged*`, back to back. Read as
+/// a fight ending it drove the live ping-pong (cw-beef, 2026-09-13): in
+/// a room with a goblin and an archer the assist cleared its target on
+/// the Off, re-looked, re-engaged the OTHER name, drew another switch
+/// pair, and hammered `a goblin`/`a archer`/`look` ~13 times a second.
+/// The Engaged that completes the pair means the fight never ended, so
+/// the target stands and the next block starts nothing.
+#[test]
+fn a_target_switch_pair_keeps_the_fight_and_does_not_ping_pong() {
+    let mut bot = combat_bot();
+    let occupants = ["dark goblin archer", "short dark goblin"];
+    assert_eq!(
+        bot.on_event(&room(&occupants)),
+        vec![BotAction::Send("a archer".into())],
+    );
+    assert_eq!(bot.engaged(), Some("dark goblin archer"));
+    // The switch pair, the two lines the board prints for `a archer`
+    // sent mid-combat.
+    assert!(bot.on_event(&line("*Combat Off*")).is_empty());
+    assert!(bot.on_event(&line("*Combat Engaged*")).is_empty());
+    // The fight never ended: the target is restored.
+    assert_eq!(bot.engaged(), Some("dark goblin archer"));
+    // The look the assist sends on the Off returns the same block; it
+    // must NOT start a second fight against the other monster.
+    assert!(
+        bot.on_event(&room(&occupants)).is_empty(),
+        "a target switch re-engaged and started the ping-pong",
+    );
+}
+
+/// A target switch must not leave a wander-out cooldown behind: the
+/// cooldown armed on the Off is cancelled when the Engaged restores the
+/// target, so the same monster is still fought.
+#[test]
+fn the_switch_off_arms_no_lingering_cooldown() {
+    let mut bot = combat_bot();
+    assert_eq!(
+        bot.on_event(&room(&["kobold thief"])),
+        vec![BotAction::Send("a thief".into())],
+    );
+    let _ = bot.on_event(&line("*Combat Off*"));
+    let _ = bot.on_event(&line("*Combat Engaged*"));
+    assert_eq!(bot.engaged(), Some("kobold thief"));
+    // The kill ends it for real, and the next thief is a fresh fight —
+    // it would be refused if the switch had cooled "thief".
+    let _ = bot.on_event(&line("You gain 40 experience."));
+    let _ = bot.on_event(&line("*Combat Off*"));
+    assert_eq!(
+        bot.on_event(&room(&["kobold thief"])),
+        vec![BotAction::Send("a thief".into())],
+    );
+}
+
+/// A real fight ending is still a fight ending: a `*Combat Off*` NOT
+/// followed by a `*Combat Engaged*` un-latches and arms the wander-out
+/// cooldown exactly as before, so the leaver is not re-engaged from the
+/// block that still lists it.
+#[test]
+fn a_lone_combat_off_still_un_latches_and_cools() {
+    let mut bot = combat_bot();
+    assert_eq!(
+        bot.on_event(&room(&["kobold thief"])),
+        vec![BotAction::Send("a thief".into())],
+    );
+    assert!(bot.on_event(&line("*Combat Off*")).is_empty());
+    assert_eq!(bot.engaged(), None, "a lone Combat Off un-latches at once");
+    // The block still lists the leaver during its transition; the
+    // cooldown keeps the bot off it.
+    assert!(
+        bot.on_event(&room(&["kobold thief"])).is_empty(),
+        "re-engaged the leaver a lone Combat Off had cooled",
+    );
+}
+
