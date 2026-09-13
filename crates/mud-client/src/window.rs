@@ -911,6 +911,25 @@ async fn play(
                     if let crate::events::Event::RoomSeen(room) = &cor.event && !cor.elsewhere {
                         last_room = Some(room.name.clone());
                     }
+                    // The room model, farm-free sessions only: while a
+                    // farm runs it keeps its own model and counts its
+                    // own divergences, and folding here too would double
+                    // them. Folded BEFORE the assist below, which now
+                    // sweeps loot through it — a room block has to be
+                    // in the model before the sweep can see the pile it
+                    // just listed.
+                    if job.is_none() {
+                        let before = model.reconcile.total();
+                        model.on_event(cor, std::time::Instant::now());
+                        if model.reconcile.total() != before {
+                            for d in model.reconcile.recent() {
+                                let entry = format!("{} {}", d.kind.label(), d.name);
+                                if noted.insert(entry.clone()) {
+                                    w.note(&format!("-- room model: {entry} --"));
+                                }
+                            }
+                        }
+                    }
                     // While a farm runs it owns the connection outright;
                     // the assist only drives a hand-played session.
                     if job.is_none()
@@ -929,25 +948,10 @@ async fn play(
                             &clock,
                             cor,
                             std::time::Instant::now(),
+                            &mut model,
                         );
                         for why in refusals {
                             w.note(&format!("-- {why} --"));
-                        }
-                    }
-                    // Shadow bookkeeping, farm-free sessions only: while
-                    // a farm runs it keeps its own model and counts its
-                    // own divergences, and folding here too would double
-                    // them.
-                    if job.is_none() {
-                        let before = model.reconcile.total();
-                        model.on_event(cor, std::time::Instant::now());
-                        if model.reconcile.total() != before {
-                            for d in model.reconcile.recent() {
-                                let entry = format!("{} {}", d.kind.label(), d.name);
-                                if noted.insert(entry.clone()) {
-                                    w.note(&format!("-- room model: {entry} --"));
-                                }
-                            }
                         }
                     }
                 }
@@ -1399,6 +1403,15 @@ async fn play(
                                                     if let crate::events::Event::Line(line) = &cor.event {
                                                         rates.observe(line);
                                                     }
+                                                    // The model keeps folding while the map
+                                                    // has the terminal, same rule as the main
+                                                    // loop, and for the same reason: the
+                                                    // assist below sweeps loot through it, and
+                                                    // going blind to plan a route must not also
+                                                    // stop it fetching a pile it just saw.
+                                                    if job.is_none() {
+                                                        model.on_event(cor, std::time::Instant::now());
+                                                    }
                                                     if job.is_none()
                                                         && let (Some(bot), Some(casts)) =
                                                             (assist.as_mut(), assist_casts.as_mut())
@@ -1414,6 +1427,7 @@ async fn play(
                                                             &assist_clock,
                                                             cor,
                                                             std::time::Instant::now(),
+                                                            &mut model,
                                                         );
                                                         refused_under_map.extend(refusals);
                                                     }

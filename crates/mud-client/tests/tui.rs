@@ -469,6 +469,7 @@ fn every_verb_in_the_completion_list_is_claimed_and_in_help() {
 use mud_client::bot::{Bot, BotConfig};
 use mud_client::correlate::CmdId;
 use mud_client::tui::assist_actions;
+use mud_client::world::Here;
 
 fn assist_bot() -> Bot {
     Bot::new(BotConfig {
@@ -504,18 +505,20 @@ fn unsolicited(event: Event) -> Correlated {
 #[test]
 fn a_fight_ending_pokes_a_look_so_the_next_monster_is_seen() {
     let mut bot = assist_bot();
+    let mut here = Here::default();
     let room = RoomView {
         name: "Dungeon, Entrance".into(),
         also_here: vec!["giant rat".into(), "kobold thief".into()],
         ..RoomView::default()
     };
     assert_eq!(
-        assist_actions(&mut bot, &attributed(Event::RoomSeen(room.clone())), false),
+        assist_actions(&mut bot, &mut here, &attributed(Event::RoomSeen(room.clone())), false),
         vec!["a rat".to_string()]
     );
     assert_eq!(
         assist_actions(
             &mut bot,
+            &mut here,
             &unsolicited(Event::Line(
                 "The giant rat falls to the ground with a tortured squeak.".into()
             )),
@@ -525,7 +528,7 @@ fn a_fight_ending_pokes_a_look_so_the_next_monster_is_seen() {
     );
     // The board's own fight-over announcement is the poke's trigger.
     assert_eq!(
-        assist_actions(&mut bot, &unsolicited(Event::Line("*Combat Off*".into())), false),
+        assist_actions(&mut bot, &mut here, &unsolicited(Event::Line("*Combat Off*".into())), false),
         vec!["look".to_string()]
     );
     // The poke's answer names the survivor and the assist engages it.
@@ -535,7 +538,7 @@ fn a_fight_ending_pokes_a_look_so_the_next_monster_is_seen() {
         ..RoomView::default()
     };
     assert_eq!(
-        assist_actions(&mut bot, &attributed(Event::RoomSeen(survivor)), false),
+        assist_actions(&mut bot, &mut here, &attributed(Event::RoomSeen(survivor)), false),
         vec!["a thief".to_string()]
     );
 }
@@ -546,21 +549,22 @@ fn a_fight_ending_pokes_a_look_so_the_next_monster_is_seen() {
 #[test]
 fn a_combat_off_from_our_own_cast_reengages_off_the_poked_look() {
     let mut bot = assist_bot();
+    let mut here = Here::default();
     let room = RoomView {
         name: "Crypt, Stone Hallway".into(),
         also_here: vec!["giant bat".into()],
         ..RoomView::default()
     };
     assert_eq!(
-        assist_actions(&mut bot, &attributed(Event::RoomSeen(room.clone())), false),
+        assist_actions(&mut bot, &mut here, &attributed(Event::RoomSeen(room.clone())), false),
         vec!["a bat".to_string()]
     );
     assert_eq!(
-        assist_actions(&mut bot, &attributed(Event::Line("*Combat Off*".into())), true),
+        assist_actions(&mut bot, &mut here, &attributed(Event::Line("*Combat Off*".into())), true),
         vec!["look".to_string()]
     );
     assert_eq!(
-        assist_actions(&mut bot, &attributed(Event::RoomSeen(room)), false),
+        assist_actions(&mut bot, &mut here, &attributed(Event::RoomSeen(room)), false),
         vec!["a bat".to_string()]
     );
 }
@@ -576,13 +580,14 @@ fn a_combat_off_from_our_own_cast_reengages_off_the_poked_look() {
 #[test]
 fn a_dragged_arrival_is_engaged() {
     let mut bot = assist_bot();
+    let mut here = Here::default();
     let room = RoomView {
         name: "Dungeon, Entrance".into(),
         also_here: vec!["giant rat".into()],
         ..RoomView::default()
     };
     assert_eq!(
-        assist_actions(&mut bot, &unsolicited(Event::RoomSeen(room)), false),
+        assist_actions(&mut bot, &mut here, &unsolicited(Event::RoomSeen(room)), false),
         vec!["a rat".to_string()]
     );
 }
@@ -595,13 +600,14 @@ fn a_dragged_arrival_is_engaged() {
 #[test]
 fn a_directional_look_starts_nothing() {
     let mut bot = assist_bot();
+    let mut here = Here::default();
     let room = RoomView {
         name: "Slum Entrance".into(),
         also_here: vec!["guardsman".into()],
         ..RoomView::default()
     };
     assert_eq!(
-        assist_actions(&mut bot, &peeked(Event::RoomSeen(room)), false),
+        assist_actions(&mut bot, &mut here, &peeked(Event::RoomSeen(room)), false),
         Vec::<String>::new()
     );
 }
@@ -2081,6 +2087,7 @@ async fn the_bot_switch_does_not_refuse_a_recovery() {
 #[test]
 fn the_assist_looks_when_the_bot_cannot_place_an_arrival() {
     let mut bot = assist_bot();
+    let mut here = Here::default();
     let painted = mud_client::events::RoomView {
         name: "Noble Street".into(),
         exits: vec!["east".into()],
@@ -2088,9 +2095,10 @@ fn the_assist_looks_when_the_bot_cannot_place_an_arrival() {
         also_here_sgr: vec![Some("0;37".into())],
         items: vec![],
     };
-    assist_actions(&mut bot, &attributed(Event::RoomSeen(painted)), false);
+    assist_actions(&mut bot, &mut here, &attributed(Event::RoomSeen(painted)), false);
     let out = assist_actions(
         &mut bot,
+        &mut here,
         &attributed(Event::ActorEntered {
             name: "tall thug".into(),
             from: None,

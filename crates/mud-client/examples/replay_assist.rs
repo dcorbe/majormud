@@ -9,6 +9,7 @@ use mud_client::events::Event;
 use mud_client::parse::Parser;
 use mud_client::tui::assist_actions;
 use mud_client::wire::{cp437_to_string, TelnetFilter};
+use mud_client::world::Here;
 use std::time::{Duration, Instant};
 
 fn main() {
@@ -21,7 +22,15 @@ fn main() {
     let mut cfg = profile.bot.clone().unwrap_or(BotConfig { auto_combat: true, auto_get: true, ..Default::default() });
     cfg.auto_heal = false;
     cfg.auto_flee = false;
+    // One loot owner, `here`, exactly as `new_assist` builds the real
+    // play-mode bot: `auto_get` off so this tool's sweep line matches
+    // what the window actually sends.
+    cfg.auto_get = false;
     let mut bot = Bot::new(cfg);
+    // Folded exactly as the window loop folds it, so this tool's own
+    // "-> [...]" line shows the loot sweep the assist now takes from
+    // the model rather than from `auto_get`.
+    let mut here = Here::default();
 
     // Raw lines in wire order, each with its terminator kept.
     let mut raw_lines: Vec<&[u8]> = Vec::new();
@@ -64,7 +73,8 @@ fn main() {
         let decoded = cp437_to_string(&out.data);
         for ev in parser.push(&decoded) {
             let c = cor.on_event(ev, now);
-            let actions = assist_actions(&mut bot, &c, false);
+            here.on_event(&c, now);
+            let actions = assist_actions(&mut bot, &mut here, &c, false);
             match &c.event {
                 Event::RoomSeen(r) => println!(
                     "{:>9.3} ROOM {:?} here={:?} items={:?} sgr={:?} answers={:?} elsewhere={} engaged={:?} -> {:?}",

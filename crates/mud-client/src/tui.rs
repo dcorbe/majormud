@@ -1416,8 +1416,18 @@ pub fn handle_key(
 /// realm entry probe has not read the stat sheet or the spellbook yet.
 /// [`assist_tick`] reads the sheet on its first tick after the probe has
 /// stored one, and refreshes the hide flag on every tick.
+///
+/// Built with `auto_get` off, whatever the profile says: one loot
+/// owner, the caller's `Here`, exactly as the farm's stop bot is built
+/// with `auto_get` off in favour of `Verdict::Loot`. `ignores_coin`
+/// never reads `auto_get`, so the profile's own ignore list still
+/// governs what the model sweep will fetch.
 pub(crate) fn new_assist(session: &Session, cfg: &crate::bot::BotConfig) -> (crate::bot::Bot, AssistCasts) {
-    let bot = crate::bot::Bot::new(cfg.clone())
+    let bot_config = crate::bot::BotConfig {
+        auto_get: false,
+        ..cfg.clone()
+    };
+    let bot = crate::bot::Bot::new(bot_config)
         .with_stealth(session.capabilities().stealth > 0)
         .with_pack(session.pack_handle());
     (bot, AssistCasts::default())
@@ -1487,6 +1497,11 @@ impl AssistCasts {
 /// `assist_play` used to keep the empty book and the missing Stealth it
 /// was built with for the whole session, so it never cast a heal and
 /// never hid.
+///
+/// `here` is the caller's room model, already folded with this same
+/// `cor` before the call: `assist_actions` sweeps loot through it
+/// rather than through the bot's own `has_loot`, one owner exactly as
+/// the farm keeps one for a stop.
 #[allow(clippy::too_many_arguments)]
 pub fn assist_tick(
     session: &Session,
@@ -1499,6 +1514,7 @@ pub fn assist_tick(
     clock: &crate::world::RoundClock,
     cor: &crate::correlate::Correlated,
     now: std::time::Instant,
+    here: &mut crate::world::Here,
 ) -> Vec<String> {
     let Some(spells) = session.book_len() else { return Vec::new() };
     bot.set_stealth(session.capabilities().stealth > 0);
@@ -1575,7 +1591,7 @@ pub fn assist_tick(
         }
     }
     follower_gate(session, bot, casts, cor, now);
-    for cmd in assist_actions(bot, cor, casts.in_flight()) {
+    for cmd in assist_actions(bot, here, cor, casts.in_flight()) {
         if cfg.is_rest(&cmd) {
             // The bot rests off a prompt and nothing else, so the
             // prompt's own numbers are the ones it read.
@@ -1694,6 +1710,7 @@ fn follower_gate(
 /// the only evidence there is.
 pub fn assist_actions(
     bot: &mut crate::bot::Bot,
+    here: &mut crate::world::Here,
     cor: &crate::correlate::Correlated,
     own_cast: bool,
 ) -> Vec<String> {
@@ -1718,6 +1735,20 @@ pub fn assist_actions(
     };
     if combat_off {
         out.push("look".into());
+    }
+    // The floor before the door, the same priority `StopState::verdict`
+    // gives the farm's sweep: an unfinished fight outranks it, judged
+    // by the same `bot.engaged()` the verdict's own Busy arm reads.
+    // `new_assist` builds this bot with `auto_get` off, so `Here` is
+    // the sweep's only owner and this is the only place a `get` for a
+    // denomination comes from — mirroring `Verdict::Loot` and its
+    // `note_get_attempt` in `farm.rs`'s stop pump.
+    if bot.engaged().is_none()
+        && let Some(pile) = here.unswept_wanted(crate::farm::LOOT_TRIES, &|d| !bot.ignores_coin(d))
+    {
+        let denom = pile.denom.clone();
+        here.note_get_attempt(&denom);
+        out.push(format!("get {denom}"));
     }
     out
 }
