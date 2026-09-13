@@ -1587,6 +1587,69 @@ fn a_pile_at_the_try_cap_releases_the_stop() {
     assert_eq!(w.verdict(t0), Verdict::Empty, "the budget drained");
 }
 
+/// `note_occupancy` gates on [`mud_client::world::Here::is_clear`], not
+/// on `has_target_among` alone: a wanted pile still on the floor must
+/// hold `empty_since` at `None` exactly as a live target would, so the
+/// dwell budget cannot run out from underneath money nobody has swept
+/// yet. Only once the try cap drains the pile does the room count as
+/// clear, and the budget starts THEN — not back when the pile first
+/// showed up with no monster ever in the room.
+#[test]
+fn the_dwell_budget_does_not_start_while_a_wanted_pile_sits_unswept() {
+    let t0 = Instant::now();
+    let linger = Duration::from_secs(2);
+    let mut w = Stop::new(combat_bot(), 2);
+
+    // No monster ever stands here; the room opens on an unswept pile.
+    // The old has_target-only gate would start the budget on this very
+    // look, since nothing is aggressive here.
+    w.look_and_see(&block_with_loot(&["11 silver nobles"]), t0);
+    assert_eq!(
+        w.verdict(t0),
+        Verdict::Loot {
+            denom: "silver".into()
+        }
+    );
+
+    let mut t = t0;
+    for i in 0..LOOT_TRIES {
+        w.here.note_get_attempt("silver");
+        t += Duration::from_secs(1);
+        // Refused without a word, and the next block lists it again —
+        // the pile stays unswept, so the budget must stay unstarted.
+        w.look_and_see(&block_with_loot(&["11 silver nobles"]), t);
+        if i + 1 < LOOT_TRIES {
+            assert_eq!(
+                w.verdict(t),
+                Verdict::Loot {
+                    denom: "silver".into()
+                },
+                "the pile is still there; the room is not clear yet"
+            );
+        }
+    }
+
+    // The cap just drained on the last look above, at `t` (t0 + 3s).
+    // The room reads clear only from this instant on, so the budget's
+    // `until` is `t + linger` — not `t0 + linger`, which has already
+    // passed.
+    let cleared_at = t;
+    assert_eq!(
+        w.verdict(cleared_at),
+        Verdict::Waiting {
+            until: cleared_at + linger
+        },
+        "the budget starts when the pile is finally gone, not when it first appeared"
+    );
+
+    let after_linger = cleared_at + linger;
+    assert_eq!(
+        w.verdict(after_linger),
+        Verdict::Empty,
+        "linger measured from the clear point has now elapsed"
+    );
+}
+
 /// Every pile was fetched twice live (2026-09-04): the gate acks on
 /// the ECHO of `get silver`, the next verdict ran on that same event,
 /// and the "You picked up" line one event behind it had not folded

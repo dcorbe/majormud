@@ -858,11 +858,17 @@ impl StopState {
     /// anyway, and starting the budget there would have it run while
     /// the room is unknown. And an unseeded model reports an empty
     /// occupant list, which is not the same answer as an empty room.
+    ///
+    /// The budget starts only once [`Here::is_clear`] says so: no
+    /// target left to fight AND no wanted pile still on the floor.
+    /// `verdict` sweeps loot ahead of ever reading `empty_since`, so
+    /// this only keeps the dwell timer from starting while a pile is
+    /// still there to fetch.
     fn note_occupancy(&mut self, bot: &crate::bot::Bot, here: &crate::world::Here, now: Instant) {
         if self.observed.is_none() || !here.seeded() {
             return;
         }
-        if bot.has_target_among(here.aggressive_names()) {
+        if !here.is_clear(bot) {
             self.empty_since = None;
         } else {
             self.empty_since.get_or_insert(now);
