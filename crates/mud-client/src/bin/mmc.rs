@@ -23,6 +23,12 @@ fn main() -> ExitCode {
             &mud_client::profile::resolve(&profile.to_string_lossy()),
             capture.as_deref(),
         ),
+        Command::Replay { capture, profile } => replay_command(
+            &capture,
+            profile
+                .map(|p| mud_client::profile::resolve(&p.to_string_lossy()))
+                .as_deref(),
+        ),
         Command::Path { from, to, content } => path_command(&from, &to, &content),
         Command::Map { at, content } => map_command(&at, &content),
         Command::Import {
@@ -344,6 +350,61 @@ fn import_command(
             ExitCode::FAILURE
         }
     }
+}
+
+/// Replay a capture's board output through the bot and report command
+/// loops. Reads no network: it feeds the recorded board stream to a
+/// fresh bot and prints where today's code would spin (see
+/// `crate::replay`). A `.raw` keeps the board's colour, which the bot
+/// needs to read a room block, so it is the better input; a
+/// `_timing.log` works for the coarser loops but has its colour stripped.
+fn replay_command(capture: &std::path::Path, profile: Option<&std::path::Path>) -> ExitCode {
+    use mud_client::replay::{board_output, find_loops, replay, DEFAULT_MAX_DISTINCT, DEFAULT_MIN_RUN};
+
+    let bytes = match std::fs::read(capture) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("{}: {e}", capture.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let text = String::from_utf8_lossy(&bytes);
+
+    let config = match profile {
+        Some(path) => match Profile::load(path) {
+            Ok(p) => p.bot.unwrap_or_default(),
+            Err(e) => {
+                eprintln!("profile {}: {e}", path.display());
+                return ExitCode::FAILURE;
+            }
+        },
+        None => mud_client::bot::BotConfig {
+            auto_combat: true,
+            ..Default::default()
+        },
+    };
+
+    let trace = replay(&board_output(&text), config);
+    let loops = find_loops(&trace, DEFAULT_MIN_RUN, DEFAULT_MAX_DISTINCT);
+    println!(
+        "{}: {} commands emitted",
+        capture.display(),
+        trace.commands.len()
+    );
+    if loops.is_empty() {
+        println!("no command loops");
+        return ExitCode::SUCCESS;
+    }
+    for finding in &loops {
+        println!(
+            "loop at event {}: {} commands from {:?}",
+            finding.at_event, finding.count, finding.commands
+        );
+    }
+    // A found loop is the failure the tool exists to surface, so it is
+    // reported in the exit code too — a scripted sweep over the captures
+    // can fail on it without parsing the text.
+    ExitCode::FAILURE
 }
 
 fn farm_command(

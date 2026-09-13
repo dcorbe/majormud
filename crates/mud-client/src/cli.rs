@@ -41,6 +41,16 @@ pub enum Command {
         #[arg(long)]
         capture: Option<PathBuf>,
     },
+    /// Replay a capture's board output through the bot and flag command loops
+    Replay {
+        /// A `.raw` capture (preferred, it keeps the board's colour) or a
+        /// `_timing.log`
+        capture: PathBuf,
+        /// Character profile whose `[bot]` config to replay with; without
+        /// it a default combat config is used
+        #[arg(long)]
+        profile: Option<PathBuf>,
+    },
     /// Compute a route between two rooms (map/room, e.g. 1/1)
     Path {
         /// Start room as map/room
