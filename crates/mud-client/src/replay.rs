@@ -17,9 +17,15 @@
 //! the bot's REACTION to a fixed, known-bad sequence, which is exactly
 //! what a regression net needs and all the captures we have can supply.
 
+use std::time::{Duration, Instant};
+
 use crate::bot::{is_kill_line, Bot, BotAction, BotConfig};
+use crate::correlate::{CmdId, Correlator};
 use crate::events::Event;
 use crate::parse::Parser;
+use crate::tui::assist_actions;
+use crate::wire::{cp437_to_string, TelnetFilter};
+use crate::world::Here;
 
 /// One command the bot emitted during a replay, tagged with the index of
 /// the board event that provoked it. The index locates a finding back in
@@ -90,6 +96,98 @@ pub fn replay(text: &str, config: BotConfig) -> Trace {
             if let BotAction::Send(command) = action {
                 trace.commands.push(Emitted { at_event: i, command });
             }
+        }
+    }
+    trace
+}
+
+/// Replay a capture pair through the FULL assist pipeline — telnet
+/// filter, parser, correlator, room model, then [`assist_actions`] — the
+/// same wiring `examples/replay_assist.rs` drives by hand, returning the
+/// same [`Trace`] shape [`find_loops`] already knows how to read.
+///
+/// The bare-bot `replay` above skips the wrapper entirely, so it never
+/// sees the loops the wrapper alone can cause — the look-on-Combat-Off
+/// push being the one this harness exists to catch. That push needs the
+/// correlator's TX/RX bookkeeping to mean anything (a `look` sent versus
+/// one merely echoed), so this takes a capture pair rather than board
+/// text alone: `raw` is the `.raw` byte capture and `timing` is its
+/// `_timing.log`, whose `TX ` lines feed the correlator and whose `RX `
+/// lines gate which raw line is decoded next.
+pub fn replay_assist(raw: &[u8], timing: &str, config: BotConfig) -> Trace {
+    let mut cfg = config;
+    // As `new_assist` builds the real play-mode bot: `auto_get` off so
+    // the loot sweep comes from `here`, the only owner assist_actions
+    // consults, and not from a second, redundant path.
+    cfg.auto_get = false;
+    let mut bot = Bot::new(cfg);
+    let mut here = Here::default();
+
+    let mut filter = TelnetFilter::new();
+    let mut parser = Parser::new();
+    let mut cor = Correlator::new(Duration::from_secs(20));
+
+    // Raw lines in wire order, each with its terminator kept — same
+    // split the example tool uses.
+    let mut raw_lines: Vec<&[u8]> = Vec::new();
+    let mut start = 0;
+    for (i, b) in raw.iter().enumerate() {
+        if *b == b'\n' {
+            raw_lines.push(&raw[start..=i]);
+            start = i + 1;
+        }
+    }
+    if start < raw.len() {
+        raw_lines.push(&raw[start..]);
+    }
+    let mut next_raw = 0usize;
+
+    let base = Instant::now();
+    let mut t0: Option<f64> = None;
+    let mut id = 0u64;
+
+    let mut trace = Trace::default();
+    let mut room: Option<String> = None;
+    let mut event_index = 0usize;
+
+    for entry in timing.lines() {
+        let Some((ts, rest)) = entry.split_once(' ') else { continue };
+        let Ok(ts) = ts.parse::<f64>() else { continue };
+        let t0v = *t0.get_or_insert(ts);
+        let now = base + Duration::from_secs_f64(ts - t0v);
+        if let Some(cmd) = rest.strip_prefix("TX ") {
+            id += 1;
+            cor.sent(CmdId(id), cmd.trim(), now);
+            continue;
+        }
+        if rest.strip_prefix("RX ").is_none() {
+            continue;
+        }
+        let Some(bytes) = raw_lines.get(next_raw) else { break };
+        next_raw += 1;
+        let out = filter.push(bytes);
+        let decoded = cp437_to_string(&out.data);
+        for ev in parser.push(&decoded) {
+            let c = cor.on_event(ev, now);
+            // Same progress rule the bare-bot replay uses: a kill line,
+            // or a step into a differently-named room.
+            let progressed = match &c.event {
+                Event::Line(line) => is_kill_line(line),
+                Event::RoomSeen(view) => {
+                    let moved = room.as_deref().is_some_and(|n| n != view.name);
+                    room = Some(view.name.clone());
+                    moved
+                }
+                _ => false,
+            };
+            if progressed {
+                trace.progress_at.push(event_index);
+            }
+            here.on_event(&c, now);
+            for command in assist_actions(&mut bot, &mut here, &c, false) {
+                trace.commands.push(Emitted { at_event: event_index, command });
+            }
+            event_index += 1;
         }
     }
     trace

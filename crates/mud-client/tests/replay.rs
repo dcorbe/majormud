@@ -9,8 +9,8 @@
 
 use mud_client::bot::BotConfig;
 use mud_client::replay::{
-    board_output, detect_loops, find_loops, replay, Emitted, Trace, DEFAULT_MAX_DISTINCT,
-    DEFAULT_MIN_RUN,
+    board_output, detect_loops, find_loops, replay, replay_assist, Emitted, Trace,
+    DEFAULT_MAX_DISTINCT, DEFAULT_MIN_RUN,
 };
 
 fn emitted(commands: &[&str]) -> Vec<Emitted> {
@@ -154,5 +154,107 @@ fn the_same_alternation_with_no_progress_is_a_loop() {
     let found = find_loops(&trace, DEFAULT_MIN_RUN, DEFAULT_MAX_DISTINCT);
     assert_eq!(found.len(), 1, "missed a no-progress loop: {found:?}");
     assert_eq!(found[0].count, 6);
+}
+
+// --- replay_assist: the wrapper (assist_actions) can loop in ways the
+// bare bot never does, because it pushes a `look` on every targetless
+// `*Combat Off*` while the bare bot emits nothing for that line at all.
+// These fixtures build a `.raw` + timing-log pair the way a capture
+// would: one `RX` timing line per newline-terminated raw chunk.
+
+fn combat_off_cycle_raw_and_timing(cycles: usize) -> (Vec<u8>, String) {
+    // Each cycle is two physical lines: the announcement, then a bare
+    // prompt. Both end in \r\n so the raw-line split (on '\n') yields
+    // exactly one chunk per line, with no ragged partial at the end.
+    let mut raw = String::new();
+    for _ in 0..cycles {
+        raw.push_str("*Combat Off*\r\n[HP=97]:\r\n");
+    }
+    let lines = 2 * cycles;
+    let mut timing = String::new();
+    for i in 0..lines {
+        timing.push_str(&format!("{}.000 RX x\n", i));
+    }
+    (raw.into_bytes(), timing)
+}
+
+/// Same cycles, but as board TEXT (what `replay`, the bare-bot path,
+/// consumes directly — no telnet filtering, no correlator).
+fn combat_off_cycle_text(cycles: usize) -> String {
+    let mut text = String::new();
+    for _ in 0..cycles {
+        text.push_str("*Combat Off*\r\n[HP=97]:\r\n");
+    }
+    text
+}
+
+/// A targetless `*Combat Off*` repeated with no kill in sight: the
+/// assist pushes a `look` every time (see `assist_actions`'s
+/// unconditional `if combat_off { out.push("look".into()) }`), and
+/// nothing ever advances the state, so this is look spam through the
+/// wrapper.
+#[test]
+fn the_assist_wrapper_looks_on_repeated_targetless_combat_off() {
+    let (raw, timing) = combat_off_cycle_raw_and_timing(10);
+    let trace = replay_assist(&raw, &timing, combat_config());
+    assert_eq!(
+        trace.commands.iter().filter(|c| c.command == "look").count(),
+        10,
+        "expected one look per Combat Off: {:?}",
+        trace.commands,
+    );
+    let found = find_loops(&trace, DEFAULT_MIN_RUN, DEFAULT_MAX_DISTINCT);
+    assert_eq!(
+        found.len(),
+        1,
+        "the assist wrapper should have looked itself into a loop: {:?} -> {found:?}",
+        trace.commands,
+    );
+}
+
+/// The SAME board, through the bare-bot path: `replay` drives the bot
+/// core directly, with no wrapper to push a `look`, so it emits no
+/// commands at all and is clean. This is the proof the extended
+/// harness catches something the bot-core replay misses.
+#[test]
+fn the_bare_bot_replay_of_the_same_board_is_clean() {
+    let text = combat_off_cycle_text(10);
+    let trace = replay(&text, combat_config());
+    assert!(
+        trace.commands.is_empty(),
+        "the bare bot should emit nothing on a targetless Combat Off: {:?}",
+        trace.commands,
+    );
+    let found = find_loops(&trace, DEFAULT_MIN_RUN, DEFAULT_MAX_DISTINCT);
+    assert!(found.is_empty(), "false positive on the bare-bot path: {found:?}");
+}
+
+/// Normal play through the assist: a kill lands between every Combat
+/// Off, so the state advances every cycle and the wrapper's `look`
+/// never accumulates into a run. No false positive.
+#[test]
+fn the_assist_wrapper_is_not_flagged_when_a_kill_lands_each_cycle() {
+    let cycles = 10;
+    let mut raw = String::new();
+    for _ in 0..cycles {
+        raw.push_str("The goblin falls to the ground!\r\n*Combat Off*\r\n[HP=97]:\r\n");
+    }
+    let lines = 3 * cycles;
+    let mut timing = String::new();
+    for i in 0..lines {
+        timing.push_str(&format!("{}.000 RX x\n", i));
+    }
+    let trace = replay_assist(raw.as_bytes(), &timing, combat_config());
+    assert_eq!(
+        trace.commands.iter().filter(|c| c.command == "look").count(),
+        cycles,
+        "expected one look per cycle: {:?}",
+        trace.commands,
+    );
+    let found = find_loops(&trace, DEFAULT_MIN_RUN, DEFAULT_MAX_DISTINCT);
+    assert!(
+        found.is_empty(),
+        "false positive: a kill lands every cycle, so this is not a loop: {found:?}",
+    );
 }
 
