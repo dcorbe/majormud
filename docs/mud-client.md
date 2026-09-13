@@ -121,7 +121,11 @@ The verb a fight opens and continues with, sent as it is with the
 target's noun after it. `a` swings. A mystic sets `pu` or `ju`. A caster
 who fights with magic sets the whole cast, `"cast lbol"`, and the bot
 sends `cast lbol rat`. The backstab opener is `bs` whatever this says,
-since it is the sneak that asked for it. The verb also reads the echo
+since it is the sneak that asked for it. The board drops a backstab to
+a plain attack once its first blow lands, so the verb is sent again on
+that blow and the second round is fought with it. The board answers a
+verb sent mid-fight with `*Combat Off*` and `*Combat Engaged*` back to
+back; that pair is a mode switch, not the fight ending. The verb also reads the echo
 that tells the bot its target was gone before the swing: the board
 speaks a command it cannot resolve, and `You say "pu rat"` ends that
 fight the same way `You say "a rat"` did.

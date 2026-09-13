@@ -241,3 +241,111 @@ fn a_wrong_weapon_refusal_is_recorded_as_a_correction() {
     assert_eq!(bot.backstab_corrections(), 1);
     assert_eq!(bot.engaged(), Some("kobold thief"), "the fight is not refused, only the mode");
 }
+
+// ---------------------------------------------------------------------
+// bot.rs: the second round after a backstab opener
+// ---------------------------------------------------------------------
+
+fn line(text: &str) -> Event {
+    Event::Line(text.into())
+}
+
+fn our_hit(target: &str) -> Event {
+    Event::CombatHit {
+        attacker: mud_client::events::Actor::You,
+        target: mud_client::events::Actor::Other(target.into()),
+        damage: 65,
+    }
+}
+
+/// The board drops a backstab to a plain attack the moment its first
+/// blow lands, so the fight's own verb goes out on that blow: a mystic
+/// who opened with `bs` and did nothing else spent every later round on
+/// a single punch (cw-blueberry-4, 2026-09-13: surprise punch 72, then
+/// punch 12, where `ju` swings two or three times a round).
+#[test]
+fn the_fights_verb_is_sent_again_when_the_surprise_blow_lands() {
+    let mut bot = Bot::new(BotConfig {
+        auto_combat: true,
+        attack_command: "ju".into(),
+        ..BotConfig::default()
+    });
+    bot.arm_backstab_opener(true, None);
+    assert_eq!(bot.on_event(&room(&["shade"])), vec![BotAction::Send("bs shade".into())]);
+    // The hit regex reads "surprise punch shade" as the target.
+    assert_eq!(bot.on_event(&our_hit("punch shade")), vec![BotAction::Send("ju shade".into())]);
+    assert_eq!(bot.engaged(), Some("shade"));
+}
+
+/// A verb re-sent mid-fight makes the board print `*Combat Off*` and
+/// `*Combat Engaged*` back to back (live, every re-sent `a` and `ju` in
+/// the 2026-09-13 captures). That Off is a mode switch, not the target
+/// leaving: the fight stays engaged and no wander-out cooldown starts,
+/// or the next block would refuse the monster still standing there.
+#[test]
+fn the_mode_switch_combat_off_ends_nothing() {
+    let mut bot = combat_bot();
+    bot.arm_backstab_opener(true, None);
+    let _ = bot.on_event(&room(&["kobold thief"]));
+    assert_eq!(bot.on_event(&our_hit("punch kobold thief")), vec![BotAction::Send("a thief".into())]);
+    assert!(bot.on_event(&line("*Combat Off*")).is_empty());
+    assert!(bot.on_event(&line("*Combat Engaged*")).is_empty());
+    assert_eq!(bot.engaged(), Some("kobold thief"), "the fight is still on");
+    assert!(bot.on_event(&room(&["kobold thief"])).is_empty(), "already engaged");
+    // The real ending, then a fresh thief: no cooldown stands in the way.
+    let _ = bot.on_event(&line("You gain 40 experience."));
+    let _ = bot.on_event(&line("*Combat Off*"));
+    assert_eq!(bot.on_event(&room(&["kobold thief"])), vec![BotAction::Send("a thief".into())]);
+}
+
+/// Most surprise blows kill outright, and the death arrives in the same
+/// burst as the blow. The verb is already out by then; the board answers
+/// it with a quiet "Your command had no effect." and the kill's own
+/// Combat Off must still be read as the ending it is.
+#[test]
+fn a_kill_in_the_same_burst_still_ends_the_fight() {
+    let mut bot = combat_bot();
+    bot.arm_backstab_opener(true, None);
+    let _ = bot.on_event(&room(&["big skeleton"]));
+    assert_eq!(bot.on_event(&our_hit("punch big skeleton")), vec![BotAction::Send("a skeleton".into())]);
+    let _ = bot.on_event(&line("You gain 55 experience."));
+    assert!(bot.on_event(&line("*Combat Off*")).is_empty());
+    assert_eq!(bot.engaged(), None);
+    assert!(bot.on_event(&line("Your command had no effect.")).is_empty());
+    // The next fight opens plainly and its Combat Off is an ordinary one.
+    assert_eq!(bot.on_event(&room(&["giant rat"])), vec![BotAction::Send("a rat".into())]);
+    let _ = bot.on_event(&line("*Combat Off*"));
+    assert_eq!(bot.engaged(), None, "a targetless Combat Off still un-latches");
+}
+
+/// A fight opened with the verb itself is already in the right mode:
+/// its blows send nothing, and neither does a second blow after the
+/// re-send.
+#[test]
+fn only_a_backstab_opener_re_sends_and_only_once() {
+    let mut bot = combat_bot();
+    let _ = bot.on_event(&room(&["kobold thief"]));
+    assert!(bot.on_event(&our_hit("kobold thief")).is_empty());
+
+    let mut bot = combat_bot();
+    bot.arm_backstab_opener(true, None);
+    let _ = bot.on_event(&room(&["kobold thief"]));
+    assert_eq!(bot.on_event(&our_hit("punch kobold thief")), vec![BotAction::Send("a thief".into())]);
+    assert!(bot.on_event(&our_hit("kobold thief")).is_empty());
+}
+
+/// A party member's blow on the target is not the opening round
+/// resolving.
+#[test]
+fn someone_elses_blow_does_not_end_the_opening_round() {
+    let mut bot = combat_bot();
+    bot.arm_backstab_opener(true, None);
+    let _ = bot.on_event(&room(&["kobold thief"]));
+    let theirs = Event::CombatHit {
+        attacker: mud_client::events::Actor::Other("Potato".into()),
+        target: mud_client::events::Actor::Other("kobold thief".into()),
+        damage: 12,
+    };
+    assert!(bot.on_event(&theirs).is_empty());
+    assert_eq!(bot.on_event(&our_hit("punch kobold thief")), vec![BotAction::Send("a thief".into())]);
+}

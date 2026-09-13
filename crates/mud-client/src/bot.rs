@@ -716,6 +716,21 @@ pub struct Bot {
     /// survive past that one use. `None` (never primed) is today's
     /// unconditional `a <target>`.
     opener: Option<Opener>,
+    /// The fight in progress opened with `bs` and its first blow has not
+    /// landed yet. The board drops a backstab to a plain attack the
+    /// moment that blow lands (`mud-core`'s `game.rs`, the autocombat
+    /// revert), which for a mystic is a single punch a round where
+    /// `attack_command` swings two or three times. So the verb goes out
+    /// again on the landing blow, and this is what says the fight owes
+    /// one. Assigned on every engage, so it can never outlive its fight.
+    backstab_open: bool,
+    /// The verb was just re-sent mid-fight. The board answers that with
+    /// `*Combat Off*` and `*Combat Engaged*` back to back (live, every
+    /// re-sent `a` and `ju`, 2026-09-13): that Off is a mode switch,
+    /// not the target leaving, and must not un-latch or start the
+    /// wander-out cooldown. Cleared by the Off it excuses, or by a kill
+    /// that beat it (the surprise blow killed and the verb hit nothing).
+    switching: bool,
     /// How many times the board has told us the wielded weapon could not
     /// backstab (`mud-core`'s `text::CANNOT_BACKSTAB_WEAPON`) — meaning
     /// whatever this bot's caller believed was wielded at swap time was
@@ -816,6 +831,8 @@ impl Bot {
             taken: (String::new(), HashSet::new()),
             pack: None,
             opener: None,
+            backstab_open: false,
+            switching: false,
             backstab_corrections: 0,
             stealth: false,
             hidden: false,
@@ -1195,6 +1212,23 @@ impl Bot {
                 {
                     self.quiet_prompts = 0;
                 }
+                // The backstab's one blow landed: the board is now in
+                // plain-attack mode, so the fight's own verb goes out
+                // for the second round. Sent on the blow, not on a
+                // later prompt, because the death that usually follows
+                // arrives in the same burst and there is no earlier
+                // moment that knows either way; the verb then hits
+                // nothing and the board says so quietly ("Your command
+                // had no effect."). See `backstab_open`.
+                if self.backstab_open
+                    && *attacker == crate::events::Actor::You
+                    && self.involves_target(&actor_name(target))
+                    && let Some(noun) = self.engaged.as_deref().map(target_word)
+                {
+                    self.backstab_open = false;
+                    self.switching = true;
+                    return vec![BotAction::Send(format!("{} {noun}", self.config.attack_command))];
+                }
                 // Deliberately NO counter-attack here. The attacker slot
                 // of a hit line cannot be split out reliably: the attack
                 // verb is per-monster data and can be multi-word — "The
@@ -1361,7 +1395,9 @@ impl Bot {
     /// their cost").
     fn opening_attack(&mut self, name: &str) -> Vec<BotAction> {
         let target = target_word(name);
-        match self.opener.take() {
+        let opener = self.opener.take();
+        self.backstab_open = opener.is_some();
+        match opener {
             Some(Opener::Backstab { restore: Some(primary) }) => vec![
                 BotAction::Send(format!("bs {target}")),
                 BotAction::Send(format!("eq {primary}")),
@@ -1566,7 +1602,13 @@ impl Bot {
         // announcement and covers the endings the other signals miss: a
         // prose death under the untrained-XP cap produces neither a
         // death mark nor an award, and the latch then held for 29s live.
-        if is_kill_line(line) || is_combat_off(line) {
+        if is_combat_off(line) && self.switching {
+            // The Off half of the re-sent verb's Off/Engaged pair: the
+            // fight is still on and the target has not moved. See
+            // `switching`.
+            self.switching = false;
+        } else if is_kill_line(line) || is_combat_off(line) {
+            self.switching = false;
             // A Combat Off that still finds the latch held is TARGETLESS:
             // no death line or award preceded it, so the fight ended some
             // way we did not see — the wander-out. Start the same-noun
