@@ -54,6 +54,20 @@ pub struct Profile {
     /// enough for a board that is restarting to finish.
     #[serde(default = "default_reconnect_delay")]
     pub reconnect_delay_seconds: u64,
+    /// Send a telnet no-op after this many seconds without a send, and
+    /// again after each quiet spell. Zero, the default, sends nothing.
+    ///
+    /// The two bytes never reach the game: the board's telnet layer eats
+    /// them, so nothing is printed and nothing is echoed. It is for a
+    /// line at home that drops when the character stands idle. The
+    /// socket's own keepalive probes are always on and carry no data at
+    /// all, which is enough when it is the network that forgets an idle
+    /// line. This is for when the board itself, or something reading the
+    /// bytes, is the one counting.
+    ///
+    /// Before the tables for the same reason as the fields above.
+    #[serde(default)]
+    pub keepalive_seconds: u64,
     /// Bot policy toggles. Absent means every toggle off — a patrol that
     /// walks its circuit and fights nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -97,6 +111,7 @@ impl Default for Profile {
             scrollback_lines: default_scrollback(),
             reconnect: false,
             reconnect_delay_seconds: default_reconnect_delay(),
+            keepalive_seconds: 0,
             bot: None,
             farm: None,
             bank: crate::bank::BankConfig::default(),

@@ -305,7 +305,8 @@ impl Window {
 enum PlayEnd {
     /// The board closed the line, or the connection failed under the
     /// loop. Nobody asked for it, so this is what a redial answers.
-    Closed,
+    /// Carries what the socket said, from [`Session::close_reason`].
+    Closed(String),
     /// The operator typed `/disconnect`. The line is just as closed and
     /// the tidying is the same, but a window is not dialled back into a
     /// board its operator just left.
@@ -479,8 +480,8 @@ async fn run(mut w: Window, first: Option<KeyOutcome>) {
         w.event(EventKind::Disconnected);
         attempt = 1;
         redial = match end {
-            PlayEnd::Closed => {
-                w.note("-- disconnected. /connect to go back --");
+            PlayEnd::Closed(reason) => {
+                w.note(&format!("-- disconnected: {reason}. /connect to go back --"));
                 arm_redial(&w)
             }
             PlayEnd::Left => {
@@ -808,7 +809,7 @@ async fn play(
                     w.set_bar(bar_text(&state_rx, job.as_ref(), here, &rates, level, assist.is_some(), &session.party(), cols), job.is_some());
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(_) => break PlayEnd::Closed, // disconnected
+                Err(_) => break closed(&session),
             },
             ev = events.recv() => {
                 // The display comes from raw passthrough, so nothing is
@@ -954,7 +955,7 @@ async fn play(
             why = rests.recv() => match why {
                 Ok(why) => w.event(EventKind::Rest(why)),
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(_) => break PlayEnd::Closed, // disconnected
+                Err(_) => break closed(&session),
             },
             note = party_notes.recv() => match note {
                 Ok(note) => {
@@ -970,10 +971,10 @@ async fn play(
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(_) => break PlayEnd::Closed, // disconnected
+                Err(_) => break closed(&session),
             },
             changed = state_rx.changed() => {
-                if changed.is_err() { break PlayEnd::Closed; }
+                if changed.is_err() { break closed(&session); }
                 let status = state_rx.borrow().status.clone();
                 if status != recovering {
                     if let Some(s @ (Status::Resting | Status::Meditating)) = &status {
@@ -1694,6 +1695,13 @@ async fn play(
     }
     session.close();
     end
+}
+
+/// The play loop's answer when a session stream ends under it. The
+/// reader writes its reason before it lets the streams go, so by the
+/// time a stream has ended the reason is there to read.
+fn closed(session: &Session) -> PlayEnd {
+    PlayEnd::Closed(session.close_reason().unwrap_or_else(|| "line closed".to_string()))
 }
 
 /// What the assist knows about the pools when the profile leaves

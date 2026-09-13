@@ -28,6 +28,7 @@ pub const KEYS: &[&str] = &[
     "scrollback_lines",
     "reconnect",
     "reconnect_delay_seconds",
+    "keepalive_seconds",
     "bot.auto_combat",
     "bot.auto_heal",
     "bot.auto_rest",

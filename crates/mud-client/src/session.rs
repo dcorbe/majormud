@@ -139,6 +139,8 @@ struct Transcript {
     text: String,
     cursor: usize,
     closed: bool,
+    /// Why the line closed, once it has: what the socket read said.
+    reason: Option<String>,
 }
 
 struct Shared {
@@ -168,8 +170,13 @@ impl Shared {
         self.version.send_modify(|v| *v += 1);
     }
 
-    fn close(&self) {
-        self.transcript.lock().expect("transcript lock").closed = true;
+    /// The first reason stands: a line the board dropped is then closed
+    /// again by the window on its way out, and that is not why it went.
+    fn close(&self, reason: String) {
+        let mut tr = self.transcript.lock().expect("transcript lock");
+        tr.closed = true;
+        tr.reason.get_or_insert(reason);
+        drop(tr);
         self.version.send_modify(|v| *v += 1);
     }
 
@@ -209,6 +216,15 @@ enum Cmd {
 /// step_timeout] band was guaranteed to arrive unattributed — a
 /// systematic loss class, not a tail case.
 const CORRELATE_TTL: Duration = Duration::from_secs(20);
+
+/// Quiet time before the kernel's first keepalive probe, and the gap
+/// between probes after it. See [`Session::connect`].
+const KEEPALIVE_IDLE: Duration = Duration::from_secs(15);
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Telnet IAC NOP: a command the board's telnet layer consumes without
+/// passing anything to the game. See `Profile::keepalive_seconds`.
+const TELNET_NOP: [u8; 2] = [255, 241];
 
 struct TimingLog {
     file: Mutex<File>,
@@ -462,6 +478,16 @@ pub struct Session {
 impl Session {
     pub async fn connect(profile: &Profile, capture: Option<Capture>) -> std::io::Result<Session> {
         let stream = TcpStream::connect((profile.host.as_str(), profile.port)).await?;
+        // Kernel probes while the line is quiet. They carry no data, so
+        // the board never sees them, and they are what keeps a NAT box
+        // at home from forgetting an idle line: an idle window dropped
+        // well under a minute after its last keystroke (2026-09-12),
+        // and the first probe goes out inside fifteen.
+        socket2::SockRef::from(&stream).set_tcp_keepalive(
+            &socket2::TcpKeepalive::new()
+                .with_time(KEEPALIVE_IDLE)
+                .with_interval(KEEPALIVE_INTERVAL),
+        )?;
         let (mut read_half, mut write_half) = stream.into_split();
 
         let shared = Arc::new(Shared {
@@ -469,6 +495,7 @@ impl Session {
                 text: String::new(),
                 cursor: 0,
                 closed: false,
+                reason: None,
             }),
             version: watch::Sender::new(0),
         });
@@ -521,16 +548,41 @@ impl Session {
         };
 
         let correlator = Arc::new(Mutex::new(Correlator::new(CORRELATE_TTL)));
+        let profile_tx = watch::Sender::new(profile.clone());
 
-        // Writer task: paced lines + unpaced negotiation replies.
+        // Writer task: paced lines + unpaced negotiation replies, and the
+        // telnet no-op a profile asks for after a quiet spell.
         let pace_ms = Arc::new(AtomicU64::new(profile.pace().as_millis() as u64));
         {
             let pace_ms = Arc::clone(&pace_ms);
             let timing = timing.clone();
             let correlator = Arc::clone(&correlator);
+            let mut profile_rx = profile_tx.subscribe();
             tokio::spawn(async move {
                 let mut pacer = Pacer::new(Duration::ZERO);
-                while let Some(cmd) = cmd_rx.recv().await {
+                let mut last_send = Instant::now();
+                loop {
+                    let quiet = profile_rx.borrow_and_update().keepalive_seconds;
+                    let cmd = tokio::select! {
+                        cmd = cmd_rx.recv() => cmd,
+                        // A `/set` wakes the wait so a new quiet time
+                        // applies to the spell already under way.
+                        _ = profile_rx.changed() => continue,
+                        () = tokio::time::sleep_until(
+                            (last_send + Duration::from_secs(quiet)).into()
+                        ), if quiet > 0 => {
+                            if write_half.write_all(&TELNET_NOP).await.is_err() {
+                                break;
+                            }
+                            let _ = write_half.flush().await;
+                            last_send = Instant::now();
+                            if let Some(t) = &timing {
+                                t.write("!!", "keepalive");
+                            }
+                            continue;
+                        }
+                    };
+                    let Some(cmd) = cmd else { break };
                     match cmd {
                         Cmd::Line { id, line, moves } => {
                             // Re-read per send: `set_pace` retunes a live
@@ -561,6 +613,7 @@ impl Session {
                                 break;
                             }
                             let _ = write_half.flush().await;
+                            last_send = Instant::now();
                             if let Some(t) = &timing {
                                 t.write("TX", &line);
                             }
@@ -570,6 +623,7 @@ impl Session {
                                 break;
                             }
                             let _ = write_half.flush().await;
+                            last_send = Instant::now();
                         }
                         Cmd::Close => {
                             use tokio::io::AsyncWriteExt as _;
@@ -601,9 +655,10 @@ impl Session {
                 let mut parser = Parser::new();
                 let mut rx_line = String::new();
                 let mut buf = [0u8; 8192];
-                loop {
+                let reason = loop {
                     let n = match read_half.read(&mut buf).await {
-                        Ok(0) | Err(_) => break,
+                        Ok(0) => break "end of stream".to_string(),
+                        Err(e) => break e.to_string(),
                         Ok(n) => n,
                     };
                     if let Some(f) = &mut raw_file {
@@ -649,7 +704,7 @@ impl Session {
                         }
                     }
                     shared.append(&stripped);
-                }
+                };
                 let tail = parser.finish();
                 if !tail.is_empty() {
                     let mut guard = correlator.lock().expect("correlator lock");
@@ -668,7 +723,10 @@ impl Session {
                 if let (Some(t), false) = (&timing, rx_line.is_empty()) {
                     t.write("RX", rx_line.trim_end_matches(['\r', '\n']));
                 }
-                shared.close();
+                if let Some(t) = &timing {
+                    t.write("!!", &format!("connection closed: {reason}"));
+                }
+                shared.close(reason);
             })
         };
 
@@ -679,7 +737,7 @@ impl Session {
             raw_tx: Mutex::new(Some(raw_tx)),
             rests_tx: Mutex::new(Some(rests_tx)),
             state_rx,
-            profile: watch::Sender::new(profile.clone()),
+            profile: profile_tx,
             reader: reader.abort_handle(),
             next_id: AtomicU64::new(1),
             pace_ms,
@@ -701,6 +759,13 @@ impl Session {
     /// and again through [`Session::profile_changes`] while it runs.
     pub fn profile(&self) -> Profile {
         self.profile.borrow().clone()
+    }
+
+    /// Why the line closed, once it has. "end of stream" is the board
+    /// hanging up, or answering our own `/disconnect`. Anything else is
+    /// the socket error, which is how a line reset by the path reads.
+    pub fn close_reason(&self) -> Option<String> {
+        self.shared.transcript.lock().expect("transcript lock").reason.clone()
     }
 
     /// Replace the profile. Every job holding a receiver from
@@ -739,7 +804,7 @@ impl Session {
         self.raw_tx.lock().expect("raw_tx lock").take();
         self.rests_tx.lock().expect("rests_tx lock").take();
         self.party.lock().expect("party lock").notes.take();
-        self.shared.close();
+        self.shared.close("closed by this side".to_string());
     }
 
     /// Retune send pacing on a live session. Takes effect from the next

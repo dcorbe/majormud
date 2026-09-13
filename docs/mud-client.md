@@ -844,6 +844,22 @@ attempt N`, and the count starts over once a session is playing or the
 operator dials. `/set reconnect false` is read when the next line
 closes, so it does not cancel a wait that is already running.
 
+When a line closes on its own the window says why, from what the socket
+read: `-- disconnected: end of stream --` is the board hanging up, and
+anything else is the socket error, such as `Connection reset by peer`,
+which is the path forgetting the line rather than the board ending it.
+The same reason goes into the timing log as `!! connection closed:`.
+
+Every connection keeps itself alive at the socket: after fifteen quiet
+seconds the kernel sends empty probes ten seconds apart. They carry no
+data, so the board sees nothing, and they are what keeps a NAT box from
+dropping an idle line. If a line still drops while the character stands
+idle, `keepalive_seconds = 30` sends a telnet no-op after every thirty
+seconds without a send. The board's telnet layer eats the two bytes, so
+nothing is printed and nothing is echoed. Zero, the default, sends none.
+Each one is logged as `!! keepalive`. The farm never needs it: its own
+`look` at an empty stop keeps the line busy.
+
 Interactive play never logs in for you: you type the username and
 password at the board's prompt. The automation needs the character's
 name, because it matches your own death line against it. It reads that

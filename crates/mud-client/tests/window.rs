@@ -247,7 +247,7 @@ async fn a_board_hanging_up_reports_disconnected_and_stays_a_window() {
     let mut r = rig(settings_for(Some(addr)), None);
     r.until("connected", |m| matches!(m, FrontMsg::Event { kind: EventKind::Connected, .. })).await;
     r.until("disconnected", |m| matches!(m, FrontMsg::Event { kind: EventKind::Disconnected, .. })).await;
-    r.until_text("-- disconnected.").await;
+    r.until_text("-- disconnected: end of stream.").await;
     assert!(!r.handle.info.lock().unwrap().connected);
     // The last thing a window does on its way to idle is set the bar,
     // so the last message it sends is the one that carries it. A bar
@@ -376,7 +376,7 @@ async fn disconnect_pauses_the_wait() {
     s.set("reconnect_delay_seconds", "3").unwrap();
     let mut r = rig(s, None);
     r.until("the drop", |m| matches!(m, FrontMsg::Event { kind: EventKind::Disconnected, .. })).await;
-    r.until_text("-- disconnected.").await;
+    r.until_text("-- disconnected: end of stream.").await;
     r.handle.msgs.send(WindowMsg::Outcome(KeyOutcome::Disconnect)).unwrap();
     r.until_text("reconnect paused").await;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
