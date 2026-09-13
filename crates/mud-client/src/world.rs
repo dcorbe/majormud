@@ -962,6 +962,18 @@ impl Here {
         }
     }
 
+    /// Is there any work left here — a monster the bot would fight, or
+    /// a pile it wants? The farm's `verdict` and the assist both need
+    /// this same answer, so it lives here rather than in either caller.
+    /// Composes the same two questions `verdict` already asks, in the
+    /// same order, and reimplements neither.
+    pub fn is_clear(&self, bot: &crate::bot::Bot) -> bool {
+        !bot.has_target_among(self.aggressive_names())
+            && self
+                .unswept_wanted(crate::farm::LOOT_TRIES, &|denom| !bot.ignores_coin(denom))
+                .is_none()
+    }
+
     /// The owner resolved which room the character is standing in.
     ///
     /// This outranks the printed name, and it has to: identity by name

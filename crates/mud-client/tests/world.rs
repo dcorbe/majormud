@@ -1236,6 +1236,48 @@ fn a_room_block_moves_no_clock() {
     assert_eq!(c, before);
 }
 
+/// `is_clear` is the one question the farm's verdict and the assist will
+/// both ask of a room: no target the bot would fight, no pile it wants.
+/// It composes `aggressive_names`/`has_target_among` and
+/// `unswept_wanted` exactly as `farm::StopState::verdict` already does —
+/// it must not reimplement either judgement.
+#[test]
+fn is_clear_is_false_with_a_target_and_true_when_empty() {
+    use mud_client::bot::{Bot, BotConfig};
+    let now = Instant::now();
+    let bot = Bot::new(BotConfig {
+        auto_combat: true,
+        ..BotConfig::default()
+    });
+    let mut here = Here::default();
+    let room = RoomView {
+        also_here: vec!["cave bear".into()],
+        items: vec!["11 silver nobles".into()],
+        ..view(&[])
+    };
+    here.on_event(&answering(Event::RoomSeen(room), ASK), now);
+    assert!(
+        !here.is_clear(&bot),
+        "an aggressive monster and a wanted pile are both work"
+    );
+
+    // Kill the bear...
+    here.on_event(
+        &unsolicited(Event::Line(
+            "The cave bear falls to the ground with a shrill cry.".into(),
+        )),
+        now,
+    );
+    assert!(!here.is_clear(&bot), "the pile is still on the floor");
+
+    // ...and sweep the pile.
+    here.on_event(
+        &unsolicited(Event::Line("You picked up 11 silver nobles".into())),
+        now,
+    );
+    assert!(here.is_clear(&bot), "nothing left to fight or sweep");
+}
+
 /// The stop's floor model is the third sweep site. Work it reports is
 /// filtered by what the policy wants, so an ignored pile never holds a
 /// stop open and a wanted pile behind it is still found.
