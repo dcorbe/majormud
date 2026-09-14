@@ -299,6 +299,73 @@ async fn a_wait_holds_the_leg_until_ok() {
     );
 }
 
+/// The held leader stands in an empty room. Standing still is the
+/// whole job, so the board hears one `look` when the hold begins and
+/// at most one more per stop the hold is cut into. It used to hear one
+/// per round trip: the hold ran two-second stops, an empty room ended
+/// each stop the moment its look was answered, and the next stop opened
+/// with a fresh look (carrot, cwgaming 2026-09-14: 234 looks in twenty
+/// seconds).
+#[tokio::test]
+async fn a_held_leader_does_not_loop_on_look() {
+    let (addr, received, pushed) = scripted_board(
+        lap_script(),
+        vec![
+            (
+                "look",
+                Duration::ZERO,
+                "wait",
+                "\r\nPootwaddle started to follow you.\r\nPootwaddle telepaths: @wait\r\n".into(),
+            ),
+            (
+                "look",
+                Duration::from_millis(1500),
+                "ok",
+                "\r\nPootwaddle telepaths: @ok\r\n".into(),
+            ),
+        ],
+    )
+    .await;
+    let session = session_for(addr, PartyConfig::default()).await;
+    mud_client::farm::probe_sheet(&session, None).await;
+
+    let graph = corridor(&["Home", "Field"]);
+    let cfg = lap_config();
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 30,
+        ..BotConfig::default()
+    };
+    let (notices, _said) = collected();
+
+    let (end, stats) = tokio::time::timeout(
+        Duration::from_secs(20),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot, cfg), None, &notices),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    .expect("the lap must finish");
+    assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
+
+    let log = received.lock().unwrap().clone();
+    let wait_seen = pushed_at(&pushed, "wait").expect("the board said @wait");
+    let ok_seen = pushed_at(&pushed, "ok").expect("the board said @ok");
+    let looks_held = log
+        .iter()
+        .filter(|(t, l)| l == "look" && *t >= wait_seen && *t <= ok_seen)
+        .count();
+    // The hold lasts a second and a half: the stop that opened on the
+    // hold, its re-ask at `idle_poke_ms` (500ms here), and the next
+    // two-second stop's opening look. A fourth is slack for the timing
+    // of the push against the stop boundary.
+    assert!(
+        looks_held <= 4,
+        "the board heard {looks_held} looks during a 1.5s hold: {:?}",
+        log.iter().map(|(_, l)| l.as_str()).collect::<Vec<_>>()
+    );
+}
+
 /// No `@ok` ever comes. With `[party].wait_secs = 1` the hold expires
 /// on its own, the leg goes on, and the run says whose hold it dropped.
 #[tokio::test]

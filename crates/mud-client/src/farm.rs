@@ -2159,7 +2159,7 @@ async fn farm_loop(
                 clock,
                 started,
                 until,
-                false,
+                StopKind::Circuit,
                 arrival,
                 arm.0,
                 arm.1,
@@ -2909,7 +2909,7 @@ pub(crate) async fn travel(
             let until = Instant::now() + Duration::from_secs(cfg.defend_seconds);
             match farm_stop(
                 session, nav, graph, *current, live, threat, refusals, casts, clock,
-                started, Some(until), true, None, false, None, stats, phase,
+                started, Some(until), StopKind::Defence, None, false, None, stats, phase,
             )
             .await?
             {
@@ -3041,7 +3041,7 @@ pub(crate) async fn travel(
                     clock,
                     started,
                     Some(until),
-                    true,
+                    StopKind::Defence,
                     room,
                     // A pass-through room, not the leg's actual
                     // destination -- but the same `NavError` this step
@@ -3089,7 +3089,7 @@ pub(crate) async fn travel(
                     clock,
                     started,
                     Some(until),
-                    true,
+                    StopKind::Defence,
                     None,
                     false,
                     None,
@@ -3477,6 +3477,19 @@ async fn wait_for_departure_health(
     }
 }
 
+/// Why the pump is standing at this stop. Decides what an empty or
+/// unlit room means: a circuit stop leaves on either, a defence
+/// (travel interrupt) leaves when the room empties but waits out its
+/// deadline in the dark, and a hold waits out its deadline on both.
+/// Used to key on `until.is_none()`, which stopped meaning "circuit
+/// stop" the day circuit stops could carry a cap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StopKind {
+    Circuit,
+    Defence,
+    Hold,
+}
+
 enum StopEnd {
     /// The stop is over and the character is still standing at it.
     /// `sneaking` is what is left of the belief the stop was primed
@@ -3536,7 +3549,7 @@ pub(crate) async fn hold_here(
         let until = Instant::now() + Duration::from_secs(2);
         match farm_stop(
             session, nav, graph, at, live, threat, refusals, casts, clock, started,
-            Some(until), true, None, false, None, stats, phase,
+            Some(until), StopKind::Hold, None, false, None, stats, phase,
         )
         .await?
         {
@@ -3570,12 +3583,7 @@ async fn farm_stop(
     started: Instant,
     // Hard cap on this stop, or None to stay until it goes quiet.
     until: Option<Instant>,
-    // A defence (travel interrupt) rather than a circuit stop. A blind
-    // defence waits out its deadline — walking on would leave whatever
-    // is hitting us behind us — where a blind circuit stop leaves at
-    // once. Used to key on `until.is_none()`, which stopped meaning
-    // "circuit stop" the day circuit stops could carry a cap.
-    defending: bool,
+    kind: StopKind,
     // The attributed block the leg's final step carried in, when it
     // described this stop. Seeds the evidence so the first swing goes
     // out without an opening look.
@@ -3744,11 +3752,21 @@ async fn farm_stop(
             }
             // Never while we still owe the board something: an
             // acknowledgement still in flight is evidence in flight.
-            Verdict::Empty => {
-                if gate.is_idle() {
-                    return Ok(StopEnd::Dwelt { sneaking: still_sneaking });
+            //
+            // A hold has nowhere to go. Its cap is where the hold set
+            // is re-read, so an empty room waits for the cap with the
+            // pump still awake: an arrival invalidates the observation
+            // and is fought. Leaving here rebuilt the stop at once, and
+            // every rebuild opens with a look (carrot, 2026-09-14: one
+            // per round trip for as long as the follower rested).
+            Verdict::Empty => match kind {
+                StopKind::Hold => hold_until = until,
+                StopKind::Circuit | StopKind::Defence => {
+                    if gate.is_idle() {
+                        return Ok(StopEnd::Dwelt { sneaking: still_sneaking });
+                    }
                 }
-            }
+            },
             Verdict::Blind => {
                 // Blind again while a source was believed burning: it
                 // burned out (item) or faded unnoticed (spell). The
@@ -3774,8 +3792,11 @@ async fn farm_stop(
                     // fighting in the dark is heavily penalised anyway.
                     // Defending is the exception: there the deadline
                     // governs, or we walk on and leave whatever is
-                    // hitting us behind.
-                    crate::sheet::CastAttempt::Nothing if !defending && gate.is_idle() => {
+                    // hitting us behind. A hold stands still whatever
+                    // it can see.
+                    crate::sheet::CastAttempt::Nothing
+                        if kind == StopKind::Circuit && gate.is_idle() =>
+                    {
                         return Ok(StopEnd::Dwelt { sneaking: still_sneaking });
                     }
                     _ => {}
