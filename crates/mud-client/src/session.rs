@@ -1482,6 +1482,7 @@ fn feed_party(party: &Mutex<PartyTracker>, stats: &Mutex<StatTracker>, cor: &Cor
         } else {
             let state = t.state.clone();
             t.holds.lock().expect("holds lock").retain_members(&state);
+            t.health.retain_members(&state);
             if matches!(change, Change::Roster | Change::Vitals) {
                 t.health.on_roster(&state.members, Instant::now());
             }

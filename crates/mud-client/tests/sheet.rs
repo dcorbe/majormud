@@ -1477,3 +1477,43 @@ fn the_absent_target_reply_is_a_failure() {
     assert_eq!(cast_outcome("You don't see celery here."), Some(Outcome::Failed));
 }
 
+
+/// A rebuild hands the party state on through `carry_party`, and the
+/// first tick after it re-reads the sheet. Reading the sheet must not
+/// undo the handover: a member healed a moment ago would be healed
+/// again on the next prompt.
+#[test]
+fn a_reload_keeps_the_healed_marks() {
+    let clock = RoundClock::new();
+    let t0 = Instant::now();
+    let mut p = party_state();
+    p.on_event(&prompt(100, 20), t0);
+    let h = health(&[row("Celery", "Mage", 30)], t0);
+    assert_eq!(p.attempt(t0, &clock, &h, Some(100), &marks()), CastAttempt::Send("cast mahe celery".into()));
+    p.on_sent("cast mahe celery", CmdId(1));
+    p.on_event(&answering("You cast major healing on Celery!", CmdId(1)), t0);
+
+    let book = party_book();
+    let heals = book.heal_spells(no_choice(), &BTreeMap::new(), Casting::Spells).0;
+    p.reload(book.party_heals(&heals, Casting::Spells));
+    assert!(!p.in_flight(), "the book is new, so the source a cast named is not");
+
+    // The pool crossed the reload: a member this character has never
+    // healed gets a cast with no fresh prompt to seed one.
+    let t1 = t0 + ROUND * 2;
+    let stranger = health(&[row("Beef", "Ninja", 30)], t0);
+    assert_eq!(
+        p.attempt(t1, &clock, &stranger, Some(100), &marks()),
+        CastAttempt::Send("cast mahe beef".into())
+    );
+    p.new_visit();
+
+    // And so did the healed mark.
+    let t2 = t1 + ROUND * 2;
+    assert_eq!(
+        p.attempt(t2, &clock, &h, Some(100), &marks()),
+        CastAttempt::Nothing,
+        "Celery was healed after its row was seen, reload or not"
+    );
+}
+

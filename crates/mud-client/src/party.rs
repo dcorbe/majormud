@@ -451,6 +451,13 @@ impl Health {
         v.class = Some(class.to_string());
     }
 
+    /// Drop the rows of names the party no longer holds. A member that
+    /// left keeps its last number until the next poll otherwise, and a
+    /// healer would go on casting at a name the room does not hold.
+    pub fn retain_members(&mut self, state: &PartyState) {
+        self.by.retain(|_, v| permitted(state, &v.name));
+    }
+
     pub fn get(&self, name: &str) -> Option<&Vitals> {
         self.by.get(&Holds::key(name))
     }

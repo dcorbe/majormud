@@ -1478,8 +1478,10 @@ impl AssistCasts {
     /// let the follower ask again inside the five minutes. The wait
     /// state carries an `@ok` the character owes its leader, and a
     /// rebuild that dropped it would leave the leader standing for the
-    /// whole of `wait_secs`. The party cast state carries a cast in
-    /// flight and the healed marks. `met` carries who has been greeted,
+    /// whole of `wait_secs`. The party cast state carries the healed
+    /// and cured marks, the pool and this character's own poison, and
+    /// the first tick after the rebuild reloads its book rather than
+    /// building a new state over them. `met` carries who has been greeted,
     /// which a rebuild must not forget or the character greets the
     /// party again.
     ///
@@ -1548,7 +1550,10 @@ pub fn assist_tick(
         let sheet = crate::farm::sheet_from(session, cfg, durations);
         casts.heal = crate::sheet::HealState::new(sheet.heals.0);
         casts.buff = crate::sheet::BuffState::new(sheet.buffs.0);
-        casts.party = crate::sheet::PartyHeal::new(sheet.party);
+        // Reload, not rebuild. Both rebuild sites make the assist read
+        // the sheet again on its first tick, so a fresh state here
+        // would undo everything `carry_party` just carried.
+        casts.party.reload(sheet.party);
         // The prompt the book was read after has already passed this
         // state by, so the pool it showed is seeded rather than waited
         // for.

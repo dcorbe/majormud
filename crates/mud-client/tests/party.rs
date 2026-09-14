@@ -5,12 +5,14 @@
 use std::time::{Duration, Instant};
 
 use mud_client::bank::{BankConfig, Reading};
-use mud_client::events::Status;
+use mud_client::bot::BotConfig;
+use mud_client::correlate::{CmdId, Correlated};
+use mud_client::events::{Event, Status};
 use mud_client::party::{
     AskState, Change, Health, Holds, Member, PartyConfig, PartyState, Remote, Request, Role,
     Signal, WaitState, bank_names, permitted, remote, say, telepath,
 };
-use mud_client::sheet::Inventory;
+use mud_client::sheet::{CastAttempt, HealKind, Inventory, PartyHeal, PartyKind, PartySource};
 use mud_client::tui::AssistCasts;
 use mud_client::world::RoundClock;
 use mud_core::content::Content;
@@ -512,17 +514,59 @@ fn the_ask_goes_out_once_per_round() {
 /// count as ours.
 #[test]
 fn a_party_cast_in_flight_is_our_own_combat_off() {
-    use mud_client::bot::BotConfig;
-    use mud_client::correlate::{CmdId, Correlated};
-    use mud_client::events::Event;
-    use mud_client::sheet::{CastAttempt, HealKind, PartyHeal, PartyKind, PartySource};
-
     let now = Instant::now();
     let clock = RoundClock::new();
     let mut casts = AssistCasts::default();
     assert!(!casts.in_flight(), "nothing of ours is out to begin with");
+    casts.party = party_cast_out(now, &clock);
+    assert!(casts.in_flight(), "the cast is ours, so the Combat Off it draws is ours");
+}
 
-    casts.party = PartyHeal::new(vec![PartySource {
+/// `carry_party` hands the party cast state to the assist replacing
+/// the old one. A rebuild that dropped it would forget the cast it
+/// has out and would heal everyone it had just healed again.
+#[test]
+fn a_rebuild_carries_the_party_cast_state() {
+    let now = Instant::now();
+    let clock = RoundClock::new();
+    let mut old = AssistCasts::default();
+    old.party = party_cast_out(now, &clock);
+
+    let mut rebuilt = AssistCasts::default();
+    rebuilt.carry_party(old);
+    assert!(rebuilt.party.in_flight(), "the cast out crosses the rebuild");
+
+    // The control: an assist built fresh has nothing out at all.
+    let blank = AssistCasts::default();
+    assert!(!blank.party.in_flight());
+}
+
+/// A member that left keeps its last number until the next poll
+/// otherwise, and a healer goes on casting at a name the room no
+/// longer holds.
+#[test]
+fn a_departed_member_leaves_the_health_table() {
+    let now = Instant::now();
+    let mut s = state();
+    s.observe("Beef started to follow you.");
+    s.observe("Carrot started to follow you.");
+    let mut h = Health::new();
+    h.on_heal("Beef", 40, now);
+    h.on_heal("Carrot", 30, now);
+    h.retain_members(&s);
+    assert!(h.get("Beef").is_some());
+    assert!(h.get("Carrot").is_some());
+
+    s.observe("Carrot has been removed from your followers.");
+    h.retain_members(&s);
+    assert!(h.get("Beef").is_some(), "the member still in the party keeps its row");
+    assert!(h.get("Carrot").is_none(), "the member that left does not");
+}
+
+/// A healer with one minor heal, its pool seen, and a cast at a hurt
+/// member already out on the board.
+fn party_cast_out(now: Instant, clock: &RoundClock) -> PartyHeal {
+    let mut p = PartyHeal::new(vec![PartySource {
         name: "minor healing".into(),
         cmd: "cast mihe".into(),
         mana_cost: 2,
@@ -533,15 +577,15 @@ fn a_party_cast_in_flight_is_our_own_combat_off() {
         answers: None,
         elsewhere: false,
     };
-    casts.party.on_event(&pool, now);
+    p.on_event(&pool, now);
     let mut health = Health::new();
     health.on_heal("Celery", 30, now);
     let cfg = BotConfig { minor_heal_at_percent: 70, major_heal_at_percent: 40, ..BotConfig::default() };
-    let CastAttempt::Send(cmd) = casts.party.attempt(now, &clock, &health, Some(100), &cfg) else {
+    let CastAttempt::Send(cmd) = p.attempt(now, clock, &health, Some(100), &cfg) else {
         panic!("a member at 30 percent is worth a heal");
     };
     assert_eq!(cmd, "cast mihe celery");
-    casts.party.on_sent(&cmd, CmdId(7));
-    assert!(casts.in_flight(), "the cast is ours, so the Combat Off it draws is ours");
+    p.on_sent(&cmd, CmdId(7));
+    p
 }
 

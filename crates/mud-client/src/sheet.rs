@@ -876,6 +876,23 @@ impl PartyHeal {
         }
     }
 
+    /// Take the book again without forgetting what this character has
+    /// already done.
+    ///
+    /// Every rebuild re-reads the sheet, and building a fresh state
+    /// there would throw away the healed and cured marks, the pool and
+    /// this character's own poison, so the healer would heal everyone
+    /// again from scratch whenever a job handed the character back.
+    /// The source indices are the one thing a new book cannot carry,
+    /// so a cast planned or in flight is dropped. That costs one
+    /// wasted round trip.
+    pub fn reload(&mut self, sources: Vec<PartySource>) {
+        self.dead = vec![false; sources.len()];
+        self.sources = sources;
+        self.planned = None;
+        self.pending = None;
+    }
+
     pub fn is_empty(&self) -> bool {
         self.sources.is_empty()
     }
