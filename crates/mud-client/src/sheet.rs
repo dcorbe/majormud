@@ -491,36 +491,6 @@ pub enum CastAttempt {
     Nothing,
 }
 
-/// Cast a healing spell, and confirm it from the board.
-///
-/// This is [`LightState`] with a different trigger, and the differences
-/// are the interesting part:
-///
-/// - **It fires in combat.** Resting is suppressed while the room holds a
-///   fight, because the board disengages combat to rest and the
-///   re-engage breaks it, the 2026-08-01 death spiral. A cast ends the
-///   fight too, with a `*Combat Off*` printed ahead of the cast line,
-///   but a cast is a moment and a rest is a state: the next room block
-///   re-engages the target and nothing is broken by it. So this is the
-///   only recovery a character has while something is still hitting it,
-///   and that is the whole reason this exists. The runner reads the
-///   Combat Off a cast draws through [`HealState::in_flight`], so the
-///   bot does not take it for the target leaving.
-/// - **Sources are not a preference order but a choice by kind.** Lighting
-///   walks its sources in order and kills them as they fail; healing
-///   holds at most one source per [`HealKind`] and the caller's
-///   [`HealNeed`] picks among them, the pool affording it decides the
-///   rest.
-/// - **Failure is nearly always temporary.** A fizzle, an empty pool, a
-///   second cast in one round: all retried. The single terminal outcome
-///   is *"You do not know how to cast %s."*, which means the spell is not
-///   in the book and never will be — that one source is retired.
-///
-/// Below the mana floor this returns [`CastAttempt::Nothing`] rather than
-/// anything louder, and the rest mark takes over: resting restores mana
-/// as well as health, so the two marks compose without either knowing
-/// about the other.
-
 /// What the board said about a cast of ours.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -557,6 +527,35 @@ pub fn cast_outcome(line: &str) -> Option<Outcome> {
     None
 }
 
+/// Cast a healing spell, and confirm it from the board.
+///
+/// This is [`LightState`] with a different trigger, and the differences
+/// are the interesting part:
+///
+/// - **It fires in combat.** Resting is suppressed while the room holds a
+///   fight, because the board disengages combat to rest and the
+///   re-engage breaks it, the 2026-08-01 death spiral. A cast ends the
+///   fight too, with a `*Combat Off*` printed ahead of the cast line,
+///   but a cast is a moment and a rest is a state: the next room block
+///   re-engages the target and nothing is broken by it. So this is the
+///   only recovery a character has while something is still hitting it,
+///   and that is the whole reason this exists. The runner reads the
+///   Combat Off a cast draws through [`HealState::in_flight`], so the
+///   bot does not take it for the target leaving.
+/// - **Sources are not a preference order but a choice by kind.** Lighting
+///   walks its sources in order and kills them as they fail; healing
+///   holds at most one source per [`HealKind`] and the caller's
+///   [`HealNeed`] picks among them, the pool affording it decides the
+///   rest.
+/// - **Failure is nearly always temporary.** A fizzle, an empty pool, a
+///   second cast in one round: all retried. The single terminal outcome
+///   is *"You do not know how to cast %s."*, which means the spell is not
+///   in the book and never will be — that one source is retired.
+///
+/// Below the mana floor this returns [`CastAttempt::Nothing`] rather than
+/// anything louder, and the rest mark takes over: resting restores mana
+/// as well as health, so the two marks compose without either knowing
+/// about the other.
 pub struct HealState {
     /// At most one per [`HealKind`] ([`Spellbook::heal_spells`]).
     sources: Vec<HealSource>,
