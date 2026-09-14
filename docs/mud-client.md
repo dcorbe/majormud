@@ -1171,6 +1171,19 @@ covers both the mark being reached and a fight breaking the rest, or at
 once when the board refused the rest. One of each per rest, under
 `auto_rest` like the rest itself.
 
+A member under its heal mark with nothing of its own to cast says
+`@heal <percent>` to the room, once per round while that holds, and
+`@cure` on every poison tick it cannot cure itself. Every member polls
+`party` every `poll_secs` seconds, so every window holds the roster's
+class, pool and health for the whole party. A member whose book holds
+a heal, healing rain or cure poison reads that table on every prompt
+and casts: cure first, rain when two or more members are under its
+minor mark, else the major or minor by its own marks on the lowest
+member, by name. Every healer that can afford the spell casts, and a
+double heal is accepted. Members say `@iam <race> <class>` on joining
+and to each newcomer, and a witchunter, by the roster's class or its
+own word, is never healed: it resists every spell.
+
 Jobs that move refuse to start while following. `/go`, `/farm`, `/roam`,
 `/bank` and `/recover` answer
 `following Foo; a job that moves does not run in a party`. A walk of its

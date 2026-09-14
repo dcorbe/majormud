@@ -1601,7 +1601,7 @@ pub fn assist_tick(
         introduce(session, casts);
     }
     if let crate::events::Event::Line(line) = &cor.event
-        && line.trim() == "You feel ill."
+        && line.trim() == mud_core::text::YOU_FEEL_ILL
     {
         // The poison tick, spellcasting.md paragraph 8.14. Self cure if
         // the book has it. Otherwise the room is asked. The line comes
@@ -1612,12 +1612,29 @@ pub fn assist_tick(
             session.party_note("party: asked @cure".to_string());
         }
     }
-    let _ = cast_this_prompt;
     if let crate::events::Event::Prompt { status, .. } = &cor.event
         && let Some(cmd) = assist_buff(bot, &mut casts.buff, clock, status.as_ref(), now)
     {
         let id = session.send(&cmd);
         casts.buff.on_sent(&cmd, id);
+    }
+    // The party's turn, after the character's own. One cast a round
+    // between the two states, and nothing while either is out.
+    if let crate::events::Event::Prompt { hp, .. } = &cor.event
+        && !cast_this_prompt
+        && !casts.heal.in_flight()
+        && !casts.party.is_empty()
+        && session.party_config().heal
+        && session.party().role != crate::party::Role::None
+    {
+        let health = session.party_health();
+        let own = bot.hp_percent(*hp);
+        if let crate::sheet::CastAttempt::Send(cmd) = casts.party.attempt(now, clock, &health, own, cfg) {
+            let id = session.send(&cmd);
+            casts.party.on_sent(&cmd, id);
+            casts.heal.hold_round(now);
+            watch.on_sent(&cmd);
+        }
     }
     follower_gate(session, bot, casts, cor, now);
     for cmd in assist_actions(bot, here, cor, casts.in_flight()) {
