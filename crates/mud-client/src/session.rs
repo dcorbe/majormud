@@ -1482,21 +1482,26 @@ fn feed_party(party: &Mutex<PartyTracker>, stats: &Mutex<StatTracker>, cor: &Cor
     if !crate::party::permitted(&t.state, &req.from) {
         return;
     }
-    let word = match req.command {
-        crate::party::Remote::Bank => "@bank",
-        crate::party::Remote::Wait => "@wait",
-        crate::party::Remote::Ok => "@ok",
+    let word = match &req.command {
+        crate::party::Remote::Bank => "@bank".to_string(),
+        crate::party::Remote::Wait => "@wait".to_string(),
+        crate::party::Remote::Ok => "@ok".to_string(),
+        crate::party::Remote::Heal(p) => format!("@heal {p}"),
+        crate::party::Remote::Cure => "@cure".to_string(),
+        crate::party::Remote::Iam { race, class } => format!("@iam {race} {class}"),
     };
     if let Some(tx) = &t.notes {
         let _ = tx.send(format!("party: {} asks {word}", req.from));
     }
-    match req.command {
+    match &req.command {
         crate::party::Remote::Wait => {
             let until = Instant::now() + Duration::from_secs(t.wait_secs);
             t.holds.lock().expect("holds lock").hold(&req.from, until);
         }
         crate::party::Remote::Ok => t.holds.lock().expect("holds lock").release(&req.from),
         crate::party::Remote::Bank => t.requests.push(req),
+        // Written into the health table by Task 3.
+        crate::party::Remote::Heal(_) | crate::party::Remote::Cure | crate::party::Remote::Iam { .. } => {}
     }
 }
 

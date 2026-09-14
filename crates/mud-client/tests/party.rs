@@ -8,7 +8,7 @@ use mud_client::bank::{BankConfig, Reading};
 use mud_client::events::Status;
 use mud_client::party::{
     Change, Holds, Member, PartyConfig, PartyState, Remote, Request, Role, Signal, WaitState,
-    bank_names, permitted, remote, telepath,
+    bank_names, permitted, remote, say, telepath,
 };
 use mud_client::sheet::Inventory;
 use mud_client::tui::AssistCasts;
@@ -400,3 +400,33 @@ fn a_rebuild_carries_the_wait_and_the_ask_throttle() {
     assert!(blank.follower.on_reading(&cfg, heavy, minute));
     assert!(!blank.wait.is_waiting());
 }
+
+/// The room hears a said word. Captured 2026-09-13 as
+/// `Blueberry says "toot"`; the `@` passing through unchanged is
+/// UNVERIFIED.
+#[test]
+fn the_new_words_read_in_both_shapes() {
+    assert_eq!(remote("Celery telepaths: @heal 35").map(|r| r.command), Some(Remote::Heal(35)));
+    assert_eq!(remote("Celery says \"@heal 35\"").map(|r| r.command), Some(Remote::Heal(35)));
+    assert_eq!(remote("Celery says \"@heal\"").map(|r| r.command), Some(Remote::Heal(0)));
+    assert_eq!(remote("Celery says \"@heal lots\"").map(|r| r.command), Some(Remote::Heal(0)));
+    assert_eq!(remote("Celery says \"@cure\"").map(|r| r.command), Some(Remote::Cure));
+    assert_eq!(
+        remote("Celery says \"@iam Human Witchunter\"").map(|r| r.command),
+        Some(Remote::Iam { race: "Human".into(), class: "Witchunter".into() })
+    );
+    assert_eq!(
+        remote("Celery says \"@iam Half-Elf Cleric\"").map(|r| r.command),
+        Some(Remote::Iam { race: "Half-Elf".into(), class: "Cleric".into() })
+    );
+    assert_eq!(remote("Celery says \"@iam Human\""), None, "a class is required");
+    assert_eq!(remote("Beef says \"@wait\"").map(|r| r.command), Some(Remote::Wait));
+    assert_eq!(remote("You say \"@heal 35\""), None, "the own echo is not a request");
+    assert_eq!(remote("Celery says \"heal me\""), None);
+}
+
+#[test]
+fn say_is_the_wire_form_for_a_said_word() {
+    assert_eq!(say("@heal 35"), "say @heal 35");
+}
+

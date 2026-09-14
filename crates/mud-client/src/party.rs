@@ -237,13 +237,20 @@ impl PartyState {
     }
 }
 
-/// The three commands this cut understands. Any other word after the
+/// The commands this client understands. Any other word after the
 /// `@` is dropped without a word, as MudPlay drops unknown commands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Remote {
     Bank,
     Wait,
     Ok,
+    /// `@heal <percent>`: the sender is at that health and cannot heal
+    /// itself. A missing or unreadable percent reads as 0.
+    Heal(u8),
+    /// `@cure`: the sender is poisoned and cannot cure itself.
+    Cure,
+    /// `@iam <race> <class>`: the sender introducing itself.
+    Iam { race: String, class: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -255,14 +262,27 @@ pub struct Request {
 /// `Foo telepaths: @bank`. MudPlay's inbound shape, and the DLL's
 /// `%s telepaths: %s%s`.
 static TELEPATH: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(\w+) telepaths: @(\S+)").unwrap());
+    LazyLock::new(|| Regex::new(r#"^(\w+) telepaths: @(\S+)(?: (.*))?$"#).unwrap());
+/// `Foo says "@heal 35"`. A word said in the room reaches every
+/// member at once, which is what a request for a healer needs. The
+/// plain say is captured; the `@` passing through is UNVERIFIED.
+static SAID: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"^(\w+) says "@(\S+)(?: ([^"]*))?"$"#).unwrap());
 
 pub fn remote(line: &str) -> Option<Request> {
-    let c = TELEPATH.captures(line.trim_end())?;
+    let line = line.trim_end();
+    let c = TELEPATH.captures(line).or_else(|| SAID.captures(line))?;
+    let arg = c.get(3).map(|m| m.as_str().trim()).unwrap_or("");
     let command = match c[2].to_ascii_lowercase().as_str() {
         "bank" => Remote::Bank,
         "wait" => Remote::Wait,
         "ok" => Remote::Ok,
+        "heal" => Remote::Heal(arg.parse().unwrap_or(0)),
+        "cure" => Remote::Cure,
+        "iam" => {
+            let (race, class) = arg.split_once(' ')?;
+            Remote::Iam { race: race.to_string(), class: class.trim().to_string() }
+        }
         _ => return None,
     };
     Some(Request { from: c[1].to_string(), command })
@@ -279,6 +299,11 @@ pub fn permitted(state: &PartyState, sender: &str) -> bool {
 /// The wire form MudPlay sends on the live board.
 pub fn telepath(to: &str, text: &str) -> String {
     format!("/{to} {text}")
+}
+
+/// The wire form of a word said to the room.
+pub fn say(text: &str) -> String {
+    format!("say {text}")
 }
 
 /// Followers the leader must not walk away from, each with a deadline.
