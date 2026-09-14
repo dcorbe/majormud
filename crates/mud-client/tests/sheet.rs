@@ -1327,6 +1327,44 @@ fn a_witchunter_is_neither_counted_nor_healed() {
     assert_eq!(p.attempt(t0, &clock, &h, Some(100), &marks()), CastAttempt::Nothing);
 }
 
+/// UNVERIFIED. No self cure has been seen on the live board. The
+/// captured targeted form is `You cast blur on Vexil!`, and this
+/// assumes the board names the caster the same way it names anyone
+/// else.
+const SELF_CURE: &str = "You cast cure poison on Yourself!";
+
+/// The self cure is not a party cast. A character with `[party].heal`
+/// off, or one in no party at all, still cures itself, so the caller
+/// reads this on every prompt ahead of the gated party block.
+#[test]
+fn the_self_cure_is_its_own_attempt() {
+    let clock = RoundClock::new();
+    let t0 = Instant::now();
+    let mut p = party_state();
+    p.on_event(&prompt(100, 20), t0);
+    assert_eq!(p.attempt_self_cure(t0, &clock), CastAttempt::Nothing, "nothing to cure");
+    p.poison_self(t0);
+    assert_eq!(p.attempt_self_cure(t0, &clock), CastAttempt::Send("cast cure".into()));
+    p.on_sent("cast cure", CmdId(1));
+    assert_eq!(p.attempt_self_cure(t0, &clock), CastAttempt::Nothing, "one cast out at a time");
+    p.on_event(&answering(SELF_CURE, CmdId(1)), t0);
+    let t1 = t0 + Duration::from_secs(10);
+    assert_eq!(p.attempt_self_cure(t1, &clock), CastAttempt::Nothing, "cured, and no timer clears it");
+
+    // A pool that cannot buy the cure says nothing rather than
+    // spending the round on a cast that never goes out.
+    let mut broke = party_state();
+    broke.on_event(&prompt(100, 4), t0);
+    broke.poison_self(t0);
+    assert_eq!(broke.attempt_self_cure(t0, &clock), CastAttempt::Nothing);
+    let h = health(&[row("Celery", "Mage", 30)], t0);
+    assert_eq!(
+        broke.attempt(t0, &clock, &h, Some(100), &marks()),
+        CastAttempt::Send("cast mihe celery".into()),
+        "the round was not spent"
+    );
+}
+
 #[test]
 fn cure_comes_before_heal_and_self_before_others() {
     let clock = RoundClock::new();
@@ -1336,10 +1374,16 @@ fn cure_comes_before_heal_and_self_before_others() {
     let mut h = health(&[row("Celery", "Mage", 30)], t0);
     h.on_cure("Celery", t0);
     p.poison_self(t0);
-    assert_eq!(p.attempt(t0, &clock, &h, Some(100), &marks()), CastAttempt::Send("cast cure".into()));
+    // The caller asks for the self cure first, and it takes the round.
+    assert_eq!(p.attempt_self_cure(t0, &clock), CastAttempt::Send("cast cure".into()));
+    assert!(
+        matches!(p.attempt(t0, &clock, &h, Some(100), &marks()), CastAttempt::Hold(_)),
+        "the round is spent on the self cure"
+    );
     p.on_sent("cast cure", CmdId(1));
-    p.on_event(&answering("You cast cure poison on Yourself!", CmdId(1)), t0);
+    p.on_event(&answering(SELF_CURE, CmdId(1)), t0);
     let t1 = t0 + Duration::from_secs(10);
+    assert_eq!(p.attempt_self_cure(t1, &clock), CastAttempt::Nothing, "the poison is cured");
     assert_eq!(p.attempt(t1, &clock, &h, Some(100), &marks()), CastAttempt::Send("cast cure celery".into()));
     p.on_sent("cast cure celery", CmdId(2));
     p.on_event(&answering("You cast cure poison on Celery!", CmdId(2)), t1);

@@ -960,9 +960,36 @@ impl PartyHeal {
         None
     }
 
-    /// The one cast worth making at `now`, if any. Cure before heal,
-    /// self before others, rain when two or more are under the mark,
-    /// else the lowest by the marks.
+    /// Cure this character's own poison.
+    ///
+    /// Not a party cast, and deliberately not part of
+    /// [`PartyHeal::attempt`]: a poisoned character cures itself
+    /// whether or not it answers the party, and whether or not it is
+    /// in one. `[party].heal` turns off what this character does for
+    /// others, not what it does for itself. The round pacing is shared
+    /// with the party casts, so the two never cast in one round.
+    pub fn attempt_self_cure(
+        &mut self,
+        now: std::time::Instant,
+        clock: &crate::world::RoundClock,
+    ) -> CastAttempt {
+        if self.self_poisoned.is_none() {
+            return CastAttempt::Nothing;
+        }
+        if let Some(held) = self.blocked(now, clock) {
+            return held;
+        }
+        match self.affordable(|k| k == PartyKind::Cure) {
+            Some(i) => self.plan(i, Target::Me, now),
+            None => CastAttempt::Nothing,
+        }
+    }
+
+    /// The one cast worth making on the party at `now`, if any. Cure
+    /// before heal, rain when two or more are under the mark, else the
+    /// lowest by the marks. This character's own poison is not read
+    /// here: [`PartyHeal::attempt_self_cure`] answers that, and the
+    /// caller asks it first.
     pub fn attempt(
         &mut self,
         now: std::time::Instant,
@@ -973,11 +1000,6 @@ impl PartyHeal {
     ) -> CastAttempt {
         if let Some(held) = self.blocked(now, clock) {
             return held;
-        }
-        if self.self_poisoned.is_some()
-            && let Some(i) = self.affordable(|k| k == PartyKind::Cure)
-        {
-            return self.plan(i, Target::Me, now);
         }
         // The first poisoned row by name. One poisoned member at a
         // time is the common case, and the next round takes the next

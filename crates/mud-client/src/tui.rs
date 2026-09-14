@@ -1617,9 +1617,13 @@ pub fn assist_tick(
         // the book has it. Otherwise the room is asked. The line comes
         // again on the next tick, so an unanswered ask is made again.
         casts.party.poison_self(now);
-        if !casts.party.has_cure() && session.party().role != crate::party::Role::None {
+        if !casts.party.has_cure()
+            && session.party().role != crate::party::Role::None
+            && casts.ask.due(now, clock)
+        {
             session.send(&crate::party::say("@cure"));
             session.party_note("party: asked @cure".to_string());
+            casts.ask.on_sent(now);
         }
     }
     if let crate::events::Event::Prompt { status, .. } = &cor.event
@@ -1627,6 +1631,21 @@ pub fn assist_tick(
     {
         let id = session.send(&cmd);
         casts.buff.on_sent(&cmd, id);
+    }
+    // The self cure, which is nobody else's business: a poisoned
+    // character with cure poison in its book cures itself whether or
+    // not `[party].heal` lets it answer the party, and whether or not
+    // it is in a party at all.
+    if matches!(&cor.event, crate::events::Event::Prompt { .. })
+        && !cast_this_prompt
+        && !casts.heal.in_flight()
+        && let crate::sheet::CastAttempt::Send(cmd) = casts.party.attempt_self_cure(now, clock)
+    {
+        let id = session.send(&cmd);
+        casts.party.on_sent(&cmd, id);
+        casts.heal.hold_round(now);
+        watch.on_sent(&cmd);
+        cast_this_prompt = true;
     }
     // The party's turn, after the character's own. One cast a round
     // between the two states, and nothing while either is out.

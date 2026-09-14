@@ -1173,7 +1173,10 @@ once when the board refused the rest. One of each per rest, under
 
 A member under its heal mark with nothing of its own to cast says
 `@heal <percent>` to the room, once per round while that holds, and
-`@cure` on every poison tick it cannot cure itself. Every member polls
+`@cure` on every poison tick it cannot cure itself, also at most once
+per round. Curing its own poison is not an answer to the party, so a
+character does it whether or not `[party].heal` is on and whether or
+not it is in a party. Every member polls
 `party` every `poll_secs` seconds, so every window holds the roster's
 class, pool and health for the whole party. A member whose book holds
 a heal, healing rain or cure poison reads that table on every prompt
