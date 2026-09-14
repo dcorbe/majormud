@@ -2468,17 +2468,17 @@ pub(crate) struct Casts {
 
 impl Casts {
     /// Every command the gate released.
-    pub fn on_sent(&mut self, line: &str, id: CmdId) {
+    pub fn on_sent(&mut self, line: &str, id: CmdId, now: Instant) {
         self.light.on_sent(line, id);
-        self.heal.on_sent(line, id);
-        self.buff.on_sent(line, id);
+        self.heal.on_sent(line, id, now);
+        self.buff.on_sent(line, id, now);
     }
 
     /// Every event, attribution and all.
-    pub fn on_event(&mut self, cor: &Correlated, now: Instant) {
+    pub fn on_event(&mut self, cor: &Correlated, now: Instant, clock: &crate::world::RoundClock) {
         self.light.on_event(cor);
-        self.heal.on_event(cor, now);
-        self.buff.on_event(cor, now);
+        self.heal.on_event(cor, now, clock);
+        self.buff.on_event(cor, now, clock);
     }
 
     /// A fresh arrival: drop outcomes that never came back.
@@ -3218,9 +3218,10 @@ pub(crate) trait CastState {
         now: Instant,
         clock: &crate::world::RoundClock,
     ) -> crate::sheet::CastAttempt;
-    fn on_sent(&mut self, line: &str, id: crate::correlate::CmdId);
-    /// `now` is ignored by a machine that keeps no budget.
-    fn on_event(&mut self, cor: &Correlated, now: Instant);
+    fn on_sent(&mut self, line: &str, id: crate::correlate::CmdId, now: Instant);
+    /// `now` and `clock` are ignored by a machine that keeps no budget
+    /// and gives up on nothing.
+    fn on_event(&mut self, cor: &Correlated, now: Instant, clock: &crate::world::RoundClock);
     fn in_flight(&self) -> bool;
     /// Nothing left worth sending, whatever the deadline says.
     fn done(&self) -> bool;
@@ -3235,11 +3236,11 @@ impl CastState for crate::sheet::LightState {
         crate::sheet::LightState::attempt(self, now, clock)
     }
 
-    fn on_sent(&mut self, line: &str, id: crate::correlate::CmdId) {
+    fn on_sent(&mut self, line: &str, id: crate::correlate::CmdId, _now: Instant) {
         crate::sheet::LightState::on_sent(self, line, id)
     }
 
-    fn on_event(&mut self, cor: &Correlated, _now: Instant) {
+    fn on_event(&mut self, cor: &Correlated, _now: Instant, _clock: &crate::world::RoundClock) {
         crate::sheet::LightState::on_event(self, cor)
     }
 
@@ -3261,12 +3262,12 @@ impl CastState for crate::sheet::BuffState {
         crate::sheet::BuffState::attempt(self, now, clock)
     }
 
-    fn on_sent(&mut self, line: &str, id: crate::correlate::CmdId) {
-        crate::sheet::BuffState::on_sent(self, line, id)
+    fn on_sent(&mut self, line: &str, id: crate::correlate::CmdId, now: Instant) {
+        crate::sheet::BuffState::on_sent(self, line, id, now)
     }
 
-    fn on_event(&mut self, cor: &Correlated, now: Instant) {
-        crate::sheet::BuffState::on_event(self, cor, now)
+    fn on_event(&mut self, cor: &Correlated, now: Instant, clock: &crate::world::RoundClock) {
+        crate::sheet::BuffState::on_event(self, cor, now, clock)
     }
 
     fn in_flight(&self) -> bool {
@@ -3296,7 +3297,7 @@ pub(crate) async fn drive_cast(
     deadline: tokio::time::Instant,
 ) -> bool {
     let mut events = session.events();
-    crate::session::drain(&mut events, |cor| state.on_event(cor, Instant::now()));
+    crate::session::drain(&mut events, |cor| state.on_event(cor, Instant::now(), clock));
     let mut sent = false;
     loop {
         if state.done() || tokio::time::Instant::now() >= deadline {
@@ -3305,7 +3306,7 @@ pub(crate) async fn drive_cast(
         match state.attempt(Instant::now(), clock) {
             crate::sheet::CastAttempt::Send(cmd) => {
                 let id = session.send(&cmd);
-                state.on_sent(&cmd, id);
+                state.on_sent(&cmd, id, Instant::now());
                 sent = true;
             }
             crate::sheet::CastAttempt::Hold(_) => {}
@@ -3313,7 +3314,7 @@ pub(crate) async fn drive_cast(
             crate::sheet::CastAttempt::Nothing => {}
         }
         match tokio::time::timeout(Duration::from_millis(300), events.recv()).await {
-            Ok(Ok(cor)) => state.on_event(&cor, Instant::now()),
+            Ok(Ok(cor)) => state.on_event(&cor, Instant::now(), clock),
             Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
             Ok(Err(_)) => return sent,
             Err(_) => {}
@@ -3903,7 +3904,7 @@ async fn farm_stop(
             let id = session.send(&cmd);
             gate.confirm(id);
             seen.on_sent(&cmd, id);
-            casts.on_sent(&cmd, id);
+            casts.on_sent(&cmd, id, now);
         }
 
         // Sleep until the next event, the gate's own deadline, the idle
@@ -4109,7 +4110,7 @@ async fn farm_stop(
             }
             gate.push(cmd);
         }
-        casts.on_event(&cor, Instant::now());
+        casts.on_event(&cor, Instant::now(), clock);
         // The model folds BEFORE the stop state, because the stop state
         // now decides occupancy by asking it. The tally still runs —
         // the counters that earned `Here` this job are what would catch

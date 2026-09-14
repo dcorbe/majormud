@@ -617,15 +617,15 @@ fn the_pool_picks_the_spell() {
     let now = std::time::Instant::now();
 
     let mut rich = heal_state();
-    rich.on_event(&prompt(20, 9), now);
+    rich.on_event(&prompt(20, 9), now, &clock);
     assert_eq!(rich.attempt(now, &clock, HealNeed::Minor), CastAttempt::Send("cast heal".into()));
 
     let mut thin = heal_state();
-    thin.on_event(&prompt(20, 4), now);
+    thin.on_event(&prompt(20, 4), now, &clock);
     assert_eq!(thin.attempt(now, &clock, HealNeed::Minor), CastAttempt::Send("cast heal".into()));
 
     let mut broke = heal_state();
-    broke.on_event(&prompt(20, 2), now);
+    broke.on_event(&prompt(20, 2), now, &clock);
     assert_eq!(broke.attempt(now, &clock, HealNeed::Minor), CastAttempt::Nothing);
 
     // A pool that has never been seen affords nothing: a character whose
@@ -642,13 +642,13 @@ fn a_second_cast_in_one_round_is_held() {
     let clock = RoundClock::new();
     let now = std::time::Instant::now();
     let mut heal = heal_state();
-    heal.on_event(&prompt(20, 9), now);
+    heal.on_event(&prompt(20, 9), now, &clock);
 
     assert_eq!(heal.attempt(now, &clock, HealNeed::Minor), CastAttempt::Send("cast heal".into()));
     // The outcome lands, so nothing is owed — but the round has not
     // turned over.
-    heal.on_sent("cast heal", CmdId(1));
-    heal.on_event(&answering("You cast minor healing!", CmdId(1)), now);
+    heal.on_sent("cast heal", CmdId(1), now);
+    heal.on_event(&answering("You cast minor healing!", CmdId(1)), now, &clock);
     assert!(matches!(heal.attempt(now, &clock, HealNeed::Minor), CastAttempt::Hold(_)));
 }
 
@@ -659,9 +659,9 @@ fn an_owed_outcome_suppresses_the_next_cast() {
     let clock = RoundClock::new();
     let now = std::time::Instant::now();
     let mut heal = heal_state();
-    heal.on_event(&prompt(20, 9), now);
+    heal.on_event(&prompt(20, 9), now, &clock);
     heal.attempt(now, &clock, HealNeed::Minor);
-    heal.on_sent("cast heal", CmdId(1));
+    heal.on_sent("cast heal", CmdId(1), now);
 
     assert!(heal.in_flight());
     assert_eq!(heal.attempt(now, &clock, HealNeed::Minor), CastAttempt::Nothing);
@@ -683,10 +683,10 @@ fn only_an_unknown_spell_kills_a_source() {
         "You have already cast a spell this round!",
     ] {
         let mut heal = heal_state();
-        heal.on_event(&prompt(20, 9), now);
+        heal.on_event(&prompt(20, 9), now, &clock);
         heal.attempt(now, &clock, HealNeed::Minor);
-        heal.on_sent("cast heal", CmdId(1));
-        heal.on_event(&answering(fizzle, CmdId(1)), now);
+        heal.on_sent("cast heal", CmdId(1), now);
+        heal.on_event(&answering(fizzle, CmdId(1)), now, &clock);
         heal.new_visit();
         assert_eq!(
             heal.attempt(now, &clock, HealNeed::Minor),
@@ -696,10 +696,10 @@ fn only_an_unknown_spell_kills_a_source() {
     }
 
     let mut heal = heal_state();
-    heal.on_event(&prompt(20, 9), now);
+    heal.on_event(&prompt(20, 9), now, &clock);
     heal.attempt(now, &clock, HealNeed::Minor);
-    heal.on_sent("cast heal", CmdId(1));
-    heal.on_event(&answering("You do not know how to cast heal.", CmdId(1)), now);
+    heal.on_sent("cast heal", CmdId(1), now);
+    heal.on_event(&answering("You do not know how to cast heal.", CmdId(1)), now, &clock);
     heal.new_visit();
     assert_eq!(
         heal.attempt(now, &clock, HealNeed::Minor),
@@ -722,9 +722,9 @@ fn a_monsters_cast_is_not_our_outcome() {
     let clock = RoundClock::new();
     let now = std::time::Instant::now();
     let mut heal = heal_state();
-    heal.on_event(&prompt(20, 9), now);
+    heal.on_event(&prompt(20, 9), now, &clock);
     heal.attempt(now, &clock, HealNeed::Minor);
-    heal.on_sent("cast heal", CmdId(1));
+    heal.on_sent("cast heal", CmdId(1), now);
 
     heal.on_event(
         &Correlated {
@@ -733,12 +733,13 @@ fn a_monsters_cast_is_not_our_outcome() {
             elsewhere: false,
         },
         now,
+        &clock,
     );
     assert!(heal.in_flight(), "somebody else's failure is not ours");
 
     // And an outcome attributed to a DIFFERENT send of ours is not it
     // either.
-    heal.on_event(&answering("You cast starlight!", CmdId(2)), now);
+    heal.on_event(&answering("You cast starlight!", CmdId(2)), now, &clock);
     assert!(heal.in_flight());
 }
 
@@ -749,7 +750,7 @@ fn the_need_picks_the_kind_and_falls_back_to_the_minor() {
     let clock = RoundClock::new();
     let now = std::time::Instant::now();
     let mut s = heal_state();
-    s.on_event(&prompt(20, 9), now);
+    s.on_event(&prompt(20, 9), now, &clock);
     let major_cmd = healer_book()
         .heal_spells(no_choice(), &BTreeMap::new(), Casting::Spells)
         .0
@@ -760,11 +761,11 @@ fn the_need_picks_the_kind_and_falls_back_to_the_minor() {
     assert_eq!(s.attempt(now, &clock, HealNeed::Major), CastAttempt::Send(major_cmd));
     // Too poor for the major: the minor goes out instead.
     let mut poor = heal_state();
-    poor.on_event(&prompt(20, 4), now);
+    poor.on_event(&prompt(20, 4), now, &clock);
     assert_eq!(poor.attempt(now, &clock, HealNeed::Major), CastAttempt::Send("cast heal".into()));
     // No regen named: the minor.
     let mut none = heal_state();
-    none.on_event(&prompt(20, 9), now);
+    none.on_event(&prompt(20, 9), now, &clock);
     assert_eq!(none.attempt(now, &clock, HealNeed::Regen), CastAttempt::Send("cast heal".into()));
 }
 
@@ -778,18 +779,64 @@ fn a_running_regen_is_not_recast_until_its_rounds_run_out() {
     durations.insert("regeneration".to_string(), 4);
     let (heals, _) = book.heal_spells(HealChoice { minor: "", major: "", regen: "regeneration" }, &durations, Casting::Spells);
     let mut s = HealState::new(heals);
-    s.on_event(&prompt(20, 9), t0);
+    s.on_event(&prompt(20, 9), t0, &clock);
     assert_eq!(s.attempt(t0, &clock, HealNeed::Regen), CastAttempt::Send("cast regn".into()));
-    s.on_sent("cast regn", CmdId(1));
-    s.on_event(&answering("You cast regeneration on yourself.", CmdId(1)), t0);
+    s.on_sent("cast regn", CmdId(1), t0);
+    s.on_event(&answering("You cast regeneration on yourself.", CmdId(1)), t0, &clock);
     // Running: the next round in the band falls back to the minor.
     let t1 = t0 + ROUND;
-    s.on_event(&prompt(20, 9), t1);
+    s.on_event(&prompt(20, 9), t1, &clock);
     assert_eq!(s.attempt(t1, &clock, HealNeed::Regen), CastAttempt::Send("cast heal".into()));
     // Rounds out: the regen again.
     let t2 = t0 + ROUND * 5;
-    s.on_event(&prompt(20, 9), t2);
+    s.on_event(&prompt(20, 9), t2, &clock);
     assert_eq!(s.attempt(t2, &clock, HealNeed::Regen), CastAttempt::Send("cast regn".into()));
+}
+
+/// A cast whose answer never came used to wedge the self heal for the
+/// rest of the session: `pending` stayed set and every later attempt
+/// returned nothing, while the ask for a healer went on every round
+/// (blueberry, cwgaming 2026-09-14: two swans, then none at 57% with a
+/// full pool). The correlator promises no attribution, so the state
+/// keeps its own timeout, the one [`PartyHeal`] already had: two rounds
+/// on, a prompt gives the cast up.
+#[test]
+fn an_unanswered_heal_is_given_up_on_two_rounds_later() {
+    let clock = RoundClock::new();
+    let t0 = Instant::now();
+    let mut s = heal_state();
+    s.on_event(&prompt(20, 9), t0, &clock);
+    assert_eq!(s.attempt(t0, &clock, HealNeed::Minor), CastAttempt::Send("cast heal".into()));
+    s.on_sent("cast heal", CmdId(1), t0);
+    s.on_event(&prompt(20, 9), t0 + ROUND, &clock);
+    assert!(s.in_flight(), "one round on, still out");
+    assert_eq!(s.attempt(t0 + ROUND, &clock, HealNeed::Minor), CastAttempt::Nothing);
+    s.on_event(&prompt(20, 9), t0 + ROUND * 2, &clock);
+    assert!(!s.in_flight(), "two rounds on, a prompt gives up on it");
+    assert_eq!(
+        s.attempt(t0 + ROUND * 2, &clock, HealNeed::Minor),
+        CastAttempt::Send("cast heal".into()),
+        "two rounds on, given up on"
+    );
+}
+
+/// The same timeout for a buff: an answer that never came frees the
+/// cast two rounds later, and the budget stays lapsed, so it is tried
+/// again.
+#[test]
+fn an_unanswered_buff_is_given_up_on_two_rounds_later() {
+    let clock = RoundClock::new();
+    let t0 = Instant::now();
+    let (kept, _) = mud_client::sheet::buffs(&buff_book(), &["bless".into()], &durations(), Casting::Spells);
+    let mut s = BuffState::new(kept);
+    s.on_event(&prompt(20, 9), t0, &clock);
+    assert_eq!(s.attempt(t0, &clock), CastAttempt::Send("cast bles".into()));
+    s.on_sent("cast bles", CmdId(1), t0);
+    s.on_event(&prompt(20, 9), t0 + ROUND, &clock);
+    assert!(s.in_flight(), "one round on, still out");
+    s.on_event(&prompt(20, 9), t0 + ROUND * 2, &clock);
+    assert!(!s.in_flight(), "two rounds on, a prompt gives up on it");
+    assert_eq!(s.attempt(t0 + ROUND * 2, &clock), CastAttempt::Send("cast bles".into()), "still lapsed, tried again");
 }
 
 // --- buffs ------------------------------------------------------------
@@ -872,21 +919,21 @@ fn a_buff_is_recast_when_its_budget_runs_out() {
     );
     let mut buffs = BuffState::new(kept);
     let t0 = std::time::Instant::now();
-    buffs.on_event(&prompt(30, 20), t0);
+    buffs.on_event(&prompt(30, 20), t0, &clock);
 
     assert_eq!(buffs.attempt(t0, &clock), CastAttempt::Send("cast bles".into()));
-    buffs.on_sent("cast bles", CmdId(1));
+    buffs.on_sent("cast bles", CmdId(1), t0);
 
     // A fizzle does not start the budget: the buff is not up.
-    buffs.on_event(&answering("You attempt to cast bless, but fail.", CmdId(1)), t0);
+    buffs.on_event(&answering("You attempt to cast bless, but fail.", CmdId(1)), t0, &clock);
     buffs.new_visit();
     assert_eq!(
         buffs.attempt(t0 + clock.period(), &clock),
         CastAttempt::Send("cast bles".into()),
         "a failed cast leaves it down"
     );
-    buffs.on_sent("cast bles", CmdId(2));
-    buffs.on_event(&answering("You cast bless!", CmdId(2)), t0);
+    buffs.on_sent("cast bles", CmdId(2), t0);
+    buffs.on_event(&answering("You cast bless!", CmdId(2)), t0, &clock);
 
     // Now it is up, and stays up for its 40 rounds.
     buffs.new_visit();
@@ -917,10 +964,10 @@ fn a_wear_off_line_expires_the_budget_early() {
     );
     let mut buffs = BuffState::new(kept);
     let t0 = std::time::Instant::now();
-    buffs.on_event(&prompt(30, 20), t0);
+    buffs.on_event(&prompt(30, 20), t0, &clock);
     buffs.attempt(t0, &clock);
-    buffs.on_sent("cast bles", CmdId(1));
-    buffs.on_event(&answering("You cast bless!", CmdId(1)), t0);
+    buffs.on_sent("cast bles", CmdId(1), t0);
+    buffs.on_event(&answering("You cast bless!", CmdId(1)), t0, &clock);
     buffs.new_visit();
     assert_eq!(buffs.attempt(t0, &clock), CastAttempt::Nothing);
 
@@ -932,6 +979,7 @@ fn a_wear_off_line_expires_the_budget_early() {
             elsewhere: false,
         },
         t0,
+        &clock,
     );
     buffs.new_visit();
     assert_eq!(
@@ -955,9 +1003,9 @@ fn a_buff_is_not_cast_without_the_mana_for_it() {
     let mut buffs = BuffState::new(kept);
     let t0 = std::time::Instant::now();
 
-    buffs.on_event(&prompt(30, 3), t0);
+    buffs.on_event(&prompt(30, 3), t0, &clock);
     assert_eq!(buffs.attempt(t0, &clock), CastAttempt::Nothing, "bless costs 4");
-    buffs.on_event(&prompt(30, 4), t0);
+    buffs.on_event(&prompt(30, 4), t0, &clock);
     assert_eq!(buffs.attempt(t0, &clock), CastAttempt::Send("cast bles".into()));
 }
 
@@ -1454,7 +1502,7 @@ fn a_self_cast_holds_the_party_cast_a_round() {
     p.hold_round(t0);
     assert!(matches!(p.attempt(t0, &clock, &h, Some(100), &marks()), CastAttempt::Hold(_)));
     let mut s = heal_state();
-    s.on_event(&prompt(20, 9), t0);
+    s.on_event(&prompt(20, 9), t0, &clock);
     s.hold_round(t0);
     assert!(matches!(s.attempt(t0, &clock, HealNeed::Minor), CastAttempt::Hold(_)));
 }

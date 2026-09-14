@@ -625,14 +625,45 @@ pub struct HealState {
     /// `None` means "unknown", which is treated as affording nothing —
     /// a character whose pool has never been seen is not a caster.
     mana: Option<i32>,
-    /// A cast is out and its outcome has not arrived: which source, and
-    /// the id its answer will carry.
-    pending: Option<(usize, crate::correlate::CmdId)>,
+    /// A cast is out and its outcome has not arrived.
+    pending: Option<SentCast>,
     /// When the last cast was released, for round pacing.
     last_attempt: Option<std::time::Instant>,
     /// When the regen was last confirmed cast; `None` means never, or its
     /// rounds have already run out.
     regen_cast_at: Option<std::time::Instant>,
+}
+
+/// A cast of ours the board has not answered: which source, the id its
+/// answer will carry, and when it went out.
+///
+/// The correlator promises no attribution: a reply wording it does not
+/// model, or an entry evicted by a younger command's answer, leaves the
+/// answer unattributed for good. Every consumer keeps its own timeout
+/// for that, and `at` is what the timeout is measured from. Without one
+/// the self heal wedged for the rest of the session (blueberry, cwgaming
+/// 2026-09-14: two swans, then none at 57% with a full pool, while the
+/// ask for a healer went on every round).
+#[derive(Debug, Clone, Copy)]
+struct SentCast {
+    source: usize,
+    id: crate::correlate::CmdId,
+    at: std::time::Instant,
+}
+
+impl SentCast {
+    /// Two rounds on, a prompt gives the cast up. The prompt is the
+    /// board answering SOMETHING, which is as much as an unmodelled
+    /// wording ever gives.
+    fn expired(
+        &self,
+        cor: &crate::correlate::Correlated,
+        now: std::time::Instant,
+        clock: &crate::world::RoundClock,
+    ) -> bool {
+        matches!(&cor.event, crate::events::Event::Prompt { .. })
+            && now.duration_since(self.at) >= clock.period() * 2
+    }
 }
 
 impl HealState {
@@ -738,24 +769,33 @@ impl HealState {
     /// Called for every command the gate releases. Any of our own casts
     /// arms the outcome watch — unlike lighting, which only ever has one
     /// candidate in play, the source chosen here varies with the pool.
-    pub fn on_sent(&mut self, line: &str, id: crate::correlate::CmdId) {
+    pub fn on_sent(&mut self, line: &str, id: crate::correlate::CmdId, now: std::time::Instant) {
         if let Some(i) = self.sources.iter().position(|s| s.cmd == line) {
-            self.pending = Some((i, id));
+            self.pending = Some(SentCast { source: i, id, at: now });
         }
     }
 
     /// Fold one event. Prompts carry the pool; everything else is only
     /// read when the correlator says it answers OUR cast — a monster's
     /// "%s attempted to cast %s at you, but failed." is routine din and
-    /// would otherwise read as our own fizzle.
-    pub fn on_event(&mut self, cor: &crate::correlate::Correlated, now: std::time::Instant) {
+    /// would otherwise read as our own fizzle. A cast nobody answered
+    /// is given up on two rounds later ([`SentCast`]).
+    pub fn on_event(
+        &mut self,
+        cor: &crate::correlate::Correlated,
+        now: std::time::Instant,
+        clock: &crate::world::RoundClock,
+    ) {
         if let crate::events::Event::Prompt {
             mana: Some(mana), ..
         } = &cor.event
         {
             self.mana = Some(*mana);
         }
-        let Some((i, pending)) = self.pending else {
+        if self.pending.is_some_and(|p| p.expired(cor, now, clock)) {
+            self.pending = None;
+        }
+        let Some(SentCast { source: i, id: pending, .. }) = self.pending else {
             return;
         };
         if cor.answers != Some(pending) {
@@ -1142,7 +1182,7 @@ pub struct BuffState {
     /// When each was last confirmed cast; `None` = never, or lapsed.
     cast_at: Vec<Option<std::time::Instant>>,
     mana: Option<i32>,
-    pending: Option<(usize, crate::correlate::CmdId)>,
+    pending: Option<SentCast>,
     last_attempt: Option<std::time::Instant>,
 }
 
@@ -1229,16 +1269,22 @@ impl BuffState {
         CastAttempt::Send(self.buffs[i].cmd.clone())
     }
 
-    pub fn on_sent(&mut self, line: &str, id: crate::correlate::CmdId) {
+    pub fn on_sent(&mut self, line: &str, id: crate::correlate::CmdId, now: std::time::Instant) {
         if let Some(i) = self.buffs.iter().position(|b| b.cmd == line) {
-            self.pending = Some((i, id));
+            self.pending = Some(SentCast { source: i, id, at: now });
         }
     }
 
     /// Fold one event. The budget is only started by a cast the board
     /// CONFIRMED — a fizzle leaves the buff lapsed, which is the truth,
-    /// and it is retried next round.
-    pub fn on_event(&mut self, cor: &crate::correlate::Correlated, now: std::time::Instant) {
+    /// and it is retried next round. A cast nobody answered is given up
+    /// on two rounds later ([`SentCast`]), lapsed the same way.
+    pub fn on_event(
+        &mut self,
+        cor: &crate::correlate::Correlated,
+        now: std::time::Instant,
+        clock: &crate::world::RoundClock,
+    ) {
         if let crate::events::Event::Prompt {
             mana: Some(mana), ..
         } = &cor.event
@@ -1256,7 +1302,10 @@ impl BuffState {
                 self.cast_at.iter_mut().for_each(|at| *at = None);
             }
         }
-        let Some((i, pending)) = self.pending else {
+        if self.pending.is_some_and(|p| p.expired(cor, now, clock)) {
+            self.pending = None;
+        }
+        let Some(SentCast { source: i, id: pending, .. }) = self.pending else {
             return;
         };
         if cor.answers != Some(pending) {

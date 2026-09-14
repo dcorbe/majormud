@@ -1570,8 +1570,8 @@ pub fn assist_tick(
             casts.follower.seed(reading);
         }
     }
-    casts.heal.on_event(cor, now);
-    casts.buff.on_event(cor, now);
+    casts.heal.on_event(cor, now, clock);
+    casts.buff.on_event(cor, now, clock);
     casts.party.on_event(cor, now, clock);
     if watch.on_event(&cor.event) {
         bot.rearm();
@@ -1590,7 +1590,7 @@ pub fn assist_tick(
     if let crate::events::Event::Prompt { hp, .. } = &cor.event {
         if let Some(cmd) = assist_heal(cfg, bot, &mut casts.heal, clock, *hp, now) {
             let id = session.send(&cmd);
-            casts.heal.on_sent(&cmd, id);
+            casts.heal.on_sent(&cmd, id, now);
             casts.party.hold_round(now);
             watch.on_sent(&cmd);
             cast_this_prompt = true;
@@ -1632,7 +1632,7 @@ pub fn assist_tick(
         && let Some(cmd) = assist_buff(bot, &mut casts.buff, clock, status.as_ref(), now)
     {
         let id = session.send(&cmd);
-        casts.buff.on_sent(&cmd, id);
+        casts.buff.on_sent(&cmd, id, now);
     }
     // The self cure, which is nobody else's business: a poisoned
     // character with cure poison in its book cures itself whether or

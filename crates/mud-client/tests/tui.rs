@@ -1176,6 +1176,7 @@ fn the_assist_casts_by_the_marks_and_once_per_round() {
     heal.on_event(
         &Correlated { event: Event::Prompt { hp: 30, mana: Some(9), status: None }, answers: None, elsewhere: false },
         now,
+        &clock,
     );
     assert_eq!(assist_heal(&cfg, &bot, &mut heal, &clock, 30, now), Some("cast mahe".into()));
     // The same round asks again: held.
@@ -1210,11 +1211,11 @@ fn the_assist_keeps_buffs_up_in_a_quiet_room() {
     // Resting: a cast would end the rest.
     assert_eq!(assist_buff(&bot, &mut buff, &clock, Some(&Status::Resting), now), None);
     assert_eq!(assist_buff(&bot, &mut buff, &clock, None, now), Some("cast bles".into()));
-    buff.on_sent("cast bles", CmdId(7));
+    buff.on_sent("cast bles", CmdId(7), now);
     // In flight: nothing until the board answers.
     assert_eq!(assist_buff(&bot, &mut buff, &clock, None, now + ROUND * 2), None);
     let cast = Correlated { event: Event::Line("You cast bless on yourself.".into()), answers: Some(CmdId(7)), elsewhere: false };
-    buff.on_event(&cast, now);
+    buff.on_event(&cast, now, &clock);
     // Bought: nothing until the budget runs out.
     assert_eq!(assist_buff(&bot, &mut buff, &clock, None, now + ROUND * 2), None);
     let lapsed = now + ROUND * 41;

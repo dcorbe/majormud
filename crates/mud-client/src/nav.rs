@@ -844,11 +844,9 @@ impl Navigator {
     /// off line, the answer to a cast of its own.
     fn note_event(&self, cor: &crate::correlate::Correlated) {
         if let Some(stealth) = &self.stealth {
-            stealth
-                .lock()
-                .expect("stealth lock")
-                .buffs
-                .on_event(cor, std::time::Instant::now());
+            let mut held = stealth.lock().expect("stealth lock");
+            let s = &mut *held;
+            s.buffs.on_event(cor, std::time::Instant::now(), &s.clock);
         }
     }
 
@@ -2333,12 +2331,12 @@ impl Navigator {
         }
         let deadline = tokio::time::Instant::now() + self.step_timeout;
         loop {
+            let now = std::time::Instant::now();
             let attempt = {
                 let mut held = stealth.lock().expect("stealth lock");
                 // A plain `&mut` so the two fields can be borrowed apart.
                 // Through the guard itself the borrow checker refuses.
                 let s = &mut *held;
-                let now = std::time::Instant::now();
                 s.buffs.attempt(now, &s.clock)
             };
             let cmd = match attempt {
@@ -2350,7 +2348,7 @@ impl Navigator {
                 }
             };
             let id = session.send(&cmd);
-            stealth.lock().expect("stealth lock").buffs.on_sent(&cmd, id);
+            stealth.lock().expect("stealth lock").buffs.on_sent(&cmd, id, now);
             loop {
                 let ev = tokio::time::timeout_at(deadline, events.recv()).await;
                 if let Ok(Ok(ev)) = &ev {
@@ -2379,7 +2377,8 @@ impl Navigator {
                 };
                 let settled = {
                     let mut held = stealth.lock().expect("stealth lock");
-                    held.buffs.on_event(&cor, std::time::Instant::now());
+                    let s = &mut *held;
+                    s.buffs.on_event(&cor, std::time::Instant::now(), &s.clock);
                     // The prompt is the board's end of reply. A wording
                     // the buff state does not know would otherwise hold
                     // the walk for the whole step timeout at every
