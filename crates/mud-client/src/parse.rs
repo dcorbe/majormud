@@ -243,8 +243,14 @@ impl Parser {
         let text_line = text_line.trim_start_matches('\r');
         // Room name: a 1;36-opened line starts (or restarts) a block.
         // Banner art also paints 1;36; the last name line before the
-        // exits line wins.
-        if opening == Some(color::ROOM_NAME) {
+        // exits line wins. A line addressed to the player is not a
+        // name whatever it wears: the live board paints the party
+        // listing's preface, "You are following Carrot.", in this
+        // colour (cwgaming 2026-09-14), and read as a room name it
+        // opened a block that swallowed the roster and everything
+        // after it until the next real block. No room is named
+        // "You ...".
+        if opening == Some(color::ROOM_NAME) && !text_line.starts_with("You ") {
             self.room = Some(RoomView {
                 name: text_line.to_string(),
                 ..RoomView::default()

@@ -1085,3 +1085,27 @@ fn a_wrapped_occupant_line_on_an_unpainted_board() {
     );
     assert!(r.also_here_sgr.iter().all(Option::is_none), "{:?}", r.also_here_sgr);
 }
+
+/// The live board paints the party listing's preface in the room-name
+/// colour (cwgaming, 2026-09-14, 586 times in one capture). Read as a
+/// room name it started a block that swallowed the roster header and
+/// every row as description, so a follower's member list stayed empty
+/// and a fellow follower's `@heal` was dropped as unpermitted. No room
+/// is named "You ...": such a line is text, whatever colour it wears.
+#[test]
+fn a_bold_cyan_line_starting_with_you_is_not_a_room_name() {
+    let events = parse_all(
+        "\r\n\x1b[1;36mYou are following Carrot.\x1b[0m\r\n\x1b[0mThe following people are in your travel party:\r\n\x1b[0m  Carrot                         (Paladin)    [M:100%] [H:100%]   - Frontrank\r\n\x1b[0m  Salad                          (Ranger)     [M: 21%] [H:100%] R - Midrank\r\n[HP=127/MA=28]:Salad says \"@heal 65\"\r\n",
+    );
+    assert_eq!(
+        events,
+        vec![
+            Event::Line("You are following Carrot.".into()),
+            Event::Line("The following people are in your travel party:".into()),
+            Event::Line("  Carrot                         (Paladin)    [M:100%] [H:100%]   - Frontrank".into()),
+            Event::Line("  Salad                          (Ranger)     [M: 21%] [H:100%] R - Midrank".into()),
+            Event::Prompt { hp: 127, mana: Some(28), status: None },
+            Event::Line("Salad says \"@heal 65\"".into()),
+        ]
+    );
+}
