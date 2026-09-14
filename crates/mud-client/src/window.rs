@@ -768,6 +768,12 @@ async fn play(
     // with it would be unreadable, so this is deliberately a slow tick.
     let mut level: Option<crate::progress::LevelProgress> = None;
     let mut level_tick = tokio::time::interval(LEVEL_POLL);
+    // The roster's numbers, for the healers. `[party].poll_secs` of 0
+    // is off: the interval still exists so the select arm compiles,
+    // and the arm checks the setting before sending.
+    let poll_secs = session.party_config().poll_secs.max(1);
+    let mut party_tick = tokio::time::interval(std::time::Duration::from_secs(poll_secs));
+    party_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // The countdowns in the bar move between events, so the bar text is
     // refreshed on its own short timer as well as on every event.
     let mut tick_paint = tokio::time::interval(std::time::Duration::from_millis(250));
@@ -1122,6 +1128,17 @@ async fn play(
                 // asked, which also picks up an `exp` the operator types.
                 if in_realm {
                     session.send("exp");
+                }
+            }
+            _ = party_tick.tick() => {
+                // Only in the realm and in a party. Opaque to the
+                // correlator like `exp`: the roster is recognised by
+                // its header whoever asked.
+                if in_realm
+                    && session.party_config().poll_secs > 0
+                    && session.party().role != crate::party::Role::None
+                {
+                    session.send("party");
                 }
             }
             msg = w.msgs.recv() => {

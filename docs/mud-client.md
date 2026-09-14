@@ -95,7 +95,7 @@ keep_gold = 0                    # left in the purse, in gold crowns
 wait_secs = 90        # a follower's @wait holds the leader this long at most
 bank_wait_secs = 15   # the leader waits at the bank this long for @ok replies
 follow_normal = true  # send "set follow normal" when following begins
-poll_secs = 20        # send "party" this often while in a party; 0 turns it off
+poll_secs = 20        # send "party" this often while in a party. 0 turns it off. A live change takes effect at the next window start
 heal = true           # cast heals on party members that need them
 ```
 
