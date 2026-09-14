@@ -11,6 +11,7 @@
 //!   spell name in 30.
 
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 use mud_core::ability::Ability;
 use mud_core::content::{
@@ -434,7 +435,9 @@ fn the_real_character_derives_a_single_spell_source() {
 
 use mud_client::correlate::{CmdId, Correlated};
 use mud_client::events::Event;
-use mud_client::sheet::{CastAttempt, HealChoice, HealKind, HealNeed, HealSource, HealState};
+use mud_client::sheet::{
+    CastAttempt, HealChoice, HealKind, HealNeed, HealSource, HealState, PartyHeal, PartyKind,
+};
 use mud_client::world::{RoundClock, ROUND};
 
 /// A book with three heals at different prices, plus one spell that is
@@ -1207,5 +1210,212 @@ fn the_outcome_grammar_reads_the_three_families() {
     assert_eq!(cast_outcome("You have already cast a spell this round!"), Some(Outcome::Failed));
     assert_eq!(cast_outcome("Celery is looking around the room."), None);
     assert_eq!(cast_outcome("A rat attempted to cast fire at you, but failed."), None, "the caller gates by attribution, this only names the family");
+}
+
+// --- PartyHeal ---------------------------------------------------------
+
+use mud_client::bot::BotConfig;
+use mud_client::party::{Health, Member};
+
+fn party_book() -> Spellbook {
+    Spellbook::parse(
+        "You have the following spells:\n\
+         Level Mana Short Spell Name\n\
+         \x20 1   2    mihe  minor healing                 \n\
+         \x20 8   6    mahe  major healing                 \n\
+         \x2010   5    rain  healing rain                  \n\
+         \x20 7   8    cure  cure poison                   \n",
+    )
+}
+
+fn party_state() -> PartyHeal {
+    let book = party_book();
+    let heals = book.heal_spells(no_choice(), &BTreeMap::new(), Casting::Spells).0;
+    PartyHeal::new(book.party_heals(&heals, Casting::Spells))
+}
+
+fn marks() -> BotConfig {
+    BotConfig { minor_heal_at_percent: 70, major_heal_at_percent: 40, ..BotConfig::default() }
+}
+
+fn row(name: &str, class: &str, hp: u8) -> Member {
+    Member { name: name.into(), invited: false, class: Some(class.into()), hp: Some(hp), pool: None }
+}
+
+fn health(rows: &[Member], at: Instant) -> Health {
+    let mut h = Health::new();
+    h.on_roster(rows, at);
+    h
+}
+
+#[test]
+fn the_book_yields_singles_area_and_cure() {
+    let book = party_book();
+    let heals = book.heal_spells(no_choice(), &BTreeMap::new(), Casting::Spells).0;
+    let sources = book.party_heals(&heals, Casting::Spells);
+    let kinds: Vec<PartyKind> = sources.iter().map(|s| s.kind).collect();
+    assert_eq!(
+        kinds,
+        vec![PartyKind::Single(HealKind::Minor), PartyKind::Single(HealKind::Major), PartyKind::Area, PartyKind::Cure]
+    );
+    assert_eq!(sources[1].cmd, "cast mahe");
+    assert_eq!(sources[2].cmd, "cast rain");
+    assert_eq!(sources[3].cmd, "cast cure");
+    let plain = healer_book();
+    let heals = plain.heal_spells(no_choice(), &BTreeMap::new(), Casting::Spells).0;
+    assert!(plain.party_heals(&heals, Casting::Spells).iter().all(|s| matches!(s.kind, PartyKind::Single(_))));
+}
+
+#[test]
+fn one_hurt_member_gets_the_single_by_the_marks() {
+    let clock = RoundClock::new();
+    let t0 = Instant::now();
+    let mut p = party_state();
+    p.on_event(&prompt(100, 20), t0);
+    let h = health(&[row("Celery", "Mage", 30), row("Beef", "Ninja", 100)], t0);
+    assert_eq!(p.attempt(t0, &clock, &h, Some(100), &marks()), CastAttempt::Send("cast mahe celery".into()));
+    let mut p = party_state();
+    p.on_event(&prompt(100, 20), t0);
+    let h = health(&[row("Celery", "Mage", 60)], t0);
+    assert_eq!(p.attempt(t0, &clock, &h, Some(100), &marks()), CastAttempt::Send("cast mihe celery".into()));
+}
+
+#[test]
+fn the_major_falls_back_to_the_minor_on_the_pool() {
+    let clock = RoundClock::new();
+    let t0 = Instant::now();
+    let mut p = party_state();
+    p.on_event(&prompt(100, 4), t0);
+    let h = health(&[row("Celery", "Mage", 30)], t0);
+    assert_eq!(p.attempt(t0, &clock, &h, Some(100), &marks()), CastAttempt::Send("cast mihe celery".into()));
+    let mut broke = party_state();
+    broke.on_event(&prompt(100, 1), t0);
+    assert_eq!(broke.attempt(t0, &clock, &h, Some(100), &marks()), CastAttempt::Nothing);
+    let mut unseen = party_state();
+    assert_eq!(unseen.attempt(t0, &clock, &h, Some(100), &marks()), CastAttempt::Nothing, "a pool never seen affords nothing");
+}
+
+#[test]
+fn two_under_the_mark_is_rain_and_the_healer_counts_itself() {
+    let clock = RoundClock::new();
+    let t0 = Instant::now();
+    let mut p = party_state();
+    p.on_event(&prompt(100, 20), t0);
+    let h = health(&[row("Celery", "Mage", 30), row("Beef", "Ninja", 50)], t0);
+    assert_eq!(p.attempt(t0, &clock, &h, Some(100), &marks()), CastAttempt::Send("cast rain".into()));
+    let mut p = party_state();
+    p.on_event(&prompt(100, 20), t0);
+    let h = health(&[row("Celery", "Mage", 30)], t0);
+    assert_eq!(p.attempt(t0, &clock, &h, Some(50), &marks()), CastAttempt::Send("cast rain".into()));
+    let mut p = party_state();
+    p.on_event(&prompt(100, 4), t0);
+    let h = health(&[row("Celery", "Mage", 30), row("Beef", "Ninja", 50)], t0);
+    assert_eq!(p.attempt(t0, &clock, &h, Some(100), &marks()), CastAttempt::Send("cast mihe celery".into()), "rain unaffordable, the lowest gets what the pool buys");
+}
+
+#[test]
+fn a_witchunter_is_neither_counted_nor_healed() {
+    let clock = RoundClock::new();
+    let t0 = Instant::now();
+    let mut p = party_state();
+    p.on_event(&prompt(100, 20), t0);
+    let h = health(&[row("Celery", "Mage", 30), row("Beef", "Witchunter", 20)], t0);
+    assert_eq!(p.attempt(t0, &clock, &h, Some(100), &marks()), CastAttempt::Send("cast mahe celery".into()));
+    let h = health(&[row("Beef", "Witchunter", 20)], t0);
+    let mut p = party_state();
+    p.on_event(&prompt(100, 20), t0);
+    assert_eq!(p.attempt(t0, &clock, &h, Some(100), &marks()), CastAttempt::Nothing);
+}
+
+#[test]
+fn cure_comes_before_heal_and_self_before_others() {
+    let clock = RoundClock::new();
+    let t0 = Instant::now();
+    let mut p = party_state();
+    p.on_event(&prompt(100, 20), t0);
+    let mut h = health(&[row("Celery", "Mage", 30)], t0);
+    h.on_cure("Celery", t0);
+    p.poison_self(t0);
+    assert_eq!(p.attempt(t0, &clock, &h, Some(100), &marks()), CastAttempt::Send("cast cure".into()));
+    p.on_sent("cast cure", CmdId(1));
+    p.on_event(&answering("You cast cure poison on Yourself!", CmdId(1)), t0);
+    let t1 = t0 + Duration::from_secs(10);
+    assert_eq!(p.attempt(t1, &clock, &h, Some(100), &marks()), CastAttempt::Send("cast cure celery".into()));
+    p.on_sent("cast cure celery", CmdId(2));
+    p.on_event(&answering("You cast cure poison on Celery!", CmdId(2)), t1);
+    let t2 = t1 + Duration::from_secs(10);
+    assert_eq!(p.attempt(t2, &clock, &h, Some(100), &marks()), CastAttempt::Send("cast mahe celery".into()), "cured, the heal is next");
+}
+
+#[test]
+fn a_cast_marks_its_targets_until_a_fresher_row() {
+    let clock = RoundClock::new();
+    let t0 = Instant::now();
+    let mut p = party_state();
+    p.on_event(&prompt(100, 20), t0);
+    let mut h = health(&[row("Celery", "Mage", 30)], t0);
+    assert_eq!(p.attempt(t0, &clock, &h, Some(100), &marks()), CastAttempt::Send("cast mahe celery".into()));
+    p.on_sent("cast mahe celery", CmdId(1));
+    assert!(p.in_flight());
+    let t1 = t0 + Duration::from_secs(10);
+    assert_eq!(p.attempt(t1, &clock, &h, Some(100), &marks()), CastAttempt::Nothing, "one cast out at a time");
+    p.on_event(&answering("You cast major healing on Celery!", CmdId(1)), t1);
+    assert!(!p.in_flight());
+    assert_eq!(p.attempt(t1, &clock, &h, Some(100), &marks()), CastAttempt::Nothing, "healed since the row was seen");
+    let t2 = t1 + Duration::from_secs(10);
+    h.on_heal("Celery", 35, t2);
+    assert_eq!(p.attempt(t2, &clock, &h, Some(100), &marks()), CastAttempt::Send("cast mahe celery".into()), "a fresher row is due again");
+}
+
+#[test]
+fn rain_marks_every_counted_row() {
+    let clock = RoundClock::new();
+    let t0 = Instant::now();
+    let mut p = party_state();
+    p.on_event(&prompt(100, 20), t0);
+    let h = health(&[row("Celery", "Mage", 30), row("Beef", "Ninja", 50)], t0);
+    assert_eq!(p.attempt(t0, &clock, &h, Some(100), &marks()), CastAttempt::Send("cast rain".into()));
+    p.on_sent("cast rain", CmdId(1));
+    p.on_event(&answering("You cast healing rain on the room!", CmdId(1)), t0);
+    let t1 = t0 + Duration::from_secs(10);
+    assert_eq!(p.attempt(t1, &clock, &h, Some(100), &marks()), CastAttempt::Nothing);
+}
+
+#[test]
+fn a_failure_frees_the_next_round_and_an_unknown_spell_retires_the_source() {
+    let clock = RoundClock::new();
+    let t0 = Instant::now();
+    let mut p = party_state();
+    p.on_event(&prompt(100, 20), t0);
+    let h = health(&[row("Celery", "Mage", 30)], t0);
+    assert_eq!(p.attempt(t0, &clock, &h, Some(100), &marks()), CastAttempt::Send("cast mahe celery".into()));
+    p.on_sent("cast mahe celery", CmdId(1));
+    p.on_event(&answering("You attempt to cast major healing at Celery, but fail.", CmdId(1)), t0);
+    assert!(matches!(p.attempt(t0, &clock, &h, Some(100), &marks()), CastAttempt::Hold(_)), "the round is spent");
+    let t1 = t0 + Duration::from_secs(10);
+    assert_eq!(p.attempt(t1, &clock, &h, Some(100), &marks()), CastAttempt::Send("cast mahe celery".into()));
+    p.on_sent("cast mahe celery", CmdId(2));
+    p.on_event(&answering("You do not know how to cast mahe.", CmdId(2)), t1);
+    let t2 = t1 + Duration::from_secs(10);
+    assert_eq!(p.attempt(t2, &clock, &h, Some(100), &marks()), CastAttempt::Send("cast mihe celery".into()), "the major is dead, the minor answers");
+}
+
+#[test]
+fn a_self_cast_holds_the_party_cast_a_round() {
+    let clock = RoundClock::new();
+    let t0 = Instant::now();
+    let mut p = party_state();
+    p.on_event(&prompt(100, 20), t0);
+    let h = health(&[row("Celery", "Mage", 30)], t0);
+    p.hold_round(t0);
+    assert!(matches!(p.attempt(t0, &clock, &h, Some(100), &marks()), CastAttempt::Hold(_)));
+    let mut s = heal_state();
+    s.on_event(&prompt(20, 9), t0);
+    s.hold_round(t0);
+    assert!(matches!(s.attempt(t0, &clock, HealNeed::Minor), CastAttempt::Hold(_)));
+    assert!(s.affords(HealNeed::Minor));
+    let mut broke = heal_state();
+    broke.on_event(&prompt(20, 1), t0);
+    assert!(!broke.affords(HealNeed::Major));
 }
 

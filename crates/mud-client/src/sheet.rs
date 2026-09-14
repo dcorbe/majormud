@@ -91,6 +91,11 @@ pub const HEAL_SPELLS: [&str; 10] = [
     "divine healing",
 ];
 
+/// The heals that target the room. `target` 13 in the spell table:
+/// every player in the room is healed, the caster included.
+pub const RAIN_SPELLS: [&str; 3] = ["healing rain", "major healing rain", "greater healing rain"];
+pub const CURE_POISON: &str = "cure poison";
+
 /// Whether this character casts spells or invokes powers.
 ///
 /// Mystics (caster group 5) are a wholesale vocabulary swap, not a
@@ -427,6 +432,32 @@ impl Spellbook {
             })
             .collect()
     }
+
+    /// The casts this character can make on the party: the self heals
+    /// it already has, minus a regen, then the first rain and cure
+    /// poison if the book has them.
+    pub fn party_heals(&self, heals: &[HealSource], casting: Casting) -> Vec<PartySource> {
+        let mut out: Vec<PartySource> = heals
+            .iter()
+            .filter_map(|h| match h.kind {
+                HealKind::Minor | HealKind::Major => Some(PartySource {
+                    name: h.name.clone(),
+                    cmd: h.cmd.clone(),
+                    mana_cost: h.mana_cost,
+                    kind: PartyKind::Single(h.kind),
+                }),
+                HealKind::Regen { .. } => None,
+            })
+            .collect();
+        let named = |name: &str| self.spells.iter().find(|s| s.name.eq_ignore_ascii_case(name));
+        if let Some(s) = RAIN_SPELLS.iter().find_map(|n| named(n)) {
+            out.push(PartySource { name: s.name.clone(), cmd: casting.command(&s.short), mana_cost: s.mana as i32, kind: PartyKind::Area });
+        }
+        if let Some(s) = named(CURE_POISON) {
+            out.push(PartySource { name: s.name.clone(), cmd: casting.command(&s.short), mana_cost: s.mana as i32, kind: PartyKind::Cure });
+        }
+        out
+    }
 }
 
 /// What a heal source is for.
@@ -472,6 +503,27 @@ pub struct HealSource {
     /// From the book, not from configuration.
     pub mana_cost: i32,
     pub kind: HealKind,
+}
+
+/// What a party cast is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PartyKind {
+    /// One member by name, the same minor or major the self heal uses.
+    Single(HealKind),
+    /// The room.
+    Area,
+    /// Cure poison, on one member or on the caster.
+    Cure,
+}
+
+/// One spell this character can cast on the party.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartySource {
+    pub name: String,
+    /// `cast mahe`, without a target. The target is appended per cast.
+    pub cmd: String,
+    pub mana_cost: i32,
+    pub kind: PartyKind,
 }
 
 /// What one of the spell machines wants to do right now.
@@ -727,6 +779,245 @@ impl HealState {
     pub fn new_visit(&mut self) {
         self.pending = None;
         self.last_attempt = None;
+    }
+
+    /// Whether a live source could answer `need` with the pool as last
+    /// seen. The ask for a party heal reads this. A character that can
+    /// cast for itself does not ask.
+    pub fn affords(&self, need: HealNeed) -> bool {
+        let minor = self.affordable(|k| *k == HealKind::Minor).is_some();
+        match need {
+            HealNeed::Minor => minor,
+            HealNeed::Major => self.affordable(|k| *k == HealKind::Major).is_some() || minor,
+            HealNeed::Regen => self.affordable(|k| matches!(k, HealKind::Regen { .. })).is_some() || minor,
+        }
+    }
+
+    /// Another cast of ours went out at `now`. The board allows one
+    /// cast a round, so this one waits its turn.
+    pub fn hold_round(&mut self, now: std::time::Instant) {
+        self.last_attempt = Some(now);
+    }
+}
+
+/// Who a party cast was for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    Me,
+    One(String),
+    /// The rows that were counted when the area cast went out.
+    Room(Vec<String>),
+}
+
+/// Cast heals on the party, and confirm them from the board.
+///
+/// The judgments live here: which row is due, which spell answers it,
+/// and who was healed by a cast. The facts, the rows themselves, live
+/// in [`crate::party::Health`] and are handed in on every attempt.
+///
+/// A row is due when its number was seen after this character last
+/// healed it. A member still hurt says `@heal` again each round, and
+/// every member is polled, so a healed row comes due again on its own
+/// when it is still low.
+pub struct PartyHeal {
+    sources: Vec<PartySource>,
+    dead: Vec<bool>,
+    mana: Option<i32>,
+    /// A cast chosen by `attempt` and not yet released by `on_sent`.
+    planned: Option<(usize, Target, String)>,
+    /// A cast out and unanswered.
+    pending: Option<(usize, Target, crate::correlate::CmdId)>,
+    last_attempt: Option<std::time::Instant>,
+    healed: std::collections::BTreeMap<String, std::time::Instant>,
+    cured: std::collections::BTreeMap<String, std::time::Instant>,
+    /// When this character last saw its own poison tick.
+    self_poisoned: Option<std::time::Instant>,
+}
+
+impl PartyHeal {
+    pub fn new(sources: Vec<PartySource>) -> Self {
+        let dead = vec![false; sources.len()];
+        PartyHeal {
+            sources,
+            dead,
+            mana: None,
+            planned: None,
+            pending: None,
+            last_attempt: None,
+            healed: Default::default(),
+            cured: Default::default(),
+            self_poisoned: None,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.sources.is_empty()
+    }
+
+    pub fn has_cure(&self) -> bool {
+        self.sources.iter().zip(&self.dead).any(|(s, d)| !d && s.kind == PartyKind::Cure)
+    }
+
+    pub fn in_flight(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    pub fn hold_round(&mut self, now: std::time::Instant) {
+        self.last_attempt = Some(now);
+    }
+
+    /// `You feel ill.` was printed: this character is poisoned.
+    pub fn poison_self(&mut self, now: std::time::Instant) {
+        self.self_poisoned = Some(now);
+    }
+
+    fn affordable(&self, kind: impl Fn(PartyKind) -> bool) -> Option<usize> {
+        let mana = self.mana?;
+        self.sources.iter().zip(&self.dead).position(|(s, d)| !d && kind(s.kind) && s.mana_cost <= mana)
+    }
+
+    fn key(name: &str) -> String {
+        name.to_ascii_lowercase()
+    }
+
+    fn plan(&mut self, i: usize, target: Target) -> CastAttempt {
+        let cmd = match &target {
+            Target::One(name) => format!("{} {}", self.sources[i].cmd, Self::key(name)),
+            Target::Me | Target::Room(_) => self.sources[i].cmd.clone(),
+        };
+        self.planned = Some((i, target, cmd.clone()));
+        CastAttempt::Send(cmd)
+    }
+
+    /// The one cast worth making at `now`, if any. Cure before heal,
+    /// self before others, rain when two or more are under the mark,
+    /// else the lowest by the marks.
+    pub fn attempt(
+        &mut self,
+        now: std::time::Instant,
+        clock: &crate::world::RoundClock,
+        health: &crate::party::Health,
+        own_percent: Option<i32>,
+        cfg: &crate::bot::BotConfig,
+    ) -> CastAttempt {
+        if self.pending.is_some() || self.sources.is_empty() {
+            return CastAttempt::Nothing;
+        }
+        if let Some(at) = self.last_attempt {
+            let next = clock.next_round_after(at);
+            if now < next {
+                return CastAttempt::Hold(next);
+            }
+        }
+        let cure = self.affordable(|k| k == PartyKind::Cure);
+        if self.self_poisoned.is_some()
+            && let Some(i) = cure
+        {
+            self.last_attempt = Some(now);
+            return self.plan(i, Target::Me);
+        }
+        if let Some(i) = cure
+            && let Some(row) = health.rows().find(|v| {
+                !v.resists_magic()
+                    && v.poisoned.is_some_and(|p| self.cured.get(&Self::key(&v.name)).is_none_or(|c| *c < p))
+            })
+        {
+            self.last_attempt = Some(now);
+            return self.plan(i, Target::One(row.name.clone()));
+        }
+        let mark = cfg.minor_heal_at_percent as i32;
+        if mark == 0 {
+            return CastAttempt::Nothing;
+        }
+        let mut due: Vec<&crate::party::Vitals> = health
+            .rows()
+            .filter(|v| {
+                !v.resists_magic()
+                    && v.hp.is_some_and(|h| (h as i32) < mark)
+                    && self.healed.get(&Self::key(&v.name)).is_none_or(|h| *h < v.seen)
+            })
+            .collect();
+        due.sort_by_key(|v| v.hp);
+        let count = due.len() + usize::from(own_percent.is_some_and(|p| p < mark));
+        if count >= 2
+            && let Some(i) = self.affordable(|k| k == PartyKind::Area)
+        {
+            let names = due.iter().map(|v| v.name.clone()).collect();
+            self.last_attempt = Some(now);
+            return self.plan(i, Target::Room(names));
+        }
+        let Some(lowest) = due.first() else {
+            return CastAttempt::Nothing;
+        };
+        let hp = lowest.hp.unwrap_or(0) as i32;
+        let minor = self.affordable(|k| k == PartyKind::Single(HealKind::Minor));
+        let picked = match crate::bot::heal_need(cfg, hp) {
+            Some(HealNeed::Major) => self.affordable(|k| k == PartyKind::Single(HealKind::Major)).or(minor),
+            Some(HealNeed::Minor | HealNeed::Regen) => minor,
+            None => None,
+        };
+        let Some(i) = picked else {
+            return CastAttempt::Nothing;
+        };
+        let name = lowest.name.clone();
+        self.last_attempt = Some(now);
+        self.plan(i, Target::One(name))
+    }
+
+    /// Called for every command the gate releases.
+    pub fn on_sent(&mut self, line: &str, id: crate::correlate::CmdId) {
+        if let Some((i, target, cmd)) = self.planned.take()
+            && cmd == line
+        {
+            self.pending = Some((i, target, id));
+        }
+    }
+
+    pub fn on_event(&mut self, cor: &crate::correlate::Correlated, now: std::time::Instant) {
+        if let crate::events::Event::Prompt { mana: Some(mana), .. } = &cor.event {
+            self.mana = Some(*mana);
+        }
+        let Some((i, _, pending)) = &self.pending else {
+            return;
+        };
+        if cor.answers != Some(*pending) {
+            return;
+        }
+        let crate::events::Event::Line(line) = &cor.event else {
+            return;
+        };
+        let i = *i;
+        match cast_outcome(line) {
+            Some(Outcome::Unknown) => {
+                self.dead[i] = true;
+                self.pending = None;
+            }
+            Some(Outcome::Cast) => {
+                let kind = self.sources[i].kind;
+                let (_, target, _) = self.pending.take().expect("pending checked above");
+                let marks = if kind == PartyKind::Cure { &mut self.cured } else { &mut self.healed };
+                match target {
+                    Target::Me => self.self_poisoned = None,
+                    Target::One(name) => {
+                        marks.insert(Self::key(&name), now);
+                    }
+                    Target::Room(names) => {
+                        for name in names {
+                            marks.insert(Self::key(&name), now);
+                        }
+                    }
+                }
+            }
+            Some(Outcome::Failed) => self.pending = None,
+            None => {}
+        }
+    }
+
+    /// A fresh visit clears an outcome that never arrived, the same
+    /// bargain [`HealState::new_visit`] makes.
+    pub fn new_visit(&mut self) {
+        self.pending = None;
+        self.planned = None;
     }
 }
 
