@@ -332,9 +332,12 @@ fn party_config_defaults_and_refuses_zero_waits() {
     assert_eq!(cfg.wait_secs, 90);
     assert_eq!(cfg.bank_wait_secs, 15);
     assert!(cfg.follow_normal);
+    assert_eq!(cfg.poll_secs, 20);
+    assert!(cfg.heal);
     assert!(cfg.validate().is_ok());
     assert!(PartyConfig { wait_secs: 0, ..Default::default() }.validate().is_err());
     assert!(PartyConfig { bank_wait_secs: 0, ..Default::default() }.validate().is_err());
+    assert!(PartyConfig { poll_secs: 0, ..Default::default() }.validate().is_ok(), "zero turns the poll off");
 }
 
 /// The bar says which party the character is in. A follower reads the

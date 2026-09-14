@@ -764,6 +764,12 @@ impl Session {
         self.profile.borrow().clone()
     }
 
+    /// The `[party]` table alone. Small, so the assist can read it on
+    /// every prompt without cloning the profile.
+    pub fn party_config(&self) -> crate::party::PartyConfig {
+        self.profile.borrow().party.clone()
+    }
+
     /// Why the line closed, once it has. "end of stream" is the board
     /// hanging up, or answering our own `/disconnect`. Anything else is
     /// the socket error, which is how a line reset by the path reads.

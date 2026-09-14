@@ -88,6 +88,8 @@ pub const KEYS: &[&str] = &[
     "party.wait_secs",
     "party.bank_wait_secs",
     "party.follow_normal",
+    "party.poll_secs",
+    "party.heal",
 ];
 
 /// Keys that were renamed, and what they are called now. Deserialisation

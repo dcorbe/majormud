@@ -226,6 +226,10 @@ fn party_keys_are_live() {
     assert_eq!(s.profile().party.bank_wait_secs, 30);
     assert!(s.set("party.wait_secs", "0").is_err(), "zero is refused by validate");
     assert_eq!(s.profile().party.wait_secs, 90, "a refused set leaves the value alone");
+    s.set("party.poll_secs", "0").unwrap();
+    assert_eq!(s.profile().party.poll_secs, 0);
+    s.set("party.heal", "false").unwrap();
+    assert!(!s.profile().party.heal);
 }
 
 fn scratch(name: &str) -> std::path::PathBuf {

@@ -585,11 +585,17 @@ pub struct PartyConfig {
     pub bank_wait_secs: u64,
     /// Send `set follow normal` when the character begins following.
     pub follow_normal: bool,
+    /// Send `party` this often while in a party, for the roster's
+    /// numbers. 0 turns the poll off.
+    pub poll_secs: u64,
+    /// Cast heals on the party. Off, the character still asks for its
+    /// own and still introduces itself.
+    pub heal: bool,
 }
 
 impl Default for PartyConfig {
     fn default() -> Self {
-        PartyConfig { wait_secs: 90, bank_wait_secs: 15, follow_normal: true }
+        PartyConfig { wait_secs: 90, bank_wait_secs: 15, follow_normal: true, poll_secs: 20, heal: true }
     }
 }
 
