@@ -506,3 +506,42 @@ fn the_ask_goes_out_once_per_round() {
     assert!(a.due(t0 + Duration::from_secs(10), &clock));
 }
 
+/// The board prints a `*Combat Off*` ahead of any cast made mid-fight,
+/// a cast on another member included. The bot reads `in_flight` to
+/// tell that from the target walking off, so a party cast out has to
+/// count as ours.
+#[test]
+fn a_party_cast_in_flight_is_our_own_combat_off() {
+    use mud_client::bot::BotConfig;
+    use mud_client::correlate::{CmdId, Correlated};
+    use mud_client::events::Event;
+    use mud_client::sheet::{CastAttempt, HealKind, PartyHeal, PartyKind, PartySource};
+
+    let now = Instant::now();
+    let clock = RoundClock::new();
+    let mut casts = AssistCasts::default();
+    assert!(!casts.in_flight(), "nothing of ours is out to begin with");
+
+    casts.party = PartyHeal::new(vec![PartySource {
+        name: "minor healing".into(),
+        cmd: "cast mihe".into(),
+        mana_cost: 2,
+        kind: PartyKind::Single(HealKind::Minor),
+    }]);
+    let pool = Correlated {
+        event: Event::Prompt { hp: 100, mana: Some(20), status: None },
+        answers: None,
+        elsewhere: false,
+    };
+    casts.party.on_event(&pool, now);
+    let mut health = Health::new();
+    health.on_heal("Celery", 30, now);
+    let cfg = BotConfig { minor_heal_at_percent: 70, major_heal_at_percent: 40, ..BotConfig::default() };
+    let CastAttempt::Send(cmd) = casts.party.attempt(now, &clock, &health, Some(100), &cfg) else {
+        panic!("a member at 30 percent is worth a heal");
+    };
+    assert_eq!(cmd, "cast mihe celery");
+    casts.party.on_sent(&cmd, CmdId(7));
+    assert!(casts.in_flight(), "the cast is ours, so the Combat Off it draws is ours");
+}
+

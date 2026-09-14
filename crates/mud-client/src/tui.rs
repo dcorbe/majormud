@@ -1496,8 +1496,13 @@ impl AssistCasts {
     }
 
     /// A cast of ours is out and the board has not said how it went.
+    ///
+    /// The party cast counts. The board prints a `*Combat Off*` ahead
+    /// of any cast made mid-fight, whoever it targets, and the bot
+    /// reads this to know the fight ended because we cast and not
+    /// because the target walked off.
     pub fn in_flight(&self) -> bool {
-        self.heal.in_flight() || self.buff.in_flight()
+        self.heal.in_flight() || self.buff.in_flight() || self.party.in_flight()
     }
 }
 
