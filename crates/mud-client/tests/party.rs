@@ -402,7 +402,7 @@ fn a_rebuild_carries_the_wait_and_the_ask_throttle() {
 }
 
 /// The room hears a said word. Captured 2026-09-13 as
-/// `Blueberry says "toot"`; the `@` passing through unchanged is
+/// `Blueberry says "toot"`. The `@` passing through unchanged is
 /// UNVERIFIED.
 #[test]
 fn the_new_words_read_in_both_shapes() {

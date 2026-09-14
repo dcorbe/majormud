@@ -265,7 +265,7 @@ static TELEPATH: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"^(\w+) telepaths: @(\S+)(?: (.*))?$"#).unwrap());
 /// `Foo says "@heal 35"`. A word said in the room reaches every
 /// member at once, which is what a request for a healer needs. The
-/// plain say is captured; the `@` passing through is UNVERIFIED.
+/// plain say is captured. The `@` passing through is UNVERIFIED.
 static SAID: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"^(\w+) says "@(\S+)(?: ([^"]*))?"$"#).unwrap());
 
