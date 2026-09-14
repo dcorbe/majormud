@@ -16,11 +16,9 @@ const HOME: RoomId = RoomId { map: 1, room: 1 };
 
 const HOME_BLOCK: &str = "\r\n\x1b[1;36mHome\r\nObvious exits: east\r\n[HP=100/MA=0]:";
 
-/// A board that puts the character in the realm at full health, says it
-/// is now following Beef, and only then drops it to a tenth of its
-/// hits, which is under the profile's rest mark. The rest is answered
-/// with prompts carrying the Resting status, and the one after those
-/// carries none. Every line the client sends is logged.
+/// A board that puts the character in the realm at full health, says
+/// Beef started to follow, answers `party` with a one-row roster at 40
+/// percent health, and logs every line the client sends.
 async fn poll_board(sent: Arc<Mutex<Vec<String>>>) -> std::net::SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -31,15 +29,8 @@ async fn poll_board(sent: Arc<Mutex<Vec<String>>>) -> std::net::SocketAddr {
         let mut buf = [0u8; 512];
         let mut pending = String::new();
         let mut step = 0;
-        let mut rested = false;
-        // One health for the whole board, echoes included. An echo that
-        // answered with a stale number would tell the client the rest
-        // it just sent had healed nothing, and a rest that shows no
-        // gain is one the client gives up on.
-        let mut hp = 100;
-        // The prompts still painted with the status after the rest went
-        // out. The one after them is the end of the rest.
-        let mut resting_left = 2;
+        // One health for the whole board, echoes included.
+        let hp = 100;
         let mut tick = tokio::time::interval(Duration::from_millis(200));
         // The first tick is immediate, and nothing is worth saying
         // until the session is reading.
@@ -57,10 +48,6 @@ async fn poll_board(sent: Arc<Mutex<Vec<String>>>) -> std::net::SocketAddr {
                         pending = pending[at + 1..].to_string();
                         sent.lock().unwrap().push(line.clone());
                         let reply = match line.to_lowercase().as_str() {
-                            "rest" => {
-                                rested = true;
-                                format!("\r\nrest\r\n[HP={hp}/MA=0]: (Resting) ")
-                            }
                             "look" => format!("\r\n{line}\r\n\x1b[1;36mHome\r\nObvious exits: east\r\n[HP={hp}/MA=0]:"),
                             "health" => format!("\r\nhealth\r\nHealth:   {hp}/100   [{hp}%]\r\n[HP={hp}/MA=0]:"),
                             "stat" => format!("\r\nstat\r\nName: Beefy   Lives/CP: 9/2\r\nClass: Warrior   Level: 15\r\nMagicRes: 0\r\n[HP={hp}/MA=0]:"),
