@@ -217,7 +217,7 @@ impl Default for FarmConfig {
             // Below the departure gate's mark, the bot's
             // `rest_until_percent` by default, and at the point the bot
             // policy would itself want to stop and heal.
-            interrupt_at_percent: 50,
+            interrupt_at_percent: 40,
             travel_interrupts: 3,
             defend_seconds: 60,
             max_rest_seconds: 180,

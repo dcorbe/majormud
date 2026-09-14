@@ -456,8 +456,8 @@ async fn a_rest_contested_by_an_arrival_defends_instead_of_dozing() {
         circuit: vec!["1/3".into()],
         loops: 1,
         idle_poke_ms: 500,
-        // The gate is ON: 15 of 30 is under the bot's 60% floor, and a
-        // rest ends at 80% of 30 = 24.
+        // The gate is ON: 15 of 30 is under the 60% floor the bot below
+        // keeps, and a rest ends at 80% of 30 = 24.
         depart_at_percent: Some(80),
         // Short leash so the BLIND failure mode (rest to the deadline,
         // then depart wounded past the rat) fails fast instead of
@@ -472,6 +472,9 @@ async fn a_rest_contested_by_an_arrival_defends_instead_of_dozing() {
     let bot = BotConfig {
         auto_combat: true,
         max_hp: 30,
+        // The scenario is a rest that gets contested, so the floor sits
+        // over the walk-in health whatever the default is.
+        rest_at_percent: 60,
         ..BotConfig::default()
     };
 
