@@ -7,11 +7,12 @@ use std::time::{Duration, Instant};
 use mud_client::bank::{BankConfig, Reading};
 use mud_client::events::Status;
 use mud_client::party::{
-    Change, Health, Holds, Member, PartyConfig, PartyState, Remote, Request, Role, Signal,
-    WaitState, bank_names, permitted, remote, say, telepath,
+    AskState, Change, Health, Holds, Member, PartyConfig, PartyState, Remote, Request, Role,
+    Signal, WaitState, bank_names, permitted, remote, say, telepath,
 };
 use mud_client::sheet::Inventory;
 use mud_client::tui::AssistCasts;
+use mud_client::world::RoundClock;
 use mud_core::content::Content;
 
 fn state() -> PartyState {
@@ -492,5 +493,16 @@ fn an_introduction_sets_race_and_class_and_a_witchunter_resists() {
     assert!(from_roster.get("Beef").unwrap().resists_magic(), "the roster's class word marks it too");
     h.clear();
     assert!(h.is_empty());
+}
+
+#[test]
+fn the_ask_goes_out_once_per_round() {
+    let clock = RoundClock::new();
+    let t0 = Instant::now();
+    let mut a = AskState::new();
+    assert!(a.due(t0, &clock));
+    a.on_sent(t0);
+    assert!(!a.due(t0 + Duration::from_millis(500), &clock));
+    assert!(a.due(t0 + Duration::from_secs(10), &clock));
 }
 

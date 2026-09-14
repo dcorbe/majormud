@@ -575,6 +575,28 @@ impl WaitState {
     }
 }
 
+/// A member's requests to the room, one per round at most. A member
+/// still hurt asks again next round, which keeps its row fresh for
+/// every healer.
+#[derive(Debug, Clone, Default)]
+pub struct AskState {
+    last: Option<Instant>,
+}
+
+impl AskState {
+    pub fn new() -> AskState {
+        AskState::default()
+    }
+
+    pub fn due(&self, now: Instant, clock: &crate::world::RoundClock) -> bool {
+        self.last.is_none_or(|at| now >= clock.next_round_after(at))
+    }
+
+    pub fn on_sent(&mut self, now: Instant) {
+        self.last = Some(now);
+    }
+}
+
 /// The `[party]` table of a profile. Absent means these defaults.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -610,3 +632,4 @@ impl PartyConfig {
         Ok(())
     }
 }
+

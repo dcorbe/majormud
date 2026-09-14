@@ -1445,6 +1445,13 @@ pub struct AssistCasts {
     /// The follower's side of the wait handshake around a rest. Idle
     /// unless the character is following someone.
     pub wait: crate::party::WaitState,
+    /// The casts this character makes on the party. Empty until the
+    /// sheet is read, and empty for a character with no heals.
+    pub party: crate::sheet::PartyHeal,
+    /// The member's own `@heal` and `@cure`, one per round.
+    pub ask: crate::party::AskState,
+    /// Members this character has introduced itself to.
+    pub met: std::collections::BTreeSet<String>,
 }
 
 impl Default for AssistCasts {
@@ -1454,6 +1461,9 @@ impl Default for AssistCasts {
             buff: crate::sheet::BuffState::new(Vec::new()),
             follower: crate::bank::FollowerGate::new(),
             wait: crate::party::WaitState::new(),
+            party: crate::sheet::PartyHeal::new(Vec::new()),
+            ask: crate::party::AskState::new(),
+            met: Default::default(),
         }
     }
 }
@@ -1468,7 +1478,10 @@ impl AssistCasts {
     /// let the follower ask again inside the five minutes. The wait
     /// state carries an `@ok` the character owes its leader, and a
     /// rebuild that dropped it would leave the leader standing for the
-    /// whole of `wait_secs`.
+    /// whole of `wait_secs`. The party cast state carries a cast in
+    /// flight and the healed marks. `met` carries who has been greeted,
+    /// which a rebuild must not forget or the character greets the
+    /// party again.
     ///
     /// Every rebuild that hands the character back to the assist calls
     /// this: a job ending, and a `bot.*` setting changing under it. The
@@ -1477,6 +1490,9 @@ impl AssistCasts {
     pub fn carry_party(&mut self, old: AssistCasts) {
         self.follower = old.follower;
         self.wait = old.wait;
+        self.party = old.party;
+        self.ask = old.ask;
+        self.met = old.met;
     }
 
     /// A cast of ours is out and the board has not said how it went.
@@ -1527,6 +1543,7 @@ pub fn assist_tick(
         let sheet = crate::farm::sheet_from(session, cfg, durations);
         casts.heal = crate::sheet::HealState::new(sheet.heals.0);
         casts.buff = crate::sheet::BuffState::new(sheet.buffs.0);
+        casts.party = crate::sheet::PartyHeal::new(sheet.party);
         // The prompt the book was read after has already passed this
         // state by, so the pool it showed is seeded rather than waited
         // for.
@@ -1545,6 +1562,7 @@ pub fn assist_tick(
     }
     casts.heal.on_event(cor, now);
     casts.buff.on_event(cor, now);
+    casts.party.on_event(cor, now);
     if watch.on_event(&cor.event) {
         bot.rearm();
         // A refused rest is over before it began. The leader is free to
@@ -1558,13 +1576,43 @@ pub fn assist_tick(
             session.party_note(format!("party: told {leader} @ok"));
         }
     }
-    if let crate::events::Event::Prompt { hp, .. } = &cor.event
-        && let Some(cmd) = assist_heal(cfg, bot, &mut casts.heal, clock, *hp, now)
-    {
-        let id = session.send(&cmd);
-        casts.heal.on_sent(&cmd, id);
-        watch.on_sent(&cmd);
+    let mut cast_this_prompt = false;
+    if let crate::events::Event::Prompt { hp, .. } = &cor.event {
+        if let Some(cmd) = assist_heal(cfg, bot, &mut casts.heal, clock, *hp, now) {
+            let id = session.send(&cmd);
+            casts.heal.on_sent(&cmd, id);
+            casts.party.hold_round(now);
+            watch.on_sent(&cmd);
+            cast_this_prompt = true;
+        } else if cfg.auto_heal
+            && !bot.fled()
+            && let Some(percent) = bot.hp_percent(*hp)
+            && let Some(need) = crate::bot::heal_need(cfg, percent)
+            && !casts.heal.affords(need)
+            && !casts.heal.in_flight()
+            && session.party().role != crate::party::Role::None
+            && casts.ask.due(now, clock)
+        {
+            // Hurt, and nothing of its own to cast: the room is told.
+            session.send(&crate::party::say(&format!("@heal {percent}")));
+            session.party_note(format!("party: asked @heal {percent}"));
+            casts.ask.on_sent(now);
+        }
+        introduce(session, casts);
     }
+    if let crate::events::Event::Line(line) = &cor.event
+        && line.trim() == "You feel ill."
+    {
+        // The poison tick, spellcasting.md paragraph 8.14. Self cure if
+        // the book has it. Otherwise the room is asked. The line comes
+        // again on the next tick, so an unanswered ask is made again.
+        casts.party.poison_self(now);
+        if !casts.party.has_cure() && session.party().role != crate::party::Role::None {
+            session.send(&crate::party::say("@cure"));
+            session.party_note("party: asked @cure".to_string());
+        }
+    }
+    let _ = cast_this_prompt;
     if let crate::events::Event::Prompt { status, .. } = &cor.event
         && let Some(cmd) = assist_buff(bot, &mut casts.buff, clock, status.as_ref(), now)
     {
@@ -1623,6 +1671,31 @@ pub fn assist_tick(
 fn follower_leader(session: &Session) -> Option<String> {
     let party = session.party();
     party.is_follower().then_some(party.leader).flatten()
+}
+
+/// Say `@iam <race> <class>` to every member not yet greeted, once.
+/// The whole party is unmet on joining and a newcomer is unmet when
+/// the roster or the join line first names it. The race and class are
+/// the stat sheet's. With either missing this waits for the next
+/// prompt. A party that ended forgets everyone, so a party formed
+/// again is greeted again.
+fn introduce(session: &Session, casts: &mut AssistCasts) {
+    let party = session.party();
+    if party.role == crate::party::Role::None {
+        casts.met.clear();
+        return;
+    }
+    let names: Vec<String> = party.leader.iter().cloned().chain(party.followers()).collect();
+    if names.iter().all(|n| casts.met.contains(&n.to_ascii_lowercase())) {
+        return;
+    }
+    let stats = session.stats();
+    let (Some(race), Some(class)) = (stats.race, stats.class) else {
+        return;
+    };
+    session.send(&crate::party::say(&format!("@iam {race} {class}")));
+    session.party_note(format!("party: said @iam {race} {class}"));
+    casts.met.extend(names.iter().map(|n| n.to_ascii_lowercase()));
 }
 
 /// The leader to ask and the bank settings to judge by, when the

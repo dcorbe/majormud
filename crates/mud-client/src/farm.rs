@@ -2444,6 +2444,8 @@ pub(crate) struct Sheet {
     pub light: Vec<crate::sheet::LightSource>,
     /// The heals this character casts, and the names it could not use.
     pub heals: (Vec<crate::sheet::HealSource>, Vec<String>),
+    /// The casts this character can make on the party.
+    pub party: Vec<crate::sheet::PartySource>,
     /// The `[bot].buffs` that survived being looked up, and one line for
     /// each that did not.
     pub buffs: (Vec<crate::sheet::Buff>, Vec<String>),
@@ -2633,17 +2635,20 @@ pub(crate) fn sheet_from(
     let content = session.content();
     let empty = BTreeMap::new();
     let spells = content.as_ref().map(|c| &c.spells).unwrap_or(&empty);
+    let heals = book.heal_spells(
+        crate::sheet::HealChoice {
+            minor: &bot.minor_heal_spell,
+            major: &bot.major_heal_spell,
+            regen: &bot.hp_regen_spell,
+        },
+        durations,
+        casting,
+    );
+    let party = book.party_heals(&heals.0, casting);
     Sheet {
         light: crate::sheet::light_sources(&inventory, &book, spells, casting),
-        heals: book.heal_spells(
-            crate::sheet::HealChoice {
-                minor: &bot.minor_heal_spell,
-                major: &bot.major_heal_spell,
-                regen: &bot.hp_regen_spell,
-            },
-            durations,
-            casting,
-        ),
+        heals,
+        party,
         buffs: crate::sheet::buffs(&book, &bot.buffs, durations, casting),
     }
 }
