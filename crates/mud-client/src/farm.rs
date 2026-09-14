@@ -3381,11 +3381,24 @@ async fn wait_for_departure_health(
     // 2026-08-01): the rat's block landed one beat after the check, and
     // the loop below then watched nothing but the HP number for up to
     // `max_rest_seconds` while the room chewed on it — the more damage
-    // landed, the longer it stayed. No phase consumes events here, but
-    // none is needed: the HP pokes keep `GameState.room` fresh, so the
-    // occupancy answer is already in hand on every pass. Unattributed,
-    // so it is a heuristic gate on a best-effort send — the caller's
-    // defence, not this check, is what actually clears the room.
+    // landed, the longer it stayed. The HP pokes keep `GameState.room`
+    // fresh, so the occupancy answer is in hand on every pass.
+    // Unattributed, so it is a heuristic gate on a best-effort send —
+    // the caller's defence, not this check, is what actually clears the
+    // room.
+    //
+    // The poke alone was not enough. It goes out only when the board
+    // has been quiet for a whole poke, and a monster chewing on a
+    // resting character never lets it go quiet: every bite paints a
+    // prompt, the prompt resets the poke, and the room stays the one
+    // seen before the monster walked in. The character rested on until
+    // it died (Daniel, 2026-09-14). So the wait also reads the events
+    // themselves, for the evidence the stop pump already acts on: a
+    // blow landing on us, a whiff at us, or an arrival the sight bot
+    // would fight. Drained first, so the last fight's blows do not
+    // contest this rest.
+    let mut events = session.events();
+    crate::session::drain(&mut events, |_| {});
     let mut sent_heal = false;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(cfg.max_rest_seconds);
     let poke = Duration::from_millis(cfg.idle_poke_ms.max(1000));
@@ -3455,19 +3468,49 @@ async fn wait_for_departure_health(
             sent_heal = true;
         }
         // A poke is what produces the prompt that carries HP; without one
-        // there is nothing to observe.
-        match tokio::time::timeout(poke, state.changed()).await {
-            Ok(Ok(())) => {}
-            Ok(Err(_)) => return DepartureWait::Fit { rested: sent_heal },
-            Err(_) => {
-                // The poke exists only to provoke a prompt that carries
-                // HP into GameState; its own answer is irrelevant, so no
-                // attribution is needed (and none is read). That the
-                // answer ALSO refreshes the room is what feeds the
-                // occupancy check above.
-                session.send("look");
+        // there is nothing to observe. The poke is measured from the
+        // last change of state, not from the last event: the din
+        // between prompts must not hold it off.
+        let poke_at = tokio::time::Instant::now() + poke;
+        loop {
+            tokio::select! {
+                changed = state.changed() => match changed {
+                    Ok(()) => break,
+                    Err(_) => return DepartureWait::Fit { rested: sent_heal },
+                },
+                ev = events.recv() => match ev {
+                    Ok(cor) if contests_a_rest(&cor.event, sight) => {
+                        return DepartureWait::Contested;
+                    }
+                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        return DepartureWait::Fit { rested: sent_heal };
+                    }
+                },
+                _ = tokio::time::sleep_until(poke_at) => {
+                    // The poke exists only to provoke a prompt that
+                    // carries HP into GameState; its own answer is
+                    // irrelevant, so no attribution is needed (and none
+                    // is read). That the answer ALSO refreshes the room
+                    // is what feeds the occupancy check above.
+                    session.send("look");
+                    break;
+                }
             }
         }
+    }
+}
+
+/// What ends a rest at the departure gate in favour of the defence:
+/// the evidence [`StopState::on_event`] re-asks on, plus an arrival the
+/// sight bot would fight. A blow on us proves something is here that
+/// the last block did not list; a parsed arrival names it outright.
+fn contests_a_rest(ev: &Event, sight: &crate::bot::Bot) -> bool {
+    match ev {
+        Event::CombatHit { target: crate::events::Actor::You, .. } => true,
+        Event::CombatMiss { line } => crate::bot::whiff_at_us(line),
+        Event::ActorEntered { name, .. } => sight.would_attack(name),
+        _ => false,
     }
 }
 

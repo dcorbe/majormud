@@ -182,21 +182,42 @@ fn long_corridor() -> Arc<RoomGraph> {
     Arc::new(RoomGraph::from_rooms(rooms))
 }
 
+/// A line the board volunteers, unasked: the received line that arms
+/// it, how long after that line it goes out, and the text. Armed by a
+/// received line rather than by the clock, so a scenario is ordered
+/// against the run itself. Each push fires once.
+type Push = (&'static str, Duration, String);
+
 /// A board driven by a per-line script: `(matcher, reply)`, each entry
 /// used once, first unused match wins. Unmatched lines echo + say back.
 /// Every line the board receives is logged for ordering assertions.
 async fn scripted_board(
     script: Vec<(&'static str, String)>,
 ) -> (std::net::SocketAddr, Arc<Mutex<Vec<String>>>) {
+    scripted_board_pushing(script, Vec::new()).await
+}
+
+/// As [`scripted_board`], with lines the board volunteers on its own.
+async fn scripted_board_pushing(
+    script: Vec<(&'static str, String)>,
+    pushes: Vec<Push>,
+) -> (std::net::SocketAddr, Arc<Mutex<Vec<String>>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let received = Arc::new(Mutex::new(Vec::new()));
     let log = Arc::clone(&received);
     tokio::spawn(async move {
-        let (mut sock, _) = listener.accept().await.unwrap();
-        sock.write_all(room_block("Guard Post", None, "north").as_bytes())
-            .await
-            .unwrap();
+        let (sock, _) = listener.accept().await.unwrap();
+        let (mut sock, tx) = tokio::io::split(sock);
+        // Shared because a delayed push and the reply loop both write.
+        let tx = Arc::new(tokio::sync::Mutex::new(tx));
+        let write = |tx: Arc<tokio::sync::Mutex<tokio::io::WriteHalf<tokio::net::TcpStream>>>, text: String| async move {
+            let mut out = tx.lock().await;
+            out.write_all(text.as_bytes()).await.unwrap();
+            out.flush().await.unwrap();
+        };
+        write(Arc::clone(&tx), room_block("Guard Post", None, "north")).await;
+        let mut fired = vec![false; pushes.len()];
         // One-shot entries consumed in order; a re-ask (the runner may
         // poke the same `look` more than once) replays the most
         // recently consumed matching entry, exactly as a real board
@@ -214,6 +235,18 @@ async fn scripted_board(
                 let line: String = pending.drain(..=nl).collect();
                 let line = line.trim().to_lowercase();
                 log.lock().unwrap().push(line.clone());
+                for (i, (on, delay, text)) in pushes.iter().enumerate() {
+                    if fired[i] || *on != line {
+                        continue;
+                    }
+                    fired[i] = true;
+                    let tx = Arc::clone(&tx);
+                    let (delay, text) = (*delay, text.clone());
+                    tokio::spawn(async move {
+                        tokio::time::sleep(delay).await;
+                        write(tx, text).await;
+                    });
+                }
                 // Strictly sequential: only the next unconsumed entry
                 // is eligible, so a repeated ask can never steal a
                 // block scripted for later in the walk.
@@ -235,7 +268,7 @@ async fn scripted_board(
                         None => format!("\r\n{line}\r\nYou say \"{line}\"\r\n[HP=30/MA=0]:"),
                     },
                 };
-                sock.write_all(reply.as_bytes()).await.unwrap();
+                write(Arc::clone(&tx), reply).await;
             }
         }
     });
@@ -389,6 +422,95 @@ async fn a_monster_entering_mid_leg_is_fought_where_it_stands() {
         first_n < attack && attack < second_n,
         "defence out of order: {log:?}"
     );
+}
+
+/// The same rest, bitten instead of seen. The gate re-looked only when
+/// the board went quiet for a poke, and a monster chewing on a resting
+/// character never lets it go quiet: every bite paints a prompt, the
+/// prompt resets the poke, and the room the gate judged occupancy from
+/// stayed the one it saw before the monster walked in. The character
+/// rested on until it died (Daniel, 2026-09-14). A blow landing on us
+/// is the same evidence the stop pump already acts on, and the gate
+/// hands over to the defence on it at once.
+#[tokio::test]
+async fn a_rest_bitten_by_something_unlisted_defends_instead_of_dozing() {
+    let bite = |hp: i32| format!("\r\nThe giant rat bites you for 1 damage!\r\n[HP={hp}/MA=0]:");
+    let (addr, received) = scripted_board_pushing(
+        vec![
+            (
+                "inventory",
+                "\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP=15/MA=0]:"
+                    .into(),
+            ),
+            (
+                "look",
+                format!("\r\nlook{}", room_block_hp("Guard Post", None, "north", 15)),
+            ),
+            (
+                "rest",
+                "\r\nrest\r\nYou are now resting.\r\n[HP=15/MA=0]: (Resting) ".into(),
+            ),
+            // The defence's opening ask names the biter.
+            (
+                "look",
+                format!(
+                    "\r\nlook{}",
+                    room_block_hp("Guard Post", Some("giant rat"), "north", 14)
+                ),
+            ),
+            (
+                "a rat",
+                "\r\na rat\r\nYou smack giant rat for 12 damage!\r\nThe giant rat falls to the ground with a tortured squeak.\r\nYou gain 25 experience.\r\n*Combat Off*\r\n[HP=26/MA=0]:"
+                    .into(),
+            ),
+            ("n", format!("\r\nn{}", room_block_hp("Inner Ward", None, "north south", 26))),
+            ("n", format!("\r\nn{}", room_block_hp("Keep", None, "south", 26))),
+            ("look", format!("\r\nlook{}", room_block_hp("Keep", None, "south", 26))),
+        ],
+        // Bites every 600ms from the rest, under the 1s poke and past
+        // the 5s rest cap, each one landing, so the board never goes
+        // quiet while the rat is at work and every prompt carries a new
+        // number.
+        (0..14).map(|i| ("rest", Duration::from_millis(300 + 600 * i), bite(14 - (i % 4) as i32))).collect(),
+    )
+    .await;
+    let session = session_for(addr).await;
+    mud_client::farm::probe_sheet(&session, None).await;
+
+    let graph = corridor();
+    let cfg = FarmConfig {
+        start: "1/1".into(),
+        circuit: vec!["1/3".into()],
+        loops: 1,
+        idle_poke_ms: 500,
+        depart_at_percent: Some(80),
+        max_rest_seconds: 5,
+        travel_interrupts: 0,
+        ..FarmConfig::default()
+    };
+    let plan = FarmPlan::build(&cfg, &graph).expect("plan");
+    let bot = BotConfig {
+        auto_combat: true,
+        max_hp: 30,
+        rest_at_percent: 60,
+        ..BotConfig::default()
+    };
+
+    let (end, stats) = tokio::time::timeout(
+        Duration::from_secs(30),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
+    )
+    .await
+    .expect("run_farm should finish, not hang")
+    .unwrap_or_else(|e| panic!("the run must survive the bitten rest: {e:?}\nboard received: {:?}", received.lock().unwrap()));
+
+    assert_eq!(end, FarmEnd::LoopsDone, "{stats:?}");
+    let log = received.lock().unwrap().clone();
+    let swing = log.iter().position(|l| l == "a rat").unwrap_or_else(|| panic!("the rat biting the rest should have been fought: {log:?}"));
+    let step = log.iter().position(|l| l == "n").expect("the leg stepped north");
+    assert!(swing < step, "the fight comes before the leg sets off: {log:?}");
+    assert!(stats.kills >= 1, "{stats:?}");
+    assert_eq!(stats.interrupts, 0, "a contested rest must never spend the emergency budget: {stats:?}");
 }
 
 /// The run6 departure-gate incident, mechanized: the character rests
