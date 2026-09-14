@@ -7,7 +7,7 @@ use mud_client::lost::Fix;
 use mud_client::session::GameState;
 use mud_client::sheet::{Casting, HealChoice, HealState, Spellbook};
 use mud_client::tui::{
-    InputEditor, act_suffix, assist_heal, bottom_bytes, help_text, pace_on_change, quit_windows_refusal, render_status,
+    InputEditor, World, act_suffix, assist_heal, bottom_bytes, help_text, pace_on_change, quit_windows_refusal, render_status,
     screen_bytes, walks_to_finish, window_bar, windows_listing,
 };
 use mud_client::window::WindowInfo;
@@ -1589,9 +1589,10 @@ async fn every_job_start_refuses_without_a_name() {
     )]));
     let bot = mud_client::bot::BotConfig::default();
     let refusals = vec![
-        start_farm(session.clone(), None, quiet()).err(),
+        start_farm(session.clone(), World::over(graph.clone()), None, quiet()).err(),
         start_roam(
             session.clone(),
+            World::over(graph.clone()),
             mud_client::roam::Walls::new([]),
             mud_client::lost::Fix::Confirmed(here),
             quiet(),
@@ -1599,15 +1600,15 @@ async fn every_job_start_refuses_without_a_name() {
         .err(),
         start_go(
             session.clone(),
-            graph.clone(),
+            World::over(graph.clone()),
             Some(here),
             vec![here],
             bot.clone(),
             quiet(),
         )
         .err(),
-        start_bank(session.clone(), graph.clone(), Some(here), bot, quiet()).err(),
-        start_recover(session.clone(), graph.clone(), Some(here), None, here, quiet()).err(),
+        start_bank(session.clone(), World::over(graph.clone()), Some(here), bot, quiet()).err(),
+        start_recover(session.clone(), World::over(graph.clone()), Some(here), None, here, quiet()).err(),
         start_where(session.clone(), graph.clone(), Some(here)).err(),
     ];
     for refusal in refusals {
@@ -1678,7 +1679,7 @@ async fn a_walking_job_refuses_while_following() {
     )]));
     let why = start_bank(
         session.clone(),
-        graph.clone(),
+        World::over(graph.clone()),
         Some(here),
         mud_client::bot::BotConfig::default(),
         quiet(),
@@ -1717,7 +1718,7 @@ async fn recover_refuses_a_character_that_cannot_sneak() {
             ..Default::default()
         },
     )]));
-    let why = start_recover(session, graph, Some(here), None, here, quiet())
+    let why = start_recover(session, World::over(graph), Some(here), None, here, quiet())
         .err()
         .expect("a job started for a character that cannot sneak");
     assert!(why.contains("Stealth is 0"), "{why}");
@@ -2117,7 +2118,7 @@ async fn the_bot_switch_does_not_refuse_a_recovery() {
             ..Default::default()
         },
     )]));
-    let why = start_recover(session, graph, Some(here), None, here, quiet())
+    let why = start_recover(session, World::over(graph), Some(here), None, here, quiet())
         .err()
         .expect("the banner board's sheet says Stealth is 0");
     assert!(why.contains("Stealth is 0"), "{why}");
@@ -2212,4 +2213,61 @@ fn the_world_derives_every_view_from_one_content() {
     assert_eq!(world.graph.room(RoomId { map: 1, room: 7 }).map(|r| r.name.as_str()), Some("Dark Cave"));
     assert_eq!(world.threat.get("cave bear"), Some(&40_012));
     assert_eq!(world.durations.get("bless"), Some(&30));
+}
+
+/// A job hands the session the world's item table when the session has
+/// none, and leaves a table the session already holds alone. Either way
+/// what comes back is the session's table, shared by `Arc`: no job
+/// decodes the database for a table of its own.
+#[tokio::test]
+async fn a_job_shares_the_world_content_unless_the_session_has_its_own() {
+    use mud_client::farm::content_for;
+    use mud_client::graph::RoomGraph;
+    use mud_client::session::Session;
+    use mud_client::spawn::SpawnTable;
+    use mud_client::tui::World;
+    use mud_core::content::Content;
+    use std::sync::Arc;
+
+    let addr = banner_board().await;
+    let profile = Profile {
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        ..Default::default()
+    };
+    let world = World::new(
+        Arc::new(Content::default()),
+        Arc::new(RoomGraph::from_rooms(vec![])),
+        Arc::new(SpawnTable::default()),
+    );
+
+    let fresh = Session::connect(&profile, None).await.unwrap();
+    assert!(fresh.content().is_none());
+    let got = content_for(&fresh, &world);
+    assert!(Arc::ptr_eq(&got, &world.content), "the world's table, not a copy");
+    assert!(Arc::ptr_eq(&fresh.content().unwrap(), &world.content), "and the session now holds it");
+
+    let own = Arc::new(Content::default());
+    let handed = Session::connect(&profile, None).await.unwrap();
+    handed.set_content(Arc::clone(&own));
+    let got = content_for(&handed, &world);
+    assert!(Arc::ptr_eq(&got, &own), "a table handed to the session earlier is kept");
+}
+
+/// A world that is only a graph, for a test that builds its rooms by
+/// hand: the content and the spawn table are empty, so its views are
+/// empty too, and the graph is the one given.
+#[test]
+fn a_world_over_a_graph_alone_has_empty_views() {
+    use mud_client::graph::{GraphRoom, RoomGraph};
+    use mud_client::tui::World;
+    use std::sync::Arc;
+
+    let here = RoomId { map: 1, room: 1 };
+    let graph = Arc::new(RoomGraph::from_rooms(vec![(here, GraphRoom { name: "Home".into(), ..Default::default() })]));
+    let world = World::over(Arc::clone(&graph));
+    assert!(Arc::ptr_eq(&world.graph, &graph));
+    assert!(world.content.rooms.is_empty());
+    assert!(world.threat.is_empty());
+    assert!(world.durations.is_empty());
 }

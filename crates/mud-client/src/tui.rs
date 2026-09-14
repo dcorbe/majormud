@@ -2185,6 +2185,7 @@ pub struct Job {
 /// caller cannot forget it. Public for the test that pins the refusal.
 pub fn start_farm(
     session: Arc<Session>,
+    world: Arc<World>,
     loop_name: Option<&str>,
     notices: crate::farm::Notices,
 ) -> Result<Job, String> {
@@ -2196,7 +2197,7 @@ pub fn start_farm(
     // nav limits -- still applies to it. The library holds routes, not
     // settings.
     let base = profile.farm.clone().unwrap_or_default();
-    let graph = Arc::new(crate::graph::RoomGraph::load(&base.content)?);
+    let graph = Arc::clone(&world.graph);
     let cfg = match loop_name {
         None => profile
             .farm
@@ -2229,7 +2230,7 @@ pub fn start_farm(
             (p.bot.clone().unwrap_or_default(), p.farm.clone().unwrap_or_default())
         }),
     );
-    Ok(spawn_run(session, graph, plan, live, "farm", notices))
+    Ok(spawn_run(session, world, plan, live, "farm", notices))
 }
 
 /// Roam the region the operator fenced, on an already-connected session.
@@ -2248,6 +2249,7 @@ pub fn start_farm(
 /// caller cannot forget it. Public for the test that pins the refusal.
 pub fn start_roam(
     session: Arc<Session>,
+    world: Arc<World>,
     walls: crate::roam::Walls,
     here: crate::lost::Fix,
     notices: crate::farm::Notices,
@@ -2256,7 +2258,7 @@ pub fn start_roam(
     needs_name(&session)?;
     not_following(&session)?;
     let cfg = profile.farm.clone().unwrap_or_default();
-    let graph = Arc::new(crate::graph::RoomGraph::load(&cfg.content)?);
+    let graph = Arc::clone(&world.graph);
     // Where the character stands is what the region is measured from, so
     // a roam started from an unknown position has nothing to measure.
     // Refusing beats guessing: the fence would be anchored somewhere
@@ -2276,7 +2278,7 @@ pub fn start_roam(
             (p.bot.clone().unwrap_or_default(), p.farm.clone().unwrap_or_default())
         }),
     );
-    Ok(spawn_run(session, graph, plan, live, "roam", notices))
+    Ok(spawn_run(session, world, plan, live, "roam", notices))
 }
 
 /// Hand the connection to the runner and report what it did.
@@ -2286,7 +2288,7 @@ pub fn start_roam(
 /// or rooms are the number that means anything.
 fn spawn_run(
     session: Arc<Session>,
-    graph: Arc<crate::graph::RoomGraph>,
+    world: Arc<World>,
     plan: crate::farm::FarmPlan,
     live: crate::live::Live,
     what: &'static str,
@@ -2302,7 +2304,7 @@ fn spawn_run(
     let handle = tokio::spawn(async move {
         let end = match crate::farm::run_farm(
             &session,
-            graph,
+            world,
             &plan,
             live,
             Some(&tx),
@@ -2374,7 +2376,7 @@ fn spawn_run(
 /// caller cannot forget it. Public for the test that pins the refusal.
 pub fn start_go(
     session: Arc<Session>,
-    graph: Arc<crate::graph::RoomGraph>,
+    world: Arc<World>,
     hint: Option<mud_core::content::RoomId>,
     waypoints: Vec<mud_core::content::RoomId>,
     bot: crate::bot::BotConfig,
@@ -2412,7 +2414,7 @@ pub fn start_go(
     let handle = tokio::spawn(async move {
         let end = match crate::go::run_go(
             &session,
-            graph,
+            world,
             hint,
             &waypoints,
             live,
@@ -2460,7 +2462,7 @@ pub fn start_go(
 /// spot rather than as a failed phase a moment later.
 pub fn start_recover(
     session: Arc<Session>,
-    graph: Arc<crate::graph::RoomGraph>,
+    world: Arc<World>,
     here: Option<mud_core::content::RoomId>,
     safe: Option<mud_core::content::RoomId>,
     target: mud_core::content::RoomId,
@@ -2468,7 +2470,7 @@ pub fn start_recover(
 ) -> Result<Job, String> {
     needs_name(&session)?;
     not_following(&session)?;
-    let from = crate::recover::refusal(&session, &graph, here, safe, target)?;
+    let from = crate::recover::refusal(&session, &world.graph, here, safe, target)?;
     // Automation goes back under flood control, exactly as a go does.
     session.set_pace(session.profile().pace());
     // The job's own settings, and the rule that rebuilds them when the
@@ -2487,7 +2489,7 @@ pub fn start_recover(
     let handle = tokio::spawn(async move {
         let end = match crate::recover::run_recover(
             &session,
-            graph,
+            world,
             from,
             safe,
             target,
@@ -2527,7 +2529,7 @@ pub fn start_recover(
 /// caller cannot forget it. Public for the test that pins the refusal.
 pub fn start_bank(
     session: Arc<Session>,
-    graph: Arc<crate::graph::RoomGraph>,
+    world: Arc<World>,
     hint: Option<mud_core::content::RoomId>,
     bot: crate::bot::BotConfig,
     notices: crate::farm::Notices,
@@ -2559,7 +2561,7 @@ pub fn start_bank(
     let handle = tokio::spawn(async move {
         let end = match crate::bank::run_bank(
             &session,
-            graph,
+            world,
             hint,
             live,
             Some(&tx),
@@ -2953,6 +2955,18 @@ impl World {
             threat,
             durations,
         }
+    }
+
+    /// A world that is only a graph: empty content, empty spawn table,
+    /// empty views. The seam for a test that builds its rooms by hand
+    /// from `GraphRoom`s; nothing in production calls it, production
+    /// goes through [`World::load`].
+    pub fn over(graph: Arc<crate::graph::RoomGraph>) -> Arc<World> {
+        Arc::new(World::new(
+            Arc::new(mud_core::content::Content::default()),
+            graph,
+            Arc::new(crate::spawn::SpawnTable::default()),
+        ))
     }
 
     /// One decode of `db`, and everything built over it. The spawn

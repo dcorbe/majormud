@@ -709,7 +709,7 @@ pub struct Buff {
     pub cmd: String,
     pub mana_cost: i32,
     /// From the shipped `spell` table's `duration`
-    /// ([`crate::graph::RoomGraph::load_spell_durations`]), in combat
+    /// ([`crate::views::spell_durations`]), in combat
     /// rounds. A floor: the real duration scales with caster level, so
     /// recasting on this is early and never late.
     pub rounds: u32,

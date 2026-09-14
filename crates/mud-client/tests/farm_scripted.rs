@@ -25,6 +25,7 @@ use mud_client::live::{Derive, Live};
 use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::profile::Profile;
 use mud_client::session::Session;
+use mud_client::tui::World;
 use mud_core::content::{Direction, RoomId};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -352,7 +353,7 @@ async fn a_monster_entering_mid_leg_is_fought_where_it_stands() {
 
     let (end, stats) = match tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -476,7 +477,7 @@ async fn a_rest_contested_by_an_arrival_defends_instead_of_dozing() {
 
     let (end, stats) = match tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -578,7 +579,7 @@ async fn a_pile_on_a_travel_leg_is_swept_without_losing_the_lap() {
 
     let (end, stats) = match tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -684,7 +685,7 @@ async fn an_endless_stop_is_left_when_its_cap_expires() {
 
     let (end, stats) = match tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
     )
     .await
     .expect("the cap must end a stop that cannot go quiet")
@@ -810,7 +811,7 @@ async fn a_flee_rests_before_it_walks_back() {
 
     let (_end, stats) = match tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -978,7 +979,7 @@ async fn a_fight_below_the_spell_mark_is_healed_not_rested() {
     let (notices, said) = collected();
     let finished = tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &notices),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &notices),
     )
     .await;
     // The log is the diagnosis for BOTH endings here, and a hang is the
@@ -1148,7 +1149,7 @@ async fn below_the_flee_mark_it_runs_and_does_not_cast() {
 
     let (_end, stats) = tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -1250,7 +1251,7 @@ async fn with_fleeing_off_the_flee_mark_does_not_suppress_the_cast() {
 
     let finished = tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
     )
     .await;
     let Ok(result) = finished else {
@@ -1370,7 +1371,7 @@ async fn a_roam_never_steps_into_a_walled_room() {
     };
     let finished = tokio::time::timeout(
         Duration::from_secs(40),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
     )
     .await;
     let Ok(result) = finished else {
@@ -1505,7 +1506,7 @@ async fn a_roam_drops_a_room_whose_lever_it_cannot_reach() {
     };
     let finished = tokio::time::timeout(
         Duration::from_secs(40),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
     )
     .await;
     let Ok(result) = finished else {
@@ -1588,7 +1589,7 @@ async fn a_clean_arrival_is_not_re_asked_at_the_stop() {
 
     let (end, stats) = match tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -1678,7 +1679,7 @@ async fn the_gate_meditates_for_mana_and_leaves_when_both_pools_clear_the_mark()
 
     let (end, stats) = match tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -1763,7 +1764,7 @@ async fn mana_over_its_floor_but_under_the_mark_departs_without_a_rest() {
 
     let (end, stats) = tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -1847,7 +1848,7 @@ async fn a_recovery_the_gate_started_runs_to_the_mark_not_the_floor() {
 
     let (end, stats) = tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -1917,7 +1918,7 @@ async fn a_rest_already_under_way_is_held_to_the_mark() {
 
     let (end, stats) = tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -1969,7 +1970,7 @@ async fn an_interrupt_mark_above_the_bots_own_departure_mark_is_refused_at_run_s
 
     let out = tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
     )
     .await
     .expect("run_farm should refuse at once, not hang");
@@ -2048,7 +2049,7 @@ async fn a_lap_of_quiet_stops_sneaks_once() {
 
     let (end, stats) = match tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -2110,7 +2111,7 @@ async fn a_lap_with_sneak_off_never_arms() {
 
     let (end, stats) = match tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -2225,7 +2226,7 @@ async fn a_stop_that_swings_rearms_the_next_leg() {
 
     let (end, stats) = match tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -2315,7 +2316,7 @@ async fn a_key_at_a_stop_is_picked_up_and_the_pack_reread() {
     let plan = mud_client::farm::FarmPlan::build(&cfg, &graph).unwrap();
     let (end, _) = tokio::time::timeout(
         Duration::from_secs(20),
-        mud_client::farm::run_farm(&session, graph, &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
+        mud_client::farm::run_farm(&session, World::over(graph), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
     )
     .await
     .expect("the run should finish")
@@ -2528,7 +2529,7 @@ async fn a_pile_that_lifts_the_weight_class_sends_the_run_to_the_bank() {
     let plan = FarmPlan::build(&cfg, &graph).expect("plan");
     let (end, stats) = match tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -2656,7 +2657,7 @@ async fn a_refused_deposit_switches_deposits_off_for_the_run() {
     let plan = FarmPlan::build(&cfg, &graph).expect("plan");
     let (end, stats) = match tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -2822,7 +2823,7 @@ async fn an_unreachable_bank_switches_deposits_off_without_ending_the_run() {
     let plan = FarmPlan::build(&cfg, &graph).expect("plan");
     let (end, stats) = match tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -3010,7 +3011,7 @@ async fn a_roam_leaves_its_fence_to_bank_and_walks_back() {
         .expect("a roam of two rooms");
     let (end, stats) = match tokio::time::timeout(
         Duration::from_secs(40),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot.clone(), cfg.clone()), None, &quiet()),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -3147,7 +3148,7 @@ async fn a_coin_rule_changed_mid_run_holds_at_the_next_stop() {
 
     let (end, stats) = match tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, live, None, &quiet()),
+        run_farm(&session, World::over(graph.clone()), &plan, live, None, &quiet()),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -3237,7 +3238,7 @@ async fn the_fight_switch_changed_mid_run_holds_at_the_next_leg() {
 
     let (end, _) = match tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, live, None, &quiet()),
+        run_farm(&session, World::over(graph.clone()), &plan, live, None, &quiet()),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -3321,7 +3322,7 @@ async fn a_coin_rule_change_lands_mid_stop_without_leaving_the_stop() {
 
     let (end, stats) = match tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, live, None, &quiet()),
+        run_farm(&session, World::over(graph.clone()), &plan, live, None, &quiet()),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -3420,7 +3421,7 @@ async fn an_ignore_rule_changed_mid_leg_holds_at_the_second_sighting() {
 
     let (end, stats) = match tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, live, None, &quiet()),
+        run_farm(&session, World::over(graph.clone()), &plan, live, None, &quiet()),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -3529,7 +3530,7 @@ async fn lap_with_starlight(with_content: bool) -> Vec<String> {
     let (notices, said) = collected();
     let (end, stats) = tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot, cfg), None, &notices),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot, cfg), None, &notices),
     )
     .await
     .expect("run_farm should finish, not hang")

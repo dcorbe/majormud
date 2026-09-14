@@ -20,7 +20,7 @@ use crate::tui::{
     assist_tick, content_path, describe_loops, finish_locator, follower_bank_arrival_decision,
     handover_actions, help_text, here_or, import_loop, lobby_step, needs_name, new_assist,
     on_realm_entry, pace_on_change, render_status, start_bank, start_farm, start_follower_deposit,
-    start_go, start_recover, start_roam, start_where,
+    start_go, start_recover, start_roam, start_where, World,
 };
 
 /// A window's identity. Stable for its life, unlike its number, which
@@ -350,21 +350,21 @@ fn arm_redial(w: &Window) -> Option<std::time::Duration> {
 fn recover_to(
     w: &Window,
     session: Arc<Session>,
-    g: Arc<crate::graph::RoomGraph>,
+    world: Arc<World>,
     here: Option<mud_core::content::RoomId>,
     safe: Option<mud_core::content::RoomId>,
     to: mud_core::content::RoomId,
     notices: crate::farm::Notices,
 ) -> Option<Job> {
     let name = |id: mud_core::content::RoomId| {
-        format!("{} [{}/{}]", g.room(id).map(|r| r.name.clone()).unwrap_or_default(), id.map, id.room)
+        format!("{} [{}/{}]", world.graph.room(id).map(|r| r.name.clone()).unwrap_or_default(), id.map, id.room)
     };
     let via = match safe {
         Some(safe) => format!(" via the safe room {}", name(safe)),
         None => String::new(),
     };
     let note = format!("-- recovering from {}{via} (Ctrl-F to take over) --", name(to));
-    match start_recover(session, g, here, safe, to, notices) {
+    match start_recover(session, world, here, safe, to, notices) {
         Err(e) => {
             w.note(&format!("-- recover: {e} --"));
             None
@@ -702,8 +702,8 @@ async fn play(
     // profile mid-session, and a refusal has to name the path that was
     // actually looked at, not the one the settings name now.
     let world_path = content_path(&session.profile());
-    let found = w.cache.lock().expect("cache lock").world(&world_path);
-    let (graph, nav, spawns, content) = finish_locator(found, &session);
+    let world = w.cache.lock().expect("cache lock").world(&world_path);
+    let (graph, nav, spawns, content) = finish_locator(world.clone(), &session);
     let durations = content.as_ref().map(|c| crate::views::spell_durations(c)).unwrap_or_default();
     // The room names that are banks. Read on every room block while
     // following, so it is built once rather than per block.
@@ -1209,7 +1209,11 @@ async fn play(
                                     // works while farming: one job only.
                                     w.note(&format!("-- {} already running (Ctrl-F to take over) --", j.what));
                                 } else {
-                                    match start_farm(session.clone(), loop_name.as_deref(), notices.clone()) {
+                                    match world
+                                        .clone()
+                                        .ok_or_else(|| format!("no room database at {}", world_path.display()))
+                                        .and_then(|wd| start_farm(session.clone(), wd, loop_name.as_deref(), notices.clone()))
+                                    {
                                         Ok(started) => {
                                             // Fresh figures for a fresh
                                             // job, measured from its own
@@ -1231,7 +1235,7 @@ async fn play(
                                 if let Some(j) = job.as_ref() {
                                     w.note(&format!("-- {} already running (Ctrl-F to take over) --", j.what));
                                 } else {
-                                    match graph.as_ref() {
+                                    match world.as_ref() {
                                         // Naming the path is the whole
                                         // point: the default is relative,
                                         // so the commonest cause of this
@@ -1242,13 +1246,13 @@ async fn play(
                                             "-- go: no room database at {} --",
                                             world_path.display()
                                         )),
-                                        Some(g) => match crate::go::resolve(g, here.confirmed(), &target) {
+                                        Some(wd) => match crate::go::resolve(&wd.graph, here.confirmed(), &target) {
                                             Err(refusal) => w.note(&refusal.lines("go").join("\n")),
                                             Ok(to) => {
-                                                let name = g.room(to).map(|r| r.name.clone()).unwrap_or_default();
+                                                let name = wd.graph.room(to).map(|r| r.name.clone()).unwrap_or_default();
                                                 let steps = here
                                                     .confirmed()
-                                                    .and_then(|f| g.route(f, to))
+                                                    .and_then(|f| wd.graph.route(f, to))
                                                     .map(|r| format!(", {} steps", r.len()))
                                                     .unwrap_or_default();
                                                 // The same test the job makes at its start.
@@ -1258,7 +1262,7 @@ async fn play(
                                                 let how = if fights { "walking" } else { "running" };
                                                 match start_go(
                                                     session.clone(),
-                                                    g.clone(),
+                                                    Arc::clone(wd),
                                                     here.confirmed(),
                                                     vec![to],
                                                     assist_config.clone(),
@@ -1286,14 +1290,14 @@ async fn play(
                                 if let Some(j) = job.as_ref() {
                                     w.note(&format!("-- {} already running (Ctrl-F to take over) --", j.what));
                                 } else {
-                                    match graph.as_ref() {
+                                    match world.as_ref() {
                                         None => w.note(&format!(
                                             "-- recover: no room database at {} --",
                                             world_path.display()
                                         )),
-                                        Some(g) => {
+                                        Some(wd) => {
                                             let to = crate::recover::target_of(
-                                                g,
+                                                &wd.graph,
                                                 here.confirmed(),
                                                 target.as_deref(),
                                                 recover_marks.death,
@@ -1306,7 +1310,7 @@ async fn play(
                                                     if let Some(started) = recover_to(
                                                         w,
                                                         session.clone(),
-                                                        g.clone(),
+                                                        Arc::clone(wd),
                                                         here.confirmed(),
                                                         recover_marks.safe,
                                                         to,
@@ -1326,14 +1330,14 @@ async fn play(
                                 if let Some(j) = job.as_ref() {
                                     w.note(&format!("-- {} already running (Ctrl-F to take over) --", j.what));
                                 } else {
-                                    match graph.as_ref() {
+                                    match world.as_ref() {
                                         None => w.note(&format!(
                                             "-- bank: no room database at {} --",
                                             world_path.display()
                                         )),
-                                        Some(g) => match start_bank(
+                                        Some(wd) => match start_bank(
                                             session.clone(),
-                                            g.clone(),
+                                            Arc::clone(wd),
                                             here.confirmed(),
                                             assist_config.clone(),
                                             notices.clone(),
@@ -1382,10 +1386,12 @@ async fn play(
                                 }
                             }
                             KeyOutcome::Map { target } => {
-                                match (graph.as_ref(), spawns.as_ref()) {
-                                    (Some(g), Some(s)) => match here_or(g, here.last_known(), &target) {
+                                match world.as_ref() {
+                                    Some(wd) => match here_or(&wd.graph, here.last_known(), &target) {
                                         Err(refusal) => w.note(&refusal.lines("map").join("\n")),
                                         Ok(id) => {
+                                            let g = &wd.graph;
+                                            let s = &wd.spawns;
                                             let mut view = crate::mapview::MapView::new(
                                                 g.clone(),
                                                 s.clone(),
@@ -1578,7 +1584,7 @@ async fn play(
                                                         }
                                                         crate::mapview::ViewAction::Roam(walls) => {
                                                             let fenced = walls.len();
-                                                            match start_roam(session.clone(), walls, here, notices.clone()) {
+                                                            match start_roam(session.clone(), Arc::clone(wd), walls, here, notices.clone()) {
                                                                 Ok(started) => {
                                                                     w.note(&format!(
                                                                         "-- roaming, fenced out of {fenced} rooms (Ctrl-F to take over) --"
@@ -1598,7 +1604,7 @@ async fn play(
                                                             let legs = way.len();
                                                             match start_go(
                                                                 session.clone(),
-                                                                g.clone(),
+                                                                Arc::clone(wd),
                                                                 here.confirmed(),
                                                                 way,
                                                                 assist_config.clone(),
@@ -1625,7 +1631,7 @@ async fn play(
                                                             if let Some(started) = recover_to(
                                                                 w,
                                                                 session.clone(),
-                                                                g.clone(),
+                                                                Arc::clone(wd),
                                                                 here.confirmed(),
                                                                 recover_marks.safe,
                                                                 to,
@@ -1641,7 +1647,7 @@ async fn play(
                                             }
                                         }
                                     },
-                                    _ => w.note(&format!(
+                                    None => w.note(&format!(
                                         "-- map: no room database at {} --",
                                         world_path.display()
                                     )),

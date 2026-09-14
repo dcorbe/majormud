@@ -634,7 +634,7 @@ fn strip_status(name: &str) -> &str {
 
 /// Monster name (as the shipped data spells it, lowercase) -> how
 /// dangerous it is. Built from the content database; see
-/// [`crate::graph::RoomGraph::load_threat`].
+/// [`crate::views::threat_table`].
 pub type ThreatTable = std::collections::HashMap<String, i64>;
 
 pub struct Bot {

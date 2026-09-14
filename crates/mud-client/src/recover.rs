@@ -431,7 +431,7 @@ fn room_name(graph: &RoomGraph, id: RoomId) -> String {
 #[allow(clippy::too_many_arguments)]
 pub async fn run_recover(
     session: &Session,
-    graph: Arc<RoomGraph>,
+    world: Arc<crate::tui::World>,
     from: RoomId,
     safe: Option<RoomId>,
     target: RoomId,
@@ -439,14 +439,14 @@ pub async fn run_recover(
     phase: PhaseSink<'_>,
     notices: &Notices,
 ) -> Result<RecoverEnd, FarmError> {
-    refusal(session, &graph, Some(from), safe, target).map_err(FarmError::Config)?;
+    refusal(session, &world.graph, Some(from), safe, target).map_err(FarmError::Config)?;
     // Both fight switches off for the job's life. The guard reads this
     // one live, and the job's own bot config has combat off, so no code
     // path in the runner can swing.
     let fought = session.travel_fights().get();
     session.travel_fights().set(false);
     let mut live = live;
-    let out = recover(session, graph, from, safe, target, &mut live, phase, notices).await;
+    let out = recover(session, world, from, safe, target, &mut live, phase, notices).await;
     session.travel_fights().set(fought);
     out
 }
@@ -454,7 +454,7 @@ pub async fn run_recover(
 #[allow(clippy::too_many_arguments)]
 async fn recover(
     session: &Session,
-    graph: Arc<RoomGraph>,
+    world: Arc<crate::tui::World>,
     from: RoomId,
     safe: Option<RoomId>,
     target: RoomId,
@@ -462,13 +462,14 @@ async fn recover(
     phase: PhaseSink<'_>,
     notices: &Notices,
 ) -> Result<RecoverEnd, FarmError> {
+    let graph = Arc::clone(&world.graph);
     set_phase(phase, Phase::Preparing);
     let mut built_at = live.generation();
     // The item table goes to the session before the capabilities are
     // read, so the walk routes with the pack and the stealth spell has a
-    // table to be found in. Best effort, as in `run_go`.
-    crate::farm::content_for(session, &live.farm, notices);
-    let durations = RoomGraph::load_spell_durations(&live.farm.content).unwrap_or_default();
+    // table to be found in.
+    crate::farm::content_for(session, &world);
+    let durations = Arc::clone(&world.durations);
     let clock = crate::world::RoundClock::new();
     let mut navs = Navs::build(session, &graph, live, &clock);
 

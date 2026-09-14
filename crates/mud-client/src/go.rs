@@ -232,7 +232,7 @@ pub enum GoEnd {
 #[allow(clippy::too_many_arguments)]
 pub async fn run_go(
     session: &crate::session::Session,
-    graph: Arc<RoomGraph>,
+    world: Arc<crate::tui::World>,
     hint: Option<RoomId>,
     waypoints: &[RoomId],
     live: Live,
@@ -256,24 +256,14 @@ pub async fn run_go(
     // How the walk starts; the leg sets it again on every reload. See
     // `run_farm`.
     session.travel_fights().set(crate::farm::fights_on_the_way(&live.bot, &live.farm));
-    // The board's own per-monster death wordings, so the room model can
-    // see a kill somebody else landed. Best effort, as in `run_farm`.
-    if let Err(e) = crate::deaths::init(&live.farm.content) {
-        notices(&format!(
-            "death wordings unavailable ({e}); shared-room kills will be missed"
-        ));
-    }
+    let graph = Arc::clone(&world.graph);
     // The table goes to the session before the capabilities are read,
-    // so the walk routes with the pack. Best effort, as before: a
-    // session handed the table earlier keeps it when this load fails.
-    let content = crate::farm::content_for(session, &live.farm, notices);
+    // so the walk routes with the pack.
+    let content = crate::farm::content_for(session, &world);
     let nav = crate::nav::Navigator::new(graph.clone(), crate::farm::nav_config(&live.bot, &live.farm))
         .with_capabilities(session.capabilities())
-        .with_stealth(crate::farm::stealth_buffs(session), crate::world::RoundClock::new());
-    let nav = match content {
-        Some(content) => nav.with_backstab(content, session.wielded(), session.contents().items),
-        None => nav,
-    };
+        .with_stealth(crate::farm::stealth_buffs(session), crate::world::RoundClock::new())
+        .with_backstab(content, session.wielded(), session.contents().items);
 
     let seen = crate::farm::look_around(session, "the go walk's look").await?;
     // An impossible id when there is no hint, so the neighbour shortcut
@@ -291,9 +281,7 @@ pub async fn run_go(
     {
         live.learned_vitals(vitals.max_hp, vitals.max_mana);
     }
-    let threat = Arc::new(
-        RoomGraph::load_threat(&live.farm.content).unwrap_or_else(|_| crate::bot::ThreatTable::new()),
-    );
+    let threat = Arc::clone(&world.threat);
     let refusals = crate::bot::Refusals::default();
     // `sheet_from` reads the session's own cached inventory/spellbook
     // (read once, at realm entry — see `crate::tui::on_realm_entry`) and

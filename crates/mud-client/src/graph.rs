@@ -9,7 +9,6 @@
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use mud_core::content::{Content, Direction, ItemId, MessageId, RoomId};
@@ -677,20 +676,11 @@ pub struct RoomGraph {
 }
 
 impl RoomGraph {
-    /// Loads and decodes `db` via `mud_core::content_db` (the one decoder,
-    /// `2026-08-22-one-path-to-content`) and builds the graph as a view
-    /// over the result. No SQL of its own: the five hand-written queries
-    /// this module used to run are gone, split between
-    /// `mud_core::content_db`'s loaders and [`Self::from_content`]'s and
-    /// [`crate::views`]'s filtering.
-    pub fn load(db: &Path) -> Result<Self, String> {
-        let content = mud_core::content_db::load(db).map_err(|e| e.to_string())?;
-        Ok(Self::from_content(&content))
-    }
-
     /// Build from an already-decoded [`Content`] -- the view that
     /// replaces this module's own SQL (`2026-08-22-one-path-to-content`
-    /// Task 4). `content::Exit` already carries the raw `exit_type` and
+    /// Task 4). The one caller outside tests is `crate::tui::World::load`,
+    /// which decodes the database exactly once; nothing here takes a
+    /// path, so no job can decode a graph of its own. `content::Exit` already carries the raw `exit_type` and
     /// `param` (`para1`), so [`ExitRequirement::from_exit_type`] and the
     /// destination/trigger-message folding port unchanged; only the
     /// per-view filtering below (command-message trimming, the
@@ -1002,58 +992,6 @@ impl RoomGraph {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
-    }
-
-    /// How dangerous each monster template is, keyed by lowercase name.
-    ///
-    /// Scored on `experience` — the board's own valuation of how hard a
-    /// thing is — with `hitpoints` breaking ties, which ranks the shipped
-    /// Newhaven dungeon the way a player would: cave bear 100 above acid
-    /// slime 16, kobold thief 13, filthbug 12, giant rat 9.
-    ///
-    /// Deliberately not the client's own damage model. The exp figure is
-    /// data rather than a guess, and it is the one number the board
-    /// already publishes about difficulty.
-    ///
-    /// Duplicate names exist (there are eight "giant rat" rows); the
-    /// highest-scoring row wins, so a shared name is never ranked below
-    /// its most dangerous variant.
-    pub fn load_threat(db: &Path) -> Result<crate::bot::ThreatTable, String> {
-        let content = mud_core::content_db::load(db).map_err(|e| e.to_string())?;
-        Ok(crate::views::threat_table(&content))
-    }
-
-    /// How long each spell lasts, in combat rounds, by lowercased name.
-    ///
-    /// Only rows with a non-zero `duration` are returned, which is
-    /// exactly the set of spells it makes sense to *keep up* — a heal has
-    /// duration 0 because it happens and is over.
-    ///
-    /// **The figure is a floor, not the truth.** Real duration scales
-    /// with caster level (`mud_core::content` `Scaling`), so a buff
-    /// recast on the table value is always recast early and never late.
-    /// That is the property that lets buff upkeep work off a timer at
-    /// all, without needing to recognise a wear-off wording it cannot
-    /// reliably identify.
-    ///
-    /// Duplicate names exist (`rapid healing` is both 138 and 831); the
-    /// SHORTEST wins, for the same reason — early is safe.
-    pub fn load_spell_durations(db: &Path) -> Result<BTreeMap<String, u32>, String> {
-        let content = mud_core::content_db::load(db).map_err(|e| e.to_string())?;
-        Ok(crate::views::spell_durations(&content))
-    }
-
-    /// The raw decoded content database, for a caller that needs item
-    /// identity directly (`crate::items::resolve`, the backstab
-    /// opener's weapon check -- `Navigator::with_backstab`) rather than
-    /// one of `RoomGraph`'s own derived views. Same "reload the path
-    /// again" shape as [`Self::load_threat`] / [`Self::load_spell_durations`]:
-    /// one more view over the same file, not a new concept. `RoomGraph`
-    /// itself does not keep the `Content` it was built from
-    /// ([`Self::from_content`] consumes a borrow and discards it), so
-    /// there is no cheaper way to hand one back.
-    pub fn load_content(db: &Path) -> Result<Content, String> {
-        mud_core::content_db::load(db).map_err(|e| e.to_string())
     }
 
     pub fn room(&self, id: RoomId) -> Option<&GraphRoom> {

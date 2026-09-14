@@ -18,9 +18,9 @@ use crate::bot::ThreatTable;
 /// Reproduces `graph.rs`'s old `select lower(name), experience,
 /// hitpoints from monster where name != ''`: blank names are skipped (1
 /// such row shipped), the score is `experience*1000 + hitpoints`, and
-/// the HIGHEST score wins a name collision (7 rows share "giant rat") --
-/// see [`crate::graph::RoomGraph::load_threat`] for the reasoning this
-/// ports unchanged.
+/// the HIGHEST score wins a name collision (7 rows share "giant rat"),
+/// so a shared name is never ranked below its most dangerous variant.
+/// Built once per world ([`crate::tui::World::new`]) and shared.
 pub fn threat_table(content: &Content) -> ThreatTable {
     let mut table = ThreatTable::new();
     for monster in content.monsters.values() {
@@ -44,8 +44,8 @@ pub fn threat_table(content: &Content) -> ThreatTable {
 /// durations are both skipped (453 of 1379 shipped spells survive --
 /// the design doc's "542" does not match the shipped database), and
 /// the SHORTEST duration wins a name collision (`rapid healing` is both
-/// 138 and 831) -- see [`crate::graph::RoomGraph::load_spell_durations`]
-/// for the reasoning this ports unchanged.
+/// 138 and 831), because the figure is a floor for the upkeep timer and
+/// early is safe. Built once per world ([`crate::tui::World::new`]).
 pub fn spell_durations(content: &Content) -> BTreeMap<String, u32> {
     let mut table: BTreeMap<String, u32> = BTreeMap::new();
     for spell in content.spells.values() {

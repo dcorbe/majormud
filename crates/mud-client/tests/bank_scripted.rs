@@ -17,6 +17,7 @@ use mud_client::go::go_config;
 use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::profile::Profile;
 use mud_client::session::Session;
+use mud_client::tui::World;
 use mud_core::content::{Content, Direction, Room, RoomId, Shop, ShopId, ShopStock};
 
 /// A notices sink that keeps nothing. What a runner says at startup is
@@ -190,7 +191,7 @@ async fn bank_walks_to_the_nearest_bank_and_deposits_above_the_floor() {
     };
     let end = tokio::time::timeout(
         Duration::from_secs(20),
-        run_bank(&session, graph(), Some(HOME), Live::fixed(bot, cfg), None, &quiet()),
+        run_bank(&session, World::over(graph()), Some(HOME), Live::fixed(bot, cfg), None, &quiet()),
     )
     .await
     .expect("run_bank should finish, not hang")

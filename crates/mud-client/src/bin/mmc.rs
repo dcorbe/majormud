@@ -6,6 +6,7 @@ use mud_client::cli::{Cli, Command};
 use mud_client::profile::Profile;
 use mud_client::script::run_script;
 use mud_client::session::{append_to_stem, Capture, Session};
+use mud_client::tui::World;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -145,8 +146,8 @@ fn path_command(from: &str, to: &str, content: &std::path::Path) -> ExitCode {
         eprintln!("rooms must be map/room, e.g. 1/1");
         return ExitCode::FAILURE;
     };
-    let graph = match mud_client::graph::RoomGraph::load(content) {
-        Ok(g) => g,
+    let graph = match World::load(content) {
+        Ok(w) => w.graph,
         Err(e) => {
             eprintln!("{e}");
             return ExitCode::FAILURE;
@@ -181,15 +182,8 @@ fn map_command(at: &str, content: &std::path::Path) -> ExitCode {
     use mud_client::map::PaintCtx;
     use mud_client::mapview::{MapView, ViewAction, run_offline};
 
-    let graph = match mud_client::graph::RoomGraph::load(content) {
-        Ok(g) => Arc::new(g),
-        Err(e) => {
-            eprintln!("{e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let spawns = match mud_client::spawn::SpawnTable::load(content) {
-        Ok(s) => Arc::new(s),
+    let (graph, spawns) = match World::load(content) {
+        Ok(w) => (w.graph, w.spawns),
         Err(e) => {
             eprintln!("{e}");
             return ExitCode::FAILURE;
@@ -277,8 +271,8 @@ fn import_command(
 ) -> ExitCode {
     use mud_client::mega::{Index, import, parse_mp};
 
-    let graph = match mud_client::graph::RoomGraph::load(content) {
-        Ok(g) => g,
+    let graph = match World::load(content) {
+        Ok(w) => w.graph,
         Err(e) => {
             eprintln!("{e}");
             return ExitCode::FAILURE;

@@ -1799,7 +1799,7 @@ pub fn check_departure_mark(cfg: &FarmConfig, bot: &crate::bot::BotConfig) -> Re
 ///   a few round trips give up on the stop rather than flee-loop.
 pub async fn run_farm(
     session: &crate::session::Session,
-    graph: std::sync::Arc<RoomGraph>,
+    world: std::sync::Arc<crate::tui::World>,
     plan: &FarmPlan,
     live: Live,
     phase: PhaseSink<'_>,
@@ -1810,26 +1810,9 @@ pub async fn run_farm(
     // The tables say how the run starts; the session's switch is what
     // every leg reads, and every reload below sets it again.
     session.travel_fights().set(fights_on_the_way(&live.bot, &live.farm));
-    // The board's own per-monster death wordings, so the room model can
-    // see a kill somebody ELSE landed. Best effort: without it the model
-    // falls back to the award-and-one-phrase test it always had.
-    if let Err(e) = crate::deaths::init(&live.farm.content) {
-        notices(&format!(
-            "death wordings unavailable ({e}); shared-room kills will be missed"
-        ));
-    }
-    // Buff durations, for the upkeep budget. An unreadable database is
-    // not fatal anywhere else here and is not fatal here either: an
-    // empty table means every configured buff is refused with a reason,
-    // which is louder than quietly recasting on a made-up timer.
-    let durations = crate::graph::RoomGraph::load_spell_durations(&live.farm.content).unwrap_or_else(|e| {
-        if !live.bot.buffs.is_empty() {
-            notices(&format!(
-                "spell durations unavailable ({e}); buffs will not be kept up"
-            ));
-        }
-        BTreeMap::new()
-    });
+    // Buff durations, for the upkeep budget: the world's table, built
+    // once over the content every job shares.
+    let durations = std::sync::Arc::clone(&world.durations);
     let sheet = sheet_from(session, &live.bot, &durations);
     let light = crate::sheet::LightState::new(sheet.light);
     if let Some(cmd) = light.first_command() {
@@ -1893,7 +1876,7 @@ pub async fn run_farm(
     let mut casts = Casts { light, heal, buff };
     let mut clock = crate::world::RoundClock::new();
     let out = farm_loop(
-        session, graph, plan, &mut live, phase, notices, &mut casts, &mut clock, &durations,
+        session, world, plan, &mut live, phase, notices, &mut casts, &mut clock, &durations,
     )
     .await;
     // A lit source burns one use per 3s medium tick whether anything
@@ -1911,7 +1894,7 @@ pub async fn run_farm(
 #[allow(clippy::too_many_arguments)]
 async fn farm_loop(
     session: &crate::session::Session,
-    graph: std::sync::Arc<RoomGraph>,
+    world: std::sync::Arc<crate::tui::World>,
     plan: &FarmPlan,
     live: &mut Live,
     phase: PhaseSink<'_>,
@@ -1920,24 +1903,22 @@ async fn farm_loop(
     clock: &mut crate::world::RoundClock,
     durations: &BTreeMap<String, u32>,
 ) -> Result<(FarmEnd, FarmStats), FarmError> {
+    let graph = std::sync::Arc::clone(&world.graph);
     let started = Instant::now();
     let mut stats = FarmStats::default();
     // Item identity for the pack and the backstab opener. Held out
     // here rather than inside the navigator's block because the bank
     // errand reads the same table to find a bank.
-    let content = content_for(session, &live.farm, notices);
+    let content = content_for(session, &world);
     let walker = |nav_cfg: crate::nav::NavConfig| {
-        let nav = crate::nav::Navigator::new(graph.clone(), nav_cfg)
+        crate::nav::Navigator::new(graph.clone(), nav_cfg)
             .with_capabilities(session.capabilities())
-            .with_stealth(stealth_buffs(session), crate::world::RoundClock::new());
-        match &content {
-            Some(content) => nav.with_backstab(
-                std::sync::Arc::clone(content),
+            .with_stealth(stealth_buffs(session), crate::world::RoundClock::new())
+            .with_backstab(
+                std::sync::Arc::clone(&content),
                 session.wielded(),
                 session.contents().items,
-            ),
-            None => nav,
-        }
+            )
     };
     // A roam's fence binds the WALK, not just the destinations. Without
     // this the rotation would only ever pick rooms inside the region
@@ -1960,15 +1941,8 @@ async fn farm_loop(
     // compares against it to tell a spell choice that moved from one
     // that did not, so it keeps the cast times of what did not move.
     let mut built_bot = live.bot.clone();
-    // Danger ranking from the shipped data. A missing or unreadable
-    // database is not fatal: an empty table simply means "no opinion",
-    // and the bot falls back to the board's own listing order.
-    let threat = std::sync::Arc::new(
-        RoomGraph::load_threat(&live.farm.content).unwrap_or_else(|e| {
-            notices(&format!("threat ranking unavailable ({e}); using board order"));
-            crate::bot::ThreatTable::new()
-        }),
-    );
+    // Danger ranking from the shipped data, shared with every other job.
+    let threat = std::sync::Arc::clone(&world.threat);
 
     // Every percent policy divides by these, and a wrong value mis-scales
     // heal and flee silently. 0 max_hp means the profile did not say, so
@@ -2213,22 +2187,18 @@ async fn farm_loop(
             if bank_cfg.auto_deposit
                 && !bank_off
                 && stats.coin_pickups > judged_pickups
-                && content.is_some()
             {
                 judged_pickups = stats.coin_pickups;
                 let inv = crate::bank::read_inventory(session).await;
                 own = crate::bank::Reading::of(&inv)
                     .is_some_and(|r| gate.judge(&bank_cfg, r) == crate::bank::Judgement::Deposit);
             }
-            if (own || asked)
-                && !bank_off
-                && let Some(content) = &content
-            {
+            if (own || asked) && !bank_off {
                 let out = crate::bank::errand(
                     session,
                     &bank_nav,
                     &graph,
-                    content,
+                    &content,
                     &bank_cfg,
                     asked,
                     live,
@@ -2670,27 +2640,20 @@ pub(crate) fn sheet_from(
 /// opener and the bank list all read it.
 ///
 /// One rule for every walker. The table goes to the session first, so
-/// the capabilities read afterwards already carry the pack. A load that
-/// fails falls back to whatever the session already holds, because
-/// something may have handed it a table earlier, and only a walk with
-/// no table at all loses the opener and the bank.
-pub(crate) fn content_for(
+/// the capabilities read afterwards already carry the pack. A session
+/// that already holds a table keeps it, because something handed it
+/// one earlier: realm entry hands over this same world's table, and a
+/// test hands over a richer one. Nothing is decoded here; the world is
+/// the one copy and the session shares it by `Arc`.
+pub fn content_for(
     session: &crate::session::Session,
-    cfg: &FarmConfig,
-    notices: &Notices,
-) -> Option<std::sync::Arc<mud_core::content::Content>> {
-    match RoomGraph::load_content(&cfg.content) {
-        Ok(content) => {
-            let content = std::sync::Arc::new(content);
-            session.set_content(std::sync::Arc::clone(&content));
-            Some(content)
-        }
-        Err(e) => {
-            let kept = session.pack_handle().map(|h| std::sync::Arc::clone(h.content()));
-            if kept.is_none() {
-                notices(&format!("item identity unavailable ({e}); backstab opener disabled"));
-            }
-            kept
+    world: &crate::tui::World,
+) -> std::sync::Arc<mud_core::content::Content> {
+    match session.content() {
+        Some(kept) => kept,
+        None => {
+            session.set_content(std::sync::Arc::clone(&world.content));
+            std::sync::Arc::clone(&world.content)
         }
     }
 }

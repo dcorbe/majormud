@@ -23,6 +23,7 @@ use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::profile::Profile;
 use mud_client::recover::{HomeWhy, RecoverEnd, run_recover};
 use mud_client::session::Session;
+use mud_client::tui::World;
 use mud_core::content::{Content, Direction, RoomId};
 
 fn quiet() -> mud_client::farm::Notices {
@@ -389,7 +390,7 @@ async fn recover_staged(
     }
     let out = tokio::time::timeout(
         Duration::from_secs(60),
-        run_recover(&session, graph, START, safe, DEATH, live, None, &quiet()),
+        run_recover(&session, World::over(graph), START, safe, DEATH, live, None, &quiet()),
     )
     .await
     .expect("run_recover should finish, not hang");
@@ -418,7 +419,7 @@ async fn stealth_zero_is_refused_before_anything_is_sent() {
     let session = session_for(addr).await;
     let out = run_recover(
         &session,
-        corridor(0),
+        World::over(corridor(0)),
         START,
         None,
         DEATH,
@@ -939,7 +940,7 @@ async fn a_settings_change_lands_while_the_sweep_waits() {
             Duration::from_secs(60),
             run_recover(
                 &session,
-                corridor(0),
+                World::over(corridor(0)),
                 START,
                 None,
                 DEATH,

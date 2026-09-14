@@ -18,6 +18,7 @@ use mud_client::go::{GoEnd, resolve, run_go};
 use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::profile::Profile;
 use mud_client::session::Session;
+use mud_client::tui::World;
 use mud_core::content::{
     Class, ClassId, Content, Direction, Exit, Race, RaceId, Room, RoomId, StatBlock,
 };
@@ -190,7 +191,7 @@ async fn go_walks_to_a_named_room() {
 
     let end = run_go(
         &session,
-        graph,
+        World::over(graph),
         Some(GATES),
         &[to],
         Live::fixed(mud_client::bot::BotConfig::default(), cfg()),
@@ -226,7 +227,7 @@ async fn go_finds_its_own_starting_room() {
 
     let end = run_go(
         &session,
-        graph,
+        World::over(graph),
         None,
         &[MARKET],
         Live::fixed(mud_client::bot::BotConfig::default(), cfg()),
@@ -246,7 +247,7 @@ async fn going_where_you_already_stand_is_a_no_op() {
 
     let end = run_go(
         &session,
-        client_graph(),
+        World::over(client_graph()),
         Some(GATES),
         &[GATES],
         Live::fixed(mud_client::bot::BotConfig::default(), cfg()),

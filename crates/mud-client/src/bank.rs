@@ -678,7 +678,7 @@ async fn bank_wait(
 /// operator asked.
 pub async fn run_bank(
     session: &Session,
-    graph: std::sync::Arc<RoomGraph>,
+    world: std::sync::Arc<crate::tui::World>,
     hint: Option<RoomId>,
     live: Live,
     phase: PhaseSink<'_>,
@@ -687,17 +687,8 @@ pub async fn run_bank(
     let mut live = live;
     crate::farm::check_departure_mark(&live.farm, &live.bot)?;
     session.travel_fights().set(crate::farm::fights_on_the_way(&live.bot, &live.farm));
-    if let Err(e) = crate::deaths::init(&live.farm.content) {
-        notices(&format!(
-            "death wordings unavailable ({e}); shared-room kills will be missed"
-        ));
-    }
-    let Some(content) = crate::farm::content_for(session, &live.farm, notices) else {
-        return Ok(ErrandEnd::Nothing(format!(
-            "no room database at {}",
-            live.farm.content.display()
-        )));
-    };
+    let graph = std::sync::Arc::clone(&world.graph);
+    let content = crate::farm::content_for(session, &world);
     let nav = crate::nav::Navigator::new(graph.clone(), crate::farm::nav_config(&live.bot, &live.farm))
         .with_capabilities(session.capabilities())
         .with_stealth(crate::farm::stealth_buffs(session), crate::world::RoundClock::new())
@@ -717,9 +708,7 @@ pub async fn run_bank(
     {
         live.learned_vitals(vitals.max_hp, vitals.max_mana);
     }
-    let threat = std::sync::Arc::new(
-        RoomGraph::load_threat(&live.farm.content).unwrap_or_else(|_| crate::bot::ThreatTable::new()),
-    );
+    let threat = std::sync::Arc::clone(&world.threat);
     let refusals = crate::bot::Refusals::default();
     let sheet = crate::farm::sheet_from(session, &live.bot, &Default::default());
     let mut casts = Casts {

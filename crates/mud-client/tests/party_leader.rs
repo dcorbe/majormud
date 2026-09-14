@@ -20,6 +20,7 @@ use mud_client::live::Live;
 use mud_client::party::PartyConfig;
 use mud_client::profile::Profile;
 use mud_client::session::Session;
+use mud_client::tui::World;
 use mud_core::content::{Content, Direction, Room, RoomId, Shop, ShopId, ShopStock};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -279,7 +280,7 @@ async fn a_wait_holds_the_leg_until_ok() {
 
     let (end, stats) = tokio::time::timeout(
         Duration::from_secs(20),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot, cfg), None, &notices),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot, cfg), None, &notices),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -334,7 +335,7 @@ async fn a_wait_with_no_ok_expires_and_the_leg_goes_on() {
 
     let (end, stats) = tokio::time::timeout(
         Duration::from_secs(20),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot, cfg), None, &notices),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot, cfg), None, &notices),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -414,7 +415,7 @@ async fn a_wait_mid_leg_stops_the_next_step() {
 
     let (end, stats) = tokio::time::timeout(
         Duration::from_secs(20),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot, cfg), None, &notices),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot, cfg), None, &notices),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -606,7 +607,7 @@ async fn a_follower_s_bank_detours_the_leader_and_waits_for_ok() {
 
     let (end, stats) = tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot, cfg), None, &notices),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot, cfg), None, &notices),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -694,7 +695,7 @@ async fn a_bank_wait_with_no_ok_expires_and_names_the_silent() {
 
     let (end, stats) = tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot, cfg), None, &notices),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot, cfg), None, &notices),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -753,7 +754,7 @@ async fn an_asked_detour_with_an_empty_purse_leaves_deposits_on() {
 
     let (end, stats) = tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot, cfg), None, &notices),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot, cfg), None, &notices),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -832,7 +833,7 @@ async fn an_ok_during_the_deposit_ends_the_bank_wait_at_once() {
 
     let (end, stats) = tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot, cfg), None, &notices),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot, cfg), None, &notices),
     )
     .await
     .expect("run_farm should finish, not hang")
@@ -906,7 +907,7 @@ async fn a_bank_wait_ends_when_both_followers_answer() {
 
     let (end, stats) = tokio::time::timeout(
         Duration::from_secs(30),
-        run_farm(&session, graph.clone(), &plan, Live::fixed(bot, cfg), None, &notices),
+        run_farm(&session, World::over(graph.clone()), &plan, Live::fixed(bot, cfg), None, &notices),
     )
     .await
     .expect("run_farm should finish, not hang")
