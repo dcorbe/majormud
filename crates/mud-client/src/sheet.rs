@@ -573,6 +573,11 @@ pub fn cast_outcome(line: &str) -> Option<Outcome> {
         || line.contains("enough kai to invoke")
         || line.contains("already cast a spell")
         || line.contains("already invoked a power")
+        // The target has left the room. UNVERIFIED for a cast target:
+        // the wording is `mud_core::text::dont_see_here`, seen for
+        // items only. It comes round again, since the member is either
+        // back next round or off the roster.
+        || line.starts_with("you don't see ")
     {
         return Some(Outcome::Failed);
     }
@@ -809,6 +814,27 @@ pub enum Target {
     Room(Vec<String>),
 }
 
+/// A party cast [`PartyHeal::attempt`] chose, before the gate has
+/// released it.
+struct Planned {
+    source: usize,
+    target: Target,
+    cmd: String,
+    /// When it was chosen, which is the round it goes out in.
+    at: std::time::Instant,
+}
+
+/// A party cast on the board with no outcome yet.
+struct Pending {
+    source: usize,
+    target: Target,
+    id: crate::correlate::CmdId,
+    /// When it went out. A cast still unanswered two rounds later is
+    /// given up on, so one wording nobody has captured cannot wedge
+    /// every party cast for the rest of the run.
+    at: std::time::Instant,
+}
+
 /// Cast heals on the party, and confirm them from the board.
 ///
 /// The judgments live here: which row is due, which spell answers it,
@@ -824,9 +850,9 @@ pub struct PartyHeal {
     dead: Vec<bool>,
     mana: Option<i32>,
     /// A cast chosen by `attempt` and not yet released by `on_sent`.
-    planned: Option<(usize, Target, String)>,
+    planned: Option<Planned>,
     /// A cast out and unanswered.
-    pending: Option<(usize, Target, crate::correlate::CmdId)>,
+    pending: Option<Pending>,
     last_attempt: Option<std::time::Instant>,
     healed: std::collections::BTreeMap<String, std::time::Instant>,
     cured: std::collections::BTreeMap<String, std::time::Instant>,
@@ -880,13 +906,41 @@ impl PartyHeal {
         name.to_ascii_lowercase()
     }
 
-    fn plan(&mut self, i: usize, target: Target) -> CastAttempt {
+    fn plan(&mut self, i: usize, target: Target, now: std::time::Instant) -> CastAttempt {
         let cmd = match &target {
             Target::One(name) => format!("{} {}", self.sources[i].cmd, Self::key(name)),
             Target::Me | Target::Room(_) => self.sources[i].cmd.clone(),
         };
-        self.planned = Some((i, target, cmd.clone()));
+        self.last_attempt = Some(now);
+        self.planned = Some(Planned { source: i, target, cmd: cmd.clone(), at: now });
         CastAttempt::Send(cmd)
+    }
+
+    /// Nothing may be cast at `now`: a cast of this state is still
+    /// out, there is nothing to cast at all, or this round is already
+    /// spent.
+    ///
+    /// A cast unanswered two rounds later is given up on first. The
+    /// board's answers are read only through the correlator, so a
+    /// reply the correlator does not recognise leaves `pending` set
+    /// and every future party cast would return nothing. Giving up
+    /// costs one wasted round trip; not giving up costs the healer.
+    fn blocked(&mut self, now: std::time::Instant, clock: &crate::world::RoundClock) -> Option<CastAttempt> {
+        if let Some(p) = &self.pending
+            && now.duration_since(p.at) >= clock.period() * 2
+        {
+            self.pending = None;
+        }
+        if self.pending.is_some() || self.sources.is_empty() {
+            return Some(CastAttempt::Nothing);
+        }
+        if let Some(at) = self.last_attempt {
+            let next = clock.next_round_after(at);
+            if now < next {
+                return Some(CastAttempt::Hold(next));
+            }
+        }
+        None
     }
 
     /// The one cast worth making at `now`, if any. Cure before heal,
@@ -900,30 +954,24 @@ impl PartyHeal {
         own_percent: Option<i32>,
         cfg: &crate::bot::BotConfig,
     ) -> CastAttempt {
-        if self.pending.is_some() || self.sources.is_empty() {
-            return CastAttempt::Nothing;
+        if let Some(held) = self.blocked(now, clock) {
+            return held;
         }
-        if let Some(at) = self.last_attempt {
-            let next = clock.next_round_after(at);
-            if now < next {
-                return CastAttempt::Hold(next);
-            }
-        }
-        let cure = self.affordable(|k| k == PartyKind::Cure);
         if self.self_poisoned.is_some()
-            && let Some(i) = cure
+            && let Some(i) = self.affordable(|k| k == PartyKind::Cure)
         {
-            self.last_attempt = Some(now);
-            return self.plan(i, Target::Me);
+            return self.plan(i, Target::Me, now);
         }
-        if let Some(i) = cure
+        // The first poisoned row by name. One poisoned member at a
+        // time is the common case, and the next round takes the next
+        // one, so there is nothing to rank them by.
+        if let Some(i) = self.affordable(|k| k == PartyKind::Cure)
             && let Some(row) = health.rows().find(|v| {
                 !v.resists_magic()
                     && v.poisoned.is_some_and(|p| self.cured.get(&Self::key(&v.name)).is_none_or(|c| *c < p))
             })
         {
-            self.last_attempt = Some(now);
-            return self.plan(i, Target::One(row.name.clone()));
+            return self.plan(i, Target::One(row.name.clone()), now);
         }
         let mark = cfg.minor_heal_at_percent as i32;
         if mark == 0 {
@@ -943,8 +991,7 @@ impl PartyHeal {
             && let Some(i) = self.affordable(|k| k == PartyKind::Area)
         {
             let names = due.iter().map(|v| v.name.clone()).collect();
-            self.last_attempt = Some(now);
-            return self.plan(i, Target::Room(names));
+            return self.plan(i, Target::Room(names), now);
         }
         let Some(lowest) = due.first() else {
             return CastAttempt::Nothing;
@@ -960,16 +1007,15 @@ impl PartyHeal {
             return CastAttempt::Nothing;
         };
         let name = lowest.name.clone();
-        self.last_attempt = Some(now);
-        self.plan(i, Target::One(name))
+        self.plan(i, Target::One(name), now)
     }
 
     /// Called for every command the gate releases.
     pub fn on_sent(&mut self, line: &str, id: crate::correlate::CmdId) {
-        if let Some((i, target, cmd)) = self.planned.take()
-            && cmd == line
+        if let Some(p) = self.planned.take()
+            && p.cmd == line
         {
-            self.pending = Some((i, target, id));
+            self.pending = Some(Pending { source: p.source, target: p.target, id, at: p.at });
         }
     }
 
@@ -977,16 +1023,16 @@ impl PartyHeal {
         if let crate::events::Event::Prompt { mana: Some(mana), .. } = &cor.event {
             self.mana = Some(*mana);
         }
-        let Some((i, _, pending)) = &self.pending else {
+        let Some(pending) = &self.pending else {
             return;
         };
-        if cor.answers != Some(*pending) {
+        if cor.answers != Some(pending.id) {
             return;
         }
         let crate::events::Event::Line(line) = &cor.event else {
             return;
         };
-        let i = *i;
+        let i = pending.source;
         match cast_outcome(line) {
             Some(Outcome::Unknown) => {
                 self.dead[i] = true;
@@ -994,9 +1040,9 @@ impl PartyHeal {
             }
             Some(Outcome::Cast) => {
                 let kind = self.sources[i].kind;
-                let (_, target, _) = self.pending.take().expect("pending checked above");
+                let done = self.pending.take().expect("pending checked above");
                 let marks = if kind == PartyKind::Cure { &mut self.cured } else { &mut self.healed };
-                match target {
+                match done.target {
                     Target::Me => self.self_poisoned = None,
                     Target::One(name) => {
                         marks.insert(Self::key(&name), now);

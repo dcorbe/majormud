@@ -1419,3 +1419,61 @@ fn a_self_cast_holds_the_party_cast_a_round() {
     assert!(!broke.affords(HealNeed::Major));
 }
 
+
+/// A name the room does not hold used to wedge the healer for the rest
+/// of the run: the reply was attributed to nothing, `pending` stayed
+/// set, and every later attempt returned nothing. The reply now
+/// completes the cast, and a cast nobody answered at all is given up
+/// on after two rounds.
+#[test]
+fn a_missing_target_does_not_wedge_the_healer() {
+    let clock = RoundClock::new();
+    let t0 = Instant::now();
+    let h = health(&[row("Celery", "Mage", 30)], t0);
+
+    // The attribution gate still holds: the same wording from the room
+    // at large answers nothing.
+    let mut p = party_state();
+    p.on_event(&prompt(100, 20), t0);
+    assert_eq!(p.attempt(t0, &clock, &h, Some(100), &marks()), CastAttempt::Send("cast mahe celery".into()));
+    p.on_sent("cast mahe celery", CmdId(1));
+    let stray = Correlated {
+        event: Event::Line("You don't see celery here.".into()),
+        answers: None,
+        elsewhere: false,
+    };
+    p.on_event(&stray, t0);
+    assert!(p.in_flight(), "unattributed, so it says nothing about our cast");
+
+    // Attributed, it is a failure and the round comes round again.
+    let mut p = party_state();
+    p.on_event(&prompt(100, 20), t0);
+    assert_eq!(p.attempt(t0, &clock, &h, Some(100), &marks()), CastAttempt::Send("cast mahe celery".into()));
+    p.on_sent("cast mahe celery", CmdId(1));
+    p.on_event(&answering("You don't see celery here.", CmdId(1)), t0);
+    assert!(!p.in_flight());
+    let t1 = t0 + ROUND * 2;
+    assert_eq!(p.attempt(t1, &clock, &h, Some(100), &marks()), CastAttempt::Send("cast mahe celery".into()));
+
+    // And an answer that never came at all frees the next attempt two
+    // rounds later.
+    let mut p = party_state();
+    p.on_event(&prompt(100, 20), t0);
+    assert_eq!(p.attempt(t0, &clock, &h, Some(100), &marks()), CastAttempt::Send("cast mahe celery".into()));
+    p.on_sent("cast mahe celery", CmdId(1));
+    assert_eq!(p.attempt(t0 + ROUND, &clock, &h, Some(100), &marks()), CastAttempt::Nothing, "one round on, still out");
+    assert_eq!(
+        p.attempt(t0 + ROUND * 2, &clock, &h, Some(100), &marks()),
+        CastAttempt::Send("cast mahe celery".into()),
+        "two rounds on, given up on"
+    );
+}
+
+/// The unknown-spell outcome is terminal and the absent-target one is
+/// not, so the shared grammar must tell them apart.
+#[test]
+fn the_absent_target_reply_is_a_failure() {
+    use mud_client::sheet::{Outcome, cast_outcome};
+    assert_eq!(cast_outcome("You don't see celery here."), Some(Outcome::Failed));
+}
+
