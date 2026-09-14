@@ -207,6 +207,29 @@ async fn the_roster_drops_the_characters_own_row() {
     assert_eq!(members, vec!["Pootwaddle".to_string()]);
 }
 
+/// The roster's numbers and a said request both reach the table a
+/// healer reads, and a stranger's word does not.
+#[tokio::test]
+async fn the_session_keeps_the_party_health() {
+    let (addr, _received) = board(vec![
+        "Beef started to follow you.",
+        "The following people are in your travel party:\r\n  Beef                           (Ninja)               [H:100%]   - Midrank\r\n",
+        "Beef says \"@heal 35\"",
+        "Stranger says \"@heal 5\"",
+        "Beef says \"@iam Human Witchunter\"",
+    ])
+    .await;
+    let session = session_for(addr).await;
+    wait_until(&session, |s| s.party_health().get("Beef").is_some_and(|v| v.race.is_some())).await;
+    let health = session.party_health();
+    let beef = health.get("Beef").unwrap();
+    assert_eq!(beef.hp, Some(35), "the request overwrote the roster's number");
+    assert_eq!(beef.class.as_deref(), Some("Witchunter"));
+    assert!(beef.resists_magic());
+    assert!(health.get("Stranger").is_none());
+    session.close();
+}
+
 #[tokio::test]
 async fn notes_name_every_change_and_accepted_request() {
     let (addr, _) =

@@ -321,7 +321,7 @@ impl Holds {
         Holds::default()
     }
 
-    fn key(name: &str) -> String {
+    pub(crate) fn key(name: &str) -> String {
         name.to_ascii_lowercase()
     }
 
@@ -364,6 +364,103 @@ impl Holds {
 
     pub fn retain_members(&mut self, state: &PartyState) {
         self.by.retain(|_, (n, _)| permitted(state, n));
+    }
+
+    pub fn clear(&mut self) {
+        self.by.clear();
+    }
+}
+
+/// One member as the board has described it. Facts only: the roster's
+/// numbers, the member's own words, and when they were said.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Vitals {
+    pub name: String,
+    /// From the roster's parentheses or from `@iam`.
+    pub class: Option<String>,
+    /// From `@iam` only.
+    pub race: Option<String>,
+    pub hp: Option<u8>,
+    pub pool: Option<u8>,
+    /// When `hp` was last written, by a roster or by `@heal`.
+    pub seen: Instant,
+    /// When the member last said `@cure`. Cleared by the next roster,
+    /// since the member says it again on the next poison tick if it
+    /// still needs curing.
+    pub poisoned: Option<Instant>,
+}
+
+impl Vitals {
+    fn new(name: &str, now: Instant) -> Vitals {
+        Vitals { name: name.to_string(), class: None, race: None, hp: None, pool: None, seen: now, poisoned: None }
+    }
+
+    /// Witchunters resist every spell. A heal cast on one is mana
+    /// spent for nothing. The class word is the roster's, UNVERIFIED
+    /// for a witchunter, or the member's own.
+    pub fn resists_magic(&self) -> bool {
+        self.class.as_deref().is_some_and(|c| c.eq_ignore_ascii_case("witchunter"))
+    }
+}
+
+/// The party's health as the board has told it, keyed lowercased.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Health {
+    by: BTreeMap<String, Vitals>,
+}
+
+impl Health {
+    pub fn new() -> Health {
+        Health::default()
+    }
+
+    fn row(&mut self, name: &str, now: Instant) -> &mut Vitals {
+        self.by.entry(Holds::key(name)).or_insert_with(|| Vitals::new(name, now))
+    }
+
+    /// A roster block: every row's numbers are fresh, a cure said
+    /// before it is spent, and names it does not list are gone.
+    pub fn on_roster(&mut self, members: &[Member], now: Instant) {
+        let keep: BTreeSet<String> = members.iter().map(|m| Holds::key(&m.name)).collect();
+        self.by.retain(|k, _| keep.contains(k));
+        for m in members {
+            let v = self.row(&m.name, now);
+            if m.class.is_some() {
+                v.class = m.class.clone();
+            }
+            v.hp = m.hp;
+            v.pool = m.pool;
+            v.seen = now;
+            v.poisoned = None;
+        }
+    }
+
+    pub fn on_heal(&mut self, name: &str, hp: u8, now: Instant) {
+        let v = self.row(name, now);
+        v.hp = Some(hp);
+        v.seen = now;
+    }
+
+    pub fn on_cure(&mut self, name: &str, now: Instant) {
+        self.row(name, now).poisoned = Some(now);
+    }
+
+    pub fn on_iam(&mut self, name: &str, race: &str, class: &str) {
+        let v = self.row(name, Instant::now());
+        v.race = Some(race.to_string());
+        v.class = Some(class.to_string());
+    }
+
+    pub fn get(&self, name: &str) -> Option<&Vitals> {
+        self.by.get(&Holds::key(name))
+    }
+
+    pub fn rows(&self) -> impl Iterator<Item = &Vitals> {
+        self.by.values()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by.is_empty()
     }
 
     pub fn clear(&mut self) {

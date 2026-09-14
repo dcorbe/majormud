@@ -331,6 +331,8 @@ struct PartyTracker {
     state: crate::party::PartyState,
     holds: Arc<Mutex<crate::party::Holds>>,
     requests: Vec<crate::party::Request>,
+    /// The party's health as the board has told it. Read by a healer.
+    health: crate::party::Health,
     changes: watch::Sender<crate::party::PartyState>,
     /// `None` once `close` has dropped it, for the same reason the
     /// session holds `rests_tx` behind an `Option`: a broadcast channel
@@ -526,6 +528,7 @@ impl Session {
             state: crate::party::PartyState::new(),
             holds: Arc::new(Mutex::new(crate::party::Holds::new())),
             requests: Vec::new(),
+            health: crate::party::Health::new(),
             changes: watch::Sender::new(crate::party::PartyState::new()),
             notes: Some(broadcast::channel(64).0),
             wait_secs: profile.party.wait_secs,
@@ -1117,6 +1120,12 @@ impl Session {
         self.party.lock().expect("party lock").state.clone()
     }
 
+    /// The party's health as the board has told it. A copy, read only
+    /// when the assist is about to decide, the same rule as `party`.
+    pub fn party_health(&self) -> crate::party::Health {
+        self.party.lock().expect("party lock").health.clone()
+    }
+
     /// Wakes on every change to the party. The receiver reports the
     /// current party on `borrow`.
     pub fn party_changes(&self) -> watch::Receiver<crate::party::PartyState> {
@@ -1463,9 +1472,13 @@ fn feed_party(party: &Mutex<PartyTracker>, stats: &Mutex<StatTracker>, cor: &Cor
         if change == Change::Ended {
             t.holds.lock().expect("holds lock").clear();
             t.requests.clear();
+            t.health.clear();
         } else {
             let state = t.state.clone();
             t.holds.lock().expect("holds lock").retain_members(&state);
+            if matches!(change, Change::Roster | Change::Vitals) {
+                t.health.on_roster(&state.members, Instant::now());
+            }
         }
         if let (Some(tx), Some(note)) = (&t.notes, note) {
             let _ = tx.send(note);
@@ -1500,8 +1513,9 @@ fn feed_party(party: &Mutex<PartyTracker>, stats: &Mutex<StatTracker>, cor: &Cor
         }
         crate::party::Remote::Ok => t.holds.lock().expect("holds lock").release(&req.from),
         crate::party::Remote::Bank => t.requests.push(req),
-        // Written into the health table by Task 3.
-        crate::party::Remote::Heal(_) | crate::party::Remote::Cure | crate::party::Remote::Iam { .. } => {}
+        crate::party::Remote::Heal(p) => t.health.on_heal(&req.from, *p, Instant::now()),
+        crate::party::Remote::Cure => t.health.on_cure(&req.from, Instant::now()),
+        crate::party::Remote::Iam { race, class } => t.health.on_iam(&req.from, race, class),
     }
 }
 

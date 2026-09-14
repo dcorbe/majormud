@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 use mud_client::bank::{BankConfig, Reading};
 use mud_client::events::Status;
 use mud_client::party::{
-    Change, Holds, Member, PartyConfig, PartyState, Remote, Request, Role, Signal, WaitState,
-    bank_names, permitted, remote, say, telepath,
+    Change, Health, Holds, Member, PartyConfig, PartyState, Remote, Request, Role, Signal,
+    WaitState, bank_names, permitted, remote, say, telepath,
 };
 use mud_client::sheet::Inventory;
 use mud_client::tui::AssistCasts;
@@ -428,5 +428,66 @@ fn the_new_words_read_in_both_shapes() {
 #[test]
 fn say_is_the_wire_form_for_a_said_word() {
     assert_eq!(say("@heal 35"), "say @heal 35");
+}
+
+fn member(name: &str, class: &str, hp: u8) -> Member {
+    Member { name: name.into(), invited: false, class: Some(class.into()), hp: Some(hp), pool: None }
+}
+
+#[test]
+fn a_roster_fills_the_table_and_drops_the_departed() {
+    let t0 = Instant::now();
+    let mut h = Health::new();
+    h.on_roster(&[member("Beef", "Ninja", 100), member("Salad", "Ranger", 86)], t0);
+    assert_eq!(h.get("salad").map(|v| v.hp), Some(Some(86)));
+    assert_eq!(h.get("Beef").map(|v| v.seen), Some(t0));
+    let t1 = t0 + Duration::from_secs(20);
+    h.on_roster(&[member("Salad", "Ranger", 90)], t1);
+    assert!(h.get("Beef").is_none(), "the departed are dropped");
+    assert_eq!(h.get("Salad").map(|v| (v.hp, v.seen)), Some((Some(90), t1)));
+}
+
+#[test]
+fn a_request_is_a_fresher_row() {
+    let t0 = Instant::now();
+    let mut h = Health::new();
+    h.on_roster(&[member("Celery", "Mage", 80)], t0);
+    let t1 = t0 + Duration::from_secs(3);
+    h.on_heal("celery", 35, t1);
+    let v = h.get("Celery").unwrap();
+    assert_eq!((v.hp, v.seen), (Some(35), t1));
+    assert_eq!(v.class.as_deref(), Some("Mage"), "a request keeps what the roster said");
+    h.on_heal("Newcomer", 20, t1);
+    assert_eq!(h.get("newcomer").map(|v| v.hp), Some(Some(20)), "a request from a name the roster has not shown yet still counts");
+}
+
+#[test]
+fn a_cure_request_holds_until_the_next_roster() {
+    let t0 = Instant::now();
+    let mut h = Health::new();
+    h.on_roster(&[member("Celery", "Mage", 80)], t0);
+    let t1 = t0 + Duration::from_secs(3);
+    h.on_cure("Celery", t1);
+    assert_eq!(h.get("Celery").unwrap().poisoned, Some(t1));
+    h.on_roster(&[member("Celery", "Mage", 80)], t1 + Duration::from_secs(20));
+    assert_eq!(h.get("Celery").unwrap().poisoned, None, "the member says it again on the next tick if still poisoned");
+}
+
+#[test]
+fn an_introduction_sets_race_and_class_and_a_witchunter_resists() {
+    let t0 = Instant::now();
+    let mut h = Health::new();
+    h.on_roster(&[member("Beef", "Ninja", 100)], t0);
+    h.on_iam("Beef", "Human", "Witchunter");
+    let v = h.get("Beef").unwrap();
+    assert_eq!(v.race.as_deref(), Some("Human"));
+    assert!(v.resists_magic());
+    h.on_iam("Carrot", "Dwarf", "Paladin");
+    assert!(!h.get("Carrot").unwrap().resists_magic());
+    let mut from_roster = Health::new();
+    from_roster.on_roster(&[member("Beef", "Witchunter", 100)], t0);
+    assert!(from_roster.get("Beef").unwrap().resists_magic(), "the roster's class word marks it too");
+    h.clear();
+    assert!(h.is_empty());
 }
 
