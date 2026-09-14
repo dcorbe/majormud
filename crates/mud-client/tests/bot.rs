@@ -131,8 +131,9 @@ fn attacks_monster_that_walks_in() {
 /// per-monster data and can be multi-word: "The fierce orc trainee
 /// all-out slashes you for 37 damage!" (live, oracle_charm_lifecycle5)
 /// parses its attacker as "...trainee all-out", and a counter would have
-/// sent "a all-out". Being hit by something unlisted is answered by the
-/// farm's re-look instead (see tests/farm.rs,
+/// sent "a all-out". Being hit by something unlisted is answered by a
+/// look instead (`a_blow_from_something_unlisted_asks_for_the_room_once`
+/// below, and the farm's own re-look in tests/farm.rs,
 /// `being_hit_invalidates_the_room_block_but_swinging_does_not`), where
 /// the room block names the attacker properly and the bot engages from
 /// it.
@@ -144,7 +145,7 @@ fn a_hit_on_us_is_not_blindly_countered() {
         target: Actor::You,
         damage: 37,
     });
-    assert!(actions.is_empty());
+    assert_eq!(actions, vec![BotAction::Look]);
 }
 
 /// The general un-latch this family kept asking for. A kill can hide
@@ -1729,6 +1730,47 @@ fn the_rest_latch_clears_when_the_board_shows_the_rest_landed() {
     assert!(bot.on_event(&vitals(50, None, None)).is_empty());
     assert!(bot.on_event(&vitals(51, None, Some(Status::Resting))).is_empty());
     assert_eq!(bot.on_event(&vitals(48, None, None)), vec![BotAction::Send("rest".into())]);
+}
+
+// --- a blow from something unlisted ---------------------------------------
+
+/// A monster whose arrival line the parser does not know is invisible
+/// until it swings. The farm re-looks off the blow through its stop
+/// state, but the assist has no stop state, so a resting character was
+/// hit round after round and rested on until it died (Daniel,
+/// 2026-09-14). The bot asks for the block itself: one look per blow
+/// while nothing is engaged, and the block that answers names the
+/// attacker properly, which is where the swing comes from.
+#[test]
+fn a_blow_from_something_unlisted_asks_for_the_room_once() {
+    let mut bot = fighter();
+    bot.on_event(&room(&[]));
+    let bite = Event::CombatHit {
+        attacker: Actor::Other("The giant rat".into()),
+        target: Actor::You,
+        damage: 3,
+    };
+    assert_eq!(bot.on_event(&bite), vec![BotAction::Look]);
+    // A second blow before the block comes back is not a second ask.
+    assert!(bot.on_event(&bite).is_empty());
+    // The block names it, and the bot swings from the block.
+    assert_eq!(bot.on_event(&room(&["giant rat"])), send("a rat"));
+    // Mid-fight a blow is the fight, not a mystery.
+    assert!(bot.on_event(&bite).is_empty());
+}
+
+/// A whiff aimed at us is the same evidence as a landed blow; our own
+/// swings and a bystander's fight are not.
+#[test]
+fn a_whiff_at_us_asks_for_the_room_and_a_bystanders_does_not() {
+    let mut bot = fighter();
+    bot.on_event(&room(&[]));
+    let other = Event::CombatMiss { line: "Poop swipes at kobold thief!".into() };
+    assert!(bot.on_event(&other).is_empty());
+    let ours = Event::CombatMiss { line: "You swing at the giant rat!".into() };
+    assert!(bot.on_event(&ours).is_empty());
+    let at_us = Event::CombatMiss { line: "The giant rat lunges at you!".into() };
+    assert_eq!(bot.on_event(&at_us), vec![BotAction::Look]);
 }
 
 // --- stealth when idle ---------------------------------------------------

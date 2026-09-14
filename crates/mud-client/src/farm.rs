@@ -949,7 +949,7 @@ impl StopState {
             // Whiff wordings are per-monster data, so no attacker name
             // can be trusted out of them — but the swing itself is
             // enough to re-ask.
-            Event::CombatMiss { line } if whiff_at_us(line) => self.invalidate(),
+            Event::CombatMiss { line } if crate::bot::whiff_at_us(line) => self.invalidate(),
             // A kill and the board's own fight-over announcement are
             // both SUBTRACTIVE, and neither is re-asked any more.
             //
@@ -1138,13 +1138,6 @@ impl StopState {
             None => Verdict::Ask,
         }
     }
-}
-
-/// Is this whiff a monster swinging at US? Our own whiffs start with
-/// "You" and prove nothing about occupancy; a bystander's fight ("Poop
-/// swipes at kobold thief!") mentions neither "you" nor "your".
-fn whiff_at_us(line: &str) -> bool {
-    !line.starts_with("You") && crate::events::mentions_you(line)
 }
 
 /// Decides when a REST has plainly failed, so the runner can call
@@ -1698,7 +1691,7 @@ impl crate::nav::TravelGuard for FarmGuard {
             // minutes (cwgaming, 2026-08-01: every leg out of the
             // Arena was whiffed at three times). Landed damage still
             // spends budget via the CombatHit arm above.
-            Event::CombatMiss { line } if self.fights.get() && whiff_at_us(line) => {
+            Event::CombatMiss { line } if self.fights.get() && crate::bot::whiff_at_us(line) => {
                 Some(Interrupt::Entered {
                     name: "something unseen".into(),
                 })

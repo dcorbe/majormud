@@ -181,6 +181,13 @@ pub fn is_combat_engaged(line: &str) -> bool {
     line.contains("*Combat Engaged*")
 }
 
+/// Is this whiff a monster swinging at US? Our own whiffs start with
+/// "You" and prove nothing about occupancy; a bystander's fight ("Poop
+/// swipes at kobold thief!") mentions neither "you" nor "your".
+pub fn whiff_at_us(line: &str) -> bool {
+    !line.starts_with("You") && crate::events::mentions_you(line)
+}
+
 /// Which heal the HP percent asks for, by the marks. None above the
 /// minor mark. Below the major mark the instant heal, never the slow
 /// regen. Between them the regen when one is named, else the minor.
@@ -651,6 +658,9 @@ pub struct Bot {
     healing: bool,
     /// Already fled this room; suppresses one per prompt.
     fled: bool,
+    /// A look asked for off a blow from something unlisted, and not
+    /// yet answered by a block. One ask per mystery, not one per blow.
+    look_pending: bool,
     /// The last room view this bot was shown listed something it would
     /// attack (the pump only shows it ATTRIBUTED blocks), or something
     /// attackable walked in since. Consulted before healing: in an
@@ -810,6 +820,7 @@ impl Bot {
             exits: Vec::new(),
             healing: false,
             fled: false,
+            look_pending: false,
             room_has_work: false,
             refused,
             swept: (String::new(), HashSet::new()),
@@ -996,6 +1007,7 @@ impl Bot {
                 self.exits = room.exits.clone();
                 // Somewhere new: running away is allowed again.
                 self.fled = false;
+                self.look_pending = false;
                 // A block is a move or a look. Moving un-hides, and a
                 // look only ever follows a send that forgot the hide.
                 // Sneak survives a move exactly when the move said so.
@@ -1214,14 +1226,19 @@ impl Bot {
                 // (live, oracle_charm_lifecycle5.raw) parses its attacker
                 // as "...trainee all-out", and a counter would have sent
                 // "a all-out". Being hit by something unlisted is instead
-                // answered by the farm's re-look (StopState invalidates
-                // on a blow landing on us), where the room block names
-                // the attacker properly and THIS bot engages from it.
+                // answered by a look, where the room block names the
+                // attacker properly and THIS bot engages from it.
+                if *target == crate::events::Actor::You {
+                    return self.ask_about_attacker();
+                }
                 Vec::new()
             }
             Event::CombatMiss { line } => {
                 if self.involves_target(line) {
                     self.combat.note_blow();
+                }
+                if whiff_at_us(line) {
+                    return self.ask_about_attacker();
                 }
                 Vec::new()
             }
@@ -1354,6 +1371,21 @@ impl Bot {
         }
         self.combat.engage(name);
         self.opening_attack(name)
+    }
+
+    /// Something unlisted is swinging at us. The farm's stop state
+    /// re-asks off the same evidence and drops this request as a second
+    /// look for the same answer; the assist has no stop state, and a
+    /// resting character it drives was hit round after round and rested
+    /// on until it died (Daniel, 2026-09-14). Nothing while a fight is
+    /// on: mid-fight a blow is the fight. Once per mystery: the ask is
+    /// held until a block answers it.
+    fn ask_about_attacker(&mut self) -> Vec<BotAction> {
+        if !self.config.auto_combat || self.combat.engaged().is_some() || self.look_pending {
+            return Vec::new();
+        }
+        self.look_pending = true;
+        vec![BotAction::Look]
     }
 
     /// The command(s) that open a fight with `name`: an ordinary swing
