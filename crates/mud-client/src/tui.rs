@@ -1572,7 +1572,7 @@ pub fn assist_tick(
     }
     casts.heal.on_event(cor, now);
     casts.buff.on_event(cor, now);
-    casts.party.on_event(cor, now);
+    casts.party.on_event(cor, now, clock);
     if watch.on_event(&cor.event) {
         bot.rearm();
         // A refused rest is over before it began. The leader is free to

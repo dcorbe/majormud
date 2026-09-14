@@ -939,18 +939,7 @@ impl PartyHeal {
     /// Nothing may be cast at `now`: a cast of this state is still
     /// out, there is nothing to cast at all, or this round is already
     /// spent.
-    ///
-    /// A cast unanswered two rounds later is given up on first. The
-    /// board's answers are read only through the correlator, so a
-    /// reply the correlator does not recognise leaves `pending` set
-    /// and every future party cast would return nothing. Giving up
-    /// costs one wasted round trip; not giving up costs the healer.
     fn blocked(&mut self, now: std::time::Instant, clock: &crate::world::RoundClock) -> Option<CastAttempt> {
-        if let Some(p) = &self.pending
-            && now.duration_since(p.at) >= clock.period() * 2
-        {
-            self.pending = None;
-        }
         if self.pending.is_some() || self.sources.is_empty() {
             return Some(CastAttempt::Nothing);
         }
@@ -1061,9 +1050,28 @@ impl PartyHeal {
         }
     }
 
-    pub fn on_event(&mut self, cor: &crate::correlate::Correlated, now: std::time::Instant) {
+    /// Called for every event the correlator produces.
+    ///
+    /// A cast unanswered two rounds later is given up on the next
+    /// prompt. The board's answers are read only through the
+    /// correlator, so a reply the correlator does not recognise leaves
+    /// `pending` set and every future party cast would return nothing.
+    /// Giving up costs one wasted round trip. Not giving up costs the
+    /// healer.
+    pub fn on_event(
+        &mut self,
+        cor: &crate::correlate::Correlated,
+        now: std::time::Instant,
+        clock: &crate::world::RoundClock,
+    ) {
         if let crate::events::Event::Prompt { mana: Some(mana), .. } = &cor.event {
             self.mana = Some(*mana);
+        }
+        if matches!(&cor.event, crate::events::Event::Prompt { .. })
+            && let Some(p) = &self.pending
+            && now.duration_since(p.at) >= clock.period() * 2
+        {
+            self.pending = None;
         }
         let Some(pending) = &self.pending else {
             return;

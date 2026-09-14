@@ -241,3 +241,4 @@ async fn notes_name_every_change_and_accepted_request() {
     let second = tokio::time::timeout(Duration::from_secs(5), notes.recv()).await.unwrap().unwrap();
     assert_eq!(second, "party: Pootwaddle asks @bank");
 }
+

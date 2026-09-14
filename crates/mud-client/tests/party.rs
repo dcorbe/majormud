@@ -602,7 +602,7 @@ fn party_cast_out(now: Instant, clock: &RoundClock) -> PartyHeal {
         answers: None,
         elsewhere: false,
     };
-    p.on_event(&pool, now);
+    p.on_event(&pool, now, clock);
     let mut health = Health::new();
     health.on_heal("Celery", 30, now);
     let cfg = BotConfig { minor_heal_at_percent: 70, major_heal_at_percent: 40, ..BotConfig::default() };

@@ -413,12 +413,6 @@ fn completes(kind: Kind, ev: &Event) -> bool {
                 // only cast outcome worth remembering past the round:
                 // `sheet::HealState` retires that source for the run.
                 || has("do not know how to cast")
-                // The target has left the room. UNVERIFIED for a cast
-                // target: `mud_core::text::dont_see_here` is the
-                // board's family and it has been seen for items only.
-                // Without it a party cast at a name that walked off is
-                // never answered, and the healer waits on it forever.
-                || has("you don't see ")
                 // A cast of a light spell routes through the light
                 // routine and answers with its wordings — success and
                 // the already-lit refusal alike.
