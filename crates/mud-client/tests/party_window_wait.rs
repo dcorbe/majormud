@@ -14,7 +14,7 @@ use std::time::Duration;
 use mud_client::graph::{GraphRoom, RoomGraph};
 use mud_client::settings::Settings;
 use mud_client::spawn::SpawnTable;
-use mud_client::tui::ContentCache;
+use mud_client::tui::{ContentCache, World};
 use mud_client::window::spawn;
 use mud_core::content::{Class, ClassId, Content, RoomId};
 
@@ -110,7 +110,7 @@ async fn rest_board(sent: Arc<Mutex<Vec<String>>>) -> std::net::SocketAddr {
 /// probe the character casts nothing, so it skips the spell listing,
 /// which has no terminator and otherwise costs the probe three seconds
 /// before the assist reads its first event.
-fn world() -> (Arc<RoomGraph>, Arc<SpawnTable>, Arc<Content>) {
+fn world() -> Arc<World> {
     let home = GraphRoom { name: "Home".into(), ..Default::default() };
     let graph = RoomGraph::from_rooms(vec![(HOME, home)]);
     let mut content = Content::default();
@@ -127,7 +127,7 @@ fn world() -> (Arc<RoomGraph>, Arc<SpawnTable>, Arc<Content>) {
         weapon_code: 8,
         armour_code: 9,
     });
-    (Arc::new(graph), Arc::new(SpawnTable::default()), Arc::new(content))
+    Arc::new(World::new(Arc::new(content), Arc::new(graph), Arc::new(SpawnTable::default())))
 }
 
 #[tokio::test]

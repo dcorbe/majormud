@@ -8,7 +8,7 @@ use std::time::Duration;
 use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::settings::Settings;
 use mud_client::spawn::SpawnTable;
-use mud_client::tui::ContentCache;
+use mud_client::tui::{ContentCache, World};
 use mud_client::window::{EventKind, FrontMsg, spawn};
 use mud_core::content::{Content, Direction, RoomId};
 
@@ -66,7 +66,7 @@ fn edge(dest: RoomId) -> ExitEdge {
 
 /// Two rooms, one hop apart, named as the board prints them: the cave
 /// the character dies in and the street it wakes up on.
-fn world() -> (Arc<RoomGraph>, Arc<SpawnTable>, Arc<Content>) {
+fn world() -> Arc<World> {
     let mut cave = GraphRoom {
         name: "Dark Cave".into(),
         ..Default::default()
@@ -78,11 +78,11 @@ fn world() -> (Arc<RoomGraph>, Arc<SpawnTable>, Arc<Content>) {
     };
     street.exits[Direction::North as usize] = Some(edge(DEAD));
     let graph = RoomGraph::from_rooms(vec![(DEAD, cave), (RECALL, street)]);
-    (
+    Arc::new(World::new(
+        Arc::new(Content::default()),
         Arc::new(graph),
         Arc::new(SpawnTable::default()),
-        Arc::new(Content::default()),
-    )
+    ))
 }
 
 #[tokio::test]

@@ -2150,3 +2150,66 @@ fn the_assist_looks_when_the_bot_cannot_place_an_arrival() {
     );
     assert_eq!(out, vec!["look".to_string()]);
 }
+
+/// One decode is the whole world: the graph, the threat ranking and the
+/// spell durations are all views over the same `Content`, built once
+/// and shared by `Arc`. A job that wants any of them takes the world it
+/// is handed instead of decoding the database again for itself.
+#[test]
+fn the_world_derives_every_view_from_one_content() {
+    use mud_client::graph::RoomGraph;
+    use mud_client::spawn::SpawnTable;
+    use mud_client::tui::World;
+    use mud_core::content::{Content, Element, MatchType, Monster, MonsterId, Room, SaveClass, ScalePair, Spell, SpellId, TargetMode};
+    use std::sync::Arc;
+
+    let mut content = Content::default();
+    content.add_room(Room {
+        id: RoomId { map: 1, room: 7 },
+        name: "Dark Cave".into(),
+        ..Default::default()
+    });
+    content.add_monster(Monster {
+        id: MonsterId(3),
+        name: "Cave Bear".into(),
+        experience: 40,
+        hitpoints: 12,
+        ..Default::default()
+    });
+    content.add_spell(Spell {
+        id: SpellId(9),
+        name: "Bless".into(),
+        short_name: "bles".into(),
+        cast_msg_a: None,
+        cast_msg_b: None,
+        abilities: Vec::new(),
+        level_cap: 0,
+        round_cost: 0,
+        required_power: 0,
+        min_base: 0,
+        max_base: 0,
+        target_mode: TargetMode::Benign,
+        save_class: SaveClass::None,
+        base_chance: 0,
+        duration_per_level: 0,
+        match_type: MatchType::Single1,
+        duration: 30,
+        element: Element::Magic,
+        class_gate_group: 0,
+        mana_cost: 4,
+        max_increase: ScalePair::NONE,
+        required_class_level: 0,
+        min_increase: ScalePair::NONE,
+        duration_increase: ScalePair::NONE,
+        msg_style: 0,
+    });
+    let content = Arc::new(content);
+
+    let graph = Arc::new(RoomGraph::from_content(&content));
+    let world = World::new(Arc::clone(&content), graph, Arc::new(SpawnTable::default()));
+
+    assert!(Arc::ptr_eq(&world.content, &content), "the world holds the content it was given, not a copy");
+    assert_eq!(world.graph.room(RoomId { map: 1, room: 7 }).map(|r| r.name.as_str()), Some("Dark Cave"));
+    assert_eq!(world.threat.get("cave bear"), Some(&40_012));
+    assert_eq!(world.durations.get("bless"), Some(&30));
+}

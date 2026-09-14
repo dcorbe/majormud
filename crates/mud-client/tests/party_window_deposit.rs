@@ -16,7 +16,7 @@ use std::time::Duration;
 use mud_client::graph::{ExitEdge, ExitRequirement, GraphRoom, RoomGraph};
 use mud_client::settings::Settings;
 use mud_client::spawn::SpawnTable;
-use mud_client::tui::ContentCache;
+use mud_client::tui::{ContentCache, World};
 use mud_client::window::spawn;
 use mud_core::content::{Content, Direction, Room, RoomId, Shop, ShopId, ShopStock};
 
@@ -100,7 +100,7 @@ fn edge(dest: RoomId) -> ExitEdge {
 /// Home, and the bank one step east. The content names the bank room as
 /// the board prints it, and its shop otherwise, as the shipped world
 /// does for four banks of five.
-fn world() -> (Arc<RoomGraph>, Arc<SpawnTable>, Arc<Content>) {
+fn world() -> Arc<World> {
     let mut home = GraphRoom { name: "Home".into(), ..Default::default() };
     home.exits[Direction::East as usize] = Some(edge(BANK));
     let mut bank = GraphRoom { name: "Bank of Godfrey".into(), shop: 8, ..Default::default() };
@@ -124,7 +124,7 @@ fn world() -> (Arc<RoomGraph>, Arc<SpawnTable>, Arc<Content>) {
         shop: Some(ShopId(8)),
         ..Default::default()
     });
-    (Arc::new(graph), Arc::new(SpawnTable::default()), Arc::new(content))
+    Arc::new(World::new(Arc::new(content), Arc::new(graph), Arc::new(SpawnTable::default())))
 }
 
 #[tokio::test]

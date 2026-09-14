@@ -2898,7 +2898,7 @@ pub(crate) fn import_loop(graph: &crate::graph::RoomGraph, file: &std::path::Pat
 /// spawned task needs an owned handle that outlives this function
 /// returning.
 ///
-/// `content`, when the caller has one loaded (see [`load_world`]), is
+/// `content`, when the caller has one loaded (see [`World::load`]), is
 /// handed straight to [`crate::farm::probe_sheet`] so it can skip or
 /// retarget the spellbook probe on a confidently-known class; `None`
 /// (no world database, or the caller never held one) leaves probing
@@ -2917,13 +2917,59 @@ pub fn on_realm_entry(session: &Arc<Session>, content: Option<Arc<mud_core::cont
     });
 }
 
-/// The world files one content path loads: graph, spawn table and the
-/// content decoder.
-pub type World = (
-    Arc<crate::graph::RoomGraph>,
-    Arc<crate::spawn::SpawnTable>,
-    Arc<mud_core::content::Content>,
-);
+/// Everything one content path loads, decoded ONCE and shared by `Arc`:
+/// the content itself, the room graph and spawn table built over it,
+/// and the two by-name views every job used to rebuild for itself by
+/// decoding the database again (`RoomGraph::load_threat` and
+/// `load_spell_durations`, each a full decode of a 120 MB file, gone).
+/// A job takes the world it is handed. Nothing outside [`World::load`]
+/// takes a database path, so a job cannot decode on its own account
+/// without a compile error.
+pub struct World {
+    pub content: Arc<mud_core::content::Content>,
+    pub graph: Arc<crate::graph::RoomGraph>,
+    pub spawns: Arc<crate::spawn::SpawnTable>,
+    pub threat: Arc<crate::bot::ThreatTable>,
+    pub durations: Arc<std::collections::BTreeMap<String, u32>>,
+}
+
+impl World {
+    /// The views are derived here, from `content`, so they can never
+    /// disagree with it. The graph is passed in rather than derived
+    /// because a test builds one by hand from `GraphRoom`s over an
+    /// empty content; [`World::load`] is the one caller that builds it
+    /// from the content itself.
+    pub fn new(
+        content: Arc<mud_core::content::Content>,
+        graph: Arc<crate::graph::RoomGraph>,
+        spawns: Arc<crate::spawn::SpawnTable>,
+    ) -> World {
+        let threat = Arc::new(crate::views::threat_table(&content));
+        let durations = Arc::new(crate::views::spell_durations(&content));
+        World {
+            content,
+            graph,
+            spawns,
+            threat,
+            durations,
+        }
+    }
+
+    /// One decode of `db`, and everything built over it. The spawn
+    /// table and the death lexicon still read the file with their own
+    /// small queries; the content decode is the expensive one and it
+    /// happens exactly once here.
+    pub fn load(db: &std::path::Path) -> Result<World, String> {
+        // The hand-played session keeps its own room model, and it needs
+        // the death wordings as much as the farm does -- more, on a
+        // shared board.
+        let _ = crate::deaths::init(db);
+        let content = Arc::new(mud_core::content_db::load(db).map_err(|e| e.to_string())?);
+        let graph = Arc::new(crate::graph::RoomGraph::from_content(&content));
+        let spawns = Arc::new(crate::spawn::SpawnTable::load(db)?);
+        Ok(World::new(content, graph, spawns))
+    }
+}
 
 /// World files by content path, loaded once per path for the life of
 /// the program. A second connection on the same database reuses the
@@ -2931,7 +2977,7 @@ pub type World = (
 /// that appears later is found.
 #[derive(Default)]
 pub struct ContentCache {
-    worlds: std::collections::HashMap<std::path::PathBuf, World>,
+    worlds: std::collections::HashMap<std::path::PathBuf, Arc<World>>,
 }
 
 impl ContentCache {
@@ -2939,53 +2985,28 @@ impl ContentCache {
     /// loading one. The seam a test uses to give a window a hand-built
     /// graph, since the loader below reads a database file and the only
     /// real one is out of bounds for tests.
-    pub fn insert(&mut self, db: std::path::PathBuf, world: World) {
+    pub fn insert(&mut self, db: std::path::PathBuf, world: Arc<World>) {
         self.worlds.insert(db, world);
     }
 
-    pub fn world(&mut self, db: &std::path::Path) -> Option<World> {
+    pub fn world(&mut self, db: &std::path::Path) -> Option<Arc<World>> {
         if let Some(world) = self.worlds.get(db) {
-            return Some(world.clone());
+            return Some(Arc::clone(world));
         }
-        let world = load_world(db)?;
-        self.worlds.insert(db.to_path_buf(), world.clone());
+        let world = Arc::new(World::load(db).ok()?);
+        self.worlds.insert(db.to_path_buf(), Arc::clone(&world));
         Some(world)
     }
 }
 
-/// Loads the world files for one content path: the graph, the spawn
-/// table and the content decoder. Takes a path, not a `Session`, on
-/// purpose. It runs before any session is guaranteed to exist and its
-/// job is "is there a world database", nothing about who is playing or
-/// what they can afford. It builds no `Navigator` at all: see
-/// [`finish_locator`], the only place one gets built, so there is no
-/// unwired one for a second caller to reach for by mistake.
-fn load_world(db: &std::path::Path) -> Option<World> {
-    // The hand-played session keeps its own room model, and it needs the
-    // death wordings as much as the farm does — more, on a shared board.
-    let _ = crate::deaths::init(db);
-    let graph = Arc::new(crate::graph::RoomGraph::load(db).ok()?);
-    // Same file as the graph, so this fails only when that one would
-    // have: both are one answer to "is there a world database".
-    let spawns = Arc::new(crate::spawn::SpawnTable::load(db).ok()?);
-    // The one decoder, held for the life of the session (spec
-    // `2026-08-22-one-path-to-content-design.md`). Not yet consumed —
-    // `graph` and `spawns` above still read the database on their own —
-    // the views that replace those reads are a later task in the same
-    // plan. Failure here is folded into the same "no world database"
-    // answer as the other two.
-    let content = Arc::new(mud_core::content_db::load(db).ok()?);
-    Some((graph, spawns, content))
-}
-
-/// Finish what [`load_world`] began: build the interactive play loop's own
+/// Finish what [`World::load`] began: build the interactive play loop's own
 /// `Navigator`, with the session's real capabilities applied AT
 /// CONSTRUCTION — never a separate step a second caller could skip.
 ///
-/// `load_world` used to hand back a ready-made `Navigator` of its own,
+/// The loader used to hand back a ready-made `Navigator` of its own,
 /// which stayed representable on `Capabilities::unrestricted()` even
 /// after this function existed to fix one up: nothing in the type
-/// system stopped a future caller from taking `load_world`'s navigator
+/// system stopped a future caller from taking the loader's navigator
 /// directly and walking with it unwired. Moving construction here
 /// removes the unwired value itself rather than merely leaving it
 /// unreached.
@@ -3003,7 +3024,7 @@ fn load_world(db: &std::path::Path) -> Option<World> {
 /// — it is the MOST-used path, not a side one, which is why it gets the
 /// same treatment as every other `Navigator::new` site.
 pub fn finish_locator(
-    found: Option<World>,
+    found: Option<Arc<World>>,
     session: &Session,
 ) -> (
     Option<Arc<crate::graph::RoomGraph>>,
@@ -3012,10 +3033,15 @@ pub fn finish_locator(
     Option<Arc<mud_core::content::Content>>,
 ) {
     match found {
-        Some((g, s, c)) => {
-            let nav = crate::nav::Navigator::new(g.clone(), crate::nav::NavConfig::default())
+        Some(w) => {
+            let nav = crate::nav::Navigator::new(Arc::clone(&w.graph), crate::nav::NavConfig::default())
                 .with_capabilities(session.capabilities());
-            (Some(g), Some(nav), Some(s), Some(c))
+            (
+                Some(Arc::clone(&w.graph)),
+                Some(nav),
+                Some(Arc::clone(&w.spawns)),
+                Some(Arc::clone(&w.content)),
+            )
         }
         None => (None, None, None, None),
     }
