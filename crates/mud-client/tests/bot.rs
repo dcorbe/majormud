@@ -1520,18 +1520,14 @@ fn a_passive_mob_is_not_work() {
 
 // --- the recovery ladders -------------------------------------------
 
-/// Both heal marks sit above the rest mark, so a caster spends its pool
-/// before it sits down. MudPlay's own numbers rested at 60 and cast the
-/// major heal at 40, which had a character resting with a full pool
-/// (Daniel, 2026-09-14).
 #[test]
-fn the_defaults_heal_before_they_rest() {
+fn the_defaults_are_mudplays() {
     let c = BotConfig::default();
-    assert_eq!(c.rest_at_percent, 40);
+    assert_eq!(c.rest_at_percent, 60);
     assert_eq!(c.mana_rest_at_percent, 30);
     assert_eq!(c.rest_until_percent, 95);
     assert_eq!(c.minor_heal_at_percent, 70);
-    assert_eq!(c.major_heal_at_percent, 60);
+    assert_eq!(c.major_heal_at_percent, 40);
     assert_eq!(c.flee_at_percent, 20);
     assert!(!c.meditate);
     assert!(c.validate().is_ok());
@@ -1659,9 +1655,9 @@ fn vitals(hp: i32, mana: Option<i32>, status: Option<Status>) -> Event {
 fn rests_below_the_rest_mark_and_not_again_while_resting() {
     let mut bot = resting_bot(0, false);
     bot.on_event(&room(&[]));
-    assert_eq!(bot.on_event(&vitals(30, None, None)), vec![BotAction::Send("rest".into())]);
+    assert_eq!(bot.on_event(&vitals(50, None, None)), vec![BotAction::Send("rest".into())]);
     // The board shows the rest. No second send.
-    assert!(bot.on_event(&vitals(30, None, Some(Status::Resting))).is_empty());
+    assert!(bot.on_event(&vitals(50, None, Some(Status::Resting))).is_empty());
     assert!(bot.on_event(&vitals(70, None, Some(Status::Resting))).is_empty());
 }
 
@@ -1669,13 +1665,13 @@ fn rests_below_the_rest_mark_and_not_again_while_resting() {
 fn a_rest_is_over_at_the_until_mark_and_nothing_is_sent_to_end_it() {
     let mut bot = resting_bot(0, false);
     bot.on_event(&room(&[]));
-    bot.on_event(&vitals(30, None, None));
+    bot.on_event(&vitals(50, None, None));
     assert!(bot.on_event(&vitals(94, None, Some(Status::Resting))).is_empty());
     // At the mark the recovery is over. Without stealth that sends
     // nothing. The character stands on its next action.
     assert!(bot.on_event(&vitals(95, None, Some(Status::Resting))).is_empty());
     // Standing again below the rest mark rests again.
-    assert_eq!(bot.on_event(&vitals(30, None, None)), vec![BotAction::Send("rest".into())]);
+    assert_eq!(bot.on_event(&vitals(50, None, None)), vec![BotAction::Send("rest".into())]);
 }
 
 #[test]
@@ -1703,7 +1699,7 @@ fn low_mana_alone_rests_or_meditates_by_the_switch() {
     // Both pools low: rest, which restores both.
     let mut both = resting_bot(20, true);
     both.on_event(&room(&[]));
-    assert_eq!(both.on_event(&vitals(30, Some(2), None)), vec![BotAction::Send("rest".into())]);
+    assert_eq!(both.on_event(&vitals(50, Some(2), None)), vec![BotAction::Send("rest".into())]);
 }
 
 #[test]
@@ -1729,10 +1725,10 @@ fn the_rest_latch_clears_when_the_board_shows_the_rest_landed() {
     // then broken by a blow re-arms on the next standing prompt.
     let mut bot = resting_bot(0, false);
     bot.on_event(&room(&[]));
-    assert_eq!(bot.on_event(&vitals(30, None, None)), vec![BotAction::Send("rest".into())]);
-    assert!(bot.on_event(&vitals(30, None, None)).is_empty());
-    assert!(bot.on_event(&vitals(31, None, Some(Status::Resting))).is_empty());
-    assert_eq!(bot.on_event(&vitals(28, None, None)), vec![BotAction::Send("rest".into())]);
+    assert_eq!(bot.on_event(&vitals(50, None, None)), vec![BotAction::Send("rest".into())]);
+    assert!(bot.on_event(&vitals(50, None, None)).is_empty());
+    assert!(bot.on_event(&vitals(51, None, Some(Status::Resting))).is_empty());
+    assert_eq!(bot.on_event(&vitals(48, None, None)), vec![BotAction::Send("rest".into())]);
 }
 
 // --- stealth when idle ---------------------------------------------------
@@ -1780,7 +1776,7 @@ fn an_idle_prompt_hides_with_auto_hide_and_sneaks_without() {
 fn a_finished_rest_hides_once_and_believes_the_attempt() {
     let mut bot = stealth_bot(true);
     bot.on_event(&room(&[]));
-    bot.on_event(&standing(30));
+    bot.on_event(&standing(50));
     assert_eq!(bot.on_event(&vitals(95, None, Some(Status::Resting))), send("hide"));
     // The echo's prompt still says resting. No second hide.
     assert!(bot.on_event(&vitals(95, None, Some(Status::Resting))).is_empty());
@@ -1793,7 +1789,7 @@ fn a_finished_rest_hides_once_and_believes_the_attempt() {
 fn a_finished_rest_sneaks_without_auto_hide() {
     let mut bot = stealth_bot(false);
     bot.on_event(&room(&[]));
-    bot.on_event(&standing(30));
+    bot.on_event(&standing(50));
     assert_eq!(bot.on_event(&vitals(95, None, Some(Status::Resting))), send("sneak"));
     assert!(bot.on_event(&vitals(95, None, Some(Status::Resting))).is_empty());
     assert!(bot.on_event(&line("Attempting to sneak...")).is_empty());

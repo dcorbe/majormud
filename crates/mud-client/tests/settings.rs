@@ -136,7 +136,7 @@ fn unset_returns_a_key_to_its_default() {
     // removed here would be a line of its own.
     assert!(!s.text().contains("\nat = "));
     s.unset("bot.rest_at_percent").unwrap();
-    assert_eq!(s.profile().bot.as_ref().unwrap().rest_at_percent, 40);
+    assert_eq!(s.profile().bot.as_ref().unwrap().rest_at_percent, 60);
 }
 
 #[test]
@@ -447,7 +447,7 @@ fn the_listing_walks_keys_in_file_order_and_renders_toml() {
 #[test]
 fn an_absent_table_lists_its_defaults() {
     let s = Settings::default();
-    assert_eq!(s.value("bot.rest_at_percent").as_deref(), Some("40"));
+    assert_eq!(s.value("bot.rest_at_percent").as_deref(), Some("60"));
     assert_eq!(s.value("bank.at").as_deref(), Some("unset"));
     assert_eq!(s.value("farm.circuit").as_deref(), Some("[]"));
 }

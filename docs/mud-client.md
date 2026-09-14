@@ -56,8 +56,8 @@ auto_sneak = true          # arm a sneak before walking, and when idle; false ne
 auto_hide = false          # hide when idle instead of sneaking, and never backstab
 ignore_coins = ["copper"]  # denominations the sweep leaves on the floor
 minor_heal_at_percent = 70 # cast the minor heal below this; 0 = never
-major_heal_at_percent = 60 # cast the major heal below this; 0 = never
-rest_at_percent = 40       # rest below this
+major_heal_at_percent = 40 # cast the major heal below this; 0 = never
+rest_at_percent = 60       # rest below this
 mana_rest_at_percent = 30  # rest, or meditate, below this mana
 rest_until_percent = 95    # a rest or a meditation is over at this
 flee_at_percent = 20       # run below this
@@ -157,10 +157,6 @@ the reimplementation's, not the board's.
 They are two ladders and the loader refuses a profile whose marks are out
 of order: `minor_heal >= major_heal >= flee`, and `rest_until >= rest_at
 >= flee`, with `mana_rest_at` under `rest_until`. `0` means *off*.
-
-The defaults put both heal marks above the rest mark, 70 and 60 over 40,
-so a caster spends its pool on heals before it sits down and rests only
-when the heals cannot keep up or the pool is gone.
 
 As health falls with the defaults:
 
@@ -299,7 +295,7 @@ first entry the minor and its last the major.
   stands. A recovery already showing on the prompt when the gate is
   reached is finished to the mark the same way. Set it to give this farm
   its own mark. Set it to `0` to disable the gate for this farm alone.
-  **`interrupt_at_percent`**, 40 by default, stops a leg that gets hurt on
+  **`interrupt_at_percent`**, 50 by default, stops a leg that gets hurt on
   the way. It must not exceed the bot's `rest_at_percent`, since that is
   the HP a leg may set off at. The plan cannot see the bot's floor, so
   the pair is refused at run start.
