@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 use mud_core::content::RoomId;
 
 use crate::correlate::{CmdId, Correlated};
-use crate::events::Event;
+use crate::events::{Event, Status};
 use crate::graph::RoomGraph;
 use crate::live::Live;
 
@@ -1166,9 +1166,11 @@ fn whiff_at_us(line: &str) -> bool {
 ///
 /// This watches for *progress* instead, clocked by the board's own
 /// prompts: a heal that has not moved HP after `heal_retry_prompts`
-/// prompts never landed, whatever the reason. `[farm].heal_refused`
-/// remains as the escape hatch for the day a real refusal line is
-/// finally captured off the live board.
+/// prompts never landed, whatever the reason. A prompt carrying the
+/// Resting or Meditating status ends the watch first: the board has
+/// said the rest landed, and the bot's own latch takes it from there.
+/// `[farm].heal_refused` remains as the escape hatch for the day a
+/// real refusal line is finally captured off the live board.
 ///
 /// Note that [`crate::bot::Bot::rearm`] releases the flee latch along
 /// with the heal, so a rearm may also let a wounded character run again.
@@ -1236,7 +1238,17 @@ impl HealWatch {
                 }
                 false
             }
-            Event::Prompt { hp, .. } => {
+            Event::Prompt { hp, status, .. } => {
+                // The board painting the status is the rest landing.
+                // The count below is for a rest the board never
+                // acknowledged: in a party room every line repaints
+                // the prompt, and three repaints came within 60 ms of
+                // the rest going out (live 2026-09-14), long before a
+                // regen tick could move HP.
+                if matches!(status, Some(Status::Resting | Status::Meditating)) {
+                    self.stop();
+                    return false;
+                }
                 let seen = self.prompts.unwrap_or(0) + 1;
                 self.prompts = Some(seen);
                 match self.baseline {

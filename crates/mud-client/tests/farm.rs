@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use mud_client::bot::{Bot, BotConfig};
 use mud_client::correlate::{CmdId, Correlated};
-use mud_client::events::{Actor, Event, RoomView};
+use mud_client::events::{Actor, Event, RoomView, Status};
 use mud_client::farm::{
     ACK_TIMEOUT, FarmConfig, FarmError, FarmGuard, FarmPlan, FarmStats, Gate, HealWatch,
     LOOT_TRIES, StopState, Verdict, casts_need_rebuild, check_departure_mark,
@@ -264,6 +264,10 @@ fn gate() -> Gate {
 
 fn prompt(hp: i32) -> Event {
     Event::Prompt { hp, mana: None, status: None }
+}
+
+fn status_prompt(hp: i32, status: Status) -> Event {
+    Event::Prompt { hp, mana: None, status: Some(status) }
 }
 
 /// An event nobody asked for.
@@ -524,6 +528,33 @@ fn a_heal_that_is_working_never_rearms() {
     assert!(!w.on_event(&prompt(13)));
     assert!(!w.on_event(&prompt(14)));
     assert!(!w.on_event(&prompt(14)), "stopped watching once HP moved");
+}
+
+/// A prompt painted with the Resting status is the board saying the
+/// rest landed. The count is for a rest the board never acknowledged;
+/// it must not run on while the character is plainly sitting down.
+/// Live 2026-09-14: in a party room the board repaints the prompt on
+/// every line, three repaints arrived within 60 ms of the rest, and
+/// the watch declared it failed before the regen had a chance to tick.
+#[test]
+fn a_rest_the_board_shows_as_resting_has_landed() {
+    let mut w = heal_watch(&[]);
+    w.on_sent("rest");
+    assert!(!w.on_event(&prompt(12)), "first prompt sets the baseline");
+    assert!(!w.on_event(&status_prompt(12, Status::Resting)));
+    for _ in 0..5 {
+        assert!(!w.on_event(&prompt(12)), "stopped watching once the board said Resting");
+    }
+}
+
+#[test]
+fn a_meditate_the_board_shows_as_meditating_has_landed() {
+    let mut w = heal_watch(&[]);
+    w.on_sent("meditate");
+    assert!(!w.on_event(&status_prompt(12, Status::Meditating)));
+    for _ in 0..5 {
+        assert!(!w.on_event(&prompt(12)));
+    }
 }
 
 /// Losing HP is not progress either — resting through a beating heals
