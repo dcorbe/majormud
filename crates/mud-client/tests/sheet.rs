@@ -1194,3 +1194,18 @@ fn a_heal_may_be_named_by_its_short_name() {
     assert_eq!(minor.name, "mend");
     assert_eq!(major.name, "major healing");
 }
+
+#[test]
+fn the_outcome_grammar_reads_the_three_families() {
+    use mud_client::sheet::{Outcome, cast_outcome};
+    assert_eq!(cast_outcome("You do not know how to cast mahe."), Some(Outcome::Unknown));
+    assert_eq!(cast_outcome("You cast major healing on Celery!"), Some(Outcome::Cast));
+    assert_eq!(cast_outcome("You cast healing rain on the room!"), Some(Outcome::Cast));
+    assert_eq!(cast_outcome("You invoke way of the swan!"), Some(Outcome::Cast));
+    assert_eq!(cast_outcome("You attempt to cast major healing at Celery, but fail."), Some(Outcome::Failed));
+    assert_eq!(cast_outcome("You do not have enough mana to cast that spell!"), Some(Outcome::Failed));
+    assert_eq!(cast_outcome("You have already cast a spell this round!"), Some(Outcome::Failed));
+    assert_eq!(cast_outcome("Celery is looking around the room."), None);
+    assert_eq!(cast_outcome("A rat attempted to cast fire at you, but failed."), None, "the caller gates by attribution, this only names the family");
+}
+

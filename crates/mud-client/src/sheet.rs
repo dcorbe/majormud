@@ -520,6 +520,43 @@ pub enum CastAttempt {
 /// anything louder, and the rest mark takes over: resting restores mana
 /// as well as health, so the two marks compose without either knowing
 /// about the other.
+
+/// What the board said about a cast of ours.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// The spell is not in the book. Terminal for that source.
+    Unknown,
+    /// It landed.
+    Cast,
+    /// A roll, a pool or a round. Comes round again.
+    Failed,
+}
+
+/// The one outcome grammar, shared by every cast machine. The caller
+/// gates by attribution: a monster's "%s attempted to cast %s at you,
+/// but failed." is routine din, and this reads only lines the
+/// correlator says answer our cast.
+pub fn cast_outcome(line: &str) -> Option<Outcome> {
+    let line = line.to_lowercase();
+    if line.contains("do not know how to cast") || line.contains("do not know how to invoke") {
+        return Some(Outcome::Unknown);
+    }
+    if line.starts_with("you cast ") || line.starts_with("you invoke ") {
+        return Some(Outcome::Cast);
+    }
+    if (line.starts_with("you attempt to") && line.contains("but fail"))
+        || line.contains("spell is resisted")
+        || line.contains("resists your spell")
+        || line.contains("enough mana to cast")
+        || line.contains("enough kai to invoke")
+        || line.contains("already cast a spell")
+        || line.contains("already invoked a power")
+    {
+        return Some(Outcome::Failed);
+    }
+    None
+}
+
 pub struct HealState {
     /// At most one per [`HealKind`] ([`Spellbook::heal_spells`]).
     sources: Vec<HealSource>,
@@ -668,27 +705,19 @@ impl HealState {
         let crate::events::Event::Line(line) = &cor.event else {
             return;
         };
-        let line = line.to_lowercase();
-        // The one terminal outcome: the spell is not in the book. Every
-        // other failure is a roll, a pool or a round, and comes round
-        // again.
-        if line.contains("do not know how to cast") || line.contains("do not know how to invoke") {
-            self.dead[i] = true;
-            self.pending = None;
-        } else if line.starts_with("you cast ") || line.starts_with("you invoke ") {
-            if matches!(self.sources[i].kind, HealKind::Regen { .. }) {
-                self.regen_cast_at = Some(now);
+        match cast_outcome(line) {
+            Some(Outcome::Unknown) => {
+                self.dead[i] = true;
+                self.pending = None;
             }
-            self.pending = None;
-        } else if line.contains("but fail")
-            || line.contains("spell is resisted")
-            || line.contains("resists your spell")
-            || line.contains("enough mana to cast")
-            || line.contains("enough kai to invoke")
-            || line.contains("already cast a spell")
-            || line.contains("already invoked a power")
-        {
-            self.pending = None;
+            Some(Outcome::Cast) => {
+                if matches!(self.sources[i].kind, HealKind::Regen { .. }) {
+                    self.regen_cast_at = Some(now);
+                }
+                self.pending = None;
+            }
+            Some(Outcome::Failed) => self.pending = None,
+            None => {}
         }
     }
 
