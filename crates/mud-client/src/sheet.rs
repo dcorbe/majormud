@@ -94,6 +94,9 @@ pub const HEAL_SPELLS: [&str; 10] = [
 /// The heals that target the room. `target` 13 in the spell table:
 /// every player in the room is healed, the caster included.
 pub const RAIN_SPELLS: [&str; 3] = ["healing rain", "major healing rain", "greater healing rain"];
+
+/// The one spell that lifts a poison. There is no cheaper or dearer
+/// version of it to choose between.
 pub const CURE_POISON: &str = "cure poison";
 
 /// Whether this character casts spells or invokes powers.

@@ -159,8 +159,8 @@ async fn the_notes_end_when_the_session_closes() {
 }
 
 /// A regression test for the roster comparison: the character's own row
-/// is dropped before comparing members, so two rosters with the same
-/// members (except the own row) correctly return Vitals and print nothing.
+/// is dropped before comparing members. Two rosters whose members match
+/// once that row is gone return Vitals and print nothing.
 #[tokio::test]
 async fn two_rosters_with_the_same_members_are_silent() {
     let (addr, _) = board(vec![

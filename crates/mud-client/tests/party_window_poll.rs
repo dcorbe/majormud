@@ -143,3 +143,4 @@ async fn a_member_polls_the_party_on_its_interval_without_a_note() {
     assert!(!screen.contains("party: roster"), "a poll that changed only numbers is silent:\n{screen}");
     assert!(screen.contains("party: Beef joined"), "the join itself is still said:\n{screen}");
 }
+

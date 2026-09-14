@@ -1522,7 +1522,7 @@ fn feed_party(party: &Mutex<PartyTracker>, stats: &Mutex<StatTracker>, cor: &Cor
         crate::party::Remote::Bank => t.requests.push(req),
         crate::party::Remote::Heal(p) => t.health.on_heal(&req.from, *p, Instant::now()),
         crate::party::Remote::Cure => t.health.on_cure(&req.from, Instant::now()),
-        crate::party::Remote::Iam { race, class } => t.health.on_iam(&req.from, race, class),
+        crate::party::Remote::Iam { race, class } => t.health.on_iam(&req.from, race, class, Instant::now()),
     }
 }
 

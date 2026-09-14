@@ -467,6 +467,31 @@ fn a_request_is_a_fresher_row() {
     assert_eq!(h.get("newcomer").map(|v| v.hp), Some(Some(20)), "a request from a name the roster has not shown yet still counts");
 }
 
+/// The stock roster is two columns and carries no numbers at all. A
+/// row without them says nothing about the member's health, so it must
+/// not erase what the member has just said out loud, and it must not
+/// bump `seen` either, or a healer would heal an already healed member
+/// again.
+#[test]
+fn a_roster_row_without_numbers_erases_nothing() {
+    let t0 = Instant::now();
+    let mut h = Health::new();
+    h.on_heal("Beef", 35, t0);
+    let t1 = t0 + Duration::from_secs(3);
+    let plain = Member { name: "Beef".into(), invited: false, class: None, hp: None, pool: None };
+    h.on_roster(&[plain], t1);
+    let v = h.get("Beef").unwrap();
+    assert_eq!(v.hp, Some(35), "the said number stands");
+    assert_eq!(v.seen, t0, "and it was not seen again");
+    assert_eq!(v.class, None);
+
+    // A row that does carry them writes them and is a fresh sighting.
+    h.on_roster(&[member("Beef", "Ninja", 90)], t1);
+    let v = h.get("Beef").unwrap();
+    assert_eq!(v.hp, Some(90));
+    assert_eq!(v.seen, t1);
+}
+
 #[test]
 fn a_cure_request_holds_until_the_next_roster() {
     let t0 = Instant::now();
@@ -484,11 +509,11 @@ fn an_introduction_sets_race_and_class_and_a_witchunter_resists() {
     let t0 = Instant::now();
     let mut h = Health::new();
     h.on_roster(&[member("Beef", "Ninja", 100)], t0);
-    h.on_iam("Beef", "Human", "Witchunter");
+    h.on_iam("Beef", "Human", "Witchunter", t0);
     let v = h.get("Beef").unwrap();
     assert_eq!(v.race.as_deref(), Some("Human"));
     assert!(v.resists_magic());
-    h.on_iam("Carrot", "Dwarf", "Paladin");
+    h.on_iam("Carrot", "Dwarf", "Paladin", t0);
     assert!(!h.get("Carrot").unwrap().resists_magic());
     let mut from_roster = Health::new();
     from_roster.on_roster(&[member("Beef", "Witchunter", 100)], t0);

@@ -122,8 +122,14 @@ impl PartyState {
 
     /// Set the character's own name. The board lists the character on its
     /// own roster, but the character is never a member of its own party.
+    ///
+    /// Every event the session reads passes through here, and the name
+    /// changes at most once a session, so the allocation is made only
+    /// when it actually changes.
     pub fn set_own(&mut self, name: &str) {
-        self.own = Some(name.to_string());
+        if self.own.as_deref() != Some(name) {
+            self.own = Some(name.to_string());
+        }
     }
 
     pub fn is_follower(&self) -> bool {
@@ -428,9 +434,18 @@ impl Health {
             if m.class.is_some() {
                 v.class = m.class.clone();
             }
-            v.hp = m.hp;
-            v.pool = m.pool;
-            v.seen = now;
+            // A row the board printed without numbers says nothing
+            // about the member's health. An invited row has none, and
+            // a two-column roster has none either, and taking either
+            // at face value would erase a number the member has just
+            // said out loud.
+            if m.hp.is_some() {
+                v.hp = m.hp;
+                v.seen = now;
+            }
+            if m.pool.is_some() {
+                v.pool = m.pool;
+            }
             v.poisoned = None;
         }
     }
@@ -445,8 +460,8 @@ impl Health {
         self.row(name, now).poisoned = Some(now);
     }
 
-    pub fn on_iam(&mut self, name: &str, race: &str, class: &str) {
-        let v = self.row(name, Instant::now());
+    pub fn on_iam(&mut self, name: &str, race: &str, class: &str, now: Instant) {
+        let v = self.row(name, now);
         v.race = Some(race.to_string());
         v.class = Some(class.to_string());
     }

@@ -1800,3 +1800,4 @@ fn avoid_marks(profile: &crate::profile::Profile) -> std::collections::BTreeSet<
         .map(|f| f.nav.avoided())
         .unwrap_or_default()
 }
+
