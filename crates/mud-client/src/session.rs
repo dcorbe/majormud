@@ -1447,12 +1447,15 @@ fn feed_party(party: &Mutex<PartyTracker>, stats: &Mutex<StatTracker>, cor: &Cor
             t.state.remove(&own);
         }
         let note = match &change {
-            Change::Following(who) => format!("party: following {who}"),
-            Change::Joined(who) => format!("party: {who} joined"),
-            Change::Invited(who) => format!("party: invited {who}"),
-            Change::Left(who) => format!("party: {who} left"),
-            Change::Ended => "party: ended".to_string(),
-            Change::Roster => format!("party: roster {}", t.state.followers().join(", ")),
+            Change::Following(who) => Some(format!("party: following {who}")),
+            Change::Joined(who) => Some(format!("party: {who} joined")),
+            Change::Invited(who) => Some(format!("party: invited {who}")),
+            Change::Left(who) => Some(format!("party: {who} left")),
+            Change::Ended => Some("party: ended".to_string()),
+            Change::Roster => Some(format!("party: roster {}", t.state.followers().join(", "))),
+            // A poll that changed only numbers. Said out loud every
+            // twenty seconds it would be the only thing in the window.
+            Change::Vitals => None,
         };
         if change == Change::Ended {
             t.holds.lock().expect("holds lock").clear();
@@ -1461,7 +1464,7 @@ fn feed_party(party: &Mutex<PartyTracker>, stats: &Mutex<StatTracker>, cor: &Cor
             let state = t.state.clone();
             t.holds.lock().expect("holds lock").retain_members(&state);
         }
-        if let Some(tx) = &t.notes {
+        if let (Some(tx), Some(note)) = (&t.notes, note) {
             let _ = tx.send(note);
         }
         let state = t.state.clone();

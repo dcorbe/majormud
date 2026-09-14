@@ -33,7 +33,7 @@ fn started_to_follow_makes_a_leader_and_adds_the_member() {
     let mut s = state();
     assert_eq!(s.observe("Pootwaddle started to follow you."), Some(Change::Joined("Pootwaddle".into())));
     assert_eq!(s.role, Role::Leader);
-    assert_eq!(s.members, vec![Member { name: "Pootwaddle".into(), invited: false }]);
+    assert_eq!(s.members, vec![Member { name: "Pootwaddle".into(), invited: false, class: None, hp: None, pool: None }]);
 }
 
 #[test]
@@ -67,7 +67,7 @@ fn removed_from_your_followers_drops_the_member() {
     s.observe("Pootwaddle started to follow you.");
     s.observe("Blueberry started to follow you.");
     assert_eq!(s.observe("Pootwaddle has been removed from your followers."), Some(Change::Left("Pootwaddle".into())));
-    assert_eq!(s.members, vec![Member { name: "Blueberry".into(), invited: false }]);
+    assert_eq!(s.members, vec![Member { name: "Blueberry".into(), invited: false, class: None, hp: None, pool: None }]);
 }
 
 #[test]
@@ -83,12 +83,54 @@ fn the_roster_replaces_the_member_list_in_either_row_format() {
     assert_eq!(
         s.members,
         vec![
-            Member { name: "Pootwaddle".into(), invited: false },
-            Member { name: "Blueberry".into(), invited: false },
-            Member { name: "Newguy".into(), invited: true },
+            Member { name: "Pootwaddle".into(), invited: false, class: None, hp: None, pool: None },
+            Member { name: "Blueberry".into(), invited: false, class: Some("Ninja".into()), hp: Some(90), pool: None },
+            Member { name: "Newguy".into(), invited: true, class: None, hp: None, pool: None },
         ]
     );
     assert_eq!(s.role, Role::Leader);
+}
+
+/// The live board's row, captured 2026-09-13: class in parentheses,
+/// the pool tagged K or M when there is one, then the health.
+#[test]
+fn a_live_roster_row_carries_class_pool_and_health() {
+    let mut s = state();
+    s.observe("Beef started to follow you.");
+    s.observe("Carrot started to follow you.");
+    s.observe("Salad started to follow you.");
+    s.observe("The following people are in your travel party:");
+    s.observe("  Blueberry                      (Mystic)     [K:100%] [H:100%]   - Frontrank");
+    s.observe("  Beef                           (Ninja)               [H:100%]   - Midrank");
+    s.observe("  Salad                          (Ranger)     [M:100%] [H: 86%]   - Midrank");
+    s.observe("");
+    let by = |name: &str| s.members.iter().find(|m| m.name == name).cloned().unwrap();
+    assert_eq!(by("Blueberry").class.as_deref(), Some("Mystic"));
+    assert_eq!(by("Blueberry").pool, Some(100));
+    assert_eq!(by("Beef").pool, None);
+    assert_eq!(by("Beef").hp, Some(100));
+    assert_eq!(by("Salad").hp, Some(86));
+    assert_eq!(by("Salad").pool, Some(100));
+}
+
+/// A poll that changed only the numbers is not a change to the party.
+/// The window prints nothing for it, so a roster every twenty seconds
+/// is silent.
+#[test]
+fn a_roster_that_changed_only_numbers_is_vitals_not_roster() {
+    let mut s = state();
+    s.observe("Beef started to follow you.");
+    s.observe("The following people are in your travel party:");
+    s.observe("  Beef                           (Ninja)               [H:100%]   - Midrank");
+    assert_eq!(s.observe(""), Some(Change::Vitals));
+    s.observe("The following people are in your travel party:");
+    s.observe("  Beef                           (Ninja)               [H: 40%]   - Midrank");
+    assert_eq!(s.observe(""), Some(Change::Vitals));
+    assert_eq!(s.members[0].hp, Some(40));
+    s.observe("The following people are in your travel party:");
+    s.observe("  Beef                           (Ninja)               [H: 40%]   - Midrank");
+    s.observe("  Carrot                         (Paladin)    [M: 90%] [H: 70%]   - Midrank");
+    assert_eq!(s.observe(""), Some(Change::Roster), "a new name is a change to the party");
 }
 
 #[test]
@@ -122,7 +164,7 @@ fn a_non_indented_line_ends_the_roster_and_is_then_read_itself() {
         s.observe("Blueberry has been removed from your followers."),
         Some(Change::Left("Blueberry".into()))
     );
-    assert_eq!(s.members, vec![Member { name: "Pootwaddle".into(), invited: false }]);
+    assert_eq!(s.members, vec![Member { name: "Pootwaddle".into(), invited: false, class: None, hp: None, pool: None }]);
 }
 
 #[test]
@@ -131,7 +173,7 @@ fn a_roster_ended_by_chatter_still_reads_as_the_roster() {
     s.observe("Pootwaddle started to follow you.");
     s.observe("The following people are in your travel party:");
     s.observe("  Pootwaddle                     Mystic");
-    assert_eq!(s.observe("Beef says \"hi\""), Some(Change::Roster));
+    assert_eq!(s.observe("Beef says \"hi\""), Some(Change::Vitals));
 }
 
 #[test]

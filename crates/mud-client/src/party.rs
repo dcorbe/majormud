@@ -38,6 +38,13 @@ static REMOVED: LazyLock<Regex> =
 pub const NOT_IN_A_PARTY: &str = "You are not in a party at the present time.";
 pub const ROSTER_HEADER: &str = "The following people are in your travel party:";
 static ROSTER_ROW: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s+(\w+)\b").unwrap());
+/// The live row, captured 2026-09-13:
+/// `  Salad   (Ranger)     [M:100%] [H: 86%]   - Midrank`. Each part
+/// is read on its own, so the stock two-column row still parses with
+/// every part absent.
+static ROSTER_CLASS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\(([^)]+)\)").unwrap());
+static ROSTER_POOL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[[KM]:\s*(\d+)%\]").unwrap());
+static ROSTER_HP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[H:\s*(\d+)%\]").unwrap());
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Role {
@@ -51,6 +58,30 @@ pub enum Role {
 pub struct Member {
     pub name: String,
     pub invited: bool,
+    /// The roster's word in parentheses. `None` on a row without one.
+    pub class: Option<String>,
+    /// Health percent, from the roster's `[H: 86%]`.
+    pub hp: Option<u8>,
+    /// Kai or mana percent, from `[K:100%]` or `[M:100%]`.
+    pub pool: Option<u8>,
+}
+
+impl Member {
+    fn plain(name: &str, invited: bool) -> Member {
+        Member { name: name.to_string(), invited, class: None, hp: None, pool: None }
+    }
+
+    /// One roster row.
+    fn from_row(line: &str, name: &str) -> Member {
+        let percent = |re: &Regex| re.captures(line).and_then(|c| c[1].parse::<u8>().ok());
+        Member {
+            name: name.to_string(),
+            invited: line.contains("[Invited]"),
+            class: ROSTER_CLASS.captures(line).map(|c| c[1].trim().to_string()),
+            hp: percent(&ROSTER_HP),
+            pool: percent(&ROSTER_POOL),
+        }
+    }
 }
 
 /// What one line changed, in words the lobby can print.
@@ -61,7 +92,10 @@ pub enum Change {
     Invited(String),
     Left(String),
     Ended,
+    /// The roster named a different set of members.
     Roster,
+    /// The roster named the same members with new numbers.
+    Vitals,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -98,7 +132,7 @@ impl PartyState {
     fn add(&mut self, name: &str, invited: bool) {
         match self.members.iter_mut().find(|m| same(&m.name, name)) {
             Some(m) => m.invited = m.invited && invited,
-            None => self.members.push(Member { name: name.to_string(), invited }),
+            None => self.members.push(Member::plain(name, invited)),
         }
     }
 
@@ -116,7 +150,7 @@ impl PartyState {
                 return self.end_roster();
             }
             if let Some(c) = ROSTER_ROW.captures(line) {
-                rows.push(Member { name: c[1].to_string(), invited: line.contains("[Invited]") });
+                rows.push(Member::from_row(line, &c[1]));
                 return None;
             }
             // Anything else ends the block: the board never prints a
@@ -182,8 +216,11 @@ impl PartyState {
             self.reset();
             return Some(Change::Ended);
         }
+        let key = |m: &Member| (m.name.to_ascii_lowercase(), m.invited);
+        let same_members = rows.len() == self.members.len()
+            && rows.iter().map(key).eq(self.members.iter().map(key));
         self.members = rows;
-        Some(Change::Roster)
+        Some(if same_members { Change::Vitals } else { Change::Roster })
     }
 }
 
