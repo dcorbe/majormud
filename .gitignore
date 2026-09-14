@@ -13,6 +13,9 @@ docs/mirrors/
 # Rust
 target/
 
+# Clauded planning docs
+docs/
+
 # Reverse-engineering material: the behavioural spec, the content database,
 # the oracle transcripts and the gang house files. Derived from the game's own
 # binaries and data, and not ours to redistribute. Kept on disk, never tracked.
