@@ -257,6 +257,24 @@ fn wait_state_signals_once_each_way() {
     assert_eq!(w.on_prompt(None), None);
 }
 
+/// The leader's step was already on the wire when `@wait` landed, so
+/// the follower is dragged one room and the board drops its Resting
+/// status. The bot sits down again in the new room, and that rest
+/// rides under the same hold: no second warning, and the release waits
+/// for it to finish. Live 2026-09-14: every rest ended in a drag, and
+/// the `@ok` it produced released the leader before the hold was ever
+/// judged.
+#[test]
+fn a_rest_after_a_drag_rides_under_the_same_hold() {
+    let mut w = WaitState::new();
+    assert_eq!(w.on_rest_sent(), Some(Signal::Wait));
+    assert_eq!(w.on_prompt(Some(&Status::Resting)), None);
+    assert_eq!(w.on_rest_sent(), None);
+    assert_eq!(w.on_prompt(None), None, "the echo's prompt is not yet resting");
+    assert_eq!(w.on_prompt(Some(&Status::Resting)), None);
+    assert_eq!(w.on_prompt(None), Some(Signal::Ok));
+}
+
 #[test]
 fn a_refused_rest_releases_at_once() {
     let mut w = WaitState::new();

@@ -1571,25 +1571,6 @@ pub fn assist_tick(
         let id = session.send(&cmd);
         casts.buff.on_sent(&cmd, id);
     }
-    // The rest the leader was warned about is over on the first prompt
-    // the board paints without the status. The party is read only while
-    // a warning is actually out.
-    if let crate::events::Event::Prompt { status, .. } = &cor.event
-        && casts.wait.is_waiting()
-    {
-        match follower_leader(session) {
-            Some(leader) => {
-                if casts.wait.on_prompt(status.as_ref()) == Some(crate::party::Signal::Ok) {
-                    session.send(&crate::party::telepath(&leader, "@ok"));
-                    session.party_note(format!("party: told {leader} @ok"));
-                }
-            }
-            // The party ended while the character was sitting down.
-            // Nobody is owed a release, and a stray one later would
-            // reach whoever the name belongs to now.
-            None => casts.wait.reset(),
-        }
-    }
     follower_gate(session, bot, casts, cor, now);
     for cmd in assist_actions(bot, here, cor, casts.in_flight()) {
         if cfg.is_rest(&cmd) {
@@ -1610,6 +1591,27 @@ pub fn assist_tick(
         }
         session.send(&cmd);
         watch.on_sent(&cmd);
+    }
+    // The rest the leader was warned about is over on the first prompt
+    // the board paints without the status. Judged after the bot's own
+    // actions: the prompt after a drag has no status, and the rest the
+    // bot sends off it is the rest going on, not over. The party is
+    // read only while a warning is actually out.
+    if let crate::events::Event::Prompt { status, .. } = &cor.event
+        && casts.wait.is_waiting()
+    {
+        match follower_leader(session) {
+            Some(leader) => {
+                if casts.wait.on_prompt(status.as_ref()) == Some(crate::party::Signal::Ok) {
+                    session.send(&crate::party::telepath(&leader, "@ok"));
+                    session.party_note(format!("party: told {leader} @ok"));
+                }
+            }
+            // The party ended while the character was sitting down.
+            // Nobody is owed a release, and a stray one later would
+            // reach whoever the name belongs to now.
+            None => casts.wait.reset(),
+        }
     }
     refusals
 }

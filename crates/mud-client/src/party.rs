@@ -337,6 +337,14 @@ pub enum Signal {
 /// A follower's side of the wait handshake. `@wait` goes out with the
 /// rest, `@ok` on the first prompt without the Resting status after a
 /// prompt that had it, or at once when the board refused the rest.
+///
+/// A rest sent while the hold is already out starts the status watch
+/// over. That is the rest after a drag: the leader's step is already on
+/// the wire when `@wait` lands, the board takes a second to resolve it,
+/// and the whole party is moved one room, which ends the rest. The bot
+/// sits down again where it lands, and the release waits for that rest.
+/// A drag the bot answers with no new rest is over, and the lost status
+/// releases the leader on the next prompt as any rest's end would.
 #[derive(Debug, Clone, Default)]
 pub struct WaitState {
     waiting: bool,
@@ -354,12 +362,14 @@ impl WaitState {
         self.waiting
     }
 
+    /// A rest under a hold already out is the one after a drag: it
+    /// starts the status watch over and owes no second warning.
     pub fn on_rest_sent(&mut self) -> Option<Signal> {
+        self.seen_resting = false;
         if self.waiting {
             return None;
         }
         self.waiting = true;
-        self.seen_resting = false;
         Some(Signal::Wait)
     }
 
