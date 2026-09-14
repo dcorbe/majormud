@@ -43,6 +43,7 @@ static ROSTER_ROW: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s+(\w+)\b")
 /// is read on its own, so the stock two-column row still parses with
 /// every part absent.
 static ROSTER_CLASS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\(([^)]+)\)").unwrap());
+/// Reads the first pool tag and assumes a row carries at most one.
 static ROSTER_POOL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[[KM]:\s*(\d+)%\]").unwrap());
 static ROSTER_HP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[H:\s*(\d+)%\]").unwrap());
 
@@ -105,6 +106,9 @@ pub struct PartyState {
     pub members: Vec<Member>,
     /// Rows of a roster block in flight. `None` between blocks.
     roster: Option<Vec<Member>>,
+    /// The character's own name. The board lists the character on its own
+    /// roster, but the character is never a member of its own party.
+    own: Option<String>,
 }
 
 fn same(a: &str, b: &str) -> bool {
@@ -114,6 +118,12 @@ fn same(a: &str, b: &str) -> bool {
 impl PartyState {
     pub fn new() -> PartyState {
         PartyState::default()
+    }
+
+    /// Set the character's own name. The board lists the character on its
+    /// own roster, but the character is never a member of its own party.
+    pub fn set_own(&mut self, name: &str) {
+        self.own = Some(name.to_string());
     }
 
     pub fn is_follower(&self) -> bool {
@@ -211,7 +221,10 @@ impl PartyState {
     }
 
     fn end_roster(&mut self) -> Option<Change> {
-        let rows = self.roster.take()?;
+        let mut rows = self.roster.take()?;
+        if let Some(own_name) = &self.own {
+            rows.retain(|m| !same(&m.name, own_name));
+        }
         if rows.is_empty() && self.role == Role::Leader {
             self.reset();
             return Some(Change::Ended);

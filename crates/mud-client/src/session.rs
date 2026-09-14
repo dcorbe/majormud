@@ -1435,6 +1435,10 @@ fn feed_party(party: &Mutex<PartyTracker>, stats: &Mutex<StatTracker>, cor: &Cor
     let sheet_name =
         stats.lock().expect("stats lock").current.name.clone().filter(|n| !n.is_empty());
     let mut t = party.lock().expect("party lock");
+    let own = sheet_name.unwrap_or_else(|| t.username.clone());
+    if !own.is_empty() {
+        t.state.set_own(&own);
+    }
     let change = match &cor.event {
         Event::Line(line) => t.state.observe(line),
         Event::Prompt { .. } => t.state.observe_prompt(),
@@ -1442,7 +1446,6 @@ fn feed_party(party: &Mutex<PartyTracker>, stats: &Mutex<StatTracker>, cor: &Cor
     };
     if let Some(change) = change {
         use crate::party::Change;
-        let own = sheet_name.unwrap_or_else(|| t.username.clone());
         if !own.is_empty() {
             t.state.remove(&own);
         }

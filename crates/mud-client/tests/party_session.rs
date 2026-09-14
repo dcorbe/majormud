@@ -158,6 +158,30 @@ async fn the_notes_end_when_the_session_closes() {
     assert!(ended.expect("a receiver taken after close must end at once").is_err());
 }
 
+/// A regression test for the roster comparison: the character's own row
+/// is dropped before comparing members, so two rosters with the same
+/// members (except the own row) correctly return Vitals and print nothing.
+#[tokio::test]
+async fn two_rosters_with_the_same_members_are_silent() {
+    let (addr, _) = board(vec![
+        "Pootwaddle started to follow you.",
+        "The following people are in your travel party:\r\n  Testuser     Mystic\r\n  Pootwaddle   Warrior",
+        "The following people are in your travel party:\r\n  Testuser     Mystic\r\n  Pootwaddle   Warrior",
+    ])
+    .await;
+    let session = session_for(addr).await;
+    let mut notes = session.party_notes();
+    let joined = tokio::time::timeout(Duration::from_secs(5), notes.recv()).await.unwrap().unwrap();
+    assert_eq!(joined, "party: Pootwaddle joined");
+    wait_until(&session, |s| s.party().members.len() == 1).await;
+    let no_note = tokio::time::timeout(Duration::from_millis(500), notes.recv()).await;
+    assert!(no_note.is_err(), "two rosters with the same members print no note");
+    assert_eq!(
+        session.party().members.iter().map(|m| m.name.clone()).collect::<Vec<_>>(),
+        vec!["Pootwaddle".to_string()]
+    );
+}
+
 /// The board lists the character itself on its own roster. A row taken
 /// at face value would put the leader on a hold of its own name at
 /// every bank trip, and would report itself as the follower that never
@@ -175,11 +199,12 @@ async fn the_roster_drops_the_characters_own_row() {
     let mut notes = session.party_notes();
     let joined = tokio::time::timeout(Duration::from_secs(5), notes.recv()).await.unwrap().unwrap();
     assert_eq!(joined, "party: Pootwaddle joined");
-    let roster = tokio::time::timeout(Duration::from_secs(5), notes.recv()).await.unwrap().unwrap();
-    assert_eq!(roster, "party: roster Pootwaddle", "the character is not its own follower");
+    wait_until(&session, |s| s.party().members.len() == 1).await;
+    assert_eq!(session.party().role, Role::Leader);
+    let no_note = tokio::time::timeout(Duration::from_millis(500), notes.recv()).await;
+    assert!(no_note.is_err(), "a roster with the same members is silent");
     let members: Vec<String> = session.party().members.iter().map(|m| m.name.clone()).collect();
     assert_eq!(members, vec!["Pootwaddle".to_string()]);
-    assert_eq!(session.party().role, Role::Leader);
 }
 
 #[tokio::test]
