@@ -1457,10 +1457,6 @@ fn a_self_cast_holds_the_party_cast_a_round() {
     s.on_event(&prompt(20, 9), t0);
     s.hold_round(t0);
     assert!(matches!(s.attempt(t0, &clock, HealNeed::Minor), CastAttempt::Hold(_)));
-    assert!(s.affords(HealNeed::Minor));
-    let mut broke = heal_state();
-    broke.on_event(&prompt(20, 1), t0);
-    assert!(!broke.affords(HealNeed::Major));
 }
 
 

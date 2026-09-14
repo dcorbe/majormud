@@ -789,18 +789,6 @@ impl HealState {
         self.last_attempt = None;
     }
 
-    /// Whether a live source could answer `need` with the pool as last
-    /// seen. The ask for a party heal reads this. A character that can
-    /// cast for itself does not ask.
-    pub fn affords(&self, need: HealNeed) -> bool {
-        let minor = self.affordable(|k| *k == HealKind::Minor).is_some();
-        match need {
-            HealNeed::Minor => minor,
-            HealNeed::Major => self.affordable(|k| *k == HealKind::Major).is_some() || minor,
-            HealNeed::Regen => self.affordable(|k| matches!(k, HealKind::Regen { .. })).is_some() || minor,
-        }
-    }
-
     /// Another cast of ours went out at `now`. The board allows one
     /// cast a round, so this one waits its turn.
     pub fn hold_round(&mut self, now: std::time::Instant) {

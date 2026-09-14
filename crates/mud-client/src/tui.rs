@@ -1594,16 +1594,18 @@ pub fn assist_tick(
             casts.party.hold_round(now);
             watch.on_sent(&cmd);
             cast_this_prompt = true;
-        } else if cfg.auto_heal
+        }
+        // Hurt: the room is told, whatever the character can cast for
+        // itself. Blueberry could always afford its own small heal, so
+        // under the old rule it never asked, and died at 13 percent
+        // with two healers standing beside it (live 2026-09-14).
+        if cfg.auto_heal
             && !bot.fled()
             && let Some(percent) = bot.hp_percent(*hp)
-            && let Some(need) = crate::bot::heal_need(cfg, percent)
-            && !casts.heal.affords(need)
-            && !casts.heal.in_flight()
+            && crate::bot::heal_need(cfg, percent).is_some()
             && session.party().role != crate::party::Role::None
             && casts.ask.due(now, clock)
         {
-            // Hurt, and nothing of its own to cast: the room is told.
             session.send(&crate::party::say(&format!("@heal {percent}")));
             session.party_note(format!("party: asked @heal {percent}"));
             casts.ask.on_sent(now);

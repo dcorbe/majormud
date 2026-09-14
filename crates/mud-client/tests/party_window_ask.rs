@@ -1,6 +1,9 @@
-//! A member under its heal mark with nothing to cast says `@heal` to
-//! the room, once per round, and stops once it is over the mark. One
-//! test in this binary, because it sets `XDG_CONFIG_HOME`.
+//! A member under its heal mark says `@heal` to the room once per round
+//! while it also casts on itself, and stops once it is over the mark.
+//! Live 2026-09-14: Blueberry could always afford its own small heal, so
+//! under the old rule it never asked, and died at 13 percent with two
+//! healers standing beside it. One test in this binary, because it sets
+//! `XDG_CONFIG_HOME`.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -14,7 +17,7 @@ use mud_core::content::{Class, ClassId, Content, RoomId};
 
 const HOME: RoomId = RoomId { map: 1, room: 1 };
 
-const HOME_BLOCK: &str = "\r\n\x1b[1;36mHome\r\nObvious exits: east\r\n[HP=100/MA=0]:";
+const HOME_BLOCK: &str = "\r\n\x1b[1;36mHome\r\nObvious exits: east\r\n[HP=100/MA=20]:";
 
 /// A board that puts the character in the realm at full health, says it
 /// is now following Beef, and only then drops it to under the profile's
@@ -51,25 +54,30 @@ async fn ask_board(sent: Arc<Mutex<Vec<String>>>) -> std::net::SocketAddr {
                         pending = pending[at + 1..].to_string();
                         sent.lock().unwrap().push(line.clone());
                         let reply = match line.to_lowercase().as_str() {
-                            "look" => format!("\r\n{line}\r\n\x1b[1;36mHome\r\nObvious exits: east\r\n[HP={hp}/MA=0]:"),
-                            "health" => format!("\r\nhealth\r\nHealth:   {hp}/100   [{hp}%]\r\n[HP={hp}/MA=0]:"),
-                            "stat" => format!("\r\nstat\r\nName: Beefy   Lives/CP: 9/2\r\nClass: Warrior   Level: 15\r\nMagicRes: 0\r\n[HP={hp}/MA=0]:"),
-                            "inventory" | "i" => format!("\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP={hp}/MA=0]:"),
-                            _ => format!("\r\n{line}\r\n[HP={hp}/MA=0]:"),
+                            "look" => format!("\r\n{line}\r\n\x1b[1;36mHome\r\nObvious exits: east\r\n[HP={hp}/MA=20]:"),
+                            "health" => format!("\r\nhealth\r\nHealth:   {hp}/100   [{hp}%]\r\n[HP={hp}/MA=20]:"),
+                            "stat" => format!("\r\nstat\r\nName: Beefy   Lives/CP: 9/2\r\nClass: Warrior   Level: 15\r\nMagicRes: 0\r\n[HP={hp}/MA=20]:"),
+                            "inventory" | "i" => format!("\r\ninventory\r\nYou are carrying nothing.\r\nEncumbrance: 0/2400 - None [0%]\r\n[HP={hp}/MA=20]:"),
+                            "spells" => format!(
+                                "\r\nspells\r\nYou have the following spells:\r\nLevel Mana Short Spell Name\r\n  1   2    mihe  minor healing                 \r\n[HP={hp}/MA=20]:"
+                            ),
+                            // The self cast's wording, captured live 2026-09-14.
+                            "cast mihe" => format!("\r\ncast mihe\r\nYou cast minor healing on yourself, healing 12 damage!\r\n[HP={hp}/MA=20]:"),
+                            _ => format!("\r\n{line}\r\n[HP={hp}/MA=20]:"),
                         };
                         sock.write_all(reply.as_bytes()).await.unwrap();
                     }
                 }
                 _ = tick.tick() => {
                     let say = if step == 0 {
-                        let say = format!("\r\nYou are now following Beef\r\n[HP={hp}/MA=0]:");
+                        let say = format!("\r\nYou are now following Beef\r\n[HP={hp}/MA=20]:");
                         hp = 30;
                         say
                     } else if step < 8 {
-                        format!("\r\n[HP={hp}/MA=0]:")
+                        format!("\r\n[HP={hp}/MA=20]:")
                     } else {
                         hp = 90;
-                        format!("\r\n[HP={hp}/MA=0]:")
+                        format!("\r\n[HP={hp}/MA=20]:")
                     };
                     step += 1;
                     sock.write_all(say.as_bytes()).await.unwrap();
@@ -82,10 +90,9 @@ async fn ask_board(sent: Arc<Mutex<Vec<String>>>) -> std::net::SocketAddr {
 
 /// One room, and the character's class. Nothing walks anywhere, so the
 /// graph is only here to keep the window off the database file. The
-/// class carries its weight: a caster group of 0 tells the realm entry
-/// probe the character casts nothing, so it skips the spell listing,
-/// which has no terminator and otherwise costs the probe three seconds
-/// before the assist reads its first event.
+/// class carries its weight: a caster group of 1 tells the realm entry
+/// probe the character casts, so it reads the spell listing and the
+/// assist has a heal of its own to cast.
 fn world() -> Arc<World> {
     let home = GraphRoom { name: "Home".into(), ..Default::default() };
     let graph = RoomGraph::from_rooms(vec![(HOME, home)]);
@@ -96,8 +103,8 @@ fn world() -> Arc<World> {
         abilities: vec![],
         hp_per_level: 6,
         hp_seed: 4,
-        caster_group: 0,
-        casting_factor: 0,
+        caster_group: 1,
+        casting_factor: 1,
         exp_base: 0,
         combat_factor: 6,
         weapon_code: 8,
@@ -107,7 +114,7 @@ fn world() -> Arc<World> {
 }
 
 #[tokio::test]
-async fn a_hurt_member_with_nothing_to_cast_asks_once_per_round() {
+async fn a_hurt_member_asks_once_per_round_while_it_casts_on_itself() {
     let base = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("party_window_ask");
     let _ = std::fs::remove_dir_all(&base);
     // Before any other task exists in this process. The only test in
@@ -149,6 +156,7 @@ async fn a_hurt_member_with_nothing_to_cast_asks_once_per_round() {
     let log = sent.lock().unwrap().clone();
     let screen = handle.screen.lock().unwrap().text();
     let asks = log.iter().filter(|l| l.as_str() == "say @heal 30").count();
+    assert!(log.iter().any(|l| l.as_str() == "cast mihe"), "it casts on itself too: {log:?}\nscreen:\n{screen}");
     assert!(asks >= 1, "the ask went out: {log:?}\nscreen:\n{screen}");
     assert!(asks <= 2, "once per round, not per prompt: {log:?}\nscreen:\n{screen}");
     assert!(!log.iter().any(|l| l == "say @heal 90"), "over the mark there is nothing to ask: {log:?}");

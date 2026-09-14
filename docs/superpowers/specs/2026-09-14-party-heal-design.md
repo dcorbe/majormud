@@ -53,9 +53,8 @@ These were settled in the design conversation and are not open.
   on the roster, so either source marks a witchunter. Race is kept for
   the rules that will need it.
 - **Asking follows the local heal rules.** `[bot].auto_heal` and its
-  minor and major marks decide when a member is hurt. It asks when it
-  is hurt and its own heal machine has nothing to cast. Self first,
-  then the party.
+  minor and major marks decide when a member is hurt. A hurt member
+  asks the room every round, and casts on itself as well when it can.
 - **`/bot` is the master switch.** The assist runs only with the bot
   on, so none of this runs with it off. `[party].heal` turns answering
   off for one character while the rest of the bot runs.
@@ -160,9 +159,12 @@ join line first names it.
 ## Asking
 
 `party::AskState` in `AssistCasts`, paced by the round clock. On a
-prompt, when `[bot].auto_heal` is on, `heal_need` says minor or major
-for the own percent, and `assist_heal` returned nothing for that
-prompt, the character says `@heal <percent>`, at most once per round.
+prompt, when `[bot].auto_heal` is on and `heal_need` says minor or
+major for the own percent, the character says `@heal <percent>`, at
+most once per round, whether or not it also cast on itself that
+prompt. Amended 2026-09-14 after the first live run: Blueberry could
+always afford its own small heal, so under the first rule it never
+asked, and died at 13 percent beside two healers.
 
 On the line `You feel ill.` the character is poisoned. If its book has
 cure poison it casts it on itself through the party cast state below,

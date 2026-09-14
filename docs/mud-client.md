@@ -1171,8 +1171,9 @@ covers both the mark being reached and a fight breaking the rest, or at
 once when the board refused the rest. One of each per rest, under
 `auto_rest` like the rest itself.
 
-A member under its heal mark with nothing of its own to cast says
-`@heal <percent>` to the room, once per round while that holds, and
+A member under its heal mark says `@heal <percent>` to the room, once
+per round while that holds, whether or not it also casts a heal on
+itself, and
 `@cure` on every poison tick it cannot cure itself, also at most once
 per round. Curing its own poison is not an answer to the party, so a
 character does it whether or not `[party].heal` is on and whether or
