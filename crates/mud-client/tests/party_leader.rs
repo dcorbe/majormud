@@ -301,11 +301,12 @@ async fn a_wait_holds_the_leg_until_ok() {
 
 /// The held leader stands in an empty room. Standing still is the
 /// whole job, so the board hears one `look` when the hold begins and
-/// at most one more per stop the hold is cut into. It used to hear one
-/// per round trip: the hold ran two-second stops, an empty room ended
-/// each stop the moment its look was answered, and the next stop opened
-/// with a fresh look (carrot, cwgaming 2026-09-14: 234 looks in twenty
-/// seconds).
+/// nothing more until a follower says `@ok`. It used to hear one per
+/// round trip: the hold ran two-second stops, an empty room ended each
+/// stop the moment its look was answered, and the next stop opened with
+/// a fresh look (carrot, cwgaming 2026-09-14: 234 looks in twenty
+/// seconds). Then one per two-second stop, which the whole party still
+/// watched as "Carrot is looking around the room" for every rest.
 #[tokio::test]
 async fn a_held_leader_does_not_loop_on_look() {
     let (addr, received, pushed) = scripted_board(
@@ -355,12 +356,11 @@ async fn a_held_leader_does_not_loop_on_look() {
         .iter()
         .filter(|(t, l)| l == "look" && *t >= wait_seen && *t <= ok_seen)
         .count();
-    // The hold lasts a second and a half: the stop that opened on the
-    // hold, its re-ask at `idle_poke_ms` (500ms here), and the next
-    // two-second stop's opening look. A fourth is slack for the timing
-    // of the push against the stop boundary.
+    // The stop that opened on the hold asks once. `idle_poke_ms` is
+    // 500ms here and the hold lasts a second and a half, so a stop that
+    // re-asked on the shelf life would be heard.
     assert!(
-        looks_held <= 4,
+        looks_held <= 1,
         "the board heard {looks_held} looks during a 1.5s hold: {:?}",
         log.iter().map(|(_, l)| l.as_str()).collect::<Vec<_>>()
     );

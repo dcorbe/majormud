@@ -1181,6 +1181,11 @@ impl Session {
         self.party_holds().lock().expect("holds lock").is_empty()
     }
 
+    /// When the first hold on the party runs out, if any is held.
+    pub fn party_next_hold_deadline(&self) -> Option<Instant> {
+        self.party_holds().lock().expect("holds lock").next_deadline()
+    }
+
     /// Drop and return every hold whose deadline has passed.
     pub fn party_expire_holds(&self) -> Vec<String> {
         self.party_holds().lock().expect("holds lock").expire(Instant::now())

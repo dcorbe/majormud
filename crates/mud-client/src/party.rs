@@ -363,6 +363,11 @@ impl Holds {
         self.by.is_empty()
     }
 
+    /// When the first of the holds runs out, if any is held.
+    pub fn next_deadline(&self) -> Option<Instant> {
+        self.by.values().map(|(_, t)| *t).min()
+    }
+
     /// Held names as they were given, sorted by their lowercased key.
     pub fn names(&self) -> Vec<String> {
         self.by.values().map(|(n, _)| n.clone()).collect()

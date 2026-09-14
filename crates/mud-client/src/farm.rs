@@ -702,8 +702,17 @@ pub struct StopState {
     stop_name: String,
     /// How long a proven-empty stop is held open for a respawn.
     linger: Duration,
-    /// How stale an accepted block may get before it must be re-asked.
+    /// How stale an accepted block may get before it must be re-asked,
+    /// and how long an unanswered ask is waited on.
     recheck: Duration,
+    /// Whether a block goes stale at all. A circuit stop re-asks after
+    /// `recheck`, because nothing announces a respawn. A hold does not:
+    /// it is not waiting for anything to turn up, only standing still
+    /// for a follower, and every re-ask is a "Carrot is looking around
+    /// the room" printed at the whole party (live 2026-09-14, one every
+    /// two seconds for the length of each rest). An arrival or a blow
+    /// still invalidates what it saw, and that is what starts a fight.
+    shelf_life: bool,
     /// When this stop was last described by a block we believed.
     ///
     /// The block itself is gone. It used to be kept because occupancy
@@ -775,6 +784,7 @@ impl StopState {
             stop_name,
             linger: Duration::from_secs(cfg.dwell_empty_seconds),
             recheck: Duration::from_millis(cfg.idle_poke_ms),
+            shelf_life: true,
             observed: None,
             resolving: None,
             pending_look: None,
@@ -782,6 +792,12 @@ impl StopState {
             empty_since: None,
             blind: false,
         }
+    }
+
+    /// As [`StopState::new`], for a stop that stands still for the party:
+    /// what it has seen never goes stale on its own.
+    pub fn holding(stop_name: String, cfg: &FarmConfig) -> Self {
+        StopState { shelf_life: false, ..StopState::new(stop_name, cfg) }
     }
 
     /// Called for every command the gate actually releases — the same
@@ -1083,7 +1099,7 @@ impl StopState {
         // simply puts a monster in the room — so silence is never proof
         // the model is still true, however well it folds what the board
         // does say. An old observation is re-asked, not trusted.
-        if now.duration_since(observed) >= self.recheck {
+        if self.shelf_life && now.duration_since(observed) >= self.recheck {
             return Verdict::Ask;
         }
         // Money on the floor is swept BEFORE the next fight is picked.
@@ -3553,10 +3569,12 @@ pub enum HoldEnd {
 
 /// Stand here until every hold is released or expired.
 ///
-/// Two-second stops, so a monster that walks in is fought by the stop
-/// pump: the same defence a walk interruption gets, rather than a sleep
-/// that would let the leader be chewed on while it waits. Expired holds
-/// are named as the board gave the name.
+/// Stops, so a monster that walks in is fought by the stop pump: the
+/// same defence a walk interruption gets, rather than a sleep that
+/// would let the leader be chewed on while it waits. One stop runs
+/// until the holds clear or the first of them runs out; it used to be
+/// two-second stops, and every stop opened with a look the whole party
+/// watched. Expired holds are named as the board gave the name.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn hold_here(
     session: &crate::session::Session,
@@ -3583,7 +3601,9 @@ pub(crate) async fn hold_here(
             return Ok(HoldEnd::Released { expired });
         }
         set_phase(phase, Phase::Holding { at });
-        let until = Instant::now() + Duration::from_secs(2);
+        let until = session
+            .party_next_hold_deadline()
+            .unwrap_or_else(|| Instant::now() + Duration::from_secs(2));
         match farm_stop(
             session, nav, graph, at, live, threat, refusals, casts, clock, started,
             Some(until), StopKind::Hold, None, false, None, stats, phase,
@@ -3693,7 +3713,10 @@ async fn farm_stop(
     // into the bot, not into a local, and a second copy of the number
     // would be one more thing that can go stale.
     let vitals = session.state();
-    let mut seen = StopState::new(stop_name.clone(), &cfg);
+    let mut seen = match kind {
+        StopKind::Hold => StopState::holding(stop_name.clone(), &cfg),
+        StopKind::Circuit | StopKind::Defence => StopState::new(stop_name.clone(), &cfg),
+    };
     // The maintained room state — fed the same stream, one fold. Its
     // first consumer is the recast coherence gate; StopState keeps its
     // own hard-won evidence rules untouched until Here earns collapse.
@@ -3754,6 +3777,12 @@ async fn farm_stop(
         // Defending is capped: see FarmConfig::defend_seconds for why a
         // stop that cannot go quiet must still end.
         if until.is_some_and(|d| Instant::now() >= d) {
+            return Ok(StopEnd::Dwelt { sneaking: still_sneaking });
+        }
+        // A hold is over the moment the last follower says `@ok`. Never
+        // while an ask is still out: the leg would walk out on the
+        // answer, the same rule `Empty` keeps.
+        if kind == StopKind::Hold && gate.is_idle() && session.party_holds_clear() {
             return Ok(StopEnd::Dwelt { sneaking: still_sneaking });
         }
 
